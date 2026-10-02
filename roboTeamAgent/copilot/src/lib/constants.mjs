@@ -33,7 +33,7 @@ export function getAllSkillTypeNames() {
  * Well-known file names used across the codebase
  */
 export const FILE_NAMES = {
-  HISTORY: '.achilles-cli/history',
+  HISTORY: '.roboteam/history',
 };
 
 /**

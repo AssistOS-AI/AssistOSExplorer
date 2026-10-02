@@ -12,6 +12,8 @@ import { robotTerminalDirectory } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
 import { findProjectRecord } from './project-storage.mjs';
+import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
+import { renderAlaTurnLog } from '../copilot/src/lib/webchat/webchatTurnLog.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
@@ -82,27 +84,20 @@ async function serveFile(res, root, relativePath) {
     fs.createReadStream(candidate).pipe(res);
 }
 
-// A main-conversation log is written by the copilot next to its session store,
-// so the session id alone locates the opened folder through the project registry.
+// A main-conversation "View Thinking" log is the coding-agent output ALA
+// recorded for the turn. The session id locates the opened folder through the
+// project registry; the assistant message id selects the turn.
 function readWebchatTurnLog(robotStore, workspaceRoot, sessionId, messageId) {
     let sessionFile;
     try { sessionFile = findProjectRecord({ dataDir: robotStore.dataDir, workspaceRoot }, 'session', sessionId); }
     catch { return null; }
     if (!sessionFile) return null;
     const workingDir = path.dirname(path.dirname(path.dirname(sessionFile)));
-    const root = path.join(workingDir, '.achilles-cli', 'logs');
-    const file = path.join(root, sessionId, `${messageId}.log`);
-    if (!file.startsWith(`${root}${path.sep}`)) return null;
-    let log;
-    try { log = fs.readFileSync(file, 'utf8'); } catch { return null; }
-    let finalResponse = '';
     try {
-        const session = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
-        const message = session.messages?.find(entry => entry.id === messageId && entry.role === 'assistant' && entry.status === 'completed');
-        // The copilot appends this navigation link after receiving ALA's final text.
-        if (typeof message?.text === 'string') finalResponse = message.text.replace(/\n\n\[View Thinking\]\([^\r\n)]*\)\s*$/, '');
-    } catch { /* Historical logs remain readable without conversation metadata. */ }
-    return { log, finalResponse };
+        const { turn, ala } = new ConversationSessionStore({ workingDir }).turnForMessage(sessionId, messageId);
+        if (!ala) return null;
+        return { log: renderAlaTurnLog(ala), finalResponse: turn.status === 'completed' ? ala.final || '' : '' };
+    } catch { return null; }
 }
 
 // HTML pages live under route paths such as /flow-types/new, so their relative

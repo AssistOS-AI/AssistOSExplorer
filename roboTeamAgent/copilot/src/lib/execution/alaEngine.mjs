@@ -1,17 +1,18 @@
 import { buildNativePrompt, buildTaskPrompt } from '../prompts.mjs';
-import { advanceSummaryFile } from '../../../../shared/summary-file-index.mjs';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { resolveAlaInstallation } from './alaInstallation.mjs';
+import { alaSessionsRoot, readAlaSession } from './alaTranscript.mjs';
 import * as workspaceSettings from '../config/achillesSettings.mjs';
 import { acquireExecutionLease, withWorkspaceMutation } from '../storage/workspaceStateLock.mjs';
-import { ensureSafeAchillesPrivateDirectory, resolveAchillesWorkspaceRoot } from '../storage/privateDataRoot.mjs';
+import { ACHILLES_PRIVATE_DIRECTORY_NAME, ensureSafeAchillesPrivateDirectory, resolveAchillesWorkspaceRoot } from '../storage/privateDataRoot.mjs';
 import { createPloinkyTaskContext } from '../ploinky/ploinkyTaskContext.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
-import { appendWebchatTurnLog, webchatTurnLogUrl, webchatTurnLogPath } from '../webchat/webchatTurnLog.mjs';
+import { webchatTurnLogUrl } from '../webchat/webchatTurnLog.mjs';
 
 const BACKENDS = ['codex', 'opencode', 'pi'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
@@ -31,9 +32,12 @@ async function modelConfigPath(home) {
     return file;
 }
 
-async function executionHome(workingDir, env) {
+// The ALA home holds ALA's configuration and the coding agents' own state. It
+// is the robot home under RoboTeam and the user's home for a standalone CLI.
+// Conversations are not stored there; they live in the working folder.
+async function executionHome(env) {
     const configured = String(env.ACHILLES_ALA_HOME || '').trim();
-    const directory = configured || ensureSafeAchillesPrivateDirectory(workingDir, 'ala/home');
+    const directory = configured || os.homedir();
     let home;
     try {
         home = await fs.realpath(directory);
@@ -56,31 +60,27 @@ function nativeEnvironment(env, home) {
         XDG_CACHE_HOME: path.join(home, '.cache'), PI_CODING_AGENT_DIR: path.join(home, '.pi/agent') };
 }
 
-async function validateNativeSession(session, home, cwd) {
+// Returns the backend to resume, or false when the conversation has no native
+// continuation yet. The continuation is the last one in ALA's transcript.
+function validateNativeSession(session, home, cwd) {
     const metadata = session.engine;
-    const file = path.join(home, '.ala', 'sessions', `${session.sessionId}.json`);
     if (metadata && (metadata.sessionId !== session.sessionId || metadata.home !== home || metadata.cwd !== cwd)) {
         throw new Error('ALA session home/cwd association mismatch; the existing conversation has not been replaced.');
     }
     let native;
-    try {
-        for (const directory of [path.join(home, '.ala'), path.join(home, '.ala', 'sessions')]) {
-            const entry = await fs.lstat(directory);
-            if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error('Unsafe native session directory.');
-        }
-        const entry = await fs.lstat(file);
-        if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('Unsafe native session file.');
-        native = JSON.parse(await fs.readFile(file, 'utf8'));
-    } catch (cause) {
-        if (!metadata && cause.code === 'ENOENT') return false;
-        throw new Error(`ALA native continuation is missing, corrupt, or unsafe for conversation ${session.sessionId}; restore it or create a new conversation.`, { cause });
+    try { native = readAlaSession(cwd, session.sessionId); }
+    catch (cause) {
+        throw new Error(`ALA conversation transcript is corrupt for conversation ${session.sessionId}; restore it or create a new conversation.`, { cause });
     }
-    if (!metadata) throw new Error('An unbound native session already exists; refusing to replace or adopt it.');
-    if (native.version !== 1 || native.id !== session.sessionId || native.home !== home || native.workspace !== cwd
-        || !BACKENDS.includes(native.agent) || !native.continuation || typeof native.continuation !== 'object'
-        || Array.isArray(native.continuation) || !Object.keys(native.continuation).length
+    if (!native) {
+        if (metadata?.backend) throw new Error(`ALA conversation transcript is missing for conversation ${session.sessionId}; restore it or create a new conversation.`);
+        return false;
+    }
+    if (!metadata) throw new Error('An unbound ALA conversation already exists; refusing to replace or adopt it.');
+    if (!native.continuation) return false;
+    if (!BACKENDS.includes(native.agent) || typeof native.continuation !== 'object' || Array.isArray(native.continuation)
         || (metadata.backend && native.agent !== metadata.backend)) {
-        throw new Error('ALA native session metadata/backend/continuation mismatch; the existing conversation has not been replaced.');
+        throw new Error('ALA native session backend/continuation mismatch; the existing conversation has not been replaced.');
     }
     const requiredFields = native.agent === 'codex' ? ['threadId']
         : native.agent === 'pi' ? ['sessionId', 'sessionFile'] : ['sessionId'];
@@ -111,8 +111,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         // One persistent native home per robot. The robot home is mounted
         // writable and used directly, so credentials and native sessions never
         // diverge across a per-project copy.
-        const home = await executionHome(cwd, env);
-        const resumeBackend = await validateNativeSession(session, home, cwd);
+        const home = await executionHome(env);
+        const resumeBackend = validateNativeSession(session, home, cwd);
         const stored = settings.readAchillesSettings?.(cwd) || {};
         let models = { ...(settings.getCodingAgentModels?.(cwd) || stored.codingAgents?.models || {}) };
         let efforts = { ...(stored.codingAgents?.efforts || {}) };
@@ -164,25 +164,6 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
         active.add(operation);
         let release, catalogRelease, turn, scriptContext, temporary, child, childDone;
-        let hasTurnLog = false;
-        const summaryIndex = { state: {} };
-        const summaryLogRanges = [];
-        const recordTurnLog = async (line, metadata = {}) => {
-            if (execution.captureTurnLogs === false) return;
-            const text = String(line ?? '');
-            if (!text && !metadata.outputComplete) return;
-            const assistant = metadata.outputKind === 'assistant';
-            const output = (metadata.outputComplete || !assistant) && !text.endsWith('\n') ? `${text}\n` : text;
-            const offset = appendWebchatTurnLog(workingDir, sessionId, turn.assistantMessageId, output);
-            hasTurnLog = true;
-            const ranges = await advanceSummaryFile(webchatTurnLogPath(workingDir, sessionId, turn.assistantMessageId), summaryIndex,
-                { start: offset, end: offset + Buffer.byteLength(output), assistant,
-                    complete: metadata.outputComplete === true, outputId: metadata.outputId || '' });
-            if (ranges.length) {
-                summaryLogRanges.push(...ranges);
-                await sessionStore.recordSummaryLog(sessionId, turn.assistantMessageId, summaryLogRanges);
-            }
-        };
         const env = { ...process.env };
         const sanitize = createSanitizer(context, env);
         const emit = async (event) => { await onEvent?.(sanitize(event)); };
@@ -216,7 +197,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 origin: structuredClone(context.origin || context.webchatOrigin || {}) };
             scriptContext = await createPloinkyTaskContext({ context: captured,
                 env, onTask: (task) => backgroundTasks?.observeScriptTask(task, captured) });
-            const root = ensureSafeAchillesPrivateDirectory(cwd, 'ala/turns');
+            const root = ensureSafeAchillesPrivateDirectory(cwd, 'turns');
             temporary = await fs.mkdtemp(path.join(root, 'turn-'));
             await fs.chmod(temporary, 0o700);
             const nativePrompt = buildNativePrompt({ prompt, resume: config.resume,
@@ -224,17 +205,20 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 workflowCatalog: snapshot.workflowCatalog });
 
             const taskFile = path.join(temporary, 'prompt.txt');
+            const userFile = path.join(temporary, 'user.txt');
             const configFile = path.join(temporary, 'config.json');
             await Promise.all([
                 fs.writeFile(taskFile, sanitize(nativePrompt), { mode: 0o600, flag: 'wx' }),
+                fs.writeFile(userFile, sanitize(context.rawText || prompt), { mode: 0o600, flag: 'wx' }),
                 fs.writeFile(configFile, JSON.stringify({ version: 1, taskRepositories: [],
                     codingAgents: { priority: config.priority, models: config.models, efforts: config.efforts, websearch: config.websearch } }), { mode: 0o600, flag: 'wx' }),
             ]);
             controller.signal.throwIfAborted();
             await sessionStore.bindEngine(sessionId, { home, cwd, backend, robotId: execution.robotId });
             const args = ['--ca', backend, '--home', home, '--cwd', cwd, '--session-id', sessionId,
+                '--turn-id', turnId, '--user-message-file', userFile,
                 '--control-stdin', '--permissions', permissionMode, '--taskFile', taskFile,
-                '--config', configFile, '--ignore', path.resolve(cwd, '.achilles-cli')];
+                '--config', configFile, '--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
             // The workspace is mounted read-only at its canonical path; the writable
             // cwd is the --cwd grant. ALA mounts exactly what it is given.
             if (config.workspaceRoot !== cwd) args.push('--folder', config.workspaceRoot);
@@ -248,15 +232,15 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const isNode = /\.(?:mjs|cjs|js)$/i.test(api.entryPath);
             await emit({ type: 'progress', reason: 'Starting ALA' });
             child = spawn(isNode ? process.execPath : api.entryPath, isNode ? [api.entryPath, ...args] : args, {
-                cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '' },
+                cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: alaSessionsRoot(cwd) },
                 shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
             });
             onControl?.((message) => {
-                if (message.type === 'message') message = { ...message, message: buildTaskPrompt({ task: message.message }) };
+                if (message.type === 'message') message = { ...message, displayText: message.message, message: buildTaskPrompt({ task: message.message }) };
                 if (!child.stdin.destroyed && !controller.signal.aborted) child.stdin.write(JSON.stringify(message) + '\n');
             });
             childDone = consumeChild(child, { config: { ...config, skillExecution: snapshot.revision ? { revision: snapshot.revision, catalogId: snapshot.catalogId } : null }, controller, context: captured, sessionId, turnId,
-                assistantMessageId: turn.assistantMessageId, emit, sanitize, recordLog: recordTurnLog });
+                assistantMessageId: turn.assistantMessageId, emit, sanitize });
             const outputText = await childDone;
             if (scriptContext) {
                 const completedContext = scriptContext;
@@ -265,13 +249,16 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             }
             controller.signal.throwIfAborted();
             let finalText = outputText;
-            if (captured.sourceTabId && webchatLogsBase && hasTurnLog) {
-                try {
-                    finalText = `${outputText}\n\n[View Thinking](${webchatTurnLogUrl(webchatLogsBase, sessionId, turn.assistantMessageId)})`;
-                } catch { /* Log persistence must not fail the answer. */ }
+            let thinkingUrl = '';
+            if (captured.sourceTabId && webchatLogsBase && execution.captureTurnLogs !== false) {
+                const recorded = readAlaSession(cwd, sessionId)?.turns.find((entry) => entry.turnId === turnId);
+                if (recorded?.messages.length || recorded?.tools.length) {
+                    thinkingUrl = webchatTurnLogUrl(webchatLogsBase, sessionId, turn.assistantMessageId);
+                    finalText = `${outputText}\n\n[View Thinking](${thinkingUrl})`;
+                }
             }
-            const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, finalText,
-                { durationMs: Math.max(0, Math.round(performance.now() - responseStarted)) });
+            const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText,
+                { durationMs: Math.max(0, Math.round(performance.now() - responseStarted)), thinkingUrl });
             return { outputText: finalText, session: completed, turnId, userMessageId: turn.userMessageId,
                 assistantMessageId: turn.assistantMessageId, backend };
         } catch (cause) {
@@ -298,7 +285,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         }
     }
 
-    async function consumeChild(child, { config, controller, context, sessionId, turnId, assistantMessageId, emit, sanitize, recordLog = null }) {
+    async function consumeChild(child, { config, controller, context, sessionId, turnId, emit, sanitize }) {
         let stdout = '', stderr = '', diagnostics = '', finalText = null, selected = false, protocolError = null;
         let queued = Promise.resolve();
         let remainingFinals = 1;
@@ -338,7 +325,6 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             } else if (event.type === 'coding-agent-final') {
                 if (remainingFinals <= 0 || event.agent !== config.backend || typeof event.message !== 'string') throw new Error('Malformed or duplicate ALA final event.');
                 remainingFinals--;
-                if (finalText !== null) await recordLog?.(sanitize(finalText), { outputKind: 'assistant', outputComplete: true });
                 finalText = event.message;
             } else if (event.type === 'message-accepted' && event.delivery === 'queued') {
                 remainingFinals++;
@@ -361,12 +347,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 pendingRequests.delete(event.id);
                 interactions?.resolve(event.id, event.reason);
             }
-            if (event.type === 'coding-agent-message' || event.type === 'agentlib-tool') {
-                await recordLog?.(sanitize(event.message ?? event.reason), event.type === 'coding-agent-message' ? event : {});
-            } else if (event.type === 'diagnostic') {
-                await recordLog?.(sanitize(event.message));
-            }
-            // Progress is delivered as a transient WebChat status, never persisted on the message.
+            // ALA records coding-agent output in its transcript. Progress is delivered as a transient WebChat status, never persisted on the message.
             await emit(event);
         };
         const line = (value) => {
@@ -420,7 +401,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         if (!selected || finalText === null || !stdout.trim() || stdout.trimEnd() !== finalText.trimEnd()) {
             throw new Error('ALA completed without a valid matching native final result.');
         }
-        await validateNativeSession(sessionStore.loadSession(sessionId), config.home, config.cwd);
+        validateNativeSession(sessionStore.loadSession(sessionId), config.home, config.cwd);
         return sanitize(stdout.trimEnd());
     }
 

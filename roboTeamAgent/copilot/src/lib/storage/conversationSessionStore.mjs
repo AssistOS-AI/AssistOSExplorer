@@ -1,4 +1,3 @@
-import { indexConversationSummaries } from '../../../../shared/impact-summary.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,15 +6,26 @@ import {
     getCurrentSessionId,
     setCurrentSessionId,
 } from '../config/achillesSettings.mjs';
+import { alaTranscript, alaSessionsRoot } from '../execution/alaTranscript.mjs';
 import {
     assertSafeAchillesPrivatePath,
     ensureAchillesPrivateDataRoot,
 } from './privateDataRoot.mjs';
 import { withWorkspaceMutation } from './workspaceStateLock.mjs';
 
+// A RoboTeam conversation has two files with the same session id:
+//  - .roboteam/.ala/sessions/<id>.jsonl, written and read only by ALA, holds
+//    the user messages, intermediate coding-agent output and final answers;
+//  - .roboteam/sessions/<id>.json, owned here, holds everything else: turn
+//    identities, attachments, references, slash-command turns, task cards,
+//    skill policy and the engine binding.
+// loadSession() combines them into the message list the UI renders.
+
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TASK_ID_RE = /^task_[0-9a-f]{24}$/;
-const SESSION_STORE_GITIGNORE = '*\n!.gitignore\n';
+const METADATA_VERSION = 2;
+const STATUSES = ['pending', 'completed', 'failed', 'interrupted'];
+const METADATA_FIELDS = ['skillPolicyRef', 'legacySkillSelection', 'skillSelection', 'skillExecution', 'previousSkillExecution'];
 
 function isInside(root, candidate) {
     const relative = path.relative(root, candidate);
@@ -39,6 +49,10 @@ function assertSessionId(sessionId) {
     return normalized;
 }
 
+function validTimestamp(value, fallback) {
+    return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : fallback;
+}
+
 function atomicWriteJson(filePath, value) {
     assertRegularFileOrMissing(filePath);
     const temporaryPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
@@ -59,54 +73,6 @@ function atomicWriteJson(filePath, value) {
     }
 }
 
-function legacyMessageId(sessionId, index) {
-    const bytes = crypto.createHash('sha256').update(`${sessionId}:${index}`).digest().subarray(0, 16);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = bytes.toString('hex');
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-function normalizeConversationMessage(raw, sessionId, index) {
-    if (!raw || typeof raw !== 'object') throw new Error('invalid_session_message');
-    if (raw.type === 'task') {
-        const taskId = String(raw.taskId || '').trim();
-        if (!TASK_ID_RE.test(taskId)) throw new Error('invalid_session_task');
-        return { type: 'task', taskId };
-    }
-    const role = raw.role === 'user' ? 'user' : (raw.role === 'assistant' ? 'assistant' : '');
-    if (!role) throw new Error('invalid_session_message');
-    const message = {
-        id: raw.id === undefined ? legacyMessageId(sessionId, index) : assertSessionId(raw.id),
-        role,
-        text: typeof raw.text === 'string' ? raw.text : '',
-        timestamp: typeof raw.timestamp === 'string' && Number.isFinite(Date.parse(raw.timestamp))
-            ? raw.timestamp
-            : new Date(0).toISOString(),
-        attachments: Array.isArray(raw.attachments) ? raw.attachments : [],
-        references: Array.isArray(raw.references) ? raw.references : [],
-    };
-    if (role === 'assistant' && Array.isArray(raw.progress)) {
-        message.progress = raw.progress
-            .filter((entry) => typeof entry === 'string')
-            .map((entry) => entry.trim())
-            .filter(Boolean);
-    }
-    if (role === 'assistant' && Number.isSafeInteger(raw.durationMs) && raw.durationMs >= 0) message.durationMs = raw.durationMs;
-    if (raw.context === false) message.context = false;
-    if (raw.turnId !== undefined) {
-        if (typeof raw.turnId !== 'string' || !raw.turnId.trim()) throw new Error('invalid_turn_id');
-        message.turnId = raw.turnId;
-    }
-    if (raw.status !== undefined) {
-        if (!['pending', 'completed', 'failed', 'interrupted'].includes(raw.status)) {
-            throw new Error('invalid_message_status');
-        }
-        message.status = raw.status;
-    }
-    return message;
-}
-
 function normalizeEngine(raw, sessionId) {
     if (!raw || raw.type !== 'ala' || raw.version !== 1
         || assertSessionId(raw.sessionId) !== sessionId
@@ -120,34 +86,84 @@ function normalizeEngine(raw, sessionId) {
         ...(raw.robotId ? { robotId: raw.robotId } : {}) };
 }
 
-function normalizeSession(raw, expectedId = '') {
-    if (!raw || typeof raw !== 'object') throw new Error('invalid_session_file');
+function normalizeTurn(raw) {
+    if (!raw || typeof raw !== 'object' || typeof raw.turnId !== 'string' || !raw.turnId.trim()) throw new Error('invalid_turn_id');
+    const turn = {
+        turnId: raw.turnId,
+        userMessageId: assertSessionId(raw.userMessageId),
+        assistantMessageId: assertSessionId(raw.assistantMessageId),
+        timestamp: validTimestamp(raw.timestamp, new Date(0).toISOString()),
+        attachments: Array.isArray(raw.attachments) ? raw.attachments : [],
+        references: Array.isArray(raw.references) ? raw.references : [],
+        tasks: Array.isArray(raw.tasks) ? raw.tasks.filter((taskId) => TASK_ID_RE.test(taskId)) : [],
+    };
+    if (raw.context === false) turn.context = false;
+    if (raw.status !== undefined) {
+        if (!STATUSES.includes(raw.status)) throw new Error('invalid_message_status');
+        turn.status = raw.status;
+    }
+    if (Number.isSafeInteger(raw.durationMs) && raw.durationMs >= 0) turn.durationMs = raw.durationMs;
+    // userText/text are RoboTeam-owned: slash-command turns, and turns that
+    // failed before ALA recorded anything.
+    for (const field of ['userText', 'text', 'thinkingUrl']) if (typeof raw[field] === 'string') turn[field] = raw[field];
+    return turn;
+}
+
+function normalizeMetadata(raw, expectedId = '') {
+    if (!raw || typeof raw !== 'object' || raw.version !== METADATA_VERSION) throw new Error('invalid_session_file');
     const sessionId = assertSessionId(raw.sessionId);
     if (expectedId && sessionId !== assertSessionId(expectedId)) throw new Error('invalid_session_file');
-    if (!Array.isArray(raw.messages)) throw new Error('invalid_session_messages');
-    const messages = raw.messages.map((message, index) => normalizeConversationMessage(message, sessionId, index));
+    if (!Array.isArray(raw.turns)) throw new Error('invalid_session_turns');
+    const turns = raw.turns.map(normalizeTurn);
     const ids = new Set();
-    for (const message of messages) {
-        if (!message.id) continue;
-        if (ids.has(message.id)) throw new Error('duplicate_session_message_id');
-        ids.add(message.id);
+    for (const turn of turns) {
+        for (const id of [turn.turnId, turn.userMessageId, turn.assistantMessageId]) {
+            if (ids.has(id)) throw new Error('duplicate_session_message_id');
+            ids.add(id);
+        }
     }
-    const createdAt = typeof raw.createdAt === 'string' && Number.isFinite(Date.parse(raw.createdAt))
-        ? raw.createdAt
-        : new Date(0).toISOString();
-    const updatedAt = typeof raw.updatedAt === 'string' && Number.isFinite(Date.parse(raw.updatedAt))
-        ? raw.updatedAt
-        : createdAt;
+    const createdAt = validTimestamp(raw.createdAt, new Date(0).toISOString());
     return {
+        version: METADATA_VERSION,
         sessionId,
         createdAt,
-        updatedAt,
-        messages,
+        updatedAt: validTimestamp(raw.updatedAt, createdAt),
+        turns,
         ...(raw.cwd && path.isAbsolute(raw.cwd) ? { cwd: raw.cwd } : {}),
-        ...Object.fromEntries(['skillPolicyRef', 'legacySkillSelection', 'skillExecution', 'previousSkillExecution', 'summaryRefs', 'summaryIndexVersion', 'summaryLogRefs'].filter((key) => raw[key] !== undefined).map((key) => [key, structuredClone(raw[key])])),
-        ...(raw.skillSelection ? { skillSelection: structuredClone(raw.skillSelection) } : {}),
+        ...Object.fromEntries(METADATA_FIELDS.filter((key) => raw[key] !== undefined).map((key) => [key, structuredClone(raw[key])])),
         ...(raw.engine === undefined ? {} : { engine: normalizeEngine(raw.engine, sessionId) }),
     };
+}
+
+const ALA_STATUS = { completed: 'completed', failed: 'failed', interrupted: 'interrupted' };
+
+function withThinkingLink(text, url) {
+    return url ? `${text}\n\n[View Thinking](${url})` : text;
+}
+
+// Build the UI message list from RoboTeam turns and the ALA transcript.
+function buildMessages(metadata, alaSession, pendingText) {
+    const alaTurns = new Map((alaSession?.turns || []).map((turn) => [turn.turnId, turn]));
+    const messages = [];
+    for (const turn of metadata.turns) {
+        const ala = turn.context === false ? null : alaTurns.get(turn.turnId);
+        const shared = { timestamp: turn.timestamp, turnId: turn.turnId, ...(turn.context === false ? { context: false } : {}) };
+        messages.push({ ...shared, id: turn.userMessageId, role: 'user',
+            text: ala?.user ?? turn.userText ?? pendingText.get(turn.turnId) ?? '',
+            attachments: turn.attachments, references: turn.references });
+        const status = turn.status || ALA_STATUS[ala?.status] || 'pending';
+        const text = ala?.final !== null && ala?.final !== undefined && turn.context !== false
+            ? withThinkingLink(ala.final, turn.thinkingUrl)
+            : (turn.text ?? '');
+        const durationMs = turn.durationMs ?? ala?.durationMs;
+        // A slash command without visible output keeps only its input.
+        const silentCommand = turn.context === false && turn.status === 'completed' && !turn.text;
+        if (!silentCommand) messages.push({ ...shared, id: turn.assistantMessageId, role: 'assistant', text,
+            attachments: [], references: [], progress: [], status,
+            ...(Number.isSafeInteger(durationMs) ? { durationMs } : {}) });
+        for (const taskId of turn.tasks) messages.push({ type: 'task', taskId });
+    }
+    return messages;
 }
 
 function formatHistoryMessage(message) {
@@ -192,6 +208,8 @@ export function buildConversationInitialHistory(session) {
 }
 
 export class ConversationSessionStore {
+    #pendingUserText = new Map();
+
     constructor({ workingDir = process.cwd() } = {}) {
         this.workingDir = fs.realpathSync(path.resolve(workingDir));
         this.sessionsDirectory = this.#validateDirectory();
@@ -201,7 +219,7 @@ export class ConversationSessionStore {
 
     #validateDirectory() {
         return assertSafeAchillesPrivatePath(this.workingDir, 'sessions', {
-            label: 'AchillesCLI sessions directory',
+            label: 'RoboTeam sessions directory',
             type: 'directory',
         });
     }
@@ -210,15 +228,6 @@ export class ConversationSessionStore {
         ensureAchillesPrivateDataRoot(this.workingDir);
         this.#validateDirectory();
         fs.mkdirSync(this.sessionsDirectory, { recursive: true, mode: 0o700 });
-        const gitignorePath = assertSafeAchillesPrivatePath(this.workingDir, 'sessions/.gitignore', {
-            label: 'AchillesCLI session metadata file',
-            type: 'file',
-        });
-        if (!fs.existsSync(gitignorePath)) {
-            fs.writeFileSync(gitignorePath, SESSION_STORE_GITIGNORE, {
-                encoding: 'utf8', mode: 0o600, flag: 'wx',
-            });
-        }
     }
 
     sessionPath(sessionId) {
@@ -227,31 +236,40 @@ export class ConversationSessionStore {
         const filePath = path.join(this.sessionsDirectory, `${normalized}.json`);
         if (!isInside(this.sessionsDirectory, filePath)) throw new Error('invalid_session_id');
         return assertSafeAchillesPrivatePath(this.workingDir, `sessions/${normalized}.json`, {
-            label: 'AchillesCLI session file',
+            label: 'RoboTeam session file',
             type: 'file',
         });
     }
 
-    #readSession(sessionId) {
+    #readMetadata(sessionId) {
         const normalized = assertSessionId(sessionId);
         const filePath = this.sessionPath(normalized);
         assertRegularFileOrMissing(filePath);
-        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        return { raw, session: normalizeSession(raw, normalized) };
+        return normalizeMetadata(JSON.parse(fs.readFileSync(filePath, 'utf8')), normalized);
+    }
+
+    #writeMetadata(metadata) {
+        const normalized = normalizeMetadata(metadata, metadata.sessionId);
+        atomicWriteJson(this.sessionPath(normalized.sessionId), normalized);
+        return normalized;
+    }
+
+    // The ALA transcript lives in the conversation's working folder.
+    #alaSession(metadata) {
+        const cwd = metadata.engine?.cwd || metadata.cwd || this.workingDir;
+        try { return alaTranscript.readSessionSync(alaSessionsRoot(cwd), metadata.sessionId); }
+        catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    }
+
+    #compose(metadata) {
+        const alaSession = this.#alaSession(metadata);
+        const { version: _version, turns: _turns, ...fields } = metadata;
+        const updatedAt = alaSession && alaSession.updatedAt > metadata.updatedAt ? alaSession.updatedAt : metadata.updatedAt;
+        return { ...structuredClone(fields), updatedAt, messages: buildMessages(metadata, alaSession, this.#pendingUserText) };
     }
 
     loadSession(sessionId) {
-        return this.#readSession(sessionId).session;
-    }
-
-    // Called only inside a workspace mutation. Persist legacy IDs before any
-    // insertion/removal can change their original positions.
-    #loadMigratedSession(sessionId) {
-        const { raw, session } = this.#readSession(sessionId);
-        if (raw.messages.some((message) => message.type !== 'task' && message.id === undefined)) {
-            atomicWriteJson(this.sessionPath(session.sessionId), session);
-        }
-        return session;
+        return this.#compose(this.#readMetadata(sessionId));
     }
 
     async createSession({ sessionId = crypto.randomUUID(), select = true } = {}) {
@@ -260,18 +278,17 @@ export class ConversationSessionStore {
             const now = new Date().toISOString();
             sessionId = assertSessionId(sessionId);
             if (fs.existsSync(this.sessionPath(sessionId))) throw new Error('session_already_exists');
-            const session = { sessionId, createdAt: now, updatedAt: now, messages: [], summaryRefs: [], summaryIndexVersion: 1, summaryLogRefs: [], cwd: this.workingDir };
-            atomicWriteJson(this.sessionPath(session.sessionId), session);
-            if (select) await setCurrentSessionId(this.workingDir, session.sessionId);
-            this.currentSessionId = session.sessionId;
+            const metadata = this.#writeMetadata({ version: METADATA_VERSION, sessionId, createdAt: now, updatedAt: now, turns: [], cwd: this.workingDir });
+            if (select) await setCurrentSessionId(this.workingDir, sessionId);
+            this.currentSessionId = sessionId;
             this.startupSelectionRead = true;
-            return session;
+            return this.#compose(metadata);
         });
     }
 
     async ensureCurrentSession() {
         return withWorkspaceMutation(this.workingDir, async () => {
-            if (this.currentSessionId) return this.#loadMigratedSession(this.currentSessionId);
+            if (this.currentSessionId) return this.loadSession(this.currentSessionId);
             this.#ensureDirectory();
             if (!this.startupSelectionRead) {
                 this.startupSelectionRead = true;
@@ -279,7 +296,7 @@ export class ConversationSessionStore {
                 if (startupId) {
                     this.currentSessionId = startupId;
                     try {
-                        const session = this.#loadMigratedSession(startupId);
+                        const session = this.loadSession(startupId);
                         if (!session.cwd || session.cwd === this.workingDir) return session;
                         this.currentSessionId = null;
                     } catch (error) {
@@ -296,7 +313,7 @@ export class ConversationSessionStore {
 
     async resumeSession(sessionId) {
         return withWorkspaceMutation(this.workingDir, async () => {
-            const session = this.#loadMigratedSession(sessionId);
+            const session = this.loadSession(sessionId);
             await setCurrentSessionId(this.workingDir, session.sessionId);
             this.currentSessionId = session.sessionId;
             this.startupSelectionRead = true;
@@ -333,17 +350,26 @@ export class ConversationSessionStore {
         };
     }
 
-    async updateSession(sessionId, updater) {
+    async #updateMetadata(sessionId, updater) {
         return withWorkspaceMutation(this.workingDir, () => {
-            const session = this.#loadMigratedSession(sessionId);
-            const previous = { messages: session.messages.map(({ id, role, text }) => ({ id, role, text })) };
+            const metadata = this.#readMetadata(sessionId);
+            updater(metadata);
+            metadata.updatedAt = new Date().toISOString();
+            return this.#compose(this.#writeMetadata(metadata));
+        });
+    }
+
+    // Updates the RoboTeam-owned session fields (skill policy, selection). The
+    // composed messages are read-only here: conversation text belongs to ALA.
+    async updateSession(sessionId, updater) {
+        return this.#updateMetadata(sessionId, (metadata) => {
+            const session = this.#compose(metadata);
             const result = updater(session);
             if (result && typeof result.then === 'function') throw new Error('session_updater_must_be_synchronous');
-            indexConversationSummaries(session, previous);
-            session.updatedAt = new Date().toISOString();
-            const normalized = normalizeSession(session, sessionId);
-            atomicWriteJson(this.sessionPath(normalized.sessionId), normalized);
-            return normalized;
+            for (const key of METADATA_FIELDS) {
+                if (session[key] === undefined) delete metadata[key];
+                else metadata[key] = structuredClone(session[key]);
+            }
         });
     }
 
@@ -358,43 +384,36 @@ export class ConversationSessionStore {
             type: 'ala', version: 1, sessionId,
             home: canonicalDirectory(home), cwd: canonicalDirectory(cwd), backend, ...(robotId ? { robotId } : {}),
         }, assertSessionId(sessionId));
-        return withWorkspaceMutation(this.workingDir, () => {
-            const session = this.loadSession(sessionId);
-            if (session.engine) {
+        return this.#updateMetadata(sessionId, (metadata) => {
+            if (metadata.engine) {
                 for (const field of ['sessionId', 'home', 'cwd']) {
-                    if (session.engine[field] !== engine[field]) throw new Error(`session_engine_${field}_mismatch`);
+                    if (metadata.engine[field] !== engine[field]) throw new Error(`session_engine_${field}_mismatch`);
                 }
-                if (session.engine.backend && engine.backend && session.engine.backend !== engine.backend) {
+                if (metadata.engine.backend && engine.backend && metadata.engine.backend !== engine.backend) {
                     throw new Error('session_engine_backend_mismatch');
                 }
-                if (session.engine.robotId && session.engine.robotId !== robotId) throw new Error('session_engine_robot_mismatch');
-                engine.backend = session.engine.backend || engine.backend;
+                if (metadata.engine.robotId && metadata.engine.robotId !== robotId) throw new Error('session_engine_robot_mismatch');
+                engine.backend = metadata.engine.backend || engine.backend;
             }
-            return this.updateSession(sessionId, (record) => { record.engine = engine; });
+            metadata.engine = engine;
         });
     }
 
-    async beginTurn({ sessionId, text = '', attachments = [], references = [], context = true, turnId } = {}) {
+    // Registers a turn. For a conversation turn the user text is held in memory
+    // only until ALA records it in the transcript.
+    async beginTurn({ sessionId, text = '', attachments = [], references = [], context = true, turnId = crypto.randomUUID() } = {}) {
         assertSessionId(sessionId);
         const userMessageId = crypto.randomUUID();
         const assistantMessageId = crypto.randomUUID();
-        const timestamp = new Date().toISOString();
-        const session = await this.updateSession(sessionId, (record) => {
-            const metadata = {
-                timestamp,
-                ...(context === false ? { context: false } : {}),
-                ...(turnId === undefined ? {} : { turnId }),
-            };
-            record.summaryLogRefs ||= [];
-            record.summaryLogRefs.push({ messageId: assistantMessageId, ranges: [] });
-            record.messages.push({
-                ...metadata, id: userMessageId, role: 'user',
-                text: typeof text === 'string' ? text : '',
+        const userText = typeof text === 'string' ? text : '';
+        if (context !== false) this.#pendingUserText.set(turnId, userText);
+        const session = await this.#updateMetadata(sessionId, (metadata) => {
+            metadata.turns.push({
+                turnId, userMessageId, assistantMessageId, timestamp: new Date().toISOString(),
                 attachments: Array.isArray(attachments) ? attachments : [],
                 references: Array.isArray(references) ? references : [],
-            }, {
-                ...metadata, id: assistantMessageId, role: 'assistant', text: '',
-                attachments: [], references: [], progress: [], status: 'pending',
+                tasks: [],
+                ...(context === false ? { context: false, userText } : {}),
             });
         });
         return { session, userMessageId, assistantMessageId };
@@ -404,78 +423,65 @@ export class ConversationSessionStore {
         return this.beginTurn({ ...options, context: false });
     }
 
-    #assistant(record, messageId) {
-        const message = typeof messageId === 'string'
-            ? record.messages.find((entry) => entry.id === messageId && entry.role === 'assistant')
+    #turn(metadata, assistantMessageId) {
+        const turn = typeof assistantMessageId === 'string'
+            ? metadata.turns.find((entry) => entry.assistantMessageId === assistantMessageId)
             : null;
-        if (!message) throw new Error('assistant_message_not_found');
-        return message;
+        if (!turn) throw new Error('assistant_message_not_found');
+        return turn;
     }
 
-    async appendProgress(sessionId, assistantMessageId, reason) {
-        const progress = String(reason || '').trim();
-        return this.updateSession(sessionId, (record) => {
-            const message = this.#assistant(record, assistantMessageId);
-            if (!progress) return;
-            if (!Array.isArray(message.progress)) message.progress = [];
-            message.progress.push(progress);
-        });
-    }
-
-    async recordSummaryLog(sessionId, messageId, ranges) {
-        return this.updateSession(sessionId, record => {
-            record.summaryLogRefs ||= [];
-            const previous = record.summaryLogRefs.find(ref => ref.messageId === messageId);
-            if (previous) previous.ranges = ranges;
-            else record.summaryLogRefs.push({ messageId, ranges });
-        });
-    }
-
-    async ensureSummaryIndex(sessionId) {
-        const session = this.loadSession(sessionId);
-        if (session.summaryIndexVersion === 1) return session;
-        return this.updateSession(sessionId, () => {});
-    }
-
-    async completeTurn(sessionId, assistantMessageId, text, { status = 'completed', durationMs } = {}) {
+    // The answer text of a completed turn is ALA's final record. RoboTeam keeps
+    // only the outcome, and its own error text when the turn did not complete.
+    async completeTurn(sessionId, assistantMessageId, text, { status = 'completed', durationMs, thinkingUrl } = {}) {
         if (!['completed', 'failed', 'interrupted'].includes(status)) throw new Error('invalid_message_status');
-        return this.updateSession(sessionId, (record) => {
-            const message = this.#assistant(record, assistantMessageId);
-            message.text = typeof text === 'string' ? text : String(text ?? '');
-            message.status = status;
-            if (Number.isSafeInteger(durationMs) && durationMs >= 0) message.durationMs = durationMs;
+        return this.#updateMetadata(sessionId, (metadata) => {
+            const turn = this.#turn(metadata, assistantMessageId);
+            turn.status = status;
+            if (Number.isSafeInteger(durationMs) && durationMs >= 0) turn.durationMs = durationMs;
+            if (thinkingUrl) turn.thinkingUrl = thinkingUrl;
+            const ala = this.#alaSession(metadata)?.turns.find((entry) => entry.turnId === turn.turnId);
+            if (status !== 'completed') turn.text = typeof text === 'string' ? text : String(text ?? '');
+            else if (!ala || ala.final === null) turn.text = typeof text === 'string' ? text : String(text ?? '');
+            // Keep the user message when ALA never recorded this turn.
+            if (!ala?.user && this.#pendingUserText.has(turn.turnId)) turn.userText = this.#pendingUserText.get(turn.turnId);
+            this.#pendingUserText.delete(turn.turnId);
         });
     }
 
     async completeCommand(sessionId, assistantMessageId, text) {
         const output = typeof text === 'string' ? text : String(text ?? '');
-        return this.updateSession(sessionId, (record) => {
-            const message = this.#assistant(record, assistantMessageId);
-            if (message.context !== false) throw new Error('command_message_not_found');
-            if (output || message.progress?.length) {
-                message.text = output;
-                message.status = 'completed';
-            } else {
-                record.messages.splice(record.messages.indexOf(message), 1);
-            }
+        return this.#updateMetadata(sessionId, (metadata) => {
+            const turn = this.#turn(metadata, assistantMessageId);
+            if (turn.context !== false) throw new Error('command_message_not_found');
+            turn.text = output;
+            turn.status = 'completed';
         });
     }
 
     async insertTask(sessionId, assistantMessageId, taskId) {
         const normalizedTaskId = String(taskId || '').trim();
         if (!TASK_ID_RE.test(normalizedTaskId)) throw new Error('invalid_task_id');
-        const session = await this.updateSession(sessionId, (record) => {
-            const assistant = this.#assistant(record, assistantMessageId);
-            if (record.messages.some((message) => message.type === 'task' && message.taskId === normalizedTaskId)) return;
-            let insertion = record.messages.indexOf(assistant) + 1;
-            while (record.messages[insertion]?.type === 'task') insertion += 1;
-            record.messages.splice(insertion, 0, { type: 'task', taskId: normalizedTaskId });
+        const session = await this.#updateMetadata(sessionId, (metadata) => {
+            const turn = this.#turn(metadata, assistantMessageId);
+            if (metadata.turns.some((entry) => entry.tasks.includes(normalizedTaskId))) return;
+            turn.tasks.push(normalizedTaskId);
         });
         return { session, taskId: normalizedTaskId };
+    }
+
+    // The persisted turn record for an assistant message, with its ALA turn.
+    turnForMessage(sessionId, assistantMessageId) {
+        const metadata = this.#readMetadata(sessionId);
+        const turn = this.#turn(metadata, assistantMessageId);
+        const ala = turn.context === false ? null
+            : this.#alaSession(metadata)?.turns.find((entry) => entry.turnId === turn.turnId) || null;
+        return { turn, ala };
     }
 }
 
 export const __testables = {
     assertSessionId,
-    normalizeSession,
+    normalizeMetadata,
+    buildMessages,
 };

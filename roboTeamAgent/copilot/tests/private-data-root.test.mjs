@@ -26,7 +26,7 @@ test('Ploinky launch from a workspace subdirectory stores private state in the s
     assert.equal(resolveAchillesWorkspaceRoot(selectedDirectory, env), fs.realpathSync(workspaceRoot));
     assert.equal(
         resolveAchillesPrivateDataRoot(selectedDirectory, { env }),
-        path.join(fs.realpathSync(selectedDirectory), '.achilles-cli'),
+        path.join(fs.realpathSync(selectedDirectory), '.roboteam'),
     );
 
     const previous = process.env.PLOINKY_WORKSPACE_ROOT;
@@ -38,9 +38,9 @@ test('Ploinky launch from a workspace subdirectory stores private state in the s
         else process.env.PLOINKY_WORKSPACE_ROOT = previous;
     }
 
-    assert.equal(fs.existsSync(path.join(selectedDirectory, '.achilles-cli', 'settings.json')), true);
+    assert.equal(fs.existsSync(path.join(selectedDirectory, '.roboteam', 'settings.json')), true);
     assert.equal(fs.existsSync(path.join(selectedDirectory, '.data')), false);
-    assert.equal(fs.existsSync(path.join(workspaceRoot, '.achilles-cli')), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, '.roboteam')), false);
 });
 
 test('AchillesCLI rejects a symlinked private data root', async t => {
@@ -49,7 +49,7 @@ test('AchillesCLI rejects a symlinked private data root', async t => {
     process.env.PLOINKY_WORKSPACE_ROOT = workspaceRoot;
     t.after(() => { if (oldRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = oldRoot; });
     const outside = await fsp.mkdtemp(path.join(os.tmpdir(), 'achilles-private-symlink-outside-'));
-    await fsp.symlink(outside, path.join(workspaceRoot, '.achilles-cli'));
+    await fsp.symlink(outside, path.join(workspaceRoot, '.roboteam'));
 
     assert.throws(
         () => resolveAchillesPrivateDataRoot(workspaceRoot, { env: { PLOINKY_WORKSPACE_ROOT: workspaceRoot } }),
@@ -68,11 +68,11 @@ test('settings do not read, migrate, or delete the former storage root', async t
     await fsp.writeFile(path.join(formerRoot, 'settings.json'), '{"model":"former/model"}\n');
 
     assert.deepEqual(readAchillesSettings(workspaceRoot), {});
-    assert.equal(fs.existsSync(path.join(workspaceRoot, '.achilles-cli')), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, '.roboteam')), false);
 
     await setSelectedModel(workspaceRoot, 'current/model');
     assert.equal(
-        JSON.parse(await fsp.readFile(path.join(workspaceRoot, '.achilles-cli', 'settings.json'), 'utf8')).model,
+        JSON.parse(await fsp.readFile(path.join(workspaceRoot, '.roboteam', 'settings.json'), 'utf8')).model,
         'current/model',
     );
     assert.equal(
@@ -88,8 +88,8 @@ test('settings reject a symlinked owned settings file before reading or writing'
     t.after(() => { if (oldRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = oldRoot; });
     const outside = path.join(await fsp.mkdtemp(path.join(os.tmpdir(), 'achilles-settings-link-outside-')), 'settings.json');
     await fsp.writeFile(outside, '{"model":"outside/model"}\n');
-    await fsp.mkdir(path.join(workspaceRoot, '.achilles-cli'), { recursive: true });
-    await fsp.symlink(outside, path.join(workspaceRoot, '.achilles-cli', 'settings.json'));
+    await fsp.mkdir(path.join(workspaceRoot, '.roboteam'), { recursive: true });
+    await fsp.symlink(outside, path.join(workspaceRoot, '.roboteam', 'settings.json'));
 
     assert.throws(() => readAchillesSettings(workspaceRoot), /settings file must not be a symbolic link/);
     await assert.rejects(setSelectedModel(workspaceRoot, 'blocked/model'), /settings file must not be a symbolic link/);

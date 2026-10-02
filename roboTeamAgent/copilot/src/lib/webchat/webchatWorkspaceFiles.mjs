@@ -4,7 +4,7 @@ import path from 'node:path';
 const WEBCHAT_WORKSPACE_FILES_VERSION = 1;
 const DEFAULT_REFRESH_INTERVAL_MS = 5000;
 const SECRET_SEGMENT_RE = /^[^/]*\.secrets$/i;
-const IGNORED_DIRECTORY_NAMES = new Set(['.achilles-cli', '.data', '.git', '.ploinky', 'node_modules']);
+const IGNORED_DIRECTORY_NAMES = new Set(['.roboteam', '.data', '.git', '.ploinky', 'node_modules']);
 
 function isIndexableSegment(segment) {
     return Boolean(segment)

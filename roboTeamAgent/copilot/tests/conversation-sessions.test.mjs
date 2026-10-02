@@ -16,6 +16,15 @@ import {
 } from '../src/lib/webchat/webchatSessionState.mjs';
 import { getCurrentSessionId } from '../src/lib/config/achillesSettings.mjs';
 import { SlashCommandHandler } from '../src/repl/SlashCommandHandler.mjs';
+import { resolveAlaCommand } from '../../server/ala-command.mjs';
+import { pathToFileURL } from 'node:url';
+
+async function loadAla() {
+    const root = path.dirname(path.dirname(fs.realpathSync(resolveAlaCommand())));
+    const load = (name) => import(pathToFileURL(path.join(root, 'src', name)).href);
+    const [state, recorder] = await Promise.all([load('session-state.mjs'), load('transcript-recorder.mjs')]);
+    return { ...state, ...recorder };
+}
 
 function workspace(t) {
     const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-conversations-'));
@@ -32,7 +41,6 @@ test('AchillesCLI creates and restores workspace conversation sessions', async (
         text: 'Inspect the project',
         references: [{ kind: 'workspace-path', path: 'src/index.mjs' }],
     });
-    await store.appendProgress(turn.session.sessionId, turn.assistantMessageId, 'Reading files');
     await store.completeTurn(turn.session.sessionId, turn.assistantMessageId, 'The project is ready.');
     await store.insertTask(turn.session.sessionId, turn.assistantMessageId, 'task_1234567890abcdef12345678');
 
@@ -40,9 +48,9 @@ test('AchillesCLI creates and restores workspace conversation sessions', async (
     assert.equal(restored.sessionId, created.sessionId);
     assert.equal(getCurrentSessionId(workingDir), created.sessionId);
     assert.equal(restored.messages[0].role, 'user');
-    assert.deepEqual(restored.messages[1].progress, ['Reading files']);
+    assert.equal(restored.messages[1].text, 'The project is ready.');
     assert.deepEqual(restored.messages[2], { type: 'task', taskId: 'task_1234567890abcdef12345678' });
-    assert.equal(fs.existsSync(path.join(workingDir, '.achilles-cli', 'sessions', `${created.sessionId}.json`)), true);
+    assert.equal(fs.existsSync(path.join(workingDir, '.roboteam', 'sessions', `${created.sessionId}.json`)), true);
     assert.equal(fs.existsSync(path.join(workingDir, '.data')), false);
     assert.equal(fs.existsSync(path.join(workingDir, '.copilot_history')), false);
 
@@ -59,8 +67,8 @@ test('conversation storage rejects a symlinked owned sessions directory', (t) =>
     const workingDir = workspace(t);
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-sessions-outside-'));
     t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
-    fs.mkdirSync(path.join(workingDir, '.achilles-cli'), { recursive: true });
-    fs.symlinkSync(outside, path.join(workingDir, '.achilles-cli', 'sessions'), 'dir');
+    fs.mkdirSync(path.join(workingDir, '.roboteam'), { recursive: true });
+    fs.symlinkSync(outside, path.join(workingDir, '.roboteam', 'sessions'), 'dir');
 
     assert.throws(
         () => new ConversationSessionStore({ workingDir }),
@@ -75,7 +83,7 @@ test('conversation storage revalidates sessions after construction', async (t) =
     t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
     const store = new ConversationSessionStore({ workingDir });
     await store.ensureCurrentSession();
-    const sessionsDirectory = path.join(workingDir, '.achilles-cli', 'sessions');
+    const sessionsDirectory = path.join(workingDir, '.roboteam', 'sessions');
 
     fs.rmSync(sessionsDirectory, { recursive: true, force: true });
     fs.symlinkSync(outside, sessionsDirectory, 'dir');
@@ -243,37 +251,44 @@ test('connections pin their selection and listing does not initialize workspace 
     assert.equal(a.loadSession(first.sessionId).messages[1].text, 'ALPHA answer');
 });
 
-test('legacy IDs survive task insertion and command placeholder removal', async (t) => {
+test('conversation text comes from the ALA transcript; RoboTeam keeps only turn metadata', async (t) => {
     const workingDir = workspace(t);
     const store = new ConversationSessionStore({ workingDir });
     const { sessionId } = await store.createSession();
-    const sessionFile = store.sessionPath(sessionId);
-    fs.writeFileSync(sessionFile, JSON.stringify({
-        sessionId, messages: [
-            { role: 'user', text: '/tasks', context: false },
-            { role: 'assistant', text: '', context: false },
-            { role: 'user', text: 'legacy question' },
-            { role: 'assistant', text: 'legacy answer', progress: ['old progress'] },
-        ],
-    }));
-    const legacy = store.loadSession(sessionId);
-    const commandId = legacy.messages[1].id;
-    const answerId = legacy.messages[3].id;
-    assert.equal(new ConversationSessionStore({ workingDir }).loadSession(sessionId).messages[3].id, answerId);
-    await store.insertTask(sessionId, commandId, 'task_1234567890abcdef12345678');
-    await store.completeCommand(sessionId, commandId, '');
-    await store.appendProgress(sessionId, answerId, 'new progress');
-    await store.completeTurn(sessionId, answerId, 'updated legacy answer');
-    const persisted = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
-    assert.deepEqual(persisted.messages.filter((message) => message.id).map((message) => message.id), [
-        legacy.messages[0].id, legacy.messages[2].id, answerId,
+    const turnId = 'turn-from-ala';
+    const turn = await store.beginTurn({ sessionId, turnId, text: 'question', attachments: [{ name: 'a.txt' }] });
+    assert.equal(store.loadSession(sessionId).messages[0].text, 'question');
+    const ala = await loadAla();
+    const state = await ala.openSessionState({ id: sessionId, sessionsRoot: path.join(workingDir, '.roboteam', '.ala') });
+    const recorder = ala.createTranscriptRecorder(state, turnId);
+    await recorder.user('question');
+    recorder.observe({ type: 'coding-agent-message', message: 'thinking', outputKind: 'assistant', outputComplete: true });
+    await recorder.finish({ result: 'answer from ALA', status: 'completed' });
+    await state.close();
+    await store.completeTurn(sessionId, turn.assistantMessageId, 'answer from ALA', { thinkingUrl: '/logs/x' });
+
+    const persisted = JSON.parse(fs.readFileSync(store.sessionPath(sessionId), 'utf8'));
+    assert.equal(JSON.stringify(persisted).includes('answer from ALA'), false);
+    assert.equal(JSON.stringify(persisted).includes('question'), false);
+    const messages = new ConversationSessionStore({ workingDir }).loadSession(sessionId).messages;
+    assert.deepEqual(messages.map(({ role, text, status }) => ({ role, text, status })), [
+        { role: 'user', text: 'question', status: undefined },
+        { role: 'assistant', text: 'answer from ALA\n\n[View Thinking](/logs/x)', status: 'completed' },
     ]);
-    assert.deepEqual(persisted.messages.find((message) => message.id === answerId).progress, ['old progress', 'new progress']);
-    assert.equal(persisted.messages.find((message) => message.id === answerId).text, 'updated legacy answer');
-    assert.equal(persisted.messages[1].taskId, 'task_1234567890abcdef12345678');
-    assert.deepEqual(buildConversationInitialHistory(store.loadSession(sessionId)), [
-        { role: 'user', message: 'legacy question' },
-        { role: 'assistant', message: 'updated legacy answer' },
+    assert.deepEqual(messages[0].attachments, [{ name: 'a.txt' }]);
+    assert.equal(store.turnForMessage(sessionId, turn.assistantMessageId).ala.messages[0].text, 'thinking');
+});
+
+test('a turn that fails before ALA records it keeps the user message and error in RoboTeam metadata', async (t) => {
+    const workingDir = workspace(t);
+    const store = new ConversationSessionStore({ workingDir });
+    const { sessionId } = await store.createSession();
+    const turn = await store.beginTurn({ sessionId, text: 'never reached ALA' });
+    await store.completeTurn(sessionId, turn.assistantMessageId, 'ALA setup error', { status: 'failed' });
+    const messages = new ConversationSessionStore({ workingDir }).loadSession(sessionId).messages;
+    assert.deepEqual(messages.map(({ role, text, status }) => ({ role, text, status })), [
+        { role: 'user', text: 'never reached ALA', status: undefined },
+        { role: 'assistant', text: 'ALA setup error', status: 'failed' },
     ]);
 });
 
@@ -326,7 +341,6 @@ function runSessionWriter(workingDir, sessionId, assistantMessageId, worker) {
         const [workingDir, sessionId, assistantMessageId, worker] = process.argv.slice(1);
         const store = new ConversationSessionStore({ workingDir });
         for (let index = 0; index < 8; index += 1) {
-            await store.appendProgress(sessionId, assistantMessageId, worker + ':' + index);
             await store.insertTask(sessionId, assistantMessageId, 'task_' + (Number(worker) * 8 + index).toString(16).padStart(24, '0'));
         }
         await store.insertTask(sessionId, assistantMessageId, 'task_ffffffffffffffffffffffff');
@@ -342,7 +356,7 @@ function runSessionWriter(workingDir, sessionId, assistantMessageId, worker) {
     });
 }
 
-test('separate processes merge progress and deduplicate task cards without shifting message targets', async (t) => {
+test('separate processes deduplicate task cards without shifting message targets', async (t) => {
     const workingDir = workspace(t);
     const store = new ConversationSessionStore({ workingDir });
     const { sessionId } = await store.createSession();
@@ -351,8 +365,6 @@ test('separate processes merge progress and deduplicate task cards without shift
     await Promise.all([0, 1, 2].map((worker) => runSessionWriter(workingDir, sessionId, first.assistantMessageId, worker)));
     await store.completeTurn(sessionId, second.assistantMessageId, 'second answer');
     const restored = store.loadSession(sessionId);
-    const expected = [0, 1, 2].flatMap((worker) => Array.from({ length: 8 }, (_, index) => `${worker}:${index}`));
-    assert.deepEqual(restored.messages.find((message) => message.id === first.assistantMessageId).progress.sort(), expected.sort());
     const expectedTasks = Array.from({ length: 24 }, (_, index) => `task_${index.toString(16).padStart(24, '0')}`);
     expectedTasks.push('task_ffffffffffffffffffffffff');
     assert.deepEqual(restored.messages.filter((message) => message.type === 'task').map((message) => message.taskId).sort(), expectedTasks.sort());

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import './helpers/isolated-ala-home.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -112,16 +113,16 @@ test('stderr final and stdout produce one persisted answer; live selection is pr
 
 test('native metadata mismatch and missing continuation preserve the conversation byte-for-byte', async (t) => {
     const h = await harness(t);
-    const first = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'First' });
-    const nativeFile = path.join(first.session.engine.home, '.ala/sessions', `${h.sessionId}.json`);
-    const original = await fs.readFile(nativeFile, 'utf8');
+    await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'First' });
+    const transcript = path.join(h.workingDir, '.roboteam', '.ala', 'sessions', `${h.sessionId}.jsonl`);
+    const original = await fs.readFile(transcript, 'utf8');
     const before = await fs.readFile(h.store.sessionPath(h.sessionId), 'utf8');
-    const native = JSON.parse(original);
-    await fs.writeFile(nativeFile, JSON.stringify({ ...native, workspace: path.dirname(h.workingDir) }));
+    await fs.appendFile(transcript, `${JSON.stringify({ seq: 999, type: 'continuation', agent: 'opencode', continuation: { sessionId: 'other' } })}\n`);
     await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Do not append' }), /mismatch/);
     assert.equal(await fs.readFile(h.store.sessionPath(h.sessionId), 'utf8'), before);
-    await fs.rm(nativeFile);
-    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Do not replace' }), /continuation is missing/);
+    await fs.writeFile(transcript, original);
+    await fs.rm(transcript);
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Do not replace' }), /transcript is missing/);
     assert.equal(await fs.readFile(h.store.sessionPath(h.sessionId), 'utf8'), before);
 });
 
@@ -237,24 +238,25 @@ test('caller system instructions are prepended to the user prompt on initial and
     }
 });
 
-test('a webchat turn persists an on-demand log and links it from the answer', async (t) => {
+test('a webchat turn links the coding-agent output ALA recorded for it', async (t) => {
     const h = await harness(t, {}, { webchatLogsBase: '/base-agent-additional-server/roboTeamAgent/3001/webchat-logs' });
-    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'LOG_TURN',
-        context: { sourceTabId: 'tab1', sourcePageInstanceId: 'page1', rawText: 'LOG_TURN' } });
-    const messageId = result.assistantMessageId;
-    assert.match(result.session.messages.at(-1).text,
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Thinking', context: { sourceTabId: 'tab-a' } });
+    const answer = result.session.messages.at(-1);
+    assert.match(answer.text,
         /\[View Thinking\]\(\/base-agent-additional-server\/roboTeamAgent\/3001\/webchat-logs\/[a-f0-9-]{36}\/[a-f0-9-]{36}\)/);
-    const log = await fs.readFile(path.join(h.workingDir, '.achilles-cli', 'logs', h.sessionId, `${messageId}.log`), 'utf8');
-    assert.match(log, /Visible progress/);
+    const { turn, ala } = h.store.turnForMessage(h.sessionId, answer.id);
+    assert.equal(turn.turnId, result.turnId);
+    assert.deepEqual(ala.messages.map((entry) => entry.text), ['Visible progress']);
+    assert.equal(ala.user, 'Thinking');
+    await assert.rejects(fs.stat(path.join(h.workingDir, '.roboteam', 'logs')), { code: 'ENOENT' });
 });
 
 test('a non-webchat turn keeps only the answer without a log link', async (t) => {
     const h = await harness(t, {}, { webchatLogsBase: '/base-agent-additional-server/roboTeamAgent/3001/webchat-logs' });
-    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'PLAIN' });
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'No tab' });
     assert.equal(result.session.messages.at(-1).text.includes('View Thinking'), false);
-    assert.ok((await fs.stat(path.join(h.workingDir, '.achilles-cli', 'logs'))).isDirectory());
+    assert.equal(result.session.messages.at(-1).text, result.outputText);
 });
-
 
 test('workflow human-input channel is mounted explicitly into the native sandbox', async t => {
     const h = await harness(t);

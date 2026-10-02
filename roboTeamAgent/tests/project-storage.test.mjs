@@ -25,7 +25,7 @@ test('task records survive robot deletion and can be found after manager restart
     const manager = new RuntimeManager(f.options);
     await manager._saveTask({ taskId: id, robotId: f.robot.id, type: 'simple', state: 'completed',
         alaSessionId: id, request: { cwd: f.project, task: 'Review', ca: 'codex' } });
-    const expected = path.join(f.project, '.achilles-cli/tasks', id, 'executions', `${id}.json`);
+    const expected = path.join(f.project, '.roboteam/tasks', id, 'executions', `${id}.json`);
     assert.equal(findProjectRecord(f.options, 'task', id), expected);
     await assert.rejects(fs.stat(path.join(f.store.robotPath(f.robot.id), 'runtime', `${id}.task.json`)), { code: 'ENOENT' });
     await f.store.delete(f.robot.id);
@@ -40,7 +40,7 @@ test('project lookup rejects ambiguous copied sessions and substituted files', a
     const f = await fixture(t);
     const id = randomUUID();
     registerProject(f.options, f.project);
-    const sessions = path.join(f.project, '.achilles-cli/sessions');
+    const sessions = path.join(f.project, '.roboteam/sessions');
     await fs.mkdir(sessions);
     const file = path.join(sessions, `${id}.json`);
     await fs.writeFile(file, JSON.stringify({ sessionId: id }));
@@ -48,8 +48,8 @@ test('project lookup rejects ambiguous copied sessions and substituted files', a
     const second = path.join(f.root, 'second');
     await fs.mkdir(second);
     registerProject(f.options, second);
-    await fs.mkdir(path.join(second, '.achilles-cli/sessions'));
-    const duplicate = path.join(second, '.achilles-cli/sessions', `${id}.json`);
+    await fs.mkdir(path.join(second, '.roboteam/sessions'));
+    const duplicate = path.join(second, '.roboteam/sessions', `${id}.json`);
     await fs.copyFile(file, duplicate);
     assert.throws(() => findProjectRecord(f.options, 'session', id), /multiple folders/);
     await fs.unlink(duplicate);
@@ -61,7 +61,7 @@ test('registration rejects a symlinked project store and paths outside the works
     const f = await fixture(t);
     const target = path.join(f.root, 'target');
     await fs.mkdir(target);
-    await fs.symlink(target, path.join(f.project, '.achilles-cli'));
+    await fs.symlink(target, path.join(f.project, '.roboteam'));
     assert.throws(() => registerProject(f.options, f.project), /real directory/);
     assert.deepEqual(await fs.readdir(target), []);
     assert.throws(() => registerProject(f.options, os.tmpdir()), /outside PLOINKY_WORKSPACE_ROOT/);

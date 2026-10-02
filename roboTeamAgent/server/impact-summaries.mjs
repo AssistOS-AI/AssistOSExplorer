@@ -3,8 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { findProjectRecord } from './project-storage.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
-import { assertSafeAchillesPrivatePath } from '../copilot/src/lib/storage/privateDataRoot.mjs';
-import { scanSummaryLines, validRange } from '../shared/impact-summary.mjs';
+import { readAlaSession } from '../copilot/src/lib/execution/alaTranscript.mjs';
+import { scanSummaryLines, summaryRanges, validRange } from '../shared/impact-summary.mjs';
 
 const missing = () => Object.assign(new Error('Summary source not found'), { statusCode: 404 });
 const uuid = value => /^[a-f0-9-]{36}$/.test(value || '');
@@ -30,31 +30,26 @@ async function readRanges(file, ranges) {
     } finally { await handle.close(); }
 }
 
+// Human reports of a conversation are the marked blocks in ALA's recorded
+// assistant output and final answers, read from the transcript on demand.
 export async function conversationSummaries(robotStore, workspaceRoot, sessionId) {
     if (!uuid(sessionId)) throw missing();
     const sessionFile = findProjectRecord({ dataDir: robotStore.dataDir, workspaceRoot }, 'session', sessionId);
     if (!sessionFile) throw missing();
     const cwd = path.dirname(path.dirname(path.dirname(sessionFile)));
-    const store = new ConversationSessionStore({ workingDir: cwd });
-    const logPath = messageId => {
-        if (!uuid(messageId)) throw new Error('Invalid summary message');
-        return assertSafeAchillesPrivatePath(cwd, `logs/${sessionId}/${messageId}.log`, { type: 'file' });
-    };
-    const session = await store.ensureSummaryIndex(sessionId);
-    const messageRefs = new Map((session.summaryRefs || []).map(ref => [ref.messageId, ref.ranges]));
-    const logRefs = new Map((session.summaryLogRefs || []).map(ref => [ref.messageId, ref.ranges]));
+    const session = new ConversationSessionStore({ workingDir: cwd }).loadSession(sessionId);
+    const alaTurns = new Map((readAlaSession(session.engine?.cwd || session.cwd || cwd, sessionId)?.turns || []).map(turn => [turn.turnId, turn]));
     const summaries = [];
-    for (const message of session.messages.filter(entry => entry.role === 'assistant')) {
+    for (const message of session.messages.filter(entry => entry.role === 'assistant' && entry.context !== false)) {
+        const turn = alaTurns.get(message.turnId);
+        if (!turn) continue;
         const seen = new Set();
-        const append = text => {
-            text = text.trim();
-            if (text && !seen.has(text)) { summaries.push({ messageId: message.id, text }); seen.add(text); }
-        };
-        const ranges = logRefs.get(message.id) || [];
-        if (ranges.length) for (const item of await readRanges(logPath(message.id), ranges)) append(item.text);
-        for (const range of messageRefs.get(message.id) || []) {
-            if (!validRange(range, message.text.length)) throw new Error('Invalid summary message reference');
-            append(message.text.slice(range.start, range.end));
+        const texts = [...turn.messages.filter(entry => entry.outputKind === 'assistant').map(entry => entry.text), turn.final || ''];
+        for (const source of texts) {
+            for (const range of summaryRanges(source)) {
+                const text = source.slice(range.start, range.end).trim();
+                if (text && !seen.has(text)) { summaries.push({ messageId: message.id, text }); seen.add(text); }
+            }
         }
     }
     return { summaries, active: session.messages.some(message => message.status === 'pending') };

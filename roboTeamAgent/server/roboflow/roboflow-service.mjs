@@ -175,7 +175,7 @@ export class RoboFlowService {
             await this.store.update(id, current => {
                 const visit = current.instances.find(item => item.id === instance.id);
                 Object.assign(visit, { robotId: robot.id, robotName: robot.name, executionType: mode, runtimeTaskId,
-                    logRef: `.achilles-cli/roboflow/${id}/${instance.id}.log`, resultRef: `.achilles-cli/roboflow/${id}/${instance.id}.result` });
+                    logRef: `.roboteam/roboflow/${id}/${instance.id}.log`, resultRef: `.roboteam/roboflow/${id}/${instance.id}.result` });
             });
             this.bindings.set(runtimeTaskId, { flowId: id, instanceId: instance.id });
             const selections = robotSelections(robot);
@@ -496,7 +496,7 @@ export class RoboFlowService {
     async generationCwd(folder) {
         if (folder) return this.runtimeManager.resolveCwd(folder);
         let directory = await this.runtimeManager.resolveCwd(this.workspaceRoot);
-        for (const segment of ['.achilles-cli', 'roboflow-generation']) {
+        for (const segment of ['.roboteam', 'roboflow-generation']) {
             directory = path.join(directory, segment);
             await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
             const stat = await fs.lstat(directory);

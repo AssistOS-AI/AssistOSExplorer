@@ -5,6 +5,7 @@ import { RuntimeManager } from './runtime-manager.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
 import { RoboFlowService } from './roboflow/roboflow-service.mjs';
 import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
+import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
@@ -17,6 +18,7 @@ if (!internalToken) {
 }
 
 const publicBasePath = PUBLIC_BASE_PATH;
+await removeLegacyStorage({ dataDir, workspaceRoot, log: (line) => console.log(line) });
 const robotStore = new RobotStore({ dataDir });
 await robotStore.initialize();
 await robotStore.ensureDefaultRobot();

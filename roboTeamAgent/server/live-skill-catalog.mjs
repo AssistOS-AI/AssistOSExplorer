@@ -321,7 +321,7 @@ export class LiveSkillCatalog {
             }
             // Keep the last two revisions of every conversation, including the one /skills pin would select.
             for (const cwd of projectDirectories({ dataDir: this.service.robotStore.dataDir, workspaceRoot: this.service.workspaceRoot })) {
-                const sessions = path.join(cwd, '.achilles-cli', 'sessions');
+                const sessions = path.join(cwd, '.roboteam', 'sessions');
                 for (const file of await fs.readdir(sessions).catch((error) => { if (error.code === 'ENOENT') return []; throw error; })) {
                     if (!/^[a-f0-9-]{36}\.json$/.test(file)) continue;
                     let session;

@@ -1,8 +1,10 @@
+import './helpers/isolated-ala-home.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import './helpers/isolated-ala-home.mjs';
 import { RobotStore } from '../../server/robot-store.mjs';
 import { RobotSkillsets } from '../../server/robot-skillsets.mjs';
 import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';

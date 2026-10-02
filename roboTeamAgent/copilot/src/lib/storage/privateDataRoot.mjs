@@ -2,7 +2,9 @@ import { requireWorkspaceRoot } from '../../../../server/workspace-root.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const ACHILLES_PRIVATE_DIRECTORY_NAME = '.achilles-cli';
+export const ACHILLES_PRIVATE_DIRECTORY_NAME = '.roboteam';
+// The whole private directory is local state and never belongs in the project's repository.
+const PRIVATE_GITIGNORE = '*\n';
 
 function isInside(root, candidate) {
     const relative = path.relative(root, candidate);
@@ -84,6 +86,9 @@ export function ensureAchillesPrivateDataRoot(workingDir = process.cwd(), option
             fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
         }
     }
+    const gitignore = path.join(privateDataRoot, '.gitignore');
+    try { fs.writeFileSync(gitignore, PRIVATE_GITIGNORE, { mode: 0o600, flag: 'wx' }); }
+    catch (error) { if (error?.code !== 'EEXIST') throw error; }
     return resolveAchillesPrivateDataRoot(workingDir, {
         ...options,
         privateDataRoot,

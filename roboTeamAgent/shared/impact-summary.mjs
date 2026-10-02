@@ -1,6 +1,5 @@
 // Offsets refer to the original output; the index never stores summary text.
 export const SUMMARY_MARKER = '<<human-report>>';
-export const SUMMARY_INDEX_VERSION = 1;
 
 export function scanSummaryLines(text, { offset = 0, bytes = false, final = true, state = {} } = {}) {
     const next = { cursor: offset, open: state.open ?? null, fence: state.fence || null, ranges: [] };
@@ -34,16 +33,6 @@ export function summaryRanges(text) {
 export function validRange(range, length) {
     return Number.isSafeInteger(range?.start) && Number.isSafeInteger(range?.end)
         && range.start >= 0 && range.end > range.start && range.end <= length;
-}
-
-export function indexConversationSummaries(session, previous = null) {
-    const old = new Map((previous?.messages || []).filter(message => message.role === 'assistant').map(message => [message.id, message.text]));
-    const refs = new Map((session.summaryRefs || []).map(ref => [ref.messageId, ref]));
-    session.summaryRefs = session.messages.filter(message => message.role === 'assistant').map(message => {
-        if (session.summaryIndexVersion === SUMMARY_INDEX_VERSION && old.get(message.id) === message.text) return refs.get(message.id) || { messageId: message.id, ranges: [] };
-        return { messageId: message.id, ranges: summaryRanges(message.text) };
-    }).filter(ref => ref.ranges.length);
-    session.summaryIndexVersion = SUMMARY_INDEX_VERSION;
 }
 
 // Separate machine-readable payloads may be followed by a human report.

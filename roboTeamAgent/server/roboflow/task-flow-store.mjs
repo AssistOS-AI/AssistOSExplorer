@@ -86,7 +86,7 @@ export class TaskFlowStore {
         const root = await fs.realpath(flow.folder);
         if (root !== path.resolve(flow.folder)) throw new Error('Workflow output folder was replaced by a symlink');
         let directory = root;
-        for (const part of ['.achilles-cli', 'roboflow', flowId]) {
+        for (const part of ['.roboteam', 'roboflow', flowId]) {
             directory = path.join(directory, part);
             if (create) await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
             const stat = await fs.lstat(directory);

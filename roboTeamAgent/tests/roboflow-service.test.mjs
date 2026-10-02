@@ -220,7 +220,7 @@ test('generation without a project uses managed scratch and the visit cap is con
     f.service.runtimeManager.resolveCwd = async value => { assert.ok(path.isAbsolute(value), 'runtime needs an explicit cwd'); return value; };
     const pending = f.service.generateWorkflow({ description: 'Draft' });
     while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
-    assert.equal(f.started[0].request.cwd, path.join(f.root, '.achilles-cli', 'roboflow-generation'));
+    assert.equal(f.started[0].request.cwd, path.join(f.root, '.roboteam', 'roboflow-generation'));
     await f.finish(0, JSON.stringify(graph())); await pending;
     await f.service.createWorkflow({ ...graph(), edges: [edge('a', 'a')] });
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work', folder: f.root });

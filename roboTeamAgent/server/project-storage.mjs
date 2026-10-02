@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { assertSafeAchillesPrivatePath, ensureSafeAchillesPrivateDirectory } from '../copilot/src/lib/storage/privateDataRoot.mjs';
 
 // This registry contains project locations only. History and execution records
-// have one owner: the project's .achilles-cli directory.
+// have one owner: the project's .roboteam directory.
 function registry({ dataDir }, create = false) {
     const directory = path.join(dataDir, 'projects');
     if (create) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });

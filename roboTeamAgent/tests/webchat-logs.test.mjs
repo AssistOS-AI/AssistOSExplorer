@@ -7,21 +7,48 @@ import test from 'node:test';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 import { registerProject } from '../server/project-storage.mjs';
+import { resolveAlaCommand } from '../server/ala-command.mjs';
+import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
+import { pathToFileURL } from 'node:url';
 
 const headers = () => ({ 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'actor', roles: ['admin'] } }) });
+
+async function loadAla() {
+    const root = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())));
+    const load = (name) => import(pathToFileURL(path.join(root, 'src', name)).href);
+    const [state, recorder] = await Promise.all([load('session-state.mjs'), load('transcript-recorder.mjs')]);
+    return { ...state, ...recorder };
+}
 
 async function fixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'webchat-logs-'));
     const workspaceRoot = path.join(root, 'workspace');
     const project = path.join(workspaceRoot, 'project');
-    const sessionId = randomUUID();
-    const messageId = randomUUID();
-    await fs.mkdir(path.join(project, '.achilles-cli', 'sessions'), { recursive: true });
-    await fs.writeFile(path.join(project, '.achilles-cli', 'sessions', `${sessionId}.json`), '{}');
-    await fs.mkdir(path.join(project, '.achilles-cli', 'logs', sessionId), { recursive: true });
-    await fs.writeFile(path.join(project, '.achilles-cli', 'logs', sessionId, `${messageId}.log`), 'Reading `src/app.js`\nDone.');
+    await fs.mkdir(project, { recursive: true });
+    const previousRoot = process.env.PLOINKY_WORKSPACE_ROOT;
+    process.env.PLOINKY_WORKSPACE_ROOT = workspaceRoot;
+    const store = new ConversationSessionStore({ workingDir: project });
+    const { sessionId } = await store.createSession();
     const dataDir = path.join(root, 'data');
     registerProject({ dataDir, workspaceRoot }, project);
+    const ala = await loadAla();
+    // Records one ALA turn and its RoboTeam metadata; returns the assistant message id.
+    const recordTurn = async ({ messages = [], final = null, status = 'completed' } = {}) => {
+        const turnId = randomUUID();
+        const turn = await store.beginTurn({ sessionId, turnId, text: 'question' });
+        const transcript = path.join(project, '.roboteam', '.ala', 'sessions', `${sessionId}.jsonl`);
+        const exists = await fs.access(transcript).then(() => true, () => false);
+        const state = await ala.openSessionState({ id: sessionId, sessionsRoot: path.join(project, '.roboteam', '.ala'), resume: exists });
+        if (!exists) await state.save({ agent: 'codex', continuation: { threadId: 'thread' } });
+        const recorder = ala.createTranscriptRecorder(state, turnId);
+        await recorder.user('question');
+        for (const message of messages) recorder.observe({ type: 'coding-agent-message', message, outputKind: 'output' });
+        if (status !== 'pending') await recorder.finish({ result: final, status: status === 'completed' ? 'completed' : 'failed' });
+        await state.close();
+        if (status !== 'pending') await store.completeTurn(sessionId, turn.assistantMessageId, final || 'Not final', { status });
+        return turn;
+    };
+    const first = await recordTurn({ messages: ['Reading `src/app.js`\nDone.'] });
 
     const robotStore = new RobotStore({ dataDir });
     await robotStore.initialize(); await robotStore.ensureDefaultRobot();
@@ -29,13 +56,17 @@ async function fixture(t) {
         startTask(robot, type, request) { return { taskId: request.runtimeTaskId, state: 'queued' }; }, stopTask() {}, activePort: () => null };
     const server = createRoboTeamServer({ robotStore, runtimeManager, internalToken: 'test-token', publicBasePath: '/rt/' });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    t.after(async () => { await new Promise(resolve => server.close(resolve)); await fs.rm(root, { recursive: true, force: true }); });
+    t.after(async () => {
+        await new Promise(resolve => server.close(resolve));
+        if (previousRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = previousRoot;
+        await fs.rm(root, { recursive: true, force: true });
+    });
     const base = `http://127.0.0.1:${server.address().port}`;
-    return { request: (url, accept = 'text/plain') => fetch(base + url, { headers: { ...headers(), accept } }), sessionId, messageId,
-        saveMessages: messages => fs.writeFile(path.join(project, '.achilles-cli', 'sessions', `${sessionId}.json`), JSON.stringify({ messages })) };
+    return { request: (url, accept = 'text/plain') => fetch(base + url, { headers: { ...headers(), accept } }), sessionId,
+        messageId: first.assistantMessageId, userMessageId: first.userMessageId, recordTurn };
 }
 
-test('the agent serves a persisted conversation log by session and message id', async t => {
+test('the agent serves the coding-agent output ALA recorded for a turn', async t => {
     const f = await fixture(t);
     const response = await f.request(`/api/webchat/logs/${f.sessionId}/${f.messageId}`);
     assert.equal(response.status, 200);
@@ -55,11 +86,10 @@ test('the agent serves the request-log page with the injected base', async t => 
 
 test('thinking always returns plain text with final-response character offsets in headers', async t => {
     const f = await fixture(t);
-    const url = `/api/webchat/logs/${f.sessionId}/${f.messageId}`;
     const final = '**Răspuns final ✅**';
-    await f.saveMessages([{ id: f.messageId, role: 'assistant', status: 'completed', text: final + '\n\n[View Thinking](/logs)' }]);
+    const answered = await f.recordTurn({ messages: ['Reading `src/app.js`\nDone.'], final });
     for (const accept of ['text/plain', 'application/json']) {
-        const response = await f.request(url, accept);
+        const response = await f.request(`/api/webchat/logs/${f.sessionId}/${answered.assistantMessageId}`, accept);
         assert.match(response.headers.get('content-type'), /^text\/plain/);
         const log = await response.text();
         const offset = Number(response.headers.get('x-log-final-offset'));
@@ -67,16 +97,15 @@ test('thinking always returns plain text with final-response character offsets i
         assert.equal(log.slice(offset, offset + length), final);
         assert.equal(log, 'Reading `src/app.js`\nDone.\n\n' + final);
     }
-    await f.saveMessages([{ id: f.messageId, role: 'assistant', status: 'completed', text: 'Done.' }]);
-    const existing = await f.request(url);
-    assert.equal(await existing.text(), 'Reading `src/app.js`\nDone.');
-    assert.equal(existing.headers.get('x-log-final-length'), '5');
+    const existing = await f.recordTurn({ messages: ['Reading `src/app.js`\nDone.'], final: 'Done.' });
+    const response = await f.request(`/api/webchat/logs/${f.sessionId}/${existing.assistantMessageId}`);
+    assert.equal(await response.text(), 'Reading `src/app.js`\nDone.');
+    assert.equal(response.headers.get('x-log-final-length'), '5');
     for (const status of ['pending', 'failed', 'interrupted']) {
-        await f.saveMessages([{ id: f.messageId, role: 'assistant', status, text: 'Not final' }]);
-        assert.equal((await f.request(url)).headers.get('x-log-final-offset'), null);
+        const turn = await f.recordTurn({ messages: ['Working'], status });
+        assert.equal((await f.request(`/api/webchat/logs/${f.sessionId}/${turn.assistantMessageId}`)).headers.get('x-log-final-offset'), null);
     }
-    await f.saveMessages([{ id: f.messageId, role: 'user', status: 'completed', text: 'Not final' }]);
-    assert.equal((await f.request(url)).headers.get('x-log-final-offset'), null);
+    assert.equal((await f.request(`/api/webchat/logs/${f.sessionId}/${f.userMessageId}`)).headers.get('x-log-final-offset'), null);
 });
 
 test('View thinking reads only text and uses optional validated final-response headers', async () => {

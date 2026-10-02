@@ -2,13 +2,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
+import { resolveAlaCommand } from '../../../server/ala-command.mjs';
 
 const args = process.argv.slice(2);
 const value = (flag) => args[args.indexOf(flag) + 1];
 const home = value('--home');
 const cwd = value('--cwd');
 const id = value('--session-id');
-if (!args.includes('--ignore') || value('--ignore') !== path.resolve(cwd, '.achilles-cli')) {
+if (!args.includes('--ignore') || value('--ignore') !== path.resolve(cwd, '.roboteam')) {
     throw new Error('Missing private workspace directory mask.');
 }
 const backend = value('--ca');
@@ -22,19 +23,23 @@ if (!folder || value('as') !== 'ploinky-runtime') throw new Error('Missing gener
 if (!(await fs.stat(path.join(folder, 'tasks.sock'))).isSocket()) throw new Error('Missing task notification socket.');
 const prompt = await fs.readFile(value('--taskFile'), 'utf8');
 const config = JSON.parse(await fs.readFile(value('--config'), 'utf8'));
-const nativeRoot = path.join(home, '.ala', 'sessions');
-const nativeFile = path.join(nativeRoot, `${id}.json`);
-await fs.mkdir(nativeRoot, { recursive: true, mode: 0o700 });
-const native = args.includes('--resume-session') ? JSON.parse(await fs.readFile(nativeFile, 'utf8'))
-    : { version: 1, id, home, workspace: cwd, agent: backend,
-        continuation: backend === 'opencode' ? { sessionId: 'fixture-opencode' } : { threadId: 'fixture-thread' } };
-await fs.writeFile(nativeFile, JSON.stringify(native), { mode: 0o600 });
+// Record the conversation through ALA's own session modules, as ALA does.
+const alaRoot = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())));
+const { openSessionState } = await import(pathToFileURL(path.join(alaRoot, 'src', 'session-state.mjs')));
+const { createTranscriptRecorder } = await import(pathToFileURL(path.join(alaRoot, 'src', 'transcript-recorder.mjs')));
+if (!process.env.ALA_SESSIONS) throw new Error('Missing ALA_SESSIONS.');
+const state = await openSessionState({ id, sessionsRoot: process.env.ALA_SESSIONS, resume: args.includes('--resume-session') });
+const recorder = createTranscriptRecorder(state, value('--turn-id'));
+await recorder.user(await fs.readFile(value('--user-message-file'), 'utf8'));
+await state.save({ agent: backend, continuation: state.record.continuation
+    || (backend === 'opencode' ? { sessionId: 'fixture-opencode' } : { threadId: 'fixture-thread' }) });
 const emit = (event) => {
+    recorder.observe(event);
     const line = `@@ALA_EVENT@@${JSON.stringify(event)}\n`;
     process.stderr.write(line.slice(0, 9));
     process.stderr.write(line.slice(9));
 };
-process.on('SIGINT', () => process.exit(130));
+process.on('SIGINT', async () => { await state.close().catch(() => {}); process.exit(130); });
 emit({ type: 'session-ready', sessionId: id });
 emit({ type: 'coding-agent-selected', agent: backend, permissionMode: value('--permissions') });
 emit({ type: 'coding-agent-message', agent: backend, message: 'Visible progress' });
@@ -78,6 +83,8 @@ if (prompt.includes('MALFORMED')) {
     }
     emit({ type: 'coding-agent-final', agent: backend, message: output });
     if (prompt.includes('NONZERO')) { process.stderr.write('Native provider failed.\n'); process.exitCode = 7; }
+    await recorder.finish(prompt.includes('NONZERO') ? { status: 'failed', error: 'Native provider failed.' } : { result: output, status: 'completed' });
+    await state.close();
     process.stdout.write(`${output}\n`);
     process.stdin.destroy();
 }

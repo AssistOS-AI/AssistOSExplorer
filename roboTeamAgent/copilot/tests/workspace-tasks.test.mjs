@@ -27,7 +27,7 @@ const ERROR_ID = 'task_333333333333333333333333';
 
 function makeWorkspace(label) {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), `achilles-tasks-${label}-`));
-    const history = path.join(workspace, '.achilles-cli', 'tasks');
+    const history = path.join(workspace, '.roboteam', 'tasks');
     fs.mkdirSync(history, { recursive: true });
     return { workspace, history };
 }
@@ -252,14 +252,14 @@ test('task summary is read-only for missing history and rejects symlinked task s
             formatWorkspaceTaskSummary(workspace),
             'No background tasks found for this workspace.',
         );
-        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks')), false);
+        assert.equal(fs.existsSync(path.join(workspace, '.roboteam', 'tasks')), false);
         const missingWorkspace = path.join(workspace, 'missing');
         assert.throws(
             () => formatWorkspaceTaskSummary(missingWorkspace),
             (error) => error.message === 'Unable to read task history (ENOENT).',
         );
-        fs.mkdirSync(path.join(workspace, '.achilles-cli'), { recursive: true });
-        fs.symlinkSync(outside, path.join(workspace, '.achilles-cli', 'tasks'), 'dir');
+        fs.mkdirSync(path.join(workspace, '.roboteam'), { recursive: true });
+        fs.symlinkSync(outside, path.join(workspace, '.roboteam', 'tasks'), 'dir');
         assert.throws(() => formatWorkspaceTaskSummary(workspace), /storage is unsafe/);
     } finally {
         fs.rmSync(workspace, { recursive: true, force: true });
@@ -300,7 +300,7 @@ test('task log tails remain bounded even when the final line is large', () => {
     }
 });
 
-test('AchillesCLI persists task metadata and logs under project .achilles-cli', async () => {
+test('AchillesCLI persists task metadata and logs under project .roboteam', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-owned-tasks-'));
     try {
         const update = await ingestTaskEvent(workspace, {
@@ -321,10 +321,10 @@ test('AchillesCLI persists task metadata and logs under project .achilles-cli', 
         assert.equal(getTask(workspace, ONGOING_ID).status, 'ongoing');
         assert.equal(readTaskLog(workspace, ONGOING_ID).text, '[runner stdout] queued\n');
         assert.equal(fs.existsSync(path.join(workspace, '.copilot_history')), false);
-        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks', ONGOING_ID, 'task.json')), true);
-        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks', ONGOING_ID, 'logs', 'output.log')), true);
-        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks', 'agent_tasks')), false);
-        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks', 'task_logs')), false);
+        assert.equal(fs.existsSync(path.join(workspace, '.roboteam', 'tasks', ONGOING_ID, 'task.json')), true);
+        assert.equal(fs.existsSync(path.join(workspace, '.roboteam', 'tasks', ONGOING_ID, 'logs', 'output.log')), true);
+        assert.equal(fs.existsSync(path.join(workspace, '.roboteam', 'tasks', 'agent_tasks')), false);
+        assert.equal(fs.existsSync(path.join(workspace, '.roboteam', 'tasks', 'task_logs')), false);
         assert.equal(fs.existsSync(path.join(workspace, '.data')), false);
     } finally {
         fs.rmSync(workspace, { recursive: true, force: true });

@@ -12,7 +12,7 @@ import { getManagedRepoSkillRoot } from '../roboTeamAgent/copilot/src/lib/skills
 function fixture(t, selectedInsideData = false) {
     const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-managed-boundary-')));
     const selected = selectedInsideData
-        ? path.join(workspace, '.achilles-cli', 'repos', 'project')
+        ? path.join(workspace, '.roboteam', 'repos', 'project')
         : path.join(workspace, 'projects', 'selected');
     fs.mkdirSync(selected, { recursive: true });
     const previousWorkspace = process.env.PLOINKY_WORKSPACE_ROOT;
@@ -25,8 +25,8 @@ function fixture(t, selectedInsideData = false) {
     const replaceDataRoot = () => {
         const moved = path.join(workspace, '.ploinky', 'unexpected-state');
         fs.mkdirSync(path.dirname(moved), { recursive: true });
-        fs.renameSync(path.join(selected, '.achilles-cli'), moved);
-        fs.symlinkSync(moved, path.join(selected, '.achilles-cli'));
+        fs.renameSync(path.join(selected, '.roboteam'), moved);
+        fs.symlinkSync(moved, path.join(selected, '.roboteam'));
         return moved;
     };
     return { workspace, selected, replaceDataRoot };
@@ -39,7 +39,7 @@ test('nested launches discover only managed Anthropic repositories and revalidat
     const firstRepo = path.join(reposRoot, 'RepoA');
     writeSkill(firstRepo, 'skills/alpha', 'repo-alpha');
     writeSkill(path.join(workspace, '.data', 'other-agent'), 'skills/private', 'unrelated-private');
-    writeSkill(path.join(selected, '.achilles-cli', 'private-state'), 'skills/private', 'not-a-repository');
+    writeSkill(path.join(selected, '.roboteam', 'private-state'), 'skills/private', 'not-a-repository');
     const options = { workingDir: selected, roots: [reposRoot], discoverTaskSkills };
     const catalog = await createAnthropicSkillCatalog(options);
     assert.deepEqual(catalog.getSkills().map((skill) => skill.name), ['repo-alpha']);

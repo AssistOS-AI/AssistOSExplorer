@@ -87,7 +87,7 @@ test('descriptor replacement by a symlink and managed repository escapes are ref
     fs.unlinkSync(path.join(skillDir, 'SKILL.md'));
     fs.symlinkSync(path.join(outside, 'SKILL.md'), path.join(skillDir, 'SKILL.md'));
     await assert.rejects(catalog.readSkill('safe'), /symbolic links/);
-    const privateRoot = path.join(workingDir, '.achilles-cli');
+    const privateRoot = path.join(workingDir, '.roboteam');
     fs.mkdirSync(privateRoot, { recursive: true });
     fs.symlinkSync(outside, path.join(privateRoot, 'repos'), 'dir');
     await assert.rejects(createCatalog([path.join(privateRoot, 'repos')]), /symbolic link/);
