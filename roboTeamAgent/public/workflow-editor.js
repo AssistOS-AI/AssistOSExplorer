@@ -21,6 +21,7 @@ export function createWorkflowEditor({ api }) {
     const addTaskButton = document.querySelector('#addTaskButton');
     let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0;
     let warningTaskIds = new Set();
+    let draggedTaskId = null;
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
     const readonly = () => !canAdmin || graph?.readOnly === true || graph?.kind === 'default';
     const changed = () => { version++; };
@@ -207,17 +208,78 @@ export function createWorkflowEditor({ api }) {
         wrapper.append(pills, trigger);
         return wrapper;
     }
+    function clearDropMarkers() {
+        for (const row of taskList.children) row.classList.remove('drop-before', 'drop-after');
+    }
+    function moveTask(sourceId, targetId, after) {
+        if (readonly() || sourceId === targetId) return;
+        const source = graph.tasks.findIndex(task => task.id === sourceId);
+        if (source < 0 || !graph.tasks.some(task => task.id === targetId)) return;
+        const [task] = graph.tasks.splice(source, 1);
+        const target = graph.tasks.findIndex(task => task.id === targetId);
+        graph.tasks.splice(target + (after ? 1 : 0), 0, task);
+        changed();
+        renderList();
+        taskList.querySelector(`[data-task-id="${sourceId}"]`)?.focus();
+    }
     function renderList() {
         taskList.replaceChildren();
         for (const task of graph.tasks) {
-            const row = node('li');
+            const row = node('li', null, 'task-list-row');
             const item = node('button', null, 'task-list-item');
             item.type = 'button';
             item.dataset.taskId = task.id;
+            if (!readonly()) {
+                const grip = node('span', null, 'task-drag-grip');
+                grip.setAttribute('aria-hidden', 'true');
+                for (let dot = 0; dot < 6; dot++) grip.append(node('i'));
+                item.append(grip);
+            }
             if (task.id === selected) item.classList.add('selected');
             if (warningTaskIds.has(task.id)) item.classList.add('coverage-warning');
             item.append(node('strong', task.name || 'Untitled task'), node('span', task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Creator · ' : ''}${task.executionType || 'terminal / desktop / browser'}`));
             item.onclick = () => select(task.id);
+            item.draggable = !readonly();
+            if (!readonly()) item.title = 'Drag to reorder, or use Alt + Arrow Up / Arrow Down';
+            item.ondragstart = event => {
+                if (readonly()) { event.preventDefault(); return; }
+                draggedTaskId = task.id;
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', task.id);
+                item.classList.add('is-dragging');
+            };
+            item.ondragend = () => {
+                draggedTaskId = null;
+                item.classList.remove('is-dragging');
+                clearDropMarkers();
+            };
+            row.ondragover = event => {
+                if (readonly() || !draggedTaskId || draggedTaskId === task.id) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                clearDropMarkers();
+                const rect = row.getBoundingClientRect();
+                row.classList.add(event.clientY > rect.top + rect.height / 2 ? 'drop-after' : 'drop-before');
+            };
+            row.ondragleave = event => {
+                if (!row.contains(event.relatedTarget)) row.classList.remove('drop-before', 'drop-after');
+            };
+            row.ondrop = event => {
+                if (readonly() || !draggedTaskId) return;
+                event.preventDefault();
+                const rect = row.getBoundingClientRect();
+                const sourceId = draggedTaskId;
+                draggedTaskId = null;
+                clearDropMarkers();
+                moveTask(sourceId, task.id, event.clientY > rect.top + rect.height / 2);
+            };
+            item.onkeydown = event => {
+                if (readonly() || !event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+                event.preventDefault();
+                const after = event.key === 'ArrowDown';
+                const target = graph.tasks[graph.tasks.indexOf(task) + (after ? 1 : -1)];
+                if (target) moveTask(task.id, target.id, after);
+            };
             row.append(item);
             taskList.append(row);
         }

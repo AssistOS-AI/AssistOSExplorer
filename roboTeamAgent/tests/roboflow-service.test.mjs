@@ -134,10 +134,17 @@ test('coverage requires all enabled skillsets on one robot and is not persisted'
 test('run snapshots survive editing and deleting their workflow', async t => {
     const f = await fixture(t); const saved = await f.service.createWorkflow({ ...graph(), edges: [] });
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
-    await f.service.updateWorkflow('example', { ...saved, name: 'Changed' });
+    await f.service.updateWorkflow('example', { ...saved, name: 'Changed', tasks: [...saved.tasks].reverse() });
+    const reordered = await f.service.registry.get('example');
+    assert.deepEqual(reordered.tasks.map(task => task.id), ['c', 'b', 'a']);
+    const nextFlow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'New run' });
+    assert.deepEqual(nextFlow.graph.tasks.map(task => task.id), ['c', 'b', 'a']);
+    assert.equal(nextFlow.instances[0].taskId, 'a');
+    assert.deepEqual((await f.service.getFlow(flow.id)).graph.tasks.map(task => task.id), ['a', 'b', 'c']);
     await assert.rejects(() => f.service.updateWorkflow('example', saved), /changed/);
     await f.service.deleteWorkflow('example'); await f.finish(0, 'Done');
     assert.equal((await f.service.getFlow(flow.id)).graph.name, 'Example');
+    assert.deepEqual((await f.service.getFlow(flow.id)).graph.tasks.map(task => task.id), ['a', 'b', 'c']);
 });
 
 test('browser tasks record the live GUI session URL on their instance', async t => {
