@@ -18,8 +18,8 @@ export function createDraft(agent, token) {
     return {
         cpus: limits.cpus == null ? '' : String(limits.cpus),
         memoryPercent: limits.memoryPercent == null ? '' : String(limits.memoryPercent),
-        smPercent: limits.gpuShare?.smPercent == null ? '' : String(limits.gpuShare.smPercent),
-        vramMiB: limits.gpuShare?.vramMiB == null ? '' : String(limits.gpuShare.vramMiB),
+        smPercent: limits.gpu?.smPercent == null ? '' : String(limits.gpu.smPercent),
+        vramPercent: limits.gpu?.vramPercent == null ? '' : String(limits.gpu.vramPercent),
         baseToken: token,
         dirty: false,
         conflict: false,
@@ -37,15 +37,16 @@ export function draftLimits(draft) {
         }
         return value;
     }
-    const cpus = number('cpus', Number.MIN_VALUE, Number.MAX_SAFE_INTEGER);
-    const memoryPercent = number('memoryPercent', Number.MIN_VALUE, 100);
+    const cpus = number('cpus', 0.05, Number.MAX_SAFE_INTEGER);
+    if (cpus !== undefined && !/^\d+(\.\d{1,2})?$/.test(String(cpus))) throw new Error('CPU cores must have at most two decimal places.');
+    const memoryPercent = number('memoryPercent', 1, 100, true);
     const smPercent = number('smPercent', 1, 100, true);
-    const vramMiB = number('vramMiB', 512, Number.MAX_SAFE_INTEGER, true);
+    const vramPercent = number('vramPercent', 1, 100, true);
     if (cpus !== undefined) result.cpus = cpus;
     if (memoryPercent !== undefined) result.memoryPercent = memoryPercent;
-    if (smPercent !== undefined || vramMiB !== undefined) {
-        if (smPercent === undefined || vramMiB === undefined) throw new Error('GPU share requires both SM percentage and device memory MiB.');
-        result.gpuShare = { smPercent, vramMiB };
+    if (smPercent !== undefined || vramPercent !== undefined) {
+        if (smPercent === undefined || vramPercent === undefined) throw new Error('GPU share requires both SM and VRAM percentages.');
+        result.gpu = { smPercent, vramPercent };
     }
     if (!Object.keys(result).length) throw new Error('Enter at least one limit, or clear the stored override.');
     return result;

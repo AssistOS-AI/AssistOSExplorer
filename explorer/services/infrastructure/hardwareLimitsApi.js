@@ -13,6 +13,9 @@ export class HardwareLimitsError extends Error {
         this.hardwareOutcome = payload.hardwareOutcome || null;
         this.committed = payload.committed === true;
         this.token = payload.token || null;
+        this.results = Array.isArray(payload.results) ? payload.results : null;
+        this.expandedContainers = Array.isArray(payload.expandedContainers) ? payload.expandedContainers : [];
+        this.pendingContainers = Array.isArray(payload.pendingContainers) ? payload.pendingContainers : [];
     }
 }
 
@@ -65,6 +68,7 @@ export function createHardwareLimitsApi({
         }
         let result = await send();
         if (result.response.status === 403 && PROOF_ERRORS.has(result.payload.error)) result = await send();
+        if (result.response.status === 207 && Array.isArray(result.payload.results)) return result.payload;
         if (!result.response.ok || result.payload.ok === false) {
             throw new HardwareLimitsError(result.payload, result.response.status);
         }

@@ -6,6 +6,7 @@ import { HardwareLimitsPanel, renderHardwareLimits } from '../../web-components/
 import { createDraft, reconcileDrafts, draftLimits, describeProblem, GPU_HELP, AUTHORITY_HELP } from '../../web-components/components/hardware-limits-panel/hardware-limits-model.js';
 import { hardwareController } from '../../web-components/modals/settings-modal/settings-hardware-controller.js';
 import { SettingsModal } from '../../web-components/modals/settings-modal/settings-modal.js';
+import { validateAgentEntry, validateAgentLimits } from '../../../../ploinky/cli/sandbox/hardwareLimits/store.mjs';
 
 const token = (revision = 1) => ({ epoch: '1'.repeat(32), revision });
 const response = (payload, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => payload });
@@ -147,10 +148,15 @@ test('X.gpu-best-effort-help', () => {
     value.gpu.eligible = true;
     html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token));
     assert.doesNotMatch(html, /data-hardware-field="smPercent"[^>]* disabled/);
-    assert.deepEqual(draftLimits({ cpus: '', memoryPercent: '', smPercent: '25', vramMiB: '1024' }), { gpuShare: { smPercent: 25, vramMiB: 1024 } });
+    const requested = draftLimits({ cpus: '', memoryPercent: '', smPercent: '50', vramPercent: '50' });
+    assert.deepEqual(requested, { gpu: { smPercent: 50, vramPercent: 50 } });
+    assert.deepEqual(validateAgentEntry(requested), requested);
     assert.throws(() => draftLimits({ smPercent: '25' }), /both/);
     assert.throws(() => draftLimits({ cpus: '0' }), /cpus/);
     assert.throws(() => draftLimits({ memoryPercent: 'NaN' }), /memoryPercent/);
+    assert.throws(() => draftLimits({ memoryPercent: '12.5' }), /whole number/);
+    assert.throws(() => draftLimits({ cpus: '0.01' }), /cpus/);
+    assert.throws(() => draftLimits({ cpus: '1.234' }), /two decimal/);
 });
 
 test('X.u13-disclosure', () => {
@@ -192,3 +198,95 @@ test('expired session proof retains HTTP authority status for hiding the editor'
     const api = createHardwareLimitsApi({ expectedOrigin: 'https://box.test', fetchImplementation: async () => response({ ok: false, error: 'not_authenticated' }, 401) });
     await assert.rejects(api.clear(token(), ref), (error) => hardwareAccessDenied(error) && error.status === 401);
 });
+
+function validatePolicy(limits) {
+    return validateAgentLimits({ agentRef: ref, limits, installedRefs: new Set([ref]), envelope: { cpus: 8, memoryBytes: 8 * 1024 ** 3 },
+        capabilities: { gate: 'on', controllers: ['cpu', 'memory', 'pids'], gpu: { eligible: true, memoryModel: 'dedicated', imageUserKnown: true, deviceMemoryBytes: 6 * 1024 ** 3 } } });
+}
+
+test('GPU drafts use the actual store percentage schema and CPU edits preserve configured GPU policy', async () => {
+    let authoritative = snapshot();
+    authoritative.gpu.eligible = true;
+    authoritative.agents[0].configured = { cpus: 1.5, memoryPercent: 25, gpu: { smPercent: 50, vramPercent: 50 } };
+    const posts = [];
+    const api = {
+        read: async () => structuredClone(authoritative),
+        set: async (_token, agentRef, limits) => {
+            assert.equal(agentRef, ref);
+            const validated = validatePolicy(limits);
+            assert.deepEqual(validateAgentEntry(limits), validated.entry);
+            assert.equal(validated.gpuBytes, 3072 * 1024 ** 2);
+            posts.push(limits);
+            authoritative = { ...authoritative, token: token(2), agents: [{ ...authoritative.agents[0], configured: validated.entry }] };
+            return { ok: true };
+        },
+    };
+    const presenter = panel(api, authoritative);
+    assert.equal(presenter.drafts.get(ref).smPercent, '50');
+    assert.equal(presenter.drafts.get(ref).vramPercent, '50');
+    presenter.edit({ dataset: { hardwareField: 'cpus', agentIndex: '0' }, value: '3.25' });
+    await presenter.action({ hardwareAction: 'save', agentIndex: '0' });
+    assert.deepEqual(posts, [{ cpus: 3.25, memoryPercent: 25, gpu: { smPercent: 50, vramPercent: 50 } }]);
+    assert.deepEqual(presenter.snapshot.agents[0].configured.gpu, { smPercent: 50, vramPercent: 50 });
+    assert.throws(() => validateAgentEntry({ gpuShare: { smPercent: 50, vramMiB: 3072 } }), /unsupported field/);
+    const html = renderHardwareLimits(presenter.snapshot, presenter.drafts);
+    assert.match(html, /GPU VRAM %/);
+    assert.match(html, /50% of physical VRAM/);
+    assert.doesNotMatch(html, /data-hardware-field="vramMiB"/);
+});
+
+test('an old poll cannot revert a completed Save or restore an editor after access denial', async () => {
+    let finishOld;
+    let reads = 0;
+    let authoritative = snapshot();
+    const api = { read: () => ++reads === 1 ? new Promise((resolve) => { finishOld = resolve; }) : Promise.resolve(structuredClone(authoritative)),
+        set: async (_token, _ref, limits) => { validatePolicy(limits); authoritative = snapshot(2); authoritative.agents[0].configured = limits; return { ok: true }; } };
+    const presenter = panel(api);
+    const oldPoll = presenter.refresh();
+    presenter.edit({ dataset: { hardwareField: 'cpus', agentIndex: '0' }, value: '3.25' });
+    await presenter.action({ hardwareAction: 'save', agentIndex: '0' });
+    finishOld(snapshot());
+    await oldPoll;
+    assert.deepEqual(presenter.snapshot.token, token(2));
+    assert.equal(presenter.drafts.get(ref).cpus, '3.25');
+    const denied = panel({ read: () => new Promise((resolve) => { finishOld = resolve; }) });
+    const pending = denied.refresh();
+    denied.reportError(new HardwareLimitsError({ error: 'admin_required' }, 403));
+    finishOld(snapshot(2));
+    await pending;
+    assert.equal(denied.snapshot, null);
+    assert.equal(denied.drafts.size, 0);
+});
+
+for (const status of [207, 409]) {
+    test(`partial Apply ${status} retains all exact outcomes before authoritative reload`, async () => {
+        let finishReload;
+        let gets = 0;
+        const outcome = { ok: false, error: status === 409 ? 'revision_conflict' : 'partial_apply', message: 'Some operations remain incomplete.', token: token(2),
+            results: [{ key: 'one', state: 'applied' }, { key: 'two', state: 'blocked', problem: { blockedBy: { ref: 'repo/root' }, rootCause: { ref: 'repo/root', reason: 'Memory missing.', fix: 'Repair delegation.' } } },
+                { key: 'three', state: 'refused', problem: { reason: 'GPU missing.', fix: 'Repair GPU.' } }, { key: 'four', state: 'pending' }],
+            expandedContainers: ['two', 'three'], pendingContainers: ['four'] };
+        const api = createHardwareLimitsApi({ expectedOrigin: 'https://box.test', fetchImplementation: async (url, options = {}) => {
+            if (url === '/auth/token') return response({ ok: true, adminControl: { origin: 'https://box.test', csrfToken: 'fresh' } });
+            if (options.method === 'POST') return response(outcome, status);
+            if (++gets === 1) return response(snapshot());
+            return { ok: true, status: 200, json: () => new Promise((resolve) => { finishReload = resolve; }) };
+        } });
+        const presenter = panel(api);
+        presenter.content = { innerHTML: '' };
+        const pending = presenter.action({ hardwareAction: 'apply-all' });
+        for (let tick = 0; !finishReload && tick < 50; tick += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+        assert.ok(finishReload);
+        assert.deepEqual(presenter.results, outcome.results);
+        assert.deepEqual(presenter.expandedContainers, outcome.expandedContainers);
+        assert.deepEqual(presenter.pendingContainers, outcome.pendingContainers);
+        for (const state of ['applied', 'blocked', 'refused', 'pending']) assert.ok(presenter.content.innerHTML.includes(state));
+        assert.match(presenter.content.innerHTML, /Repair delegation/);
+        assert.match(presenter.content.innerHTML, /Still pending: four/);
+        assert.match(presenter.content.innerHTML, /Coordinated instances: two, three/);
+        finishReload(snapshot(2));
+        await pending;
+        assert.deepEqual(presenter.results, outcome.results);
+        assert.deepEqual(presenter.snapshot.token, token(2));
+    });
+}

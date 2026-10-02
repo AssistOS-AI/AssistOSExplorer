@@ -2,7 +2,7 @@ hardware-limits-panel { display: block; }
 .hardware-limits-panel { color: var(--text); }
 .hardware-limits-toolbar, .hardware-limit-fields, .hardware-policy-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .hardware-limits-toolbar { justify-content: space-between; margin-bottom: 16px; }
-.hardware-limits-panel p { margin: 8px 0; }
+.hardware-limits-panel p { margin: 8px 0; overflow-wrap: anywhere; }
 .hardware-limits-facts, .hardware-limit-help, .hardware-instance-detail { color: var(--text-soft); font-size: 0.9rem; }
 .hardware-policy { border-top: 1px solid var(--border); padding: 16px 0; }
 .hardware-policy h3 { margin: 0 0 8px; font-size: 1rem; overflow-wrap: anywhere; }
