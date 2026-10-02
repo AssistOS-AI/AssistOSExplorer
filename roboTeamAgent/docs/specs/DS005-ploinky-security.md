@@ -43,6 +43,10 @@ The certified local Router transport advertises buffered chat only. The service 
 
 Trusted local-skill launch scope is carried from Ploinky as a canonical path inside the existing workspace grant and persisted per conversation. It is discovery metadata, not a new filesystem grant. Saved scope cannot be widened by resolving a retargeted alias; selected source trees are validated and mounted through ALA's existing read-only catalog delivery. Multiple bounded CLI scopes may share one already-authorized Box.
 
+### Conversation skill settings
+
+RoboTeam serves the Conversation skills page and `GET` and `PATCH <publicBasePath>api/robots/<robotId>/conversations/<sessionId>/skills` under its existing authenticated Router route. Anonymous requests receive 401, and the internal-token actor receives 403 because no internal caller needs these endpoints. Robots belong to the workspace and conversations carry no owner, so any signed-in user who names a robot and one of its registered conversations may read or change that conversation's skill selection. This is no wider than the `list_achilles_skills` and `set_achilles_skill_enabled` tools. The endpoints take no query parameters and no directory, accept only `identity`, `enabled` and `policyVersion` in a `PATCH` body, and never create or change a robot-defaults policy. A conversation bound to another robot, or whose saved policy reference is not its own conversation policy, is refused. Browser mutations rely on the Router's mutation proof and exact Origin check, and RoboTeam adds no second check. The page renders every dynamic value as text.
+
 ### Workflow graph authoring
 
 roboflow_generate_workflow requires the administrator role, like workflow creation, update and deletion. The browser uses the native Ploinky MCP client and Router task polling and cancellation. HTTP mutations retain browser CSRF proof checks. Graph generation passes system instructions to a default robot terminal task and returns a validated unsaved draft. The retired decision tools have no MCP definitions or HTTP endpoints.

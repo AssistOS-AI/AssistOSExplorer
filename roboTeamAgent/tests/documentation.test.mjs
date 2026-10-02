@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, readFile } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -125,4 +125,37 @@ test('documentation explains native async progress and the per-robot FIFO queue'
     assert.match(combined, /intermediate ALA messages|coding-agent-message/iu);
     assert.match(combined, /standard error/iu);
     assert.match(combined, /standard output/iu);
+});
+
+async function documentationFiles(relativeDirectory) {
+    const entries = await readdir(join(AGENT_ROOT, relativeDirectory), { withFileTypes: true });
+    const nested = await Promise.all(entries.map(async (entry) => entry.isDirectory()
+        ? documentationFiles(join(relativeDirectory, entry.name))
+        : /\.(?:html|md)$/u.test(entry.name) ? [join(relativeDirectory, entry.name)] : []));
+    return nested.flat();
+}
+
+test('conversation skill selection is documented on RoboTeam\'s page and API, never in Explorer', async () => {
+    const stale = /Explorer (?:Copilot Settings|Conversation skills)|(?:skills?|selection|conversation)(?: is managed)? in Explorer|adjusted in Explorer|existing Settings interface|Ordinary (?:Explorer )?Settings|Without a conversation context it edits/iu;
+    const files = ['README.md', '../README.md', ...await documentationFiles('docs')];
+    for (const file of files) assert.doesNotMatch(await read(file), stale, file);
+
+    const ds006 = await read('docs/specs/DS006-ala-task-boundary.md');
+    assert.match(ds006, /<publicBasePath>conversation-skills\/<robotId>\/<sessionId>/u);
+    assert.match(ds006, /`GET` and `PATCH` `?<publicBasePath>api\/robots\/<robotId>\/conversations\/<sessionId>\/skills/u);
+    assert.match(ds006, /never falls back to robot defaults/u);
+    assert.match(ds006, /stale version returns 409/u);
+    assert.match(ds006, /Explorer has no skill-settings surface/u);
+
+    assert.match(await read('docs/specs/DS003-main-behavior.md'), /Conversation skills page opened from the WebChat menu/u);
+    const ds005 = await read('docs/specs/DS005-ploinky-security.md');
+    assert.match(ds005, /### Conversation skill settings/u);
+    assert.match(ds005, /internal-token/u);
+    assert.match(ds005, /no query/iu);
+    for (const file of ['docs/local-skills.html', 'docs/operations.html']) {
+        const html = (await read(file)).replaceAll(/<[^>]+>/g, '');
+        assert.match(html, /Conversation skills page/u, file);
+    }
+    const operations = await read('docs/operations.html');
+    assert.match(operations, /conversations\/&lt;sessionId&gt;\/skills|conversations\/<sessionId>\/skills/u);
 });
