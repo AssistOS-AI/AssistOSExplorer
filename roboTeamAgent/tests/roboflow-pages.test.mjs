@@ -15,7 +15,7 @@ async function fixture(t) {
     await robotStore.initialize(); await robotStore.ensureDefaultRobot();
     const runtimeManager = { workspaceRoot: root, status: () => ({ state: 'stopped' }), resolveCwd: async () => root,
         startTask(robot, type, request) { return { taskId: request.runtimeTaskId, state: 'queued' }; }, stopTask() {}, activePort: () => null };
-    const roboflow = new RoboFlowService({ robotStore, runtimeManager, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }) });
+    const roboflow = new RoboFlowService({ robotStore, runtimeManager, skillsets: { repositoriesClient: { listRepositories: async () => [{ name: 'DocumentationSkills', source: root, origin: 'local' }] } }, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }) });
     await roboflow.initialize();
     const server = createRoboTeamServer({ robotStore, runtimeManager, roboflow, internalToken: 'test-token', publicBasePath: '/rt/' });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
