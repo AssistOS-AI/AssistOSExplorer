@@ -318,9 +318,9 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         sendJson(res, 200, { ok: true, flow: await roboflow.answerHumanInput(answerId, await readJsonBody(req), actor.id) });
         return true;
     }
-    const stopId = pathname.match(new RegExp(`^${FLOW_PATH}/stop$`))?.[1];
-    if (stopId && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, flow: await roboflow.stopFlow(stopId) });
+    const pauseId = pathname.match(new RegExp(`^${FLOW_PATH}/pause$`))?.[1];
+    if (pauseId && req.method === 'POST') {
+        sendJson(res, 200, { ok: true, flow: await roboflow.pauseFlow(pauseId) });
         return true;
     }
     const terminateId = pathname.match(new RegExp(`^${FLOW_PATH}/terminate$`))?.[1];
@@ -333,9 +333,9 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         sendJson(res, 200, { ok: true, flow: await roboflow.resumeFlow(resumeId) });
         return true;
     }
-    const instanceStop = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/stop$`));
-    if (instanceStop && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, flow: await roboflow.stopInstance(instanceStop[1], instanceStop[2]) });
+    const instancePause = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/pause$`));
+    if (instancePause && req.method === 'POST') {
+        sendJson(res, 200, { ok: true, flow: await roboflow.pauseInstance(instancePause[1], instancePause[2]) });
         return true;
     }
     const instanceMessage = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/message$`));
@@ -505,7 +505,7 @@ export function createRoboTeamServer(options) {
                     if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                     const status = runtimeManager.status(robot.id);
                     if (status.state !== 'stopped' || runtimeManager.hasUnfinishedTasks?.(robot.id)
-                        || ['queued', 'starting', 'running', 'stopping'].includes(status.task?.state)) {
+                        || ['queued', 'starting', 'running', 'pausing'].includes(status.task?.state)) {
                         return sendError(res, 409, 'stop the robot before deleting it');
                     }
                     if (runtimeManager.deleteRobot) await runtimeManager.deleteRobot(robot.id, () => robotStore.delete(robot.id));

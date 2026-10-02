@@ -19,16 +19,16 @@ async function fixture(t, operation, handler) {
 }
 
 test('cancelling the MCP start tool stops its flow despite aborted polling', { timeout: 10000 }, async t => {
-    const polled = deferred(), stopped = deferred();
+    const polled = deferred(), paused = deferred();
     const id = 'flow_123456789012345678901234';
     const f = await fixture(t, 'start-flow', (req, res) => {
         res.setHeader('content-type', 'application/json');
-        if (req.url === `/api/roboflow/flows/${id}/stop`) { stopped.resolve(); return res.end('{}'); }
+        if (req.url === `/api/roboflow/flows/${id}/pause`) { paused.resolve(); return res.end('{}'); }
         if (req.url.includes('?logs=')) polled.resolve();
         res.end(JSON.stringify({ flow: { id, status: 'running' } }));
     });
     await polled.promise; f.child.kill('SIGTERM');
-    await stopped.promise; const [code] = await f.exited; assert.equal(code, 143);
+    await paused.promise; const [code] = await f.exited; assert.equal(code, 143);
 });
 
 test('cancelling MCP generation closes the HTTP request that owns its robot task', { timeout: 10000 }, async t => {

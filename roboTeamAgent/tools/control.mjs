@@ -149,7 +149,7 @@ async function runTaskUntilTerminal({ operation, input, user }) {
             const outputText = String(task.result || '').trim();
             return { outputText, ...(continuation ? { continuation } : {}) };
         }
-        if (task.state === 'failed' || task.state === 'stopped') {
+        if (task.state === 'failed' || task.state === 'paused') {
             throw new Error(String(task.error || '').trim() || `RoboTeam task ${task.state}`);
         }
         await sleep(TASK_POLL_INTERVAL_MS);

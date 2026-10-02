@@ -132,7 +132,7 @@ export class ObservabilityPanel {
         if (!selected) delete this.selection[this.tab];
         this.renderCards(flows);
         this.find('[data-empty-list]').hidden = flows.length > 0;
-        setText(this.find('[data-empty-list]'), this.tab === 'human' ? 'No stopped or failed workflows.'
+        setText(this.find('[data-empty-list]'), this.tab === 'human' ? 'No paused or failed workflows.'
             : !this.loaded && this.loading ? 'Loading workflows…'
                 : this.error ? 'Workflow list unavailable.'
                     : this.tab === 'running' ? 'No workflows are running.' : 'No finished workflows yet.');

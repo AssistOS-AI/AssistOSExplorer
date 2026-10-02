@@ -78,7 +78,7 @@ export const COMMAND_DEFINITIONS = {
         description: 'View, continue, stop, or configure a background task',
         args: 'required',
         needsSkillArg: false,
-        subOptions: ['view', 'continue', 'stop', 'model', 'login'],
+        subOptions: ['view', 'continue', 'pause', 'model', 'login'],
     },
     'session': {
         usage: '/session [new|resume <session-id>]',
@@ -121,10 +121,10 @@ export const SUB_OPTIONS = {
             args: 'required',
             needsSkillArg: false,
         },
-        'stop': {
+        'pause': {
             skill: null,
-            usage: '/task stop <task-id>',
-            description: 'Stop a queued or running task',
+            usage: '/task pause <task-id>',
+            description: 'Pause a queued or running task',
             args: 'required',
             needsSkillArg: false,
         },
@@ -264,7 +264,7 @@ export class SlashCommandHandler {
         resumeSession,
         viewTask,
         continueTask,
-        stopTask,
+        pauseTask,
         modelTask,
         loginTask,
         getTaskCompletions,
@@ -284,7 +284,7 @@ export class SlashCommandHandler {
         this.resumeSession = resumeSession;
         this.viewTask = viewTask;
         this.continueTask = continueTask;
-        this.stopTask = stopTask;
+        this.pauseTask = pauseTask;
         this.modelTask = modelTask;
         this.loginTask = loginTask;
         this.getTaskCompletions = getTaskCompletions;
@@ -586,11 +586,11 @@ export class SlashCommandHandler {
             catch (error) { return { handled: true, error: error.message }; }
         }
 
-        if (command === 'task' && subOption === 'stop') {
-            if (typeof this.stopTask !== 'function') return { handled: true, error: 'Task management is unavailable.' };
+        if (command === 'task' && subOption === 'pause') {
+            if (typeof this.pauseTask !== 'function') return { handled: true, error: 'Task management is unavailable.' };
             try {
-                const task = await this.stopTask(args.trim());
-                return { handled: true, result: `Stop requested for ${task.id}.` };
+                const task = await this.pauseTask(args.trim());
+                return { handled: true, result: `Pause requested for ${task.id}.` };
             } catch (error) { return { handled: true, error: error.message }; }
         }
 

@@ -155,7 +155,7 @@ function renderRobots(robots, canAdmin = false) {
         const deleteButton = card.querySelector('.delete-robot');
         deleteButton.hidden = !canAdmin;
         deleteButton.disabled = robot.run.state !== 'stopped'
-            || ['queued', 'starting', 'running', 'stopping'].includes(robot.run.task?.state);
+            || ['queued', 'starting', 'running', 'pausing'].includes(robot.run.task?.state);
         deleteButton.title = 'Stop the container and all unfinished tasks before deleting this robot.';
         deleteButton.addEventListener('click', async () => {
             if (!confirm(`Permanently delete ${robot.name}, its saved logins, files and skillsets? This cannot be undone.`)) return;

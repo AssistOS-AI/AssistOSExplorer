@@ -30,7 +30,7 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
             return { id: RUN_WORKFLOWS_ID, name: 'Run workflows', kind: 'run-workflows', skillsets: [] };
         }
         if (task.id === RUN_WORKFLOWS_ID) throw invalid('reserved coordinator task id');
-        if (builtin && task.creator) throw invalid('default workflow cannot contain creators');
+        if (builtin && task.creator) throw invalid('Standard development workflow cannot allow sub-flows');
         if (task.robotName || task.robotId) throw invalid('tasks cannot select robots');
         if (!builtin && !EXECUTION_TYPES.includes(task.executionType)) throw invalid('invalid execution type');
         if (!Array.isArray(task.skillsets) || task.skillsets.length > 100 || task.skillsets.some(s => typeof s !== 'string' || !s || s.length > 512)) throw invalid('invalid task skillsets');
@@ -44,7 +44,7 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         tasks.push({ id: RUN_WORKFLOWS_ID, name: 'Run workflows', kind: 'run-workflows', skillsets: [] });
         ids.add(RUN_WORKFLOWS_ID);
     }
-    if (!creators.length && ids.has(RUN_WORKFLOWS_ID)) throw invalid('Run workflows requires a creator');
+    if (!creators.length && ids.has(RUN_WORKFLOWS_ID)) throw invalid('Run workflows requires a task that allows sub-flows');
     if (input.entryTaskId === RUN_WORKFLOWS_ID) throw invalid('Run workflows cannot be the entry task');
     if (!ids.has(input.entryTaskId)) throw invalid('entryTaskId must identify a task');
     if (!Array.isArray(input.edges) || input.edges.length > 1000) throw invalid('edges must contain at most 1000 entries');
@@ -52,7 +52,7 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
     const edges = input.edges.map(edge => {
         if (!edge || !identifier.test(edge.id) || edgeIds.has(edge.id)) throw invalid('edge IDs must be valid and unique');
         if (!ids.has(edge.sourceTaskId) || !ids.has(edge.targetTaskId)) throw invalid('edge endpoints must identify tasks');
-        if (edge.targetTaskId === RUN_WORKFLOWS_ID && !tasks.find(task => task.id === edge.sourceTaskId)?.creator) throw invalid('Only a creator can enter Run workflows');
+        if (edge.targetTaskId === RUN_WORKFLOWS_ID && !tasks.find(task => task.id === edge.sourceTaskId)?.creator) throw invalid('Only a task that allows sub-flows can enter Run workflows');
         const sourcePort = edge.sourcePort === undefined ? 'right' : edge.sourcePort;
         const targetPort = edge.targetPort === undefined ? 'left' : edge.targetPort;
         if (!['left', 'right'].includes(sourcePort) || !['left', 'right'].includes(targetPort)) throw invalid('edge ports must be left or right');
@@ -75,7 +75,7 @@ export function graphDiagnostics(graph) {
         for (const edge of graph.edges) if (seen.has(edge.sourceTaskId) && !seen.has(edge.targetTaskId)) { seen.add(edge.targetTaskId); changed = true; }
     }
     const diagnostics = graph.tasks.filter(task => !seen.has(task.id)).map(task => ({ taskId: task.id, message: 'Task is unreachable from the entry task' }));
-    if (hasCreators(graph) && !graph.edges.some(edge => edge.sourceTaskId === RUN_WORKFLOWS_ID)) diagnostics.push({ taskId: RUN_WORKFLOWS_ID, message: 'Run workflows needs an outgoing continuation edge before a creator can delegate.' });
+    if (hasCreators(graph) && !graph.edges.some(edge => edge.sourceTaskId === RUN_WORKFLOWS_ID)) diagnostics.push({ taskId: RUN_WORKFLOWS_ID, message: 'Run workflows needs an outgoing continuation edge before a task that allows sub-flows can delegate.' });
     return diagnostics;
 }
 export function workflowCatalogEntry(workflow) {

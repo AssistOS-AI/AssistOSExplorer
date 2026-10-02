@@ -97,7 +97,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         if (!graph.edges.some(edge => edge.sourceTaskId === task.id)) node.classList.add('graph-terminal');
         if (states[task.id]) node.classList.add(`graph-state-${states[task.id]}`);
         const label = document.createElement('strong'); label.textContent = task.name;
-        const detail = document.createElement('span'); detail.textContent = `${task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Creator · ' : ''}${task.executionType || 'terminal / desktop / browser'}`}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
+        const detail = document.createElement('span'); detail.textContent = `${task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Sub-flows · ' : ''}${task.executionType || 'terminal / desktop / browser'}`}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
         node.append(label, detail);
         const place = () => { node.style.left = `${graph.layout[task.id].x}px`; node.style.top = `${graph.layout[task.id].y}px`; };
         place();

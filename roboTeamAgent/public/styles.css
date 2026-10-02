@@ -411,7 +411,7 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .flow-item-status[data-status="running"], .flow-item-status[data-status="queued"] { color: var(--accent); }
 .flow-item-status[data-status="completed"] { color: #1f8a4c; }
 .flow-item-status[data-status="failed"] { color: var(--danger); }
-.flow-item-status[data-status="stopped"], .flow-item-status[data-status="interrupted"] { color: var(--warning); }
+.flow-item-status[data-status="paused"] { color: var(--warning); }
 .flow-item-meta { color: var(--text-soft); font-size: 13px; }
 
 /* Flow type generation step */

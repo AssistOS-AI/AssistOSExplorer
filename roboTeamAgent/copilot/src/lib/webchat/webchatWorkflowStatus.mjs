@@ -9,16 +9,16 @@ export function workflowIdForTask(task) {
     } catch { return null; }
 }
 
-export async function readWorkflowTask(task, agentClientModule, { stop = false } = {}) {
+export async function readWorkflowTask(task, agentClientModule, { pause = false } = {}) {
     const flowId = workflowIdForTask(task);
     if (!flowId) throw new Error('workflow_task_reference_missing');
     const client = await agentClientModule.createAgentClient(task.targetAgent);
-    const result = await client.callTool(stop ? 'roboflow_stop_flow' : 'roboflow_flow_state', { flowId });
+    const result = await client.callTool(pause ? 'roboflow_pause_flow' : 'roboflow_flow_state', { flowId });
     if (result?.isError) throw new Error('workflow_status_unavailable');
     const text = result?.content?.filter(item => item.type === 'text').map(item => item.text).join('\n');
     const payload = text ? JSON.parse(text) : result;
     const flow = payload?.flow;
-    if (flow?.id !== flowId || !['running', 'stopped', 'failed', 'completed', 'terminated'].includes(flow.status)) {
+    if (flow?.id !== flowId || !['running', 'paused', 'failed', 'completed', 'terminated'].includes(flow.status)) {
         throw new Error('invalid_workflow_status');
     }
     return { flow, timing: executionTiming(flow, flow.status === 'running', flow.createdAt, flow.finishedAt) };

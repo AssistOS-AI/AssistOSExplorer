@@ -47,7 +47,7 @@ export async function executeRuntimeCommand({ runtime, connection, input, contex
         getTaskSummary: async (args) => { await backgroundTasks?.listTasks(); return formatWorkspaceTaskSummary(workingDir, args); },
         viewTask: async (id) => { await backgroundTasks?.viewTask(id); return formatWorkspaceTaskDetail(workingDir, id); },
         continueTask: (id, prompt) => taskAction('continue', id, () => backgroundTasks.continueTask(id, prompt, context)),
-        stopTask: (id) => taskAction('stop', id, () => backgroundTasks.stopTask(id)),
+        pauseTask: (id) => taskAction('pause', id, () => backgroundTasks.pauseTask(id)),
         modelTask: (id, model, options) => taskAction('model', id, async () => {
             const result = await taskControls().model(id, model, options);
             if (result?.type === 'task-model-catalog') await backgroundTasks.setTaskModelCatalog(id, result.models);

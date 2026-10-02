@@ -23,7 +23,7 @@ const HELP_TOPICS = {
     },
     tasks: {
         title: 'Persistent delegated tasks',
-        content: '/tasks shows durable worker status. /task view <id> opens stored log output; /task continue <id> <prompt> continues the same worker; /task stop <id> explicitly stops it. /task model and /task login configure its worker. Stopping a copilot turn or switching sessions does not stop delegated tasks. Workflow teams are started through RoboFlow; the copilot only chooses and starts a workflow.',
+        content: '/tasks shows durable worker status. /task view <id> opens stored log output; /task continue <id> <prompt> continues the same worker; /task pause <id> explicitly pauses it. /task model and /task login configure its worker. Stopping a copilot turn or switching sessions does not stop delegated tasks. Workflow teams are started through RoboFlow; the copilot only chooses and starts a workflow.',
     },
     keyboard: {
         title: 'Keyboard controls',

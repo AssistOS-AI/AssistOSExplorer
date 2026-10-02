@@ -11,7 +11,7 @@ import {
 import { withWorkspaceMutation } from '../storage/workspaceStateLock.mjs';
 
 const TASK_ID_RE = /^task_[0-9a-f]{24}$/;
-const TERMINAL_STATUSES = new Set(['finished', 'stopped', 'error']);
+const TERMINAL_STATUSES = new Set(['finished', 'paused', 'error']);
 const DEFAULT_TASK_LIMIT = 10;
 const MAX_TASK_LIMIT = 100;
 const LOG_TAIL_LINES = 5;
@@ -160,7 +160,7 @@ function normalizeTask(raw) {
     if (!raw || typeof raw !== 'object' || !TASK_ID_RE.test(String(raw.id || ''))) {
         return null;
     }
-    const status = ['ongoing', 'finished', 'stopped', 'error'].includes(raw.status)
+    const status = ['ongoing', 'finished', 'paused', 'error'].includes(raw.status)
         ? raw.status
         : 'ongoing';
     const now = new Date().toISOString();
@@ -712,7 +712,7 @@ export function formatWorkspaceTaskDetail(workingDir, taskId) {
 
 export function buildTaskCompletions(workingDir, action = 'view') {
     const tasks = readWorkspaceTasks(workingDir).filter((task) => {
-        if (action === 'stop') return task.status === 'ongoing';
+        if (action === 'pause') return task.status === 'ongoing';
         if (action === 'continue' || action === 'model' || action === 'login') {
             return TERMINAL_STATUSES.has(task.status) && Boolean(task.continuation?.handle);
         }

@@ -88,20 +88,20 @@ test('invalid route fails without dispatch; stop prevents late completion', asyn
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
     await f.finish(0, '#Edge\nb-a'); assert.equal((await f.service.getFlow(flow.id)).status, 'failed'); assert.equal(f.started.length, 1);
     const second = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
-    await f.service.stopFlow(second.id); await f.finish(1, '#Edge\na-b');
-    assert.equal((await f.service.getFlow(second.id)).status, 'stopped'); assert.equal(f.started.length, 2);
+    await f.service.pauseFlow(second.id); await f.finish(1, '#Edge\na-b');
+    assert.equal((await f.service.getFlow(second.id)).status, 'paused'); assert.equal(f.started.length, 2);
 });
 
-test('stopping a single phase cancels its runtime task and stops the whole flow', async t => {
+test('pausing a single phase cancels its runtime task and pauses the whole flow', async t => {
     const f = await fixture(t); await f.service.createWorkflow(graph());
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
     const instanceId = flow.instances[0].id;
-    const stopped = await f.service.stopInstance(flow.id, instanceId);
-    assert.equal(stopped.status, 'stopped');
-    assert.equal(stopped.instances[0].state, 'stopped');
+    const paused = await f.service.pauseInstance(flow.id, instanceId);
+    assert.equal(paused.status, 'paused');
+    assert.equal(paused.instances[0].state, 'paused');
     assert.deepEqual(f.stopped, [f.started[0].taskId]);
-    assert.equal((await f.service.getFlow(flow.id)).status, 'stopped');
-    await assert.rejects(() => f.service.stopInstance(flow.id, 'inv_000000000000000000000000'), { statusCode: 404 });
+    assert.equal((await f.service.getFlow(flow.id)).status, 'paused');
+    await assert.rejects(() => f.service.pauseInstance(flow.id, 'inv_000000000000000000000000'), { statusCode: 404 });
 });
 
 test('default requires an execution mode and always uses the default robot', async t => {
@@ -170,7 +170,7 @@ test('generation uses supplied system instructions and returns a validated unsav
     assert.equal(generated.graph.entryTaskId, 'a'); assert.equal(await f.service.registry.get('example'), null);
 });
 
-test('restart stops unfinished runs without replay and removes legacy workflow definitions', async t => {
+test('restart pauses unfinished runs without replay and removes legacy workflow definitions', async t => {
     const f = await fixture(t);
     await f.service.createWorkflow(graph());
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
@@ -181,7 +181,7 @@ test('restart stops unfinished runs without replay and removes legacy workflow d
     f.service.registry.legacyDirectory = legacy;
     await f.service.initialize();
     const recovered = await f.service.getFlow(flow.id);
-    assert.equal(recovered.status, 'stopped'); assert.equal(recovered.instances[0].state, 'interrupted');
+    assert.equal(recovered.status, 'paused'); assert.equal(recovered.instances[0].state, 'paused');
     assert.equal(f.started.length, 1);
     await assert.rejects(fs.stat(path.join(legacy, 'legacy.json')), { code: 'ENOENT' });
     assert.equal(await fs.readFile(path.join(legacy, 'keep.txt'), 'utf8'), 'unrelated');
@@ -327,7 +327,7 @@ test('workflow resume sends an English prompt on its own log line', async t => {
     const instance = flow.instances[0];
     f.service.onRuntimeTaskEvent({ kind: 'state', taskId: f.started[0].taskId, state: 'running' });
     while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
-    await f.service.stopFlow(flow.id);
+    await f.service.pauseFlow(flow.id);
     await f.service.store.writeOutput(flow.id, instance.id, 'Interrupted output');
     await f.service.resumeFlow(flow.id);
     assert.equal(f.resumed[0].prompt, 'Continue where you left off');
@@ -402,7 +402,7 @@ test('human input commits before routing and concurrent answers resume the same 
     const input = { question: 'Which customer?', options: ['Retail', 'Business', 'Enterprise'] };
     const question = await f.service.requestHumanInput(runtimeTaskId, input);
     assert.equal((await f.service.requestHumanInput(runtimeTaskId, input)).id, question.id);
-    assert.equal((await f.service.getFlow(flow.id)).status, 'stopped');
+    assert.equal((await f.service.getFlow(flow.id)).status, 'paused');
     await assert.rejects(f.service.answerHumanInput(flow.id, { requestId: question.id, option: 0 }), /finishing/);
     await assert.rejects(f.service.resumeFlow(flow.id), /pending human-input/);
     await assert.rejects(f.service.resumeInstance(flow.id, flow.instances[0].id, 'skip'), /pending human-input/);
@@ -451,7 +451,7 @@ test('human-input answer restores the pending question when continuation cannot 
     f.service.runtimeManager.resumeTask = async () => { throw new Error('Robot unavailable'); };
     await assert.rejects(f.service.answerHumanInput(flow.id, { requestId: question.id, option: 0 }), /Robot unavailable/);
     const paused = await f.service.getFlow(flow.id);
-    assert.equal(paused.status, 'stopped');
+    assert.equal(paused.status, 'paused');
     assert.equal(paused.humanInput.status, 'pending');
     assert.equal(paused.instances[0].runtimeTaskId, f.started[0].taskId);
 });
@@ -466,7 +466,7 @@ test('pending question survives restart and can be answered after the old task i
     const recovered = await f.service.getFlow(flow.id);
     assert.equal(recovered.humanInput.id, question.id);
     assert.equal(recovered.humanInput.executionEnded, true);
-    assert.equal(recovered.status, 'stopped');
+    assert.equal(recovered.status, 'paused');
     assert.equal((await f.service.answerHumanInput(flow.id, { requestId: question.id, option: 2 })).status, 'running');
     assert.equal(f.resumed[0].prompt, 'My answer to your question is: c');
 });
@@ -498,7 +498,7 @@ test('a child question pauses the parent join and answering resumes the graph', 
     const child = (await f.service.listFlows()).find(flow => flow.parentFlowId === parent.id);
     const request = await f.service.requestHumanInput(f.started[1].taskId, { question: 'Q?', options: ['a', 'b', 'c'] });
     await f.finish(1, 'Waiting');
-    assert.equal((await f.service.getFlow(parent.id)).status, 'stopped');
+    assert.equal((await f.service.getFlow(parent.id)).status, 'paused');
     const continued = await f.service.answerHumanInput(child.id, { requestId: request.id, option: 0 });
     f.service.onRuntimeTaskEvent({ kind: 'terminal', taskId: continued.instances[0].runtimeTaskId, state: 'completed', result: 'Done' });
     while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
@@ -514,7 +514,7 @@ test('a terminal event queued behind the question cannot route even without rout
     const ending = f.finish(0, 'Waiting without a nextEdgeId');
     await Promise.all([asking, ending]);
     const paused = await f.service.getFlow(flow.id);
-    assert.equal(paused.status, 'stopped');
+    assert.equal(paused.status, 'paused');
     assert.equal(paused.error, null);
     assert.equal(paused.humanInput.executionEnded, true);
     assert.equal(f.started.length, 1);
@@ -553,7 +553,7 @@ test('termination is irreversible, survives restart and ignores late runtime eve
     await assert.rejects(f.service.runtimeManager.assertHumanInputAnswered(instance.runtimeTaskId), /Terminated/);
     await assert.rejects(f.service.runtimeManager.assertHumanInputAnswered('previous-attempt', flow.id), /Terminated/);
     await f.service.initialize();
-    await f.service.stopFlow(flow.id);
+    await f.service.pauseFlow(flow.id);
     current = await f.service.terminateFlow(flow.id);
     assert.equal(current.status, 'terminated');
     assert.equal(f.started.length, 1);

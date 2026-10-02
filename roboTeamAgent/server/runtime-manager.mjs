@@ -309,7 +309,7 @@ export class RuntimeManager {
 
     hasUnfinishedTasks(robotId) {
         return Array.from(this.tasks.values()).some((task) => task.robotId === robotId
-            && ['queued', 'starting', 'running', 'stopping'].includes(task.state));
+            && ['queued', 'starting', 'running', 'pausing'].includes(task.state));
     }
 
     async ensureContainer(robot, mode, cwdValue, options = {}) {
@@ -333,7 +333,7 @@ export class RuntimeManager {
                 if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
                 if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey) return existing;
                 const activeTask = this.activeTaskStatus(robot.id);
-                const activeStates = ['queued', 'starting', 'running', 'stopping'];
+                const activeStates = ['queued', 'starting', 'running', 'pausing'];
                 if (activeTask && activeTask.taskId !== options.taskId && activeStates.includes(activeTask.state)) {
                     throw new Error(`robot has an active ${activeTask.type} task; its container cwd cannot be changed`);
                 }
@@ -397,11 +397,11 @@ export class RuntimeManager {
     _enqueueTask(robot, type, request, { first = false } = {}) {
         if (this.deletedRobots.has(robot.id)) throw new Error('robot was deleted');
         request = structuredClone(request);
-        // A new GUI request after all previous GUI work was stopped explicitly
+        // A new GUI request after all previous GUI work was paused explicitly
         // returns control to automation. Keep the pause while old work remains.
         if (GUI_MODES.has(type) && this.manualControl.has(robot.id)
             && ![...this.tasks.values()].some(task => task.robotId === robot.id
-                && GUI_MODES.has(task.type) && ['queued', 'starting', 'running', 'stopping'].includes(task.state))) {
+                && GUI_MODES.has(task.type) && ['queued', 'starting', 'running', 'pausing'].includes(task.state))) {
             this.manualControl.delete(robot.id);
         }
         const task = this._newTask(robot, type, request);
@@ -461,7 +461,7 @@ export class RuntimeManager {
     }
 
     guiBusy(robotId) {
-        return this.manualControl.has(robotId) || [...this.tasks.values()].some(task => task.robotId === robotId && GUI_MODES.has(task.type) && ['queued', 'starting', 'running', 'stopping'].includes(task.state));
+        return this.manualControl.has(robotId) || [...this.tasks.values()].some(task => task.robotId === robotId && GUI_MODES.has(task.type) && ['queued', 'starting', 'running', 'pausing'].includes(task.state));
     }
 
     async _runTask(robot, task) {
@@ -480,7 +480,7 @@ export class RuntimeManager {
             this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'starting' });
             const cwd = await this.resolveCwd(task.request.cwd);
             task.request.cwd = registerProject(this, cwd);
-            if (task.cancelRequested) throw new Error('task was stopped');
+            if (task.cancelRequested) throw new Error('task was paused');
             if (task.request.requiredWorkflowSkillsets && this.skillsets) {
                 const currentRobot = await this.skillsets.robotStore.get(robot.id);
                 const { matchRobot } = await import('./roboflow/skill-matching.mjs');
@@ -517,7 +517,7 @@ export class RuntimeManager {
             } else {
                 await codingAgentsPromise;
             }
-            if (task.cancelRequested) throw new Error('task was stopped');
+            if (task.cancelRequested) throw new Error('task was paused');
             await fs.mkdir(cwd, { recursive: true });
             const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             await this._prepareRobotAgentState(originalHome);
@@ -533,7 +533,7 @@ export class RuntimeManager {
             // no separate system-instruction option.
             const taskText = buildTaskPrompt(task.request);
             await fs.writeFile(taskFile, taskText, { mode: 0o600 });
-            if (task.cancelRequested) throw new Error('task was stopped');
+            if (task.cancelRequested) throw new Error('task was paused');
             const args = ['--home', robotHome, '--cwd', cwd, '--taskFile', taskFile, '--ca', codingAgent];
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
@@ -614,7 +614,7 @@ export class RuntimeManager {
             if (!task.cancelRequested) task.state = 'completed';
             task.completedAt = new Date().toISOString();
         } catch (error) {
-            if (task.state !== 'stopped') {
+            if (task.state !== 'paused') {
                 task.state = 'failed'; task.error = String(error?.message || error); task.completedAt = new Date().toISOString();
             }
         } finally {
@@ -628,7 +628,7 @@ export class RuntimeManager {
                 this.messageWaiters.delete(id);
             }
             await this._saveTask(task).catch(() => {});
-            if (['completed', 'failed', 'stopped'].includes(task.state)) {
+            if (['completed', 'failed', 'paused'].includes(task.state)) {
                 this._emitTaskEvent({
                     kind: 'terminal', robotId: robot.id, taskId: task.taskId, state: task.state,
                     result: task.result, error: task.error || (task.resultOverflow ? 'Final response exceeds the 1 MiB limit' : null),
@@ -710,7 +710,7 @@ export class RuntimeManager {
                     this.manualControl.set(robot.id, internal.taskId);
                 }
                 internal.cancelRequested = true;
-                internal.state = 'stopped'; internal.completedAt = new Date().toISOString(); internal.child?.kill('SIGTERM');
+                internal.state = 'paused'; internal.completedAt = new Date().toISOString(); internal.child?.kill('SIGTERM');
             }
             operation.state = 'completed'; operation.completedAt = new Date().toISOString();
         });
@@ -730,10 +730,10 @@ export class RuntimeManager {
             const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
             try { internal = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
             if (internal.taskId !== taskId) throw new Error('Task execution record identity mismatch.');
-            if (['starting', 'running'].includes(internal.state)) internal.state = 'stopped';
+            if (['starting', 'running'].includes(internal.state)) internal.state = 'paused';
         }
         if (internal.robotId !== robot.id || !['desktop', 'browser', 'simple'].includes(internal.type)
-            || !['stopped', 'completed', 'failed'].includes(internal.state)) {
+            || !['paused', 'completed', 'failed'].includes(internal.state)) {
             throw new Error('Robot has no matching task to continue.');
         }
         await this.assertHumanInputAnswered?.(taskId, internal.request.workflowRunId);
@@ -812,7 +812,7 @@ export class RuntimeManager {
         for (const task of this.tasks.values()) {
             if (!['queued', 'starting', 'running'].includes(task.state)) continue;
             task.cancelRequested = true;
-            task.state = 'stopped';
+            task.state = 'paused';
             task.completedAt = new Date().toISOString();
             task.child?.kill('SIGTERM');
         }

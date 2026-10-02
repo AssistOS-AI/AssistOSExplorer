@@ -47,7 +47,7 @@ test('roboflow orchestration tools are internal while workflow mutations stay au
         'roboflow_list_workflows',
         'roboflow_start_flow',
         'roboflow_flow_state',
-        'roboflow_stop_flow',
+        'roboflow_pause_flow',
     ]) {
         assert.deepEqual(tools.get(name)?.tags, ['internal'], `${name} must be internal`);
     }

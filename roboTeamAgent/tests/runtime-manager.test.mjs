@@ -337,7 +337,7 @@ test('keeps task prompts private and rejects a mismatched stop operation', async
     assert.throws(() => manager.stopTask(robot, 'desktop', manager.taskStatus(robot.id).taskId), /active simple task/);
     manager.stopTask(robot, 'simple');
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(manager.taskStatus(robot.id).state, 'stopped');
+    assert.equal(manager.taskStatus(robot.id).state, 'paused');
     await execution; // Finish asynchronous preparation before removing its home.
     await manager.stopAll();
 });
@@ -371,7 +371,7 @@ test('can stop one parallel CLI task without interrupting another', async (t) =>
     manager.stopTask(robot, 'simple', second.taskId);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(manager.taskStatus(robot.id, first.taskId).state, 'running');
-    assert.equal(manager.taskStatus(robot.id, second.taskId).state, 'stopped');
+    assert.equal(manager.taskStatus(robot.id, second.taskId).state, 'paused');
     for (const child of children) child.emit('close', 0, null);
     while (manager.taskStatus(robot.id, first.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
     await new Promise((resolve) => setImmediate(resolve));
@@ -417,7 +417,7 @@ test('holds the robot queue during manual GUI control and resumes the interrupte
 
     assert.equal(manager.manualControl.get(robot.id), interrupted.taskId);
     assert.deepEqual(killed, ['SIGTERM']);
-    assert.equal(manager.taskStatus(robot.id, interrupted.taskId).state, 'stopped');
+    assert.equal(manager.taskStatus(robot.id, interrupted.taskId).state, 'paused');
     await manager._drainTaskQueue(robot);
     assert.equal(manager.taskStatus(robot.id, waiting.taskId).state, 'queued');
 
@@ -506,7 +506,7 @@ test('an explicit GUI stop does not enter manual-control mode', async () => {
     manager.stopTask(robot, 'browser', active.taskId);
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.equal(manager.taskStatus(robot.id, active.taskId).state, 'stopped');
+    assert.equal(manager.taskStatus(robot.id, active.taskId).state, 'paused');
     assert.equal(manager.manualControl.has(robot.id), false);
 });
 
@@ -634,7 +634,7 @@ test('returns the deterministic live URL with an asynchronous GUI task', async (
         '/base-agent-additional-server/roboTeamAgent/3001/api/robots/analyst-a1b2c3/session/',
     );
     assert.equal(manager.taskStatus('analyst-a1b2c3', accepted.taskId).sessionUrl, accepted.sessionUrl);
-    while (!['failed', 'stopped'].includes(manager.taskStatus('analyst-a1b2c3', accepted.taskId).state)) {
+    while (!['failed', 'paused'].includes(manager.taskStatus('analyst-a1b2c3', accepted.taskId).state)) {
         await new Promise((resolve) => setTimeout(resolve, 1));
     }
 });
@@ -685,7 +685,7 @@ test('replaces the retained GUI container when the next queued task needs anothe
     while (manager.taskStatus(robot.id, browser.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
 });
 
-test('new GUI work clears manual control after every previous GUI task was stopped', async () => {
+test('new GUI work clears manual control after every previous GUI task was paused', async () => {
     const robot = { id: 'restart-a1b2c3', name: 'Restart' };
     const manager = new RuntimeManager({ toolCache: preparedToolCache });
     const active = manager._newTask(robot, 'browser', { cwd: '/workspace' });

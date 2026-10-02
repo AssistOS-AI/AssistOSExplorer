@@ -9,7 +9,7 @@ import { RoboFlowDatabase } from './database.mjs';
 import { FLOW_ID_PATTERN, INVOCATION_ID_PATTERN } from './constants.mjs';
 import { invalid } from './graph.mjs';
 
-const activePhase = phase => ['starting', 'running', 'stopping'].includes(phase.state);
+const activePhase = phase => ['starting', 'running', 'pausing'].includes(phase.state);
 const flowTiming = flow => executionTiming(flow, flow.status === 'running', flow.createdAt, flow.finishedAt);
 const phaseTiming = phase => executionTiming(phase, activePhase(phase), phase.startedAt, phase.endedAt);
 
@@ -44,11 +44,12 @@ export class TaskFlowStore {
         });
     }
     async get(id) { await this.initialize(); return this.getSync(id); }
-    // One-time cleanup of stored workflow types and runs; the default workflow is
-    // recreated afterwards. Guarded by a marker next to the database.
+    // One-time cleanup of stored workflow types and runs; built-in workflows are
+    // recreated afterwards. Guarded by a marker next to the database; bump the
+    // marker name to wipe again after an incompatible state change.
     async clearLegacyOnce() {
         await this.initialize();
-        const marker = `${this.database.file}.legacy-cleared`;
+        const marker = `${this.database.file}.paused-reset`;
         try { await fs.access(marker); return; } catch (error) { if (error.code !== 'ENOENT') throw error; }
         this.database.transaction(() => {
             this.database.db.prepare('DELETE FROM task_instances').run();

@@ -126,7 +126,7 @@ body {
 .invocation.state-running, .invocation.state-starting, .invocation.state-queued { border-left-color: var(--accent); }
 .invocation.state-completed { border-left-color: var(--ok); }
 .invocation.state-failed { border-left-color: var(--danger); }
-.invocation.state-stopped, .invocation.state-interrupted { border-left-color: var(--warn); }
+.invocation.state-paused { border-left-color: var(--warn); }
 
 .invocation-header { display: flex; gap: 10px; align-items: baseline; }
 .invocation-robot { font-weight: 600; }
@@ -210,7 +210,7 @@ body {
 .status-badge[data-status='running'], .status-badge[data-status='queued'] { color: var(--accent); border-color: var(--accent); }
 .status-badge[data-status='completed'] { color: var(--ok); border-color: var(--ok); }
 .status-badge[data-status='failed'] { color: var(--danger); border-color: var(--danger); }
-.status-badge[data-status='stopped'], .status-badge[data-status='interrupted'] { color: var(--warn); border-color: var(--warn); }
+.status-badge[data-status='paused'] { color: var(--warn); border-color: var(--warn); }
 
 .flow-columns {
     display: grid;
@@ -265,7 +265,7 @@ body {
 .phase-card[data-state='running'], .phase-card[data-state='queued'], .phase-card[data-state='starting'] { border-left-color: var(--accent); }
 .phase-card[data-state='completed'] { border-left-color: var(--ok); }
 .phase-card[data-state='failed'] { border-left-color: var(--danger); }
-.phase-card[data-state='stopped'], .phase-card[data-state='interrupted'] { border-left-color: var(--warn); }
+.phase-card[data-state='paused'] { border-left-color: var(--warn); }
 
 .phase-card.is-pending { border-style: dashed; opacity: .78; }
 .phase-card.is-pending:hover, .phase-card.is-pending.is-selected { opacity: 1; }
@@ -273,7 +273,7 @@ body {
 .phase-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .phase-card-head strong { overflow-wrap: anywhere; }
 .phase-card-meta { color: var(--muted); font-size: 13px; }
-.phase-stop { align-self: flex-start; padding: 4px 10px; font-size: 12px; }
+.phase-pause { align-self: flex-start; padding: 4px 10px; font-size: 12px; }
 
 .stage-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .stage-title { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
@@ -295,7 +295,7 @@ body {
 
 .phase-view-name { overflow-wrap: anywhere; }
 .phase-view-duration { color: var(--muted); font-size: 13px; margin-left: auto; }
-.phase-view-header .phase-stop { margin-left: 0; }
+.phase-view-header .phase-pause { margin-left: 0; }
 
 .phase-view-detail { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; }
 .phase-description { margin: 0; color: var(--text); }
@@ -349,7 +349,7 @@ body {
 .phase-view-status.is-running { color: var(--accent); border-color: var(--accent); }
 .phase-view-status.is-finished { color: var(--ok); border-color: var(--ok); }
 .phase-view-status.is-error { color: var(--danger); border-color: var(--danger); }
-.phase-view-status.is-stopped { color: var(--warn); border-color: var(--warn); }
+.phase-view-status.is-paused { color: var(--warn); border-color: var(--warn); }
 
 .phase-log {
     flex: 1 1 auto;
@@ -381,7 +381,7 @@ body {
 .graph-node.graph-state-queued { border-color: var(--accent); }
 .graph-node.graph-state-completed { border-color: var(--ok); }
 .graph-node.graph-state-failed { border-color: var(--danger); }
-.graph-node.graph-state-stopped, .graph-node.graph-state-interrupted { border-color: var(--warn); }
+.graph-node.graph-state-paused { border-color: var(--warn); }
 
 @keyframes phase-pulse {
     0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }

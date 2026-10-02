@@ -222,7 +222,7 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
     const form = dialog.querySelector('form');
     const close = () => { dialog.close(); dialog.remove(); };
     const names = robot.codingAgents || ['codex', 'opencode', 'pi'];
-    const busy = robot.run.state !== 'stopped' || ['queued', 'starting', 'running', 'stopping'].includes(robot.run.task?.state);
+    const busy = robot.run.state !== 'stopped' || ['queued', 'starting', 'running', 'pausing'].includes(robot.run.task?.state);
     for (const field of form.elements) {
         field.disabled = busy;
         if (field.type === 'radio') field.checked = names.length === 1 && field.value === names[0];

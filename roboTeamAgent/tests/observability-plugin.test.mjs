@@ -23,18 +23,18 @@ test('Observability declares a fullscreen toolbar plugin immediately after RoboT
     }
 });
 
-test('Tabs separate active and terminal executions; human input lists stopped and failed flows', () => {
-    const flows = ['running', 'pending', 'completed', 'failed', 'stopped', 'interrupted', 'requires_human_input'].map((status, i) => ({ id: status, status, createdAt: `2026-10-01T00:00:0${i}Z` }));
-    assert.deepEqual(workflowsForTab(flows, 'human').map(flow => flow.id), ['stopped', 'failed']);
+test('Tabs separate active and terminal executions; human input lists paused and failed flows', () => {
+    const flows = ['running', 'pending', 'completed', 'failed', 'paused', 'requires_human_input'].map((status, i) => ({ id: status, status, createdAt: `2026-10-01T00:00:0${i}Z` }));
+    assert.deepEqual(workflowsForTab(flows, 'human').map(flow => flow.id), ['paused', 'failed']);
     assert.deepEqual(workflowsForTab(flows, 'running').map(flow => flow.id), ['pending', 'running']);
-    assert.deepEqual(workflowsForTab(flows, 'history').map(flow => flow.id), ['interrupted', 'stopped', 'failed', 'completed']);
+    assert.deepEqual(workflowsForTab(flows, 'history').map(flow => flow.id), ['paused', 'failed', 'completed']);
 });
 
 test('Duration accumulates active execution time and freezes when finished', () => {
     const activeSince = '2026-10-01T01:00:00Z';
     const now = Date.parse(activeSince) + 5000;
     assert.equal(elapsedMs({ status: 'running', elapsedMs: 10000, activeSince }, now), 15000);
-    assert.equal(elapsedMs({ status: 'stopped', elapsedMs: 10000, activeSince }, now), 10000);
+    assert.equal(elapsedMs({ status: 'paused', elapsedMs: 10000, activeSince }, now), 10000);
     assert.equal(elapsedMs({ status: 'pending', createdAt: activeSince }, now), 0);
     assert.equal(elapsedMs({ status: 'completed', createdAt: activeSince, finishedAt: '2026-10-01T01:01:00Z' }, now), 60000);
     assert.equal(elapsedMs({ status: 'completed' }, now), null);
@@ -46,7 +46,7 @@ test('Node counts include finished loop visits, excluding queued and active work
     assert.equal(executedNodes({ instances: [
         { nodeId: 'a', state: 'completed' }, { nodeId: 'a', state: 'completed' },
         { nodeId: 'b', state: 'failed', startedAt: '2026-10-01' },
-        { state: 'stopped', startedAt: '2026-10-01' },
+        { state: 'paused', startedAt: '2026-10-01' },
         { state: 'failed' }, { state: 'running', startedAt: '2026-10-01' }, { state: 'pending' },
     ] }), 4);
     assert.equal(executedNodes({}), 0);

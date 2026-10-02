@@ -92,6 +92,6 @@ export async function workflowSummaries(service, flowId, instanceId) {
             if (!entry.text || seen.has(key)) return false;
             seen.add(key); return true;
         }).map(({ text }) => ({ text }));
-        return { summaries, active: !['completed', 'failed', 'stopped', 'interrupted'].includes(instance.state) };
+        return { summaries, active: !['completed', 'failed', 'paused'].includes(instance.state) };
     }));
 }

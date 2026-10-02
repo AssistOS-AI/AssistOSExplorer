@@ -393,7 +393,7 @@ test('continuation keeps the local id, advances the turn, and filters action com
             },
         });
         assert.deepEqual(buildTaskCompletions(workspace, 'continue').map((item) => item.value), [FINISHED_ID]);
-        assert.deepEqual(buildTaskCompletions(workspace, 'stop'), []);
+        assert.deepEqual(buildTaskCompletions(workspace, 'pause'), []);
         const next = await beginTaskContinuation(workspace, FINISHED_ID, {
             remoteTaskId: 'remote-2',
             message: 'finish the tests',
@@ -403,7 +403,7 @@ test('continuation keeps the local id, advances the turn, and filters action com
         assert.equal(next.status, 'ongoing');
         assert.equal(next.remoteStatus, 'pending');
         assert.match(readTaskLog(workspace, FINISHED_ID).text, /you> finish the tests/);
-        assert.deepEqual(buildTaskCompletions(workspace, 'stop').map((item) => item.value), [FINISHED_ID]);
+        assert.deepEqual(buildTaskCompletions(workspace, 'pause').map((item) => item.value), [FINISHED_ID]);
     } finally {
         fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -435,7 +435,7 @@ test('slash handler delegates task view, stop, continuation, model, and login ac
         getUserSkills: () => [],
         getSkills: () => [],
         viewTask: async (id) => { calls.push(['view', id]); return 'task detail'; },
-        stopTask: async (id) => { calls.push(['stop', id]); return { id }; },
+        pauseTask: async (id) => { calls.push(['pause', id]); return { id }; },
         continueTask: async (id, prompt) => { calls.push(['continue', id, prompt]); return { id }; },
         modelTask: async (id, model) => { calls.push(['model', id, model]); return { id, model: { label: 'GPT Test' } }; },
         loginTask: async (id, provider, method) => { calls.push(['login', id, provider, method]); return { id, provider }; },
@@ -446,8 +446,8 @@ test('slash handler delegates task view, stop, continuation, model, and login ac
         { handled: true, result: 'task detail' },
     );
     assert.deepEqual(
-        await handler.executeSlashCommand('task', `stop ${taskId}`),
-        { handled: true, result: `Stop requested for ${taskId}.` },
+        await handler.executeSlashCommand('task', `pause ${taskId}`),
+        { handled: true, result: `Pause requested for ${taskId}.` },
     );
     assert.deepEqual(
         await handler.executeSlashCommand('task', `continue ${taskId} finish the tests`),
@@ -463,7 +463,7 @@ test('slash handler delegates task view, stop, continuation, model, and login ac
     );
     assert.deepEqual(calls, [
         ['view', taskId],
-        ['stop', taskId],
+        ['pause', taskId],
         ['continue', taskId, 'finish the tests'],
         ['model', taskId, 'openai/gpt-test'],
         ['login', taskId, 'openai', 'api_key'],

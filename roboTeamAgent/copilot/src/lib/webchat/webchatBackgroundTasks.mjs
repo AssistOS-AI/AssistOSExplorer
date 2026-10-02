@@ -90,7 +90,7 @@ function describeTask(agentName, toolName, args = {}) {
 function normalizeStatus(status) {
     const value = trim(status).toLowerCase();
     if (value === 'completed') return 'finished';
-    if (['cancelled', 'stopped', 'interrupted', 'terminated'].includes(value)) return 'stopped';
+    if (['cancelled', 'paused', 'stopped', 'interrupted', 'terminated'].includes(value)) return 'paused';
     if (value === 'failed' || value === 'not_found') return 'error';
     return 'ongoing';
 }
@@ -532,12 +532,12 @@ export async function createWebchatBackgroundTaskManager({
             await publish({ event: 'view', task, log }, { persist: false });
             return { task, log };
         },
-        async stopTask(taskId) {
+        async pauseTask(taskId) {
             const task = getTask(workingDir, taskId);
             if (!task) throw new Error('task_not_found');
             if (task.status !== 'ongoing') throw new Error('task_not_running');
             if (workflowIdForTask(task)) {
-                await syncWorkflow(active.get(taskId) || task, { stop: true });
+                await syncWorkflow(active.get(taskId) || task, { pause: true });
                 return getTask(workingDir, taskId);
             }
             const client = await agentClientModule.createAgentClient(task.targetAgent);
@@ -563,7 +563,7 @@ export async function createWebchatBackgroundTaskManager({
                 }
             }
             if (outgoing.task.status !== 'ongoing') active.delete(taskId);
-            await publish({ event: 'action', action: 'stop', ok: true, task: outgoing.task }, { persist: false });
+            await publish({ event: 'action', action: 'pause', ok: true, task: outgoing.task }, { persist: false });
             return outgoing.task;
         },
         async continueTask(taskId, message, origin = getSkillRuntimeOrigin()) {

@@ -54,7 +54,7 @@ export class REPLSession {
                 return formatWorkspaceTaskDetail(this.workingDir, id);
             },
             continueTask: (id, prompt, origin) => this._requireTaskManager().continueTask(id, prompt, origin),
-            stopTask: (id) => this._requireTaskManager().stopTask(id),
+            pauseTask: (id) => this._requireTaskManager().pauseTask(id),
             modelTask: (id, model, opts) => { this._requireTaskManager(); return this._taskModel(id, model, opts); },
             loginTask: (id, provider, method, opts) => { this._requireTaskManager(); return this.taskControls.login(id, provider, method, opts); },
             getTaskCompletions: (action) => buildTaskCompletions(this.workingDir, action),

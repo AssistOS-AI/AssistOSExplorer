@@ -85,7 +85,7 @@ export function createWorkflowEditor({ api }) {
     function connect({ source, target }) {
         if (source.taskId === target.taskId) return;
         if (target.taskId === 'run-workflows' && !graph.tasks.find(task => task.id === source.taskId)?.creator) {
-            showError(new Error('Only a workflow creator can connect to Run workflows.')); return;
+            showError(new Error('Only a task that allows sub-flows can connect to Run workflows.')); return;
         }
         graph.edges.push({ id: `edge-${crypto.randomUUID()}`, sourceTaskId: source.taskId, targetTaskId: target.taskId, sourcePort: source.side, targetPort: target.side }); changed(); render();
     }
@@ -237,7 +237,7 @@ export function createWorkflowEditor({ api }) {
             }
             if (task.id === selected) item.classList.add('selected');
             if (warningTaskIds.has(task.id)) item.classList.add('coverage-warning');
-            item.append(node('strong', task.name || 'Untitled task'), node('span', task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Creator · ' : ''}${task.executionType || 'terminal / desktop / browser'}`));
+            item.append(node('strong', task.name || 'Untitled task'), node('span', task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Sub-flows · ' : ''}${task.executionType || 'terminal / desktop / browser'}`));
             item.onclick = () => select(task.id);
             item.draggable = !readonly();
             if (!readonly()) item.title = 'Drag to reorder, or use Alt + Arrow Up / Arrow Down';
@@ -296,8 +296,8 @@ export function createWorkflowEditor({ api }) {
         const card = node('section', null, 'task-editor'); card.dataset.taskId = task.id;
         card.append(node('h3', task.kind === 'run-workflows' ? 'Run workflows' : 'Edit task'));
         if (task.kind === 'run-workflows') {
-            card.append(node('p', 'RoboFlow runs the workflows chosen by a creator in parallel. After all children complete or fail, it follows the creator’s selected outgoing edge. A stopped child waits for Resume.'));
-            card.append(node('p', 'Connect creators to this node and draw its outgoing continuation edges in the graph.'));
+            card.append(node('p', 'RoboFlow runs the workflows chosen by a task that allows sub-flows in parallel. After all children complete or fail, it follows that task’s selected outgoing edge. A paused child waits for Resume.'));
+            card.append(node('p', 'Connect tasks that allow sub-flows to this node and draw its outgoing continuation edges in the graph.'));
             taskPanel.append(card); return;
         }
         const name = node('input'); name.value = task.name || ''; name.maxLength = 120;
@@ -325,18 +325,18 @@ export function createWorkflowEditor({ api }) {
             label.append(input, document.createTextNode(text));
             return { input, label };
         };
-        const entry = checkbox('First node', isEntry);
+        const entry = checkbox('Start node', isEntry);
         entry.input.onchange = () => {
             // A graph always has one entry; selecting another task replaces it.
             entry.input.checked = true;
             if (graph.entryTaskId === task.id) return;
             graph.entryTaskId = task.id; changed(); renderBoard(); renderList();
         };
-        const creator = checkbox('Workflow creator', Boolean(task.creator));
+        const creator = checkbox('Allow sub-flows', Boolean(task.creator));
         creator.input.onchange = () => {
             if (task.creator && graph.tasks.filter(item => item.creator).length === 1
                 && graph.edges.some(edge => edge.sourceTaskId === 'run-workflows' || edge.targetTaskId === 'run-workflows')
-                && !confirm('Remove the last creator? Run workflows and its connections will be removed.')) {
+                && !confirm('Disallow sub-flows on the last task that allows them? Run workflows and its connections will be removed.')) {
                 creator.input.checked = true;
                 return;
             }
@@ -368,7 +368,7 @@ export function createWorkflowEditor({ api }) {
         if (!Array.isArray(task.skillsets)) task.skillsets = [];
         const deleteTask = button('Delete task', () => {
             if (task.creator && graph.tasks.filter(item => item.creator).length === 1
-                && !confirm('Delete the last creator and remove Run workflows with its connections?')) return;
+                && !confirm('Delete the last task that allows sub-flows and remove Run workflows with its connections?')) return;
             graph.tasks = graph.tasks.filter(item => item.id !== task.id);
             graph.edges = graph.edges.filter(edge => edge.sourceTaskId !== task.id && edge.targetTaskId !== task.id);
             delete graph.layout[task.id];

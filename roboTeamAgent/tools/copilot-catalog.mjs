@@ -20,7 +20,7 @@ try {
             sessionId: input.sessionId, freshSession: true, signal: AbortSignal.timeout(20000),
             execution: { robotId: context.robot.id },
             sessionCompletions: buildSessionCompletions(workingDir),
-            taskCompletions: Object.fromEntries(['view', 'continue', 'stop', 'model', 'login'].map((action) =>
+            taskCompletions: Object.fromEntries(['view', 'continue', 'pause', 'model', 'login'].map((action) =>
                 [action, buildTaskActionCompletions(workingDir, action)])) });
     if (result.commands) {
         const skills = result.commands.find((command) => command.name === '/skills');

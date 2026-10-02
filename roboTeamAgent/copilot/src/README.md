@@ -27,7 +27,7 @@ Run this command from `achilles-cli/`. Under RoboTeam, `ACHILLES_ALA_HOME` is th
 /tasks
 /task view <id>
 /task continue <id> <prompt>
-/task stop <id>
+/task pause <id>
 /help
 ```
 

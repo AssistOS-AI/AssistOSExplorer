@@ -15,7 +15,7 @@ import { SlashCommandHandler, SUB_OPTIONS } from './SlashCommandHandler.mjs';
 import { UIContext } from '../ui/UIContext.mjs';
 
 export function getSubOptionArgumentSource(command, subOption, subDef = {}) {
-    if (command === 'task' && ['view', 'continue', 'stop', 'model', 'login'].includes(subOption)) return 'tasks';
+    if (command === 'task' && ['view', 'continue', 'pause', 'model', 'login'].includes(subOption)) return 'tasks';
     if (command === 'session' && subOption === 'resume') return 'sessions';
     if (subDef.needsSkillArg) return 'skills';
     if (subDef.args === 'required') return 'text';

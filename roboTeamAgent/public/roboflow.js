@@ -3,7 +3,7 @@ import { renderLog } from './log-render.js';
 
 const element = (tag, text) => { const node = document.createElement(tag); node.textContent = text; return node; };
 const api = path => new URL(path, document.baseURI).toString();
-const FLOW_TERMINAL = new Set(['completed', 'failed', 'stopped', 'interrupted', 'terminated']);
+const FLOW_TERMINAL = new Set(['completed', 'failed', 'paused', 'terminated']);
 
 async function get(path, text = false) {
     const response = await fetch(api(path), { credentials: 'include' });
@@ -49,7 +49,7 @@ function terminalStatus(status) {
 
 function duration(instance) {
     if (!instance) return '';
-    const active = ['running', 'starting', 'stopping'].includes(instance.state || instance.status);
+    const active = ['running', 'starting', 'pausing'].includes(instance.state || instance.status);
     const start = instance.startedAt || instance.createdAt;
     const end = instance.endedAt || instance.finishedAt;
     const ms = Number.isFinite(instance.elapsedMs)
@@ -76,9 +76,9 @@ function renderHeader(flow) {
     const error = document.querySelector('#flowError');
     error.hidden = !flow.error;
     if (error.textContent !== (flow.error || '')) error.textContent = flow.error || '';
-    const control = document.querySelector('#stopFlowButton');
-    const paused = ['stopped', 'interrupted'].includes(flow.status);
-    control.textContent = paused ? 'Resume workflow' : 'Stop workflow';
+    const control = document.querySelector('#pauseFlowButton');
+    const paused = flow.status === 'paused';
+    control.textContent = paused ? 'Resume workflow' : 'Pause workflow';
     control.classList.toggle('danger', !paused);
     control.classList.toggle('primary', paused);
     control.disabled = ['completed', 'failed', 'terminated'].includes(flow.status);
@@ -110,11 +110,11 @@ function phaseItem(task, instance) {
     meta.className = 'phase-card-meta';
     card.append(head, meta);
     if (!terminalStatus(instance.state)) {
-        const stop = element('button', 'Stop');
-        stop.type = 'button';
-        stop.className = 'button danger phase-stop';
-        stop.onclick = event => { event.stopPropagation(); void stopPhase(instance.id); };
-        card.append(stop);
+        const pause = element('button', 'Pause');
+        pause.type = 'button';
+        pause.className = 'button danger phase-pause';
+        pause.onclick = event => { event.stopPropagation(); void pausePhase(instance.id); };
+        card.append(pause);
     }
     item.append(card);
     return item;
@@ -289,7 +289,7 @@ function phaseStatusClass(state) {
     if (['running', 'queued', 'starting'].includes(state)) return 'running';
     if (state === 'completed') return 'finished';
     if (state === 'failed') return 'error';
-    if (['stopped', 'interrupted', 'terminated'].includes(state)) return 'stopped';
+    if (['paused', 'terminated'].includes(state)) return 'paused';
     return 'ongoing';
 }
 
@@ -312,11 +312,11 @@ function renderPhaseHeader(header, instance) {
     time.className = 'phase-view-duration';
     header.append(name, status, time);
     if (instance.id && !terminalStatus(instance.state)) {
-        const stop = element('button', 'Stop');
-        stop.type = 'button';
-        stop.className = 'button danger phase-stop';
-        stop.onclick = () => void stopPhase(instance.id);
-        header.append(stop);
+        const pause = element('button', 'Pause');
+        pause.type = 'button';
+        pause.className = 'button danger phase-pause';
+        pause.onclick = () => void pausePhase(instance.id);
+        header.append(pause);
     }
 }
 
@@ -336,7 +336,7 @@ function renderPhaseDetail(container, instance) {
         container.append(error);
     }
     const description = element('p', task?.kind === 'run-workflows'
-        ? 'Runs the creator’s selected workflows sequentially. A failed or stopped child blocks later children; all must complete before continuing on the selected edge.'
+        ? 'Runs the sub-flows selected by the previous task sequentially. A failed or paused child blocks later children; all must complete before continuing on the selected edge.'
         : task?.prompt || 'No prompt.');
     description.className = 'phase-description';
     container.append(description);
@@ -370,7 +370,7 @@ function composerMode(instance) {
     if (currentFlow?.status === 'terminated') return '';
     if (currentFlow?.graph.tasks.find(task => task.id === instance.taskId)?.kind === 'run-workflows') return '';
     if (['queued', 'starting', 'running'].includes(instance.state)) return 'message';
-    if (['stopped', 'completed', 'failed'].includes(instance.state)) return 'continue';
+    if (['paused', 'completed', 'failed'].includes(instance.state)) return 'continue';
     return '';
 }
 
@@ -505,18 +505,18 @@ function showGraph() {
     renderStage();
 }
 
-async function stopFlow() {
+async function toggleFlowPause() {
     if (!selected) return;
-    const action = ['stopped', 'interrupted'].includes(currentFlow?.status) ? 'resume' : 'stop';
-    const button = document.querySelector('#stopFlowButton'); button.disabled = true;
+    const action = currentFlow?.status === 'paused' ? 'resume' : 'pause';
+    const button = document.querySelector('#pauseFlowButton'); button.disabled = true;
     try { await post(`api/roboflow/flows/${encodeURIComponent(selected)}/${action}`); await refresh(); }
     catch (error) { setMessage(error.message, true); }
     finally { if (currentFlow) renderHeader(currentFlow); }
 }
 
-async function stopPhase(instanceId) {
+async function pausePhase(instanceId) {
     if (!selected) return;
-    try { await post(`api/roboflow/flows/${encodeURIComponent(selected)}/instances/${encodeURIComponent(instanceId)}/stop`); await refresh(); }
+    try { await post(`api/roboflow/flows/${encodeURIComponent(selected)}/instances/${encodeURIComponent(instanceId)}/pause`); await refresh(); }
     catch (error) { setMessage(error.message, true); }
 }
 
@@ -617,7 +617,7 @@ confirmTerminateButton.onclick = async () => {
         confirmTerminateButton.textContent = 'Terminate workflow';
     }
 };
-document.querySelector('#stopFlowButton').onclick = () => void stopFlow();
+document.querySelector('#pauseFlowButton').onclick = () => void toggleFlowPause();
 
 await render();
 setInterval(() => { if (!document.hidden && selected) void refresh().catch(() => {}); }, 2000);

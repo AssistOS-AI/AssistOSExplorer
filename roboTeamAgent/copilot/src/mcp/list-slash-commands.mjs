@@ -103,7 +103,7 @@ export async function loadAutocompleteCatalog(options = {}) {
     }
     const result = await toAutocompleteCatalog({ ...options, dir: workingDir, skillCatalog, modelSubCommands,
         sessionCompletions: buildSessionCompletions(workingDir),
-        taskCompletions: Object.fromEntries(['view', 'continue', 'stop', 'model', 'login'].map((action) =>
+        taskCompletions: Object.fromEntries(['view', 'continue', 'pause', 'model', 'login'].map((action) =>
             [action, buildTaskActionCompletions(workingDir, action)])),
     });
     return modelError ? { ...result, modelError } : result;

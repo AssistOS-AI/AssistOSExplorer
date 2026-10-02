@@ -1,11 +1,11 @@
 export const WORKFLOW_BASE = '/base-agent-additional-server/roboTeamAgent/3001/';
 export const TABS = ['human', 'running', 'history'];
-const ACTIVE = new Set(['running', 'pending', 'queued', 'starting', 'stopping']);
-const TERMINAL = new Set(['completed', 'failed', 'stopped', 'interrupted', 'terminated']);
+const ACTIVE = new Set(['running', 'pending', 'queued', 'starting', 'pausing']);
+const TERMINAL = new Set(['completed', 'failed', 'paused', 'terminated']);
 const timestamp = value => typeof value === 'string' ? Date.parse(value) : NaN;
 
 export function workflowsForTab(flows, tab) {
-    const states = tab === 'human' ? new Set(['stopped', 'failed']) : tab === 'running' ? ACTIVE : TERMINAL;
+    const states = tab === 'human' ? new Set(['paused', 'failed']) : tab === 'running' ? ACTIVE : TERMINAL;
     return flows.filter(flow => states.has(flow.status)).sort((a, b) =>
         (timestamp(b.createdAt) || 0) - (timestamp(a.createdAt) || 0));
 }

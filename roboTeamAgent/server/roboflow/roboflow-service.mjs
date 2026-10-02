@@ -14,15 +14,15 @@ import { ensureDefaultWorkflow } from './default-workflow.mjs';
 import { EXECUTION_TASK_TYPES, EXECUTION_TYPES, WORKFLOWS_DIR } from './constants.mjs';
 import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
 
-const terminal = state => ['completed', 'failed', 'stopped', 'interrupted', 'terminated'].includes(state);
+const terminal = state => ['completed', 'failed', 'paused', 'terminated'].includes(state);
 const missing = () => Object.assign(new Error('workflow run not found'), { statusCode: 404 });
 
-// A run has one status. Running wins over everything, then stop, then failure:
-// there is no partially stopped run while any phase is still active.
+// A run has one status. Running wins over everything, then pause, then failure:
+// there is no partially paused run while any phase is still active.
 function deriveFlowStatus(instances) {
     const states = instances.map(instance => instance.state);
-    if (states.some(state => ['queued', 'starting', 'running', 'stopping'].includes(state))) return 'running';
-    if (states.some(state => ['stopped', 'interrupted'].includes(state))) return 'stopped';
+    if (states.some(state => ['queued', 'starting', 'running', 'pausing'].includes(state))) return 'running';
+    if (states.some(state => state === 'paused')) return 'paused';
     if (states.some(state => state === 'failed')) return 'failed';
     return 'completed';
 }
@@ -66,14 +66,14 @@ export class RoboFlowService {
         await ensureCodeDevelopmentWorkflow(this.registry, this.skillsets);
         for (const flow of await this.store.list()) if (flow.status !== 'pending' && !terminal(flow.status)) await this.store.update(flow.id, current => {
             current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
-            for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'interrupted'; instance.error = current.error; instance.endedAt = current.finishedAt; }
+            for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'paused'; instance.error = current.error; instance.endedAt = current.finishedAt; }
             current.status = deriveFlowStatus(current.instances);
         });
         for (const flow of await this.store.list()) if (flow.humanInput?.status === 'pending') await this.store.update(flow.id, current => {
             current.humanInput.executionEnded = true;
-            current.status = 'stopped';
+            current.status = 'paused';
             const instance = current.instances.find(item => item.id === current.humanInput.instanceId);
-            if (instance) { instance.state = 'stopped'; instance.endedAt ||= new Date().toISOString(); }
+            if (instance) { instance.state = 'paused'; instance.endedAt ||= new Date().toISOString(); }
         });
         for (const flow of await this.store.list()) if (flow.status === 'terminated') await this.terminateFlow(flow.id);
         this.store.onStatusChange = flow => {
@@ -84,7 +84,7 @@ export class RoboFlowService {
     }
     _derive(flow) {
         if (flow.status === 'terminated') return;
-        flow.status = flow.humanInput?.status === 'pending' ? 'stopped' : deriveFlowStatus(flow.instances);
+        flow.status = flow.humanInput?.status === 'pending' ? 'paused' : deriveFlowStatus(flow.instances);
         flow.finishedAt = flow.status === 'running' ? null : new Date().toISOString();
         if (flow.status !== 'failed') flow.error = null;
     }
@@ -141,7 +141,7 @@ export class RoboFlowService {
         let flow = await this.store.get(id);
         if (!flow || terminal(flow.status)) return;
         const instance = flow.instances.find(item => item.id === (instanceId || flow.currentInstanceId));
-        if (!instance || instance.state !== 'queued' || instance.runtimeTaskId || flow.stopRequested) return;
+        if (!instance || instance.state !== 'queued' || instance.runtimeTaskId || flow.pauseRequested) return;
         const node = flow.graph.tasks.find(task => task.id === instance.taskId);
         try {
             if (flow.instances.length > this.maxVisits) throw new Error('maximum task visits reached');
@@ -203,9 +203,9 @@ export class RoboFlowService {
         if (!flow || flow.status === 'terminated') return;
         const active = flow.instances.filter(instance => !terminal(instance.state));
         if (!active.length) return;
-        if (!flow.stopRequested && active.some(instance => instance.creatorInstanceId)) {
-            await this.store.update(id, current => { current.stopRequested = true; });
-            await this.subflows.stopChildren(flow);
+        if (!flow.pauseRequested && active.some(instance => instance.creatorInstanceId)) {
+            await this.store.update(id, current => { current.pauseRequested = true; });
+            await this.subflows.pauseChildren(flow);
         }
         const started = new Map();
         for (const instance of active) if (instance.runtimeTaskId) {
@@ -225,14 +225,14 @@ export class RoboFlowService {
             current.status = deriveFlowStatus(current.instances);
         });
     }
-    async stopFlow(id) {
+    async pauseFlow(id) {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
             if (['pending', 'completed', 'failed', 'terminated'].includes(flow.status)) return this.getFlow(id);
-            await this.store.update(id, current => { current.stopRequested = true; });
-            await this.subflows.stopChildren(flow);
-            await this._fail(id, 'Stopped by user', 'stopped');
+            await this.store.update(id, current => { current.pauseRequested = true; });
+            await this.subflows.pauseChildren(flow);
+            await this._fail(id, 'Paused by user', 'paused');
             return this.getFlow(id);
         });
     }
@@ -242,7 +242,7 @@ export class RoboFlowService {
             if (!flow) throw missing();
             // Persist the irreversible gate before stopping processes or visiting children.
             await this.store.update(id, current => {
-                current.status = 'terminated'; current.stopRequested = true;
+                current.status = 'terminated'; current.pauseRequested = true;
                 current.terminatedAt ||= new Date().toISOString();
                 current.finishedAt = current.terminatedAt; current.error = null;
                 if (current.humanInput?.status === 'pending') current.humanInput.status = 'cancelled';
@@ -264,13 +264,13 @@ export class RoboFlowService {
             return this.getFlow(id);
         });
     }
-    async stopInstance(id, instanceId) {
+    async pauseInstance(id, instanceId) {
         const flow = await this.store.get(id);
         if (!flow) throw missing();
         const instance = flow.instances.find(item => item.id === instanceId);
         if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
         if (terminal(instance.state)) return this.getFlow(id);
-        return this.stopFlow(id);
+        return this.pauseFlow(id);
     }
     async resumeFlow(id) {
         return this._serialize(id, async () => {
@@ -278,11 +278,11 @@ export class RoboFlowService {
             if (!flow) throw missing();
             if (flow.humanInput?.status === 'pending') throw invalid('Answer the pending human-input question before resuming');
             await this.subflows.assertCanContinue(flow);
-            if (!flow.instances.some(item => ['stopped', 'interrupted'].includes(item.state))) return this.getFlow(id);
-            await this.store.update(id, current => { current.stopRequested = false; });
+            if (!flow.instances.some(item => item.state === 'paused')) return this.getFlow(id);
+            await this.store.update(id, current => { current.pauseRequested = false; });
             const errors = [];
             try { await this.subflows.resumeChildren(flow); } catch (error) { errors.push(error.message); }
-            const results = await Promise.allSettled(flow.instances.filter(item => ['stopped', 'interrupted'].includes(item.state)
+            const results = await Promise.allSettled(flow.instances.filter(item => item.state === 'paused'
                 && !isCoordinator(flow.graph.tasks.find(task => task.id === item.taskId)))
                 .map(item => this._resumeInstance(id, item.id, CONTINUE_PROMPT)));
             errors.push(...results.filter(item => item.status === 'rejected').map(item => item.reason.message));
@@ -317,15 +317,15 @@ export class RoboFlowService {
         await this.subflows.assertCanContinue(flow);
         const instance = flow.instances.find(item => item.id === instanceId);
         if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
-        if (!['stopped', 'interrupted', 'completed', 'failed'].includes(instance.state)) throw invalid('only a stopped, completed or failed phase can continue');
+        if (!['paused', 'completed', 'failed'].includes(instance.state)) throw invalid('only a paused, completed or failed phase can continue');
         const message = textField(prompt, 'prompt', 32768, false);
-        if (['stopped', 'interrupted', 'failed'].includes(instance.state) && !instance.startedAt
+        if (['paused', 'failed'].includes(instance.state) && !instance.startedAt
             && !isCoordinator(flow.graph.tasks.find(task => task.id === instance.taskId))) {
             this.bindings.delete(instance.runtimeTaskId);
             await this.store.update(id, current => {
                 const phase = current.instances.find(item => item.id === instanceId);
                 phase.state = 'queued'; phase.runtimeTaskId = null; phase.error = null; phase.endedAt = null;
-                current.currentInstanceId = instanceId; current.stopRequested = false; this._derive(current);
+                current.currentInstanceId = instanceId; current.pauseRequested = false; this._derive(current);
             });
             await this._dispatch(id, instanceId, message);
             return this.getFlow(id);
@@ -338,7 +338,7 @@ export class RoboFlowService {
             const visit = current.instances.find(item => item.id === instanceId);
             if (humanInputId) current.humanInput = { ...current.humanInput, status: 'answered', answer: message.slice('My answer to your question is: '.length), answeredAt: new Date().toISOString(), answeredBy };
             visit.runtimeTaskId = runtimeTaskId; visit.state = 'running'; visit.error = null; visit.endedAt = null;
-            current.status = deriveFlowStatus(current.instances); current.finishedAt = null; current.error = null; current.stopRequested = false;
+            current.status = deriveFlowStatus(current.instances); current.finishedAt = null; current.error = null; current.pauseRequested = false;
         });
         this.bindings.set(runtimeTaskId, { flowId: id, instanceId, manual: true });
         try {
@@ -362,7 +362,7 @@ export class RoboFlowService {
         if (!flow || flow.humanInput?.status === 'pending' || (terminal(flow.status) && !binding.manual)) return;
         const instance = flow.instances.find(item => item.id === binding.instanceId);
         if (!instance || terminal(instance.state)) return;
-        if (['stopped', 'interrupted'].includes(event.state)) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, event.state);
+        if (event.state === 'paused') return this._fail(flow.id, event.error || `Task ${instance.taskId} paused`, 'paused');
         if (event.state !== 'completed' || event.error) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, 'failed');
         await this.store.writeOutput(flow.id, instance.id, event.result || '', 'result');
         const node = flow.graph.tasks.find(task => task.id === instance.taskId);
@@ -404,9 +404,9 @@ export class RoboFlowService {
                     await this.store.update(flow.id, current => {
                         current.humanInput.executionEnded = true;
                         const phase = current.instances.find(item => item.id === visit.id);
-                        phase.state = 'stopped'; phase.endedAt = new Date().toISOString();
+                        phase.state = 'paused'; phase.endedAt = new Date().toISOString();
                         if (outputUnavailable) phase.outputUnavailable = true;
-                        current.status = 'stopped';
+                        current.status = 'paused';
                     });
                 }
                 return;
@@ -438,15 +438,15 @@ export class RoboFlowService {
                     && JSON.stringify(flow.humanInput.options) === JSON.stringify(options)) return { id: flow.humanInput.id };
                 throw invalid('A human-input question is already pending');
             }
-            if (flow.status !== 'running' || terminal(instance.state) || flow.stopRequested) throw invalid('This workflow execution is no longer active');
+            if (flow.status !== 'running' || terminal(instance.state) || flow.pauseRequested) throw invalid('This workflow execution is no longer active');
             const request = { id: crypto.randomUUID(), instanceId: instance.id, runtimeTaskId, question, options,
                 status: 'pending', executionEnded: false, createdAt: new Date().toISOString() };
             await this.store.update(flow.id, current => {
                 current.humanInput = request;
-                current.status = 'stopped'; current.finishedAt = request.createdAt; current.error = null;
+                current.status = 'paused'; current.finishedAt = request.createdAt; current.error = null;
                 const visit = current.instances.find(item => item.id === instance.id);
                 visit.startedAt ||= request.createdAt;
-                visit.state = 'stopped'; visit.endedAt = request.createdAt;
+                visit.state = 'paused'; visit.endedAt = request.createdAt;
             });
             return { id: request.id };
         });

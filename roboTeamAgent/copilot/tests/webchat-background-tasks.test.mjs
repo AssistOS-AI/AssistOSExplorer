@@ -54,7 +54,7 @@ test('remote task statuses map to the four WebChat states', () => {
     assert.equal(__testables.normalizeStatus('pending'), 'ongoing');
     assert.equal(__testables.normalizeStatus('running'), 'ongoing');
     assert.equal(__testables.normalizeStatus('completed'), 'finished');
-    assert.equal(__testables.normalizeStatus('cancelled'), 'stopped');
+    assert.equal(__testables.normalizeStatus('cancelled'), 'paused');
     assert.equal(__testables.normalizeStatus('failed'), 'error');
 });
 
@@ -197,8 +197,8 @@ test('AchillesCLI manager stops and continues tasks through agent commands', asy
             agentClientModule,
         });
         try {
-            const stopped = await manager.stopTask(ongoingId);
-            assert.equal(stopped.status, 'stopped');
+            const stopped = await manager.pauseTask(ongoingId);
+            assert.equal(stopped.status, 'paused');
             assert.equal(stopped.remoteStatus, 'cancelled');
 
             const continued = await manager.continueTask(finishedId, 'finish the tests');

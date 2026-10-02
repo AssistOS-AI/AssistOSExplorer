@@ -1,7 +1,7 @@
 import process from 'node:process';
 
 const TASK_POLL_INTERVAL_MS = Math.max(50, Math.min(5000, Number(process.env.ROBOTEAM_TASK_POLL_INTERVAL_MS) || 500));
-const FLOW_TERMINAL = new Set(['completed', 'failed', 'stopped', 'terminated']);
+const FLOW_TERMINAL = new Set(['completed', 'failed', 'paused', 'terminated']);
 const lifetime = new AbortController();
 process.once('SIGTERM', () => lifetime.abort());
 const FLOW_ID = /^flow_[0-9a-f]{24}$/;
@@ -64,8 +64,8 @@ async function startFlowUntilTerminal({ body, user }) {
     const cancelFlow = () => {
         if (terminating) return;
         terminating = true;
-        void request(`/api/roboflow/flows/${flowId}/stop`, { method: 'POST', user, ignoreCancellation: true })
-            .catch((error) => process.stderr.write(`Could not stop RoboFlow flow: ${error?.message || error}\n`))
+        void request(`/api/roboflow/flows/${flowId}/pause`, { method: 'POST', user, ignoreCancellation: true })
+            .catch((error) => process.stderr.write(`Could not pause RoboFlow flow: ${error?.message || error}\n`))
             .finally(() => process.exit(143));
     };
     process.once('SIGTERM', cancelFlow);
@@ -82,8 +82,8 @@ async function startFlowUntilTerminal({ body, user }) {
             if (flow.status === 'failed') {
                 throw new Error(String(flow.error || '').trim() || `RoboFlow task flow ended ${flow.status}`);
             }
-            return { outputText: String(flow.result || '').trim() || (['stopped', 'terminated'].includes(flow.status) ? `Workflow ${flow.status}.` : ''),
-                flowId, status: flow.status, taskStatus: ['stopped', 'terminated'].includes(flow.status) ? 'cancelled' : 'completed' };
+            return { outputText: String(flow.result || '').trim() || (['paused', 'terminated'].includes(flow.status) ? `Workflow ${flow.status}.` : ''),
+                flowId, status: flow.status, taskStatus: ['paused', 'terminated'].includes(flow.status) ? 'cancelled' : 'completed' };
         }
         await sleep(TASK_POLL_INTERVAL_MS);
     }
@@ -98,7 +98,7 @@ const expectedToolNames = {
     'start-flow': 'roboflow_start_flow',
     'flow-state': 'roboflow_flow_state',
     'generate-workflow': 'roboflow_generate_workflow',
-    'stop-flow': 'roboflow_stop_flow',
+    'pause-flow': 'roboflow_pause_flow',
 };
 
 async function main() {
@@ -124,9 +124,9 @@ async function main() {
     if (operation === 'generate-workflow') {
         return output(await request('/api/roboflow/generate', { method: 'POST', body: input, user, timeoutMs: 3600000 }));
     }
-    if (operation === 'stop-flow') {
+    if (operation === 'pause-flow') {
         if (!FLOW_ID.test(String(input.flowId || ''))) throw new Error('invalid task flow id');
-        return output(await request(`/api/roboflow/flows/${input.flowId}/stop`, { method: 'POST', user }));
+        return output(await request(`/api/roboflow/flows/${input.flowId}/pause`, { method: 'POST', user }));
     }
     throw new Error(`unsupported RoboFlow operation: ${operation}`);
 }

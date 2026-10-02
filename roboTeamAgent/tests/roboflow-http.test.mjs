@@ -52,12 +52,12 @@ test('HTTP stops a single phase and stops the whole flow with it', async t => {
     const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);
     const { flow } = await (await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example', objective: 'Work' })).json();
     const instanceId = flow.instances[0].id;
-    const stopped = await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/stop`, 'user', {});
-    assert.equal(stopped.status, 200);
-    const { flow: after } = await stopped.json();
-    assert.equal(after.status, 'stopped');
-    assert.equal(after.instances[0].state, 'stopped');
-    assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/instances/not-an-instance/stop`, 'user', {})).status, 404);
+    const paused = await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/pause`, 'user', {});
+    assert.equal(paused.status, 200);
+    const { flow: after } = await paused.json();
+    assert.equal(after.status, 'paused');
+    assert.equal(after.instances[0].state, 'paused');
+    assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/instances/not-an-instance/pause`, 'user', {})).status, 404);
 });
 test('HTTP messages and continues a single phase', async t => {    const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);
     const { flow } = await (await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example', objective: 'Work' })).json();
@@ -65,7 +65,7 @@ test('HTTP messages and continues a single phase', async t => {    const f = awa
     const message = await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/message`, 'user', { prompt: 'go' });
     assert.equal(message.status, 200);
     assert.equal((await message.json()).delivery, 'sent');
-    await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/stop`, 'user', {});
+    await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/pause`, 'user', {});
     const resume = await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/resume`, 'user', { prompt: 'again' });
     assert.equal(resume.status, 200);
     const { flow: after } = await resume.json();

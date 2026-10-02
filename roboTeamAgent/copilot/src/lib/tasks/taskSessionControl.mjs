@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { getTask, setTaskModel } from './workspaceTasks.mjs';
 
-const TERMINAL_STATUSES = new Set(['finished', 'stopped', 'error']);
+const TERMINAL_STATUSES = new Set(['finished', 'paused', 'error']);
 const LOGIN_OPERATIONS = new Set([
     'login_describe',
     'login_start',

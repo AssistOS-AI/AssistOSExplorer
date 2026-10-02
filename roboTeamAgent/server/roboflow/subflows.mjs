@@ -2,7 +2,7 @@ import { extractJson, parseRoute } from './result-parser.mjs';
 import { hasCreators, isCoordinator, invalid, textField, workflowCatalogEntry } from './graph.mjs';
 import { EXECUTION_TYPES } from './constants.mjs';
 
-const stopped = state => ['stopped', 'interrupted'].includes(state);
+const paused = state => state === 'paused';
 const finished = state => ['completed', 'failed', 'terminated'].includes(state);
 export const CONTINUE_PROMPT = 'Continue where you left off';
 
@@ -19,12 +19,12 @@ export class Subflows {
         const response = extractJson(output);
         const after = flow.graph.edges.find(item => item.id === response.afterWorkflowsEdgeId && item.sourceTaskId === edge.targetTaskId);
         if (!after) throw invalid('afterWorkflowsEdgeId must leave Run workflows');
-        if (!Array.isArray(response.workflows) || response.workflows.length < 1 || response.workflows.length > 100) throw invalid('Creator must choose 1 to 100 workflows');
+        if (!Array.isArray(response.workflows) || response.workflows.length < 1 || response.workflows.length > 100) throw invalid('A task that allows sub-flows must choose 1 to 100 workflows');
         const plans = [];
         for (const item of response.workflows) {
             if (!item || typeof item.workflowTypeId !== 'string') throw invalid('workflowTypeId is required');
             const graph = await this.service.registry.get(item.workflowTypeId);
-            if (!graph || hasCreators(graph) || graph.tasks.some(isCoordinator)) throw invalid('Child workflow must exist and contain no creators');
+            if (!graph || hasCreators(graph) || graph.tasks.some(isCoordinator)) throw invalid('Child workflow must exist and contain no tasks that allow sub-flows');
             if (graph.kind === 'default' ? !EXECUTION_TYPES.includes(item.executionType) : item.executionType !== undefined) throw invalid('executionType is required only for default child workflows');
             plans.push({ graph, objective: textField(item.prompt, 'child prompt', 32768, true),
                 ...(graph.kind === 'default' ? { executionType: item.executionType } : {}) });
@@ -59,7 +59,7 @@ export class Subflows {
     async reconcile(id) {
         const { store } = this.service;
         let flow = await store.get(id);
-        if (!flow || flow.stopRequested) return;
+        if (!flow || flow.pauseRequested) return;
         for (const visit of flow.instances.filter(item => item.childFlowIds?.length && item.creatorInstanceId && item.state !== 'completed')) {
             let children = await Promise.all(visit.childFlowIds.map(child => store.get(child)));
             if (children.some(child => !child)) throw new Error('Child workflow record is unavailable');
@@ -85,9 +85,9 @@ export class Subflows {
                 if (!edge) throw invalid('Saved continuation edge is unavailable');
                 await this.service._advance(id, visit.id, edge);
             } else {
-                const active = children.some(child => ['queued', 'starting', 'running', 'stopping'].includes(child.status));
+                const active = children.some(child => ['queued', 'starting', 'running', 'pausing'].includes(child.status));
                 const failed = children.find(child => ['failed', 'terminated'].includes(child.status));
-                const state = active ? 'running' : children.some(child => stopped(child.status)) ? 'stopped' : failed ? 'failed' : 'running';
+                const state = active ? 'running' : children.some(child => paused(child.status)) ? 'paused' : failed ? 'failed' : 'running';
                 const error = state === 'failed' ? `Sub-workflow ${failed.id} failed: ${failed.error || 'Execution failed'}` : null;
                 if (visit.state !== state || visit.error !== error) await store.update(id, current => {
                     const phase = current.instances.find(item => item.id === visit.id);
@@ -107,26 +107,26 @@ export class Subflows {
                 error: child.error, result: child.result || '' };
         }));
     }
-    async stopChildren(flow) {
+    async pauseChildren(flow) {
         const ids = flow.instances.filter(item => item.creatorInstanceId).flatMap(item => item.childFlowIds || []);
         await Promise.all(ids.map(async id => {
             const child = await this.service.store.get(id);
-            if (child && child.status !== 'pending' && !finished(child.status)) await this.service.stopFlow(id);
+            if (child && child.status !== 'pending' && !finished(child.status)) await this.service.pauseFlow(id);
         }));
     }
     async resumeChildren(flow) {
         const ids = [];
-        for (const visit of flow.instances.filter(item => item.creatorInstanceId && stopped(item.state))) {
+        for (const visit of flow.instances.filter(item => item.creatorInstanceId && paused(item.state))) {
             for (const id of visit.childFlowIds || []) {
                 const child = await this.service.store.get(id);
                 if (child?.status === 'completed') continue;
-                if (child && stopped(child.status)) ids.push(id);
+                if (child && paused(child.status)) ids.push(id);
                 break;
             }
         }
         const results = await Promise.allSettled(ids.map(async id => {
             const child = await this.service.store.get(id);
-            if (child && stopped(child.status)) await this.service.resumeFlow(id);
+            if (child && paused(child.status)) await this.service.resumeFlow(id);
         }));
         const errors = results.filter(item => item.status === 'rejected').map(item => item.reason.message);
         if (errors.length) throw new Error(errors.join('; '));
@@ -135,7 +135,7 @@ export class Subflows {
         if (flow.status === 'terminated') throw invalid('Terminated workflows cannot be continued');
         if (!flow.parentFlowId) return;
         const parent = await this.service.store.get(flow.parentFlowId);
-        if (!parent || parent.stopRequested) throw invalid('Resume the parent workflow before continuing this child');
+        if (!parent || parent.pauseRequested) throw invalid('Resume the parent workflow before continuing this child');
         // Previously dispatched parallel children cannot acquire a new execution order retroactively.
         if (!Object.hasOwn(flow, 'previousChildFlowId')) return;
         const visit = parent.instances.find(item => item.id === flow.parentInstanceId);
