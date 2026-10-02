@@ -1,16 +1,19 @@
+import { PUBLIC_BASE_PATH } from '../../../../server/constants.mjs';
 import { summarizeConversationSession } from '../storage/conversationSessionStore.mjs';
 
 const WEBCHAT_SESSION_VERSION = 1;
 
-export function createConversationSettingsAction(session, robot = process.env.ROBOTEAM_COPILOT_ROBOT_NAME) {
-    if (typeof robot !== 'string' || !robot.trim() || robot.trim().length > 80
-        || /[\x00-\x1f\x7f]/.test(robot) || !/^[a-f0-9-]{36}$/.test(session?.sessionId || '')) return undefined;
-    const query = new URLSearchParams({ 'copilot-robot': robot.trim(), 'copilot-session': session.sessionId });
-    return { label: 'Conversation skills', href: `/explorer/index.html?${query}#file-exp/` };
+// The action opens RoboTeam's own Conversation skills page for the saved conversation. The
+// link names only the robot id and the session id; the page resolves everything else, and a
+// conversation bound to another robot gets no link because the page would refuse it.
+export function createConversationSettingsAction(session, robotId = process.env.ROBOTEAM_COPILOT_ROBOT_ID) {
+    if (typeof robotId !== 'string' || !/^[a-z0-9][a-z0-9-]{2,63}$/.test(robotId) || !/^[a-f0-9-]{36}$/.test(session?.sessionId || '')) return undefined;
+    if (session.engine?.robotId && session.engine.robotId !== robotId) return undefined;
+    return { label: 'Conversation skills', href: `${PUBLIC_BASE_PATH}conversation-skills/${robotId}/${session.sessionId}` };
 }
 
 export function createCurrentSessionEnvelope(session, options = {}) {
-    const settingsAction = createConversationSettingsAction(session, options.robot);
+    const settingsAction = createConversationSettingsAction(session, options.robotId);
     return {
         __webchatSession: 1,
         version: WEBCHAT_SESSION_VERSION,
