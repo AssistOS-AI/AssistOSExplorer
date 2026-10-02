@@ -12,6 +12,7 @@ import { robotTerminalDirectory } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
 import { findProjectRecord } from './project-storage.mjs';
+import { matchConversationSkillsPath, readConversationSkills, setConversationSkill } from './conversation-skills-api.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 import { renderAlaTurnLog } from '../copilot/src/lib/webchat/webchatTurnLog.mjs';
 
@@ -397,7 +398,7 @@ export function createRoboTeamServer(options) {
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(res, publicDir, 'styles.css');
             if (['/workflow-editor.js', '/workflow-board.js', '/workflow-generator.js', '/workflow-editor.css',
                 '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js',
-                '/log-render.js', '/webchat-logs.js', '/summary.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
+                '/log-render.js', '/webchat-logs.js', '/summary.js', '/conversation-skills.js', '/conversation-skills-model.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
             if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(res, publicDir, 'skills-dialog.js');
             if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(res, publicDir, 'terminal.js');
@@ -415,6 +416,20 @@ export function createRoboTeamServer(options) {
                 const skill = await requiredHumanReportSkill(skillsets);
                 const content = await fs.promises.readFile(path.join(skill.sourcePath, 'SKILL.md'), 'utf8');
                 return sendJson(res, 200, { skills: [{ name: skill.name, description: skill.description, content, required: true, readOnly: true }] });
+            }
+
+            if ((pathname === '/conversation-skills' || pathname.startsWith('/conversation-skills/')) && req.method === 'GET') {
+                return servePage(res, publicDir, 'conversation-skills.html', publicBasePath);
+            }
+            const conversationSkills = matchConversationSkillsPath(pathname);
+            if (conversationSkills) {
+                if (!['GET', 'PATCH'].includes(req.method)) return sendError(res, 404, 'not found');
+                if (actor.internal) return sendError(res, 403, 'conversation skills require a signed-in user');
+                if (url.search) return sendError(res, 400, 'conversation skills requests take no query parameters');
+                const context = { robotStore, skillsets };
+                const catalog = req.method === 'GET' ? await readConversationSkills(context, conversationSkills)
+                    : await setConversationSkill(context, { ...conversationSkills, body: await readJsonBody(req) });
+                return sendJson(res, 200, { ok: true, robotId: conversationSkills.robotId, ...catalog });
             }
 
             const logsPage = pathname.match(/^\/webchat-logs\/([a-f0-9-]{36})\/([a-f0-9-]{36})$/);
