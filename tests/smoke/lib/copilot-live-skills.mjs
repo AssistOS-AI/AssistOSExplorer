@@ -49,17 +49,6 @@ export function liveSkillsPrompt({ phase, selected }) {
     return `Use each of these currently available skills for phase ${phase}: ${selected.map(skill => skill.name).join(', ')}. Read each selected skill's current instructions, run its adjacent receipt helper once as instructed, and report its current descriptor value and helper output. Discover the currently registered skill paths from the current catalog. Use cat to read the selected current SKILL.md and helper source files. If a directory listing is needed, use ls or ls -la only on the current skill catalog directory or a selected skill's directory. Use node to run each adjacent receipt helper with the phase UUID as its sole argument, as instructed by that skill. Use literal absolute paths and arguments; commands may be sequenced with &&. Use only these command forms for this check. Do not reuse values or helper paths from earlier turns. Do not create, copy, alter or remove any files yourself; only the selected helpers may write their own receipts. Do not invoke other skills. Finish this turn after reporting the values.`;
 }
 
-export function conversationFromSettingsURL(value, origin) {
-    const url = new URL(value, origin);
-    assert.equal(url.origin, new URL(origin).origin, 'Conversation settings escaped the selected application origin.');
-    assert.equal(url.pathname, '/explorer/index.html');
-    assert.deepEqual([...url.searchParams.keys()].sort(), ['copilot-robot', 'copilot-session']);
-    assert.equal(url.searchParams.get('copilot-robot'), 'default');
-    const sessionId = url.searchParams.get('copilot-session');
-    assert.match(sessionId, UUID, 'The browser must identify one actual conversation UUID.');
-    return sessionId;
-}
-
 export function policyEvidence(catalog, sessionId = null) {
     assert.equal(catalog.robot, 'default');
     assert.equal(catalog.scope, sessionId ? 'conversation' : 'defaults');

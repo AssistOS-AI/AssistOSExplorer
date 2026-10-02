@@ -18,7 +18,7 @@ function fixtureCase() {
     const entries = selected.map(skill => ({ name: skill.name, identity: `workspace:${fixture.folder}/.agents/skills/${skill.name}` }));
     return { fixture, workspaceRoot, sessionId, phase, selected, baselineIds: [], decisions: [], baseURL,
         browserURL: `${baseURL}/webchat?agent=roboTeamAgent&robot=default&workspace-dir=${fixture.folder}`,
-        settingsURL: `${baseURL}/explorer/index.html?copilot-robot=default&copilot-session=${sessionId}`,
+        settingsURL: `${baseURL}/base-agent-additional-server/roboTeamAgent/3001/conversation-skills/default-abc123/${sessionId}`,
         ui: { title: 'Codex permission request', detail: JSON.stringify(detail), options: [
             { id: `interaction-option-${interactionId}-0`, label: 'Deny', description: 'Decline this operation and continue the turn.' },
             { id: `interaction-option-${interactionId}-1`, label: 'Allow once', description: 'Approve this operation.' },

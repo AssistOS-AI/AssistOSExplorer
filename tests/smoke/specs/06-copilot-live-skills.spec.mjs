@@ -13,14 +13,21 @@ import { createReleaseGateFailureCollector } from '../lib/release-gate-failures.
 import { observeLiveSkillsBrowser, captureLiveSkillsFailure, liveSkillsDiagnosticText } from '../lib/copilot-live-skills-diagnostics.mjs';
 import { approveLiveSkillsRequest } from '../lib/copilot-live-skills-approval.mjs';
 import {
-    createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt, conversationFromSettingsURL,
+    createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt,
     isCompletedLiveSkillsTurn, validateLiveSkillsTurn, policyEvidence, liveSkillsHash, LIVE_SKILLS_TURN_TIMEOUT_MS,
 } from '../lib/copilot-live-skills.mjs';
 import { createLiveSkillsRuntimeReader } from '../lib/copilot-live-skills-runtime.mjs';
+import {
+    ROBOTEAM_BASE_PATH, conversationFromSkillsURL, roboTeamRobotId, openConversationSkills,
+    conversationSkillsState, setConversationSkill, refreshConversationSkills,
+} from '../lib/conversation-skills.mjs';
 
 const enabled = process.env.SMOKE_COPILOT_LIVE_SKILLS === '1';
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+// The conversation skill steps drive RoboTeam's Conversation skills page (WebChat menu), not an Explorer Settings tab.
+// Status: unexecuted until the deployment gate (D1/D2); Copilot-family flows are excluded from the 2026-10-02 post-merge acceptance.
+// This spec is also blocked on SET-2 (live-link evidence, registered-repository fixture and `.roboteam` session reader).
 // This gate deliberately submits exactly seven native turns. A failed completion is never retried.
 test.describe('Deployed Copilot live skills', () => {
     test.skip(!enabled, 'Opt in with SMOKE_COPILOT_LIVE_SKILLS=1 and exact host/release pins.');
@@ -46,6 +53,7 @@ test.describe('Deployed Copilot live skills', () => {
         page.context().on('page', observe);
         let copilot;
         let settings;
+        let defaultRobotId;
         let directoryCreated = false;
         let receiptDirectoryCreated = false;
         let sessionId;
@@ -75,50 +83,38 @@ test.describe('Deployed Copilot live skills', () => {
         }
         async function browserSessionId() {
             const href = await copilot.locator('#sessionSettingsLink').getAttribute('href');
-            return conversationFromSettingsURL(href, smokeConfig.baseURL);
+            return conversationFromSkillsURL(href, smokeConfig.baseURL, { robotId: defaultRobotId }).sessionId;
+        }
+        // The robot id lives on RoboTeam's API, so it is read from a short-lived page under the RoboTeam route.
+        async function resolveDefaultRobotId() {
+            page.context().off('page', observe);
+            const roboTeam = await page.context().newPage();
+            try {
+                await roboTeam.goto(new URL(ROBOTEAM_BASE_PATH, smokeConfig.baseURL).toString(), { waitUntil: 'domcontentloaded' });
+                return await roboTeamRobotId(roboTeam, 'default');
+            } finally {
+                await roboTeam.close();
+                page.context().on('page', observe);
+            }
         }
         async function unchangedPolicies() {
             assert.deepEqual(policyEvidence(await catalog(), null), defaultsBefore, 'Robot defaults changed.');
             assert.deepEqual(policyEvidence(await catalog(untouchedId), untouchedId), untouchedBefore, 'The other conversation policy changed.');
         }
-        async function currentModal() {
-            await expect(settings.locator('settings-modal')).toBeVisible();
-            await expect(settings.locator('#copilotSettingsStatus')).toContainText('Current selection loaded.');
-            await expect(settings.locator('#copilotSettingsStatus')).not.toHaveClass(/error/);
-            const state = await settings.locator('settings-modal').evaluate(element => {
-                const presenter = element.webSkelPresenter;
-                return { context: presenter.getCopilotContext(), loaded: presenter.state.copilotDataLoaded,
-                    policyVersion: presenter.state.copilotPolicyVersion, items: presenter.state.copilotItems };
-            });
-            assert.deepEqual(state.context, { robot: 'default', sessionId });
-            assert.equal(state.loaded, true);
-            return state;
-        }
         async function toggleProbe(value) {
             assert.equal(await browserSessionId(), sessionId);
-            if (!settings) {
-                await copilot.locator('#settingsBtn').click();
-                await expect(copilot.locator('#sessionSettingsLink')).toBeVisible();
-                const popup = page.context().waitForEvent('page');
-                await copilot.locator('#sessionSettingsLink').click();
-                settings = await popup;
-                await settings.waitForLoadState('domcontentloaded');
-            } else {
-                await settings.getByRole('button', { name: 'Refresh skills', exact: true }).click();
-            }
-            const before = await currentModal();
+            if (!settings) settings = await openConversationSkills(copilot);
+            else await refreshConversationSkills(settings);
+            const before = await conversationSkillsState(settings);
+            assert.equal(before.robotId, defaultRobotId);
+            assert.equal(before.sessionId, sessionId);
             const item = before.items.filter(entry => entry.name === fixture.probe.name);
             assert.equal(item.length, 1);
             assert.equal(item[0].identity, probeIdentity);
             assert.equal(item[0].enabled, !value);
-            const row = settings.locator('#copilotSettingsList .plugin-settings-row').filter({
-                has: settings.locator('.plugin-settings-key', { hasText: new RegExp(`^${fixture.probe.name}$`) }),
-            });
-            const button = row.locator('button[data-local-action^="toggleCopilotSkill "]');
-            await expect(button).toHaveAttribute('aria-pressed', String(!value));
-            await button.click();
-            await expect(button).toHaveAttribute('aria-pressed', String(value));
-            await expect.poll(async () => (await currentModal()).policyVersion).toBeGreaterThan(before.policyVersion);
+            const after = await setConversationSkill(settings, probeIdentity, value);
+            assert.ok(after.policyVersion > before.policyVersion);
+            assert.equal(after.items.filter(entry => entry.name === fixture.probe.name && entry.enabled === value).length, 1);
             const persisted = await catalog(sessionId);
             const selected = persisted.skills.filter(entry => entry.name === fixture.probe.name);
             assert.equal(selected.length, 1);
@@ -196,6 +192,7 @@ test.describe('Deployed Copilot live skills', () => {
             evidence.currentPhase = { label: 'setup', stage: 'Explorer and fixture setup' };
             await openExplorer(page);
             observe(page);
+            defaultRobotId = await resolveDefaultRobotId();
             const roots = (await fsTool('list_allowed_directories', {})).rawText || '';
             assert.ok(roots.split('\n').includes(workspaceRoot), 'Explorer is not serving the pinned Box workspace.');
             defaultsBefore = policyEvidence(await catalog());

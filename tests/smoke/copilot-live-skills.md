@@ -2,6 +2,8 @@
 
 `npm run test:copilot-live-skills` runs one Chromium test with one worker and no retries. It submits exactly seven native turns through one actual deployed Copilot conversation. Each turn has the existing 150 second completion limit. The whole test has a 25 minute limit and retains the ordinary Copilot gate's maximum 30 minute Box generation age.
 
+The disable and re-enable turns use RoboTeam's Conversation skills page (WebChat menu): the settings link of the WebChat menu opens `<RoboTeam base>conversation-skills/<robotId>/<sessionId>`, and the page changes only that conversation through `GET` and `PATCH <RoboTeam base>api/robots/<robotId>/conversations/<sessionId>/skills`. Explorer has no skill settings surface. The rewritten settings steps are unexecuted until the deployment gate (D1/D2); Copilot-family flows are excluded from the 2026-10-02 post-merge acceptance. The gate stays blocked on SET-2 (registered-repository fixture, live-link evidence and the `.roboteam` session reader); the offline checks run with `node --test lib/conversation-skills.test.mjs`.
+
 Run the command on the selected deployment host, beside its Podman engine and verified source checkouts. It works with the local Explorer Box and the public QA application. The Box URL is always the exact loopback Router publication on that same host. The application URL can be the local URL or `https://explorer-qa.axiologic.dev`.
 
 ```bash
@@ -24,8 +26,8 @@ For QA, run this same command on the QA host with the QA application URL and tha
 | Descriptor edit | Change only the probe descriptor value | Changed descriptor bytes/value with unchanged helper bytes/value |
 | Helper edit | Change only the probe helper value | Changed helper bytes/output with unchanged descriptor bytes/value |
 | Addition | Add a third skill through Explorer | Execute control and added skill; all three present in the captured catalog |
-| Disable | Disable the original probe through Conversation skills UI | Fresh control receipt, probe absent from the captured execution catalog, no new probe receipt |
-| Re-enable | Re-enable that probe through the same UI | Execute control and probe again |
+| Disable | Disable the original probe through RoboTeam's Conversation skills page (WebChat menu) | Fresh control receipt, probe absent from the captured execution catalog, no new probe receipt |
+| Re-enable | Re-enable that probe through the same page | Execute control and probe again |
 | Delete | Delete the probe source directory through Explorer | Fresh control receipt, probe absent from the captured catalog, no new probe receipt |
 
 Expected answers are random values written only in the skill source. Prompts contain skill names and a fresh public phase UUID. Each helper accepts that UUID, hashes its own bytes and writes its receipt with exclusive creation. The test never writes receipts. Native ALA maps the selected outer `<workspace-root>/<run-folder>` to native `/workspace`, so helpers write `/workspace/.receipts` while the observer reads `<workspace-root>/<run-folder>/.receipts`. The receipts include run/phase/skill identity, current helper value/hash, the actual executed helper path and creation time. The executed path must be the selected native `/workspace/.agents/skills/<name>/receipt.mjs` mount, so a copied helper cannot count. Previous receipts must remain unchanged.
@@ -42,4 +44,4 @@ The test reserves another real conversation through the browser's New action bef
 
 The artifact records sanitized identities, hashes, revisions and results. It omits native auth, environment values, raw session progress and model traces. Any browser error, failed turn, stale answer, missing receipt, identity change or cleanup failure fails the gate. Fixture source and receipts are removed from the run-owned Explorer folder after the native turn is idle; existing conversation history and runtime catalog retention follow the product's normal persistence policy. If cancellation cannot prove the failed native turn has stopped, cleanup fails and retains the uniquely named folder for diagnosis.
 
-This composed gate supplements the existing six native live-skills phases and deployed Conversation skills settings coverage. It does not replace those tests or the ordinary Copilot folder-launch gate. Offline adversarial checks run with `node --test lib/copilot-live-skills.test.mjs`; those checks validate the evidence rules and do not claim deployed execution passed.
+This composed gate supplements the existing six native live-skills phases and deployed Conversation skills settings coverage on RoboTeam's page. It does not replace those tests or the ordinary Copilot folder-launch gate. Offline adversarial checks run with `node --test lib/copilot-live-skills.test.mjs`; those checks validate the evidence rules and do not claim deployed execution passed.

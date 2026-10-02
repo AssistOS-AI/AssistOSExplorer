@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { conversationFromSettingsURL, liveSkillSources, liveSkillsPrompt, liveSkillsHash, liveSkillsWorkspace } from './copilot-live-skills.mjs';
+import { liveSkillSources, liveSkillsPrompt, liveSkillsHash, liveSkillsWorkspace } from './copilot-live-skills.mjs';
+import { conversationFromSkillsURL } from './conversation-skills.mjs';
 
 function literalTokens(command) {
     assert.ok(typeof command === 'string' && command.length > 0 && command.length <= 4096, 'Invalid approval command length.');
@@ -60,7 +61,7 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
     // Observer evidence uses the admitted outer root. The approval request itself is in the ALA-native /workspace namespace.
     const workspace = liveSkillsWorkspace(workspaceRoot, fixture.folder);
     assert.equal(fixture.workspace, workspace, 'The fixture is not under the admitted workspace root.');
-    assert.equal(conversationFromSettingsURL(settingsURL, baseURL), sessionId, 'Approval changed browser conversation.');
+    assert.equal(conversationFromSkillsURL(settingsURL, baseURL).sessionId, sessionId, 'Approval changed browser conversation.');
     const url = new URL(browserURL);
     assert.equal(url.origin, new URL(baseURL).origin);
     assert.equal(url.pathname, '/webchat');

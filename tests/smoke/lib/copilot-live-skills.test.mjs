@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
-    createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt, conversationFromSettingsURL,
+    createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt,
     isCompletedLiveSkillsTurn, validateLiveSkillsTurn, policyEvidence, liveSkillsHash,
 } from './copilot-live-skills.mjs';
 import { validateLiveSkillsRuntimeBinding } from './copilot-live-skills-runtime.mjs';
@@ -193,16 +193,6 @@ test('pending polling never treats a previous completed assistant as a new nativ
     assert.equal(isCompletedLiveSkillsTurn(input.snapshot, [input.snapshot.session.messages[1].id]), false);
     input.snapshot.session.messages[1].status = 'pending';
     assert.equal(isCompletedLiveSkillsTurn(input.snapshot, []), false);
-});
-
-test('settings links bind one browser UUID to the selected application and default robot', () => {
-    const id = randomUUID();
-    const url = `/explorer/index.html?copilot-robot=default&copilot-session=${id}#file-exp/`;
-    assert.equal(conversationFromSettingsURL(url, 'http://127.0.0.1:8088'), id);
-    for (const invalid of [url.replace('default', 'other'), url.replace(id, 'bad'), `https://other.example${url}`]) {
-        assert.throws(() => conversationFromSettingsURL(invalid, 'http://127.0.0.1:8088'));
-    }
-    assert.throws(() => conversationFromSettingsURL(url.replace('#', '&dir=other#'), 'http://127.0.0.1:8088'));
 });
 
 function runtimeFixture(root = ROOT) {
