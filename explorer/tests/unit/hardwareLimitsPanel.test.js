@@ -317,3 +317,18 @@ test('a successful poll arriving during edits preserves the current input DOM', 
     presenter.edit({ dataset: { hardwareField: 'cpus', agentIndex: '0' }, value: '2.25' });
     assert.equal(presenter.drafts.get(ref).cpus, '2.25');
 });
+
+for (const error of [new Error('Network unavailable'), new HardwareLimitsError({ error: 'store_unreadable', message: 'Store unreadable' }, 503)]) {
+    test(`a failed poll preserves dirty input DOM while displaying ${error.message}`, async () => {
+        let fail;
+        const presenter = panel({ read: () => new Promise((_resolve, reject) => { fail = reject; }) });
+        let renders = 0; const notice = { textContent: '', hidden: true };
+        presenter.content = { set innerHTML(_) { renders += 1; }, querySelector: () => notice };
+        const request = presenter.refresh();
+        presenter.edit({ dataset: { hardwareField: 'cpus', agentIndex: '0' }, value: '2' });
+        fail(error); await request;
+        assert.equal(renders, 0); assert.equal(notice.textContent, error.message); assert.equal(notice.hidden, false);
+        presenter.edit({ dataset: { hardwareField: 'cpus', agentIndex: '0' }, value: '2.25' });
+        assert.equal(presenter.drafts.get(ref).cpus, '2.25');
+    });
+}

@@ -27,7 +27,7 @@ export function renderHardwareLimits(snapshot, drafts, { busy = false, error = '
     return `<div class="hardware-limits-toolbar"><div><strong>Hardware limits</strong><p class="hardware-limits-facts">Gate ${escapeHtml(snapshot.gate?.state || 'unknown')}; ${snapshot.gate?.prepared === true ? 'prepared' : 'preparation unverified'}. Envelope ${escapeHtml(snapshot.envelope?.cpus ?? 'unknown')} CPU cores / ${escapeHtml(formatBytes(snapshot.envelope?.memoryBytes))}. Controllers: ${escapeHtml((snapshot.gate?.controllers || []).join(', ') || 'none observed')}.</p></div><div class="hardware-policy-actions"><button class="gray-button" type="button" data-hardware-action="refresh"${disabled}>Refresh</button><button class="general-button" type="button" data-hardware-action="apply-all"${disabled}>Apply all pending</button></div></div>
         <p>Saving changes desired policy. Apply recreates exact instances. CPU and RAM limits use kernel controllers. RAM and GPU percentages are whole numbers from 1 to 100. GPU VRAM percentage uses physical device memory; applied rows show the resolved bytes per CUDA process. Empty fields inherit declared limits; Clear override restores all declared values.</p>
         <p class="hardware-limits-facts">GPU ${escapeHtml(snapshot.gpu?.mode || 'unavailable')} (${escapeHtml(snapshot.gpu?.assurance || 'none')}). ${gpuEnabled ? '' : escapeHtml(snapshot.gpu?.fix || snapshot.gpu?.reason || 'GPU editing requires a verified eligible NVIDIA backend.')}</p>
-        ${error ? `<p class="hardware-limits-error" role="status">${escapeHtml(error)}</p>` : ''}
+        <p class="hardware-limits-error" data-role="hardware-error" role="status"${error ? '' : ' hidden'}>${escapeHtml(error)}</p>
         ${results ? `<div role="status"><strong>Apply results</strong>${results.length ? results.map((result) => `<p>${escapeHtml(result.key || result.containerName || '')}${result.observedKey && result.observedKey !== result.key ? ` (observed ${escapeHtml(result.observedKey)})` : ''}: ${escapeHtml(result.state || result.status || (result.ok ? 'completed' : 'unavailable'))} ${escapeHtml(result.message || describeProblem({ availability: result.state, problem: result.problem }))} ${escapeHtml(result.fix || '')}</p>`).join('') : '<p>No instances changed.</p>'}${expandedContainers.length ? `<p>Coordinated instances: ${expandedContainers.map(escapeHtml).join(', ')}</p>` : ''}${pendingContainers.length ? `<p>Still pending: ${pendingContainers.map(escapeHtml).join(', ')}</p>` : ''}</div>` : ''}
         ${agents.length ? agents.map((agent, index) => {
         const draft = drafts.get(agent.ref);
@@ -121,6 +121,11 @@ export class HardwareLimitsPanel {
             this.element.dispatchEvent(new CustomEvent('hardware-limits-access-denied', { bubbles: true }));
         }
         this.error = `${error?.message || 'Hardware limits are unavailable.'}${error?.fix ? ` ${error.fix}` : ''}`;
+        if (this.snapshot && [...this.drafts.values()].some((draft) => draft.dirty)) {
+            const status = this.content?.querySelector?.('[data-role="hardware-error"]');
+            if (status) { status.textContent = this.error; status.hidden = false; }
+            return;
+        }
         this.render();
     }
 

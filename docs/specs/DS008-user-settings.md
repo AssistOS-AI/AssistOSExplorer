@@ -43,7 +43,7 @@ Hardware limits is a separate editable administrator tab; Administration remains
 
 Save compares a fresh policy token with the token observed when the draft began. A changed token prevents the mutation and marks the draft for review. Review and save sends the refreshed token only after an explicit subsequent action. Every mutation obtains a fresh session/origin proof, with one fresh-proof retry for the Router's CSRF rejection. The panel hides access after 401, 403 or not_in_box, while an authorized store failure remains visible. Background reads pause while a draft is dirty; Refresh preserves its values. Closing Settings aborts pending reads and mutations and ignores late replies. Mutation and authority-loss generations invalidate older reads. Partial HTTP 207 results and partial conflict errors retain individual applied/refused/blocked/pending outcomes, coordinated exact keys and remaining pending keys before the authoritative state reload.
 
-Each exact-instance row shows its profile-specific desired limits beside applied values. A successful polling reply received during unsaved edits is deferred so it cannot replace the focused input. Authorization failures still remove editor access immediately.
+Each exact-instance row shows its profile-specific desired limits beside applied values. A successful polling reply received during unsaved edits is deferred so it cannot replace the focused input. Background read failures update the error notice without replacing edited inputs. Authorization failures still remove editor access immediately.
 
 ## Conclusion
 
