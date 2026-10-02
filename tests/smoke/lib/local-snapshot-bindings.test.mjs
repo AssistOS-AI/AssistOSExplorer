@@ -3,13 +3,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { collectLocalSnapshotSourceBindings } from './local-snapshot-bindings.mjs';
+import { spawnSync } from 'node:child_process';
+import { activeRuntimeProbe, collectLocalSnapshotSourceBindings, inside, overlaps } from './local-snapshot-bindings.mjs';
 
 const hash = character => character.repeat(64);
 const bind = (Source, Destination, RW = false) => ({ Type: 'bind', Source, Destination, RW });
 
-function fixture(t) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'snapshot-bindings-')));
+// The Box mounts the workspace at its own host path, so every runtime path below is the host path itself.
+function fixture(t, prefix = 'snapshot-bindings-') {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const repositories = {
     ploinky: { repositoryPath: path.join(root, 'ploinky'), treeSha256: hash('9') },
@@ -26,7 +28,7 @@ function fixture(t) {
   for (const [name, dir] of [['explorer', 'explorer'], ['achillesCLI', 'achilles-cli']]) {
     const repositoryPath = path.join(root, '.ploinky/repos', name);
     const source = path.join(repositoryPath, dir);
-    const runtimeSource = `/workspace/.ploinky/repos/${name}/${dir}`;
+    const runtimeSource = source;
     const staging = path.join(root, '.ploinky/container-runtime', name);
     const code = path.join(staging, 'code');
     fs.mkdirSync(source, { recursive: true });
@@ -35,7 +37,7 @@ function fixture(t) {
     fs.symlinkSync(`${runtimeSource}/index.mjs`, path.join(code, 'index.mjs'));
     fs.cpSync(agentSource, path.join(staging, 'Agent'), { recursive: true });
     // Production staged node_modules resolves through a separate self mount.
-    const dependencies = `/workspace/.ploinky/cache/${name}/node_modules`;
+    const dependencies = `${root}/.ploinky/cache/${name}/node_modules`;
     fs.symlinkSync(dependencies, path.join(code, 'node_modules'));
     fs.symlinkSync(dependencies, path.join(staging, 'Agent/node_modules'));
     repositories[name] = { repositoryPath, treeSha256: hash('a') };
@@ -49,16 +51,16 @@ function fixture(t) {
     containers.push({ id: containerId, running: true, mounts: [
       bind(runtimeSource, runtimeSource),
       bind('/opt/ploinky-agentlib', '/opt/ploinky-agentlib'),
-      bind(`/workspace/.ploinky/container-runtime/${name}/code`, '/code'),
-      bind(`/workspace/.ploinky/container-runtime/${name}/Agent`, '/Agent'),
+      bind(`${root}/.ploinky/container-runtime/${name}/code`, '/code'),
+      bind(`${root}/.ploinky/container-runtime/${name}/Agent`, '/Agent'),
       bind(dependencies, dependencies),
     ] });
   }
   const outerMounts = [
-    bind(root, '/workspace', true),
+    bind(root, root, true),
     bind(repositories.ploinky.repositoryPath, '/opt/ploinky'),
     bind(repositories.achillesAgentLib.repositoryPath, '/opt/ploinky-agentlib'),
-    bind(repositories.achillesAgentLib.repositoryPath, '/workspace/achillesAgentLib'),
+    bind(repositories.achillesAgentLib.repositoryPath, repositories.achillesAgentLib.repositoryPath),
     bind(path.join(root, '.ploinky/box/dependencies'), '/opt/ploinky/node_modules', true),
   ];
   const calls = [];
@@ -106,8 +108,21 @@ test('snapshot binds the verified active route, exact container, shared library 
   assert.equal('generation' in result, false);
   const probes = f.calls.filter(args => args.includes('node'));
   assert.equal(probes.length, 2);
-  assert.match(probes[0].at(-1), /loadActiveEdgeRoutingGeneration\(\{ workspaceRoot: '\/workspace' \}\)/);
+  // The admitted root reaches the in-Box probe as one JSON string literal, never as the retired /workspace alias.
+  assert.ok(probes[0].at(-1).includes(`const workspaceRoot = ${JSON.stringify(f.root)};`));
+  assert.match(probes[0].at(-1), /loadActiveEdgeRoutingGeneration\(\{ workspaceRoot \}\)/);
+  assert.doesNotMatch(probes[0].at(-1), /'\/workspace'/);
   assert.doesNotMatch(probes[0].at(-1), /JSON\.stringify\(generation\)/);
+});
+
+test('primary: a canonical same-path workspace containing a space and Unicode is accepted end to end', t => {
+  const f = fixture(t, 'fresh workspace ü ');
+  assert.match(f.root, / ü /);
+  const result = collect(f);
+  assert.equal(result.explorer.active, true);
+  assert.equal(result.explorer.runtimeSource, path.join(f.root, '.ploinky/repos/explorer/explorer'));
+  assert.equal(result.explorer.codeRoot, path.join(f.root, '.ploinky/container-runtime/explorer/code'));
+  assert.equal(result.achillesAgentLib.source, path.join(f.root, 'achillesAgentLib'));
 });
 
 test('the active-generation probe carries the exact selected Router and media host ports verified in the live Box', t => {
@@ -154,18 +169,18 @@ test('the active container wins even when an unrelated running container mounts 
 
 test('the shipped Explorer repository-parent self mount preserves the verified source', t => {
   const f = fixture(t);
-  const mount = bind('/workspace/.ploinky/repos', '/workspace/.ploinky/repos', true);
+  const mount = bind(`${f.root}/.ploinky/repos`, `${f.root}/.ploinky/repos`, true);
   f.containers[0].mounts.push(mount);
   assert.equal(collect(f).explorer.active, true);
-  mount.Source = '/workspace/other-repos';
+  mount.Source = `${f.root}/other-repos`;
   assert.throws(() => collect(f), /mount shadowing/);
 });
 
 test('a global CLI workspace self mount preserves its exact source binding', t => {
   const f = fixture(t);
-  f.containers[1].mounts.push(bind('/workspace', '/workspace', true));
+  f.containers[1].mounts.push(bind(f.root, f.root, true));
   assert.equal(collect(f).achillesCLI.active, true);
-  f.containers[1].mounts.at(-1).Source = '/other-workspace';
+  f.containers[1].mounts.at(-1).Source = `${f.root}-other`;
   assert.throws(() => collect(f), /mount shadowing/);
 });
 
@@ -175,12 +190,12 @@ test('prepared dependency mount must be read-only and cannot contain shadow moun
   dependency.RW = true;
   assert.throws(() => collect(f), /exact verified read-only/);
   dependency.RW = false;
-  f.containers[0].mounts.push(bind('/workspace/other', `${dependency.Destination}/package.mjs`));
+  f.containers[0].mounts.push(bind(`${f.root}/other`, `${dependency.Destination}/package.mjs`));
   assert.throws(() => collect(f), /mount shadowing/);
 });
 
 for (const [label, mutate] of [
-  ['wrong host source', f => { f.active.bindings.explorer.route.hostPath = '/workspace/other/explorer'; }],
+  ['wrong host source', f => { f.active.bindings.explorer.route.hostPath = `${f.root}/other/explorer`; }],
   ['wrong captured repo', f => { f.active.bindings.explorer.record.repoName = 'other'; }],
   ['wrong captured agent', f => { f.active.bindings.explorer.record.agentName = 'other'; }],
   ['wrong alias', f => { f.active.bindings.explorer.record.alias = 'other'; }],
@@ -266,19 +281,28 @@ for (const field of ['generation', 'activationId']) {
   });
 }
 
-for (const destination of ['/code/index.mjs', '/code/node_modules', '/Agent/index.mjs', '/Agent/node_modules', '/opt', '/opt/ploinky-agentlib/lib.mjs', '/workspace/.ploinky/repos/explorer', '/workspace/.ploinky/repos/explorer/explorer/index.mjs']) {
-  test(`inner mount shadow is rejected at ${destination}`, t => {
+for (const relative of ['/code/index.mjs', '/code/node_modules', '/Agent/index.mjs', '/Agent/node_modules', '/opt', '/opt/ploinky-agentlib/lib.mjs', '<root>/.ploinky/repos/explorer', '<root>/.ploinky/repos/explorer/explorer/index.mjs']) {
+  test(`inner mount shadow is rejected at ${relative}`, t => {
     const f = fixture(t);
-    f.containers[0].mounts.push(bind('/workspace/substitute', destination));
+    const destination = relative.replace('<root>', f.root);
+    f.containers[0].mounts.push(bind(`${f.root}/substitute`, destination));
     assert.throws(() => collect(f), /mount shadowing/);
   });
 }
 
-for (const destination of ['/opt', '/opt/ploinky/cli', '/opt/ploinky/Agent/index.mjs', '/opt/ploinky/node_modules/extra', '/workspace/.ploinky', '/workspace/.ploinky/repos/explorer/explorer/index.mjs', '/workspace/.ploinky/container-runtime/explorer/Agent/index.mjs']) {
-  test(`outer mount shadow is rejected at ${destination}`, t => {
+for (const relative of ['/opt', '/opt/ploinky/cli', '/opt/ploinky/Agent/index.mjs', '/opt/ploinky/node_modules/extra', '<root>/.ploinky', '<root>/.ploinky/repos/explorer/explorer/index.mjs', '<root>/.ploinky/container-runtime/explorer/Agent/index.mjs']) {
+  test(`outer mount shadow is rejected at ${relative}`, t => {
     const f = fixture(t);
-    f.outerMounts.push(bind(f.root, destination));
+    const destination = relative.replace('<root>', f.root);
+    // A foreign source shadows the verified path; the workspace source itself is covered by the alias test below.
+    f.outerMounts.push(bind(`${f.root}-foreign`, destination));
     assert.throws(() => collect(f), /mount shadowing/);
+  });
+
+  test(`an outer alias of the workspace source at ${relative} is rejected`, t => {
+    const f = fixture(t);
+    f.outerMounts.push(bind(f.root, relative.replace('<root>', f.root)));
+    assert.throws(() => collect(f), /another alias of its workspace source/);
   });
 }
 
@@ -320,7 +344,7 @@ test('missing /Agent mount, writable AgentLib, and substituted code are rejected
 
 test('a same-commit alternate mount and a symlinked staging directory are rejected', t => {
   const f = fixture(t);
-  f.containers[0].mounts[0].Source = '/workspace/other/explorer';
+  f.containers[0].mounts[0].Source = `${f.root}/other/explorer`;
   assert.throws(() => collect(f), /exact verified source mount/);
   f.containers[0].mounts[0].Source = f.containers[0].mounts[0].Destination;
   const stage = path.join(f.root, '.ploinky/container-runtime/explorer/Agent');
@@ -328,3 +352,107 @@ test('a same-commit alternate mount and a symlinked staging directory are reject
   fs.symlinkSync(`${stage}-other`, stage);
   assert.throws(() => collect(f), /runtime staging is not a real workspace directory/);
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Same-path workspace policy: exact outer root, strict nested mounts, lexical and canonical containment.
+// ---------------------------------------------------------------------------------------------------------
+for (const [name, mutate, message] of [
+  ['a retired /workspace alias', f => { f.outerMounts[0] = bind(f.root, '/workspace', true); }, /exactly one .* source mount/],
+  ['a missing root bind', f => { f.outerMounts.splice(0, 1); }, /exactly one .* source mount/],
+  ['a duplicate root bind', f => { f.outerMounts.push(bind(f.root, f.root, true)); }, /exactly one .* source mount/],
+  ['a read-only root bind', f => { f.outerMounts[0].RW = false; }, /writable bind/],
+  ['a root bind sourced from a prefix-lookalike directory', f => { f.outerMounts[0].Source = `${f.root}-evil`; }, /source does not equal its destination/],
+  ['a second alias of the workspace source', f => { f.outerMounts.push(bind(f.root, '/srv/alias', true)); }, /another alias of its workspace source/],
+  ['a volume instead of a bind', f => { f.outerMounts[0].Type = 'volume'; }, /absolute writable bind/],
+]) {
+  test(`the exact outer root proof rejects ${name}`, t => {
+    const f = fixture(t, 'fresh workspace ü ');
+    mutate(f);
+    assert.throws(() => collect(f), message);
+  });
+}
+
+test('an unclean admitted root is rejected before any inspection command runs', t => {
+  for (const prefix of ['fresh:workspace ', 'fresh\nworkspace ', 'fresh\\workspace ']) {
+    const f = fixture(t, prefix);
+    assert.throws(() => collect(f), /clean absolute host path/, JSON.stringify(prefix));
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test('verified sources must lie inside the admitted root, lexically and canonically', t => {
+  const f = fixture(t, 'fresh workspace ü ');
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'snapshot-outside-')));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(outside, 'explorer'));
+  const repository = f.options.repositories.explorer.repositoryPath;
+  const original = repository;
+  // A prefix-lookalike sibling of the root is not inside it.
+  const lookalike = `${f.root}-evil/explorer-repo`;
+  fs.mkdirSync(path.join(lookalike, 'explorer'), { recursive: true });
+  t.after(() => fs.rmSync(`${f.root}-evil`, { recursive: true, force: true }));
+  f.options.repositories.explorer.repositoryPath = lookalike;
+  assert.throws(() => collect(f), /outside the inspected workspace/);
+  f.options.repositories.explorer.repositoryPath = outside;
+  assert.throws(() => collect(f), /outside the inspected workspace/);
+  // A source directory that is a symlink to an outside tree resolves outside the root.
+  fs.rmSync(path.join(original, 'explorer'), { recursive: true });
+  fs.symlinkSync(path.join(outside, 'explorer'), path.join(original, 'explorer'));
+  f.options.repositories.explorer.repositoryPath = original;
+  assert.throws(() => collect(f), /outside the inspected workspace/);
+  // The AgentLib source follows the same rule.
+  const g = fixture(t, 'fresh workspace ü ');
+  g.options.repositories.achillesAgentLib.repositoryPath = outside;
+  g.outerMounts[2].Source = outside;
+  assert.throws(() => collect(g), /outside the inspected workspace/);
+});
+
+for (const [name, mutate, message] of [
+  ['a /code staged outside the admitted root', f => { f.containers[0].mounts[2].Source = `${f.root}-evil/.ploinky/container-runtime/explorer/code`; }, /unverified runtime mount at \/code/],
+  ['a /code outside the container-runtime staging root', f => { f.containers[0].mounts[2].Source = `${f.root}/.ploinky/other/code`; }, /unverified runtime mount at \/code/],
+  ['an /Agent staged outside the admitted root', f => { f.containers[0].mounts[3].Source = `${f.root}-evil/.ploinky/container-runtime/explorer/Agent`; }, /unverified runtime mount at \/Agent/],
+  ['a duplicated source bind', f => { f.containers[0].mounts.push(structuredClone(f.containers[0].mounts[0])); }, /exact verified source mount/],
+  ['a source bind sourced from a foreign directory', f => { f.containers[0].mounts[0].Source = `${f.root}-evil/explorer`; }, /exact verified source mount/],
+  ['a foreign source mounted at /code', f => { f.containers[0].mounts.push(bind(`${f.root}/foreign`, '/code')); }, /unverified runtime mount at \/code/],
+  ['a dependency tree outside the admitted root', f => { fs.rmSync(path.join(f.root, '.ploinky/container-runtime/explorer/code/node_modules')); fs.symlinkSync(`${f.root}-evil/.ploinky/cache/explorer/node_modules`, path.join(f.root, '.ploinky/container-runtime/explorer/code/node_modules')); fs.rmSync(path.join(f.root, '.ploinky/container-runtime/explorer/Agent/node_modules')); fs.symlinkSync(`${f.root}-evil/.ploinky/cache/explorer/node_modules`, path.join(f.root, '.ploinky/container-runtime/explorer/Agent/node_modules')); }, /do not share the prepared workspace dependency tree/],
+]) {
+  test(`inner mounts reject ${name}`, t => {
+    const f = fixture(t, 'fresh workspace ü ');
+    mutate(f);
+    assert.throws(() => collect(f), message);
+  });
+}
+
+test('legitimate nested binds are accepted: the read-only controller pin and the controller data guard', t => {
+  const f = fixture(t, 'fresh workspace ü ');
+  const pin = bind(`${f.root}/.ploinky`, `${f.root}/.ploinky`, false);
+  f.containers[0].mounts.push(pin, bind('/tmp/ploinky-runtime-guards/0123456789abcdef01234567/data', `${f.root}/.ploinky/data`, false));
+  assert.equal(collect(f).explorer.active, true);
+  // The same destinations sourced from anywhere else are hostile shadows of the verified source tree.
+  pin.Source = `${f.root}/foreign`;
+  assert.throws(() => collect(f), /mount shadowing/);
+});
+
+test('root and path helpers treat the filesystem root and prefix-lookalikes exactly', () => {
+  assert.equal(inside('/', '/anything'), true);
+  assert.equal(inside('/srv/a', '/srv/a'), true);
+  assert.equal(inside('/srv/a', '/srv/a/b'), true);
+  assert.equal(inside('/srv/a', '/srv/ab'), false);
+  assert.equal(overlaps('/', '/srv/a'), true);
+  assert.equal(overlaps('/srv/a/b', '/srv/a'), true);
+  assert.equal(overlaps('/srv/ab', '/srv/a'), false);
+});
+
+for (const root of ["/srv/it's $HOME `x` ${y} \"q\"", '/Volumes/Ünïcode ws/ñ 数据 café', '/srv/fresh workspace']) {
+  test(`the in-Box probe carries ${JSON.stringify(root)} as one JSON string literal and parses`, t => {
+    const text = activeRuntimeProbe(root);
+    assert.ok(text.includes(`const workspaceRoot = ${JSON.stringify(root)};`));
+    assert.ok(!text.includes('/workspace'));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-'));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const file = path.join(directory, 'probe.mjs');
+    fs.writeFileSync(file, text);
+    const check = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
+    assert.equal(check.status, 0, check.stderr);
+  });
+}

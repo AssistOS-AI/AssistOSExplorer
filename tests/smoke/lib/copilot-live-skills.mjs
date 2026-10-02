@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
+import path from 'node:path';
+
+import { assertBoxWorkspacePath } from './box-workspace.mjs';
 
 export const LIVE_SKILLS_TURN_TIMEOUT_MS = 150_000;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -10,22 +13,31 @@ export function liveSkillsHash(value) {
     return createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex');
 }
 
-export function createLiveSkillsFixture() {
+// The Box mounts the workspace at its own host path, so the observer-visible fixture
+// folder lives under the admitted root. Only the ALA-native namespace is always /workspace.
+export function liveSkillsWorkspace(workspaceRoot, folder) {
+    assert.match(folder, /^copilot-live-skills-[0-9a-f-]{36}$/);
+    return path.posix.join(assertBoxWorkspacePath(workspaceRoot), folder);
+}
+
+export function createLiveSkillsFixture(workspaceRoot) {
     const runId = randomUUID();
     const folder = `copilot-live-skills-${runId}`;
     const prefix = `live-${runId.slice(0, 8)}`;
     const make = (role) => ({ name: `${prefix}-${role}`, descriptorMarker: randomUUID(), helperMarker: randomUUID() });
-    return { runId, folder, workspace: `/workspace/${folder}`, control: make('control'), probe: make('probe'), added: make('added') };
+    return { runId, folder, workspace: liveSkillsWorkspace(workspaceRoot, folder), control: make('control'), probe: make('probe'), added: make('added') };
 }
 
-export function liveSkillSources(fixture, skill) {
+export function liveSkillSources(fixture, skill, workspaceRoot) {
     assert.match(fixture.runId, UUID);
-    assert.equal(fixture.workspace, `/workspace/copilot-live-skills-${fixture.runId}`);
+    assert.equal(fixture.folder, `copilot-live-skills-${fixture.runId}`);
+    assert.equal(fixture.workspace, liveSkillsWorkspace(workspaceRoot, fixture.folder), 'The fixture is not under the admitted workspace root.');
     assert.match(skill.name, /^live-[a-f0-9]{8}-(control|probe|added)$/);
     assert.match(skill.descriptorMarker, UUID);
     assert.match(skill.helperMarker, UUID);
     const descriptor = `---\nname: ${skill.name}\ndescription: Run the explicit live skills conversation check and produce its fresh receipt.\n---\n\nUse this skill only when named in the current request. The request supplies a phase UUID. Run the receipt.mjs helper adjacent to this SKILL.md with Node.js, passing that UUID as its sole argument. Run the helper exactly once. Use the helper from the currently selected skill catalog. Never write or edit receipts yourself. Report the helper's output and this descriptor value verbatim: ${skill.descriptorMarker}\n`;
-    // ALA binds the selected outer folder as native /workspace. Only the observer uses fixture.workspace.
+    // ALA binds the selected outer folder as native /workspace. Only the observer uses fixture.workspace
+    // under the admitted root; the helper source never contains the outer root.
     // The phase is a public challenge. Values used as answers exist only in the descriptor/helper source.
     const helper = `import { createHash } from 'node:crypto';\nimport { readFileSync, writeFileSync } from 'node:fs';\nimport { fileURLToPath } from 'node:url';\nconst phase = process.argv[2];\nif (!${UUID}.test(phase || '') || process.argv.length !== 3) throw new Error('Pass one phase UUID');\nconst marker = ${JSON.stringify(skill.helperMarker)};\nconst receipt = { version: 1, runId: ${JSON.stringify(fixture.runId)}, phase, skill: ${JSON.stringify(skill.name)}, marker, executedPath: fileURLToPath(import.meta.url), helperSha256: createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).digest('hex'), createdAt: new Date().toISOString(), pid: process.pid };\nwriteFileSync(${JSON.stringify('/workspace/.receipts/')} + phase + '-' + receipt.skill + '.json', JSON.stringify(receipt) + '\\n', { flag: 'wx', mode: 0o600 });\nconsole.log(marker);\n`;
     return { descriptor, helper, descriptorSha256: liveSkillsHash(descriptor), helperSha256: liveSkillsHash(helper) };
@@ -66,11 +78,15 @@ export function isCompletedLiveSkillsTurn(snapshot, baselineIds) {
 }
 
 export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, priorTurnIds, sessionId, nativeIdentity,
-    fixture, phase, selected, available, absent = [], startedAt, finishedAt, expectedPolicy, priorReceiptNames = [], priorReceiptHashes = {}, priorRevision }) {
+    fixture, workspaceRoot, phase, selected, available, absent = [], startedAt, finishedAt, expectedPolicy, priorReceiptNames = [], priorReceiptHashes = {}, priorRevision }) {
     assert.ok(isCompletedLiveSkillsTurn(snapshot, baselineIds), 'The persisted native turn is not complete.');
+    // Both the capture metadata and every persisted cwd must follow the one admitted root.
+    const workspace = liveSkillsWorkspace(workspaceRoot, fixture.folder);
+    assert.equal(fixture.workspace, workspace, 'The fixture is not under the admitted workspace root.');
+    assert.equal(snapshot.workspaceRoot, workspaceRoot, 'The runtime capture used a different workspace root.');
     const session = snapshot.session;
     assert.equal(session.sessionId, sessionId);
-    assert.equal(session.cwd, fixture.workspace);
+    assert.equal(session.cwd, workspace);
     const assistant = session.messages.find(message => message.role === 'assistant' && !baselineIds.includes(message.id));
     assert.match(assistant.id, UUID);
     assert.ok(typeof assistant.turnId === 'string' && assistant.turnId.length > 0);
@@ -87,13 +103,13 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
     assert.equal(session.engine?.type, 'ala');
     assert.equal(session.engine.backend, 'codex');
     assert.equal(session.engine.sessionId, sessionId);
-    assert.equal(session.engine.cwd, fixture.workspace);
+    assert.equal(session.engine.cwd, workspace);
     assert.equal(session.engine.home, `${snapshot.robotRoot}/home`);
     const native = snapshot.native;
     assert.equal(native?.id, sessionId);
     assert.equal(native.version, 1);
     assert.equal(native.home, session.engine.home);
-    assert.equal(native.workspace, fixture.workspace);
+    assert.equal(native.workspace, workspace);
     assert.equal(native.agent, 'codex');
     assert.ok(typeof native.continuation?.threadId === 'string' && native.continuation.threadId.length > 0,
         'Completed deployed turn has no native continuation.');
@@ -104,12 +120,12 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
     if (priorRevision) assert.notEqual(execution.revision, priorRevision, 'The mutated phase reused the prior captured catalog revision.');
     assert.equal(execution.catalogPath, `${snapshot.robotRoot}/runtime/skill-catalogs/${execution.revision}`);
     assert.equal(execution.catalogId, execution.revision);
-    assert.equal(execution.cwd, fixture.workspace);
+    assert.equal(execution.cwd, workspace);
     assert.equal(execution.policyVersion, expectedPolicy.policyVersion);
     assert.deepEqual(policyEvidence(inventory, sessionId), expectedPolicy);
     assert.equal(inventory.lastRevision, execution.revision, 'Inventory does not refer to this completed turn.');
     assert.equal(inventory.activeRevision, null);
-    assert.equal(inventory.cwd, fixture.workspace);
+    assert.equal(inventory.cwd, workspace);
     assert.equal(session.skillPolicyRef, execution.policyId);
     assert.equal(execution.policyId, sessionId);
     assert.equal(snapshot.catalog?.version, 1);
@@ -123,7 +139,7 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
         assert.equal(entries.length, 1, `Captured execution must include ${skill.name}.`);
         assert.equal(entries[0].identity, `workspace:${fixture.folder}/.agents/skills/${skill.name}`);
         assert.match(entries[0].fingerprint, HASH);
-        const source = liveSkillSources(fixture, skill);
+        const source = liveSkillSources(fixture, skill, workspaceRoot);
         assert.deepEqual(snapshot.capturedFiles[skill.name], { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 },
             `Captured files for ${skill.name} are stale or came from a different source.`);
     }
@@ -147,7 +163,7 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
         assert.equal(receipt.marker, skill.helperMarker);
         assert.equal(receipt.executedPath, `/workspace/.agents/skills/${skill.name}/receipt.mjs`,
             'The receipt came from a copied helper outside its selected native skill mount.');
-        assert.equal(receipt.helperSha256, liveSkillSources(fixture, skill).helperSha256);
+        assert.equal(receipt.helperSha256, liveSkillSources(fixture, skill, workspaceRoot).helperSha256);
         assert.ok(Number.isSafeInteger(receipt.pid) && receipt.pid > 0);
         assert.ok(Number.isFinite(Date.parse(receipt.createdAt)) && Date.parse(receipt.createdAt) >= startedAt
             && Date.parse(receipt.createdAt) <= finishedAt, 'Receipt is stale or outside the native turn.');

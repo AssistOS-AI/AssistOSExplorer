@@ -3,16 +3,21 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
+import { assertBoxWorkspacePath, validateSamePathWorkspaceMount } from './box-workspace.mjs';
+
 const HEX_ID = /^[0-9a-f]{64}$/;
 const sha256 = value => crypto.createHash('sha256').update(value).digest('hex');
-const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}/`);
-const overlaps = (left, right) => inside(left, right) || inside(right, left);
+export const inside = (root, candidate) => candidate === root || candidate.startsWith(root.endsWith('/') ? root : `${root}/`);
+export const overlaps = (left, right) => inside(left, right) || inside(right, left);
 
 // Use the runtime's semantic verifier, and emit only source/runtime identities.
 // Captured agent configuration and authentication policy must not enter evidence.
-const ACTIVE_RUNTIME_PROBE = `
+// The Box mounts the workspace at its own host path, so the admitted root is passed as one JSON string literal.
+export function activeRuntimeProbe(workspaceRoot) {
+  return `
 import { loadActiveEdgeRoutingGeneration } from '/opt/ploinky/cli/sandbox/edgeGeneration.js';
-const { selector, generation } = loadActiveEdgeRoutingGeneration({ workspaceRoot: '/workspace' });
+const workspaceRoot = ${JSON.stringify(workspaceRoot)};
+const { selector, generation } = loadActiveEdgeRoutingGeneration({ workspaceRoot });
 const pick = (value, keys) => Object.fromEntries(keys.filter(key => value?.[key] !== undefined).map(key => [key, value[key]]));
 const bindings = {};
 for (const key of ['explorer', 'achilles-cli']) {
@@ -25,6 +30,7 @@ for (const key of ['explorer', 'achilles-cli']) {
 }
 process.stdout.write(JSON.stringify({ generation: selector.generation, activationId: selector.activationId, bindings }));
 `;
+}
 
 function command(args) {
   const result = spawnSync('podman', args, { encoding: 'utf8', timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
@@ -32,40 +38,46 @@ function command(args) {
   return result.stdout;
 }
 
-function requireMount(mounts, destination, source, { readOnly = false, fsApi } = {}) {
+// `subject` names the evidence mode in the thrown messages; the checks themselves are mode independent.
+// `lexical` additionally requires the reported Source to be spelled exactly as expected, so a symlink alias of the
+// expected canonical directory is not accepted. An unreadable Source is a mismatch, never a different error.
+export function requireMount(mounts, destination, source, { readOnly = false, fsApi, lexical = false, subject = 'Local snapshot' } = {}) {
   const selected = mounts.filter(mount => mount.Destination === destination);
+  const canonical = value => { try { return fsApi.realpathSync(value); } catch { return null; } };
   if (selected.length !== 1 || selected[0].Type !== 'bind'
       || (readOnly && selected[0].RW !== false)
-      || (fsApi ? fsApi.realpathSync(selected[0].Source) !== source : selected[0].Source !== source)) {
-    throw new Error(`Local snapshot requires the exact verified ${readOnly ? 'read-only ' : ''}source mount at ${destination}.`);
+      || (lexical && selected[0].Source !== source)
+      || (fsApi ? canonical(selected[0].Source) !== source : selected[0].Source !== source)) {
+    throw new Error(`${subject} requires the exact verified ${readOnly ? 'read-only ' : ''}source mount at ${destination}.`);
   }
   return selected[0];
 }
 
-function rejectShadows(mounts, protectedPaths, allowed) {
+export function rejectShadows(mounts, protectedPaths, allowed, { subject = 'Local snapshot' } = {}) {
   for (const mount of mounts) {
     if (allowed.includes(mount)) continue;
     const destination = mount.Destination;
     if (typeof destination !== 'string' || !destination.startsWith('/') || path.posix.normalize(destination) !== destination
         || protectedPaths.some(protectedPath => overlaps(destination, protectedPath))) {
-      throw new Error('Local snapshot has a mount shadowing a verified source or runtime.');
+      throw new Error(`${subject} has a mount shadowing a verified source or runtime.`);
     }
   }
 }
 
-function hostWorkspacePath(workspace, runtimePath) {
-  if (typeof runtimePath !== 'string' || !runtimePath.startsWith('/workspace/') || path.posix.normalize(runtimePath) !== runtimePath) {
+// The workspace is mounted at its own host path, so a runtime path inside it is also its host path.
+// Lexical containment is checked here; callers prove canonical containment with a real directory/realpath check.
+function workspacePath(workspace, runtimePath) {
+  if (typeof runtimePath !== 'string' || !runtimePath.startsWith(`${workspace}/`) || path.posix.normalize(runtimePath) !== runtimePath) {
     throw new Error('Local snapshot runtime path is outside the verified workspace.');
   }
-  return path.join(workspace, runtimePath.slice('/workspace/'.length));
+  return runtimePath;
 }
 
-function runtimeWorkspacePath(workspace, source) {
-  const relative = path.relative(workspace, source);
-  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+function inspectedWorkspaceSource(workspace, source) {
+  if (typeof source !== 'string' || !source.startsWith(`${workspace}/`) || path.posix.normalize(source) !== source) {
     throw new Error('Local snapshot source is outside the inspected workspace.');
   }
-  return `/workspace/${relative.split(path.sep).join('/')}`;
+  return source;
 }
 
 function sameStat(before, after) {
@@ -118,12 +130,12 @@ function selectedHostPorts(liveBox) {
   return Object.freeze({ router, media });
 }
 
-function readActiveGeneration(run, outerId, ports) {
+function readActiveGeneration(run, outerId, ports, workspace) {
   const result = JSON.parse(run([
     'exec',
     '--env', `PLOINKY_ROUTER_HOST_PORT=${ports.router}`,
     '--env', `PLOINKY_MEDIA_HOST_PORT=${ports.media}`,
-    outerId, 'node', '--input-type=module', '-e', ACTIVE_RUNTIME_PROBE,
+    outerId, 'node', '--input-type=module', '-e', activeRuntimeProbe(workspace),
   ]));
   if (!/^sha256:[0-9a-f]{64}$/.test(result.generation || '')
       || typeof result.activationId !== 'string' || !result.activationId.trim() || !result.bindings) {
@@ -138,16 +150,19 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
   const workspace = mountedWorkspace ? fsApi.realpathSync(mountedWorkspace) : '';
   const outerId = liveBox?.box?.containerId;
   if (!workspace || !HEX_ID.test(outerId || '')) throw new Error('Local snapshot requires the exact live workspace mount and Box ID.');
+  assertBoxWorkspacePath(workspace);
   const ports = selectedHostPorts(liveBox);
   const outerMounts = JSON.parse(run(['container', 'inspect', outerId, '--format', '{{json .Mounts}}']));
+  // The exact outer root proof: one writable same-path bind, and no second alias of its source.
+  validateSamePathWorkspaceMount(outerMounts, workspace);
   const libSource = fsApi.realpathSync(repositories.achillesAgentLib.repositoryPath);
   const ploinkySource = fsApi.realpathSync(repositories.ploinky.repositoryPath);
   const allowedOuter = [
-    requireMount(outerMounts, '/workspace', workspace, { fsApi }),
+    requireMount(outerMounts, workspace, workspace, { fsApi }),
     requireMount(outerMounts, '/opt/ploinky', ploinkySource, { readOnly: true, fsApi }),
     requireMount(outerMounts, '/opt/ploinky-agentlib', libSource, { readOnly: true, fsApi }),
   ];
-  const libAlias = runtimeWorkspacePath(workspace, libSource);
+  const libAlias = inspectedWorkspaceSource(workspace, libSource);
   if (outerMounts.some(mount => mount.Destination === libAlias)) {
     allowedOuter.push(requireMount(outerMounts, libAlias, libSource, { readOnly: true, fsApi }));
   }
@@ -157,13 +172,13 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
   }
   const sources = Object.fromEntries([['explorer', 'explorer'], ['achillesCLI', 'achilles-cli']].map(([name, routeKey]) => {
     const source = fsApi.realpathSync(path.join(repositories[name].repositoryPath, routeKey));
-    return [name, { source, runtimeSource: runtimeWorkspacePath(workspace, source), treeSha256: repositories[name].treeSha256, routeKey }];
+    return [name, { source, runtimeSource: inspectedWorkspaceSource(workspace, source), treeSha256: repositories[name].treeSha256, routeKey }];
   }));
   const protectedOuter = ['/opt/ploinky', '/opt/ploinky-agentlib', libAlias, ...Object.values(sources).map(value => value.runtimeSource)];
   rejectShadows(outerMounts, protectedOuter, allowedOuter);
   const agentSource = path.join(ploinkySource, 'Agent');
   const agentDigest = agentTreeDigest(agentSource, fsApi);
-  const active = readActiveGeneration(run, outerId, ports);
+  const active = readActiveGeneration(run, outerId, ports, workspace);
   const ids = run(['exec', outerId, 'podman', 'ps', '--quiet', '--no-trunc']).trim().split(/\s+/).filter(Boolean);
   if (!ids.length || new Set(ids).size !== ids.length || ids.some(id => !HEX_ID.test(id))) throw new Error('Invalid nested runtime inventory.');
   const format = '{"id":{{json .ID}},"running":{{json .State.Running}},"mounts":{{json .Mounts}}}';
@@ -211,11 +226,11 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
     const roots = {};
     for (const [mountPath, field, readOnly] of [['/code', 'codeRoot', false], ['/Agent', 'agentRuntimeRoot', true]]) {
       const mounts = container.mounts.filter(mount => mount.Destination === mountPath);
-      if (mounts.length !== 1 || !mounts[0].Source?.startsWith('/workspace/.ploinky/container-runtime/')) {
+      if (mounts.length !== 1 || !mounts[0].Source?.startsWith(`${workspace}/.ploinky/container-runtime/`)) {
         throw new Error(`${name} has an unverified runtime mount at ${mountPath}.`);
       }
       const mount = requireMount(container.mounts, mountPath, mounts[0].Source, { readOnly });
-      const host = hostWorkspacePath(workspace, mount.Source);
+      const host = workspacePath(workspace, mount.Source);
       if (!fsApi.lstatSync(host).isDirectory() || fsApi.realpathSync(host) !== host) throw new Error(`${name} runtime staging is not a real workspace directory.`);
       roots[field] = host;
       protectedOuter.push(mount.Source);
@@ -226,8 +241,8 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
     // also proves that whole parent is backed by the verified workspace.
     for (const mount of container.mounts) {
       if (allowedInner.includes(mount) || mount.Type !== 'bind' || mount.Source !== mount.Destination
-          || !inside('/workspace', mount.Destination) || !inside(mount.Destination, identity.runtimeSource)) continue;
-      const host = mount.Destination === '/workspace' ? workspace : hostWorkspacePath(workspace, mount.Destination);
+          || !inside(workspace, mount.Destination) || !inside(mount.Destination, identity.runtimeSource)) continue;
+      const host = mount.Destination === workspace ? workspace : workspacePath(workspace, mount.Destination);
       if (!fsApi.lstatSync(host).isDirectory() || fsApi.realpathSync(host) !== host) {
         throw new Error(`${name} source ancestor mount is not the exact workspace directory.`);
       }
@@ -243,11 +258,11 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
       return fsApi.readlinkSync(adapter);
     });
     if (dependencyTargets[0] !== dependencyTargets[1]
-        || !dependencyTargets[0].startsWith('/workspace/.ploinky/')) {
+        || !dependencyTargets[0].startsWith(`${workspace}/.ploinky/`)) {
       throw new Error(`${name} dependency adapters do not share the prepared workspace dependency tree.`);
     }
     const dependencyTarget = dependencyTargets[0];
-    hostWorkspacePath(workspace, dependencyTarget);
+    workspacePath(workspace, dependencyTarget);
     allowedInner.push(requireMount(container.mounts, dependencyTarget, dependencyTarget, { readOnly: true }));
     protectedInner.push(dependencyTarget);
     protectedOuter.push(dependencyTarget);
@@ -269,7 +284,7 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
       routeKey, instanceId: record.instanceId, enableGeneration: record.enableGeneration,
       mappingSha256: sha256(JSON.stringify(mappings)) });
   }
-  const current = readActiveGeneration(run, outerId, ports);
+  const current = readActiveGeneration(run, outerId, ports, workspace);
   if (current.generation !== active.generation || current.activationId !== active.activationId) {
     throw new Error('Local snapshot active routing generation changed during inspection.');
   }

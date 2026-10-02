@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { conversationFromSettingsURL, liveSkillSources, liveSkillsPrompt, liveSkillsHash } from './copilot-live-skills.mjs';
+import { conversationFromSettingsURL, liveSkillSources, liveSkillsPrompt, liveSkillsHash, liveSkillsWorkspace } from './copilot-live-skills.mjs';
 
 function literalTokens(command) {
     assert.ok(typeof command === 'string' && command.length > 0 && command.length <= 4096, 'Invalid approval command length.');
@@ -55,8 +55,11 @@ export function parseLiveSkillsApprovalCommand(command) {
     return { shell, operations };
 }
 
-export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseURL, snapshot, fixture,
+export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseURL, snapshot, fixture, workspaceRoot,
     sessionId, phase, selected, baselineIds, decisions, nativeIdentity }) {
+    // Observer evidence uses the admitted outer root. The approval request itself is in the ALA-native /workspace namespace.
+    const workspace = liveSkillsWorkspace(workspaceRoot, fixture.folder);
+    assert.equal(fixture.workspace, workspace, 'The fixture is not under the admitted workspace root.');
     assert.equal(conversationFromSettingsURL(settingsURL, baseURL), sessionId, 'Approval changed browser conversation.');
     const url = new URL(browserURL);
     assert.equal(url.origin, new URL(baseURL).origin);
@@ -64,11 +67,11 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
     assert.equal(url.searchParams.get('agent'), 'roboTeamAgent');
     assert.equal(url.searchParams.get('robot'), 'default');
     const directory = url.searchParams.get('workspace-dir') || url.searchParams.get('dir');
-    assert.ok([fixture.folder, fixture.workspace].includes(directory), 'Approval changed browser workspace.');
+    assert.ok([fixture.folder, workspace].includes(directory), 'Approval changed browser workspace.');
     assert.equal(snapshot.session.sessionId, sessionId);
-    assert.equal(snapshot.session.cwd, fixture.workspace);
+    assert.equal(snapshot.session.cwd, workspace);
     assert.equal(snapshot.native.id, sessionId);
-    assert.equal(snapshot.native.workspace, fixture.workspace);
+    assert.equal(snapshot.native.workspace, workspace);
     assert.equal(snapshot.native.agent, 'codex');
     if (nativeIdentity) assert.deepEqual({ sessionId, home: snapshot.native.home, workspace: snapshot.native.workspace,
         agent: snapshot.native.agent, threadId: snapshot.native.continuation.threadId }, nativeIdentity,
@@ -95,7 +98,7 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
     assert.equal(snapshot.catalog.revision, activeRevision);
     const files = new Map();
     for (const skill of selected) {
-        const source = liveSkillSources(fixture, skill);
+        const source = liveSkillSources(fixture, skill, workspaceRoot);
         assert.deepEqual(snapshot.capturedFiles[skill.name], { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 });
         const entry = snapshot.catalog.entries.filter(entry => entry.name === skill.name);
         assert.equal(entry.length, 1);

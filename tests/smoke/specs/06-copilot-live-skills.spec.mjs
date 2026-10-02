@@ -30,10 +30,12 @@ test.describe('Deployed Copilot live skills', () => {
         assert.equal(testInfo.project.retries, 0, 'Configure zero retries for this gate.');
         assert.equal(testInfo.config.workers, 1, 'Run this gate with one worker.');
         assert.ok(smokeConfig.flags.failOnBrowserErrors, 'Browser errors may not be ignored by this gate.');
-        const fixture = createLiveSkillsFixture();
-        const evidence = { kind: 'deployed-copilot-live-skills', runId: fixture.runId, phases: [], result: 'running', cleanup: 'pending' };
+        // The Box mounts the workspace at its own host path. The verified root exists before any fixture does.
         const reader = await createLiveSkillsRuntimeReader({ baseURL: smokeConfig.baseURL,
             verifierPath: process.env.SMOKE_COPILOT_RELEASE_VERIFIER || path.resolve(here, '../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs') });
+        const workspaceRoot = reader.workspaceRoot;
+        const fixture = createLiveSkillsFixture(workspaceRoot);
+        const evidence = { kind: 'deployed-copilot-live-skills', runId: fixture.runId, phases: [], result: 'running', cleanup: 'pending' };
         evidence.releaseBefore = reader.release;
         const errors = [];
         const network = [];
@@ -67,7 +69,7 @@ test.describe('Deployed Copilot live skills', () => {
         async function installSkill(skill) {
             const relative = `${fixture.folder}/.agents/skills/${skill.name}`;
             assert.match((await fsTool('create_directory', { path: relative })).rawText || '', /^Successfully created directory /);
-            const source = liveSkillSources(fixture, skill);
+            const source = liveSkillSources(fixture, skill, workspaceRoot);
             await writeSource(`${relative}/SKILL.md`, source.descriptor);
             await writeSource(`${relative}/receipt.mjs`, source.helper);
         }
@@ -154,7 +156,7 @@ test.describe('Deployed Copilot live skills', () => {
                 evidence.currentPhase.elapsedMs = Date.now() - hostStarted;
                 try {
                     await approveLiveSkillsRequest({ page: copilot, remaining, evidence: evidence.currentPhase,
-                        baseURL: smokeConfig.baseURL, snapshot, fixture, sessionId, phase, selected, baselineIds, nativeIdentity });
+                        baseURL: smokeConfig.baseURL, snapshot, fixture, workspaceRoot, sessionId, phase, selected, baselineIds, nativeIdentity });
                 } catch (error) {
                     // Stop polling and preserve the exact rejected request immediately.
                     approvalFailure = error;
@@ -169,7 +171,7 @@ test.describe('Deployed Copilot live skills', () => {
             const inventory = await catalog(sessionId);
             evidence.currentPhase.stage = 'catalog, receipt and continuation validation';
             const proof = validateLiveSkillsTurn({ snapshot, inventory, baselineIds, priorTurnIds: turnIds, sessionId,
-                nativeIdentity, fixture, phase, selected, available, absent, expectedPolicy, priorReceiptNames: receiptNames, priorReceiptHashes: receiptHashes,
+                nativeIdentity, fixture, workspaceRoot, phase, selected, available, absent, expectedPolicy, priorReceiptNames: receiptNames, priorReceiptHashes: receiptHashes,
                 priorRevision: evidence.phases.at(-1)?.revision,
                 startedAt: Date.parse(baseline.capturedAt), finishedAt: Date.parse(snapshot.capturedAt) });
             const message = copilot.locator(`#chatList > .wa-message.in[data-message-id="${proof.messageId}"]`);
@@ -195,7 +197,7 @@ test.describe('Deployed Copilot live skills', () => {
             await openExplorer(page);
             observe(page);
             const roots = (await fsTool('list_allowed_directories', {})).rawText || '';
-            assert.ok(roots.split('\n').includes('/workspace'), 'Explorer is not serving the pinned Box workspace.');
+            assert.ok(roots.split('\n').includes(workspaceRoot), 'Explorer is not serving the pinned Box workspace.');
             defaultsBefore = policyEvidence(await catalog());
             await createDirectory(page, fixture.folder, `/${fixture.folder}`);
             directoryCreated = true;
@@ -212,7 +214,7 @@ test.describe('Deployed Copilot live skills', () => {
             await expect.poll(browserSessionId).not.toBe(untouchedId);
             sessionId = await browserSessionId();
             await waitForWebchatIdle(copilot, smokeConfig.timeouts.navigation);
-            evidence.conversation = { sessionId, untouchedId, workspace: fixture.workspace };
+            evidence.conversation = { sessionId, untouchedId, workspaceRoot, workspace: fixture.workspace };
             assert.match((await fsTool('create_directory', { path: `${fixture.folder}/.receipts` })).rawText || '', /^Successfully created directory /);
             receiptDirectoryCreated = true;
             await installSkill(fixture.control);
@@ -226,11 +228,11 @@ test.describe('Deployed Copilot live skills', () => {
             await turn('original', [fixture.control, fixture.probe], [fixture.control, fixture.probe]);
 
             fixture.probe.descriptorMarker = randomUUID();
-            await writeSource(`${fixture.folder}/.agents/skills/${fixture.probe.name}/SKILL.md`, liveSkillSources(fixture, fixture.probe).descriptor);
+            await writeSource(`${fixture.folder}/.agents/skills/${fixture.probe.name}/SKILL.md`, liveSkillSources(fixture, fixture.probe, workspaceRoot).descriptor);
             await turn('descriptor edit', [fixture.control, fixture.probe], [fixture.control, fixture.probe]);
 
             fixture.probe.helperMarker = randomUUID();
-            await writeSource(`${fixture.folder}/.agents/skills/${fixture.probe.name}/receipt.mjs`, liveSkillSources(fixture, fixture.probe).helper);
+            await writeSource(`${fixture.folder}/.agents/skills/${fixture.probe.name}/receipt.mjs`, liveSkillSources(fixture, fixture.probe, workspaceRoot).helper);
             await turn('helper-only edit', [fixture.control, fixture.probe], [fixture.control, fixture.probe]);
 
             await installSkill(fixture.added);

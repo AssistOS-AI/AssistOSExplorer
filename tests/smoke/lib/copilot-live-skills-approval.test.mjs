@@ -4,8 +4,11 @@ import { test } from 'node:test';
 import { approveLiveSkillsRequest, validateLiveSkillsApproval, parseLiveSkillsApprovalCommand } from './copilot-live-skills-approval.mjs';
 import { createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt } from './copilot-live-skills.mjs';
 
+// Approval commands run in the ALA-native /workspace namespace; the observer evidence uses the admitted outer root.
+const workspaceRoot = '/srv/fresh workspace';
+
 function fixtureCase() {
-    const fixture = createLiveSkillsFixture(), sessionId = randomUUID(), phase = randomUUID(), turnId = randomUUID();
+    const fixture = createLiveSkillsFixture(workspaceRoot), sessionId = randomUUID(), phase = randomUUID(), turnId = randomUUID();
     const selected = [fixture.control, fixture.probe];
     const threadId = randomUUID(), nativeTurnId = randomUUID(), interactionId = `task_control_${randomUUID().replaceAll('-', '_')}`;
     const revision = 'a'.repeat(64), baseURL = 'http://localhost:8080';
@@ -13,7 +16,7 @@ function fixtureCase() {
     const detail = { threadId, turnId: nativeTurnId, itemId: 'native-item', cwd: '/workspace', command,
         item: { id: 'native-item', type: 'commandExecution', cwd: '/workspace', command } };
     const entries = selected.map(skill => ({ name: skill.name, identity: `workspace:${fixture.folder}/.agents/skills/${skill.name}` }));
-    return { fixture, sessionId, phase, selected, baselineIds: [], decisions: [], baseURL,
+    return { fixture, workspaceRoot, sessionId, phase, selected, baselineIds: [], decisions: [], baseURL,
         browserURL: `${baseURL}/webchat?agent=roboTeamAgent&robot=default&workspace-dir=${fixture.folder}`,
         settingsURL: `${baseURL}/explorer/index.html?copilot-robot=default&copilot-session=${sessionId}`,
         ui: { title: 'Codex permission request', detail: JSON.stringify(detail), options: [
@@ -25,7 +28,7 @@ function fixtureCase() {
                 messages: [{ role: 'user', id: randomUUID(), turnId, text: liveSkillsPrompt({ phase, selected }) },
                     { role: 'assistant', id: randomUUID(), turnId, status: 'pending' }] },
             catalog: { revision, entries }, capturedFiles: Object.fromEntries(selected.map(skill => {
-                const source = liveSkillSources(fixture, skill);
+                const source = liveSkillSources(fixture, skill, workspaceRoot);
                 return [skill.name, { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 }];
             })) } };
 }
@@ -255,4 +258,34 @@ test('wrapper changes, appended outer commands, oversized input and empty body r
         "/bin/bash -lc 'ls /workspace/.agents/skills' && cat /workspace/.env", 'x'.repeat(4097)]) {
         assert.throws(() => parseLiveSkillsApprovalCommand(value));
     }
+});
+
+test('approval evidence follows the admitted root while the approved command stays in the ALA-native /workspace namespace', () => {
+    const input = fixtureCase();
+    assert.ok(!workspaceRoot.startsWith('/workspace'));
+    assert.equal(validateLiveSkillsApproval(input).helper, input.fixture.control.name);
+    const detail = JSON.parse(input.ui.detail);
+    assert.equal(detail.cwd, '/workspace');
+    assert.equal(input.snapshot.session.cwd, `${workspaceRoot}/${input.fixture.folder}`);
+});
+
+for (const [name, mutate] of Object.entries({
+    'a missing root': input => { delete input.workspaceRoot; },
+    'another root': input => { input.workspaceRoot = '/srv/other workspace'; },
+    'a prefix-lookalike root': input => { input.workspaceRoot = `${workspaceRoot}-evil`; },
+    'a session cwd on the retired alias': input => { input.snapshot.session.cwd = `/workspace/${input.fixture.folder}`; },
+    'a native workspace under a lookalike root': input => { input.snapshot.native.workspace = `${workspaceRoot}-evil/${input.fixture.folder}`; },
+    'a browser directory under another root': input => { input.browserURL = input.browserURL.replace(input.fixture.folder, `${workspaceRoot}-evil/${input.fixture.folder}`); },
+})) {
+    test(`approval rejects ${name}`, () => {
+        const input = fixtureCase();
+        mutate(input);
+        assert.throws(() => validateLiveSkillsApproval(input));
+    });
+}
+
+test('approval accepts the browser directory spelled as the fixture folder or its full same-path workspace', () => {
+    const input = fixtureCase();
+    input.browserURL = `${input.baseURL}/webchat?agent=roboTeamAgent&robot=default&workspace-dir=${encodeURIComponent(input.fixture.workspace)}`;
+    assert.equal(validateLiveSkillsApproval(input).helper, input.fixture.control.name);
 });

@@ -370,7 +370,7 @@ test('local snapshot mode is explicit, loopback-only, and binds source digests a
     collectSnapshotBindings: ({ repositories }) => ({
       explorer: { active: true, containerId: 'e'.repeat(64), treeSha256: repositories.explorer.treeSha256 },
       ploinkyAgent: { source: '/candidate/ploinky/Agent', runtimeSource: '/Agent', treeSha256: 'a'.repeat(64) },
-      achillesCLI: { active: true, source: '/candidate/AchillesCLI/achilles-cli', runtimeSource: '/workspace/.ploinky/repos/AchillesCLI/achilles-cli', treeSha256: 'b'.repeat(64), containerId: 'c'.repeat(64), codeRoot: '/candidate/runtime/old' },
+      achillesCLI: { active: true, source: '/candidate/AchillesCLI/achilles-cli', runtimeSource: '/candidate/AchillesCLI/achilles-cli', treeSha256: 'b'.repeat(64), containerId: 'c'.repeat(64), codeRoot: '/candidate/runtime/old' },
     }),
     loadVerifier: async () => ({ verifyManifestFile: () => structuredClone(source) }),
     collectLiveBox: () => liveBox(),
@@ -420,4 +420,49 @@ test('local snapshot mode is explicit, loopback-only, and binds source digests a
   await assert.rejects(() => collectCopilotReleaseEvidence({ ...options, boxBaseURL: 'http://127.0.0.1:9090' }), /same origin/);
   await assert.rejects(() => collectCopilotReleaseEvidence({ ...options, verificationMode: 'release' }), /does not match/);
   await assert.rejects(() => collectCopilotReleaseEvidence({ ...options, verificationMode: 'skip' }), /must be release or local-snapshot/);
+});
+
+test('image-mode release evidence and local-snapshot source evidence never substitute for one another', async () => {
+  const snapshotVerified = {
+    verificationMode: 'local-snapshot',
+    imageDigest: DIGEST,
+    repositories: {
+      ploinky: { commit: '2'.repeat(40), repositoryPath: PLOINKY_SOURCE, treeSha256: '7'.repeat(64) },
+      achillesAgentLib: { commit: AGENTLIB_COMMIT, treeSha256: '8'.repeat(64) },
+      explorer: { commit: '1'.repeat(40), treeSha256: '9'.repeat(64) },
+    },
+  };
+  const boxCalls = [];
+  let snapshotCollections = 0;
+  const common = {
+    verifierPath: '/candidate/verifier.mjs',
+    baseURL: 'http://127.0.0.1:8080',
+    boxBaseURL: 'http://127.0.0.1:8080',
+    collectLiveBox(options) { boxCalls.push(options); return imageModeLiveBox(); },
+    readImageAgentLib: () => ({ commit: AGENTLIB_COMMIT }),
+    collectSnapshotBindings: () => {
+      snapshotCollections += 1;
+      return { explorer: { active: true, treeSha256: '9'.repeat(64) },
+        achillesCLI: { active: true, source: '/candidate/AchillesCLI/achilles-cli', runtimeSource: '/candidate/AchillesCLI/achilles-cli', treeSha256: 'b'.repeat(64) },
+        ploinkyAgent: { treeSha256: 'a'.repeat(64) } };
+    },
+    realpathSync: value => value,
+  };
+  const release = await collectCopilotReleaseEvidence({ ...common, manifestPath: '/candidate/release.json', loadVerifier: releaseVerifier() });
+  assert.equal(release.verificationMode, 'release');
+  assert.equal('sourceBindings' in release, false, 'Image-mode evidence carries no source bindings.');
+  assert.equal(snapshotCollections, 0, 'Release mode must never run the local-snapshot collector.');
+  assert.equal('expectedWorkspaceSource' in boxCalls[0], false, 'Release mode takes its workspace pin from the selected host workspace.');
+  const snapshot = await collectCopilotReleaseEvidence({ ...common, manifestPath: '/candidate/snapshot.json', verificationMode: 'local-snapshot',
+    loadVerifier: async () => ({ verifyManifestFile: () => structuredClone(snapshotVerified) }) });
+  assert.equal(snapshot.verificationMode, 'local-snapshot');
+  assert.equal(snapshotCollections, 1);
+  assert.equal(boxCalls[1].expectedWorkspaceSource, path.dirname(PLOINKY_SOURCE));
+  assert.equal(sameCopilotReleaseGeneration(release, snapshot), false);
+  assert.equal(sameCopilotReleaseGeneration(snapshot, release), false);
+  // Relabelling one mode as the other does not make it the same generation.
+  assert.equal(sameCopilotReleaseGeneration(release, { ...structuredClone(snapshot), verificationMode: 'release' }), false);
+  assert.equal(sameCopilotReleaseGeneration({ ...structuredClone(release), verificationMode: 'local-snapshot' }, snapshot), false);
+  assert.equal(sameCopilotReleaseGeneration(release, structuredClone(release)), true);
+  assert.equal(sameCopilotReleaseGeneration(snapshot, structuredClone(snapshot)), true);
 });

@@ -3,9 +3,11 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { assertBoxWorkspacePath, inspectBoxWorkspace } from './box-workspace.mjs';
 import { collectCopilotReleaseEvidence, sameCopilotReleaseGeneration } from './copilot-release-evidence.mjs';
 import { validateWorkspaceSourceMount } from './live-box.mjs';
-import { liveSkillsHash, UUID } from './copilot-live-skills.mjs';
+import { liveSkillsHash, liveSkillsWorkspace, UUID } from './copilot-live-skills.mjs';
+import { inside, requireMount, rejectShadows } from './local-snapshot-bindings.mjs';
 
 const CONTRACT_FILES = [
     'server/copilot-context.mjs', 'server/constants.mjs', 'server/robot-store.mjs',
@@ -39,7 +41,8 @@ function command(args, input = '') {
     });
 }
 
-function program(fn, args) {
+// The function source is shipped to the Box, so it may reference no module binding. Every path travels as a JSON value.
+export function program(fn, args) {
     const helpers = fn === readLiveSkillsSnapshot ? `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\n` : '';
     return `${helpers}(${fn.toString()})(${JSON.stringify(args)}).catch(() => { console.error('Invalid read-only runtime evidence'); process.exitCode = 1; });\n`;
 }
@@ -87,11 +90,15 @@ export async function readLiveSkillsCodeHashes({ expectedRepository, contractFil
 }
 
 // Executed inside the already pinned Box. Importing this observational reader does not create a registry.
-async function readRegistryAndRuntime() {
+export async function readRegistryAndRuntime({ workspaceRoot }) {
     const assert = (await import('node:assert/strict')).default;
+    const path = await import('node:path');
     const { execFileSync } = await import('node:child_process');
     const { readAgentRegistrySnapshot } = await import('/opt/ploinky/cli/utils/agentRegistrySnapshot.js');
-    const rows = Object.entries(readAgentRegistrySnapshot({ workspaceRoot: '/workspace' }))
+    // The Box mounts the workspace at its own host path; the admitted root is never the retired /workspace alias.
+    assert.ok(typeof workspaceRoot === 'string' && path.isAbsolute(workspaceRoot) && path.normalize(workspaceRoot) === workspaceRoot
+        && workspaceRoot !== '/' && !workspaceRoot.endsWith('/'));
+    const rows = Object.entries(readAgentRegistrySnapshot({ workspaceRoot }))
         .filter(([, row]) => row.type === 'agent' && row.repoName === 'AchillesCLI' && row.agentName === 'roboTeamAgent');
     assert.equal(rows.length, 1);
     const [key, row] = rows[0];
@@ -107,15 +114,23 @@ async function readRegistryAndRuntime() {
 
 // Executed inside the exact running RoboTeam container. Never instantiate RobotStore, execute helpers,
 // update settings, or read native auth/progress. All paths below are derived and confined.
-export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, contractFiles, expectedRepository }) {
+// `/data` and `/code` are runtime locations of the RoboTeam container. The workspace root is the admitted host path.
+export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, contractFiles, expectedRepository, workspaceRoot },
+    { dataRoot = '/data', codeRoot = '/code', fsApi, emit = value => console.log(JSON.stringify(value)) } = {}) {
     const assert = (await import('node:assert/strict')).default;
-    const fs = await import('node:fs');
+    const fs = fsApi || await import('node:fs');
     const path = await import('node:path');
     const { createHash } = await import('node:crypto');
     const hash = value => createHash('sha256').update(value).digest('hex');
     assert.match(sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.match(folder, /^copilot-live-skills-[0-9a-f-]{36}$/);
-    const workspace = `/workspace/${folder}`;
+    // Lexical and canonical containment: the root, the repository and the run folder must each be their own realpath.
+    assert.ok(typeof workspaceRoot === 'string' && path.isAbsolute(workspaceRoot) && path.normalize(workspaceRoot) === workspaceRoot
+        && workspaceRoot !== '/' && !workspaceRoot.endsWith('/'));
+    assert.equal(fs.realpathSync(workspaceRoot), workspaceRoot, 'The admitted workspace root must be canonical.');
+    assert.ok(typeof expectedRepository === 'string' && expectedRepository.startsWith(`${workspaceRoot}/`));
+    const workspace = `${workspaceRoot}/${folder}`;
+    assert.equal(fs.realpathSync(workspace), workspace, 'The run folder must be a real directory inside the admitted root.');
     function bytes(filename, root, limit = 4 * 1024 * 1024) {
         assert.ok(filename.startsWith(`${root}/`));
         assert.equal(fs.realpathSync(filename), filename, 'Evidence path contains a symlink.');
@@ -132,9 +147,9 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
     }
     const json = (filename, root, limit) => JSON.parse(bytes(filename, root, limit));
     const robotRoots = [];
-    for (const entry of fs.readdirSync('/data/robots', { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(`${dataRoot}/robots`, { withFileTypes: true })) {
         if (!entry.isDirectory() || !/^[a-z0-9][a-z0-9-]{2,63}$/.test(entry.name)) continue;
-        const root = `/data/robots/${entry.name}`;
+        const root = `${dataRoot}/robots/${entry.name}`;
         const metadata = json(`${root}/metadata.json`, root);
         if (metadata.name === 'default') { assert.equal(metadata.id, entry.name); robotRoots.push(root); }
     }
@@ -170,47 +185,128 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
     }
     const receipts = {};
     const receiptRoot = `${workspace}/.receipts`;
+    assert.equal(fs.realpathSync(receiptRoot), receiptRoot, 'The receipts directory escapes the run folder.');
     for (const name of fs.readdirSync(receiptRoot)) {
         assert.match(name, /^[a-f0-9-]{36}-live-[a-f0-9]{8}-(control|probe|added)\.json$/);
         receipts[name] = json(`${receiptRoot}/${name}`, workspace, 4096);
     }
-    const codeHashes = await readLiveSkillsCodeHashes({ expectedRepository, contractFiles });
-    console.log(JSON.stringify({ robotRoot, session: { sessionId: session.sessionId, cwd: session.cwd,
+    const codeHashes = await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi });
+    emit({ workspaceRoot, robotRoot, session: { sessionId: session.sessionId, cwd: session.cwd,
         engine: session.engine, skillPolicyRef: session.skillPolicyRef, skillExecution: session.skillExecution,
         messages: session.messages.map(({ id, role, text, status, turnId }) => ({ id, role, text, status, turnId })) },
-        native, catalog, capturedFiles, receipts, codeHashes, capturedAt: new Date().toISOString() }));
+        native, catalog, capturedFiles, receipts, codeHashes, capturedAt: new Date().toISOString() });
 }
 
-export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository) {
+const RUNTIME_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const STAGED_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const SUBJECT = 'Live skills runtime';
+
+// The RoboTeam runtime is a managed, global Podman agent. Ploinky's production mount builder
+// (cli/sandbox/docker/agentServiceManager.js) gives it these binds, and only these may overlap a path the
+// evidence reads. Everything else a runtime mounts (/shared, the probe control root, the edge topology,
+// /root, dependency trees, linked repositories) lies outside those paths and is not part of the proof.
+//   - the project bind: the workspace root at its own path, writable (buildPersistentAgentRunArgs, homeLayout.binds)
+//   - the persistent storage `.data/roboTeamAgent` at /data (manifest volume)
+//   - the staged agent source at its own path (buildPodmanStagedTargetMounts: setPodmanTargetMount(agentCodePath))
+//   - /code and /Agent from `<root>/.ploinky/container-runtime/<key>/` (ensurePodmanStagedCodeDir, StagedAgentLibDir)
+//   - the read-only AgentLib grant: Source and Destination are both /opt/ploinky-agentlib (agentLibGrant)
+//   - the read-only self pin of the controller root `<root>/.ploinky` (controllerGuardMounts.pinAncestors). Production
+//     emits it for every runtime that has the root project bind; it needs allow-listing only when the verified
+//     source lives below it, because only then does it overlap a path the evidence reads.
+// /Agent and the AgentLib grant are always emitted exactly once, read-only, so both are required.
+export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository, { workspaceRoot, fixtureWorkspace = null, fsApi = null } = {}) {
+    const root = assertBoxWorkspacePath(workspaceRoot);
     assert.match(runtime.containerId, /^[0-9a-f]{64}$/);
     assert.match(runtime.instanceId, UUID);
     assert.match(runtime.enableGeneration, UUID);
     assert.ok(Number.isFinite(Date.parse(runtime.startedAt)));
     assert.match(runtime.imageId, /^sha256:[0-9a-f]{64}$|^[0-9a-f]{64}$/);
-    const mount = (destination, source) => {
-        const rows = runtime.mounts.filter(item => item.Destination === destination);
-        assert.equal(rows.length, 1, `Runtime needs one exact ${destination} mount.`);
-        assert.equal(rows[0].Type, 'bind');
-        assert.equal(rows[0].Source, source);
-        assert.equal(rows[0].RW, true);
+    assert.match(String(runtime.key), RUNTIME_KEY, 'The runtime registry key is not a single path segment.');
+    assert.ok(typeof expectedRepository === 'string' && expectedRepository.startsWith(`${root}/`)
+        && path.posix.normalize(expectedRepository) === expectedRepository, 'The verified AchillesCLI repository is outside the admitted root.');
+    assert.ok(Array.isArray(runtime.mounts), 'The runtime must report its exact mount inventory.');
+    const options = { fsApi: fsApi || undefined, lexical: true, subject: SUBJECT };
+    const writable = (destination, source) => {
+        const mount = requireMount(runtime.mounts, destination, source, options);
+        assert.equal(mount.RW, true, `Runtime needs a writable ${destination} mount.`);
+        return mount;
     };
-    mount('/workspace', '/workspace');
-    mount('/data', '/workspace/.data/roboTeamAgent');
-    mount(`${expectedRepository}/roboTeamAgent`, `${expectedRepository}/roboTeamAgent`);
-    const code = runtime.mounts.filter(item => item.Destination === '/code');
-    assert.equal(code.length, 1);
-    assert.equal(code[0].Type, 'bind');
-    assert.ok(code[0].Source.startsWith(`/workspace/.ploinky/container-runtime/${runtime.key}/code-`));
+    const staged = (destination, prefix) => {
+        const selected = runtime.mounts.filter(item => item.Destination === destination);
+        assert.equal(selected.length, 1, `Runtime needs one exact ${destination} mount.`);
+        const [mount] = selected;
+        assert.ok(typeof mount.Source === 'string' && mount.Source.startsWith(prefix) && STAGED_DIRECTORY.test(mount.Source.slice(prefix.length)),
+            `Runtime ${destination} is not one staged directory of its own runtime key.`);
+        return requireMount(runtime.mounts, destination, mount.Source, options);
+    };
+    const sourceRoot = `${expectedRepository}/roboTeamAgent`;
+    const stagingRoot = `${root}/.ploinky/container-runtime/${runtime.key}/`;
+    const allowed = [
+        writable(root, root),
+        writable('/data', `${root}/.data/roboTeamAgent`),
+        writable(sourceRoot, sourceRoot),
+        staged('/code', `${stagingRoot}code-`),
+    ];
+    const protectedPaths = ['/data', '/code', '/Agent', '/opt/ploinky-agentlib', sourceRoot];
+    const agent = staged('/Agent', `${stagingRoot}Agent-`);
+    assert.equal(agent.RW, false, 'Runtime /Agent must be read-only.');
+    allowed.push(agent);
+    // The AgentLib source lives in the Box namespace, so only its mount tuple is checked, never a host realpath.
+    allowed.push(requireMount(runtime.mounts, '/opt/ploinky-agentlib', '/opt/ploinky-agentlib', { readOnly: true, lexical: true, subject: SUBJECT }));
+    // The controller root is pinned read-only by a self bind when the verified source lives below it.
+    const pin = `${root}/.ploinky`;
+    if (inside(pin, sourceRoot) && runtime.mounts.some(item => item.Destination === pin)) {
+        allowed.push(requireMount(runtime.mounts, pin, pin, { ...options, readOnly: true }));
+    }
+    if (fixtureWorkspace !== null) {
+        assert.equal(fixtureWorkspace, liveSkillsWorkspace(root, path.posix.basename(fixtureWorkspace)), 'The run folder is not under the admitted root.');
+        protectedPaths.push(fixtureWorkspace);
+    }
+    rejectShadows(runtime.mounts, protectedPaths, allowed, { subject: SUBJECT });
     return runtime;
 }
 
+// Box-side sources the validated runtime binds from. The inner validator resolves them on the host, which only proves
+// something when the Box sees the same directory there, so no outer mount may overlap any of them.
+export function liveSkillsProtectedSources(runtime, expectedRepository, workspaceRoot) {
+    const root = assertBoxWorkspacePath(workspaceRoot);
+    const sourceRoot = `${expectedRepository}/roboTeamAgent`;
+    const sources = [sourceRoot];
+    for (const destination of ['/data', '/code', '/Agent']) {
+        for (const mount of runtime.mounts.filter(item => item.Destination === destination)) sources.push(mount.Source);
+    }
+    const pin = `${root}/.ploinky`;
+    if (inside(pin, sourceRoot) && runtime.mounts.some(item => item.Destination === pin)) sources.push(pin);
+    return sources;
+}
+
+// After the runtime is validated: only the exact root bind (and, in local-AgentLib mode, its exact read-only
+// same-path alias) may overlap those sources, an ancestor of the root, or the run folder.
+function rejectOuterRuntimeShadows(outer, hostWorkspace, protectedSources, agentLibAlias) {
+    const allowed = outer.Mounts.filter(item => item.Destination === hostWorkspace);
+    if (agentLibAlias && outer.Mounts.some(item => item.Destination === agentLibAlias)) {
+        allowed.push(requireMount(outer.Mounts, agentLibAlias, agentLibAlias, { readOnly: true, lexical: true, subject: SUBJECT }));
+    }
+    rejectShadows(outer.Mounts, protectedSources, allowed, { subject: SUBJECT });
+}
+
+// The Box mounts the workspace at its own host path. Besides the exact same-path root, no outer mount may
+// overlap the verified RoboTeam source or any of its ancestors.
+function validateOuterWorkspaceBinding(outer, hostWorkspace, repositorySource, realpathSync) {
+    const root = assertBoxWorkspacePath(hostWorkspace);
+    // Exact root proof: the Box's own PLOINKY_WORKSPACE_ROOT, cwd and one writable same-path bind.
+    assert.equal(inspectBoxWorkspace(outer).source, root, 'The live Box runs another workspace than the selected host workspace.');
+    validateWorkspaceSourceMount(outer.Mounts, root, { realpathSync });
+    rejectShadows(outer.Mounts, [`${repositorySource}/roboTeamAgent`], outer.Mounts.filter(item => item.Destination === root), { subject: SUBJECT });
+}
+
 export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL, verifierPath }, {
-    collectRelease = collectCopilotReleaseEvidence, runCommand = command,
+    collectRelease = collectCopilotReleaseEvidence, runCommand = command, fsApi = fs,
 } = {}) {
     assert.ok(env.SMOKE_PLOINKY_BOX_CONTAINER, 'Set the exact SMOKE_PLOINKY_BOX_CONTAINER name.');
     assert.ok(env.SMOKE_BOX_BASE_URL, 'Set SMOKE_BOX_BASE_URL to the selected host Box loopback origin.');
     assert.ok(env.SMOKE_WORKSPACE_ROOT && path.isAbsolute(env.SMOKE_WORKSPACE_ROOT), 'Set an absolute SMOKE_WORKSPACE_ROOT on the selected host.');
-    const hostWorkspace = fs.realpathSync(env.SMOKE_WORKSPACE_ROOT);
+    const hostWorkspace = assertBoxWorkspacePath(fsApi.realpathSync(env.SMOKE_WORKSPACE_ROOT));
     const collect = () => collectRelease({ manifestPath: env.SMOKE_RELEASE_MANIFEST,
         verifierPath, baseURL, boxBaseURL: env.SMOKE_BOX_BASE_URL,
         expectedContainerName: env.SMOKE_PLOINKY_BOX_CONTAINER, expectedImageRef: env.SMOKE_EXPECT_BOX_IMAGE_REF,
@@ -218,21 +314,31 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
     const release = await collect();
     const box = release.liveBox.box;
     assert.match(box.containerId, /^[0-9a-f]{64}$/);
-    const hostRepository = fs.realpathSync(release.repositories.achillesCLI.repositoryPath);
-    const relative = path.relative(hostWorkspace, hostRepository);
-    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative), 'Verified AchillesCLI must belong to the selected workspace.');
-    const expectedRepository = `/workspace/${relative.split(path.sep).join('/')}`;
-    const codeHashes = Object.fromEntries(CONTRACT_FILES.map(file => [file, liveSkillsHash(fs.readFileSync(path.join(hostRepository, 'roboTeamAgent', file)))]));
+    assert.equal(release.liveBox.workspaceSourceMount?.source, hostWorkspace, 'The verified Box workspace is not the selected host workspace.');
+    // The Box mounts the workspace at its own path, so the verified host repository is also its runtime path.
+    const hostRepository = fsApi.realpathSync(release.repositories.achillesCLI.repositoryPath);
+    assert.ok(hostRepository.startsWith(`${hostWorkspace}/`) && path.posix.normalize(hostRepository) === hostRepository,
+        'Verified AchillesCLI must belong to the selected workspace.');
+    const expectedRepository = hostRepository;
+    // A local or managed AgentLib is shadowed read-only at its own path below the root; an image AgentLib has no alias.
+    const libRelative = release.agentLib?.mode && release.agentLib.mode !== 'image' ? release.agentLib.sourceRelativePath : null;
+    const agentLibAlias = typeof libRelative === 'string' && libRelative !== 'image' ? path.posix.join(hostWorkspace, libRelative) : null;
+    assert.ok(agentLibAlias === null || (agentLibAlias.startsWith(`${hostWorkspace}/`) && path.posix.normalize(agentLibAlias) === agentLibAlias),
+        'The AgentLib source must lie inside the admitted root.');
+    const codeHashes = Object.fromEntries(CONTRACT_FILES.map(file => [file, liveSkillsHash(fsApi.readFileSync(path.join(hostRepository, 'roboTeamAgent', file)))]));
     let initialRuntime;
-    async function binding() {
+    async function binding(fixtureWorkspace = null) {
         const [outer] = await runCommand(['inspect', box.containerId]);
         assert.equal(outer.Id, box.containerId);
         assert.equal(outer.State.Running, true);
         assert.equal(new Date(outer.State.StartedAt).toISOString(), new Date(box.startedAt).toISOString());
         assert.equal(normalizeLiveSkillsImageId(outer.Image), normalizeLiveSkillsImageId(box.imageId));
-        validateWorkspaceSourceMount(outer.Mounts, hostWorkspace);
+        validateOuterWorkspaceBinding(outer, hostWorkspace, expectedRepository, fsApi.realpathSync);
         const runtime = validateLiveSkillsRuntimeBinding(await runCommand(['exec', '-i', '--user', 'podman', box.containerId,
-            'node', '--input-type=module', '-'], program(readRegistryAndRuntime, {})), expectedRepository);
+            'node', '--input-type=module', '-'], program(readRegistryAndRuntime, { workspaceRoot: hostWorkspace })), expectedRepository,
+        { workspaceRoot: hostWorkspace, fixtureWorkspace, fsApi });
+        rejectOuterRuntimeShadows(outer, hostWorkspace, [...liveSkillsProtectedSources(runtime, expectedRepository, hostWorkspace),
+            ...(fixtureWorkspace ? [fixtureWorkspace] : [])], agentLibAlias);
         if (initialRuntime) assert.deepEqual(runtime, initialRuntime, 'RoboTeam runtime was replaced, restarted or remounted during the test.');
         else initialRuntime = runtime;
         return runtime;
@@ -240,12 +346,16 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
     await binding();
     return {
         release,
+        workspaceRoot: hostWorkspace,
         async capture({ sessionId, fixture }) {
-            const runtime = await binding();
+            assert.equal(fixture.workspace, liveSkillsWorkspace(hostWorkspace, fixture.folder), 'The fixture is not under the admitted workspace root.');
+            const runtime = await binding(fixture.workspace);
             const snapshot = await runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
                 'node', '--input-type=module', '-'], program(readLiveSkillsSnapshot, {
-                sessionId, folder: fixture.folder, skillNames: [fixture.control.name, fixture.probe.name, fixture.added.name], contractFiles: CONTRACT_FILES, expectedRepository,
+                sessionId, folder: fixture.folder, skillNames: [fixture.control.name, fixture.probe.name, fixture.added.name], contractFiles: CONTRACT_FILES,
+                expectedRepository, workspaceRoot: hostWorkspace,
             }));
+            assert.equal(snapshot.workspaceRoot, hostWorkspace, 'The runtime capture used a different workspace root.');
             assert.deepEqual(snapshot.codeHashes, codeHashes, 'Running Copilot source differs from the verified checkout.');
             return snapshot;
         },
