@@ -37,7 +37,7 @@ export function renderHardwareLimits(snapshot, drafts, { busy = false, error = '
             ${draft?.conflict ? '<p class="hardware-limits-conflict" role="status">Policy changed elsewhere. Your unsaved values remain below. Review the refreshed stored and effective values before saving again.</p>' : ''}
             <div class="hardware-limit-fields">${fields.map(([field, label, step]) => `<label class="hardware-limit-field">${label}<input class="form-input" type="number" step="${step}" min="${field === 'cpus' ? '0.05' : '1'}"${field !== 'cpus' ? ' max="100"' : ''} data-hardware-field="${field}" data-agent-index="${index}" value="${escapeHtml(draft?.[field] || '')}"${disabled}${!gpuEnabled && ['smPercent', 'vramPercent'].includes(field) ? ' disabled' : ''}></label>`).join('')}</div>
             <div class="hardware-policy-actions"><button class="general-button" type="button" data-hardware-action="save" data-agent-index="${index}"${disabled}>${draft?.conflict ? 'Review and save' : 'Save desired limits'}</button><button class="gray-button" type="button" data-hardware-action="clear" data-agent-index="${index}"${disabled}>Clear override</button>${draft?.dirty ? '<span class="hardware-instance-detail">Unsaved edits</span>' : ''}</div>
-            ${containers.length ? `<table class="hardware-instances"><thead><tr><th>Exact instance</th><th>Availability / limits</th><th>Applied / usage</th><th>Action</th></tr></thead><tbody>${containers.map((instance, instanceIndex) => `<tr><td>${escapeHtml(instance.alias == null ? 'Canonical instance' : `Alias: ${instance.alias}`)}<code>${escapeHtml(instance.key)}</code></td><td><span class="hardware-instance-state">${escapeHtml(instance.availability || 'stopped')}</span> / ${escapeHtml(instance.limitsState || 'unavailable')}<p class="hardware-instance-problem">${escapeHtml(describeProblem(instance))}</p></td><td>${escapeHtml(describeApplied(instance.limits))}<p class="hardware-instance-detail">${escapeHtml(describeUsage(instance))}</p></td><td><button class="general-button" type="button" data-hardware-action="apply" data-agent-index="${index}" data-instance-index="${instanceIndex}"${disabled}>Apply instance</button></td></tr>`).join('')}</tbody></table>` : '<p class="hardware-instance-detail">Not enabled. Saved policy will apply when this agent starts.</p>'}
+            ${containers.length ? `<table class="hardware-instances"><thead><tr><th>Exact instance</th><th>Availability / limits</th><th>Desired / applied / usage</th><th>Action</th></tr></thead><tbody>${containers.map((instance, instanceIndex) => `<tr><td>${escapeHtml(instance.alias == null ? 'Canonical instance' : `Alias: ${instance.alias}`)}<code>${escapeHtml(instance.key)}</code></td><td><span class="hardware-instance-state">${escapeHtml(instance.availability || 'stopped')}</span> / ${escapeHtml(instance.limitsState || 'unavailable')}<p class="hardware-instance-problem">${escapeHtml(describeProblem(instance))}</p></td><td><p class="hardware-instance-detail">Desired ${escapeHtml(policyDescription(instance.effective))}</p>Applied ${escapeHtml(describeApplied(instance.limits))}<p class="hardware-instance-detail">${escapeHtml(describeUsage(instance))}</p></td><td><button class="general-button" type="button" data-hardware-action="apply" data-agent-index="${index}" data-instance-index="${instanceIndex}"${disabled}>Apply instance</button></td></tr>`).join('')}</tbody></table>` : '<p class="hardware-instance-detail">Not enabled. Saved policy will apply when this agent starts.</p>'}
             </article>`;
     }).join('') : '<p>No installed agents are available.</p>'}
         <details class="hardware-limit-help"><summary>GPU assurance and administrator authority</summary>${GPU_HELP.map((sentence) => `<p>${escapeHtml(sentence)}</p>`).join('')}<p>Host operator commands: <code>sudo nvidia-smi -i 0 -c EXCLUSIVE_PROCESS</code>; undo with <code>sudo nvidia-smi -i 0 -c DEFAULT</code>.</p><p>${escapeHtml(AUTHORITY_HELP)}</p><p>An optional no-wait child refusal does not block its parent. A required refused dependency blocks its consumers; those consumers are never ready. If Explorer itself is blocked, host <code>ploinky limits status</code>, <code>ploinky limits clear</code> and Router administration provide recovery.</p></details>`;
@@ -124,13 +124,14 @@ export class HardwareLimitsPanel {
         this.render();
     }
 
-    async refresh() {
+    async refresh({ force = false } = {}) {
         if (this.closed || this.busy || this.reading) return;
         const generation = ++this.readGeneration;
         this.reading = generation;
         try {
             const snapshot = await this.api.read({ signal: this.abort.signal });
             if (this.closed || generation !== this.readGeneration) return;
+            if (!force && [...this.drafts.values()].some((draft) => draft.dirty)) return;
             this.error = '';
             this.acceptSnapshot(snapshot);
         } catch (error) {
@@ -168,7 +169,7 @@ export class HardwareLimitsPanel {
 
     async action(dataset) {
         if (this.busy || this.closed) return;
-        if (dataset.hardwareAction === 'refresh') return this.refresh();
+        if (dataset.hardwareAction === 'refresh') return this.refresh({ force: true });
         const agent = this.snapshot?.agents?.[Number(dataset.agentIndex)];
         const draft = this.drafts.get(agent?.ref);
         const instance = agent?.containers?.[Number(dataset.instanceIndex)];

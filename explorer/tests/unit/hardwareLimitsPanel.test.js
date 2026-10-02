@@ -290,3 +290,30 @@ for (const status of [207, 409]) {
         assert.deepEqual(presenter.snapshot.token, token(2));
     });
 }
+
+
+test('exact alias rows show profile-specific desired values beside applied limits', () => {
+    const value = snapshot();
+    value.agents[0].containers[0].effective = { cpus: 2.25, memoryBytes: 3 * 1024 ** 3 };
+    const presenter = panel({}, value);
+    const html = renderHardwareLimits(value, presenter.drafts);
+    assert.match(html, /Desired 2.25 CPU cores, 3.0 GiB RAM/);
+    assert.match(html, /Applied/);
+    assert.match(html, /1.0 GiB/);
+});
+
+test('a successful poll arriving during edits preserves the current input DOM', async () => {
+    let finish;
+    const presenter = panel({ read: () => new Promise((resolve) => { finish = resolve; }) });
+    let renders = 0;
+    presenter.content = { set innerHTML(_) { renders += 1; } };
+    const request = presenter.refresh();
+    presenter.edit({ dataset: { hardwareField: 'cpus', agentIndex: '0' }, value: '2' });
+    finish(snapshot(2));
+    await request;
+    assert.equal(renders, 0);
+    assert.equal(presenter.drafts.get(ref).cpus, '2');
+    assert.deepEqual(presenter.snapshot.token, token(1));
+    presenter.edit({ dataset: { hardwareField: 'cpus', agentIndex: '0' }, value: '2.25' });
+    assert.equal(presenter.drafts.get(ref).cpus, '2.25');
+});
