@@ -11,8 +11,8 @@ import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { setComposer, waitForWebchatIdle } from '../lib/webchat.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
 import {
-  CodexAuthError, acceptCopyBack, acquireRunLock, assertNoQuarantine, assertPrivateRoot, classifyTurnFailure, createInflight, isRunId,
-  listQuarantines, loadStream, planRecovery, readInflight, removeInflight, resolveAuthPaths, robotDeleteAccepted, sha256Hex,
+  CodexAuthError, acquireRunLock, assertNoQuarantine, assertPrivateRoot, classifyTurnFailure, createCredentialSession, createInflight, isRunId,
+  planRecovery, readInflight, removeInflight, resolveAuthPaths, robotDeleteAccepted,
 } from '../lib/codex-test-auth.mjs';
 import { TEST_ROBOT_PREFIX, bindingUnchanged, createCodexRuntime, credentialPhase } from '../lib/codex-test-auth-runtime.mjs';
 
@@ -66,7 +66,8 @@ function freshResult(runId) {
 test.describe('Codex-authenticated Copilot native turn', () => {
   test.skip(!enabled, 'Opt in with SMOKE_COPILOT_CODEX=1 through npm run test:copilot-codex.');
   test('one bounded native Codex turn in a run-owned robot with an owned, serialized login stream', async ({ page }, testInfo) => {
-    test.setTimeout(20 * 60_000);
+    // The phase budgets add up to about 15.75 min and recovery can add 12 min; the finally path must always fit.
+    test.setTimeout(35 * 60_000);
     assert.equal(testInfo.retry, 0, 'Acceptance retries are forbidden.');
     assert.equal(testInfo.project.retries, 0, 'Configure zero retries for this gate.');
     assert.equal(testInfo.config.workers, 1, 'Run this gate with one worker.');
@@ -81,16 +82,10 @@ test.describe('Codex-authenticated Copilot native turn', () => {
     let primary = null;
     let cleanupFailure = null;
     let lock = null;
-    let lockHeld = false;
-    let loaded = null;
+    let session = null;
     let robot = null;
     let inflightCreated = false;
     let folderCreated = false;
-    let injected = false;
-    let injectConfirmed = false;
-    let runtimeBytes = null;
-    let persisted = false;
-    let removed = false;
     let dashboard = null;
     let chat = null;
     let recoveryPending = null;
@@ -122,43 +117,12 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       assert.equal(remaining.length, 0, 'The robot still exists after robot-delete.');
     }
 
-    // Persist-or-quarantine the runtime copy, then remove it with the persisted hash. `target` is the robot holding the copy.
-    async function persistAndRemove(target, { confirmed }) {
-      if (!persisted) {
-        let copied;
-        try { copied = await runtime.readForCopyBack(target, { timeoutMs: 30_000 }); } catch (error) {
-          if (error?.code === 'NOT_FOUND') {
-            persisted = true;
-            removed = true;
-            if (confirmed) throw new CodexAuthError('COPYBACK_REFUSED', 'runtime-auth-missing');
-            return;
-          }
-          throw new CodexAuthError('CLEANUP_INCOMPLETE', 'credential-not-persisted');
-        }
-        runtimeBytes = copied.bytes;
-        // The stream is only ever written under the host lock.
-        if (!lockHeld) throw new CodexAuthError('CLEANUP_INCOMPLETE', 'credential-not-persisted');
-        try {
-          const outcome = acceptCopyBack(paths, { loadedSha256: loaded.sha256, loadedBytes: loaded.bytes, runtimeBytes, runId });
-          Object.assign(result.stream, { sameAccount: outcome.sameAccount, refreshedDuringRun: outcome.refreshedDuringRun,
-            lastRefreshAdvanced: outcome.lastRefreshAdvanced, replaced: outcome.replaced });
-          persisted = true;
-        } catch (error) {
-          if (!(error instanceof CodexAuthError)) throw new CodexAuthError('CLEANUP_INCOMPLETE', 'credential-not-persisted');
-          if (error.quarantined) {
-            persisted = true;
-            result.stream.quarantined = true;
-            result.stream.refreshedDuringRun = true;
-            result.stream.sameAccount = error.reason === 'other-account' ? false : result.stream.sameAccount;
-            try { await runtime.remove(target, sha256Hex(runtimeBytes)); removed = true; } catch { throw new CodexAuthError('CLEANUP_INCOMPLETE', 'credential-not-removed'); }
-          }
-          throw error;
-        }
-      }
-      if (!removed) {
-        try { await runtime.remove(target, sha256Hex(runtimeBytes)); removed = true; } catch { throw new CodexAuthError('CLEANUP_INCOMPLETE', 'credential-not-removed'); }
-      }
-    }
+    // The credential bytes, their moves and the stream's reload after a recovery live in the tested library session.
+    const credential = () => session?.state ?? { injected: false, injectConfirmed: false, persisted: false, removed: false };
+    const recordBefore = (summary) => {
+      result.stream.lastRefreshAgeHoursBefore = summary.lastRefreshAgeHours;
+      result.stream.accessValidHoursBefore = summary.accessValidHours;
+    };
 
     function writeResult() {
       const fd = fs.openSync(smokeArtifactPath('codex-auth', 'result.json'),
@@ -178,10 +142,9 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       await credentialPhase(BUDGET.setup + BUDGET.recovery, async () => {
         assertPrivateRoot(paths, { forbiddenRoots: [smokeConfig.repoRoot, workspaceRoot, smokeConfig.artifactRoot] });
         lock = acquireRunLock(paths, { runId });
-        lockHeld = true;
-        loaded = loadStream(paths);
-        result.stream.lastRefreshAgeHoursBefore = loaded.summary.lastRefreshAgeHours;
-        result.stream.accessValidHoursBefore = loaded.summary.accessValidHours;
+        session = createCredentialSession({ paths, runtime, runId });
+        session.holdLock(true);
+        recordBefore(session.load().summary);
         try { await runtime.registryRuntime(workspaceRoot); } catch (error) { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'binding'); }
         const inflight = readInflight(paths);
         let inventory;
@@ -191,17 +154,15 @@ test.describe('Codex-authenticated Copilot native turn', () => {
         if (plan.action === 'copy-back-then-delete') {
           result.cleanup.credentialPersisted = false;
           result.cleanup.credentialRemoved = false;
-          try { await persistAndRemove(recoveryPending.robot, { confirmed: true }); } catch (error) {
-            if (!(error instanceof CodexAuthError) || error.code === 'CLEANUP_INCOMPLETE') throw classify(error, 'CLEANUP_INCOMPLETE', 'recovery-incomplete');
-            recoveryRefusal = error;
+          try { recoveryRefusal = (await session.recover(recoveryPending.robot)).refusal; } catch (error) {
+            throw classify(error, 'CLEANUP_INCOMPLETE', 'recovery-incomplete');
           }
           result.recovered = true;
-          // The recovered copy no longer counts for this run's own persist and remove.
-          persisted = false;
-          removed = false;
-          runtimeBytes = null;
           result.cleanup.credentialPersisted = true;
           result.cleanup.credentialRemoved = true;
+          // Recovery may have replaced the stream with a refreshed state. The session reloaded it, so what this run injects and
+          // compares against is the current stream, and the "before" figures describe that stream.
+          recordBefore(session.state.loaded.summary);
         }
         // With a recovery pending the refusal waits until the robot and folder are gone, so inflight.json never blocks adopt or retire.
         if (!recoveryPending) assertNoQuarantine(paths);
@@ -292,11 +253,9 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       await credentialPhase(BUDGET.inject, async () => {
         result.cleanup.credentialPersisted = false;
         result.cleanup.credentialRemoved = false;
-        injected = true;
-        try { await runtime.inject(robot, loaded.bytes); } catch (error) {
+        try { await session.inject(robot); } catch (error) {
           throw new CodexAuthError('RUNTIME_PREREQ_FAILED', error?.code === 'TARGET_EXISTS' ? 'target-exists' : 'binding');
         }
-        injectConfirmed = true;
       });
 
       // Step 9: one bounded native turn through the browser, no retry.
@@ -361,18 +320,20 @@ test.describe('Codex-authenticated Copilot native turn', () => {
           const found = (await runtime.robotInventory().catch(() => [])).find((entry) => entry.name === robotName);
           if (found) { robot = { robotId: found.id, robotName }; result.robot.id = found.id; result.robot.created = true; }
         }
-        if (injected && robot && !(persisted && removed)) {
-          await credentialPhase(BUDGET.copyBack + BUDGET.remove, () => persistAndRemove(robot, { confirmed: injectConfirmed })).catch((error) => {
+        const held = credential();
+        if (held.injected && robot && !(held.persisted && held.removed)) {
+          await credentialPhase(BUDGET.copyBack + BUDGET.remove, () => session.persistAndRemove(robot, { confirmed: held.injectConfirmed })).catch((error) => {
             note('persist', error);
             if (error instanceof CodexAuthError && error.code === 'CLEANUP_INCOMPLETE') cleanupFailure ??= error;
             else fail(error, 'COPYBACK_REFUSED', 'invalid');
           });
         }
-        result.cleanup.credentialPersisted = !injected || persisted;
-        result.cleanup.credentialRemoved = !injected || removed;
+        result.cleanup.credentialPersisted = !held.injected || held.persisted;
+        result.cleanup.credentialRemoved = !held.injected || held.removed;
       } catch (error) { note('persist-outer', error); cleanupFailure ??= new CodexAuthError('CLEANUP_INCOMPLETE', 'credential-not-persisted'); }
 
-      const credentialSettled = !injected || (persisted && removed);
+      const settled = credential();
+      const credentialSettled = !settled.injected || (settled.persisted && settled.removed);
       if (robot && credentialSettled) {
         try {
           await within(BUDGET.teardown, async () => {
@@ -402,13 +363,15 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       // Binding after, the default robot unchanged, then the marker.
       if (runtime && result.binding.before && result.cleanup.robotDeleted && result.cleanup.folderDeleted) {
         try {
-          result.binding.after = await runtime.readBinding({ workspaceRoot, smokeRepository: smokeConfig.repoRoot });
-          result.binding.unchanged = bindingUnchanged(result.binding.before, result.binding.after);
-          result.codexClient.post = result.binding.after.codexClient ?? null;
-          const robots = await roboTeamApi(await dashboardPage(), { path: 'api/robots' });
-          const defaults = (robots.payload?.robots || []).filter((entry) => entry?.name === 'default');
-          result.defaultRobot.codingAgentsAfter = defaults.length === 1 ? defaults[0].codingAgents ?? null : null;
-          result.defaultRobot.unchanged = JSON.stringify(result.defaultRobot.codingAgentsBefore) === JSON.stringify(result.defaultRobot.codingAgentsAfter);
+          await within(BUDGET.finish, async () => {
+            result.binding.after = await runtime.readBinding({ workspaceRoot, smokeRepository: smokeConfig.repoRoot });
+            result.binding.unchanged = bindingUnchanged(result.binding.before, result.binding.after);
+            result.codexClient.post = result.binding.after.codexClient ?? null;
+            const robots = await roboTeamApi(await dashboardPage(), { path: 'api/robots' });
+            const defaults = (robots.payload?.robots || []).filter((entry) => entry?.name === 'default');
+            result.defaultRobot.codingAgentsAfter = defaults.length === 1 ? defaults[0].codingAgents ?? null : null;
+            result.defaultRobot.unchanged = JSON.stringify(result.defaultRobot.codingAgentsBefore) === JSON.stringify(result.defaultRobot.codingAgentsAfter);
+          });
           if (!result.binding.unchanged || !result.defaultRobot.unchanged) fail(null, 'IDENTITY_MISMATCH', 'binding-changed');
         } catch (error) { note('binding-after', error); fail(error, 'IDENTITY_MISMATCH', 'binding-changed'); }
       }
@@ -424,7 +387,11 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       if (primary) result.primaryFailure = { code: primary.code, reason: primary.reason };
       if (final) { result.code = final.code; result.reason = final.reason; result.exitCode = final.exitCode; }
       result.finishedAt = new Date().toISOString();
-      try { writeResult(); } finally { lockHeld = false; lock?.release(); }
+      if (session) {
+        Object.assign(result.stream, session.state.stream);
+        if (session.state.recoveryStream) result.recoveredStream = session.state.recoveryStream;
+      }
+      try { writeResult(); } finally { session?.holdLock(false); lock?.release(); }
       assert.equal(result.code, 'OK', `codex-test-auth ${result.code} ${result.reason}`);
     }
   });

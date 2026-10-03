@@ -6,7 +6,7 @@ import { test } from 'node:test';
 
 import {
   CodexAuthError, EXIT_CODES, EXIT_REASONS, acceptCopyBack, acquireRunLock, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot,
-  classifyTurnFailure, createInflight, describeFailure, inspectLock, inspectStream, loadStream, lockStatus, planRecovery, readInflight,
+  classifyTurnFailure, collectScanReferences, createCredentialSession, createInflight, describeFailure, inspectLock, inspectStream, loadStream, lockStatus, planRecovery, readInflight,
   removeInflight, resolveAuthPaths, resultLine, retireStream, robotDeleteAccepted, scanLeaks, seedStream, sha256Hex, summarizeAuth,
   validateAuthArtifact,
 } from './codex-test-auth.mjs';
@@ -781,4 +781,214 @@ test('lockStatus reports free, held with its reason, and stale without changing 
   assert.deepEqual(snapshot(root), before);
   fs.writeFileSync(paths.lockPath, 'garbage');
   assert.deepEqual(lockStatus(paths, { procRoot: proc.dir }), { state: 'held', reason: 'ambiguous-owner' });
+});
+
+test('dead-owner recovery is exclusive: a second recoverer fails closed while a claim exists', (t) => {
+  const { paths, root, proc } = setup(t, { stream: auth() });
+  const token = 'f'.repeat(32);
+  const claim = `${paths.lockPath}.recovery`;
+  const plantDeadLock = () => {
+    const candidate = path.join(root, `.run-owner-${token}.json`);
+    fs.writeFileSync(candidate, JSON.stringify({ pid: 777777, start: '9', boot: 'boot-1', token, runId: 'dead', startedAt: 'x' }), { mode: 0o600 });
+    fs.linkSync(candidate, paths.lockPath);
+  };
+  // A recoverer that died mid-recovery leaves its fixed claim: nobody else recovers, and preflight reports it as held.
+  plantDeadLock();
+  fs.writeFileSync(claim, 'claim of another recoverer', { mode: 0o600 });
+  assert.deepEqual(lockStatus(paths, { procRoot: proc.dir }), { state: 'held', reason: 'ambiguous-owner' });
+  assert.throws(() => acquireRunLock(paths, { runId: 'second', procRoot: proc.dir }), failure('LOCK_HELD', 'ambiguous-owner'));
+  assert.equal(fs.existsSync(paths.lockPath), true, 'the dead lock is not removed by a recoverer that lost the claim');
+  assert.equal(fs.readFileSync(claim, 'utf8'), 'claim of another recoverer', 'a foreign claim is never removed');
+  assert.deepEqual(fs.readdirSync(root).filter((name) => name.startsWith('.run-')), [`.run-owner-${token}.json`], 'the failed attempt leaves no candidate');
+  fs.rmSync(claim);
+  assert.equal(lockStatus(paths, { procRoot: proc.dir }).state, 'stale');
+  // Two recoverers: while the first one holds the claim (inside its recovery), a second one is refused, and the first completes.
+  const original = fs.linkSync;
+  let nested = null;
+  fs.linkSync = (from, to) => {
+    const done = original(from, to);
+    if (to === claim) {
+      try { acquireRunLock(paths, { runId: 'nested', procRoot: proc.dir }); } catch (error) { nested = error; }
+    }
+    return done;
+  };
+  t.after(() => { fs.linkSync = original; });
+  const lock = acquireRunLock(paths, { runId: 'first', procRoot: proc.dir, now: NOW });
+  fs.linkSync = original;
+  assert.equal(lock.recovered, true);
+  assert.ok(nested && failure('LOCK_HELD', 'ambiguous-owner')(nested), 'the nested recoverer fails closed');
+  assert.equal(fs.existsSync(claim), false, 'the claim is removed after the recovery');
+  assert.equal(JSON.parse(fs.readFileSync(paths.lockPath, 'utf8')).runId, 'first');
+  lock.release();
+  assert.deepEqual(fs.readdirSync(root).sort(), ['streams']);
+});
+
+test('acceptCopyBack re-checks the stream hash again right before the atomic replace', (t) => {
+  const loaded = auth({ seed: 'loaded', refreshed: NOW - 2 * HOUR });
+  const { paths } = setup(t, { stream: loaded });
+  const raced = auth({ seed: 'raced', refreshed: NOW - 90 * 60_000 });
+  const refreshed = auth({ seed: 'refreshed', refreshed: NOW - 60_000 });
+  // The stream changes after the temporary file was created, which is after the first hash check has passed.
+  const original = fs.openSync;
+  fs.openSync = (file, flags, ...rest) => {
+    const fd = original(file, flags, ...rest);
+    if (path.basename(String(file)) === 'auth.json.next-run-r2') fs.writeFileSync(paths.streamFile, raced);
+    return fd;
+  };
+  t.after(() => { fs.openSync = original; });
+  assert.throws(() => acceptCopyBack(paths, { loadedSha256: sha256Hex(loaded), loadedBytes: loaded, runtimeBytes: refreshed, runId: 'run-r2', now: NOW }),
+    (error) => failure('COPYBACK_REFUSED', 'stream-changed')(error) && error.quarantined === true);
+  fs.openSync = original;
+  assert.deepEqual(fs.readFileSync(paths.streamFile), raced, 'the stream that moved underneath is never overwritten');
+  assert.deepEqual(fs.readFileSync(path.join(paths.streamDir, 'quarantine-run-r2.json')), refreshed);
+  assert.deepEqual(fs.readdirSync(paths.streamDir).sort(), ['auth.json', 'quarantine-run-r2.json'], 'no temporary file is left behind');
+});
+
+function fakeRuntime({ copyBack = [], injectError = null } = {}) {
+  const calls = { injected: [], removed: [], readForCopyBack: [] };
+  const queue = [...copyBack];
+  return { calls,
+    async inject(robot, bytes) { calls.injected.push(Buffer.from(bytes)); if (injectError) throw injectError; return { ok: true }; },
+    async readForCopyBack(robot, options) {
+      calls.readForCopyBack.push(options);
+      const next = queue.shift();
+      if (next instanceof Error) throw next;
+      return { bytes: Buffer.from(next), size: next.length, mode: '600' };
+    },
+    async remove(robot, sha) { calls.removed.push(sha); return { ok: true, removed: true }; } };
+}
+
+const ROBOT = { robotId: 'codex-auth-test-r1-ab12', robotName: 'codex-auth-test-r1' };
+const programError = (code) => Object.assign(new Error(code), { code });
+
+test('after a recovery replaced the stream, the session reloads it and injects the current stream, never superseded bytes', async (t) => {
+  const original = auth({ seed: 's0', refreshed: NOW - 3 * HOUR });
+  const recovered = auth({ seed: 's1', refreshed: NOW - 2 * HOUR });
+  const next = auth({ seed: 's2', refreshed: NOW - 60_000 });
+  const { paths, proc } = setup(t, { stream: original });
+  const runtime = fakeRuntime({ copyBack: [recovered, next] });
+  const session = createCredentialSession({ paths, runtime, runId: 'run-s', now: () => NOW });
+  const lock = acquireRunLock(paths, { runId: 'run-s', procRoot: proc.dir, now: NOW });
+  session.holdLock(true);
+  assert.deepEqual(session.load().bytes, original);
+  // Recovery of a previous crashed run persists its refreshed copy into the stream.
+  const outcome = await session.recover(ROBOT);
+  assert.equal(outcome.refusal, null);
+  assert.deepEqual(fs.readFileSync(paths.streamFile), recovered);
+  assert.deepEqual(session.state.loaded.bytes, recovered, 'the loaded stream was reloaded after the recovery');
+  assert.equal(session.state.loaded.summary.lastRefreshAgeHours, 2);
+  assert.equal(session.state.recoveryStream.replaced, true);
+  assert.deepEqual(session.state.stream, { sameAccount: null, refreshedDuringRun: false, lastRefreshAdvanced: false, replaced: false, quarantined: false });
+  assert.deepEqual([session.state.persisted, session.state.removed, session.state.injected], [false, false, false]);
+  assert.deepEqual(runtime.calls.removed, [sha256Hex(recovered)]);
+  // This run injects the post-recovery stream, byte for byte.
+  await session.inject(ROBOT);
+  assert.equal(runtime.calls.injected.length, 1);
+  assert.deepEqual(runtime.calls.injected[0], recovered);
+  assert.notDeepEqual(runtime.calls.injected[0], original);
+  assert.deepEqual([session.state.injected, session.state.injectConfirmed], [true, true]);
+  // The refresh of this run is compared against the reloaded stream, so it replaces it instead of being quarantined.
+  await session.persistAndRemove(ROBOT, { confirmed: true });
+  assert.deepEqual(fs.readFileSync(paths.streamFile), next);
+  assert.deepEqual(session.state.stream, { sameAccount: true, refreshedDuringRun: true, lastRefreshAdvanced: true, replaced: true, quarantined: false });
+  assert.deepEqual(fs.readdirSync(paths.streamDir), ['auth.json']);
+  assert.deepEqual(runtime.calls.removed, [sha256Hex(recovered), sha256Hex(next)]);
+  lock.release();
+});
+
+test('the credential session writes only under the lock, quarantines refusals and reports recovery failures', async (t) => {
+  const original = auth({ seed: 's0', refreshed: NOW - 2 * HOUR });
+  const older = auth({ seed: 'older', refreshed: NOW - 5 * HOUR });
+  // Without the lock nothing is persisted, and the stream stays as it was.
+  {
+    const { paths } = setup(t, { stream: original });
+    const runtime = fakeRuntime({ copyBack: [auth({ seed: 'new', refreshed: NOW - 60_000 })] });
+    const session = createCredentialSession({ paths, runtime, runId: 'run-u', now: () => NOW });
+    session.load();
+    await assert.rejects(session.persistAndRemove(ROBOT, { confirmed: true }), failure('CLEANUP_INCOMPLETE', 'credential-not-persisted'));
+    assert.deepEqual(fs.readFileSync(paths.streamFile), original);
+    assert.deepEqual(runtime.calls.removed, [], 'an unpersisted runtime copy is never removed');
+  }
+  // A recovery whose copy is older than the stream is quarantined, removed, and returned as a refusal after the reload.
+  {
+    const { paths } = setup(t, { stream: original });
+    const runtime = fakeRuntime({ copyBack: [older] });
+    const session = createCredentialSession({ paths, runtime, runId: 'run-v', now: () => NOW });
+    session.holdLock(true);
+    session.load();
+    const { refusal } = await session.recover(ROBOT);
+    assert.ok(failure('COPYBACK_REFUSED', 'stale-last-refresh')(refusal));
+    assert.deepEqual(fs.readFileSync(path.join(paths.streamDir, 'quarantine-run-v.json')), older);
+    assert.deepEqual(fs.readFileSync(paths.streamFile), original);
+    assert.deepEqual(runtime.calls.removed, [sha256Hex(older)]);
+    assert.deepEqual(session.state.loaded.bytes, original);
+  }
+  // A recovery that cannot read the copy is a failure, and the stream is not reloaded or touched.
+  {
+    const { paths } = setup(t, { stream: original });
+    const session = createCredentialSession({ paths, runtime: fakeRuntime({ copyBack: [programError('BUSY')] }), runId: 'run-w', now: () => NOW });
+    session.holdLock(true);
+    session.load();
+    await assert.rejects(session.recover(ROBOT), failure('CLEANUP_INCOMPLETE', 'recovery-incomplete'));
+  }
+  // A missing runtime copy: nothing to persist. Unconfirmed it is silent, confirmed it is exit 24 without a quarantine file.
+  {
+    const { paths } = setup(t, { stream: original });
+    const quiet = createCredentialSession({ paths, runtime: fakeRuntime({ copyBack: [programError('NOT_FOUND')] }), runId: 'run-x', now: () => NOW });
+    quiet.holdLock(true);
+    quiet.load();
+    await quiet.persistAndRemove(ROBOT, { confirmed: false });
+    assert.deepEqual([quiet.state.persisted, quiet.state.removed], [true, true]);
+    const loud = createCredentialSession({ paths, runtime: fakeRuntime({ copyBack: [programError('NOT_FOUND')] }), runId: 'run-y', now: () => NOW });
+    loud.holdLock(true);
+    loud.load();
+    await assert.rejects(loud.persistAndRemove(ROBOT, { confirmed: true }), failure('COPYBACK_REFUSED', 'runtime-auth-missing'));
+    assert.deepEqual(fs.readdirSync(paths.streamDir), ['auth.json'], 'runtime-auth-missing writes no quarantine, so nothing blocks the next run');
+    assert.deepEqual(fs.readFileSync(paths.streamFile), original);
+    assert.doesNotThrow(() => assertNoQuarantine(paths));
+  }
+  // An inject of unknown outcome still marks the credential as injected, so the copy-back is attempted.
+  {
+    const { paths } = setup(t, { stream: original });
+    const session = createCredentialSession({ paths, runtime: fakeRuntime({ injectError: programError('TIMEOUT') }), runId: 'run-z', now: () => NOW });
+    session.load();
+    await assert.rejects(session.inject(ROBOT), (error) => error.code === 'TIMEOUT');
+    assert.deepEqual([session.state.injected, session.state.injectConfirmed], [true, false]);
+    await assert.rejects(createCredentialSession({ paths, runtime: fakeRuntime(), runId: 'run-n', now: () => NOW }).inject(ROBOT), failure('USAGE', 'bad-variable'));
+  }
+});
+
+test('scan-leaks refuses an empty reference set and covers retired credentials and quarantine files', (t) => {
+  const base = sandbox(t);
+  const dir = path.join(base, 'artifacts');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, 'a.log'), 'nothing here');
+  // An empty root has no reference, so a scan cannot pass vacuously.
+  const empty = setup(t);
+  assert.deepEqual(collectScanReferences(empty.paths), []);
+  assert.throws(() => scanLeaks(dir, collectScanReferences(empty.paths)), failure('STREAM_UNSAFE', 'scan-reference-missing'));
+  assert.throws(() => scanLeaks(dir, []), failure('STREAM_UNSAFE', 'scan-reference-missing'));
+  assert.throws(() => scanLeaks(dir, [Buffer.from('abc')]), failure('STREAM_UNSAFE', 'scan-reference-missing'));
+  // Current stream, quarantine file, and (after retire) the retired stream with its own quarantine file.
+  const stream = auth({ seed: 'current' });
+  const quarantined = auth({ seed: 'quarantined' });
+  const { paths, proc } = setup(t, { stream });
+  fs.writeFileSync(path.join(paths.streamDir, 'quarantine-q1.json'), quarantined, { mode: 0o600 });
+  assert.equal(collectScanReferences(paths).length, 2);
+  fs.writeFileSync(path.join(dir, 'leak-q.log'), JSON.parse(quarantined).tokens.refresh_token);
+  assert.deepEqual(scanLeaks(dir, collectScanReferences(paths)).leaks, [{ file: 'leak-q.log', field: 'refreshToken' }]);
+  fs.rmSync(path.join(dir, 'leak-q.log'));
+  retireStream(paths, { now: NOW, procRoot: proc.dir });
+  assert.equal(fs.existsSync(paths.streamFile), false);
+  const references = collectScanReferences(paths);
+  assert.equal(references.length, 2, 'the retired stream and its quarantine file are still scanned for');
+  fs.writeFileSync(path.join(dir, 'leak-retired.log'), `old ${JSON.parse(stream).tokens.refresh_token}`);
+  fs.writeFileSync(path.join(dir, 'leak-retired-q.log'), JSON.parse(quarantined).tokens.refresh_token);
+  const { leaks } = scanLeaks(dir, references);
+  assert.deepEqual(leaks.map((entry) => entry.file).sort(), ['leak-retired-q.log', 'leak-retired.log']);
+  // A symlinked credential file in the retired area is skipped, not followed.
+  const other = path.join(paths.retiredDir, 'other-20261003T120000Z');
+  fs.mkdirSync(other, { mode: 0o700 });
+  fs.symlinkSync(path.join(dir, 'a.log'), path.join(other, 'auth.json'));
+  assert.equal(collectScanReferences(paths).length, 2);
 });

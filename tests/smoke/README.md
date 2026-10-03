@@ -840,7 +840,7 @@ Run `npm run test:copilot-codex` on apparatus (Ubuntu) only. The gate makes the 
 | --- | --- |
 | `node ./scripts/codex-test-auth.mjs preflight` | Read-only readiness check. Exit 0 means ready. It writes nothing under `CODEX_TEST_AUTH_ROOT`, the artifact directory or the Box. |
 | `SMOKE_ARTIFACT_DIR=<abs dir> npm run test:copilot-codex` | The run. It drives `specs/07-copilot-codex-native.spec.mjs` through `scripts/run-playwright.mjs` and prints one JSON line. The Playwright output goes to `$SMOKE_ARTIFACT_DIR/codex-auth/playwright.log`, and the summary to `$SMOKE_ARTIFACT_DIR/codex-auth/result.json`. npm may print a banner first, so read the last line. |
-| `node ./scripts/codex-test-auth.mjs scan-leaks "$SMOKE_ARTIFACT_DIR"` | Scans an artifact directory for credential values. Exit 27 means a leak. |
+| `node ./scripts/codex-test-auth.mjs scan-leaks "$SMOKE_ARTIFACT_DIR"` | Scans an artifact directory for credential values of the current stream, pending quarantine files and every retired stream. Exit 27 means a leak. It refuses with exit 14 (`scan-reference-missing`) when none of those loads, because a scan with nothing to look for would pass vacuously. |
 | `node ./scripts/codex-test-auth.mjs seed` | One-time import of a separate login (see below). |
 | `node ./scripts/codex-test-auth.mjs retire` | Renames the stream to `retired/<stream>-<UTC>` under the lock. The first step of a reseed. |
 | `node ./scripts/codex-test-auth.mjs adopt <runId>` | Installs a validated quarantined artifact as the stream. |
@@ -866,11 +866,11 @@ Every subcommand prints exactly one sanitized JSON line on stdout with the fixed
 | 10 | `NOT_SEEDED` | `no-stream` | seed |
 | 11 | `ALREADY_SEEDED` | `stream-exists` | none; reseed only after `retire` |
 | 13 | `LOCK_HELD` | `live-owner`, `ambiguous-owner` | wait |
-| 14 | `STREAM_UNSAFE` | `location`, `owner-or-mode`, `seed-source-missing`, `seed-source-symlink`, `seed-already-present`, `seed-equals-live-cache`, `main-login-changed`, `auth-invalid:<reason>`, `quarantine-pending`, `quarantine-missing`, `inflight-present` | follow the reason; for `seed-already-present` delete `ROOT/seed` and never import it |
+| 14 | `STREAM_UNSAFE` | `location`, `owner-or-mode`, `seed-source-missing`, `seed-source-symlink`, `seed-already-present`, `seed-equals-live-cache`, `main-login-changed`, `auth-invalid:<reason>`, `quarantine-pending`, `quarantine-missing`, `inflight-present`, `scan-reference-missing` | follow the reason; for `seed-already-present` delete `ROOT/seed` and never import it |
 | 20 | `RUNTIME_PREREQ_FAILED` | `binding`, `not-admin`, `selection-count`, `unowned-leftover-robot`, `version-pin`, `cli-start-budget`, `codex-client-missing`, `target-exists` | fix the prerequisite; delete an unowned `codex-auth-test-*` robot in the RoboTeam UI |
 | 22 | `NATIVE_TURN_FAILED` | `failed`, `timeout`, plus `authRejectionSuspected` | if suspected, `retire` and reseed |
 | 23 | `IDENTITY_MISMATCH` | `backend`, `robot`, `provider-env`, `config-toml`, `binary`, `transcript-missing`, `transcript-mismatch`, `binding-changed` | investigate |
-| 24 | `COPYBACK_REFUSED` | `invalid`, `other-account`, `stale-last-refresh`, `stream-changed`, `runtime-auth-missing` | `adopt <runId>` or `retire` |
+| 24 | `COPYBACK_REFUSED` | `invalid`, `other-account`, `stale-last-refresh`, `stream-changed`, `runtime-auth-missing` | `adopt <runId>` or `retire`. `runtime-auth-missing` writes no quarantine and changes nothing, so there is nothing to adopt: rerun, and if that run reports `authRejectionSuspected`, `retire` and reseed |
 | 26 | `CLEANUP_INCOMPLETE` | `credential-not-persisted`, `credential-not-removed`, `robot-not-deleted`, `folder-not-deleted`, `recovery-incomplete` | the next `run` recovers through `inflight.json` |
 | 27 | `LEAK_DETECTED` | `artifact-contains-token` | quarantine the artifact directory |
 
@@ -887,7 +887,7 @@ When several apply, 27 wins over 26, and 26 over the first failure in sequence o
 | Reseed | Operator and login owner | `retire`, then S1 to S4. Retired streams keep a credential at rest and are never imported again; the operator deletes them. |
 | Quarantine | Operator | A refused copy-back (exit 24) writes `quarantine-<runId>.json` (0600) beside the stream and removes the runtime copy. `preflight` then shows `quarantineCount >= 1` and runs refuse with `quarantine-pending`. Either `adopt <runId>` (validated atomic install; the quarantine file is removed) or `retire` followed by a reseed. |
 
-`retire`, `adopt` and `seed` refuse while `inflight.json` exists; the next `run` recovers the named robot and folder first. A lock whose owner is provably dead is recovered by the next lock holder, and `preflight` reports it as `stale` without blocking.
+`retire`, `adopt` and `seed` refuse while `inflight.json` exists; the next `run` recovers the named robot and folder first. A lock whose owner is provably dead is recovered by the next lock holder under one fixed claim file (`run.lock.recovery`), and `preflight` reports it as `stale` without blocking. A second recoverer fails closed. A leftover claim from a recoverer that died makes the lock read as held (`ambiguous-owner`); after confirming that no run is active, delete that file by hand.
 
 ### Refresh path
 

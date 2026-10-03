@@ -13,7 +13,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import {
-  CodexAuthError, EXIT_CODES, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot,
+  CodexAuthError, EXIT_CODES, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot, collectScanReferences,
   describeFailure, inflightPresent, inspectStream, isRunId, listQuarantines, loadStream, lockStatus, planRecovery, readInflight, resolveAuthPaths,
   resultLine, retireStream, scanLeaks, seedStream,
 } from '../lib/codex-test-auth.mjs';
@@ -146,18 +146,9 @@ async function preflight(paths, env) {
   }
 }
 
-function scanTargets(paths) {
-  const sets = [];
-  try { sets.push(loadStream(paths).bytes); } catch { /* an unseeded or unreadable stream has nothing to scan for */ }
-  for (const runId of listQuarantines(paths)) {
-    try { sets.push(fs.readFileSync(path.join(paths.streamDir, `quarantine-${runId}.json`))); } catch { /* skipped */ }
-  }
-  return sets;
-}
-
 async function scanLeaksCommand(paths, env, argv) {
   const directory = assertArtifactDirectory(argv[3] ?? env.SMOKE_ARTIFACT_DIR, { paths, forbiddenRoots: forbiddenRoots({ ...env, SMOKE_ARTIFACT_DIR: undefined }) });
-  const { leaks, filesScanned } = scanLeaks(directory, scanTargets(paths));
+  const { leaks, filesScanned } = scanLeaks(directory, collectScanReferences(paths));
   const leaked = leaks.length > 0;
   return { command: 'scan-leaks', result: leaked ? 'failed' : 'done', code: leaked ? 'LEAK_DETECTED' : 'OK',
     reason: leaked ? 'artifact-contains-token' : null, stream: paths.stream, artifactDirectory: directory, leaks: leaks.length, filesScanned,

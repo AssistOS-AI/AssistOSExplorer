@@ -37,7 +37,7 @@ export const EXIT_REASONS = Object.freeze({
   ALREADY_SEEDED: Object.freeze(['stream-exists']),
   LOCK_HELD: Object.freeze(['live-owner', 'ambiguous-owner']),
   STREAM_UNSAFE: Object.freeze(['location', 'owner-or-mode', 'seed-source-missing', 'seed-source-symlink', 'seed-already-present',
-    'seed-equals-live-cache', 'main-login-changed', 'quarantine-pending', 'quarantine-missing', 'inflight-present',
+    'seed-equals-live-cache', 'main-login-changed', 'quarantine-pending', 'quarantine-missing', 'inflight-present', 'scan-reference-missing',
     ...AUTH_INVALID.map((name) => `auth-invalid:${name}`)]),
   RUNTIME_PREREQ_FAILED: Object.freeze(['binding', 'not-admin', 'selection-count', 'unowned-leftover-robot', 'version-pin',
     'cli-start-budget', 'codex-client-missing', 'target-exists']),
@@ -366,9 +366,11 @@ function readLockOwner(lockPath) {
   } finally { fs.closeSync(fd); }
 }
 
-// Read-only: `free`, `held` (live or ambiguous owner) or `stale` (a provably dead owner; does not block).
+// Read-only: `free`, `held` (live or ambiguous owner) or `stale` (a provably dead owner; does not block). A leftover recovery
+// claim means a recoverer died mid-recovery: that needs reconciliation by an operator, so it reads as held.
 export function lockStatus(paths, { procRoot = '/proc' } = {}) {
   const observed = readLockOwner(paths.lockPath);
+  if (exists(`${paths.lockPath}.recovery`)) return { state: 'held', reason: 'ambiguous-owner' };
   if (observed === null) return { state: 'free', reason: null };
   const state = ownerState(observed.owner, procRoot);
   if (state === 'dead') return { state: 'stale', reason: null };
@@ -425,10 +427,12 @@ export function acquireRunLock(paths, { runId, procRoot = '/proc', now = Date.no
       const state = ownerState(observed.owner, procRoot);
       if (state === 'live') throw fail('LOCK_HELD', 'live-owner');
       if (state === 'ambiguous') throw fail('LOCK_HELD', 'ambiguous-owner');
-      // Dead owner: claim the exact inode that was inspected, remove it, then retry.
-      const claim = path.join(paths.root, `.run-claim-${token}`);
+      // Dead owner: claim the exact inode that was inspected under one fixed claim name, so only one recoverer can act at a time.
+      // An existing claim fails closed (a recoverer is active or died mid-recovery), like the RoboTeam registry lock.
+      const claim = `${paths.lockPath}.recovery`;
       try { fs.linkSync(paths.lockPath, claim); } catch (error) {
         if (enoent(error)) continue;
+        if (error.code === 'EEXIST') throw fail('LOCK_HELD', 'ambiguous-owner');
         throw error;
       }
       try {
@@ -751,6 +755,88 @@ export function robotDeleteAccepted(status, { robotName, markerRobotName = null 
   return status === 200 || (status === 404 && markerRobotName !== null && markerRobotName === robotName);
 }
 
+// ---- credential session -----------------------------------------------------------------------------------------
+
+// The credential bytes of one run, with their moves. `runtime` is the Box runner (inject, readForCopyBack, remove). The
+// stream is only written while the host lock is held. After a recovery has persisted a previous crashed run's runtime copy,
+// the stream is reloaded, so the credential injected afterwards is always the current stream and never superseded bytes.
+export function createCredentialSession({ paths, runtime, runId, now = Date.now, uid = currentUid() }) {
+  const freshStream = () => ({ sameAccount: null, refreshedDuringRun: false, lastRefreshAdvanced: false, replaced: false, quarantined: false });
+  const state = { lockHeld: false, loaded: null, runtimeBytes: null, persisted: false, removed: false, injected: false,
+    injectConfirmed: false, stream: freshStream(), recoveryStream: null };
+  const api = {
+    state,
+    holdLock(held) { state.lockHeld = held === true; },
+    load() {
+      state.loaded = loadStream(paths, { now: now(), uid });
+      return state.loaded;
+    },
+    // Persist-or-quarantine the runtime copy, then remove it with the persisted hash. `target` is the robot holding the copy.
+    async persistAndRemove(target, { confirmed }) {
+      if (!state.persisted) {
+        let copied;
+        try { copied = await runtime.readForCopyBack(target, { timeoutMs: 30_000 }); } catch (error) {
+          if (error?.code === 'NOT_FOUND') {
+            // Nothing exists to persist or remove. The stream is unchanged and no quarantine is written.
+            state.persisted = true;
+            state.removed = true;
+            if (confirmed) throw fail('COPYBACK_REFUSED', 'runtime-auth-missing');
+            return;
+          }
+          throw fail('CLEANUP_INCOMPLETE', 'credential-not-persisted');
+        }
+        state.runtimeBytes = copied.bytes;
+        if (!state.lockHeld || !state.loaded) throw fail('CLEANUP_INCOMPLETE', 'credential-not-persisted');
+        try {
+          const outcome = acceptCopyBack(paths, { loadedSha256: state.loaded.sha256, loadedBytes: state.loaded.bytes,
+            runtimeBytes: state.runtimeBytes, runId, now: now(), uid });
+          Object.assign(state.stream, { sameAccount: outcome.sameAccount, refreshedDuringRun: outcome.refreshedDuringRun,
+            lastRefreshAdvanced: outcome.lastRefreshAdvanced, replaced: outcome.replaced });
+          state.persisted = true;
+        } catch (error) {
+          if (!(error instanceof CodexAuthError)) throw fail('CLEANUP_INCOMPLETE', 'credential-not-persisted');
+          if (error.quarantined) {
+            state.persisted = true;
+            state.stream.quarantined = true;
+            state.stream.refreshedDuringRun = true;
+            if (error.reason === 'other-account') state.stream.sameAccount = false;
+            try { await runtime.remove(target, sha256Hex(state.runtimeBytes)); state.removed = true; } catch { throw fail('CLEANUP_INCOMPLETE', 'credential-not-removed'); }
+          }
+          throw error;
+        }
+      }
+      if (!state.removed) {
+        try { await runtime.remove(target, sha256Hex(state.runtimeBytes)); state.removed = true; } catch { throw fail('CLEANUP_INCOMPLETE', 'credential-not-removed'); }
+      }
+    },
+    // Exec-chain half of recovering a previous crashed run: persist or quarantine its runtime copy, remove it, then reload
+    // the stream. Returns the copy-back refusal, if any, which the caller raises after the robot and folder are gone.
+    async recover(target) {
+      let refusal = null;
+      try { await api.persistAndRemove(target, { confirmed: true }); } catch (error) {
+        if (error instanceof CodexAuthError && error.code === 'COPYBACK_REFUSED') refusal = error;
+        else throw fail('CLEANUP_INCOMPLETE', 'recovery-incomplete');
+      }
+      // The recovered copy no longer counts for this run's own persist and remove.
+      state.recoveryStream = state.stream;
+      state.stream = freshStream();
+      state.persisted = false;
+      state.removed = false;
+      state.runtimeBytes = null;
+      api.load();
+      return { refusal };
+    },
+    // Injects the loaded stream bytes. `injected` is set first, so a failure of unknown outcome still gets a copy-back.
+    async inject(robot) {
+      if (!state.loaded) throw fail('USAGE', 'bad-variable');
+      state.injected = true;
+      await runtime.inject(robot, state.loaded.bytes);
+      state.injectConfirmed = true;
+    },
+  };
+  return api;
+}
+
 // ---- leak scan and failure classification --------------------------------------------------------------------
 
 function leakSecrets(tokenSets) {
@@ -777,9 +863,30 @@ function* walk(directory) {
   }
 }
 
+// Every credential a scan must look for: the current stream, pending quarantine files, and retired streams with theirs.
+// Unreadable or oversize entries are skipped; an empty result is refused by `scanLeaks`.
+export function collectScanReferences(paths, { uid = currentUid() } = {}) {
+  const sets = [];
+  const take = (file) => { try { sets.push(readRegular(file, { limit: 1024 * 1024, uid, private: false })); } catch { /* skipped */ } };
+  take(paths.streamFile);
+  for (const runId of listQuarantines(paths)) take(path.join(paths.streamDir, `quarantine-${runId}.json`));
+  let retired = [];
+  try { retired = fs.readdirSync(paths.retiredDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()); } catch { retired = []; }
+  for (const entry of retired) {
+    const directory = path.join(paths.retiredDir, entry.name);
+    take(path.join(directory, 'auth.json'));
+    let names = [];
+    try { names = fs.readdirSync(directory).filter((name) => /^quarantine-[A-Za-z0-9_-]+\.json$/.test(name)); } catch { names = []; }
+    for (const name of names) take(path.join(directory, name));
+  }
+  return sets;
+}
+
 // Reports the relative file and a camelCase field name only. Never a value.
 export function scanLeaks(directory, tokenSets) {
   const secrets = leakSecrets(tokenSets);
+  // A scan with nothing to look for would pass vacuously, which must never read as clean.
+  if (secrets.length === 0) throw fail('STREAM_UNSAFE', 'scan-reference-missing');
   const leaks = [];
   let filesScanned = 0;
   for (const file of walk(directory)) {
