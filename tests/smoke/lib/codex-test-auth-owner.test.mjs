@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -58,9 +59,9 @@ function installRealHomeGuard({ fs, os, path, fileURLToPath, onBlocked }) {
   };
   install(fs, ['openSync', 'readFileSync', 'readdirSync', 'lstatSync', 'statSync', 'existsSync', 'accessSync', 'realpathSync', 'opendirSync',
     'readlinkSync', 'createReadStream', 'copyFileSync', 'linkSync', 'renameSync', 'unlinkSync', 'rmSync', 'writeFileSync', 'mkdirSync', 'chmodSync',
-    'open', 'readFile', 'stat', 'lstat', 'realpath', 'access', 'readdir'], false);
+    'open', 'readFile', 'stat', 'lstat', 'realpath', 'access', 'readdir', 'copyFile', 'cp', 'cpSync'], false);
   install(fs.realpathSync, ['native'], false);
-  install(fs.promises, ['open', 'readFile', 'readdir', 'lstat', 'stat', 'access', 'realpath', 'readlink'], true);
+  install(fs.promises, ['open', 'readFile', 'readdir', 'lstat', 'stat', 'access', 'realpath', 'readlink', 'copyFile', 'cp', 'opendir'], true);
 }
 
 const blockedAccess = [];
@@ -71,6 +72,8 @@ const GUARD_MARKER = 'BLOCKED-REAL-CODEX-ACCESS';
 const CHILD_GUARD_SOURCE = `import fs from 'node:fs';\nimport os from 'node:os';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\n`
   + `(${installRealHomeGuard.toString()})({ fs, os, path, fileURLToPath, onBlocked: () => { fs.writeSync(2, '${GUARD_MARKER}\\n'); process.exit(97); } });\n`;
 const CHILD_NODE_OPTIONS = `--import=data:text/javascript,${encodeURIComponent(CHILD_GUARD_SOURCE)}`;
+const STUB_GUARD = `(${installRealHomeGuard.toString()})({ fs: require('node:fs'), os: require('node:os'), path: require('node:path'),
+  fileURLToPath: require('node:url').fileURLToPath, onBlocked: () => { require('node:fs').writeSync(2, '${GUARD_MARKER}\\n'); process.exit(97); } });`;
 
 const NOW = Date.parse('2026-10-03T12:00:00.000Z');
 const HOUR = 3_600_000;
@@ -1092,7 +1095,7 @@ test('the CLI defaults to the owner route without falling back to a valid stream
   // Every child, and every process it starts, loads the blocking guard first (NODE_OPTIONS is inherited).
   const cli = (subcommand, extra = {}, rest = []) => {
     const result = spawnSync(process.execPath, [CLI, subcommand, ...rest], { env: { ...baseEnv, NODE_OPTIONS: CHILD_NODE_OPTIONS, ...extra }, encoding: 'utf8', cwd: SMOKE_DIR, timeout: 60_000 });
-    assert.equal(result.stderr.includes(GUARD_MARKER), false, 'a CLI child reached the real account .codex');
+    assert.equal(result.stderr.includes(GUARD_MARKER), false, 'a CLI child was stopped by the guard below the real account .codex');
     assert.notEqual(result.status, 97);
     const lines = result.stdout.split('\n').filter(Boolean);
     assert.equal(lines.length, 1, `exactly one stdout line: ${result.stderr}`);
@@ -1111,14 +1114,33 @@ test('the CLI defaults to the owner route without falling back to a valid stream
     return bytes;
   };
   const ownerState = () => [fs.readFileSync(ownerFile), fs.statSync(ownerFile).ino, fs.statSync(ownerFile).mtimeMs];
-  // Positive control: a child that touches the real account's .codex is stopped by the guard, with the marker and exit 97, before any access.
-  for (const probe of [`require('node:fs').existsSync(${JSON.stringify(path.join(REAL_HOME, '.codex', 'auth.json'))})`,
-    `require('node:fs').readFileSync(${JSON.stringify(path.join(REAL_HOME, '.codex', 'auth.json'))})`,
-    `require('node:fs').promises.stat(${JSON.stringify(path.join(REAL_HOME, '.codex'))}).then(() => process.exit(0), () => process.exit(0))`]) {
-    const probed = spawnSync(process.execPath, ['-e', probe], { env: { PATH: '/usr/bin:/bin', HOME: home, NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 30_000 });
-    assert.equal(probed.status, 97, probe.slice(0, 60));
-    assert.equal(probed.stderr.includes(GUARD_MARKER), true);
+  // Positive controls: a child that touches anything below the real account's .codex is stopped by the guard, with the marker and exit 97,
+  // before any access. Every probe names a file that does not exist (a fresh name below the root), one per wrapped API category, so even a
+  // broken guard could not read the owner's login.
+  const missingBelowRoot = () => path.join(REAL_HOME, '.codex', `cta-guard-probe-${randomUUID()}`);
+  const sink = path.join(base, 'probe-copy');
+  const category = (call) => `const fs = require('node:fs'); const target = ${JSON.stringify(missingBelowRoot())}; const sink = ${JSON.stringify(sink)}; ${call}`;
+  for (const [name, call] of [
+    ['existsSync', 'fs.existsSync(target);'], ['readFileSync', 'fs.readFileSync(target);'], ['readFileSync (utf8)', "fs.readFileSync(target, 'utf8');"], ['openSync', "fs.openSync(target, 'r');"],
+    ['statSync', 'fs.statSync(target);'], ['opendirSync', 'fs.opendirSync(target);'], ['copyFileSync', 'fs.copyFileSync(target, sink);'],
+    ['cpSync', 'fs.cpSync(target, sink);'], ['readFile (callback)', 'fs.readFile(target, () => process.exit(0));'],
+    ['copyFile (callback)', 'fs.copyFile(target, sink, () => process.exit(0));'], ['cp (callback)', 'fs.cp(target, sink, () => process.exit(0));'],
+    ['promises.stat', 'fs.promises.stat(target).then(() => process.exit(0), () => process.exit(0));'],
+    ['promises.readFile', 'fs.promises.readFile(target).then(() => process.exit(0), () => process.exit(0));'],
+    ['promises.opendir', 'fs.promises.opendir(target).then(() => process.exit(0), () => process.exit(0));'],
+    ['promises.copyFile', 'fs.promises.copyFile(target, sink).then(() => process.exit(0), () => process.exit(0));'],
+    ['promises.cp', 'fs.promises.cp(target, sink).then(() => process.exit(0), () => process.exit(0));'],
+  ]) {
+    const probed = spawnSync(process.execPath, ['-e', category(call)], { env: { PATH: '/usr/bin:/bin', HOME: home, NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 30_000 });
+    assert.equal(probed.status, 97, name);
+    assert.equal(probed.stderr.includes(GUARD_MARKER), true, name);
   }
+  assert.equal(fs.existsSync(sink), false, 'no probe copied anything');
+  // The stub form of the guard stops a client script in the same way.
+  const stubProbe = path.join(base, 'stub-probe');
+  fs.writeFileSync(stubProbe, `#!${process.execPath}\n${STUB_GUARD}\nrequire('node:fs').promises.copyFile(${JSON.stringify(missingBelowRoot())}, ${JSON.stringify(sink)});\n`, { mode: 0o755 });
+  const stubbed = spawnSync(stubProbe, [], { env: { PATH: '/usr/bin:/bin', HOME: home }, encoding: 'utf8', timeout: 30_000 });
+  assert.deepEqual([stubbed.status, stubbed.stderr.includes(GUARD_MARKER)], [97, true]);
   // Owner missing: exit 10 with the owner reason, no ROOT and not even its parent is created.
   const missing = cli('preflight');
   expectFailure(missing, { code: 'NOT_SEEDED', reason: 'owner-login-missing', route: 'owner' });
@@ -1284,7 +1306,7 @@ process.exit(scenario.exit);
       SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-fake-0123456789ab', SMOKE_WORKSPACE_ROOT: path.join(base, 'workspace'), NODE_OPTIONS: CHILD_NODE_OPTIONS,
       STUB_SCENARIO: JSON.stringify(scenario), ...(override ? { CODEX_TEST_AUTH_OWNER_AUTH: override } : {}) };
     const result = spawnSync(process.execPath, [path.join(scratch, 'scripts', 'codex-test-auth.mjs'), 'run'], { env, encoding: 'utf8', cwd: scratch, timeout: 120_000 });
-    assert.equal(result.stderr.includes(GUARD_MARKER), false, 'a child reached the real account .codex');
+    assert.equal(result.stderr.includes(GUARD_MARKER), false, 'a child was stopped by the guard below the real account .codex');
     const lines = result.stdout.split('\n').filter(Boolean);
     assert.equal(lines.length, 1, `exactly one stdout line: ${result.stderr}`);
     const runs = fs.readFileSync(stubLog, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
@@ -1392,7 +1414,11 @@ test('the spec wires route A in the documented order: recovery before the owner 
 test('no test in this file touched the real account\'s .codex directory', () => {
   assert.deepEqual(blockedAccess, []);
   // Positive control: the guard does block an access to the guarded directory.
-  assert.throws(() => fs.existsSync(path.join(REAL_HOME, '.codex')), /blocked access to the real account \.codex/);
-  assert.equal(blockedAccess.length, 1);
+  const below = () => path.join(REAL_HOME, '.codex', `cta-guard-probe-${randomUUID()}`);
+  assert.throws(() => fs.existsSync(below()), /blocked access to the real account \.codex/);
+  assert.throws(() => fs.readFileSync(below()), /blocked access to the real account \.codex/);
+  assert.throws(() => fs.readFileSync(below(), 'utf8'), /blocked access to the real account \.codex/);
+  assert.throws(() => fs.copyFileSync(below(), path.join(os.tmpdir(), 'cta-guard-probe-sink')), /blocked access to the real account \.codex/);
+  assert.equal(blockedAccess.length, 4);
   blockedAccess.length = 0;
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -55,9 +55,9 @@ function installRealHomeGuard({ fs, os, path, fileURLToPath, onBlocked }) {
   };
   install(fs, ['openSync', 'readFileSync', 'readdirSync', 'lstatSync', 'statSync', 'existsSync', 'accessSync', 'realpathSync', 'opendirSync',
     'readlinkSync', 'createReadStream', 'copyFileSync', 'linkSync', 'renameSync', 'unlinkSync', 'rmSync', 'writeFileSync', 'mkdirSync', 'chmodSync',
-    'open', 'readFile', 'stat', 'lstat', 'realpath', 'access', 'readdir'], false);
+    'open', 'readFile', 'stat', 'lstat', 'realpath', 'access', 'readdir', 'copyFile', 'cp', 'cpSync'], false);
   install(fs.realpathSync, ['native'], false);
-  install(fs.promises, ['open', 'readFile', 'readdir', 'lstat', 'stat', 'access', 'realpath', 'readlink'], true);
+  install(fs.promises, ['open', 'readFile', 'readdir', 'lstat', 'stat', 'access', 'realpath', 'readlink', 'copyFile', 'cp', 'opendir'], true);
 }
 const GUARD_MARKER = 'BLOCKED-REAL-CODEX-ACCESS';
 const CHILD_GUARD_SOURCE = `import fs from 'node:fs';\nimport os from 'node:os';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\n`
@@ -326,7 +326,7 @@ function runHarness(t, binary, extraArguments = []) {
   const result = spawnSync(process.execPath, [HARNESS, binary, ...extraArguments], {
     env: { PATH: '/usr/bin:/bin', HOME: home, TMPDIR: tmp, SMOKE_CANARY: '1', CODEX_TEST_AUTH_SOURCE: 'stream', NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 150_000,
   });
-  assert.equal(result.status === 97 || result.stderr.includes(GUARD_MARKER) || result.stdout.includes(GUARD_MARKER), false, 'the harness or a stub reached the real account .codex');
+  assert.equal(result.status === 97 || result.stderr.includes(GUARD_MARKER) || result.stdout.includes(GUARD_MARKER), false, 'the harness or a stub was stopped by the guard below the real account .codex');
   const lines = result.stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line));
   return { ...result, lines, cases: lines.slice(0, -1), receipt: lines.at(-1) };
 }
@@ -405,12 +405,28 @@ test('the qualification harness fails stub clients that rewrite the access-only 
 test('the harness refuses a binary that is not the expected one before running it, and rejects bad usage with exit 2', (t) => {
   const dir = sandbox(t);
   // The guard in this file is the one of the owner test file, and it stops a harness child and a stub client before any real access.
-  assert.equal(fs.readFileSync(new URL('./codex-test-auth-owner.test.mjs', import.meta.url), 'utf8').includes(installRealHomeGuard.toString()), true, 'the guard drifted');
-  const realLogin = path.join(REAL_HOME, '.codex', 'auth.json');
-  const probed = spawnSync(process.execPath, ['-e', `require('node:fs').existsSync(${JSON.stringify(realLogin)})`], { env: { PATH: '/usr/bin:/bin', HOME: dir, NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 30_000 });
-  assert.deepEqual([probed.status, probed.stderr.includes(GUARD_MARKER)], [97, true]);
+  const ownerTest = fs.readFileSync(new URL('./codex-test-auth-owner.test.mjs', import.meta.url), 'utf8');
+  assert.equal(ownerTest.includes(installRealHomeGuard.toString()), true, 'the guard drifted');
+  // The marker, the child module source, its NODE_OPTIONS form and the stub form are declared together and must read the same in both files.
+  const declarations = (text) => text.slice(text.indexOf('const GUARD_MARKER ='), text.indexOf('\n\n', text.indexOf('const STUB_GUARD =')));
+  assert.equal(declarations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8')), declarations(ownerTest), 'the guard declarations drifted');
+  assert.match(declarations(ownerTest), /const GUARD_MARKER = 'BLOCKED-REAL-CODEX-ACCESS';[\s\S]*const CHILD_GUARD_SOURCE =[\s\S]*const STUB_GUARD =/);
+  // Every probe names a file that does not exist (a fresh name below the guarded root), one per wrapped API category, so even a broken
+  // guard could not read the owner's login. Each must stop with exit 97 and the marker.
+  const missingBelowRoot = () => path.join(REAL_HOME, '.codex', `cta-guard-probe-${randomUUID()}`);
+  const sink = path.join(dir, 'probe-copy');
+  for (const [name, call] of [
+    ['existsSync', 'fs.existsSync(target);'], ['readFileSync', 'fs.readFileSync(target);'], ['readFileSync (utf8)', "fs.readFileSync(target, 'utf8');"], ['copyFileSync', 'fs.copyFileSync(target, sink);'],
+    ['promises.stat', 'fs.promises.stat(target).then(() => process.exit(0), () => process.exit(0));'],
+    ['promises.copyFile', 'fs.promises.copyFile(target, sink).then(() => process.exit(0), () => process.exit(0));'],
+  ]) {
+    const script = `const fs = require('node:fs'); const target = ${JSON.stringify(missingBelowRoot())}; const sink = ${JSON.stringify(sink)}; ${call}`;
+    const probed = spawnSync(process.execPath, ['-e', script], { env: { PATH: '/usr/bin:/bin', HOME: dir, NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 30_000 });
+    assert.deepEqual([probed.status, probed.stderr.includes(GUARD_MARKER)], [97, true], name);
+  }
+  assert.equal(fs.existsSync(sink), false, 'no probe copied anything');
   const probeStub = path.join(dir, 'probe-stub');
-  fs.writeFileSync(probeStub, `#!${process.execPath}\n${STUB_GUARD}\nrequire('node:fs').existsSync(${JSON.stringify(realLogin)});\n`, { mode: 0o755 });
+  fs.writeFileSync(probeStub, `#!${process.execPath}\n${STUB_GUARD}\nrequire('node:fs').promises.copyFile(${JSON.stringify(missingBelowRoot())}, ${JSON.stringify(sink)});\n`, { mode: 0o755 });
   const stubProbe = spawnSync(probeStub, [], { env: { PATH: '/usr/bin:/bin', HOME: dir }, encoding: 'utf8', timeout: 30_000 });
   assert.deepEqual([stubProbe.status, stubProbe.stderr.includes(GUARD_MARKER)], [97, true]);
   const marker = path.join(dir, 'ran.log');
