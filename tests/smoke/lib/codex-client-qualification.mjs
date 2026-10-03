@@ -77,6 +77,32 @@ export function assertClientQualified({ identity, digest, entries = QUALIFIED_CO
   return { status: 'qualified', entry };
 }
 
+// The runtime check for one client identity ({ package, version, generation }). Nothing is hashed without an entry for the version; then
+// the container hashes the allowlisted file of its platform; then `assertClientQualified` decides. A qualification outcome never throws:
+// it returns the `report` to record (one status word, the platform, a 12-character generation prefix, and the digests of the public client
+// binary and of the receipt) and the `failure` to raise, or null.
+export async function checkClientQualification({ runtime, identity, entries = QUALIFIED_CODEX_CLIENTS }) {
+  const report = { status: null, platform: null, generation12: String(identity?.generation ?? '').slice(0, 12), nativeSha256: null, nativeSize: null,
+    entryVersion: null, receiptSha256: null };
+  const refuse = (failure) => { report.status = failure.qualification; return { report, failure }; };
+  const matching = qualifiedEntriesFor({ packageName: identity?.package, version: identity?.version, entries });
+  if (matching.length === 0) return refuse(unqualified('no-entry'));
+  let digest;
+  try { digest = await runtime.nativeDigest({ generation: identity.generation, relativePaths: relativePathsFor(matching) }); } catch (error) {
+    if (error instanceof TypeError) throw error;
+    return refuse(unqualified('digest-unreadable'));
+  }
+  Object.assign(report, { platform: digest?.platform ?? null, nativeSha256: digest?.sha256 ?? null, nativeSize: digest?.size ?? null });
+  try {
+    const { entry } = assertClientQualified({ identity, digest, entries });
+    Object.assign(report, { status: 'qualified', entryVersion: entry.version, receiptSha256: entry.receipt.sha256 });
+    return { report, failure: null };
+  } catch (error) {
+    if (!(error instanceof CodexAuthError)) throw error;
+    return refuse(error);
+  }
+}
+
 // Evaluates the four cases of a qualification run (E-401, E-window, M-401, M-window). The external cases must never refresh, in either
 // phase (`login status` and `exec`), never write the file, use the bearer, fail closed and keep the derived shape. The managed cases are
 // the positive controls: they prove that the recorder would see a refresh. A missing or malformed case makes its checks false.

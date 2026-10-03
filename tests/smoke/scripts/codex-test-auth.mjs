@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
 // Entry point of the Codex-authenticated Copilot gate: seed, preflight, run, scan-leaks, retire, adopt.
-// Stdout is exactly one sanitized JSON line for every subcommand and every outcome. Prompts and diagnostics go to stderr
-// as fixed English sentences. Credential bytes are never printed, logged, passed in argv or placed in the environment.
+// Two credential routes: `owner` (route A, the default for preflight, run and scan-leaks) derives an access-only credential from the
+// machine owner's Codex login, read-only; `stream` (route B) uses the owned login stream. CODEX_TEST_AUTH_SOURCE selects the route and
+// there is never an automatic fallback. seed, retire and adopt are stream-only.
+// Stdout is exactly one sanitized JSON line for every subcommand and every outcome, and it names the route. Prompts and diagnostics go
+// to stderr as fixed English sentences. Credential bytes are never printed, logged, passed in argv or placed in the environment.
 // This file never imports lib/config.mjs (it creates an artifact directory at import time) and never runs Codex.
 
 import { spawn } from 'node:child_process';
@@ -13,10 +16,15 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import {
-  CodexAuthError, EXIT_CODES, RUN_WATCHDOG_MS, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot, collectScanReferences,
-  describeFailure, inflightPresent, inspectStream, isRunId, listQuarantines, loadStream, lockStatus, planRecovery, readInflight, resolveAuthPaths,
-  resultLine, retireStream, scanLeaks, seedStream,
+  CodexAuthError, EXIT_CODES, RUN_TIMEOUT_MS, RUN_WATCHDOG_MS, adoptQuarantine, assertArtifactDirectory, assertNoOtherRouteInflight, assertNoQuarantine,
+  assertPrivateRoot, collectScanReferences, decideRunOutcome, describeFailure, inflightPresent, inspectStream, isRunId, listQuarantines, loadStream,
+  lockStatus, planRecovery, readInflight, resolveAuthPaths, resultLine, retireStream, scanLeaks, seedStream,
 } from '../lib/codex-test-auth.mjs';
+import {
+  assertAccessValidity, assertOwnerScanCoverage, deriveAccessOnlyAuth, ownerDirectoryFor, ownerScanReferences, planOwnerRun, readOwnerAuth,
+  resolveCredentialSource, resolveOwnerAuthPath, summarizeOwner,
+} from '../lib/codex-test-auth-owner.mjs';
+import { checkClientQualification } from '../lib/codex-client-qualification.mjs';
 import { RuntimeProgramError, TEST_ROBOT_PREFIX, createCodexRuntime } from '../lib/codex-test-auth-runtime.mjs';
 
 const smokeRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -108,7 +116,7 @@ async function readRuntimeFacts(env) {
       if (error instanceof RuntimeProgramError) throw new CodexAuthError('RUNTIME_PREREQ_FAILED', 'codex-client-missing');
       throw error;
     });
-    return { robots, client, facts: {
+    return { runtime, robots, client, facts: {
       box: { name: box, id12: String(outer.Id).slice(0, 12), startedAt: outer.State?.StartedAt ?? null },
       roboTeam: { containerId12: registry.containerId.slice(0, 12), startedAt: registry.startedAt },
       robots: { total: robots.length, ownedLeftovers: robots.filter((robot) => robot.name?.startsWith(TEST_ROBOT_PREFIX)).length,
@@ -126,6 +134,7 @@ async function preflight(paths, env) {
   const info = { command: 'preflight', stream: paths.stream };
   try {
     assertPrivateRoot(paths, { forbiddenRoots: forbiddenRoots(env) });
+    assertNoOtherRouteInflight(paths, 'stream');
     const state = inspectStream(paths);
     Object.assign(info, state);
     const lock = lockStatus(paths);
@@ -152,6 +161,79 @@ async function scanLeaksCommand(paths, env, argv) {
   return { command: 'scan-leaks', result: leaked ? 'failed' : 'done', code: leaked ? 'LEAK_DETECTED' : 'OK',
     reason: leaked ? 'artifact-contains-token' : null, stream: paths.stream, artifactDirectory: directory, leaks: leaks.length, filesScanned,
     findings: leaks };
+}
+
+// The directories route A must keep every other root away from: the located owner directory joins the forbidden roots of ROOT and of the
+// artifact directory, so neither can be created inside the owner's Codex directory.
+const withOwnerDirectory = (roots, ownerDirectory) => [...roots, ownerDirectory].filter(Boolean);
+
+// Route A. Read-only: nothing under ROOT, the artifact directory, the owner directory or the Box is created or changed. The order is
+// fixed: ROOT checks, then the facts that stay reportable when the owner gate fails (a pending marker is recovered by a run even then),
+// the lock, the other route's marker, the owner gate, and only then anything that touches Podman.
+async function preflightOwner(paths, env) {
+  const info = { command: 'preflight', stream: null };
+  const bytesHeld = [];
+  try {
+    const ownerDirectory = ownerDirectoryFor(env, paths);
+    const checked = assertPrivateRoot(paths, { forbiddenRoots: withOwnerDirectory(forbiddenRoots(env), ownerDirectory) });
+    const lock = lockStatus(paths);
+    Object.assign(info, { rootExists: checked.exists, lock: lock.state, inflight: inflightPresent(paths, { route: 'owner' }) ? 'present' : 'absent',
+      otherRouteInflight: inflightPresent(paths) });
+    if (lock.state === 'held') throw new CodexAuthError('LOCK_HELD', lock.reason);
+    assertNoOtherRouteInflight(paths, 'owner');
+    const { file, source } = resolveOwnerAuthPath(env, paths, { forbiddenRoots: forbiddenRoots(env) });
+    info.owner = { source, readable: false };
+    const { bytes } = await readOwnerAuth(file);
+    bytesHeld.push(bytes);
+    info.owner = summarizeOwner(bytes, { remainingRunMs: RUN_TIMEOUT_MS, source });
+    const { derived, expMs } = deriveAccessOnlyAuth(bytes);
+    bytesHeld.push(derived);
+    assertAccessValidity({ expMs, now: Date.now(), remainingRunMs: RUN_TIMEOUT_MS });
+    const { runtime, robots, client, facts } = await readRuntimeFacts(env);
+    Object.assign(info, facts);
+    planRecovery({ inflight: readInflight(paths, { route: 'owner' }), robots });
+    const { report, failure } = await checkClientQualification({ runtime, identity: client });
+    info.codexClient = { toolCacheCurrentVersion: client.version, generation12: report.generation12, platform: report.platform, nativeSha256: report.nativeSha256,
+      qualification: report.status };
+    if (failure) throw failure;
+    const pin = env.CODEX_TEST_EXPECT_CODEX_VERSION;
+    if (pin && pin !== client.version) throw new CodexAuthError('RUNTIME_PREREQ_FAILED', 'version-pin');
+    return { ...info, result: 'ready' };
+  } catch (error) {
+    // The facts gathered so far are still reported, with the failure.
+    const failure = describeFailure(error);
+    if (!(error instanceof CodexAuthError)) say('Preflight failed with an unexpected error.');
+    return { ...info, result: 'not-ready', ...failure };
+  } finally { for (const held of bytesHeld) held.fill(0); }
+}
+
+// Route A: the references are the current owner login and what ROOT holds (a stream, when one exists). Best effort after an owner refresh:
+// the scan inside `run` is the authoritative one. An empty set is refused, as for every other caller.
+async function scanLeaksOwner(paths, env, argv) {
+  const ownerDirectory = ownerDirectoryFor(env, paths);
+  const directory = assertArtifactDirectory(argv[3] ?? env.SMOKE_ARTIFACT_DIR, { paths,
+    forbiddenRoots: withOwnerDirectory(forbiddenRoots({ ...env, SMOKE_ARTIFACT_DIR: undefined }), ownerDirectory) });
+  const references = [];
+  let ownerReferences = 'unavailable';
+  try {
+    const { file } = resolveOwnerAuthPath(env, paths, { forbiddenRoots: forbiddenRoots({ ...env, SMOKE_ARTIFACT_DIR: undefined }) });
+    const { bytes } = await readOwnerAuth(file);
+    references.push(...ownerScanReferences(bytes));
+    bytes.fill(0);
+    ownerReferences = 'loaded';
+  } catch { /* the owner login may be absent or unusable; the scan then relies on what ROOT holds */ }
+  references.push(...collectScanReferences(paths));
+  let scanned;
+  try { scanned = scanLeaks(directory, references); } catch (error) {
+    // An empty reference set is refused. The failure still says whether the owner login could be loaded.
+    if (!(error instanceof CodexAuthError)) throw error;
+    return { command: 'scan-leaks', result: 'failed', ...describeFailure(error), stream: null, artifactDirectory: directory, ownerReferences };
+  }
+  const { leaks, filesScanned } = scanned;
+  const leaked = leaks.length > 0;
+  return { command: 'scan-leaks', result: leaked ? 'failed' : 'done', code: leaked ? 'LEAK_DETECTED' : 'OK',
+    reason: leaked ? 'artifact-contains-token' : null, stream: null, artifactDirectory: directory, leaks: leaks.length, filesScanned,
+    findings: leaks, ownerReferences };
 }
 
 function runPlaywright(args, env, stdio) {
@@ -184,6 +266,7 @@ async function run(paths, env) {
   const runId = env.SMOKE_RUN_ID || `codex-auth-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${process.pid}`;
   if (!isRunId(runId)) throw new CodexAuthError('USAGE', 'bad-variable');
   assertPrivateRoot(paths, { forbiddenRoots: forbiddenRoots(env) });
+  assertNoOtherRouteInflight(paths, 'stream');
   // Read-only: the pre-run stream stays in memory for the leak scan. Nothing is written under ROOT by this parent.
   const before = loadStream(paths);
   // With a marker pending, the worker recovers first; the quarantine refusal then follows that cleanup.
@@ -208,24 +291,73 @@ async function run(paths, env) {
     try { sets.push(fs.readFileSync(path.join(paths.streamDir, `quarantine-${quarantine}.json`))); } catch { /* skipped */ }
   }
   const { leaks } = scanLeaks(directory, sets);
-  const summary = { refreshedDuringRun: result?.stream?.refreshedDuringRun === true, authRejectionSuspected: result?.authRejectionSuspected === true,
-    cleanup: result?.cleanup && Object.values(result.cleanup).every(Boolean) ? 'complete' : 'incomplete' };
-  // Precedence: leak, then incomplete cleanup, then the first failure in sequence order.
-  if (leaks.length > 0) return { ...base, ...summary, result: 'failed', code: 'LEAK_DETECTED', reason: 'artifact-contains-token' };
-  if (result === null) return { ...base, ...summary, cleanup: 'incomplete', result: 'failed', code: 'INTERNAL', reason: 'no-result-file' };
-  if (result.code === 'CLEANUP_INCOMPLETE' || (result.code !== 'OK' && summary.cleanup === 'incomplete')) {
-    return { ...base, ...summary, result: 'failed', code: 'CLEANUP_INCOMPLETE', reason: result.code === 'CLEANUP_INCOMPLETE' ? result.reason : 'recovery-incomplete' };
+  return { ...base, ...decideRunOutcome({ leaks, result, exitedCode: exited.code }) };
+}
+
+// Route A. The parent reads the owner login before and after the worker runs and keeps both reads in memory. They are the leak-scan
+// references, and byte-identical reads prove that every credential the worker could have read is among them. With a route-A marker
+// pending, the worker is spawned even when the owner gate fails, so a crashed run's leftover copy is recovered first.
+async function runOwner(paths, env) {
+  const base = { command: 'run', stream: null };
+  const ownerDirectory = ownerDirectoryFor(env, paths);
+  const directory = assertArtifactDirectory(env.SMOKE_ARTIFACT_DIR, { paths,
+    forbiddenRoots: withOwnerDirectory(forbiddenRoots({ ...env, SMOKE_ARTIFACT_DIR: undefined }), ownerDirectory) });
+  base.artifactDirectory = directory;
+  const runId = env.SMOKE_RUN_ID || `codex-auth-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${process.pid}`;
+  if (!isRunId(runId)) throw new CodexAuthError('USAGE', 'bad-variable');
+  assertPrivateRoot(paths, { forbiddenRoots: withOwnerDirectory(forbiddenRoots(env), ownerDirectory) });
+  assertNoOtherRouteInflight(paths, 'owner');
+  const pendingRecovery = inflightPresent(paths, { route: 'owner' });
+  let ownerFile = null;
+  let pre = null;
+  let post = null;
+  let ownerGateFailure = null;
+  try {
+    ownerFile = resolveOwnerAuthPath(env, paths, { forbiddenRoots: forbiddenRoots(env) }).file;
+    pre = (await readOwnerAuth(ownerFile)).bytes;
+    const { derived, expMs } = deriveAccessOnlyAuth(pre);
+    derived.fill(0);
+    assertAccessValidity({ expMs, now: Date.now(), remainingRunMs: RUN_TIMEOUT_MS });
+  } catch (error) {
+    ownerGateFailure = describeFailure(error);
+    if (!(error instanceof CodexAuthError)) say('The owner login check failed with an unexpected error.');
   }
-  if (result.code !== 'OK') return { ...base, ...summary, result: 'failed', code: result.code, reason: result.reason ?? null };
-  if (exited.code !== 0) return { ...base, ...summary, result: 'failed', code: 'INTERNAL', reason: 'exception' };
-  return { ...base, ...summary, result: 'passed', code: 'OK', reason: null };
+  const ownerGate = ownerGateFailure ? ownerGateFailure.reason : 'pass';
+  try {
+    const plan = planOwnerRun({ pendingRecovery, ownerGateFailure });
+    if (!plan.spawn) return { ...base, result: 'failed', ...plan.earlyFailure, ownerGate, spawnedForRecovery: false };
+    const childEnv = { ...env, SMOKE_COPILOT_CODEX: '1', SMOKE_RUN_ID: runId, SMOKE_ARTIFACT_DIR: directory,
+      CODEX_TEST_AUTH_ROOT: paths.root, CODEX_TEST_AUTH_STREAM: paths.stream, CODEX_TEST_AUTH_SOURCE: 'owner',
+      ...(ownerFile ? { CODEX_TEST_AUTH_OWNER_AUTH: ownerFile } : {}) };
+    const playwrightArgs = ['--project=chromium', '--workers=1', '--retries=0', SPEC];
+    const listed = await runPlaywright([...playwrightArgs, '--list'], childEnv, ['ignore', 'pipe', 'pipe']);
+    if (listed.code !== 0 || !/Total: 1 tests? in 1 files?/.test(listed.output)) throw new CodexAuthError('RUNTIME_PREREQ_FAILED', 'selection-count');
+    const logDirectory = path.join(directory, 'codex-auth');
+    fs.mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
+    const logFd = fs.openSync(path.join(logDirectory, 'playwright.log'),
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
+    let exited;
+    try { exited = await runPlaywright(playwrightArgs, childEnv, ['ignore', logFd, logFd]); } finally { fs.closeSync(logFd); }
+    const result = readResultFile(directory);
+    if (ownerFile) { try { post = (await readOwnerAuth(ownerFile)).bytes; } catch { post = null; } }
+    let coverage = 'unproven';
+    try { coverage = assertOwnerScanCoverage({ preBytes: pre, postBytes: post, result }); } catch { coverage = 'unproven'; }
+    const references = [...(pre ? ownerScanReferences(pre) : []), ...(post ? ownerScanReferences(post) : [])];
+    // With no owner read at all and a worker that never derived a credential, nothing could have leaked, so the scan is skipped.
+    let leaks = [];
+    let leakScan = 'skipped';
+    if (references.length > 0) { ({ leaks } = scanLeaks(directory, references)); leakScan = 'scanned'; }
+    const outcome = decideRunOutcome({ leaks, coverageFailure: coverage === 'unproven', result, exitedCode: exited.code });
+    return { ...base, ...outcome, ownerGate, spawnedForRecovery: plan.spawnedForRecovery, ownerChangedDuringRun: pre && post ? !pre.equals(post) : null,
+      leakScanCoverage: coverage, leakScan };
+  } finally { pre?.fill(0); post?.fill(0); }
 }
 
 const COMMANDS = {
   seed: (paths, env) => seed(paths, env),
-  preflight: (paths, env) => preflight(paths, env),
-  run: (paths, env) => run(paths, env),
-  'scan-leaks': (paths, env, argv) => scanLeaksCommand(paths, env, argv),
+  preflight: (paths, env, argv, route) => (route === 'owner' ? preflightOwner(paths, env) : preflight(paths, env)),
+  run: (paths, env, argv, route) => (route === 'owner' ? runOwner(paths, env) : run(paths, env)),
+  'scan-leaks': (paths, env, argv, route) => (route === 'owner' ? scanLeaksOwner(paths, env, argv) : scanLeaksCommand(paths, env, argv)),
   retire: async (paths, env) => {
     assertPrivateRoot(paths, { forbiddenRoots: forbiddenRoots(env) });
     return { command: 'retire', result: 'done', stream: paths.stream, ...retireStream(paths) };
@@ -240,18 +372,21 @@ const COMMANDS = {
 async function main(argv, env) {
   const name = argv[2] ?? null;
   if (!Object.hasOwn(COMMANDS, name ?? '')) {
-    emit({ command: name && /^[a-z-]{1,20}$/.test(name) ? name : null, result: 'failed', code: 'USAGE', reason: 'bad-subcommand' });
+    emit({ command: name && /^[a-z-]{1,20}$/.test(name) ? name : null, route: null, result: 'failed', code: 'USAGE', reason: 'bad-subcommand' });
     return;
   }
+  // The route is resolved once and named in every line. It is null when the resolution itself failed.
+  let route = null;
   try {
+    route = resolveCredentialSource(env, { command: name });
     const paths = resolveAuthPaths(env);
-    const outcome = await COMMANDS[name](paths, env, argv);
+    const outcome = await COMMANDS[name](paths, env, argv, route);
     const code = outcome.code ?? 'OK';
-    emit({ ...outcome, code, reason: outcome.reason ?? null });
+    emit({ ...outcome, route, code, reason: outcome.reason ?? null });
   } catch (error) {
     const failure = describeFailure(error);
     if (!(error instanceof CodexAuthError)) say('The command failed with an unexpected error.');
-    emit({ command: name, result: name === 'preflight' ? 'not-ready' : 'failed', ...failure });
+    emit({ command: name, route, result: name === 'preflight' ? 'not-ready' : 'failed', ...failure });
   }
 }
 

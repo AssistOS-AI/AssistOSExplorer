@@ -10,8 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { CodexAuthError, EXIT_CODES } from './codex-test-auth.mjs';
 import { DERIVED_SHAPE_ID } from './codex-test-auth-owner.mjs';
 import {
-  QUALIFICATION_CHECKS, QUALIFICATION_RECEIPT_SCHEMA, QUALIFIED_CODEX_CLIENTS, assertClientQualified, evaluateQualification, qualifiedEntriesFor,
-  relativePathsFor, validateQualifiedClientEntry,
+  QUALIFICATION_CHECKS, QUALIFICATION_RECEIPT_SCHEMA, QUALIFIED_CODEX_CLIENTS, assertClientQualified, checkClientQualification, evaluateQualification,
+  qualifiedEntriesFor, relativePathsFor, validateQualifiedClientEntry,
 } from './codex-client-qualification.mjs';
 
 // Qualification tests. Every token is fabricated and every request stays on loopback. The file refuses to start under the account's own
@@ -114,6 +114,47 @@ test('assertClientQualified requires the same package, version, platform, native
   const both = [entry(), entry({ platform: 'linux-arm64', nativeSha256: SHA_B, nativeSize: 8192 })];
   assert.equal(assertClientQualified({ identity: IDENTITY, digest: { platform: 'linux-arm64', sha256: SHA_B, size: 8192 }, entries: both }).entry, both[1]);
   assert.throws(() => assertClientQualified({ identity: IDENTITY, digest: { platform: 'linux-arm64', sha256: SHA_A, size: 4096 }, entries: both }), failure('RUNTIME_PREREQ_FAILED', 'client-unqualified', 'digest-mismatch'));
+});
+
+test('checkClientQualification hashes only when an entry exists, reports one status word with the public digests, and never throws for a qualification outcome', async () => {
+  const GENERATION = 'f'.repeat(64);
+  const identity = { ...IDENTITY, generation: GENERATION };
+  const asked = [];
+  const runtimeFor = (answer) => ({ async nativeDigest(request) { asked.push(request); if (answer instanceof Error) throw answer; return answer; } });
+  const listed = [entry()];
+  // No entry: nothing is hashed.
+  const none = await checkClientQualification({ runtime: runtimeFor(DIGEST), identity, entries: [] });
+  assert.deepEqual(asked, []);
+  assert.equal(none.report.status, 'no-entry');
+  assert.equal(none.report.generation12, 'ffffffffffff');
+  assert.equal(none.report.nativeSha256, null);
+  assert.ok(failure('RUNTIME_PREREQ_FAILED', 'client-unqualified', 'no-entry')(none.failure));
+  assert.equal((await checkClientQualification({ runtime: runtimeFor(DIGEST), identity: { ...identity, version: '0.160.1' }, entries: listed })).report.status, 'no-entry');
+  assert.deepEqual(asked, []);
+  // Qualified: the container is asked for exactly the allowlisted path of the entry, and the report carries only public values.
+  const ok = await checkClientQualification({ runtime: runtimeFor(DIGEST), identity, entries: listed });
+  assert.deepEqual(asked, [{ generation: GENERATION, relativePaths: { 'linux-x64': NATIVE } }]);
+  assert.equal(ok.failure, null);
+  assert.deepEqual(ok.report, { status: 'qualified', platform: 'linux-x64', generation12: 'ffffffffffff', nativeSha256: SHA_A, nativeSize: 4096, entryVersion: '0.160.0', receiptSha256: SHA_B });
+  // Each refusal is a status word with a failure, and a runtime failure is digest-unreadable.
+  const refusals = [
+    [{ ...DIGEST, sha256: SHA_B }, 'digest-mismatch'], [{ ...DIGEST, size: 1 }, 'digest-mismatch'], [{ platform: 'linux-x64', sha256: null, size: null }, 'platform-mismatch'],
+    [{ ...DIGEST, platform: 'linux-arm64' }, 'platform-mismatch'], [new Error('boom'), 'digest-unreadable'],
+  ];
+  for (const [answer, status] of refusals) {
+    const outcome = await checkClientQualification({ runtime: runtimeFor(answer), identity, entries: listed });
+    assert.equal(outcome.report.status, status, status);
+    assert.ok(failure('RUNTIME_PREREQ_FAILED', 'client-unqualified', status)(outcome.failure), status);
+    assert.equal(outcome.report.entryVersion, null);
+    assert.equal(outcome.report.receiptSha256, null);
+  }
+  const mismatched = await checkClientQualification({ runtime: runtimeFor({ ...DIGEST, sha256: SHA_B }), identity, entries: listed });
+  assert.equal(mismatched.report.nativeSha256, SHA_B, 'the digest of the public binary is reported with the refusal');
+  // A malformed allowlist (two entries for one platform) is a programming error and is not reported as an outcome.
+  await assert.rejects(checkClientQualification({ runtime: runtimeFor(DIGEST), identity, entries: [entry(), entry()] }), TypeError);
+  // The shape id of an old entry unqualifies it.
+  const stale = await checkClientQualification({ runtime: runtimeFor(DIGEST), identity, entries: [entry({ derivedShape: 'chatgptAuthTokens-v0' })] });
+  assert.equal(stale.report.status, 'shape-mismatch');
 });
 
 // Summaries of the four cases as the harness records them, all good.

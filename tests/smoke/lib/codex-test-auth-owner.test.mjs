@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
   CodexAuthError, EXIT_CODES, EXIT_REASONS, RUN_TIMEOUT_MS, assertArtifactDirectory, assertNoOtherRouteInflight, assertPrivateRoot, adoptQuarantine,
   createInflight, decideRunOutcome, ensurePrivateRoot, inflightPresent, lockStatus, readInflight, removeInflight, resolveAuthPaths, resultLine,
-  retireStream, scanLeaks, seedStream, sha256Hex,
+  loadStream, retireStream, scanLeaks, seedStream, sha256Hex,
 } from './codex-test-auth.mjs';
 import {
   ACCESS_SKEW_MS, CREDENTIAL_SOURCES, DERIVED_SHAPE_ID, STREAM_ONLY_COMMANDS, assertAccessValidity, assertOwnerScanCoverage, createOwnerCredentialSession,
@@ -177,6 +177,9 @@ function ownerSession(runtime, ownerBytes, { clock = { now: NOW }, deadline = NO
 }
 
 const FILE = '/virtual/owner/auth.json';
+const CLI = fileURLToPath(new URL('../scripts/codex-test-auth.mjs', import.meta.url));
+const SMOKE_DIR = path.dirname(path.dirname(CLI));
+
 const codeError = (code) => Object.assign(new Error(code), { code });
 
 test('the route-A marker lives in inflight-owner.json, needs no stream, and each route refuses the other route\'s marker', async (t) => {
@@ -1023,6 +1026,153 @@ test('a pending route-A marker makes the run spawn the worker for recovery when 
   // Cleanup that did not complete turns the same worker result into 26.
   const stuck = decideRunOutcome({ leaks: [], result: { code: 'NOT_SEEDED', reason: 'owner-login-missing', cleanup: { ...complete, robotDeleted: false } }, exitedCode: 1 });
   assert.deepEqual([stuck.code, stuck.reason], ['CLEANUP_INCOMPLETE', 'recovery-incomplete']);
+});
+
+test('the CLI defaults to the owner route without falling back to a valid stream, reports owner-login-missing without creating ROOT, refuses seed under owner, a near-expiry owner and a ROOT inside the owner directory, without calling podman', (t) => {
+  const base = sandbox(t);
+  const home = path.join(base, 'home');
+  const ownerDir = path.join(home, '.codex');
+  const ownerFile = path.join(ownerDir, 'auth.json');
+  const root = path.join(base, 'state', 'assistos-codex-test-auth');
+  const stubs = path.join(base, 'stubs');
+  fs.mkdirSync(home, { mode: 0o700 });
+  fs.mkdirSync(stubs);
+  fs.writeFileSync(path.join(stubs, 'podman'), `#!/bin/sh\ntouch ${base}/podman-called\nexit 99\n`, { mode: 0o755 });
+  fs.chmodSync(path.join(stubs, 'podman'), 0o755);
+  const artifacts = path.join(base, 'artifacts');
+  fs.mkdirSync(artifacts);
+  // A literal child environment: a fake HOME, the podman stub first on PATH, and the variables the runtime facts would need.
+  const baseEnv = { PATH: `${stubs}:/usr/bin:/bin`, HOME: home, CODEX_TEST_AUTH_ROOT: root, SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-fake-0123456789ab',
+    SMOKE_WORKSPACE_ROOT: path.join(base, 'workspace') };
+  const cli = (subcommand, extra = {}, rest = []) => {
+    const result = spawnSync(process.execPath, [CLI, subcommand, ...rest], { env: { ...baseEnv, ...extra }, encoding: 'utf8', cwd: SMOKE_DIR, timeout: 60_000 });
+    const lines = result.stdout.split('\n').filter(Boolean);
+    assert.equal(lines.length, 1, `exactly one stdout line: ${result.stderr}`);
+    return { status: result.status, line: JSON.parse(lines[0]), text: lines[0], stderr: result.stderr };
+  };
+  const expectFailure = (outcome, { code, reason, route, status }) => {
+    assert.deepEqual([outcome.line.code, outcome.line.reason, outcome.line.route, outcome.status], [code, reason, route, status ?? EXIT_CODES[code]], outcome.text);
+  };
+  const noPodman = () => assert.equal(fs.existsSync(path.join(base, 'podman-called')), false, 'podman must never be called');
+  // Writes a fabricated owner login that expires in `minutes` and returns exactly the bytes that were written.
+  const putOwner = (minutes) => {
+    const bytes = ownerLogin({ expMs: Date.now() + minutes * MINUTE, refreshed: Date.now() - HOUR });
+    fs.mkdirSync(ownerDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(ownerFile, bytes);
+    fs.chmodSync(ownerFile, 0o600);
+    return bytes;
+  };
+  const ownerState = () => [fs.readFileSync(ownerFile), fs.statSync(ownerFile).ino, fs.statSync(ownerFile).mtimeMs];
+  // Owner missing: exit 10 with the owner reason, no ROOT and not even its parent is created.
+  const missing = cli('preflight');
+  expectFailure(missing, { code: 'NOT_SEEDED', reason: 'owner-login-missing', route: 'owner' });
+  assert.equal(missing.line.result, 'not-ready');
+  assert.equal(missing.line.stream, null);
+  assert.equal(missing.line.owner.readable, false);
+  assert.equal(missing.line.owner.source, 'default');
+  assert.equal(fs.existsSync(path.join(base, 'state')), false);
+  // The same through run: no ROOT, no Playwright, and a missing login is the early failure.
+  const missingRun = cli('run', { SMOKE_ARTIFACT_DIR: artifacts, SMOKE_RUN_ID: 'a18-missing' });
+  expectFailure(missingRun, { code: 'NOT_SEEDED', reason: 'owner-login-missing', route: 'owner' });
+  assert.deepEqual([missingRun.line.ownerGate, missingRun.line.spawnedForRecovery], ['owner-login-missing', false]);
+  assert.equal(fs.existsSync(path.join(artifacts, 'codex-auth')), false);
+  assert.equal(fs.existsSync(path.join(base, 'state')), false);
+  // The other routes and the variable: an explicit stream is the old behaviour, and bad values are refused.
+  expectFailure(cli('preflight', { CODEX_TEST_AUTH_SOURCE: 'stream' }), { code: 'NOT_SEEDED', reason: 'no-stream', route: 'stream' });
+  expectFailure(cli('preflight', { CODEX_TEST_AUTH_SOURCE: 'owner' }), { code: 'NOT_SEEDED', reason: 'owner-login-missing', route: 'owner' });
+  for (const value of ['Owner', 'both', ' owner']) expectFailure(cli('preflight', { CODEX_TEST_AUTH_SOURCE: value }), { code: 'USAGE', reason: 'bad-variable', route: null });
+  expectFailure(cli('seed', { CODEX_TEST_AUTH_SOURCE: 'owner' }), { code: 'USAGE', reason: 'route-mismatch', route: null });
+  expectFailure(cli('retire', { CODEX_TEST_AUTH_SOURCE: 'owner' }), { code: 'USAGE', reason: 'route-mismatch', route: null });
+  expectFailure(cli('adopt', { CODEX_TEST_AUTH_SOURCE: 'owner' }, ['run-1']), { code: 'USAGE', reason: 'route-mismatch', route: null });
+  expectFailure(cli('seed'), { code: 'USAGE', reason: 'bad-variable', route: 'stream' });
+  expectFailure(cli('bogus'), { code: 'USAGE', reason: 'bad-subcommand', route: null });
+  assert.equal(fs.existsSync(path.join(base, 'state')), false);
+  // A valid fabricated stream is accepted by the library, and a missing owner login still fails on the owner route, leaving it untouched.
+  const paths = resolveAuthPaths({ HOME: home, CODEX_TEST_AUTH_ROOT: root });
+  for (const directory of [root, paths.streamsDir, paths.streamDir]) fs.mkdirSync(directory, { mode: 0o700, recursive: true });
+  fs.writeFileSync(paths.streamFile, streamLogin(), { mode: 0o600 });
+  assert.doesNotThrow(() => loadStream(paths, { now: NOW }));
+  const streamBefore = [fs.readFileSync(paths.streamFile), fs.statSync(paths.streamFile).ino, fs.statSync(paths.streamFile).mtimeMs];
+  const fallback = cli('preflight');
+  expectFailure(fallback, { code: 'NOT_SEEDED', reason: 'owner-login-missing', route: 'owner' });
+  assert.equal(fallback.line.rootExists, true);
+  assert.equal(fallback.line.inflight, 'absent');
+  assert.equal(fallback.line.otherRouteInflight, false);
+  expectFailure(cli('run', { SMOKE_ARTIFACT_DIR: artifacts, SMOKE_RUN_ID: 'a18-stream' }), { code: 'NOT_SEEDED', reason: 'owner-login-missing', route: 'owner' });
+  assert.deepEqual([fs.readFileSync(paths.streamFile), fs.statSync(paths.streamFile).ino, fs.statSync(paths.streamFile).mtimeMs], streamBefore);
+  // An owner login 39 minutes from expiry is refused with the gate's words, from both commands, and the stream is still not used.
+  const nearOwner = putOwner(39);
+  const ownerBefore = ownerState();
+  const near = cli('preflight');
+  expectFailure(near, { code: 'STREAM_UNSAFE', reason: 'access-near-expiry', route: 'owner' });
+  assert.equal(near.line.owner.readable, true);
+  assert.equal(near.line.owner.requiredValidMinutes, 40);
+  assert.ok([38, 39].includes(near.line.owner.accessValidMinutes), String(near.line.owner.accessValidMinutes));
+  assert.equal(near.line.owner.accountClaim, 'match');
+  const nearRun = cli('run', { SMOKE_ARTIFACT_DIR: artifacts, SMOKE_RUN_ID: 'a18-near' });
+  expectFailure(nearRun, { code: 'STREAM_UNSAFE', reason: 'access-near-expiry', route: 'owner' });
+  assert.deepEqual([nearRun.line.ownerGate, nearRun.line.spawnedForRecovery], ['access-near-expiry', false]);
+  assert.equal(fs.existsSync(path.join(artifacts, 'codex-auth')), false, 'Playwright was never started');
+  // No output carries a token, the account id or a digest.
+  const secrets = Object.values(parsed(nearOwner).tokens).concat(['acct-fake-0001']);
+  for (const outcome of [missing, missingRun, fallback, near, nearRun]) {
+    for (const secret of secrets) assert.equal(outcome.text.includes(secret), false);
+    assert.equal(/[0-9a-f]{64}/.test(outcome.text), false);
+  }
+  // A pending route-A marker is reported before the owner gate, and a route-B marker or a route-A marker is refused by the other route.
+  createInflight(paths, { ...MARKER, route: 'owner' });
+  const pending = cli('preflight');
+  expectFailure(pending, { code: 'STREAM_UNSAFE', reason: 'access-near-expiry', route: 'owner' });
+  assert.equal(pending.line.inflight, 'present');
+  assert.equal(pending.line.otherRouteInflight, false);
+  expectFailure(cli('preflight', { CODEX_TEST_AUTH_SOURCE: 'stream' }), { code: 'STREAM_UNSAFE', reason: 'inflight-other-route', route: 'stream' });
+  expectFailure(cli('run', { CODEX_TEST_AUTH_SOURCE: 'stream', SMOKE_ARTIFACT_DIR: artifacts, SMOKE_RUN_ID: 'a18-other' }), { code: 'STREAM_UNSAFE', reason: 'inflight-other-route', route: 'stream' });
+  removeInflight(paths, { route: 'owner' });
+  createInflight(paths, MARKER);
+  const crossed = cli('preflight');
+  expectFailure(crossed, { code: 'STREAM_UNSAFE', reason: 'inflight-other-route', route: 'owner' });
+  assert.deepEqual([crossed.line.inflight, crossed.line.otherRouteInflight], ['absent', true]);
+  expectFailure(cli('run', { SMOKE_ARTIFACT_DIR: artifacts, SMOKE_RUN_ID: 'a18-crossed' }), { code: 'STREAM_UNSAFE', reason: 'inflight-other-route', route: 'owner' });
+  removeInflight(paths);
+  assert.deepEqual(ownerState(), ownerBefore, 'the owner login was not written by any command');
+  // A ROOT inside the owner directory is refused as a location, and so is an artifact directory there. Nothing is created inside.
+  const goodOwner = putOwner(240 * 60);
+  const insideRoot = path.join(ownerDir, 'state', 'root');
+  expectFailure(cli('preflight', { CODEX_TEST_AUTH_ROOT: insideRoot }), { code: 'STREAM_UNSAFE', reason: 'location', route: 'owner' });
+  expectFailure(cli('run', { CODEX_TEST_AUTH_ROOT: insideRoot, SMOKE_ARTIFACT_DIR: artifacts, SMOKE_RUN_ID: 'a18-root' }), { code: 'STREAM_UNSAFE', reason: 'location', route: 'owner' });
+  fs.mkdirSync(path.join(ownerDir, 'artifacts'));
+  expectFailure(cli('run', { SMOKE_ARTIFACT_DIR: path.join(ownerDir, 'artifacts'), SMOKE_RUN_ID: 'a18-art' }), { code: 'USAGE', reason: 'artifact-dir-location', route: 'owner' });
+  assert.equal(fs.existsSync(path.join(ownerDir, 'state')), false);
+  assert.deepEqual(fs.readdirSync(path.join(ownerDir, 'artifacts')), []);
+  // An owner override inside ROOT is refused as a location of ROOT, which is checked first. One inside the workspace root is an owner location.
+  fs.mkdirSync(path.join(root, 'elsewhere'), { mode: 0o700 });
+  fs.writeFileSync(path.join(root, 'elsewhere', 'auth.json'), goodOwner, { mode: 0o600 });
+  expectFailure(cli('preflight', { CODEX_TEST_AUTH_OWNER_AUTH: path.join(root, 'elsewhere', 'auth.json') }), { code: 'STREAM_UNSAFE', reason: 'location', route: 'owner' });
+  fs.mkdirSync(path.join(base, 'workspace', 'login'), { recursive: true });
+  fs.writeFileSync(path.join(base, 'workspace', 'login', 'auth.json'), goodOwner, { mode: 0o600 });
+  expectFailure(cli('preflight', { CODEX_TEST_AUTH_OWNER_AUTH: path.join(base, 'workspace', 'login', 'auth.json') }), { code: 'USAGE', reason: 'owner-location', route: 'owner' });
+  // scan-leaks on the owner route: the owner's derived credential is found, a clean directory is clean, and no reference at all is refused.
+  const derived = deriveAccessOnlyAuth(fs.readFileSync(ownerFile), { now: Date.now() }).derived;
+  const scratch = path.join(base, 'scratch');
+  fs.mkdirSync(scratch);
+  fs.writeFileSync(path.join(scratch, 'out.log'), `noise ${derived.toString('base64')} noise`);
+  const leaked = cli('scan-leaks', {}, [scratch]);
+  expectFailure(leaked, { code: 'LEAK_DETECTED', reason: 'artifact-contains-token', route: 'owner' });
+  assert.equal(leaked.line.ownerReferences, 'loaded');
+  assert.ok(leaked.line.leaks >= 1);
+  assert.equal(leaked.text.includes(derived.toString('base64')), false);
+  const clean = path.join(base, 'clean');
+  fs.mkdirSync(clean);
+  fs.writeFileSync(path.join(clean, 'out.log'), 'nothing to see');
+  const cleanRun = cli('scan-leaks', {}, [clean]);
+  assert.deepEqual([cleanRun.status, cleanRun.line.code, cleanRun.line.leaks, cleanRun.line.ownerReferences, cleanRun.line.route], [0, 'OK', 0, 'loaded', 'owner']);
+  fs.rmSync(ownerFile);
+  fs.rmSync(root, { recursive: true });
+  const nothing = cli('scan-leaks', {}, [clean]);
+  expectFailure(nothing, { code: 'STREAM_UNSAFE', reason: 'scan-reference-missing', route: 'owner' });
+  assert.equal(nothing.line.ownerReferences, 'unavailable');
+  // Podman was never called by any command.
+  noPodman();
 });
 
 test('no test in this file touched the real account\'s .codex directory', () => {
