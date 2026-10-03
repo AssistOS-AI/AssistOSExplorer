@@ -8,7 +8,9 @@ import { findSecretLeaks } from './security.mjs';
 // which is seeded once from a separate login, copied into a run-owned robot for one bounded turn, and copied back
 // with a monotonic compare-and-swap. Credential bytes live only in memory, in the stream file and in a quarantine
 // file. Nothing here reads process.env, spawns a process or opens the caller's own Codex login except `seedStream`,
-// which brackets that login in memory to prove the separate login did not disturb it.
+// which brackets that login in memory to prove the separate login did not disturb it. Route A (lib/codex-test-auth-owner.mjs) is
+// the other credential route. It reads that login read-only and builds an access-only credential in memory, and this module only
+// carries the pieces both routes share: reasons, locations, the in-flight marker and the outcome of a run.
 
 export const EXIT_CODES = Object.freeze({
   OK: 0,
@@ -31,25 +33,28 @@ export const EXIT_CODES = Object.freeze({
 export const RUN_TIMEOUT_MS = 35 * 60_000;
 export const RUN_WATCHDOG_MS = RUN_TIMEOUT_MS + 5 * 60_000;
 
-const AUTH_INVALID = ['not-chatgpt', 'api-key', 'pat', 'bedrock', 'missing-field', 'future-last-refresh', 'oversize'];
+const AUTH_INVALID = ['not-chatgpt', 'api-key', 'pat', 'bedrock', 'missing-field', 'future-last-refresh', 'oversize', 'token-unparseable', 'account-claim'];
+const OWNER_UNSAFE = ['symlink', 'not-regular', 'uid', 'mode', 'hardlink', 'unstable'];
 
 // Every failure carries one of these fixed reasons. Nothing derived from a payload, Podman, Codex or ALA is ever a reason.
 export const EXIT_REASONS = Object.freeze({
   OK: Object.freeze([]),
   INTERNAL: Object.freeze(['exception', 'no-result-file']),
-  USAGE: Object.freeze(['bad-subcommand', 'bad-variable', 'relative-path', 'artifact-dir-location']),
-  NOT_SEEDED: Object.freeze(['no-stream']),
+  USAGE: Object.freeze(['bad-subcommand', 'bad-variable', 'relative-path', 'artifact-dir-location', 'route-mismatch', 'owner-location']),
+  NOT_SEEDED: Object.freeze(['no-stream', 'owner-login-missing']),
   ALREADY_SEEDED: Object.freeze(['stream-exists']),
   LOCK_HELD: Object.freeze(['live-owner', 'ambiguous-owner']),
   STREAM_UNSAFE: Object.freeze(['location', 'owner-or-mode', 'seed-source-missing', 'seed-source-symlink', 'seed-already-present',
     'seed-equals-live-cache', 'main-login-changed', 'quarantine-pending', 'quarantine-missing', 'inflight-present', 'scan-reference-missing',
-    ...AUTH_INVALID.map((name) => `auth-invalid:${name}`)]),
+    'access-near-expiry', 'inflight-other-route', 'derived-not-access-only',
+    ...OWNER_UNSAFE.map((name) => `owner-unsafe:${name}`), ...AUTH_INVALID.map((name) => `auth-invalid:${name}`)]),
   RUNTIME_PREREQ_FAILED: Object.freeze(['binding', 'not-admin', 'selection-count', 'unowned-leftover-robot', 'version-pin',
-    'cli-start-budget', 'codex-client-missing', 'target-exists']),
+    'cli-start-budget', 'codex-client-missing', 'target-exists', 'client-unqualified']),
   NATIVE_TURN_FAILED: Object.freeze(['failed', 'timeout']),
   IDENTITY_MISMATCH: Object.freeze(['backend', 'robot', 'provider-env', 'config-toml', 'binary', 'transcript-missing',
     'transcript-mismatch', 'binding-changed']),
-  COPYBACK_REFUSED: Object.freeze(['invalid', 'other-account', 'stale-last-refresh', 'stream-changed', 'runtime-auth-missing']),
+  COPYBACK_REFUSED: Object.freeze(['invalid', 'other-account', 'stale-last-refresh', 'stream-changed', 'runtime-auth-missing',
+    'runtime-copy-changed']),
   CLEANUP_INCOMPLETE: Object.freeze(['credential-not-persisted', 'credential-not-removed', 'robot-not-deleted',
     'folder-not-deleted', 'recovery-incomplete']),
   LEAK_DETECTED: Object.freeze(['artifact-contains-token']),
@@ -87,13 +92,14 @@ function currentUid() {
   return typeof process.getuid === 'function' ? process.getuid() : 0;
 }
 
-function isInside(parent, child) {
+// Exported for the route-A location rules (lib/codex-test-auth-owner.mjs). Bodies are unchanged.
+export function isInside(parent, child) {
   const relative = path.relative(parent, child);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 // The realpath of the nearest existing ancestor plus the remaining lexical tail, so a missing root can still be located.
-function locate(target) {
+export function locate(target) {
   let existing = path.resolve(target);
   const tail = [];
   for (;;) {
@@ -143,10 +149,10 @@ export function resolveAuthPaths(env) {
   const streamDir = path.join(root, 'streams', stream);
   return Object.freeze({
     root, stream, streamsDir: path.join(root, 'streams'), streamDir, streamFile: path.join(streamDir, 'auth.json'),
-    lockPath: path.join(root, 'run.lock'), inflightPath: path.join(root, 'inflight.json'),
+    lockPath: path.join(root, 'run.lock'), inflightPath: path.join(root, 'inflight.json'), ownerInflightPath: path.join(root, 'inflight-owner.json'),
     seedDir: path.join(root, 'seed'), seedHome: path.join(root, 'seed', 'home'), seedCodexHome: path.join(root, 'seed', 'codex'),
     retiredDir: path.join(root, 'retired'),
-    // Only `seedStream` opens this path. `run`, `preflight` and the library never do.
+    // Opened only by `seedStream` (route B) and by route A's owner module, never by another function of this library.
     liveCachePath: own('HOME') && path.isAbsolute(env.HOME) ? path.join(env.HOME, '.codex', 'auth.json') : null,
   });
 }
@@ -179,6 +185,7 @@ export function assertPrivateRoot(paths, { forbiddenRoots = [], uid = currentUid
   }
   checkPrivateEntry(paths.streamFile, { directory: false, uid });
   checkPrivateEntry(paths.inflightPath, { directory: false, uid });
+  checkPrivateEntry(paths.ownerInflightPath, { directory: false, uid });
   for (const name of listStreamFiles(paths, /^quarantine-[A-Za-z0-9_-]+\.json$/)) {
     checkPrivateEntry(path.join(paths.streamDir, name), { directory: false, uid });
   }
@@ -469,12 +476,22 @@ export function loadStream(paths, { now = Date.now(), uid = currentUid() } = {})
   return { bytes, sha256: sha256Hex(bytes), summary: validateAuthArtifact(bytes, { now }) };
 }
 
-export function inflightPresent(paths) {
-  try { fs.lstatSync(paths.inflightPath); return true; } catch (error) {
+const INFLIGHT_ROUTES = ['stream', 'owner'];
+
+function inflightFile(paths, route) {
+  if (!INFLIGHT_ROUTES.includes(route)) throw fail('USAGE', 'bad-variable');
+  return route === 'owner' ? paths.ownerInflightPath : paths.inflightPath;
+}
+
+export function inflightPresent(paths, { route = 'stream' } = {}) {
+  try { fs.lstatSync(inflightFile(paths, route)); return true; } catch (error) {
     if (enoent(error)) return false;
     throw error;
   }
 }
+
+// The stream-only commands refuse while either route's marker exists.
+const anyInflightPresent = (paths) => inflightPresent(paths) || inflightPresent(paths, { route: 'owner' });
 
 export function listQuarantines(paths) {
   return listStreamFiles(paths, /^quarantine-[A-Za-z0-9_-]+\.json$/).map((name) => name.slice('quarantine-'.length, -'.json'.length));
@@ -490,6 +507,14 @@ export function inspectStream(paths, { now = Date.now(), procRoot = '/proc', uid
 function mkdirPrivate(directory) {
   fs.mkdirSync(directory, { mode: 0o700, recursive: true });
   fs.chmodSync(directory, 0o700);
+}
+
+// Route A: creates ROOT (0700) only when it is absent, after the location and mode checks, and nothing below it.
+export function ensurePrivateRoot(paths, { forbiddenRoots = [], uid = currentUid() } = {}) {
+  const checked = assertPrivateRoot(paths, { forbiddenRoots, uid });
+  if (checked.exists) return { root: checked.root, created: false };
+  mkdirPrivate(paths.root);
+  return { root: assertPrivateRoot(paths, { forbiddenRoots, uid }).root, created: true };
 }
 
 function snapshotLiveCache(file) {
@@ -540,7 +565,7 @@ export async function seedStream(paths, { waitForOperator, seedBin, now = Date.n
   const lock = acquireRunLock(paths, { runId, procRoot, now });
   try {
     if (exists(paths.streamFile)) throw fail('ALREADY_SEEDED', 'stream-exists');
-    if (inflightPresent(paths)) throw fail('STREAM_UNSAFE', 'inflight-present');
+    if (anyInflightPresent(paths)) throw fail('STREAM_UNSAFE', 'inflight-present');
     if (exists(path.join(paths.seedCodexHome, 'auth.json'))) throw fail('STREAM_UNSAFE', 'seed-already-present');
     const before = snapshotLiveCache(paths.liveCachePath);
     fs.rmSync(paths.seedDir, { recursive: true, force: true });
@@ -595,7 +620,7 @@ export function retireStream(paths, { now = Date.now(), procRoot = '/proc', uid 
   const lock = acquireRunLock(paths, { runId, procRoot, now });
   try {
     if (!exists(paths.streamFile)) throw fail('NOT_SEEDED', 'no-stream');
-    if (inflightPresent(paths)) throw fail('STREAM_UNSAFE', 'inflight-present');
+    if (anyInflightPresent(paths)) throw fail('STREAM_UNSAFE', 'inflight-present');
     mkdirPrivate(paths.retiredDir);
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const target = path.join(paths.retiredDir, `${paths.stream}-${utcStamp(now)}${attempt ? `-${attempt}` : ''}`);
@@ -616,7 +641,7 @@ export function adoptQuarantine(paths, { runId, now = Date.now(), procRoot = '/p
   const lock = acquireRunLock(paths, { runId: `adopt-${runId}`.slice(0, 64), procRoot, now });
   try {
     if (!exists(paths.streamFile)) throw fail('NOT_SEEDED', 'no-stream');
-    if (inflightPresent(paths)) throw fail('STREAM_UNSAFE', 'inflight-present');
+    if (anyInflightPresent(paths)) throw fail('STREAM_UNSAFE', 'inflight-present');
     const quarantine = path.join(paths.streamDir, `quarantine-${runId}.json`);
     let bytes;
     try { bytes = readRegular(quarantine, { uid }); } catch (error) {
@@ -707,11 +732,13 @@ export function acceptCopyBack(paths, { loadedSha256, loadedBytes, runtimeBytes,
 const ROBOT_NAME = /^codex-auth-test-[A-Za-z0-9_-]{1,64}$/;
 const FOLDER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-export function createInflight(paths, { runId, robotName, folder }) {
+export function createInflight(paths, { runId, robotName, folder, route = 'stream' }) {
+  const file = inflightFile(paths, route);
   if (!isRunId(runId) || !ROBOT_NAME.test(robotName) || !FOLDER_NAME.test(folder)) throw fail('USAGE', 'bad-variable');
-  if (!exists(paths.streamFile)) throw fail('NOT_SEEDED', 'no-stream');
+  // Route B only exists while a stream exists. Route A has no stream.
+  if (route === 'stream' && !exists(paths.streamFile)) throw fail('NOT_SEEDED', 'no-stream');
   try {
-    writeExclusive(paths.inflightPath, Buffer.from(JSON.stringify({ runId, robotName, folder })));
+    writeExclusive(file, Buffer.from(JSON.stringify({ runId, robotName, folder })));
     fsyncDirectory(paths.root);
   } catch (error) {
     if (error.code === 'EEXIST') throw fail('STREAM_UNSAFE', 'inflight-present');
@@ -720,9 +747,10 @@ export function createInflight(paths, { runId, robotName, folder }) {
   return { runId, robotName, folder };
 }
 
-export function readInflight(paths, { uid = currentUid() } = {}) {
+export function readInflight(paths, { uid = currentUid(), route = 'stream' } = {}) {
+  const file = inflightFile(paths, route);
   let bytes;
-  try { bytes = readRegular(paths.inflightPath, { limit: 4096, uid }); } catch (error) {
+  try { bytes = readRegular(file, { limit: 4096, uid }); } catch (error) {
     if (enoent(error)) return null;
     throw fail('STREAM_UNSAFE', 'inflight-present');
   }
@@ -733,8 +761,16 @@ export function readInflight(paths, { uid = currentUid() } = {}) {
   } catch { throw fail('STREAM_UNSAFE', 'inflight-present'); }
 }
 
-export function removeInflight(paths) {
-  try { fs.unlinkSync(paths.inflightPath); fsyncDirectory(paths.root); } catch (error) { if (!enoent(error)) throw error; }
+export function removeInflight(paths, { route = 'stream' } = {}) {
+  const file = inflightFile(paths, route);
+  try { fs.unlinkSync(file); fsyncDirectory(paths.root); } catch (error) { if (!enoent(error)) throw error; }
+}
+
+// Each route refuses the other route's marker before any recovery, so a route-A copy is never handled by route-B code.
+export function assertNoOtherRouteInflight(paths, route) {
+  const other = route === 'owner' ? 'stream' : route === 'stream' ? 'owner' : null;
+  if (other === null) throw fail('USAGE', 'bad-variable');
+  if (inflightPresent(paths, { route: other })) throw fail('STREAM_UNSAFE', 'inflight-other-route');
 }
 
 // A run refuses while an unresolved quarantine exists. The operator resolves it with `adopt` or `retire`.
@@ -923,4 +959,21 @@ export function resultLine(fields) {
 export function describeFailure(error) {
   if (error instanceof CodexAuthError) return { code: error.code, reason: error.reason };
   return { code: 'INTERNAL', reason: 'exception' };
+}
+
+// The outcome of one `run`, for both routes. Pure. Precedence: a leak (27), an unproven leak-scan coverage (route A, 14), a missing
+// result file, incomplete cleanup (26), the worker's first failure, a failing Playwright exit, then success.
+export function decideRunOutcome({ leaks, coverageFailure = false, result, exitedCode }) {
+  const leaked = Array.isArray(leaks) ? leaks.length > 0 : Number(leaks) > 0;
+  const summary = { refreshedDuringRun: result?.stream?.refreshedDuringRun === true, authRejectionSuspected: result?.authRejectionSuspected === true,
+    cleanup: result?.cleanup && Object.values(result.cleanup).every(Boolean) ? 'complete' : 'incomplete' };
+  if (leaked) return { ...summary, result: 'failed', code: 'LEAK_DETECTED', reason: 'artifact-contains-token' };
+  if (coverageFailure) return { ...summary, result: 'failed', code: 'STREAM_UNSAFE', reason: 'scan-reference-missing' };
+  if (result === null || result === undefined) return { ...summary, cleanup: 'incomplete', result: 'failed', code: 'INTERNAL', reason: 'no-result-file' };
+  if (result.code === 'CLEANUP_INCOMPLETE' || (result.code !== 'OK' && summary.cleanup === 'incomplete')) {
+    return { ...summary, result: 'failed', code: 'CLEANUP_INCOMPLETE', reason: result.code === 'CLEANUP_INCOMPLETE' ? result.reason : 'recovery-incomplete' };
+  }
+  if (result.code !== 'OK') return { ...summary, result: 'failed', code: result.code, reason: result.reason ?? null };
+  if (exitedCode !== 0) return { ...summary, result: 'failed', code: 'INTERNAL', reason: 'exception' };
+  return { ...summary, result: 'passed', code: 'OK', reason: null };
 }
