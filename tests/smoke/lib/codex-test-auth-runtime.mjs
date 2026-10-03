@@ -322,6 +322,18 @@ export function credentialProgram(fn, args, options = {}) {
   ].join('\n');
 }
 
+// For phases that move credential bytes: the budget is advisory, never a cancellation. The work is always awaited until it
+// settles (every runtime call is individually bounded), so no credential write can outlive the host lock or the result.
+export async function credentialPhase(milliseconds, work) {
+  const settled = Promise.resolve().then(work).then(() => null, (error) => error ?? new Error('credential phase failed'));
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve('late'), milliseconds); });
+  const first = await Promise.race([settled, late]);
+  clearTimeout(timer);
+  const error = first === 'late' ? await settled : first;
+  if (error) throw error;
+}
+
 // ---- host side ------------------------------------------------------------------------------------------------
 
 // Bounded Podman runner. Output is capped and stderr is never read, since raw Podman, Codex and ALA output can carry

@@ -14,7 +14,7 @@ import {
   CodexAuthError, acceptCopyBack, acquireRunLock, assertNoQuarantine, assertPrivateRoot, classifyTurnFailure, createInflight, isRunId,
   listQuarantines, loadStream, planRecovery, readInflight, removeInflight, resolveAuthPaths, robotDeleteAccepted, sha256Hex,
 } from '../lib/codex-test-auth.mjs';
-import { TEST_ROBOT_PREFIX, bindingUnchanged, createCodexRuntime } from '../lib/codex-test-auth-runtime.mjs';
+import { TEST_ROBOT_PREFIX, bindingUnchanged, createCodexRuntime, credentialPhase } from '../lib/codex-test-auth-runtime.mjs';
 
 // One bounded native Codex turn in a run-owned, codex-only RoboTeam robot, authenticated by the owned login stream.
 // Every credential move goes through lib/codex-test-auth*.mjs. This spec never traces, stores browser state, reads
@@ -81,6 +81,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
     let primary = null;
     let cleanupFailure = null;
     let lock = null;
+    let lockHeld = false;
     let loaded = null;
     let robot = null;
     let inflightCreated = false;
@@ -135,6 +136,8 @@ test.describe('Codex-authenticated Copilot native turn', () => {
           throw new CodexAuthError('CLEANUP_INCOMPLETE', 'credential-not-persisted');
         }
         runtimeBytes = copied.bytes;
+        // The stream is only ever written under the host lock.
+        if (!lockHeld) throw new CodexAuthError('CLEANUP_INCOMPLETE', 'credential-not-persisted');
         try {
           const outcome = acceptCopyBack(paths, { loadedSha256: loaded.sha256, loadedBytes: loaded.bytes, runtimeBytes, runId });
           Object.assign(result.stream, { sameAccount: outcome.sameAccount, refreshedDuringRun: outcome.refreshedDuringRun,
@@ -172,9 +175,10 @@ test.describe('Codex-authenticated Copilot native turn', () => {
         paths = resolveAuthPaths(process.env);
         runtime = createCodexRuntime({ box });
       } catch (error) { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'binding'); }
-      await within(BUDGET.setup + BUDGET.recovery, async () => {
+      await credentialPhase(BUDGET.setup + BUDGET.recovery, async () => {
         assertPrivateRoot(paths, { forbiddenRoots: [smokeConfig.repoRoot, workspaceRoot, smokeConfig.artifactRoot] });
         lock = acquireRunLock(paths, { runId });
+        lockHeld = true;
         loaded = loadStream(paths);
         result.stream.lastRefreshAgeHoursBefore = loaded.summary.lastRefreshAgeHours;
         result.stream.accessValidHoursBefore = loaded.summary.accessValidHours;
@@ -285,7 +289,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       });
 
       // Step 8: the credential goes in over stdin. From here a copy-back is always attempted.
-      await within(BUDGET.inject, async () => {
+      await credentialPhase(BUDGET.inject, async () => {
         result.cleanup.credentialPersisted = false;
         result.cleanup.credentialRemoved = false;
         injected = true;
@@ -358,7 +362,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
           if (found) { robot = { robotId: found.id, robotName }; result.robot.id = found.id; result.robot.created = true; }
         }
         if (injected && robot && !(persisted && removed)) {
-          await within(BUDGET.copyBack + BUDGET.remove, () => persistAndRemove(robot, { confirmed: injectConfirmed })).catch((error) => {
+          await credentialPhase(BUDGET.copyBack + BUDGET.remove, () => persistAndRemove(robot, { confirmed: injectConfirmed })).catch((error) => {
             note('persist', error);
             if (error instanceof CodexAuthError && error.code === 'CLEANUP_INCOMPLETE') cleanupFailure ??= error;
             else fail(error, 'COPYBACK_REFUSED', 'invalid');
@@ -420,7 +424,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       if (primary) result.primaryFailure = { code: primary.code, reason: primary.reason };
       if (final) { result.code = final.code; result.reason = final.reason; result.exitCode = final.exitCode; }
       result.finishedAt = new Date().toISOString();
-      try { writeResult(); } finally { lock?.release(); }
+      try { writeResult(); } finally { lockHeld = false; lock?.release(); }
       assert.equal(result.code, 'OK', `codex-test-auth ${result.code} ${result.reason}`);
     }
   });

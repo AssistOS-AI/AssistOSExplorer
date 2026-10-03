@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
 import {
-  RuntimeProgramError, bindingUnchanged, createCodexRuntime, credentialProgram, deriveRoboTeamRepository, injectCodexAuth,
+  RuntimeProgramError, bindingUnchanged, createCodexRuntime, credentialPhase, credentialProgram, deriveRoboTeamRepository, injectCodexAuth,
   readAlaSource, readCodexAuthForCopyBack, readCodexClientIdentity, readCodexTurnIdentity, readRobotInventory, removeCodexAuth,
   waitRobotCliExit,
 } from './codex-test-auth-runtime.mjs';
@@ -560,4 +560,26 @@ test('the imported live-skills runtime helpers still exist with the expected ari
   assert.match(text, /readRegistryAndRuntime/);
   assert.match(text, /\{"workspaceRoot":"\/work\/ws"\}/);
   assert.throws(() => validateLiveSkillsRuntimeBinding({}, '/x', { workspaceRoot: '/work/ws' }));
+});
+
+test('a credential phase is awaited until it settles even when it overruns its budget', async () => {
+  const events = [];
+  const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  // A phase that overruns its budget but succeeds: the caller only continues after the work finished.
+  await credentialPhase(5, async () => { await delay(60); events.push('work-finished'); });
+  events.push('caller-continues');
+  assert.deepEqual(events, ['work-finished', 'caller-continues']);
+  // A late failure is reported, and still only after the work settled.
+  events.length = 0;
+  await assert.rejects(credentialPhase(5, async () => { await delay(60); events.push('late-failure'); throw new RuntimeProgramError('TIMEOUT'); }),
+    (error) => error.code === 'TIMEOUT');
+  assert.deepEqual(events, ['late-failure']);
+  // A prompt failure and a prompt success behave as usual, and an empty throw is still a failure.
+  await assert.rejects(credentialPhase(1000, async () => { throw new RuntimeProgramError('BUSY'); }), (error) => error.code === 'BUSY');
+  await assert.rejects(credentialPhase(1000, async () => { throw undefined; }));
+  await credentialPhase(1000, async () => {});
+  // The budget timer never keeps the process alive after a fast phase.
+  const started = Date.now();
+  await credentialPhase(60_000, async () => {});
+  assert.ok(Date.now() - started < 5000);
 });
