@@ -1208,6 +1208,93 @@ test('the CLI defaults to the owner route without falling back to a valid stream
   noPodman();
 });
 
+test('the owner run spawns the worker for recovery when a route-A marker is pending and the owner gate fails, passes only an override on to the worker, and scans before it wipes', (t) => {
+  const base = sandbox(t);
+  // A scratch copy of tests/smoke in which the Playwright runner is a stub. It answers the --list check, records how it was started, and
+  // writes the result.json and the artifact content that the scenario says. The production CLI has no hook for this.
+  const scratch = path.join(base, 'smoke');
+  fs.mkdirSync(path.join(scratch, 'scripts'), { recursive: true });
+  fs.cpSync(path.join(SMOKE_DIR, 'lib'), path.join(scratch, 'lib'), { recursive: true });
+  fs.copyFileSync(CLI, path.join(scratch, 'scripts', 'codex-test-auth.mjs'));
+  const stubLog = path.join(base, 'stub-runs.jsonl');
+  fs.writeFileSync(path.join(scratch, 'scripts', 'run-playwright.mjs'), `
+import fs from 'node:fs';
+import path from 'node:path';
+const args = process.argv.slice(2);
+if (args.includes('--list')) { console.log('Total: 1 test in 1 file'); process.exit(0); }
+const scenario = JSON.parse(process.env.STUB_SCENARIO);
+fs.appendFileSync(${JSON.stringify(stubLog)}, JSON.stringify({ source: process.env.CODEX_TEST_AUTH_SOURCE ?? null, ownerAuth: process.env.CODEX_TEST_AUTH_OWNER_AUTH ?? null,
+  runId: process.env.SMOKE_RUN_ID ?? null }) + '\\n');
+const directory = path.join(process.env.SMOKE_ARTIFACT_DIR, 'codex-auth');
+if (scenario.plant) fs.writeFileSync(path.join(directory, 'out.log'), 'noise ' + scenario.plant + ' noise');
+fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(scenario.result));
+process.exit(scenario.exit);
+`);
+  const home = path.join(base, 'home');
+  const ownerDir = path.join(home, '.codex');
+  fs.mkdirSync(ownerDir, { recursive: true, mode: 0o700 });
+  const ownerFile = path.join(ownerDir, 'auth.json');
+  const complete = { credentialPersisted: true, credentialRemoved: true, robotDeleted: true, folderDeleted: true };
+  const scenarioRun = (name, { pending = false, owner = null, override = null, scenario }) => {
+    const root = path.join(base, `state-${name}`, 'assistos-codex-test-auth');
+    const artifacts = path.join(base, `artifacts-${name}`);
+    fs.mkdirSync(artifacts);
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    const paths = resolveAuthPaths({ HOME: home, CODEX_TEST_AUTH_ROOT: root });
+    if (pending) createInflight(paths, { ...MARKER, route: 'owner' });
+    fs.rmSync(ownerFile, { force: true });
+    if (owner) { fs.writeFileSync(ownerFile, owner); fs.chmodSync(ownerFile, 0o600); }
+    fs.writeFileSync(stubLog, '');
+    const env = { PATH: '/usr/bin:/bin', HOME: home, CODEX_TEST_AUTH_ROOT: root, SMOKE_ARTIFACT_DIR: artifacts, SMOKE_RUN_ID: `fix-${name}`,
+      SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-fake-0123456789ab', SMOKE_WORKSPACE_ROOT: path.join(base, 'workspace'), NODE_OPTIONS: CHILD_NODE_OPTIONS,
+      STUB_SCENARIO: JSON.stringify(scenario), ...(override ? { CODEX_TEST_AUTH_OWNER_AUTH: override } : {}) };
+    const result = spawnSync(process.execPath, [path.join(scratch, 'scripts', 'codex-test-auth.mjs'), 'run'], { env, encoding: 'utf8', cwd: scratch, timeout: 120_000 });
+    assert.equal(result.stderr.includes(GUARD_MARKER), false, 'a child reached the real account .codex');
+    const lines = result.stdout.split('\n').filter(Boolean);
+    assert.equal(lines.length, 1, `exactly one stdout line: ${result.stderr}`);
+    const runs = fs.readFileSync(stubLog, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    return { status: result.status, line: JSON.parse(lines[0]), text: lines[0], runs, paths, root };
+  };
+  const nearOwner = ownerLogin({ expMs: Date.now() + 39 * MINUTE, refreshed: Date.now() - HOUR });
+  const goodOwner = ownerLogin({ expMs: Date.now() + 240 * HOUR, refreshed: Date.now() - HOUR });
+  const unusable = { code: 'NOT_SEEDED', reason: 'owner-login-missing', owner: { derived: false }, recovered: true, cleanup: complete };
+  // D1: a pending marker and no owner login. The worker is spawned for recovery, the empty reference set is not scanned, and the
+  // worker's owner reason is the exit code.
+  const missing = scenarioRun('missing', { pending: true, scenario: { result: unusable, exit: 1 } });
+  assert.deepEqual([missing.status, missing.line.code, missing.line.reason, missing.line.route], [10, 'NOT_SEEDED', 'owner-login-missing', 'owner']);
+  assert.deepEqual([missing.line.ownerGate, missing.line.spawnedForRecovery, missing.line.leakScanCoverage, missing.line.leakScan, missing.line.ownerChangedDuringRun, missing.line.cleanup],
+    ['owner-login-missing', true, 'n/a', 'skipped', null, 'complete']);
+  assert.equal(missing.runs.length, 1, 'the worker was started once');
+  assert.deepEqual([missing.runs[0].source, missing.runs[0].ownerAuth], ['owner', null]);
+  // The same without a pending marker is an early failure: nothing is started.
+  const early = scenarioRun('early', { scenario: { result: unusable, exit: 1 } });
+  assert.deepEqual([early.status, early.line.code, early.line.reason, early.line.spawnedForRecovery, early.line.ownerGate], [10, 'NOT_SEEDED', 'owner-login-missing', false, 'owner-login-missing']);
+  assert.deepEqual(early.runs, []);
+  assert.equal(fs.existsSync(path.join(base, 'artifacts-early', 'codex-auth')), false);
+  // D1 with an owner login that fails the gate but was read: its references are scanned, and an unchanged owner proves the coverage.
+  const nearRun = scenarioRun('near', { pending: true, owner: nearOwner, scenario: { result: { ...unusable, reason: 'access-near-expiry', code: 'STREAM_UNSAFE' }, exit: 1 } });
+  assert.deepEqual([nearRun.status, nearRun.line.code, nearRun.line.reason, nearRun.line.ownerGate, nearRun.line.spawnedForRecovery],
+    [14, 'STREAM_UNSAFE', 'access-near-expiry', 'access-near-expiry', true]);
+  assert.deepEqual([nearRun.line.leakScanCoverage, nearRun.line.leakScan, nearRun.line.ownerChangedDuringRun], ['proven', 'scanned', false]);
+  assert.equal(nearRun.runs.length, 1);
+  // A usable owner login on the default path: the worker resolves the path itself, and a refresh token planted in the artifacts is a leak.
+  const leaky = scenarioRun('leaky', { owner: goodOwner, scenario: { result: { code: 'OK', reason: null, owner: { derived: true }, cleanup: complete }, exit: 0,
+    plant: parsed(goodOwner).tokens.refresh_token } });
+  assert.deepEqual([leaky.status, leaky.line.code, leaky.line.reason], [27, 'LEAK_DETECTED', 'artifact-contains-token']);
+  assert.deepEqual([leaky.line.ownerGate, leaky.line.spawnedForRecovery, leaky.line.leakScanCoverage, leaky.line.leakScan, leaky.line.ownerChangedDuringRun],
+    ['pass', false, 'proven', 'scanned', false]);
+  assert.deepEqual([leaky.runs.length, leaky.runs[0].ownerAuth], [1, null]);
+  assert.equal(leaky.text.includes(parsed(goodOwner).tokens.refresh_token), false);
+  // A clean run passes. An override is passed on to the worker, and only an override.
+  const clean = scenarioRun('clean', { owner: goodOwner, scenario: { result: { code: 'OK', reason: null, owner: { derived: true }, cleanup: complete }, exit: 0 } });
+  assert.deepEqual([clean.status, clean.line.code, clean.line.result, clean.line.leakScan, clean.runs[0].ownerAuth], [0, 'OK', 'passed', 'scanned', null]);
+  const overrideFile = path.join(base, 'elsewhere', 'login.json');
+  fs.mkdirSync(path.dirname(overrideFile));
+  fs.writeFileSync(overrideFile, goodOwner, { mode: 0o600 });
+  const overridden = scenarioRun('override', { override: overrideFile, scenario: { result: { code: 'OK', reason: null, owner: { derived: true }, cleanup: complete }, exit: 0 } });
+  assert.deepEqual([overridden.status, overridden.line.code, overridden.runs[0].ownerAuth, overridden.runs[0].source], [0, 'OK', overrideFile, 'owner']);
+});
+
 test('the spec wires route A in the documented order: recovery before the owner read, qualification before injection, the route on every marker call, no quarantine check and a post-turn generation check', () => {
   const spec = fs.readFileSync(new URL('../specs/07-copilot-codex-native.spec.mjs', import.meta.url), 'utf8');
   const at = (needle, from = 0) => { const index = spec.indexOf(needle, from); assert.notEqual(index, -1, `the spec must contain: ${needle}`); return index; };
@@ -1259,6 +1346,10 @@ test('the spec wires route A in the documented order: recovery before the owner 
   assert.match(spec, /result\.runtimeCopy = runtimeCopy;\s*result\.recoveredCopy = recoveredCopy;/);
   assert.match(spec, /if \(session && route === 'stream'\) \{\s*Object\.assign\(result\.stream, session\.state\.stream\);/);
   assert.match(spec, /if \(route === 'owner'\) session\?\.release\(\);/);
+  // The source in the result comes from the resolution the worker does itself, and a step-3b budget overrun is documented as exit 1.
+  assert.match(spec, /result\.owner\.source = resolved\.source;/);
+  const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  assert.match(readme, /step-3b[^|\n]*budget overrun[^|\n]*reports 1 `exception`/);
   // No credential reaches argv, the environment or a stream-style file from this spec: it only reads the owner login through the owner module.
   assert.equal(/auth\.json|\.codex\b/.test(spec.replace(/\/\/[^\n]*/g, '')), false, 'the spec never names the login file');
 });

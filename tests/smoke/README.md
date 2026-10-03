@@ -869,7 +869,7 @@ Every subcommand prints exactly one sanitized JSON line on stdout with the fixed
 | Exit | Code | Reasons | Operator action |
 | --- | --- | --- | --- |
 | 0 | `OK` | none | none |
-| 1 | `INTERNAL` | `exception`, `no-result-file` | inspect `codex-auth/playwright.log` |
+| 1 | `INTERNAL` | `exception`, `no-result-file` | inspect `codex-auth/playwright.log`. Under route A, a step-3b (owner read and derivation) budget overrun reports 1 `exception`; it is practically unreachable, because the reads are synchronous |
 | 2 | `USAGE` | `bad-subcommand`, `bad-variable`, `relative-path`, `artifact-dir-location` (also an artifact directory overlapping the owner directory), `route-mismatch`, `owner-location` | fix the invocation |
 | 10 | `NOT_SEEDED` | `no-stream` (route B), `owner-login-missing` (route A) | route A: the owner signs in with their own Codex, outside the tests, or select route B explicitly. A pending `inflight-owner.json` has already been recovered by the same run. Route B: seed |
 | 11 | `ALREADY_SEEDED` | `stream-exists` | none; reseed only after `retire` |
