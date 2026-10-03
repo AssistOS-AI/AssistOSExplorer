@@ -91,7 +91,10 @@ const DIGEST = { platform: 'linux-x64', sha256: SHA_A, size: 4096 };
 
 test('the committed allowlist is frozen and well-formed, an empty allowlist refuses every client with no-entry, and a non-empty list never matches another version', () => {
   assert.ok(Object.isFrozen(QUALIFIED_CODEX_CLIENTS));
+  // The committed list holds the real qualified entry, and every committed entry is well-formed, frozen and has a frozen receipt.
+  assert.ok(QUALIFIED_CODEX_CLIENTS.length >= 1);
   for (const committed of QUALIFIED_CODEX_CLIENTS) assert.doesNotThrow(() => validateQualifiedClientEntry(committed));
+  assert.ok(QUALIFIED_CODEX_CLIENTS.some((committed) => committed.version === '0.160.0' && committed.platform === 'linux-x64' && committed.package === '@openai/codex'));
   assert.equal(QUALIFICATION_RECEIPT_SCHEMA, 'codex-client-qualification-v1');
   // Entry validation: a well-formed frozen entry passes; every malformed one is a TypeError.
   assert.equal(validateQualifiedClientEntry(entry()).version, '0.160.0');

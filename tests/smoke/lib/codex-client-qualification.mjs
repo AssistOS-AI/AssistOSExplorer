@@ -18,7 +18,27 @@ export const QUALIFICATION_CHECKS = Object.freeze([
 //   Object.freeze({ package: '@openai/codex', version: '<semver>', platform: 'linux-x64', nativeRelativePath: '<path inside the generation>',
 //     nativeSha256: '<64 hex>', nativeSize: <integer>, derivedShape: 'chatgptAuthTokens-v1',
 //     receipt: Object.freeze({ file, sha256, harnessSha256, verdict: 'PASS', qualifiedAt: '<ISO UTC>', host: 'apparatus' }) })
-export const QUALIFIED_CODEX_CLIENTS = Object.freeze([]);
+// Qualified on the apparatus host by `scripts/codex-client-qualify.mjs` (verdict PASS, 9 of 9 checks) on the exact Linux tool-cache binary.
+// The receipt is `apparatus_routeA_w1_20261003T183747Z/slotQ/qualify.jsonl`; `sha256` is the digest of that file.
+export const QUALIFIED_CODEX_CLIENTS = Object.freeze([
+  Object.freeze({
+    package: '@openai/codex',
+    version: '0.160.0',
+    platform: 'linux-x64',
+    nativeRelativePath: 'lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex',
+    nativeSha256: '12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad',
+    nativeSize: 289101384,
+    derivedShape: 'chatgptAuthTokens-v1',
+    receipt: Object.freeze({
+      file: 'apparatus_routeA_w1_20261003T183747Z/slotQ/qualify.jsonl',
+      sha256: 'c7a8e35a7d3c25934cc7aa4e184fc372b4ca9651adaaf69f8cbacea43a677c62',
+      harnessSha256: '465212750d521996a3669f8d6055626f18a2e596c88b6713c8c8f84f76879416',
+      verdict: 'PASS',
+      qualifiedAt: '2026-10-03T18:45:52.866Z',
+      host: 'apparatus',
+    }),
+  }),
+]);
 
 const ENTRY_KEYS = ['package', 'version', 'platform', 'nativeRelativePath', 'nativeSha256', 'nativeSize', 'derivedShape', 'receipt'];
 const RECEIPT_KEYS = ['file', 'sha256', 'harnessSha256', 'verdict', 'qualifiedAt', 'host'];
