@@ -74,7 +74,13 @@ test('W2 bootstrap resolves its route from the current address right after the p
     assert.ok(rootSet < resolve && resolve < fileRouteFlag && fileRouteFlag < policy && policy < mount);
     // A navigation event that fires between these two points would be lost, so no await may separate them.
     assert.doesNotMatch(source.slice(rootSet, resolve), /\bawait\b/);
-    assert.match(source, /currentHash: window\.location\.hash/);
+    const resolveCall = source.slice(resolve, at('});', resolve));
+    assert.match(resolveCall, /capturedRoute: initialHashedRoute\b/);
+    assert.match(resolveCall, /currentHash: window\.location\.hash/);
+    assert.match(resolveCall, /^\s*roomEntry,?\s*$/m);
+    assert.match(resolveCall, /isWebSkelComponent: .*webSkel\.configs\?\.components/);
+    // The route policy must look up the re-resolved page, not the startup capture.
+    assert.match(source.slice(policy, mount), /getRuntimeComponentPolicy\(context\.plugins, pageName\)/);
     assert.match(source, /const initialHashedRoute = resolveInitialHashedRoute\(window\.location\.hash\);/);
     assert.match(source, /initialHashedRoute\?\.pageName === 'agent-runtime-wait'/);
     assert.doesNotMatch(source, /preserveHash: suppressNavigationHash \} = initialHashedRoute\);/);
