@@ -48,8 +48,23 @@ function say(sentence) {
   process.stderr.write(`${sentence}\n`);
 }
 
+// Blocks until a newline (or end of input) arrives on a terminal descriptor, without leaving a read pending afterwards.
+function waitForLineSync(fd) {
+  const byte = Buffer.alloc(1);
+  for (;;) {
+    let read;
+    try { read = fs.readSync(fd, byte, 0, 1, null); } catch (error) {
+      if (error.code === 'EAGAIN') continue;
+      if (error.code === 'EOF') return;
+      throw error;
+    }
+    if (read === 0 || byte[0] === 0x0a) return;
+  }
+}
+
 // The operator step of `seed`: print the exact login command, then wait for Enter. The prompt goes to /dev/tty when there
-// is one, otherwise to stderr, so stdout stays a single JSON line.
+// is one (read synchronously, so the process can exit right after), otherwise to stderr and stdin, so stdout stays a single
+// JSON line.
 async function waitForOperator({ command }) {
   let tty = null;
   try { tty = fs.openSync('/dev/tty', 'r+'); } catch { tty = null; }
@@ -57,14 +72,18 @@ async function waitForOperator({ command }) {
   write('Run this command in a second terminal on this host, complete the device login, and wait for the command to exit:\n\n');
   write(`  ${command}\n\n`);
   write('Press Enter here only after the login command has exited. ');
-  const input = tty === null ? process.stdin : fs.createReadStream('', { fd: tty, autoClose: false });
+  if (tty !== null) {
+    waitForLineSync(tty);
+    write('\n');
+    fs.closeSync(tty);
+    return;
+  }
   await new Promise((resolve) => {
-    const lines = readline.createInterface({ input });
+    const lines = readline.createInterface({ input: process.stdin });
     lines.once('line', () => { lines.close(); resolve(); });
     lines.once('close', resolve);
   });
   write('\n');
-  if (tty !== null) fs.closeSync(tty);
 }
 
 async function seed(paths, env) {
