@@ -3,6 +3,7 @@ import assistosSDK, { initialiseAssistOS } from './services/assistosSDK.js';
 import { createComponentRegistry } from './services/runtime/componentRegistry.js';
 import { createRuntimePluginLoader } from './services/runtime/runtimePluginLoader.js';
 import { installExplorerResourceLoader } from './services/runtime/explorerResourceLoader.js';
+import { installDetachedRenderGuard, installPageChangeGuard } from './services/runtime/pageChangeGuards.js';
 import { filterRuntimePluginsByPolicy, forEachRuntimePluginEntry } from './utils/pluginUtils.core.js';
 import { initializeTheme } from './shared/ui/theme.js';
 import { openExpandedModal, restoreExpandedModal } from './shared/ui/expanded-modal.js';
@@ -232,6 +233,7 @@ async function start() {
     const workspaceRootPromise = roomEntry ? Promise.resolve('') : bootstrapWorkspaceRoot();
     const webSkel = await WebSkel.initialise('webskel.json');
     installExplorerResourceLoader(webSkel);
+    installDetachedRenderGuard(webSkel);
     webSkel.appServices = assistosSDK;
     await workspaceRootPromise;
 
@@ -444,13 +446,10 @@ async function start() {
             return result;
         };
 
-        const originalChangeToDynamicPage = webSkel.changeToDynamicPage;
-        if (typeof originalChangeToDynamicPage === 'function') {
-            webSkel.changeToDynamicPage = async (componentName, ...args) => {
-                await ensureComponentRegistered(componentName);
-                return originalChangeToDynamicPage.call(webSkel, componentName, ...args);
-            };
-        }
+        installPageChangeGuard(webSkel, {
+            ensureComponentRegistered,
+            getPageRoot: () => document.querySelector('#page_content')
+        });
     };
 
     installRuntimeComponentGuards();

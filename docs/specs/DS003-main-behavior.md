@@ -21,7 +21,7 @@ AchillesIDE enables a workspace user to work with files and agent-owned resource
 
 ### Workspace navigation and editing
 
-The affected user is a workspace operator who needs to inspect and change files without leaving the Explorer shell. A directory selection or URL route triggers `file-exp`, which resolves the selected filesystem or virtual DPU path, lists it, and selects a preview or editor appropriate to the resource. The observable result is a coherent file, document, media, or Confidential workflow. Explorer must preserve the distinction between normal workspace paths and agent-backed virtual resources; it must not write a virtual resource through the ordinary filesystem tools.
+The affected user is a workspace operator who needs to inspect and change files without leaving the Explorer shell. A directory selection or URL route triggers `file-exp`, which resolves the selected filesystem or virtual DPU path, lists it, and selects a preview or editor appropriate to the resource. The observable result is a coherent file, document, media, or Confidential workflow. Explorer must preserve the distinction between normal workspace paths and agent-backed virtual resources; it must not write a virtual resource through the ordinary filesystem tools. As a hidden safeguard, a history navigation (hash change, Back, Forward) that arrives while Explorer is still mounting the same page joins that mount instead of mounting a second copy, so the loading indicator never outlives the page change.
 
 ### Agent-owned workflows
 
