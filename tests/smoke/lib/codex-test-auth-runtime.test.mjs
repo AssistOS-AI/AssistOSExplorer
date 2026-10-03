@@ -332,15 +332,20 @@ test('readCodexTurnIdentity reads the .roboteam session and the mandatory ALA tr
   await rejectsWith(readCodexTurnIdentity({ ...f.args, folder: 'missing-folder' }, f.options), 'UNSAFE_PATH');
 });
 
-function toolCacheFixture(w, { version = '0.160.0', stampVersion = version, generation = '4766a1b2276fdbe3606f84ab59db278ea529e06863af68f39a52361391efbec0',
-  link = true } = {}) {
+// `selection` builds the codex-only `shell-codex` view that exists only once a codex-only robot's CLI has started.
+// `current` builds `codex/current.json`, which RoboTeam's startup warm-up writes for the all-agents bundle.
+function toolCacheFixture(w, { version = '0.160.0', stampVersion = version, currentVersion = version, generation = '4766a1b2276fdbe3606f84ab59db278ea529e06863af68f39a52361391efbec0',
+  selection = true, current = true } = {}) {
   const generations = path.join(w.data, 'tool-cache', 'codex', 'generations', generation);
   const packageDir = path.join(generations, 'lib', 'node_modules', '@openai', 'codex');
   fs.mkdirSync(path.join(packageDir, 'bin'), { recursive: true });
   fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ name: '@openai/codex', version }));
   fs.writeFileSync(path.join(packageDir, 'bin', 'codex.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(generations, 'stamp.json'), JSON.stringify({ schema: 1, name: 'codex', generation, versions: { codex: stampVersion } }));
-  if (!link) return generation;
+  if (current) {
+    fs.writeFileSync(path.join(w.data, 'tool-cache', 'codex', 'current.json'), JSON.stringify({ schema: 1, name: 'codex', generation, versions: { codex: currentVersion } }));
+  }
+  if (!selection) return generation;
   const shell = path.join(w.data, 'tool-cache', 'shell-generations', 'f'.repeat(64));
   fs.mkdirSync(path.join(shell, 'bin'), { recursive: true });
   fs.symlinkSync(path.relative(path.join(shell, 'bin'), path.join(packageDir, 'bin', 'codex.js')), path.join(shell, 'bin', 'codex'));
@@ -582,4 +587,49 @@ test('a credential phase is awaited until it settles even when it overruns its b
   const started = Date.now();
   await credentialPhase(60_000, async () => {});
   assert.ok(Date.now() - started < 5000);
+});
+
+test('the client identity for preflight and the binding needs only codex/current.json, and step 7 needs the codex-only selection', async (t) => {
+  // The deployed state before any codex-only robot CLI has started: the all-agents warm-up wrote current.json, no shell-codex exists.
+  const warm = world(t);
+  const generation = toolCacheFixture(warm, { selection: false });
+  assert.equal(fs.existsSync(path.join(warm.data, 'tool-cache', 'shell-selections')), false);
+  const expected = { ok: true, package: '@openai/codex', version: '0.160.0', generation, cli: null, codexConfigTomlPresent: null };
+  assert.deepEqual(await readCodexClientIdentity({}, warm.options), expected);
+  assert.deepEqual(runSerialized(readCodexClientIdentity, {}, warm.options).json, expected);
+  assert.deepEqual(await readCodexClientIdentity({ robotId: null, robotName: null }, warm.options), expected);
+  // With a robot the codex-only selection is required, and it is absent until that robot's CLI has started.
+  await rejectsWith(readCodexClientIdentity(warm.robot, warm.options), 'NOT_FOUND');
+  assert.deepEqual(runSerialized(readCodexClientIdentity, warm.robot, warm.options).json, { ok: false, code: 'NOT_FOUND' });
+  // Once the selection exists, the robot read works and agrees with the all-agents read.
+  const started = world(t);
+  const startedGeneration = toolCacheFixture(started);
+  started.addProcess(401, ['node', 'robot-cli.mjs', `--robot=${started.robot.robotName}`], ['PATH=/usr/bin']);
+  const withRobot = await readCodexClientIdentity(started.robot, started.options);
+  assert.equal(withRobot.generation, startedGeneration);
+  assert.equal(withRobot.cli.count, 1);
+  assert.equal((await readCodexClientIdentity({}, started.options)).generation, withRobot.generation);
+  // current.json problems: missing, another name, a version that disagrees with the package or the stamp, a bad or absent generation.
+  const missing = world(t);
+  toolCacheFixture(missing, { selection: false, current: false });
+  await rejectsWith(readCodexClientIdentity({}, missing.options), 'NOT_FOUND');
+  const mismatch = world(t);
+  toolCacheFixture(mismatch, { selection: false, currentVersion: '0.159.0' });
+  await rejectsWith(readCodexClientIdentity({}, mismatch.options), 'MALFORMED');
+  const stamp = world(t);
+  toolCacheFixture(stamp, { selection: false, stampVersion: '0.159.0' });
+  await rejectsWith(readCodexClientIdentity({}, stamp.options), 'MALFORMED');
+  const other = world(t);
+  toolCacheFixture(other, { selection: false });
+  const currentFile = path.join(other.data, 'tool-cache', 'codex', 'current.json');
+  const good = JSON.parse(fs.readFileSync(currentFile, 'utf8'));
+  for (const bad of [{ ...good, name: 'opencode' }, { ...good, generation: '../x' }, { ...good, generation: 'a'.repeat(64) }, { ...good, generation: 7 }]) {
+    fs.writeFileSync(currentFile, JSON.stringify(bad));
+    await rejectsWith(readCodexClientIdentity({}, other.options), 'MALFORMED');
+  }
+  fs.writeFileSync(currentFile, 'not json');
+  await rejectsWith(readCodexClientIdentity({}, other.options), 'MALFORMED');
+  fs.rmSync(currentFile);
+  fs.symlinkSync(path.join(other.data, 'elsewhere.json'), currentFile);
+  await rejectsWith(readCodexClientIdentity({}, other.options), 'UNSAFE_PATH');
 });

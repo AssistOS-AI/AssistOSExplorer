@@ -154,22 +154,37 @@ export async function readRobotInventory({ prefix } = {}, options = {}) {
   return { ok: true, robots: result };
 }
 
-// The Codex client that the robot CLIs will run, from the tool cache. With a null robot only the client is read.
+// The Codex client RoboTeam resolves for robot CLIs, from the tool cache. Two sources, because they exist at different times:
+//   - with a robot: the codex-only `shell-codex` selection (named `shell-<agents>` by RoboTeam's tool cache). It exists only after
+//     a codex-only robot's CLI has started, so only step 7 of the run reads it;
+//   - without a robot (preflight and the binding): `codex/current.json` and its generation, which RoboTeam's startup warm-up
+//     writes for the all-agents bundle, so they exist on any deployed RoboTeam.
 export async function readCodexClientIdentity({ robotId = null, robotName = null } = {}, options = {}) {
   const h = await makeHelpers(options);
   const withRobot = robotId !== null || robotName !== null;
   const robot = withRobot ? h.checkRobot({ robotId, robotName }) : null;
   const generations = `${h.dataRoot}/tool-cache/codex/generations/`;
-  let real;
-  try { real = h.fs.realpathSync(`${h.dataRoot}/tool-cache/shell-selections/shell-codex/bin/codex`); } catch { throw h.fail('NOT_FOUND'); }
-  if (!real.startsWith(generations)) throw h.fail('MALFORMED');
-  const generation = real.slice(generations.length).split('/')[0];
+  let generation;
+  let announced = null;
+  if (robot) {
+    let real;
+    try { real = h.fs.realpathSync(`${h.dataRoot}/tool-cache/shell-selections/shell-codex/bin/codex`); } catch { throw h.fail('NOT_FOUND'); }
+    if (!real.startsWith(generations)) throw h.fail('MALFORMED');
+    generation = real.slice(generations.length).split('/')[0];
+  } else {
+    const current = h.readJson(`${h.dataRoot}/tool-cache/codex/current.json`, 64 * 1024);
+    if (current?.name !== 'codex' || typeof current.generation !== 'string') throw h.fail('MALFORMED');
+    generation = current.generation;
+    announced = current.versions?.codex;
+  }
   if (!/^[0-9a-f]{64}$/.test(generation)) throw h.fail('MALFORMED');
+  const directory = h.lstat(`${generations}${generation}`);
+  if (directory === null || directory.isSymbolicLink() || !directory.isDirectory()) throw h.fail('MALFORMED');
   const packageJson = h.readJson(`${generations}${generation}/lib/node_modules/@openai/codex/package.json`, 256 * 1024);
   const version = packageJson?.name === '@openai/codex' ? packageJson.version : null;
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) throw h.fail('MALFORMED');
   const stamp = h.readJson(`${generations}${generation}/stamp.json`, 256 * 1024);
-  if (stamp?.versions?.codex !== version) throw h.fail('MALFORMED');
+  if (stamp?.versions?.codex !== version || (announced !== null && announced !== version)) throw h.fail('MALFORMED');
   let cli = null;
   let codexConfigTomlPresent = null;
   if (robot) {
