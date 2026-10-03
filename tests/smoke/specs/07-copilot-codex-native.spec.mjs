@@ -11,22 +11,27 @@ import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { setComposer, waitForWebchatIdle } from '../lib/webchat.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
 import {
-  CodexAuthError, RUN_TIMEOUT_MS, acquireRunLock, assertNoQuarantine, assertPrivateRoot, classifyTurnFailure, createCredentialSession, createInflight, isRunId,
-  planRecovery, readInflight, removeInflight, resolveAuthPaths, robotDeleteAccepted,
+  CodexAuthError, RUN_TIMEOUT_MS, acquireRunLock, assertNoOtherRouteInflight, assertNoQuarantine, assertPrivateRoot, classifyTurnFailure, createCredentialSession,
+  createInflight, ensurePrivateRoot, isRunId, planRecovery, readInflight, removeInflight, resolveAuthPaths, robotDeleteAccepted,
 } from '../lib/codex-test-auth.mjs';
+import { createOwnerCredentialSession, ownerDirectoryFor, resolveCredentialSource, resolveOwnerAuthPath } from '../lib/codex-test-auth-owner.mjs';
+import { checkClientQualification } from '../lib/codex-client-qualification.mjs';
 import { TEST_ROBOT_PREFIX, bindingUnchanged, createCodexRuntime, credentialPhase, pollCodexClient } from '../lib/codex-test-auth-runtime.mjs';
 
-// One bounded native Codex turn in a run-owned, codex-only RoboTeam robot, authenticated by the owned login stream.
-// Every credential move goes through lib/codex-test-auth*.mjs. This spec never traces, stores browser state, reads
-// the caller's own Codex login, spawns Codex or runs a login. Opt in with SMOKE_COPILOT_CODEX=1 through
-// `npm run test:copilot-codex`, which also owns the exit codes and the one-line summary.
+// One bounded native Codex turn in a run-owned, codex-only RoboTeam robot. It authenticates either from the owner-derived access-only
+// credential (route A, the default) or from the owned login stream (route B, CODEX_TEST_AUTH_SOURCE=stream). It reads the caller's own
+// Codex login only under route A, read-only, through lib/codex-test-auth-owner.mjs. Every credential move goes through
+// lib/codex-test-auth*.mjs. This spec never traces, stores browser state, spawns Codex or runs a login. Opt in with
+// SMOKE_COPILOT_CODEX=1 through `npm run test:copilot-codex`, which also owns the exit codes and the one-line summary.
 const enabled = process.env.SMOKE_COPILOT_CODEX === '1';
 const BOT_MESSAGE = '#chatList > .wa-message.in:not(.wa-typing):not(.wa-task-item) .wa-message-bubble';
 const STARTUP_FAILURE = /\[input error\]|bwrap:|Agent process exited repeatedly|open \/proc\/\d+\/ns/i;
 const COMPLETION_FAILURE = /\[input error\]|\[error\]|tier[_\s-]+exhausted|provider\s+(?:error|failure)|API\s+(?:error|failure)|startup\s+(?:error|failure)/i;
 const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/;
 const BUDGET = Object.freeze({ setup: 60_000, binding: 90_000, create: 30_000, folder: 45_000, cliStart: 180_000, identity: 30_000, inject: 15_000,
-  turn: 150_000, verify: 15_000, copyBack: 45_000, remove: 15_000, teardown: 200_000, finish: 60_000, recovery: 360_000 });
+  turn: 150_000, verify: 15_000, copyBack: 45_000, remove: 15_000, teardown: 200_000, finish: 60_000, recovery: 360_000, derive: 15_000, qualify: 60_000 });
+// The time the credential is still needed after the inject step: the turn and its slack. Route A gates the access token on it.
+const TURN_SLACK_MS = 10_000;
 
 async function assistantMessages(page) {
   return page.locator(BOT_MESSAGE).evaluateAll((messages) => messages.map((message, index) => ({
@@ -48,16 +53,19 @@ function classify(error, code, reason) {
   return error instanceof CodexAuthError ? error : new CodexAuthError(code, reason);
 }
 
-function freshResult(runId) {
+function freshResult(runId, route) {
+  const owner = route === 'owner';
   return {
-    runId, startedAt: new Date().toISOString(), finishedAt: null, code: 'OK', reason: null, exitCode: 0, authRejectionSuspected: false,
+    runId, route, startedAt: new Date().toISOString(), finishedAt: null, code: 'OK', reason: null, exitCode: 0, authRejectionSuspected: false,
     primaryFailure: null, recovered: false, binding: { before: null, after: null, unchanged: null },
     robot: { id: null, name: null, created: false, deleted: false },
     defaultRobot: { codingAgentsBefore: null, codingAgentsAfter: null, unchanged: null },
-    codexClient: { package: null, version: null, generation12: null, pre: null, post: null },
+    codexClient: { package: null, version: null, generation12: null, pre: null, post: null, ...(owner ? { qualification: null } : {}) },
     identity: null, turn: { durationMs: null, tokenObserved: false },
-    stream: { sameAccount: null, refreshedDuringRun: false, lastRefreshAdvanced: false, replaced: false, quarantined: false,
+    // Route A has no stream. Its credential is derived from the owner login in memory and only ever lives in the robot copy.
+    stream: owner ? null : { sameAccount: null, refreshedDuringRun: false, lastRefreshAdvanced: false, replaced: false, quarantined: false,
       lastRefreshAgeHoursBefore: null, accessValidHoursBefore: null },
+    ...(owner ? { owner: { source: null, derived: false, accountClaim: null, gateAtDerive: null, gateAtInject: null }, runtimeCopy: null, recoveredCopy: null } : {}),
     // Flags start true because nothing exists yet; each is cleared when the thing it covers comes into existence.
     cleanup: { credentialPersisted: true, credentialRemoved: true, robotDeleted: true, folderDeleted: true },
   };
@@ -65,16 +73,19 @@ function freshResult(runId) {
 
 test.describe('Codex-authenticated Copilot native turn', () => {
   test.skip(!enabled, 'Opt in with SMOKE_COPILOT_CODEX=1 through npm run test:copilot-codex.');
-  test('one bounded native Codex turn in a run-owned robot with an owned, serialized login stream', async ({ page }, testInfo) => {
-    // The phase budgets add up to about 15.75 min and recovery can add 12 min; the finally path must always fit. The parent's
-    // watchdog is derived from the same constant and outlasts it.
+  test('one bounded native Codex turn in a run-owned robot with an owner-derived or an owned login', async ({ page }, testInfo) => {
+    // The phase budgets add up to about 15.75 min (about 17 min under route A, which adds the derive and qualify phases) and recovery can
+    // add 12 min; the finally path must always fit. The parent's watchdog is derived from the same constant and outlasts it.
     test.setTimeout(RUN_TIMEOUT_MS);
+    const testStartedAt = Date.now();
     assert.equal(testInfo.retry, 0, 'Acceptance retries are forbidden.');
     assert.equal(testInfo.project.retries, 0, 'Configure zero retries for this gate.');
     assert.equal(testInfo.config.workers, 1, 'Run this gate with one worker.');
     const runId = smokeConfig.runId;
     assert.ok(isRunId(runId), 'SMOKE_RUN_ID must be at most 64 characters of letters, digits, underscore and hyphen.');
-    const result = freshResult(runId);
+    // Step 1: the route, resolved once with the same function as the parent. No code path changes it afterwards.
+    const route = resolveCredentialSource(process.env, { command: 'run' });
+    const result = freshResult(runId, route);
     const robotName = `${TEST_ROBOT_PREFIX}${runId}`;
     const folder = `codex-auth-${runId}`;
     const folderPath = `/${folder}`;
@@ -143,13 +154,19 @@ test.describe('Codex-authenticated Copilot native turn', () => {
         runtime = createCodexRuntime({ box });
       } catch (error) { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'binding'); }
       await credentialPhase(BUDGET.setup + BUDGET.recovery, async () => {
-        assertPrivateRoot(paths, { forbiddenRoots: [smokeConfig.repoRoot, workspaceRoot, smokeConfig.artifactRoot] });
+        if (route === 'owner') {
+          // Route A creates ROOT (0700) only here, and never inside or around the owner's Codex directory. It never reads the owner login in this step.
+          ensurePrivateRoot(paths, { forbiddenRoots: [smokeConfig.repoRoot, workspaceRoot, smokeConfig.artifactRoot, ownerDirectoryFor(process.env, paths)].filter(Boolean) });
+        } else assertPrivateRoot(paths, { forbiddenRoots: [smokeConfig.repoRoot, workspaceRoot, smokeConfig.artifactRoot] });
         lock = acquireRunLock(paths, { runId });
-        session = createCredentialSession({ paths, runtime, runId });
+        session = route === 'owner'
+          ? createOwnerCredentialSession({ paths, runtime, runId, runDeadline: testStartedAt + RUN_TIMEOUT_MS, injectWindowMs: BUDGET.inject + BUDGET.turn + TURN_SLACK_MS })
+          : createCredentialSession({ paths, runtime, runId });
         session.holdLock(true);
-        recordBefore(session.load().summary);
+        if (route === 'owner') assertNoOtherRouteInflight(paths, 'owner');
+        else recordBefore(session.load().summary);
         try { await runtime.registryRuntime(workspaceRoot); } catch (error) { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'binding'); }
-        const inflight = readInflight(paths);
+        const inflight = readInflight(paths, { route });
         let inventory;
         try { inventory = await runtime.robotInventory(); } catch (error) { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'binding'); }
         const plan = planRecovery({ inflight, robots: inventory });
@@ -166,11 +183,12 @@ test.describe('Codex-authenticated Copilot native turn', () => {
           result.cleanup.credentialPersisted = true;
           result.cleanup.credentialRemoved = true;
           // Recovery may have replaced the stream with a refreshed state. The session reloaded it, so what this run injects and
-          // compares against is the current stream, and the "before" figures describe that stream.
-          recordBefore(session.state.loaded.summary);
+          // compares against is the current stream, and the "before" figures describe that stream. Route A has no stream and has
+          // loaded nothing at this step.
+          if (route === 'stream') recordBefore(session.state.loaded.summary);
         }
         // With a recovery pending the refusal waits until the robot and folder are gone, so inflight.json never blocks adopt or retire.
-        if (!recoveryPending) assertNoQuarantine(paths);
+        if (!recoveryPending && route === 'stream') assertNoQuarantine(paths);
       });
 
       // Step 3: binding before, sign-in, the pinned workspace, the administrator check and the default robot.
@@ -198,18 +216,28 @@ test.describe('Codex-authenticated Copilot native turn', () => {
             await deleteRobot(stale, inflight.robotName);
           }
           await deleteDirectoryIfPresent(page, `/${inflight.folder}`);
-          removeInflight(paths);
+          removeInflight(paths, { route });
           result.recovered = true;
           recoveryPending = null;
         }).catch((error) => { throw classify(error, 'CLEANUP_INCOMPLETE', 'recovery-incomplete'); });
       }
 
       if (recoveryRefusal) throw recoveryRefusal;
-      assertNoQuarantine(paths);
+      if (route === 'stream') assertNoQuarantine(paths);
+
+      // Step 3b (route A): the owner login is read read-only and the access-only credential is derived in memory, after any recovery has
+      // completed, so an unusable owner login never blocks the recovery of a crashed run. The gate applies the rest of the test time.
+      if (route === 'owner') {
+        await within(BUDGET.derive, async () => {
+          const resolved = resolveOwnerAuthPath(process.env, paths, { forbiddenRoots: [smokeConfig.repoRoot, workspaceRoot, smokeConfig.artifactRoot, paths.root] });
+          result.owner.source = resolved.source;
+          await session.load({ ownerFile: resolved.file });
+        });
+      }
 
       // Step 4: the marker first, then the robot.
       await within(BUDGET.create, async () => {
-        createInflight(paths, { runId, robotName, folder });
+        createInflight(paths, { runId, robotName, folder, route });
         inflightCreated = true;
         result.cleanup.robotDeleted = false;
         const created = await roboTeamApi(await dashboardPage(), { method: 'POST', path: 'api/robots', body: { name: robotName, codingAgents: ['codex'] } });
@@ -258,17 +286,29 @@ test.describe('Codex-authenticated Copilot native turn', () => {
         if (!entry || entry.codexAuthPresent !== false) throw new CodexAuthError('RUNTIME_PREREQ_FAILED', 'target-exists');
       });
 
+      // Step 7b (route A): the exact client build the robot's CLI will run must be qualified before anything is injected. The generation
+      // hashed here is the one the post-turn binding read is held to.
+      if (route === 'owner') {
+        await within(BUDGET.qualify, async () => {
+          const { report, failure } = await checkClientQualification({ runtime, identity: client });
+          result.codexClient.qualification = report;
+          if (failure) throw failure;
+        }).catch((error) => { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'client-unqualified'); });
+      }
+
       // Step 8: the credential goes in over stdin. From here a copy-back is always attempted.
       await credentialPhase(BUDGET.inject, async () => {
         result.cleanup.credentialPersisted = false;
         result.cleanup.credentialRemoved = false;
         try { await session.inject(robot); } catch (error) {
+          // Route A's expiry gate runs inside the inject and keeps its own reason.
+          if (route === 'owner' && error instanceof CodexAuthError) throw error;
           throw new CodexAuthError('RUNTIME_PREREQ_FAILED', error?.code === 'TARGET_EXISTS' ? 'target-exists' : 'binding');
         }
       });
 
       // Step 9: one bounded native turn through the browser, no retry.
-      await within(BUDGET.turn + 10_000, async () => {
+      await within(BUDGET.turn + TURN_SLACK_MS, async () => {
         await waitForWebchatIdle(chat, BUDGET.cliStart);
         const baseline = await assistantMessages(chat);
         const baselineIds = new Set(baseline.map((message) => message.id));
@@ -383,10 +423,15 @@ test.describe('Codex-authenticated Copilot native turn', () => {
             result.defaultRobot.unchanged = JSON.stringify(result.defaultRobot.codingAgentsBefore) === JSON.stringify(result.defaultRobot.codingAgentsAfter);
           });
           if (!result.binding.unchanged || !result.defaultRobot.unchanged) fail(null, 'IDENTITY_MISMATCH', 'binding-changed');
+          // Route A: the tool cache must still hold the generation that was hashed and qualified before the credential went in.
+          const qualified = result.codexClient.qualification;
+          if (route === 'owner' && qualified?.status === 'qualified' && result.codexClient.post?.generation12 !== qualified.generation12) {
+            fail(null, 'IDENTITY_MISMATCH', 'binding-changed');
+          }
         } catch (error) { note('binding-after', error); fail(error, 'IDENTITY_MISMATCH', 'binding-changed'); }
       }
       if (paths && lock && inflightCreated && !cleanupFailure && result.cleanup.robotDeleted && result.cleanup.folderDeleted && credentialSettled) {
-        try { removeInflight(paths); } catch (error) { note('marker', error); cleanupFailure ??= new CodexAuthError('CLEANUP_INCOMPLETE', 'folder-not-deleted'); }
+        try { removeInflight(paths, { route }); } catch (error) { note('marker', error); cleanupFailure ??= new CodexAuthError('CLEANUP_INCOMPLETE', 'folder-not-deleted'); }
       }
       if (recoveryPending && !cleanupFailure) cleanupFailure = new CodexAuthError('CLEANUP_INCOMPLETE', 'recovery-incomplete');
       if (chat && !chat.isClosed()) await chat.close().catch(() => {});
@@ -397,11 +442,21 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       if (primary) result.primaryFailure = { code: primary.code, reason: primary.reason };
       if (final) { result.code = final.code; result.reason = final.reason; result.exitCode = final.exitCode; }
       result.finishedAt = new Date().toISOString();
-      if (session) {
+      if (session && route === 'stream') {
         Object.assign(result.stream, session.state.stream);
         if (session.state.recoveryStream) result.recoveredStream = session.state.recoveryStream;
       }
-      try { writeResult(); } finally { session?.holdLock(false); lock?.release(); }
+      if (session && route === 'owner') {
+        const { derived, accountClaim, gates, runtimeCopy, recoveredCopy } = session.state;
+        Object.assign(result.owner, { derived, accountClaim, gateAtDerive: gates.atDerive, gateAtInject: gates.atInject });
+        result.runtimeCopy = runtimeCopy;
+        result.recoveredCopy = recoveredCopy;
+      }
+      try { writeResult(); } finally {
+        if (route === 'owner') session?.release();
+        session?.holdLock(false);
+        lock?.release();
+      }
       assert.equal(result.code, 'OK', `codex-test-auth ${result.code} ${result.reason}`);
     }
   });

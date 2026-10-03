@@ -1175,6 +1175,61 @@ test('the CLI defaults to the owner route without falling back to a valid stream
   noPodman();
 });
 
+test('the spec wires route A in the documented order: recovery before the owner read, qualification before injection, the route on every marker call, no quarantine check and a post-turn generation check', () => {
+  const spec = fs.readFileSync(new URL('../specs/07-copilot-codex-native.spec.mjs', import.meta.url), 'utf8');
+  const at = (needle, from = 0) => { const index = spec.indexOf(needle, from); assert.notEqual(index, -1, `the spec must contain: ${needle}`); return index; };
+  // The route is resolved once, with the same function as the parent, before the result is created.
+  assert.equal(spec.split("resolveCredentialSource(process.env, { command: 'run' })").length, 2);
+  assert.ok(at("resolveCredentialSource(process.env, { command: 'run' })") < at('const result = freshResult(runId, route)'));
+  // Every marker call carries the route, so route A can never touch the route-B marker.
+  for (const name of ['createInflight', 'readInflight', 'removeInflight']) {
+    const calls = [...spec.matchAll(new RegExp(`\\b${name}\\(([^;]*?)\\)(?:;|\\))`, 'g'))].map((match) => match[1]).filter((argument) => argument.startsWith('paths'));
+    assert.ok(calls.length >= 1, name);
+    for (const argument of calls) assert.match(argument, /\broute\b/, `${name}(${argument})`);
+  }
+  // ROOT is created only by ensurePrivateRoot, under route A, with the owner directory forbidden.
+  assert.equal(spec.split('ensurePrivateRoot(paths').length, 2);
+  assert.match(spec, /ensurePrivateRoot\(paths, \{ forbiddenRoots: \[[^\]]*ownerDirectoryFor\(process\.env, paths\)\]/);
+  // No quarantine check under route A, and no stream reload at recovery.
+  for (const match of spec.matchAll(/assertNoQuarantine\(paths\)/g)) {
+    const line = spec.slice(spec.lastIndexOf('\n', match.index) + 1, spec.indexOf('\n', match.index));
+    assert.match(line, /route === 'stream'/, line);
+  }
+  assert.match(spec, /if \(route === 'stream'\) recordBefore\(session\.state\.loaded\.summary\)/);
+  // Order: browser recovery (marker removal), then the recovery refusal, then the owner read, then the new marker, then qualification, then injection.
+  const recovery = at('removeInflight(paths, { route })');
+  const refusal = at('if (recoveryRefusal) throw recoveryRefusal;');
+  const load = at('await session.load({ ownerFile: resolved.file })');
+  const marker = at('createInflight(paths, { runId, robotName, folder, route })');
+  const qualify = at('checkClientQualification({ runtime, identity: client })');
+  const inject = at('await session.inject(robot)');
+  assert.ok(recovery < refusal && refusal < load && load < marker && marker < qualify && qualify < inject, 'the steps are out of order');
+  // The owner read happens inside its own budget and never before the recovery block of step 2, which has no owner read.
+  assert.ok(at('BUDGET.derive') < load);
+  const recoverCall = at('session.recover(recoveryPending.robot)');
+  assert.ok(recoverCall < load);
+  assert.equal(spec.slice(0, recoverCall).includes('session.load('), true, 'route B still loads its stream before the recovery');
+  assert.match(spec.slice(0, recoverCall), /else recordBefore\(session\.load\(\)\.summary\)/);
+  assert.equal(spec.split('session.load(').length, 3, 'one load per route');
+  // The inject gate keeps its own reason, and the budgets and slack come from named constants.
+  assert.match(spec, /if \(route === 'owner' && error instanceof CodexAuthError\) throw error;/);
+  assert.match(spec, /derive: 15_000, qualify: 60_000/);
+  assert.match(spec, /const TURN_SLACK_MS = 10_000;/);
+  assert.match(spec, /injectWindowMs: BUDGET\.inject \+ BUDGET\.turn \+ TURN_SLACK_MS/);
+  assert.match(spec, /within\(BUDGET\.turn \+ TURN_SLACK_MS,/);
+  assert.match(spec, /runDeadline: testStartedAt \+ RUN_TIMEOUT_MS/);
+  assert.equal(/BUDGET\.turn \+ 10_000/.test(spec), false, 'no literal turn slack');
+  // The post-turn generation check fails with binding-changed, and the route-A fields reach result.json.
+  assert.match(spec, /route === 'owner' && qualified\?\.status === 'qualified' && result\.codexClient\.post\?\.generation12 !== qualified\.generation12/);
+  assert.match(spec, /if \(session && route === 'owner'\) \{/);
+  assert.match(spec, /gateAtDerive: gates\.atDerive, gateAtInject: gates\.atInject/);
+  assert.match(spec, /result\.runtimeCopy = runtimeCopy;\s*result\.recoveredCopy = recoveredCopy;/);
+  assert.match(spec, /if \(session && route === 'stream'\) \{\s*Object\.assign\(result\.stream, session\.state\.stream\);/);
+  assert.match(spec, /if \(route === 'owner'\) session\?\.release\(\);/);
+  // No credential reaches argv, the environment or a stream-style file from this spec: it only reads the owner login through the owner module.
+  assert.equal(/auth\.json|\.codex\b/.test(spec.replace(/\/\/[^\n]*/g, '')), false, 'the spec never names the login file');
+});
+
 test('no test in this file touched the real account\'s .codex directory', () => {
   assert.deepEqual(blockedAccess, []);
   // Positive control: the guard does block an access to the guarded directory.
