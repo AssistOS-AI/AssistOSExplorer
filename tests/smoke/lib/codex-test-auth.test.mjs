@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import {
-  CodexAuthError, EXIT_CODES, EXIT_REASONS, acceptCopyBack, acquireRunLock, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot,
+  CodexAuthError, EXIT_CODES, EXIT_REASONS, RUN_TIMEOUT_MS, RUN_WATCHDOG_MS, acceptCopyBack, acquireRunLock, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot,
   classifyTurnFailure, collectScanReferences, createCredentialSession, createInflight, describeFailure, inspectLock, inspectStream, loadStream, lockStatus, planRecovery, readInflight,
   removeInflight, resolveAuthPaths, resultLine, retireStream, robotDeleteAccepted, scanLeaks, seedStream, sha256Hex, summarizeAuth,
   validateAuthArtifact,
@@ -991,4 +991,17 @@ test('scan-leaks refuses an empty reference set and covers retired credentials a
   fs.mkdirSync(other, { mode: 0o700 });
   fs.symlinkSync(path.join(dir, 'a.log'), path.join(other, 'auth.json'));
   assert.equal(collectScanReferences(paths).length, 2);
+});
+
+test('the parent watchdog outlasts the spec test timeout, and both come from one constant', () => {
+  assert.ok(RUN_WATCHDOG_MS > RUN_TIMEOUT_MS, 'the watchdog must not kill the run while its cleanup is still running');
+  assert.ok(RUN_WATCHDOG_MS - RUN_TIMEOUT_MS >= 60_000, 'and leave room for the run to finish and write its result');
+  const spec = fs.readFileSync(new URL('../specs/07-copilot-codex-native.spec.mjs', import.meta.url), 'utf8');
+  const cli = fs.readFileSync(new URL('../scripts/codex-test-auth.mjs', import.meta.url), 'utf8');
+  assert.match(spec, /test\.setTimeout\(RUN_TIMEOUT_MS\)/);
+  assert.doesNotMatch(spec, /test\.setTimeout\(\s*\d/, 'the spec must not carry its own literal timeout');
+  assert.match(cli, /setTimeout\(\(\) => \{ child\.kill\('SIGTERM'\)/);
+  assert.match(cli, /RUN_WATCHDOG_MS/);
+  assert.doesNotMatch(cli, /const RUN_WATCHDOG_MS\s*=/, 'the CLI must import the constant, not redefine it');
+  assert.doesNotMatch(cli, /\b\d+ \* 60_000/, 'the CLI carries no literal run duration');
 });

@@ -11,10 +11,10 @@ import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { setComposer, waitForWebchatIdle } from '../lib/webchat.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
 import {
-  CodexAuthError, acquireRunLock, assertNoQuarantine, assertPrivateRoot, classifyTurnFailure, createCredentialSession, createInflight, isRunId,
+  CodexAuthError, RUN_TIMEOUT_MS, acquireRunLock, assertNoQuarantine, assertPrivateRoot, classifyTurnFailure, createCredentialSession, createInflight, isRunId,
   planRecovery, readInflight, removeInflight, resolveAuthPaths, robotDeleteAccepted,
 } from '../lib/codex-test-auth.mjs';
-import { TEST_ROBOT_PREFIX, bindingUnchanged, createCodexRuntime, credentialPhase } from '../lib/codex-test-auth-runtime.mjs';
+import { TEST_ROBOT_PREFIX, bindingUnchanged, createCodexRuntime, credentialPhase, pollCodexClient } from '../lib/codex-test-auth-runtime.mjs';
 
 // One bounded native Codex turn in a run-owned, codex-only RoboTeam robot, authenticated by the owned login stream.
 // Every credential move goes through lib/codex-test-auth*.mjs. This spec never traces, stores browser state, reads
@@ -66,8 +66,9 @@ function freshResult(runId) {
 test.describe('Codex-authenticated Copilot native turn', () => {
   test.skip(!enabled, 'Opt in with SMOKE_COPILOT_CODEX=1 through npm run test:copilot-codex.');
   test('one bounded native Codex turn in a run-owned robot with an owned, serialized login stream', async ({ page }, testInfo) => {
-    // The phase budgets add up to about 15.75 min and recovery can add 12 min; the finally path must always fit.
-    test.setTimeout(35 * 60_000);
+    // The phase budgets add up to about 15.75 min and recovery can add 12 min; the finally path must always fit. The parent's
+    // watchdog is derived from the same constant and outlasts it.
+    test.setTimeout(RUN_TIMEOUT_MS);
     assert.equal(testInfo.retry, 0, 'Acceptance retries are forbidden.');
     assert.equal(testInfo.project.retries, 0, 'Configure zero retries for this gate.');
     assert.equal(testInfo.config.workers, 1, 'Run this gate with one worker.');
@@ -90,6 +91,8 @@ test.describe('Codex-authenticated Copilot native turn', () => {
     let chat = null;
     let recoveryPending = null;
     let recoveryRefusal = null;
+    let recoveryCopyOpen = false;
+    let cliDeadline = 0;
     let completionToken = null;
     let client = null;
     let paths = null;
@@ -154,10 +157,12 @@ test.describe('Codex-authenticated Copilot native turn', () => {
         if (plan.action === 'copy-back-then-delete') {
           result.cleanup.credentialPersisted = false;
           result.cleanup.credentialRemoved = false;
+          recoveryCopyOpen = true;
           try { recoveryRefusal = (await session.recover(recoveryPending.robot)).refusal; } catch (error) {
             throw classify(error, 'CLEANUP_INCOMPLETE', 'recovery-incomplete');
           }
           result.recovered = true;
+          recoveryCopyOpen = false;
           result.cleanup.credentialPersisted = true;
           result.cleanup.credentialRemoved = true;
           // Recovery may have replaced the stream with a refreshed state. The session reloaded it, so what this run injects and
@@ -225,6 +230,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       }).catch((error) => { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'binding'); });
 
       // Step 6: WebChat for the test robot. The first CLI start may install a newer Codex client.
+      cliDeadline = Date.now() + BUDGET.cliStart;
       await within(BUDGET.cliStart, async () => {
         chat = await page.context().newPage();
         const query = new URLSearchParams({ agent: 'roboTeamAgent', robot: robotName, 'workspace-dir': folder, 'forward-envelope': '1' });
@@ -236,8 +242,11 @@ test.describe('Codex-authenticated Copilot native turn', () => {
       }).catch((error) => { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'cli-start-budget'); });
 
       // Step 7: the Codex client the CLI will run, the provider names in its environment, and no native credential yet.
-      await within(BUDGET.identity, async () => {
-        client = await runtime.clientIdentity(robot).catch((error) => { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'codex-client-missing'); });
+      // Ploinky reports the CLI ready before robot-cli has prepared its tool selection, so the read polls inside what is left of
+      // the 180 s CLI-start budget (never less than the step's own budget) and fails closed when that runs out.
+      const clientWaitMs = Math.max(BUDGET.identity, cliDeadline - Date.now());
+      await within(clientWaitMs + BUDGET.identity, async () => {
+        client = await pollCodexClient(runtime, robot, { timeoutMs: clientWaitMs }).catch((error) => { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'codex-client-missing'); });
         Object.assign(result.codexClient, { package: client.package, version: client.version, generation12: client.generation.slice(0, 12),
           pre: { version: client.version, generation12: client.generation.slice(0, 12) } });
         const pin = process.env.CODEX_TEST_EXPECT_CODEX_VERSION;
@@ -328,8 +337,9 @@ test.describe('Codex-authenticated Copilot native turn', () => {
             else fail(error, 'COPYBACK_REFUSED', 'invalid');
           });
         }
-        result.cleanup.credentialPersisted = !held.injected || held.persisted;
-        result.cleanup.credentialRemoved = !held.injected || held.removed;
+        // A recovery whose copy is still unaccounted for keeps both flags false.
+        result.cleanup.credentialPersisted = !recoveryCopyOpen && (!held.injected || held.persisted);
+        result.cleanup.credentialRemoved = !recoveryCopyOpen && (!held.injected || held.removed);
       } catch (error) { note('persist-outer', error); cleanupFailure ??= new CodexAuthError('CLEANUP_INCOMPLETE', 'credential-not-persisted'); }
 
       const settled = credential();

@@ -26,6 +26,11 @@ export const EXIT_CODES = Object.freeze({
   LEAK_DETECTED: 27,
 });
 
+// One source for the gate's timing: the Playwright test timeout, and the parent's watchdog, which must outlast it so that
+// the spec's `finally` cleanup is never killed mid-way.
+export const RUN_TIMEOUT_MS = 35 * 60_000;
+export const RUN_WATCHDOG_MS = RUN_TIMEOUT_MS + 5 * 60_000;
+
 const AUTH_INVALID = ['not-chatgpt', 'api-key', 'pat', 'bedrock', 'missing-field', 'future-last-refresh', 'oversize'];
 
 // Every failure carries one of these fixed reasons. Nothing derived from a payload, Podman, Codex or ALA is ever a reason.

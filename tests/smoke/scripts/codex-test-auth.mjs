@@ -13,7 +13,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import {
-  CodexAuthError, EXIT_CODES, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot, collectScanReferences,
+  CodexAuthError, EXIT_CODES, RUN_WATCHDOG_MS, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot, collectScanReferences,
   describeFailure, inflightPresent, inspectStream, isRunId, listQuarantines, loadStream, lockStatus, planRecovery, readInflight, resolveAuthPaths,
   resultLine, retireStream, scanLeaks, seedStream,
 } from '../lib/codex-test-auth.mjs';
@@ -21,7 +21,6 @@ import { RuntimeProgramError, TEST_ROBOT_PREFIX, createCodexRuntime } from '../l
 
 const smokeRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const SPEC = 'specs/07-copilot-codex-native.spec.mjs';
-const RUN_WATCHDOG_MS = 25 * 60_000;
 
 function repositoryRoot() {
   let current = smokeRoot;
