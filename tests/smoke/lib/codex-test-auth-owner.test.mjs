@@ -164,6 +164,27 @@ function spyFs(t, names) {
 const WRITE_FUNCTIONS = ['writeFileSync', 'appendFileSync', 'mkdirSync', 'chmodSync', 'renameSync', 'unlinkSync', 'rmSync', 'copyFileSync', 'linkSync',
   'symlinkSync', 'truncateSync', 'utimesSync', 'rmdirSync'];
 
+// Every call that could write: the path-based write functions, the descriptor-based ones, and open or openSync with a write flag
+// (a numeric flag with any write bit, or any string flag other than 'r'). The returned array fills while the test runs.
+const DESCRIPTOR_WRITE_FUNCTIONS = ['writeSync', 'fsyncSync', 'fdatasyncSync', 'fchmodSync', 'ftruncateSync'];
+const WRITE_FLAG_BITS = fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND | fs.constants.O_EXCL;
+const writesFlag = (flags) => (typeof flags === 'number' ? (flags & WRITE_FLAG_BITS) !== 0 : flags !== undefined && flags !== 'r');
+
+function spyWrites(t) {
+  const recorded = [];
+  for (const name of [...WRITE_FUNCTIONS, ...DESCRIPTOR_WRITE_FUNCTIONS, 'openSync', 'open']) {
+    const original = fs[name];
+    if (typeof original !== 'function') continue;
+    const opens = name === 'openSync' || name === 'open';
+    fs[name] = Object.assign(function spied(...args) {
+      if (!opens || writesFlag(args[1])) recorded.push({ name, args });
+      return original.apply(this, args);
+    }, original);
+    t.after(() => { fs[name] = original; });
+  }
+  return recorded;
+}
+
 function fakeRuntime({ copy = null, readError = null, removeError = null, discard = null, injectError = null } = {}) {
   const calls = [];
   return {
@@ -723,6 +744,7 @@ test('route A opens nothing under the owner directory except auth.json, only rea
   const before = snapshotOf();
   const everything = spyFs(t, ['openSync', 'readFileSync', 'readdirSync', 'lstatSync', 'statSync', 'existsSync', 'accessSync', 'realpathSync', 'opendirSync',
     'readlinkSync', 'createReadStream', ...WRITE_FUNCTIONS]);
+  const writes = spyWrites(t);
   const paths = resolveAuthPaths({ HOME: home, CODEX_TEST_AUTH_ROOT: path.join(base, 'state', 'root') });
   const env = { HOME: home };
   const { file: resolved, source } = resolveOwnerAuthPath(env, paths, { forbiddenRoots: [path.join(base, 'artifacts')] });
@@ -758,7 +780,7 @@ test('route A opens nothing under the owner directory except auth.json, only rea
   // Positive control: the spy does see the open and the lookups.
   assert.ok(touching.some((call) => call.name === 'openSync' && call.args[0] === file));
   assert.ok(touching.some((call) => call.name === 'realpathSync'));
-  assert.deepEqual(everything.filter((call) => WRITE_FUNCTIONS.includes(call.name)).map((call) => call.name), [], 'route A writes no file at all');
+  assert.deepEqual(writes.map((call) => call.name), [], 'route A writes no file at all, by path or by descriptor');
   assert.deepEqual(snapshotOf(), before);
 });
 
@@ -844,7 +866,7 @@ test('the owner session gates before injecting, injects the derived bytes, verif
 test('a changed, unparsable or missing robot copy fails with runtime-copy-changed or runtime-auth-missing, is removed by the hash of what was read, never throws while classifying, and nothing is written anywhere', async (t) => {
   const owner = ownerLogin({ expMs: NOW + 2 * HOUR });
   const { derived } = deriveAccessOnlyAuth(owner, { now: NOW });
-  const writes = spyFs(t, WRITE_FUNCTIONS);
+  const writes = spyWrites(t);
   const text = derived.toString('utf8');
   const sameLength = Buffer.from(text.replace('"account_id":"acct-fake-0001"', '"account_id":"acct-fake-0002"'));
   assert.equal(sameLength.length, derived.length);
@@ -925,10 +947,23 @@ test('a changed, unparsable or missing robot copy fails with runtime-copy-change
   assert.deepEqual(flaky.calls.filter((call) => call[0] === 'readForCopyBack').length, 1, 'the copy is read once');
   assert.deepEqual(flaky.calls.filter((call) => call[0] === 'remove').map((call) => call[2]), [sha256Hex(derived), sha256Hex(derived)]);
   assert.deepEqual(writes.map((call) => call.name), [], 'nothing is written anywhere');
+  // Positive control: the spy sees a write open, every descriptor write and a read-write open, and ignores a plain read open.
+  const probe = path.join(sandbox(t), 'probe');
+  const descriptor = fs.openSync(probe, 'w');
+  fs.writeSync(descriptor, 'x');
+  fs.fsyncSync(descriptor);
+  fs.fdatasyncSync(descriptor);
+  fs.fchmodSync(descriptor, 0o600);
+  fs.ftruncateSync(descriptor, 0);
+  fs.closeSync(descriptor);
+  fs.closeSync(fs.openSync(probe, fs.constants.O_RDWR));
+  fs.closeSync(fs.openSync(probe, 'r'));
+  fs.closeSync(fs.openSync(probe, fs.constants.O_RDONLY));
+  assert.deepEqual(writes.map((call) => call.name), ['openSync', 'writeSync', 'fsyncSync', 'fdatasyncSync', 'fchmodSync', 'ftruncateSync', 'openSync']);
 });
 
 test('recovery of a route-A marker discards the leftover copy inside the container, never brings its bytes to the host, never persists it and never reads the owner login', async (t) => {
-  const writes = spyFs(t, WRITE_FUNCTIONS);
+  const writes = spyWrites(t);
   const forbidden = () => { throw new Error('this call must not happen during a route-A recovery'); };
   const make = (discard) => {
     const runtime = fakeRuntime({ discard });
