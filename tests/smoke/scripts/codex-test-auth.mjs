@@ -213,27 +213,33 @@ async function scanLeaksOwner(paths, env, argv) {
   const ownerDirectory = ownerDirectoryFor(env, paths);
   const directory = assertArtifactDirectory(argv[3] ?? env.SMOKE_ARTIFACT_DIR, { paths,
     forbiddenRoots: withOwnerDirectory(forbiddenRoots({ ...env, SMOKE_ARTIFACT_DIR: undefined }), ownerDirectory) });
+  // The owner references are the owner's own buffers and the buffers derived from them. They are wiped only after the scan has read them.
+  const ownerBuffers = [];
   const references = [];
   let ownerReferences = 'unavailable';
   try {
-    const { file } = resolveOwnerAuthPath(env, paths, { forbiddenRoots: forbiddenRoots({ ...env, SMOKE_ARTIFACT_DIR: undefined }) });
-    const { bytes } = await readOwnerAuth(file);
-    references.push(...ownerScanReferences(bytes));
-    bytes.fill(0);
-    ownerReferences = 'loaded';
-  } catch { /* the owner login may be absent or unusable; the scan then relies on what ROOT holds */ }
-  references.push(...collectScanReferences(paths));
-  let scanned;
-  try { scanned = scanLeaks(directory, references); } catch (error) {
-    // An empty reference set is refused. The failure still says whether the owner login could be loaded.
-    if (!(error instanceof CodexAuthError)) throw error;
-    return { command: 'scan-leaks', result: 'failed', ...describeFailure(error), stream: null, artifactDirectory: directory, ownerReferences };
-  }
-  const { leaks, filesScanned } = scanned;
-  const leaked = leaks.length > 0;
-  return { command: 'scan-leaks', result: leaked ? 'failed' : 'done', code: leaked ? 'LEAK_DETECTED' : 'OK',
-    reason: leaked ? 'artifact-contains-token' : null, stream: null, artifactDirectory: directory, leaks: leaks.length, filesScanned,
-    findings: leaks, ownerReferences };
+    try {
+      const { file } = resolveOwnerAuthPath(env, paths, { forbiddenRoots: forbiddenRoots({ ...env, SMOKE_ARTIFACT_DIR: undefined }) });
+      const { bytes } = await readOwnerAuth(file);
+      ownerBuffers.push(bytes);
+      const owned = ownerScanReferences(bytes);
+      ownerBuffers.push(...owned);
+      references.push(...owned);
+      ownerReferences = 'loaded';
+    } catch { /* the owner login may be absent or unusable; the scan then relies on what ROOT holds */ }
+    references.push(...collectScanReferences(paths));
+    let scanned;
+    try { scanned = scanLeaks(directory, references); } catch (error) {
+      // An empty reference set is refused. The failure still says whether the owner login could be loaded.
+      if (!(error instanceof CodexAuthError)) throw error;
+      return { command: 'scan-leaks', result: 'failed', ...describeFailure(error), stream: null, artifactDirectory: directory, ownerReferences };
+    }
+    const { leaks, filesScanned } = scanned;
+    const leaked = leaks.length > 0;
+    return { command: 'scan-leaks', result: leaked ? 'failed' : 'done', code: leaked ? 'LEAK_DETECTED' : 'OK',
+      reason: leaked ? 'artifact-contains-token' : null, stream: null, artifactDirectory: directory, leaks: leaks.length, filesScanned,
+      findings: leaks, ownerReferences };
+  } finally { for (const buffer of ownerBuffers) buffer.fill(0); }
 }
 
 function runPlaywright(args, env, stdio) {
@@ -309,11 +315,12 @@ async function runOwner(paths, env) {
   assertNoOtherRouteInflight(paths, 'owner');
   const pendingRecovery = inflightPresent(paths, { route: 'owner' });
   let ownerFile = null;
+  let ownerSource = null;
   let pre = null;
   let post = null;
   let ownerGateFailure = null;
   try {
-    ownerFile = resolveOwnerAuthPath(env, paths, { forbiddenRoots: forbiddenRoots(env) }).file;
+    ({ file: ownerFile, source: ownerSource } = resolveOwnerAuthPath(env, paths, { forbiddenRoots: forbiddenRoots(env) }));
     pre = (await readOwnerAuth(ownerFile)).bytes;
     const { derived, expMs } = deriveAccessOnlyAuth(pre);
     derived.fill(0);
@@ -323,12 +330,15 @@ async function runOwner(paths, env) {
     if (!(error instanceof CodexAuthError)) say('The owner login check failed with an unexpected error.');
   }
   const ownerGate = ownerGateFailure ? ownerGateFailure.reason : 'pass';
+  // Every owner buffer and every buffer derived from one is wiped in the `finally`, after the scan has read them.
+  let references = [];
   try {
     const plan = planOwnerRun({ pendingRecovery, ownerGateFailure });
     if (!plan.spawn) return { ...base, result: 'failed', ...plan.earlyFailure, ownerGate, spawnedForRecovery: false };
     const childEnv = { ...env, SMOKE_COPILOT_CODEX: '1', SMOKE_RUN_ID: runId, SMOKE_ARTIFACT_DIR: directory,
       CODEX_TEST_AUTH_ROOT: paths.root, CODEX_TEST_AUTH_STREAM: paths.stream, CODEX_TEST_AUTH_SOURCE: 'owner',
-      ...(ownerFile ? { CODEX_TEST_AUTH_OWNER_AUTH: ownerFile } : {}) };
+      // Only an override is passed on. For the default path the worker resolves it itself, so its result says `default`.
+      ...(ownerSource === 'override' ? { CODEX_TEST_AUTH_OWNER_AUTH: ownerFile } : {}) };
     const playwrightArgs = ['--project=chromium', '--workers=1', '--retries=0', SPEC];
     const listed = await runPlaywright([...playwrightArgs, '--list'], childEnv, ['ignore', 'pipe', 'pipe']);
     if (listed.code !== 0 || !/Total: 1 tests? in 1 files?/.test(listed.output)) throw new CodexAuthError('RUNTIME_PREREQ_FAILED', 'selection-count');
@@ -342,7 +352,7 @@ async function runOwner(paths, env) {
     if (ownerFile) { try { post = (await readOwnerAuth(ownerFile)).bytes; } catch { post = null; } }
     let coverage = 'unproven';
     try { coverage = assertOwnerScanCoverage({ preBytes: pre, postBytes: post, result }); } catch { coverage = 'unproven'; }
-    const references = [...(pre ? ownerScanReferences(pre) : []), ...(post ? ownerScanReferences(post) : [])];
+    references = [...(pre ? ownerScanReferences(pre) : []), ...(post ? ownerScanReferences(post) : [])];
     // With no owner read at all and a worker that never derived a credential, nothing could have leaked, so the scan is skipped.
     let leaks = [];
     let leakScan = 'skipped';
@@ -350,7 +360,11 @@ async function runOwner(paths, env) {
     const outcome = decideRunOutcome({ leaks, coverageFailure: coverage === 'unproven', result, exitedCode: exited.code });
     return { ...base, ...outcome, ownerGate, spawnedForRecovery: plan.spawnedForRecovery, ownerChangedDuringRun: pre && post ? !pre.equals(post) : null,
       leakScanCoverage: coverage, leakScan };
-  } finally { pre?.fill(0); post?.fill(0); }
+  } finally {
+    pre?.fill(0);
+    post?.fill(0);
+    for (const buffer of references) buffer.fill(0);
+  }
 }
 
 const COMMANDS = {

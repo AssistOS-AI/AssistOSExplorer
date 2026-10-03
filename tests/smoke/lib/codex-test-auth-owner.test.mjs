@@ -1182,6 +1182,18 @@ test('the CLI defaults to the owner route without falling back to a valid stream
   assert.equal(leaked.line.ownerReferences, 'loaded');
   assert.ok(leaked.line.leaks >= 1);
   assert.equal(leaked.text.includes(derived.toString('base64')), false);
+  // Every owner token is among the references, not only the derived credential: the refresh token and the id token are found too, and
+  // a run of zero bytes is not a leak (a wiped reference would match it).
+  const ownerTokens = parsed(goodOwner).tokens;
+  const planted = (name, content) => { const directory = path.join(base, `planted-${name}`); fs.mkdirSync(directory); fs.writeFileSync(path.join(directory, 'out.log'), content); return directory; };
+  for (const [name, value, field] of [['refresh', ownerTokens.refresh_token, 'refreshToken'], ['id', ownerTokens.id_token, 'idToken'], ['access', ownerTokens.access_token, 'accessToken']]) {
+    const found = cli('scan-leaks', {}, [planted(name, `noise ${value} noise`)]);
+    expectFailure(found, { code: 'LEAK_DETECTED', reason: 'artifact-contains-token', route: 'owner' });
+    assert.ok(found.line.findings.some((finding) => finding.field === field), `${name}: ${found.text}`);
+    assert.equal(found.text.includes(value), false);
+  }
+  const zeros = cli('scan-leaks', {}, [planted('zeros', Buffer.alloc(4096))]);
+  assert.deepEqual([zeros.status, zeros.line.code, zeros.line.leaks, zeros.line.ownerReferences], [0, 'OK', 0, 'loaded']);
   const clean = path.join(base, 'clean');
   fs.mkdirSync(clean);
   fs.writeFileSync(path.join(clean, 'out.log'), 'nothing to see');
