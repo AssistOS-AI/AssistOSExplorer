@@ -13,6 +13,7 @@ import { isAdminUser } from './services/auth/adminUser.js';
 import {
     completeInitialApplicationRoute,
     mountInitialApplicationRoute,
+    resolveBootRoute,
     resolveDeniedAdminRoute,
     resolveInitialHashedRoute
 } from './services/runtime/initial-application-route.js';
@@ -479,18 +480,14 @@ async function start() {
     webSkel.setDomElementForPages(pageContent);
     const loader = document.querySelector("#before_webskel_loader");
 
-    let pageName;
-    let url;
-    let suppressNavigationHash = false;
-    if (initialHashedRoute) {
-        ({ pageName, url, preserveHash: suppressNavigationHash } = initialHashedRoute);
-    } else if (ROOM_ID_PATTERN.test(String(new URLSearchParams(window.location.search || '').get('roomId') || '').trim())) {
-        pageName = 'webmeet-dashboard';
-        url = 'webmeet-dashboard';
-    } else {
-        pageName = 'file-exp';
-        url = 'file-exp';
-    }
+    // WebSkel ignored history events until the page root was set. Re-read the address now, with nothing
+    // asynchronous between setDomElementForPages and this call, and mount the page the user navigated to last.
+    let { pageName, url, preserveHash: suppressNavigationHash } = resolveBootRoute({
+        capturedRoute: initialHashedRoute,
+        currentHash: window.location.hash,
+        roomEntry,
+        isWebSkelComponent: (name) => Boolean(webSkel.configs?.components?.some((component) => component.name === name))
+    });
 
     const isFileExplorerRoute = !roomEntry && pageName === 'file-exp';
     if (!isFileExplorerRoute) {

@@ -1,4 +1,6 @@
 const DEFAULT_PAGE_NAME = 'file-exp';
+const RUNTIME_WAIT_PAGE_NAME = 'agent-runtime-wait';
+const WEBMEET_DASHBOARD_PAGE_NAME = 'webmeet-dashboard';
 
 // WebSkel's changeToDynamicPage always inserts `<tag data-presenter="tag">` as the page element.
 export function isWebSkelPageElement(element) {
@@ -40,6 +42,37 @@ export function resolveInitialHashedRoute(hashValue) {
         pageName,
         url,
         preserveHash: true
+    });
+}
+
+// The route that bootstrap mounts. WebSkel ignores history events until its page root exists, so a navigation
+// made while Explorer was still loading is lost unless bootstrap re-reads the address when the page root is set.
+// This mirrors WebSkel's own rule: it acts on a history event only for a configured component, and a late
+// agent-runtime-wait hash is never adopted. Pure on purpose: callers pass the captured route, the current hash,
+// and the component predicate.
+export function resolveBootRoute({
+    capturedRoute = null,
+    currentHash = '',
+    roomEntry = null,
+    isWebSkelComponent = () => false
+} = {}) {
+    const currentRoute = resolveInitialHashedRoute(currentHash);
+    if (currentRoute && capturedRoute && currentRoute.url === capturedRoute.url) {
+        return capturedRoute;
+    }
+    if (currentRoute
+        && currentRoute.pageName !== RUNTIME_WAIT_PAGE_NAME
+        && isWebSkelComponent(currentRoute.pageName) === true) {
+        return currentRoute;
+    }
+    if (capturedRoute) {
+        return capturedRoute;
+    }
+    const pageName = roomEntry ? WEBMEET_DASHBOARD_PAGE_NAME : DEFAULT_PAGE_NAME;
+    return Object.freeze({
+        pageName,
+        url: pageName,
+        preserveHash: false
     });
 }
 

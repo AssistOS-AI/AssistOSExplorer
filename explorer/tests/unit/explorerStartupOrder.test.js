@@ -30,6 +30,28 @@ test('initial route replaces the static spinner before WebSkel mounts its loader
     assert.ok(mountIndex > removeIndex);
 });
 
+test('W2 bootstrap resolves its route from the current address right after the page root is set', () => {
+    const source = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
+    const at = (text, from = 0) => {
+        const index = source.indexOf(text, from);
+        assert.ok(index >= 0, `missing: ${text}`);
+        return index;
+    };
+    const rootSet = at('webSkel.setDomElementForPages(pageContent);');
+    const resolve = at('resolveBootRoute({', rootSet);
+    const fileRouteFlag = at('const isFileExplorerRoute', resolve);
+    const policy = at('if (!isFileExplorerRoute) {', fileRouteFlag);
+    const mount = at('await mountInitialApplicationRoute({', policy);
+
+    assert.ok(rootSet < resolve && resolve < fileRouteFlag && fileRouteFlag < policy && policy < mount);
+    // A navigation event that fires between these two points would be lost, so no await may separate them.
+    assert.doesNotMatch(source.slice(rootSet, resolve), /\bawait\b/);
+    assert.match(source, /currentHash: window\.location\.hash/);
+    assert.match(source, /const initialHashedRoute = resolveInitialHashedRoute\(window\.location\.hash\);/);
+    assert.match(source, /initialHashedRoute\?\.pageName === 'agent-runtime-wait'/);
+    assert.doesNotMatch(source, /preserveHash: suppressNavigationHash \} = initialHashedRoute\);/);
+});
+
 test('file explorer refreshes plugin slots when deferred discovery completes', () => {
     const mainSource = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
     const hostSource = fs.readFileSync(

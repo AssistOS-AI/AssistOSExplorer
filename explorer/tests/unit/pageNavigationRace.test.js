@@ -812,3 +812,111 @@ test('T24 bootstrap keeps a newer navigation and its address when the route poli
     assert.deepEqual(replaced, [[null, '', '/explorer/?x=1']]);
     assert.deepEqual({ ...fallback }, { pageName: 'file-exp', url: 'file-exp', preserveHash: false });
 });
+
+function bootRouteFixture() {
+    const known = new Set(['file-exp', 'paragraph-html-preview', 'other-page']);
+    return { known, isWebSkelComponent: (name) => known.has(name) };
+}
+
+test('T25 bootstrap adopts the navigation that WebSkel ignored before the page root existed', () => {
+    const previousWindow = globalThis.window;
+    delete globalThis.window;
+    try {
+        assert.equal(typeof initialRoute.resolveBootRoute, 'function');
+        const { isWebSkelComponent } = bootRouteFixture();
+        const capturedRoute = initialRoute.resolveInitialHashedRoute('#file-exp/Confidential');
+
+        const route = initialRoute.resolveBootRoute({
+            capturedRoute,
+            currentHash: '#paragraph-html-preview',
+            roomEntry: null,
+            isWebSkelComponent
+        });
+
+        assert.deepEqual({ ...route }, {
+            pageName: 'paragraph-html-preview',
+            url: 'paragraph-html-preview',
+            preserveHash: true
+        });
+        assert.equal(Object.isFrozen(route), true);
+    } finally {
+        restoreGlobal('window', previousWindow);
+    }
+});
+
+test('T26 bootstrap keeps the captured route when the address did not change', () => {
+    assert.equal(typeof initialRoute.resolveBootRoute, 'function');
+    const { isWebSkelComponent } = bootRouteFixture();
+    const capturedRoute = initialRoute.resolveInitialHashedRoute('#file-exp/Confidential');
+
+    const route = initialRoute.resolveBootRoute({
+        capturedRoute,
+        currentHash: '#file-exp/Confidential',
+        isWebSkelComponent
+    });
+
+    assert.equal(route, capturedRoute);
+});
+
+test('T27 bootstrap keeps the captured route for an empty, unknown, or runtime-wait address', () => {
+    assert.equal(typeof initialRoute.resolveBootRoute, 'function');
+    const { isWebSkelComponent } = bootRouteFixture();
+    const capturedRoute = initialRoute.resolveInitialHashedRoute('#file-exp/Confidential');
+
+    for (const currentHash of ['#no-such-page/x', '', '#']) {
+        const route = initialRoute.resolveBootRoute({ capturedRoute, currentHash, isWebSkelComponent });
+        assert.equal(route, capturedRoute, `current hash ${JSON.stringify(currentHash)}`);
+    }
+
+    // A late runtime-wait hash is never adopted, even by a predicate that would accept it.
+    const route = initialRoute.resolveBootRoute({
+        capturedRoute,
+        currentHash: '#agent-runtime-wait?label=Explorer',
+        isWebSkelComponent: () => true
+    });
+    assert.equal(route, capturedRoute);
+});
+
+test('T28 bootstrap without a captured route adopts a known page or falls back to the defaults', () => {
+    assert.equal(typeof initialRoute.resolveBootRoute, 'function');
+    const { isWebSkelComponent } = bootRouteFixture();
+    const plain = (route) => ({ ...route });
+
+    assert.deepEqual(
+        plain(initialRoute.resolveBootRoute({ currentHash: '#other-page', isWebSkelComponent })),
+        { pageName: 'other-page', url: 'other-page', preserveHash: true }
+    );
+    for (const currentHash of ['', '#no-such-page/x']) {
+        assert.deepEqual(
+            plain(initialRoute.resolveBootRoute({ currentHash, isWebSkelComponent })),
+            { pageName: 'file-exp', url: 'file-exp', preserveHash: false },
+            `current hash ${JSON.stringify(currentHash)}`
+        );
+    }
+    assert.deepEqual(
+        plain(initialRoute.resolveBootRoute({ currentHash: '', roomEntry: { roomId: 'room_x' }, isWebSkelComponent })),
+        { pageName: 'webmeet-dashboard', url: 'webmeet-dashboard', preserveHash: false }
+    );
+    assert.deepEqual(
+        plain(initialRoute.resolveBootRoute()),
+        { pageName: 'file-exp', url: 'file-exp', preserveHash: false }
+    );
+});
+
+test('T29 bootstrap adopts a deeper address of the same page', () => {
+    assert.equal(typeof initialRoute.resolveBootRoute, 'function');
+    const { isWebSkelComponent } = bootRouteFixture();
+    const capturedRoute = initialRoute.resolveInitialHashedRoute('#file-exp/Confidential');
+
+    const route = initialRoute.resolveBootRoute({
+        capturedRoute,
+        currentHash: '#file-exp/Confidential/My%20Space',
+        isWebSkelComponent
+    });
+
+    assert.deepEqual({ ...route }, {
+        pageName: 'file-exp',
+        url: 'file-exp/Confidential/My%20Space',
+        preserveHash: true
+    });
+});
