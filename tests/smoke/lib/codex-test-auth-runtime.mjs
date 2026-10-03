@@ -388,6 +388,28 @@ function parseResult({ exitCode, stdout }) {
 
 const defaultSleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+// The codex-only `shell-codex` selection is created by the robot CLI itself, after Ploinky already reports the CLI as ready,
+// so the first read can legitimately find nothing. Poll until the selection exists and a robot CLI process is visible, within
+// the budget. Fail closed when the budget runs out: a missing selection rethrows NOT_FOUND, and a still-empty process list is
+// returned as is, so the caller's provider-environment check refuses it. Any other error stops at once.
+export async function pollCodexClient(runtime, robot, { timeoutMs, intervalMs = 2000, sleep = defaultSleep, now = Date.now } = {}) {
+  const deadline = now() + timeoutMs;
+  for (;;) {
+    let identity = null;
+    let missing = null;
+    try { identity = await runtime.clientIdentity(robot); } catch (error) {
+      if (error?.code !== 'NOT_FOUND') throw error;
+      missing = error;
+    }
+    if (identity !== null && identity.cli?.count > 0) return identity;
+    if (now() >= deadline) {
+      if (missing) throw missing;
+      return identity;
+    }
+    await sleep(intervalMs);
+  }
+}
+
 function defaultGit(repository, args) {
   return execFileSync('git', ['-C', repository, ...args], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] });
 }

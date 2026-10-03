@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
 import {
-  RuntimeProgramError, bindingUnchanged, createCodexRuntime, credentialPhase, credentialProgram, deriveRoboTeamRepository, injectCodexAuth,
+  RuntimeProgramError, bindingUnchanged, createCodexRuntime, credentialPhase, credentialProgram, pollCodexClient, deriveRoboTeamRepository, injectCodexAuth,
   readAlaSource, readCodexAuthForCopyBack, readCodexClientIdentity, readCodexTurnIdentity, readRobotInventory, removeCodexAuth,
   waitRobotCliExit,
 } from './codex-test-auth-runtime.mjs';
@@ -632,4 +632,61 @@ test('the client identity for preflight and the binding needs only codex/current
   fs.rmSync(currentFile);
   fs.symlinkSync(path.join(other.data, 'elsewhere.json'), currentFile);
   await rejectsWith(readCodexClientIdentity({}, other.options), 'UNSAFE_PATH');
+});
+
+function pollFixture(replies) {
+  let index = 0;
+  let clock = 0;
+  const calls = [];
+  const sleeps = [];
+  return { calls, sleeps,
+    runtime: { async clientIdentity(robot) {
+      calls.push(robot);
+      const next = replies[Math.min(index, replies.length - 1)];
+      index += 1;
+      if (next instanceof Error) throw next;
+      return next;
+    } },
+    options: { now: () => clock, sleep: async (milliseconds) => { clock += milliseconds; sleeps.push(milliseconds); } } };
+}
+const identityWith = (count) => ({ ok: true, package: '@openai/codex', version: '0.160.0', generation: 'a'.repeat(64),
+  cli: { count, openaiBaseUrlSet: false, openaiApiKeySet: false }, codexConfigTomlPresent: false });
+const notFound = () => new RuntimeProgramError('NOT_FOUND');
+
+test('the client read polls for the codex-only selection and the robot CLI inside its budget, and fails closed when it runs out', async () => {
+  // The selection appears after two empty reads.
+  let fixture = pollFixture([notFound(), notFound(), identityWith(1)]);
+  const found = await pollCodexClient(fixture.runtime, ROBOT, { timeoutMs: 180_000, ...fixture.options });
+  assert.equal(found.cli.count, 1);
+  assert.equal(fixture.calls.length, 3);
+  assert.deepEqual(fixture.sleeps, [2000, 2000]);
+  assert.deepEqual(fixture.calls[0], ROBOT);
+  // The selection exists but the robot CLI process is not visible yet.
+  fixture = pollFixture([identityWith(0), identityWith(0), identityWith(2)]);
+  assert.equal((await pollCodexClient(fixture.runtime, ROBOT, { timeoutMs: 180_000, ...fixture.options })).cli.count, 2);
+  assert.equal(fixture.calls.length, 3);
+  // A selection that never appears: the last NOT_FOUND is rethrown at the deadline (the spec maps it to exit 20 codex-client-missing).
+  fixture = pollFixture([notFound()]);
+  await assert.rejects(pollCodexClient(fixture.runtime, ROBOT, { timeoutMs: 10_000, ...fixture.options }),
+    (error) => error instanceof RuntimeProgramError && error.code === 'NOT_FOUND');
+  assert.equal(fixture.calls.length, 6, 'one read at every 2 s from 0 s to the 10 s deadline');
+  // A CLI that never shows up: the last identity is returned with a zero count, so the provider-environment check fails closed.
+  fixture = pollFixture([identityWith(0)]);
+  const empty = await pollCodexClient(fixture.runtime, ROBOT, { timeoutMs: 6000, ...fixture.options });
+  assert.equal(empty.cli.count, 0);
+  assert.equal(fixture.calls.length, 4);
+  // Mixed: missing first, then present but without a CLI until the end returns the identity, not an error.
+  fixture = pollFixture([notFound(), identityWith(0)]);
+  assert.equal((await pollCodexClient(fixture.runtime, ROBOT, { timeoutMs: 4000, ...fixture.options })).cli.count, 0);
+  // Any other error stops at once without a retry.
+  fixture = pollFixture([new RuntimeProgramError('MALFORMED'), identityWith(1)]);
+  await assert.rejects(pollCodexClient(fixture.runtime, ROBOT, { timeoutMs: 180_000, ...fixture.options }), (error) => error.code === 'MALFORMED');
+  assert.equal(fixture.calls.length, 1);
+  assert.deepEqual(fixture.sleeps, []);
+  // A zero budget still reads once.
+  fixture = pollFixture([identityWith(1)]);
+  assert.equal((await pollCodexClient(fixture.runtime, ROBOT, { timeoutMs: 0, ...fixture.options })).cli.count, 1);
+  fixture = pollFixture([notFound()]);
+  await assert.rejects(pollCodexClient(fixture.runtime, ROBOT, { timeoutMs: 0, ...fixture.options }), (error) => error.code === 'NOT_FOUND');
+  assert.equal(fixture.calls.length, 1);
 });
