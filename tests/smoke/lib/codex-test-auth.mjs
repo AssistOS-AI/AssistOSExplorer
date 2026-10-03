@@ -67,7 +67,7 @@ export class CodexAuthError extends Error {
 const fail = (code, reason, extra) => new CodexAuthError(code, reason, extra);
 
 const STREAM_NAME = /^[a-z0-9][a-z0-9-]{2,40}$/;
-const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/;
+const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const TOKEN = /^[0-9a-f]{32}$/;
 const AUTH_LIMIT = 64 * 1024;
 const FUTURE_SKEW_MS = 5 * 60 * 1000;
@@ -178,6 +178,27 @@ export function assertPrivateRoot(paths, { forbiddenRoots = [], uid = currentUid
     checkPrivateEntry(path.join(paths.streamDir, name), { directory: false, uid });
   }
   return { root: located, exists: true };
+}
+
+// `SMOKE_ARTIFACT_DIR` must be an existing absolute directory outside ROOT, every forbidden root and any git work tree,
+// so a credential-bearing artifact can never land in source or in the stream.
+export function assertArtifactDirectory(directory, { paths, forbiddenRoots = [] } = {}) {
+  if (typeof directory !== 'string' || directory === '' || directory.includes('\0')) throw fail('USAGE', 'bad-variable');
+  if (!path.isAbsolute(directory)) throw fail('USAGE', 'relative-path');
+  let real;
+  try {
+    real = fs.realpathSync(directory);
+    if (!fs.statSync(real).isDirectory()) throw fail('USAGE', 'artifact-dir-location');
+  } catch (error) {
+    if (error instanceof CodexAuthError) throw error;
+    throw fail('USAGE', 'artifact-dir-location');
+  }
+  const root = locate(paths.root);
+  const others = [root, ...forbiddenRoots.filter((entry) => typeof entry === 'string' && entry !== '').map(locate)];
+  if (insideGitWorkTree(real) || others.some((other) => isInside(other, real) || isInside(real, other))) {
+    throw fail('USAGE', 'artifact-dir-location');
+  }
+  return real;
 }
 
 function listStreamFiles(paths, pattern) {
@@ -346,11 +367,16 @@ function readLockOwner(lockPath) {
 }
 
 // Read-only: `free`, `held` (live or ambiguous owner) or `stale` (a provably dead owner; does not block).
-export function inspectLock(paths, { procRoot = '/proc' } = {}) {
+export function lockStatus(paths, { procRoot = '/proc' } = {}) {
   const observed = readLockOwner(paths.lockPath);
-  if (observed === null) return 'free';
+  if (observed === null) return { state: 'free', reason: null };
   const state = ownerState(observed.owner, procRoot);
-  return state === 'dead' ? 'stale' : 'held';
+  if (state === 'dead') return { state: 'stale', reason: null };
+  return { state: 'held', reason: state === 'live' ? 'live-owner' : 'ambiguous-owner' };
+}
+
+export function inspectLock(paths, options) {
+  return lockStatus(paths, options).state;
 }
 
 function unlinkIfSameInode(file, ino) {
@@ -578,7 +604,7 @@ export function adoptQuarantine(paths, { runId, now = Date.now(), procRoot = '/p
   if (!isRunId(runId)) throw fail('USAGE', 'bad-variable');
   assertPrivateRoot(paths, { uid });
   if (!exists(paths.root)) throw fail('NOT_SEEDED', 'no-stream');
-  const lock = acquireRunLock(paths, { runId: `adopt-${runId}`.slice(0, 81), procRoot, now });
+  const lock = acquireRunLock(paths, { runId: `adopt-${runId}`.slice(0, 64), procRoot, now });
   try {
     if (!exists(paths.streamFile)) throw fail('NOT_SEEDED', 'no-stream');
     if (inflightPresent(paths)) throw fail('STREAM_UNSAFE', 'inflight-present');

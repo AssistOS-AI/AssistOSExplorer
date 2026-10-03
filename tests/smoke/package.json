@@ -22,7 +22,8 @@
     "install:browsers": "playwright install chromium",
     "test:webtty": "SMOKE_WEBTTY_CORE=1 node ./scripts/run-playwright.mjs --project=chromium specs/01-webtty-core.spec.mjs",
     "show-report": "playwright show-report",
-    "test:copilot-live-skills": "SMOKE_COPILOT_LIVE_SKILLS=1 node ./scripts/run-playwright.mjs --project=chromium --workers=1 --retries=0 specs/06-copilot-live-skills.spec.mjs"
+    "test:copilot-live-skills": "SMOKE_COPILOT_LIVE_SKILLS=1 node ./scripts/run-playwright.mjs --project=chromium --workers=1 --retries=0 specs/06-copilot-live-skills.spec.mjs",
+    "test:copilot-codex": "node ./scripts/codex-test-auth.mjs run"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0"

@@ -5,8 +5,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import {
-  CodexAuthError, EXIT_CODES, EXIT_REASONS, acceptCopyBack, acquireRunLock, adoptQuarantine, assertNoQuarantine, assertPrivateRoot,
-  classifyTurnFailure, createInflight, describeFailure, inspectLock, inspectStream, loadStream, planRecovery, readInflight,
+  CodexAuthError, EXIT_CODES, EXIT_REASONS, acceptCopyBack, acquireRunLock, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot,
+  classifyTurnFailure, createInflight, describeFailure, inspectLock, inspectStream, loadStream, lockStatus, planRecovery, readInflight,
   removeInflight, resolveAuthPaths, resultLine, retireStream, robotDeleteAccepted, scanLeaks, seedStream, sha256Hex, summarizeAuth,
   validateAuthArtifact,
 } from './codex-test-auth.mjs';
@@ -740,4 +740,45 @@ test('run and preflight never open a path under HOME/.codex', async (t) => {
   t.after(() => { fs.openSync = originalOpen; });
   await seedWith(fresh.paths, fresh.proc, () => placeSeed(fresh.paths, auth({ seed: 'fresh-seed', account: 'acct-fake-seed' })));
   assert.ok(seen.length >= 2, 'seed reads the main login before and after the operator step');
+});
+
+test('assertArtifactDirectory accepts only an existing absolute directory outside ROOT, forbidden roots and git work trees', (t) => {
+  const { base, paths, root } = setup(t, { stream: auth() });
+  const mk = (...parts) => { const directory = path.join(base, ...parts); fs.mkdirSync(directory, { recursive: true }); return directory; };
+  const artifacts = mk('evidence', 'run-1');
+  const forbiddenRoots = [mk('checkout'), mk('workspace')];
+  assert.equal(assertArtifactDirectory(artifacts, { paths, forbiddenRoots }), artifacts);
+  assert.throws(() => assertArtifactDirectory(undefined, { paths }), failure('USAGE', 'bad-variable'));
+  assert.throws(() => assertArtifactDirectory('', { paths }), failure('USAGE', 'bad-variable'));
+  assert.throws(() => assertArtifactDirectory('evidence/run-1', { paths }), failure('USAGE', 'relative-path'));
+  assert.throws(() => assertArtifactDirectory(path.join(base, 'missing'), { paths }), failure('USAGE', 'artifact-dir-location'));
+  fs.writeFileSync(path.join(base, 'file.txt'), 'x');
+  assert.throws(() => assertArtifactDirectory(path.join(base, 'file.txt'), { paths }), failure('USAGE', 'artifact-dir-location'));
+  for (const inside of [root, paths.streamDir, mk('checkout', 'out'), mk('workspace', 'out')]) {
+    assert.throws(() => assertArtifactDirectory(inside, { paths, forbiddenRoots }), failure('USAGE', 'artifact-dir-location'), inside);
+  }
+  // A directory that contains ROOT or a forbidden root is refused as well, and so is one inside a git work tree.
+  assert.throws(() => assertArtifactDirectory(path.dirname(root), { paths }), failure('USAGE', 'artifact-dir-location'));
+  fs.mkdirSync(path.join(mk('tree'), '.git'));
+  assert.throws(() => assertArtifactDirectory(mk('tree', 'out'), { paths }), failure('USAGE', 'artifact-dir-location'));
+  // A symlink into ROOT is resolved first.
+  fs.symlinkSync(root, path.join(base, 'into-root'));
+  assert.throws(() => assertArtifactDirectory(path.join(base, 'into-root'), { paths }), failure('USAGE', 'artifact-dir-location'));
+});
+
+test('lockStatus reports free, held with its reason, and stale without changing anything', (t) => {
+  const { paths, root, proc } = setup(t, { stream: auth() });
+  assert.deepEqual(lockStatus(paths, { procRoot: proc.dir }), { state: 'free', reason: null });
+  const lock = acquireRunLock(paths, { runId: 'status-run', procRoot: proc.dir });
+  assert.deepEqual(lockStatus(paths, { procRoot: proc.dir }), { state: 'held', reason: 'live-owner' });
+  lock.release();
+  const token = 'e'.repeat(32);
+  const owner = { pid: 999999, start: '1', boot: 'boot-1', token, runId: 'dead', startedAt: 'x' };
+  fs.writeFileSync(path.join(root, `.run-owner-${token}.json`), JSON.stringify(owner), { mode: 0o600 });
+  fs.linkSync(path.join(root, `.run-owner-${token}.json`), paths.lockPath);
+  const before = snapshot(root);
+  assert.deepEqual(lockStatus(paths, { procRoot: proc.dir }), { state: 'stale', reason: null });
+  assert.deepEqual(snapshot(root), before);
+  fs.writeFileSync(paths.lockPath, 'garbage');
+  assert.deepEqual(lockStatus(paths, { procRoot: proc.dir }), { state: 'held', reason: 'ambiguous-owner' });
 });
