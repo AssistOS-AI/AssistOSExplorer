@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
+import { CodexAuthError } from './codex-test-auth.mjs';
 import { program, readRegistryAndRuntime, validateLiveSkillsRuntimeBinding } from './copilot-live-skills-runtime.mjs';
 
 // Box exec-chain runner and the in-RoboTeam programs of the Codex-authenticated Copilot gate.
@@ -393,6 +394,8 @@ const defaultSleep = (milliseconds) => new Promise((resolve) => setTimeout(resol
 // the budget. Fail closed when the budget runs out: a missing selection rethrows NOT_FOUND, and a still-empty process list is
 // returned as is, so the caller's provider-environment check refuses it. Any other error stops at once.
 export async function pollCodexClient(runtime, robot, { timeoutMs, intervalMs = 2000, sleep = defaultSleep, now = Date.now } = {}) {
+  // A missing, NaN or infinite budget would make the deadline unreachable and the loop unbounded.
+  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs < 0) throw new CodexAuthError('USAGE', 'bad-variable');
   const deadline = now() + timeoutMs;
   for (;;) {
     let identity = null;

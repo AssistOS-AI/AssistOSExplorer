@@ -11,6 +11,7 @@ import {
   readAlaSource, readCodexAuthForCopyBack, readCodexClientIdentity, readCodexTurnIdentity, readRobotInventory, removeCodexAuth,
   waitRobotCliExit,
 } from './codex-test-auth-runtime.mjs';
+import { CodexAuthError } from './codex-test-auth.mjs';
 import { program, readRegistryAndRuntime, validateLiveSkillsRuntimeBinding } from './copilot-live-skills-runtime.mjs';
 
 // Synthetic payloads only. Every program runs against a temporary fake /data and /proc.
@@ -689,4 +690,18 @@ test('the client read polls for the codex-only selection and the robot CLI insid
   fixture = pollFixture([notFound()]);
   await assert.rejects(pollCodexClient(fixture.runtime, ROBOT, { timeoutMs: 0, ...fixture.options }), (error) => error.code === 'NOT_FOUND');
   assert.equal(fixture.calls.length, 1);
+});
+
+test('the client poll rejects a budget that is not a finite number of at least zero, without reading or sleeping', async () => {
+  for (const timeoutMs of [undefined, null, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, '180000', {}]) {
+    const fixture = pollFixture([identityWith(1)]);
+    await assert.rejects(pollCodexClient(fixture.runtime, ROBOT, { timeoutMs, ...fixture.options }),
+      (error) => error instanceof CodexAuthError && error.code === 'USAGE' && error.reason === 'bad-variable' && error.exitCode === 2, String(timeoutMs));
+    assert.equal(fixture.calls.length, 0, `${String(timeoutMs)} must not read`);
+    assert.deepEqual(fixture.sleeps, [], `${String(timeoutMs)} must not sleep`);
+  }
+  // No options object at all is rejected the same way.
+  await assert.rejects(pollCodexClient(pollFixture([identityWith(1)]).runtime, ROBOT), (error) => error.code === 'USAGE');
+  // Zero and a finite budget are still accepted.
+  assert.equal((await pollCodexClient(pollFixture([identityWith(1)]).runtime, ROBOT, { timeoutMs: 0 })).cli.count, 1);
 });
