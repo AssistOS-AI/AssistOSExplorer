@@ -826,7 +826,92 @@ in `MINIMUM_REVISIONS`. Update this section in the same change.
   sufficient.
 - External provider checks must stay opt-in unless the repository owns all required credentials and runtime configuration.
 - Tests that create rooms, uploads, users, branches, or files must use `SMOKE_RUN_ID` in names and clean up when the UI exposes cleanup.
+- Native Codex credentials move only through `lib/codex-test-auth*.mjs`, never through environment variables, argv, artifacts, traces or browser state.
 
 ## Composed Copilot live skills gate
 
 Run `npm run test:copilot-live-skills` on the selected local or QA deployment host with the exact Box, workspace and release manifest pins described in [copilot-live-skills.md](./copilot-live-skills.md). One continuing deployed native conversation covers descriptor edits, helper-only edits, addition, UI disable/re-enable and deletion. Every turn requires its captured catalog, unchanged native continuation and fresh helper-written receipt; the test has no acceptance retries. The run folder, source generation, in-Box reader and turn validation all derive from the one workspace root proven from the inspected Box, which may contain spaces and Unicode. The disable and re-enable turns drive RoboTeam's Conversation skills page (WebChat menu) through `lib/conversation-skills.mjs`; those rewritten settings steps are unexecuted until the deployment gate (D1/D2); Copilot-family flows are excluded from the 2026-10-02 post-merge acceptance, and the gate stays blocked on SET-2. This supplements the separate native and settings tests.
+
+## Codex-authenticated Copilot gate
+
+Run `npm run test:copilot-codex` on apparatus (Ubuntu) only. The gate makes the Copilot checks that need a real Codex backend run without a manual sign-in per run. It performs one bounded native turn in a run-owned, codex-only RoboTeam robot named `codex-auth-test-<SMOKE_RUN_ID>`, so the `default` robot keeps its OpenCode coding agent and ordinary chat is unchanged. The tests own exactly one Codex login cache, the stream. The stream is seeded once from a separate device login, so it never shares a token family with an interactive login, and nothing here copies, links or mounts any other Codex login. Each run takes an exclusive host lock, copies the stream into the test robot over the stdin of the existing Box exec chain, runs one turn, copies the possibly refreshed state back with a monotonic in-memory compare-and-swap, removes every runtime copy and deletes the robot. Codex identity is proven from the session file and from ALA's own transcript, never from the browser alone. Missing or rejected auth fails through exit codes; there is no interactive login, no mock and no provider substitution.
+
+| Command (from `tests/smoke`) | Purpose |
+| --- | --- |
+| `node ./scripts/codex-test-auth.mjs preflight` | Read-only readiness check. Exit 0 means ready. It writes nothing under `CODEX_TEST_AUTH_ROOT`, the artifact directory or the Box. |
+| `SMOKE_ARTIFACT_DIR=<abs dir> npm run test:copilot-codex` | The run. It drives `specs/07-copilot-codex-native.spec.mjs` through `scripts/run-playwright.mjs` and prints one JSON line. The Playwright output goes to `$SMOKE_ARTIFACT_DIR/codex-auth/playwright.log`, and the summary to `$SMOKE_ARTIFACT_DIR/codex-auth/result.json`. npm may print a banner first, so read the last line. |
+| `node ./scripts/codex-test-auth.mjs scan-leaks "$SMOKE_ARTIFACT_DIR"` | Scans an artifact directory for credential values. Exit 27 means a leak. |
+| `node ./scripts/codex-test-auth.mjs seed` | One-time import of a separate login (see below). |
+| `node ./scripts/codex-test-auth.mjs retire` | Renames the stream to `retired/<stream>-<UTC>` under the lock. The first step of a reseed. |
+| `node ./scripts/codex-test-auth.mjs adopt <runId>` | Installs a validated quarantined artifact as the stream. |
+
+| Variable | Needed by | Contract |
+| --- | --- | --- |
+| `CODEX_TEST_AUTH_ROOT` | all | Absolute. Default `${XDG_STATE_HOME:-$HOME/.local/state}/assistos-codex-test-auth`. Its realpath must lie outside any git work tree, the smoke checkout, `SMOKE_WORKSPACE_ROOT` and `SMOKE_ARTIFACT_DIR`. Directories are 0700 and files 0600. |
+| `CODEX_TEST_AUTH_STREAM` | all | `^[a-z0-9][a-z0-9-]{2,40}$`, default `apparatus-copilot`. One stream per serialized workflow. |
+| `CODEX_TEST_AUTH_SEED_BIN` | `seed` | Absolute path of the Codex CLI the operator uses for the one-time login. Required, no default. It is never executed by this code. `seed` prints it inside the login command and records its realpath and the version read from a `releases/<semver>-` path segment, or `unknown`. |
+| `CODEX_TEST_EXPECT_CODEX_VERSION` | optional | If set, the tool-cache `@openai/codex` version must equal it (exit 20, `version-pin`). |
+| `SMOKE_BASE_URL`, `SMOKE_BOX_BASE_URL`, `SMOKE_DEPLOYMENT_MODE=box`, `SMOKE_WORKSPACE_ROOT`, `SMOKE_PLOINKY_BOX_CONTAINER` | `preflight`, `run` | The existing smoke contract. |
+| `SMOKE_ARTIFACT_DIR` | `run`, `scan-leaks` | Absolute, existing, outside source trees, the workspace and `CODEX_TEST_AUTH_ROOT`; otherwise exit 2 (`artifact-dir-location`). |
+| `SMOKE_RUN_ID` | `run` | At most 64 characters of letters, digits, underscore and hyphen. Used in the robot and folder names. |
+| `SMOKE_USERNAME`, `SMOKE_PASSWORD` and the sign-in variables | `run` | A RoboTeam administrator, otherwise exit 20 (`not-admin`). |
+
+Every subcommand prints exactly one sanitized JSON line on stdout with the fixed keys `command`, `result`, `code`, `reason`, `exitCode`, `stream`, `refreshedDuringRun`, `authRejectionSuspected`, `cleanup` and `artifactDirectory`, plus per-command additions. Prompts and diagnostics go to stderr as fixed sentences. Token values, account identifiers and credential hashes never appear in stdout, stderr, the log, `result.json` or any artifact.
+
+| Exit | Code | Reasons | Operator action |
+| --- | --- | --- | --- |
+| 0 | `OK` | none | none |
+| 1 | `INTERNAL` | `exception`, `no-result-file` | inspect `codex-auth/playwright.log` |
+| 2 | `USAGE` | `bad-subcommand`, `bad-variable`, `relative-path`, `artifact-dir-location` | fix the invocation |
+| 10 | `NOT_SEEDED` | `no-stream` | seed |
+| 11 | `ALREADY_SEEDED` | `stream-exists` | none; reseed only after `retire` |
+| 13 | `LOCK_HELD` | `live-owner`, `ambiguous-owner` | wait |
+| 14 | `STREAM_UNSAFE` | `location`, `owner-or-mode`, `seed-source-missing`, `seed-source-symlink`, `seed-already-present`, `seed-equals-live-cache`, `main-login-changed`, `auth-invalid:<reason>`, `quarantine-pending`, `quarantine-missing`, `inflight-present` | follow the reason; for `seed-already-present` delete `ROOT/seed` and never import it |
+| 20 | `RUNTIME_PREREQ_FAILED` | `binding`, `not-admin`, `selection-count`, `unowned-leftover-robot`, `version-pin`, `cli-start-budget`, `codex-client-missing`, `target-exists` | fix the prerequisite; delete an unowned `codex-auth-test-*` robot in the RoboTeam UI |
+| 22 | `NATIVE_TURN_FAILED` | `failed`, `timeout`, plus `authRejectionSuspected` | if suspected, `retire` and reseed |
+| 23 | `IDENTITY_MISMATCH` | `backend`, `robot`, `provider-env`, `config-toml`, `binary`, `transcript-missing`, `transcript-mismatch`, `binding-changed` | investigate |
+| 24 | `COPYBACK_REFUSED` | `invalid`, `other-account`, `stale-last-refresh`, `stream-changed`, `runtime-auth-missing` | `adopt <runId>` or `retire` |
+| 26 | `CLEANUP_INCOMPLETE` | `credential-not-persisted`, `credential-not-removed`, `robot-not-deleted`, `folder-not-deleted`, `recovery-incomplete` | the next `run` recovers through `inflight.json` |
+| 27 | `LEAK_DETECTED` | `artifact-contains-token` | quarantine the artifact directory |
+
+When several apply, 27 wins over 26, and 26 over the first failure in sequence order. The first failure is kept in `result.json` as `primaryFailure`.
+
+### Seed, reseed and quarantine
+
+| Step | Who | Action |
+| --- | --- | --- |
+| S1 | Operator on apparatus | `CODEX_TEST_AUTH_SEED_BIN=<abs path> node ./scripts/codex-test-auth.mjs seed`. It takes the lock, refuses while a stream exists (11), a marker exists or `ROOT/seed/codex/auth.json` exists (14), snapshots the main login in memory, creates `ROOT/seed/{home,codex}` and prints the exact login command on stderr (or `/dev/tty`), then waits for Enter. |
+| S2 | The person who owns the login, in a second terminal on apparatus | Run the printed command: `HOME="<ROOT>/seed/home" CODEX_HOME="<ROOT>/seed/codex" <seed bin> -c cli_auth_credentials_store=file login --device-auth`. Press Enter in the first terminal only after this command has exited. |
+| S3 | Operator | `seed` validates the artifact (ChatGPT login only; no API key, access token, cloud-provider key or login equal to the main login), re-checks the main login, imports with `O_EXCL`, and removes `ROOT/seed` on every exit path. `mainLoginUnchanged` is `true`, or `"inconclusive"` when the main login refreshed for the same account in the meantime. Any other change refuses with `main-login-changed`. |
+| S4 | Operator | `node ./scripts/codex-test-auth.mjs preflight` exits 0. |
+| Reseed | Operator and login owner | `retire`, then S1 to S4. Retired streams keep a credential at rest and are never imported again; the operator deletes them. |
+| Quarantine | Operator | A refused copy-back (exit 24) writes `quarantine-<runId>.json` (0600) beside the stream and removes the runtime copy. `preflight` then shows `quarantineCount >= 1` and runs refuse with `quarantine-pending`. Either `adopt <runId>` (validated atomic install; the quarantine file is removed) or `retire` followed by a reseed. |
+
+`retire`, `adopt` and `seed` refuse while `inflight.json` exists; the next `run` recovers the named robot and folder first. A lock whose owner is provably dead is recovered by the next lock holder, and `preflight` reports it as `stale` without blocking.
+
+### Refresh path
+
+The refresh path is not live-verified until the deferred criterion passes. Codex 0.160.0 refreshes proactively only within 5 minutes of access-token expiry, which is about 10 days after login, so ordinary runs normally report `refreshedDuringRun: false`. The first run at or after `exp - 5 min` (`preflight` shows `auth.accessValidHours` at or below 0.083) must report `refreshedDuringRun`, `lastRefreshAdvanced` and `sameAccount` all true, followed by a passing second run and a `preflight` with `accessValidHours` above 1. Until then this section keeps the words "not live-verified".
+
+### Copilot gate inventory
+
+| Gate | Command | Provider | Status |
+| --- | --- | --- | --- |
+| C1 Ordinary Copilot folder launch | `npm test -- --project=chromium --workers=1 --retries=0 specs/05-copilot-folder-launch.spec.mjs` | `default` robot, OpenCode | Needs the release manifest and sibling verifier; not run on the retained deployment |
+| C2 Codex-authenticated native turn | `npm run test:copilot-codex` | run-owned robot, Codex from the tool cache, ChatGPT login from the stream | Needs a seeded stream and a RoboTeam administrator; refresh path not live-verified |
+| C3 Conversation skills settings | `node <ploinky>/tests/integration/local-skills/deployed-settings.mjs` | none | After Marketplace activation |
+| C4 Copilot Codex delegation (`specs/06-copilot-codex-delegation.spec.mjs`) | `SMOKE_CODEX_DELEGATION=1` | targets the removed `codexAgent` | NOT PASSING: stale target, a product decision |
+| C5 Composed live skills | `npm run test:copilot-live-skills` | requires `default` to resolve to Codex | NOT PASSING: blocked on SET-2, and `default` is OpenCode-only |
+| H1 Host-level native propagation | ploinky `run.mjs --native` | Codex through a donor home | Never uses the stream and never an interactive login |
+
+### Slot plan
+
+| Slot | Content |
+| --- | --- |
+| A, read-only | Codex CLI flags, tool-cache client version, deployed ALA transcript layout, administrator status. No writes. |
+| Seed | S1 to S4 by the operator and the login owner. Writes only `CODEX_TEST_AUTH_ROOT`. |
+| B, bounded validation | `preflight`, then two consecutive runs (no sign-in between them), leak scans, on the retained deployment. No other browser gate runs concurrently. |
+| C, probes | Crash recovery, rejected auth with synthetic tokens, concurrent runs. Scratch roots and run-owned robots only. |
+| Deferred | The first run at or after access-token expiry minus 5 minutes. |
+
+The C2 run is a bounded auth validation with a run-owned robot, so it does not depend on Marketplace activation. Its first CLI start runs RoboTeam's normal `npm view @openai/codex@latest` and installs a newer client if one exists; the client version is recorded on every run.
