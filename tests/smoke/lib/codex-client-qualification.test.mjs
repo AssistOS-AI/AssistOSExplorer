@@ -22,6 +22,50 @@ if (!process.env.HOME || path.resolve(process.env.HOME) === path.resolve(REAL_HO
   throw new Error('Refusing to start: run with HOME set to a temporary directory.');
 }
 
+// The blocking guard of lib/codex-test-auth-owner.test.mjs, verbatim (a test below checks that it has not drifted). It is loaded into the
+// harness and into every stub client it runs, so none of them can read the real account's .codex directory (decision L): a guarded
+// access prints the marker to stderr and exits 97.
+function installRealHomeGuard({ fs, os, path, fileURLToPath, onBlocked }) {
+  const realOf = (value) => { try { return fs.realpathSync(value); } catch { return path.resolve(value); } };
+  const home = os.userInfo().homedir;
+  const roots = [path.join(home, '.codex'), path.join(realOf(home), '.codex')];
+  const guardedPath = (argument) => {
+    let raw = null;
+    if (typeof argument === 'string') raw = argument;
+    else if (Buffer.isBuffer(argument)) raw = argument.toString('utf8');
+    else if (argument instanceof URL) { try { raw = fileURLToPath(argument); } catch { raw = null; } }
+    if (raw === null || raw === '' || raw.includes('\0')) return false;
+    const resolved = path.resolve(raw);
+    return roots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
+  };
+  const install = (target, names, promise) => {
+    for (const name of names) {
+      const original = target[name];
+      if (typeof original !== 'function') continue;
+      target[name] = Object.assign(function guarded(...args) {
+        if (args.some(guardedPath)) {
+          onBlocked(name);
+          const error = new Error('blocked access to the real account .codex');
+          if (promise) return Promise.reject(error);
+          throw error;
+        }
+        return original.apply(this, args);
+      }, original);
+    }
+  };
+  install(fs, ['openSync', 'readFileSync', 'readdirSync', 'lstatSync', 'statSync', 'existsSync', 'accessSync', 'realpathSync', 'opendirSync',
+    'readlinkSync', 'createReadStream', 'copyFileSync', 'linkSync', 'renameSync', 'unlinkSync', 'rmSync', 'writeFileSync', 'mkdirSync', 'chmodSync',
+    'open', 'readFile', 'stat', 'lstat', 'realpath', 'access', 'readdir'], false);
+  install(fs.realpathSync, ['native'], false);
+  install(fs.promises, ['open', 'readFile', 'readdir', 'lstat', 'stat', 'access', 'realpath', 'readlink'], true);
+}
+const GUARD_MARKER = 'BLOCKED-REAL-CODEX-ACCESS';
+const CHILD_GUARD_SOURCE = `import fs from 'node:fs';\nimport os from 'node:os';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\n`
+  + `(${installRealHomeGuard.toString()})({ fs, os, path, fileURLToPath, onBlocked: () => { fs.writeSync(2, '${GUARD_MARKER}\\n'); process.exit(97); } });\n`;
+const CHILD_NODE_OPTIONS = `--import=data:text/javascript,${encodeURIComponent(CHILD_GUARD_SOURCE)}`;
+const STUB_GUARD = `(${installRealHomeGuard.toString()})({ fs: require('node:fs'), os: require('node:os'), path: require('node:path'),
+  fileURLToPath: require('node:url').fileURLToPath, onBlocked: () => { require('node:fs').writeSync(2, '${GUARD_MARKER}\\n'); process.exit(97); } });`;
+
 const HARNESS = fileURLToPath(new URL('../scripts/codex-client-qualify.mjs', import.meta.url));
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const failure = (code, reason, qualification) => (error) => error instanceof CodexAuthError && error.code === code && error.reason === reason
@@ -219,6 +263,7 @@ test('evaluateQualification passes only when every external-mode safety check an
 // The stub client is a Node script behind an absolute shebang. It prints what the harness needs to see and behaves like the variant says.
 function stubSource(variant, marker) {
   return `
+${STUB_GUARD}
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -279,8 +324,9 @@ function runHarness(t, binary, extraArguments = []) {
   fs.mkdirSync(home);
   fs.mkdirSync(tmp);
   const result = spawnSync(process.execPath, [HARNESS, binary, ...extraArguments], {
-    env: { PATH: '/usr/bin:/bin', HOME: home, TMPDIR: tmp, SMOKE_CANARY: '1', CODEX_TEST_AUTH_SOURCE: 'stream' }, encoding: 'utf8', timeout: 150_000,
+    env: { PATH: '/usr/bin:/bin', HOME: home, TMPDIR: tmp, SMOKE_CANARY: '1', CODEX_TEST_AUTH_SOURCE: 'stream', NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 150_000,
   });
+  assert.equal(result.status === 97 || result.stderr.includes(GUARD_MARKER) || result.stdout.includes(GUARD_MARKER), false, 'the harness or a stub reached the real account .codex');
   const lines = result.stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line));
   return { ...result, lines, cases: lines.slice(0, -1), receipt: lines.at(-1) };
 }
@@ -358,6 +404,15 @@ test('the qualification harness fails stub clients that rewrite the access-only 
 
 test('the harness refuses a binary that is not the expected one before running it, and rejects bad usage with exit 2', (t) => {
   const dir = sandbox(t);
+  // The guard in this file is the one of the owner test file, and it stops a harness child and a stub client before any real access.
+  assert.equal(fs.readFileSync(new URL('./codex-test-auth-owner.test.mjs', import.meta.url), 'utf8').includes(installRealHomeGuard.toString()), true, 'the guard drifted');
+  const realLogin = path.join(REAL_HOME, '.codex', 'auth.json');
+  const probed = spawnSync(process.execPath, ['-e', `require('node:fs').existsSync(${JSON.stringify(realLogin)})`], { env: { PATH: '/usr/bin:/bin', HOME: dir, NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 30_000 });
+  assert.deepEqual([probed.status, probed.stderr.includes(GUARD_MARKER)], [97, true]);
+  const probeStub = path.join(dir, 'probe-stub');
+  fs.writeFileSync(probeStub, `#!${process.execPath}\n${STUB_GUARD}\nrequire('node:fs').existsSync(${JSON.stringify(realLogin)});\n`, { mode: 0o755 });
+  const stubProbe = spawnSync(probeStub, [], { env: { PATH: '/usr/bin:/bin', HOME: dir }, encoding: 'utf8', timeout: 30_000 });
+  assert.deepEqual([stubProbe.status, stubProbe.stderr.includes(GUARD_MARKER)], [97, true]);
   const marker = path.join(dir, 'ran.log');
   const stub = writeStub(dir, 'well', { marker });
   // A digest mismatch: the binary is never executed.
@@ -382,7 +437,7 @@ test('the harness refuses a binary that is not the expected one before running i
   const usage = [[['relative/binary']], [[stub, '--bogus', 'x']], [['/no/such/binary/codex']], [[stub, '--label']], [[stub, '--expect-sha256', 'abc']],
     [[stub, '--expect-version', 'one']], [[stub, '--label', 'has space']], [[dir]], [[stub, '--relative-path', '']]];
   for (const [argv] of usage) {
-    const result = spawnSync(process.execPath, [HARNESS, ...argv], { env: { PATH: '/usr/bin:/bin', HOME: dir }, encoding: 'utf8', timeout: 30_000 });
+    const result = spawnSync(process.execPath, [HARNESS, ...argv], { env: { PATH: '/usr/bin:/bin', HOME: dir, NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 30_000 });
     assert.equal(result.status, 2, argv.join(' '));
     assert.equal(result.stdout, '');
   }

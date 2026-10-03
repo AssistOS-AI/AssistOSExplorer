@@ -25,42 +25,52 @@ if (!process.env.HOME || path.resolve(process.env.HOME) === path.resolve(REAL_HO
   throw new Error('Refusing to start: run with HOME set to a temporary directory.');
 }
 
-// Both spellings of the guarded root are computed before any wrapper is installed.
-const GUARDED_ROOTS = [path.join(REAL_HOME, '.codex'), path.join(realOf(REAL_HOME), '.codex')];
+// The blocking guard. It is self-contained, so its source text is also loaded into every child Node process that a test spawns
+// (decision L): `onBlocked` is told the name of the guarded function, and the guard then throws. Both spellings of the guarded root
+// are computed before any wrapper is installed.
+function installRealHomeGuard({ fs, os, path, fileURLToPath, onBlocked }) {
+  const realOf = (value) => { try { return fs.realpathSync(value); } catch { return path.resolve(value); } };
+  const home = os.userInfo().homedir;
+  const roots = [path.join(home, '.codex'), path.join(realOf(home), '.codex')];
+  const guardedPath = (argument) => {
+    let raw = null;
+    if (typeof argument === 'string') raw = argument;
+    else if (Buffer.isBuffer(argument)) raw = argument.toString('utf8');
+    else if (argument instanceof URL) { try { raw = fileURLToPath(argument); } catch { raw = null; } }
+    if (raw === null || raw === '' || raw.includes('\0')) return false;
+    const resolved = path.resolve(raw);
+    return roots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
+  };
+  const install = (target, names, promise) => {
+    for (const name of names) {
+      const original = target[name];
+      if (typeof original !== 'function') continue;
+      target[name] = Object.assign(function guarded(...args) {
+        if (args.some(guardedPath)) {
+          onBlocked(name);
+          const error = new Error('blocked access to the real account .codex');
+          if (promise) return Promise.reject(error);
+          throw error;
+        }
+        return original.apply(this, args);
+      }, original);
+    }
+  };
+  install(fs, ['openSync', 'readFileSync', 'readdirSync', 'lstatSync', 'statSync', 'existsSync', 'accessSync', 'realpathSync', 'opendirSync',
+    'readlinkSync', 'createReadStream', 'copyFileSync', 'linkSync', 'renameSync', 'unlinkSync', 'rmSync', 'writeFileSync', 'mkdirSync', 'chmodSync',
+    'open', 'readFile', 'stat', 'lstat', 'realpath', 'access', 'readdir'], false);
+  install(fs.realpathSync, ['native'], false);
+  install(fs.promises, ['open', 'readFile', 'readdir', 'lstat', 'stat', 'access', 'realpath', 'readlink'], true);
+}
+
 const blockedAccess = [];
+installRealHomeGuard({ fs, os, path, fileURLToPath, onBlocked: (name) => { blockedAccess.push(name); } });
 
-function guardedPath(argument) {
-  let raw = null;
-  if (typeof argument === 'string') raw = argument;
-  else if (Buffer.isBuffer(argument)) raw = argument.toString('utf8');
-  else if (argument instanceof URL) { try { raw = fileURLToPath(argument); } catch { raw = null; } }
-  if (raw === null || raw === '' || raw.includes('\0')) return false;
-  const resolved = path.resolve(raw);
-  return GUARDED_ROOTS.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
-}
-
-function installGuard(target, names, { promise = false } = {}) {
-  for (const name of names) {
-    const original = target[name];
-    if (typeof original !== 'function') continue;
-    const wrapped = Object.assign(function guarded(...args) {
-      if (args.some(guardedPath)) {
-        blockedAccess.push(name);
-        const error = new Error('blocked access to the real account .codex');
-        if (promise) return Promise.reject(error);
-        throw error;
-      }
-      return original.apply(this, args);
-    }, original);
-    target[name] = wrapped;
-  }
-}
-
-installGuard(fs, ['openSync', 'readFileSync', 'readdirSync', 'lstatSync', 'statSync', 'existsSync', 'accessSync', 'realpathSync', 'opendirSync',
-  'readlinkSync', 'createReadStream', 'copyFileSync', 'linkSync', 'renameSync', 'unlinkSync', 'rmSync', 'writeFileSync', 'mkdirSync', 'chmodSync',
-  'open', 'readFile', 'stat', 'lstat', 'realpath', 'access', 'readdir']);
-installGuard(fs.realpathSync, ['native']);
-installGuard(fs.promises, ['open', 'readFile', 'readdir', 'lstat', 'stat', 'access', 'realpath', 'readlink'], { promise: true });
+// The same guard, as a module that every spawned child process loads first. A guarded access prints the marker to stderr and exits 97.
+const GUARD_MARKER = 'BLOCKED-REAL-CODEX-ACCESS';
+const CHILD_GUARD_SOURCE = `import fs from 'node:fs';\nimport os from 'node:os';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\n`
+  + `(${installRealHomeGuard.toString()})({ fs, os, path, fileURLToPath, onBlocked: () => { fs.writeSync(2, '${GUARD_MARKER}\\n'); process.exit(97); } });\n`;
+const CHILD_NODE_OPTIONS = `--import=data:text/javascript,${encodeURIComponent(CHILD_GUARD_SOURCE)}`;
 
 const NOW = Date.parse('2026-10-03T12:00:00.000Z');
 const HOUR = 3_600_000;
@@ -1044,8 +1054,11 @@ test('the CLI defaults to the owner route without falling back to a valid stream
   // A literal child environment: a fake HOME, the podman stub first on PATH, and the variables the runtime facts would need.
   const baseEnv = { PATH: `${stubs}:/usr/bin:/bin`, HOME: home, CODEX_TEST_AUTH_ROOT: root, SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-fake-0123456789ab',
     SMOKE_WORKSPACE_ROOT: path.join(base, 'workspace') };
+  // Every child, and every process it starts, loads the blocking guard first (NODE_OPTIONS is inherited).
   const cli = (subcommand, extra = {}, rest = []) => {
-    const result = spawnSync(process.execPath, [CLI, subcommand, ...rest], { env: { ...baseEnv, ...extra }, encoding: 'utf8', cwd: SMOKE_DIR, timeout: 60_000 });
+    const result = spawnSync(process.execPath, [CLI, subcommand, ...rest], { env: { ...baseEnv, NODE_OPTIONS: CHILD_NODE_OPTIONS, ...extra }, encoding: 'utf8', cwd: SMOKE_DIR, timeout: 60_000 });
+    assert.equal(result.stderr.includes(GUARD_MARKER), false, 'a CLI child reached the real account .codex');
+    assert.notEqual(result.status, 97);
     const lines = result.stdout.split('\n').filter(Boolean);
     assert.equal(lines.length, 1, `exactly one stdout line: ${result.stderr}`);
     return { status: result.status, line: JSON.parse(lines[0]), text: lines[0], stderr: result.stderr };
@@ -1063,6 +1076,14 @@ test('the CLI defaults to the owner route without falling back to a valid stream
     return bytes;
   };
   const ownerState = () => [fs.readFileSync(ownerFile), fs.statSync(ownerFile).ino, fs.statSync(ownerFile).mtimeMs];
+  // Positive control: a child that touches the real account's .codex is stopped by the guard, with the marker and exit 97, before any access.
+  for (const probe of [`require('node:fs').existsSync(${JSON.stringify(path.join(REAL_HOME, '.codex', 'auth.json'))})`,
+    `require('node:fs').readFileSync(${JSON.stringify(path.join(REAL_HOME, '.codex', 'auth.json'))})`,
+    `require('node:fs').promises.stat(${JSON.stringify(path.join(REAL_HOME, '.codex'))}).then(() => process.exit(0), () => process.exit(0))`]) {
+    const probed = spawnSync(process.execPath, ['-e', probe], { env: { PATH: '/usr/bin:/bin', HOME: home, NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 30_000 });
+    assert.equal(probed.status, 97, probe.slice(0, 60));
+    assert.equal(probed.stderr.includes(GUARD_MARKER), true);
+  }
   // Owner missing: exit 10 with the owner reason, no ROOT and not even its parent is created.
   const missing = cli('preflight');
   expectFailure(missing, { code: 'NOT_SEEDED', reason: 'owner-login-missing', route: 'owner' });
