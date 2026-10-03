@@ -431,7 +431,9 @@ test('T11 a registration failure is isolated', async () => {
     assert.deepEqual(harness.labels(), ['file-exp:file-exp/a']);
 
     // The failed registration released the in-flight counter, so the pending mount is still joinable.
-    assert.equal(await wrapper('file-exp', 'file-exp/b', null, true), undefined);
+    const joinedCall = wrapper('file-exp', 'file-exp/b', null, true);
+    assert.equal(await settlesWithin(joinedCall, 50), 'settled');
+    assert.equal(await joinedCall, undefined);
     assert.deepEqual(harness.labels(), ['file-exp:file-exp/a']);
 
     void wrapper('file-exp', 'file-exp');
@@ -669,6 +671,46 @@ test('T19 a page detached during a route load does not write history', async () 
         globalThis.window.location.hash = '#other-page';
         host.element.isConnected = false;
         rootListing.resolve([{ name: 'a', type: 'directory' }]);
+        await load;
+
+        assert.deepEqual(pushes, []);
+    } finally {
+        restoreGlobal('window', previousWindow);
+        restoreGlobal('history', previousHistory);
+    }
+});
+
+test('T19b a page detached during a file-route load does not write history', async () => {
+    const previousWindow = globalThis.window;
+    const previousHistory = globalThis.history;
+    const pushes = [];
+    globalThis.window = { location: { hash: '#file-exp/a.md' } };
+    globalThis.history = {
+        pushState: (...args) => pushes.push(args),
+        replaceState: (...args) => pushes.push(args)
+    };
+    try {
+        const rootListing = deferred();
+        const host = {
+            element: { isConnected: true },
+            state: { path: '/', directoryViewMode: 'list', isEditing: false, directoryFilterQuery: '' },
+            normalizePath,
+            parentPath,
+            loadDirectoryContent: (path) => (path === '/' ? rootListing.promise : Promise.resolve([])),
+            loadDirectory: (path) => loadDirectory(host, path),
+            openFile: async () => {},
+            setEntries: async () => {},
+            dispatchUi() {},
+            dispatchPreview() {},
+            invalidate() {},
+            showStatus() {}
+        };
+
+        const load = loadStateFromURL(host);
+        await tick();
+        globalThis.window.location.hash = '#other-page';
+        host.element.isConnected = false;
+        rootListing.resolve([{ name: 'a.md', type: 'file' }]);
         await load;
 
         assert.deepEqual(pushes, []);

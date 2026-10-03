@@ -30,6 +30,34 @@ test('initial route replaces the static spinner before WebSkel mounts its loader
     assert.ok(mountIndex > removeIndex);
 });
 
+test('W1 page-change guards are installed in order, without an inline wrapper, and the denied-route fallback stays in its branch', () => {
+    const source = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
+    const at = (text, from = 0) => {
+        const index = source.indexOf(text, from);
+        assert.ok(index >= 0, `missing: ${text}`);
+        return index;
+    };
+    const order = [
+        'installExplorerResourceLoader(webSkel);',
+        'installDetachedRenderGuard(webSkel);',
+        'installPageChangeGuard(webSkel,',
+        'webSkel.setDomElementForPages(pageContent);',
+        'await mountInitialApplicationRoute({'
+    ].map((text) => at(text));
+
+    order.forEach((index, position) => {
+        if (position > 0) {
+            assert.ok(index > order[position - 1], `out of order: ${position}`);
+        }
+    });
+    assert.equal(source.includes('originalChangeToDynamicPage'), false);
+
+    const adminBranch = at('if (routePolicy?.adminOnly && !isAdminUser(context.authenticatedUser)) {');
+    const denied = at('resolveDeniedAdminRoute({', adminBranch);
+    const elseBranch = at('} else {', adminBranch);
+    assert.ok(denied < elseBranch, 'resolveDeniedAdminRoute must sit inside the admin-only branch');
+});
+
 test('W2 bootstrap resolves its route from the current address right after the page root is set', () => {
     const source = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
     const at = (text, from = 0) => {
