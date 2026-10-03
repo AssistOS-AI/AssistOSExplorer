@@ -2,14 +2,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
-  CodexAuthError, EXIT_CODES, EXIT_REASONS, assertArtifactDirectory, assertNoOtherRouteInflight, assertPrivateRoot, adoptQuarantine, createInflight,
-  decideRunOutcome, ensurePrivateRoot, inflightPresent, lockStatus, readInflight, removeInflight, resolveAuthPaths, resultLine, retireStream,
-  seedStream,
+  CodexAuthError, EXIT_CODES, EXIT_REASONS, RUN_TIMEOUT_MS, assertArtifactDirectory, assertNoOtherRouteInflight, assertPrivateRoot, adoptQuarantine,
+  createInflight, decideRunOutcome, ensurePrivateRoot, inflightPresent, lockStatus, readInflight, removeInflight, resolveAuthPaths, resultLine,
+  retireStream, scanLeaks, seedStream, sha256Hex,
 } from './codex-test-auth.mjs';
+import {
+  ACCESS_SKEW_MS, CREDENTIAL_SOURCES, DERIVED_SHAPE_ID, STREAM_ONLY_COMMANDS, assertAccessValidity, assertOwnerScanCoverage, createOwnerCredentialSession,
+  deriveAccessOnlyAuth, deriveAccessOnlyBytes, extractOwnerCredential, isAccessOnly, newTokenValues, ownerDirectoryFor, ownerScanReferences,
+  parseAccessTokenClaims, planOwnerRun, readOwnerAuth, requiredValidityMs, resolveCredentialSource, resolveOwnerAuthPath, summarizeOwner,
+} from './codex-test-auth-owner.mjs';
 
 // Route A tests. Every credential here is fabricated. The file refuses to start under the account's own home and blocks
 // every access to the account's real Codex directory, so a defect can never reach a real login (decision L).
@@ -94,6 +100,84 @@ function setup(t, { stream = null, root: createRoot = true, envExtra = {} } = {}
 }
 
 const MARKER = Object.freeze({ runId: 'run-1', robotName: 'codex-auth-test-run-1', folder: 'codex-auth-run-1' });
+
+// ---- route A fixtures -----------------------------------------------------------------------------------------------
+// Unsigned JWT-shaped tokens with a non-empty signature segment and the account claim Codex reads. Nothing here is a real credential.
+const CLAIM_KEY = 'https://api.openai.com/auth';
+const MINUTE = 60_000;
+const ROBOT = Object.freeze({ robotId: 'codex-auth-test-r1-ab12', robotName: 'codex-auth-test-r1' });
+
+function accessToken(seed, { expMs = NOW + 240 * HOUR, account = 'acct-fake-0001', claim } = {}) {
+  const payload = { exp: Math.floor(expMs / 1000), sub: seed };
+  const claimed = claim === undefined ? account : claim;
+  if (claimed !== null) payload[CLAIM_KEY] = { chatgpt_account_id: claimed };
+  return `${b64({ alg: 'none', typ: 'JWT' })}.${b64(payload)}.c2lnbmF0dXJl`;
+}
+
+// A fabricated managed login. `claim: null` leaves the account claim out.
+function ownerLogin({ seed = 'own', account = 'acct-fake-0001', claim, expMs, refreshed = NOW - HOUR, lastRefresh, tokens = {}, extra = {} } = {}) {
+  return Buffer.from(JSON.stringify({
+    auth_mode: 'chatgpt', OPENAI_API_KEY: null,
+    tokens: { id_token: accessToken(`id-${seed}`, { expMs, account, claim }), access_token: accessToken(`access-${seed}`, { expMs, account, claim }),
+      refresh_token: `rt-fake-${seed}-0123456789abcdef`, account_id: account, ...tokens },
+    last_refresh: lastRefresh ?? new Date(refreshed).toISOString(), ...extra,
+  }));
+}
+
+const parsed = (bytes) => JSON.parse(Buffer.from(bytes).toString('utf8'));
+const edited = (bytes, change) => { const value = parsed(bytes); change(value); return Buffer.from(JSON.stringify(value)); };
+const noSleep = async () => {};
+
+// A fake HOME holding ~/.codex/auth.json (when `bytes` is given) inside the sandbox.
+function ownerHome(t, bytes = null, { mode = 0o600 } = {}) {
+  const base = sandbox(t);
+  const home = path.join(base, 'home');
+  const dir = path.join(home, '.codex');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, 'auth.json');
+  if (bytes) { fs.writeFileSync(file, bytes); fs.chmodSync(file, mode); }
+  return { base, home, dir, file };
+}
+
+// Records every call of the named fs functions. The recorder wraps whatever is installed now and is restored after the test.
+function spyFs(t, names) {
+  const calls = [];
+  for (const name of names) {
+    const original = fs[name];
+    if (typeof original !== 'function') continue;
+    fs[name] = Object.assign(function spied(...args) { calls.push({ name, args }); return original.apply(this, args); }, original);
+    t.after(() => { fs[name] = original; });
+  }
+  return calls;
+}
+
+const WRITE_FUNCTIONS = ['writeFileSync', 'appendFileSync', 'mkdirSync', 'chmodSync', 'renameSync', 'unlinkSync', 'rmSync', 'copyFileSync', 'linkSync',
+  'symlinkSync', 'truncateSync', 'utimesSync', 'rmdirSync'];
+
+function fakeRuntime({ copy = null, readError = null, removeError = null, discard = null, injectError = null } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async inject(robot, bytes) { calls.push(['inject', robot, Buffer.from(bytes)]); if (injectError) throw injectError; },
+    async readForCopyBack(robot, options) {
+      calls.push(['readForCopyBack', robot, options]);
+      if (readError) throw readError;
+      return { bytes: Buffer.from(typeof copy === 'function' ? copy() : copy) };
+    },
+    async remove(robot, sha) { calls.push(['remove', robot, sha]); if (removeError) throw removeError; return { ok: true, removed: true }; },
+    async discard(robot, options) { calls.push(['discard', robot, options]); return typeof discard === 'function' ? discard() : discard; },
+  };
+}
+
+function ownerSession(runtime, ownerBytes, { clock = { now: NOW }, deadline = NOW + RUN_TIMEOUT_MS, injectWindowMs = 175_000, readOwner } = {}) {
+  const session = createOwnerCredentialSession({ runtime, runDeadline: deadline, injectWindowMs, now: () => clock.now, uid: process.getuid(),
+    readOwner: readOwner ?? (async () => ({ bytes: Buffer.from(ownerBytes) })) });
+  session.holdLock(true);
+  return session;
+}
+
+const FILE = '/virtual/owner/auth.json';
+const codeError = (code) => Object.assign(new Error(code), { code });
 
 test('the route-A marker lives in inflight-owner.json, needs no stream, and each route refuses the other route\'s marker', async (t) => {
   const { paths, root } = setup(t);
@@ -266,4 +350,685 @@ test('the route-A reasons exist under their documented exit codes', () => {
   }
   assert.equal(Object.keys(EXIT_CODES).length, 13);
   assert.throws(() => new CodexAuthError('RUNTIME_PREREQ_FAILED', 'access-near-expiry'), TypeError);
+});
+
+test('route selection defaults preflight, run and scan-leaks to owner, keeps stream explicit, and refuses stream-only subcommands under owner', () => {
+  assert.deepEqual([...CREDENTIAL_SOURCES], ['owner', 'stream']);
+  assert.deepEqual([...STREAM_ONLY_COMMANDS], ['seed', 'retire', 'adopt']);
+  assert.ok(Object.isFrozen(CREDENTIAL_SOURCES) && Object.isFrozen(STREAM_ONLY_COMMANDS));
+  for (const command of ['preflight', 'run', 'scan-leaks']) {
+    assert.equal(resolveCredentialSource({}, { command }), 'owner', command);
+    assert.equal(resolveCredentialSource({ CODEX_TEST_AUTH_SOURCE: '' }, { command }), 'owner', command);
+    assert.equal(resolveCredentialSource({ CODEX_TEST_AUTH_SOURCE: 'owner' }, { command }), 'owner', command);
+    assert.equal(resolveCredentialSource({ CODEX_TEST_AUTH_SOURCE: 'stream' }, { command }), 'stream', command);
+    for (const value of ['OWNER', 'Stream', 'both', ' owner', 'owner ', 'none', 7, true]) {
+      assert.throws(() => resolveCredentialSource({ CODEX_TEST_AUTH_SOURCE: value }, { command }), failure('USAGE', 'bad-variable'), `${command} ${String(value)}`);
+    }
+  }
+  for (const command of STREAM_ONLY_COMMANDS) {
+    assert.equal(resolveCredentialSource({}, { command }), 'stream', command);
+    assert.equal(resolveCredentialSource({ CODEX_TEST_AUTH_SOURCE: '' }, { command }), 'stream', command);
+    assert.equal(resolveCredentialSource({ CODEX_TEST_AUTH_SOURCE: 'stream' }, { command }), 'stream', command);
+    assert.throws(() => resolveCredentialSource({ CODEX_TEST_AUTH_SOURCE: 'owner' }, { command }), failure('USAGE', 'route-mismatch'), command);
+    for (const value of ['OWNER', 'both', ' owner']) {
+      assert.throws(() => resolveCredentialSource({ CODEX_TEST_AUTH_SOURCE: value }, { command }), failure('USAGE', 'bad-variable'), `${command} ${value}`);
+    }
+  }
+  // An absent environment object resolves like an empty one.
+  assert.equal(resolveCredentialSource(undefined, { command: 'run' }), 'owner');
+});
+
+test('resolveOwnerAuthPath uses HOME/.codex/auth.json from the given environment, accepts an absolute override, locates a missing directory without failing, and rejects relative, NUL and overlapping paths in both directions', (t) => {
+  const { base, home, dir, file } = ownerHome(t, ownerLogin());
+  const paths = resolveAuthPaths({ HOME: home, CODEX_TEST_AUTH_ROOT: path.join(base, 'state', 'root') });
+  // The default comes from the environment that is passed in, never from the account's own home.
+  assert.notEqual(home, REAL_HOME);
+  assert.deepEqual(resolveOwnerAuthPath({ HOME: home }, paths), { file, source: 'default' });
+  assert.equal(ownerDirectoryFor({ HOME: home }, paths), dir);
+  // An absolute override wins.
+  const other = path.join(base, 'elsewhere', 'login.json');
+  fs.mkdirSync(path.dirname(other));
+  assert.deepEqual(resolveOwnerAuthPath({ HOME: home, CODEX_TEST_AUTH_OWNER_AUTH: other }, paths), { file: other, source: 'override' });
+  assert.equal(ownerDirectoryFor({ CODEX_TEST_AUTH_OWNER_AUTH: other }, paths), path.dirname(other));
+  assert.deepEqual(resolveOwnerAuthPath({ HOME: home, CODEX_TEST_AUTH_OWNER_AUTH: '' }, paths), { file, source: 'default' });
+  // A HOME whose directory is missing is located without failing: the open reports the missing login.
+  const missingHome = path.join(base, 'does-not-exist', 'home');
+  assert.deepEqual(resolveOwnerAuthPath({ HOME: missingHome }, paths), { file: path.join(missingHome, '.codex', 'auth.json'), source: 'default' });
+  assert.equal(ownerDirectoryFor({ HOME: missingHome }, paths), path.join(missingHome, '.codex'));
+  // A symlinked HOME is located through its target.
+  const linked = path.join(base, 'linked-home');
+  fs.symlinkSync(home, linked);
+  assert.equal(ownerDirectoryFor({ HOME: linked }, paths), dir);
+  // Unusable environments.
+  assert.throws(() => resolveOwnerAuthPath({}, paths), failure('USAGE', 'bad-variable'));
+  assert.throws(() => resolveOwnerAuthPath({ HOME: '' }, paths), failure('USAGE', 'bad-variable'));
+  assert.throws(() => resolveOwnerAuthPath({ HOME: 'rel/home' }, paths), failure('USAGE', 'relative-path'));
+  assert.throws(() => resolveOwnerAuthPath({ CODEX_TEST_AUTH_OWNER_AUTH: 'rel/auth.json' }, paths), failure('USAGE', 'relative-path'));
+  for (const bad of ['/a\u0000b', '/a\nb', '/a\rb']) {
+    assert.throws(() => resolveOwnerAuthPath({ HOME: home, CODEX_TEST_AUTH_OWNER_AUTH: bad }, paths), failure('USAGE', 'bad-variable'));
+    assert.equal(ownerDirectoryFor({ HOME: home, CODEX_TEST_AUTH_OWNER_AUTH: bad }, paths), null);
+  }
+  assert.equal(ownerDirectoryFor({}, paths), null);
+  assert.equal(ownerDirectoryFor({ HOME: 'rel/home' }, paths), null);
+  // Overlap with a forbidden root is refused in both directions: the owner directory inside a root, and a root inside the owner directory.
+  const artifacts = path.join(base, 'artifacts');
+  fs.mkdirSync(path.join(artifacts, 'nested'), { recursive: true });
+  const insideRoot = path.join(artifacts, 'nested', 'auth.json');
+  assert.throws(() => resolveOwnerAuthPath({ CODEX_TEST_AUTH_OWNER_AUTH: insideRoot }, paths, { forbiddenRoots: [artifacts] }), failure('USAGE', 'owner-location'));
+  const workspace = path.join(dir, 'workspace');
+  fs.mkdirSync(workspace);
+  assert.throws(() => resolveOwnerAuthPath({ HOME: home }, paths, { forbiddenRoots: [workspace] }), failure('USAGE', 'owner-location'));
+  assert.throws(() => resolveOwnerAuthPath({ HOME: home }, paths, { forbiddenRoots: [home] }), failure('USAGE', 'owner-location'));
+  // ROOT is always forbidden, in both directions.
+  const rootInside = resolveAuthPaths({ HOME: home, CODEX_TEST_AUTH_ROOT: path.join(dir, 'state', 'root') });
+  assert.throws(() => resolveOwnerAuthPath({ HOME: home }, rootInside), failure('USAGE', 'owner-location'));
+  const rootAround = resolveAuthPaths({ HOME: home, CODEX_TEST_AUTH_ROOT: home });
+  assert.throws(() => resolveOwnerAuthPath({ HOME: home }, rootAround), failure('USAGE', 'owner-location'));
+  // Positive control: unrelated roots are accepted.
+  assert.deepEqual(resolveOwnerAuthPath({ HOME: home }, paths, { forbiddenRoots: [artifacts, '', null] }), { file, source: 'default' });
+});
+
+test('readOwnerAuth reads a private regular file through O_NOFOLLOW and refuses a symlink, a hard link, a FIFO, a directory, another uid, group or world bits and an oversize file', async (t) => {
+  const bytes = ownerLogin();
+  const { base, dir, file } = ownerHome(t, bytes);
+  const opened = spyFs(t, ['openSync']);
+  const read = await readOwnerAuth(file, { sleep: noSleep });
+  assert.deepEqual(Object.keys(read), ['bytes']);
+  assert.deepEqual(read.bytes, bytes);
+  const own = opened.filter((call) => call.args[0] === file);
+  assert.equal(own.length, 1);
+  const flags = own[0].args[1];
+  assert.equal(typeof flags, 'number');
+  assert.ok(flags & fs.constants.O_NOFOLLOW, 'the open must not follow a symlink');
+  assert.ok(flags & fs.constants.O_NONBLOCK, 'the open must not block on a FIFO');
+  assert.equal(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND), 0, 'the open is read-only');
+  // 0400 is accepted as well as 0600.
+  fs.chmodSync(file, 0o400);
+  assert.deepEqual((await readOwnerAuth(file, { sleep: noSleep })).bytes, bytes);
+  fs.chmodSync(file, 0o600);
+  const refused = async (target, reason, options = {}) => assert.rejects(readOwnerAuth(target, { sleep: noSleep, ...options }), failure('STREAM_UNSAFE', reason), reason);
+  // A symlink, even to a valid private file.
+  const link = path.join(dir, 'link.json');
+  fs.symlinkSync(file, link);
+  await refused(link, 'owner-unsafe:symlink');
+  // A hard link: the link count is 2 for both names.
+  const hard = path.join(dir, 'hard.json');
+  fs.linkSync(file, hard);
+  await refused(file, 'owner-unsafe:hardlink');
+  await refused(hard, 'owner-unsafe:hardlink');
+  fs.rmSync(hard);
+  // A FIFO and a directory are not regular files.
+  const fifo = path.join(dir, 'fifo.json');
+  execFileSync('mkfifo', [fifo], { env: { PATH: '/usr/bin:/bin' } });
+  await refused(fifo, 'owner-unsafe:not-regular');
+  const folder = path.join(dir, 'folder.json');
+  fs.mkdirSync(folder);
+  await refused(folder, 'owner-unsafe:not-regular');
+  // Another uid, then group and world bits.
+  await refused(file, 'owner-unsafe:uid', { uid: process.getuid() + 1 });
+  for (const mode of [0o640, 0o604, 0o660, 0o666, 0o620]) {
+    fs.chmodSync(file, mode);
+    await refused(file, 'owner-unsafe:mode');
+  }
+  fs.chmodSync(file, 0o600);
+  // Size: exactly 64 KiB is read, one byte more is refused.
+  const padded = (size) => { const value = Buffer.alloc(size, 0x20); Buffer.from('{}').copy(value); return value; };
+  const big = path.join(base, 'big.json');
+  fs.writeFileSync(big, padded(64 * 1024), { mode: 0o600 });
+  assert.equal((await readOwnerAuth(big, { sleep: noSleep })).bytes.length, 64 * 1024);
+  fs.writeFileSync(big, padded(64 * 1024 + 1), { mode: 0o600 });
+  await refused(big, 'auth-invalid:oversize');
+  // Open errors that are not file states map to fixed reasons, anything else propagates unchanged.
+  const failing = (code) => ({ openSync() { throw codeError(code); } });
+  await refused(file, 'owner-unsafe:symlink', { fsApi: failing('EMLINK') });
+  await refused(file, 'owner-unsafe:symlink', { fsApi: failing('ELOOP') });
+  await refused(file, 'owner-unsafe:not-regular', { fsApi: failing('ENXIO') });
+  await refused(file, 'owner-unsafe:uid', { fsApi: failing('EACCES') });
+  await refused(file, 'owner-unsafe:uid', { fsApi: failing('EPERM') });
+  await assert.rejects(readOwnerAuth(file, { sleep: noSleep, fsApi: failing('EIO') }), (error) => error?.code === 'EIO' && !(error instanceof CodexAuthError));
+});
+
+test('readOwnerAuth reports owner-login-missing for an absent file, retries an in-place rewrite, and fails unstable for a file that stays empty or keeps changing', async (t) => {
+  const { base, home, dir, file } = ownerHome(t);
+  const missing = failure('NOT_SEEDED', 'owner-login-missing');
+  await assert.rejects(readOwnerAuth(file, { sleep: noSleep }), missing);
+  await assert.rejects(readOwnerAuth(path.join(base, 'no-such-directory', 'auth.json'), { sleep: noSleep }), missing);
+  await assert.rejects(readOwnerAuth(path.join(file, 'below-a-file'), { sleep: noSleep }), missing);
+  assert.ok(home && dir);
+  const bytes = ownerLogin();
+  fs.writeFileSync(file, bytes, { mode: 0o600 });
+  const counted = (overrides = {}) => {
+    const log = { opens: 0, sleeps: [] };
+    const bigStat = (fd, change = {}) => {
+      const real = fs.fstatSync(fd, { bigint: true });
+      return { isFile: () => real.isFile(), uid: real.uid, mode: real.mode, nlink: real.nlink, size: real.size, ino: real.ino, mtimeNs: real.mtimeNs, ...change };
+    };
+    const fsApi = { openSync(...args) { log.opens += 1; return fs.openSync(...args); }, fstatSync: (fd, options) => overrides.fstat?.(fd, bigStat, log) ?? bigStat(fd),
+      readFileSync: (fd) => overrides.read?.(fd, log) ?? fs.readFileSync(fd), closeSync: (fd) => fs.closeSync(fd) };
+    return { log, fsApi, sleep: async (milliseconds) => { log.sleeps.push(milliseconds); } };
+  };
+  // An empty file on the first attempt (Codex truncates, then writes) and the real bytes on the second succeeds after two opens.
+  const rewrite = counted({ fstat: (fd, bigStat, log) => (log.opens === 1 ? bigStat(fd, { size: 0n }) : bigStat(fd)) });
+  assert.deepEqual((await readOwnerAuth(file, { fsApi: rewrite.fsApi, sleep: rewrite.sleep, retryDelayMs: 7 })).bytes, bytes);
+  assert.equal(rewrite.log.opens, 2);
+  assert.deepEqual(rewrite.log.sleeps, [7]);
+  // A partial JSON body on the first attempt is retried as well.
+  const partial = counted({ read: (fd, log) => (log.opens === 1 ? Buffer.from(bytes.subarray(0, 20)) : fs.readFileSync(fd)),
+    fstat: (fd, bigStat, log) => (log.opens === 1 ? bigStat(fd, { size: 20n }) : bigStat(fd)) });
+  assert.deepEqual((await readOwnerAuth(file, { fsApi: partial.fsApi, sleep: partial.sleep })).bytes, bytes);
+  assert.equal(partial.log.opens, 2);
+  // A file that stays empty fails unstable after exactly three attempts.
+  const empty = path.join(dir, 'empty.json');
+  fs.writeFileSync(empty, '', { mode: 0o600 });
+  const emptyRun = counted();
+  await assert.rejects(readOwnerAuth(empty, { fsApi: emptyRun.fsApi, sleep: emptyRun.sleep }), failure('STREAM_UNSAFE', 'owner-unsafe:unstable'));
+  assert.equal(emptyRun.log.opens, 3);
+  assert.equal(emptyRun.log.sleeps.length, 2);
+  // A file whose metadata keeps changing fails unstable after exactly three attempts.
+  let tick = 0n;
+  const changing = counted({ fstat: (fd, bigStat) => { tick += 1n; return bigStat(fd, { mtimeNs: tick }); } });
+  await assert.rejects(readOwnerAuth(file, { fsApi: changing.fsApi, sleep: changing.sleep }), failure('STREAM_UNSAFE', 'owner-unsafe:unstable'));
+  assert.equal(changing.log.opens, 3);
+  // A stable, non-empty file that is not JSON is a content failure after three attempts, not an unstable one.
+  const text = path.join(dir, 'text.json');
+  fs.writeFileSync(text, 'this is not json', { mode: 0o600 });
+  const textRun = counted();
+  await assert.rejects(readOwnerAuth(text, { fsApi: textRun.fsApi, sleep: textRun.sleep }), failure('STREAM_UNSAFE', 'auth-invalid:missing-field'));
+  assert.equal(textRun.log.opens, 3);
+  // One attempt only when asked.
+  const once = counted();
+  await assert.rejects(readOwnerAuth(empty, { fsApi: once.fsApi, sleep: once.sleep, attempts: 1 }), failure('STREAM_UNSAFE', 'owner-unsafe:unstable'));
+  assert.equal(once.log.opens, 1);
+});
+
+test('extractOwnerCredential accepts only a managed chatgpt login and refuses api-key, PAT, Bedrock, chatgptAuthTokens, a missing auth_mode, missing fields and a mismatched or absent account claim', (t) => {
+  void t;
+  const extract = (bytes) => extractOwnerCredential(bytes, { now: NOW });
+  const good = ownerLogin({ lastRefresh: '2026-09-24T12:00:00.123456789Z' });
+  const credential = extract(good);
+  assert.deepEqual(Object.keys(credential), ['accessToken', 'accountId', 'lastRefresh', 'expMs']);
+  assert.equal(credential.accessToken, parsed(good).tokens.access_token);
+  assert.equal(credential.accountId, 'acct-fake-0001');
+  // A last_refresh with nine fractional digits is accepted and kept verbatim.
+  assert.equal(credential.lastRefresh, '2026-09-24T12:00:00.123456789Z');
+  assert.equal(credential.expMs, Math.floor((NOW + 240 * HOUR) / 1000) * 1000);
+  assert.equal(JSON.stringify(credential).includes('rt-fake'), false, 'the refresh token is never extracted');
+  const refusals = [
+    ['an API key', ownerLogin({ extra: { OPENAI_API_KEY: 'sk-fake-0000000000' } }), 'auth-invalid:api-key'],
+    ['a PAT', ownerLogin({ extra: { personal_access_token: 'pat-fake-0000' } }), 'auth-invalid:pat'],
+    ['Bedrock', ownerLogin({ extra: { bedrock_api_key: 'bk-fake-0000' } }), 'auth-invalid:bedrock'],
+    ['auth_mode apikey', ownerLogin({ extra: { auth_mode: 'apikey' } }), 'auth-invalid:not-chatgpt'],
+    ['auth_mode chatgptAuthTokens', ownerLogin({ extra: { auth_mode: 'chatgptAuthTokens' } }), 'auth-invalid:not-chatgpt'],
+    ['no auth_mode', edited(good, (value) => { delete value.auth_mode; }), 'auth-invalid:not-chatgpt'],
+    ['no refresh token', edited(good, (value) => { value.tokens.refresh_token = ''; }), 'auth-invalid:missing-field'],
+    ['no id token', edited(good, (value) => { delete value.tokens.id_token; }), 'auth-invalid:missing-field'],
+    ['no tokens', edited(good, (value) => { delete value.tokens; }), 'auth-invalid:missing-field'],
+    ['no last_refresh', edited(good, (value) => { delete value.last_refresh; }), 'auth-invalid:missing-field'],
+    ['a future last_refresh', ownerLogin({ refreshed: NOW + HOUR }), 'auth-invalid:future-last-refresh'],
+    ['an account id with a space', ownerLogin({ account: 'acct fake', claim: 'acct fake' }), 'auth-invalid:missing-field'],
+    ['an account id of 257 characters', ownerLogin({ account: 'a'.repeat(257) }), 'auth-invalid:missing-field'],
+    ['a non-ASCII account id', ownerLogin({ account: 'acct-fäke', claim: 'acct-fäke' }), 'auth-invalid:missing-field'],
+    ['an unparseable access token', edited(good, (value) => { value.tokens.access_token = 'not-a-jwt'; }), 'auth-invalid:token-unparseable'],
+    ['an absent account claim', ownerLogin({ claim: null }), 'auth-invalid:account-claim'],
+    ['a different account claim', ownerLogin({ claim: 'acct-fake-9999' }), 'auth-invalid:account-claim'],
+  ];
+  for (const [name, bytes, reason] of refusals) assert.throws(() => extract(bytes), failure('STREAM_UNSAFE', reason), name);
+  // The refusal says which kind of claim problem it was, as one fixed word.
+  assert.throws(() => extract(ownerLogin({ claim: null })), (error) => error.accountClaim === 'absent');
+  assert.throws(() => extract(ownerLogin({ claim: 'acct-fake-9999' })), (error) => error.accountClaim === 'mismatch');
+  // A 64 KiB limit and a non-JSON body are refused by the shared validation.
+  assert.throws(() => extract(Buffer.alloc(64 * 1024 + 1, 0x20)), failure('STREAM_UNSAFE', 'auth-invalid:oversize'));
+  assert.throws(() => extract(Buffer.from('nope')), failure('STREAM_UNSAFE', 'auth-invalid:missing-field'));
+  assert.equal(extract(ownerLogin({ account: 'a'.repeat(256) })).accountId.length, 256);
+});
+
+test('parseAccessTokenClaims requires three non-empty base64url segments, a JSON object payload and a positive safe-integer exp', () => {
+  const header = b64({ alg: 'none' });
+  const withPayload = (value, signature = 'c2ln') => `${header}.${b64(value)}.${signature}`;
+  const valid = withPayload({ exp: 1_790_000_000, [CLAIM_KEY]: { chatgpt_account_id: 'acct-fake-0001' } });
+  assert.deepEqual(parseAccessTokenClaims(valid), { expMs: 1_790_000_000_000, accountClaim: 'acct-fake-0001' });
+  assert.deepEqual(parseAccessTokenClaims(withPayload({ exp: 5 })), { expMs: 5000, accountClaim: null });
+  assert.deepEqual(parseAccessTokenClaims(withPayload({ exp: 5, [CLAIM_KEY]: { chatgpt_account_id: 7 } })), { expMs: 5000, accountClaim: null });
+  const payload = b64({ exp: 1_790_000_000 });
+  const bad = [
+    'a.b', 'a', '', `${header}.${payload}`, `${header}.${payload}.c2ln.extra`, 'a..c', `${header}..c2ln`, `${header}.${payload}.`, `.${payload}.c2ln`,
+    `${header}.${payload}=.c2ln`, `${header}.${Buffer.from(JSON.stringify({ exp: 12 })).toString('base64')}.c2ln`,
+    `${header}.${Buffer.from(JSON.stringify({ exp: 1_790_000_000, pad: '>>>' })).toString('base64')}.c2ln`, `${header}.${payload}+.c2ln`,
+    `${header}.${Buffer.from('not json').toString('base64url')}.c2ln`, withPayload([1, 2, 3]), withPayload('exp'), withPayload(null),
+    withPayload({ exp: '1' }), withPayload({ exp: 1.5 }), withPayload({ exp: -1 }), withPayload({ exp: 0 }), withPayload({}), withPayload({ exp: 2 ** 53 }),
+    withPayload({ exp: null }), withPayload({ exp: [1] }), null, undefined, 5, {},
+  ];
+  for (const token of bad) assert.throws(() => parseAccessTokenClaims(token), failure('STREAM_UNSAFE', 'auth-invalid:token-unparseable'), String(token).slice(0, 40));
+  // The error never carries the token.
+  try { parseAccessTokenClaims(`${header}.${payload}`); assert.fail('unreachable'); } catch (error) {
+    assert.equal(JSON.stringify({ ...error, message: error.message }).includes(payload), false);
+  }
+});
+
+test('deriveAccessOnlyAuth writes exactly the chatgptAuthTokens shape and never carries the owner refresh token, id token or any other owner field', () => {
+  const owner = ownerLogin({ lastRefresh: '2026-09-24T12:00:00.123456789Z',
+    extra: { agent_identity: { record: 'agent-fake-record' }, unknown_future_field: 'unknown-fake-value', tokens_extra: ['x'] } });
+  const value = parsed(owner);
+  const { derived, expMs } = deriveAccessOnlyAuth(owner, { now: NOW });
+  const golden = `{"auth_mode":"chatgptAuthTokens","OPENAI_API_KEY":null,"tokens":{"id_token":"${value.tokens.access_token}","access_token":"${value.tokens.access_token}",`
+    + `"refresh_token":"","account_id":"acct-fake-0001"},"last_refresh":"2026-09-24T12:00:00.123456789Z"}`;
+  assert.equal(derived.toString('utf8'), golden);
+  assert.equal(expMs, Math.floor((NOW + 240 * HOUR) / 1000) * 1000);
+  const text = derived.toString('utf8');
+  assert.deepEqual(Object.keys(parsed(derived)), ['auth_mode', 'OPENAI_API_KEY', 'tokens', 'last_refresh']);
+  assert.deepEqual(Object.keys(parsed(derived).tokens), ['id_token', 'access_token', 'refresh_token', 'account_id']);
+  assert.equal(text.includes(value.tokens.refresh_token), false);
+  assert.equal(text.includes(value.tokens.id_token), false);
+  for (const foreign of ['agent_identity', 'agent-fake-record', 'unknown_future_field', 'unknown-fake-value', 'tokens_extra']) assert.equal(text.includes(foreign), false, foreign);
+  assert.equal(isAccessOnly(derived), true);
+  assert.equal(DERIVED_SHAPE_ID, 'chatgptAuthTokens-v1');
+  // The byte builder is a pure function of its three values.
+  assert.deepEqual(deriveAccessOnlyBytes({ accessToken: 'a.b.c', accountId: 'acct', lastRefresh: '2026-10-03T12:00:00Z' }),
+    Buffer.from('{"auth_mode":"chatgptAuthTokens","OPENAI_API_KEY":null,"tokens":{"id_token":"a.b.c","access_token":"a.b.c","refresh_token":"","account_id":"acct"},"last_refresh":"2026-10-03T12:00:00Z"}'));
+  // The self-check is conservative: an owner whose id token equals its access token would put the id token into the derived bytes.
+  const same = edited(owner, (login) => { login.tokens.id_token = login.tokens.access_token; });
+  assert.throws(() => deriveAccessOnlyAuth(same, { now: NOW }), failure('STREAM_UNSAFE', 'derived-not-access-only'));
+  // The derivation refuses what the extraction refuses.
+  assert.throws(() => deriveAccessOnlyAuth(ownerLogin({ claim: null }), { now: NOW }), failure('STREAM_UNSAFE', 'auth-invalid:account-claim'));
+});
+
+test('the expiry gate passes at exactly the required validity, refuses one second less, records its outcome, and reports floored and ceiled minutes', async () => {
+  assert.equal(ACCESS_SKEW_MS, 5 * MINUTE);
+  assert.equal(requiredValidityMs(RUN_TIMEOUT_MS), 2_400_000);
+  assert.equal(requiredValidityMs(0), ACCESS_SKEW_MS);
+  for (const bad of [-1, Number.NaN, Infinity, '1', null, undefined]) assert.throws(() => requiredValidityMs(bad), failure('USAGE', 'bad-variable'), String(bad));
+  const gate = (expMs, remainingRunMs = RUN_TIMEOUT_MS) => assertAccessValidity({ expMs, now: NOW, remainingRunMs });
+  assert.deepEqual(gate(NOW + 40 * MINUTE), { accessValidMinutes: 40, requiredValidMinutes: 40 });
+  assert.deepEqual(gate(NOW + 40 * MINUTE + 1000), { accessValidMinutes: 40, requiredValidMinutes: 40 });
+  assert.throws(() => gate(NOW + 40 * MINUTE - 1000), (error) => failure('STREAM_UNSAFE', 'access-near-expiry')(error) && error.accessValidMinutes === 39 && error.requiredValidMinutes === 40);
+  assert.throws(() => gate(NOW - 90 * MINUTE), (error) => failure('STREAM_UNSAFE', 'access-near-expiry')(error) && error.accessValidMinutes === -90);
+  assert.throws(() => gate(Number.NaN), failure('STREAM_UNSAFE', 'access-near-expiry'));
+  // The inject window of 175 s needs 475 s.
+  assert.equal(requiredValidityMs(175_000), 475_000);
+  assert.deepEqual(gate(NOW + 475_000, 175_000), { accessValidMinutes: 7, requiredValidMinutes: 8 });
+  assert.throws(() => gate(NOW + 474_999, 175_000), failure('STREAM_UNSAFE', 'access-near-expiry'));
+  // The session records each gate before it throws.
+  const edge = (expMs) => ownerLogin({ expMs });
+  const passing = ownerSession(fakeRuntime(), edge(NOW + 40 * MINUTE));
+  await passing.load({ ownerFile: FILE });
+  assert.deepEqual(passing.state.gates.atDerive, { result: 'pass', accessValidMinutes: 40, requiredValidMinutes: 40 });
+  const refusing = ownerSession(fakeRuntime(), edge(NOW + 40 * MINUTE - 1000));
+  await assert.rejects(refusing.load({ ownerFile: FILE }), failure('STREAM_UNSAFE', 'access-near-expiry'));
+  assert.deepEqual(refusing.state.gates.atDerive, { result: 'refused', accessValidMinutes: 39, requiredValidMinutes: 40 });
+  assert.equal(refusing.state.derived, true, 'the derived bytes existed when the gate refused');
+  // A rest of the test time below the full run needs less: the worker gate uses what is left.
+  const later = ownerSession(fakeRuntime(), edge(NOW + 20 * MINUTE), { clock: { now: NOW }, deadline: NOW + 15 * MINUTE });
+  await later.load({ ownerFile: FILE });
+  assert.deepEqual(later.state.gates.atDerive, { result: 'pass', accessValidMinutes: 20, requiredValidMinutes: 20 });
+});
+
+test('owner summaries and gate errors contain no token, account or digest values', () => {
+  const owner = ownerLogin({ lastRefresh: '2026-09-24T12:00:00.123456789Z' });
+  const value = parsed(owner);
+  const secrets = [value.tokens.access_token, value.tokens.id_token, value.tokens.refresh_token, value.tokens.account_id, value.last_refresh];
+  const summary = summarizeOwner(owner, { now: NOW, remainingRunMs: RUN_TIMEOUT_MS, source: 'default' });
+  assert.deepEqual(Object.keys(summary), ['source', 'readable', 'authMode', 'hasIdToken', 'hasAccessToken', 'hasRefreshToken', 'hasAccountId', 'hasLastRefresh',
+    'lastRefreshAgeHours', 'accessToken', 'accountClaim', 'accessValidMinutes', 'requiredValidMinutes']);
+  assert.deepEqual({ ...summary, lastRefreshAgeHours: undefined }, { source: 'default', readable: true, authMode: 'chatgpt', hasIdToken: true, hasAccessToken: true,
+    hasRefreshToken: true, hasAccountId: true, hasLastRefresh: true, lastRefreshAgeHours: undefined, accessToken: 'ok', accountClaim: 'match',
+    accessValidMinutes: 240 * 60, requiredValidMinutes: 40 });
+  const texts = [JSON.stringify(summary)];
+  for (const body of [Buffer.from('not json'), ownerLogin({ claim: null }), ownerLogin({ claim: 'acct-fake-9999' }), edited(owner, (login) => { login.tokens.access_token = 'opaque'; }),
+    edited(owner, (login) => { login.auth_mode = 'chatgptAuthTokens'; }), Buffer.alloc(0)]) {
+    const other = summarizeOwner(body, { now: NOW, remainingRunMs: RUN_TIMEOUT_MS, source: 'override' });
+    texts.push(JSON.stringify(other));
+    assert.equal(other.readable, true);
+  }
+  assert.equal(summarizeOwner(Buffer.from('not json'), { now: NOW, remainingRunMs: RUN_TIMEOUT_MS, source: 'default' }).accessToken, 'unparseable');
+  assert.equal(summarizeOwner(ownerLogin({ claim: null }), { now: NOW, remainingRunMs: RUN_TIMEOUT_MS, source: 'default' }).accountClaim, 'absent');
+  assert.equal(summarizeOwner(ownerLogin({ claim: 'acct-fake-9999' }), { now: NOW, remainingRunMs: RUN_TIMEOUT_MS, source: 'default' }).accountClaim, 'mismatch');
+  // Every error of the route is a fixed word with at most two minute counts.
+  const errors = [
+    () => assertAccessValidity({ expMs: NOW, now: NOW, remainingRunMs: RUN_TIMEOUT_MS }),
+    () => extractOwnerCredential(ownerLogin({ claim: 'acct-fake-9999' }), { now: NOW }),
+    () => extractOwnerCredential(ownerLogin({ claim: null }), { now: NOW }),
+    () => parseAccessTokenClaims(value.tokens.access_token.split('.').slice(0, 2).join('.')),
+    () => deriveAccessOnlyAuth(edited(owner, (login) => { login.tokens.id_token = login.tokens.access_token; }), { now: NOW }),
+  ];
+  for (const attempt of errors) {
+    try { attempt(); assert.fail('unreachable'); } catch (error) {
+      assert.ok(error instanceof CodexAuthError);
+      texts.push(JSON.stringify({ ...error, message: error.message, stack: error.stack }));
+    }
+  }
+  for (const text of texts) {
+    for (const secret of secrets) assert.equal(text.includes(secret), false, `a value leaked: ${secret.slice(0, 12)}`);
+    assert.equal(/[0-9a-f]{64}/.test(text), false, 'no digest');
+  }
+});
+
+test('route A opens nothing under the owner directory except auth.json, only read-only, and writes nothing there', async (t) => {
+  const bytes = ownerLogin();
+  const { base, home, dir, file } = ownerHome(t, bytes);
+  fs.writeFileSync(path.join(dir, 'config.toml'), 'model = "fake"\n', { mode: 0o600 });
+  const snapshotOf = () => fs.readdirSync(dir).sort().map((name) => { const stat = fs.lstatSync(path.join(dir, name)); return [name, stat.ino, stat.size, stat.mtimeMs, stat.mode, fs.readFileSync(path.join(dir, name), 'utf8')].join(' '); });
+  const before = snapshotOf();
+  const everything = spyFs(t, ['openSync', 'readFileSync', 'readdirSync', 'lstatSync', 'statSync', 'existsSync', 'accessSync', 'realpathSync', 'opendirSync',
+    'readlinkSync', 'createReadStream', ...WRITE_FUNCTIONS]);
+  const paths = resolveAuthPaths({ HOME: home, CODEX_TEST_AUTH_ROOT: path.join(base, 'state', 'root') });
+  const env = { HOME: home };
+  const { file: resolved, source } = resolveOwnerAuthPath(env, paths, { forbiddenRoots: [path.join(base, 'artifacts')] });
+  assert.equal(resolved, file);
+  assert.equal(ownerDirectoryFor(env, paths), dir);
+  const { bytes: read } = await readOwnerAuth(resolved, { sleep: noSleep });
+  extractOwnerCredential(read, { now: NOW });
+  const { derived, expMs } = deriveAccessOnlyAuth(read, { now: NOW });
+  assertAccessValidity({ expMs, now: NOW, remainingRunMs: RUN_TIMEOUT_MS });
+  summarizeOwner(read, { now: NOW, remainingRunMs: RUN_TIMEOUT_MS, source });
+  ownerScanReferences(read, { now: NOW });
+  assertOwnerScanCoverage({ preBytes: read, postBytes: Buffer.from(read), result: null });
+  // The session, with a fake runtime and the real read.
+  const runtime = fakeRuntime({ copy: derived });
+  const session = createOwnerCredentialSession({ runtime, runDeadline: NOW + RUN_TIMEOUT_MS, injectWindowMs: 175_000, now: () => NOW });
+  session.holdLock(true);
+  await session.load({ ownerFile: resolved });
+  await session.inject(ROBOT);
+  await session.persistAndRemove(ROBOT, { confirmed: true });
+  await ownerSession(fakeRuntime({ discard: { removed: true, accessOnly: true } }), bytes).recover(ROBOT);
+  session.release();
+  // Only the read-only open of auth.json, and the realpath lookups that locate the directory, touch the owner directory.
+  const inside = (argument) => typeof argument === 'string' && (argument === dir || argument.startsWith(`${dir}${path.sep}`));
+  const touching = everything.filter((call) => call.args.some(inside));
+  const writeBits = fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND | fs.constants.O_EXCL;
+  for (const call of touching) {
+    if (call.name === 'realpathSync') continue;
+    assert.equal(call.name, 'openSync', `unexpected ${call.name} on the owner directory`);
+    assert.equal(call.args[0], file);
+    assert.equal(typeof call.args[1], 'number');
+    assert.equal(call.args[1] & writeBits, 0, 'the open must be read-only');
+  }
+  // Positive control: the spy does see the open and the lookups.
+  assert.ok(touching.some((call) => call.name === 'openSync' && call.args[0] === file));
+  assert.ok(touching.some((call) => call.name === 'realpathSync'));
+  assert.deepEqual(everything.filter((call) => WRITE_FUNCTIONS.includes(call.name)).map((call) => call.name), [], 'route A writes no file at all');
+  assert.deepEqual(snapshotOf(), before);
+});
+
+test('the owner session gates before injecting, injects the derived bytes, verifies an unchanged access-only robot copy and removes it by its hash', async () => {
+  const owner = ownerLogin({ expMs: NOW + 2 * HOUR });
+  const { derived } = deriveAccessOnlyAuth(owner, { now: NOW });
+  const clock = { now: NOW };
+  const runtime = fakeRuntime({ copy: derived });
+  const held = Buffer.from(owner);
+  const session = ownerSession(runtime, owner, { clock, readOwner: async () => ({ bytes: held }) });
+  assert.deepEqual(Object.keys(session.state).sort(), ['accountClaim', 'derived', 'gates', 'injectConfirmed', 'injected', 'loaded', 'lockHeld', 'persisted',
+    'recoveredCopy', 'removed', 'runtimeBytes', 'runtimeCopy']);
+  // The session refuses every move without the host lock, and the inject without a passing load.
+  const unlocked = createOwnerCredentialSession({ runtime, runDeadline: NOW + RUN_TIMEOUT_MS, injectWindowMs: 175_000, now: () => NOW });
+  await assert.rejects(unlocked.load({ ownerFile: FILE }), failure('USAGE', 'bad-variable'));
+  await assert.rejects(unlocked.inject(ROBOT), failure('USAGE', 'bad-variable'));
+  await assert.rejects(unlocked.persistAndRemove(ROBOT, { confirmed: true }), failure('USAGE', 'bad-variable'));
+  await assert.rejects(unlocked.recover(ROBOT), failure('USAGE', 'bad-variable'));
+  await assert.rejects(session.inject(ROBOT), failure('USAGE', 'bad-variable'));
+  await assert.rejects(session.load({ ownerFile: 'relative/auth.json' }), failure('USAGE', 'bad-variable'));
+  assert.deepEqual(runtime.calls, []);
+  // Load: the derived bytes exist, the gate passed and the owner bytes were wiped.
+  await session.load({ ownerFile: FILE });
+  assert.equal(session.state.derived, true);
+  assert.equal(session.state.accountClaim, 'match');
+  assert.deepEqual(session.state.gates.atDerive, { result: 'pass', accessValidMinutes: 120, requiredValidMinutes: 40 });
+  assert.equal(held.every((byte) => byte === 0), true, 'the owner bytes are zero-filled after the derivation');
+  assert.deepEqual(session.state.loaded.derived, derived);
+  assert.equal(session.state.injected, false);
+  // Inject: the derived bytes go to the runtime, and the flags follow the call.
+  await session.inject(ROBOT);
+  assert.deepEqual(runtime.calls.map((call) => call[0]), ['inject']);
+  assert.deepEqual(runtime.calls[0][2], derived);
+  assert.equal(session.state.injected, true);
+  assert.equal(session.state.injectConfirmed, true);
+  assert.deepEqual(session.state.gates.atInject, { result: 'pass', accessValidMinutes: 120, requiredValidMinutes: 8 });
+  // Verify and remove: the removal carries the hash of the bytes that were read.
+  await session.persistAndRemove(ROBOT, { confirmed: true });
+  assert.deepEqual(runtime.calls.map((call) => call[0]), ['inject', 'readForCopyBack', 'remove']);
+  assert.equal(runtime.calls[2][2], sha256Hex(derived));
+  assert.equal(session.state.persisted, true);
+  assert.equal(session.state.removed, true);
+  assert.deepEqual(session.state.runtimeCopy, { state: 'unchanged', accessOnly: true, newTokenValues: false, removed: true });
+  assert.equal(session.state.recoveredCopy, null);
+  session.release();
+  assert.equal(session.state.loaded.derived.every((byte) => byte === 0), true, 'release zero-fills the derived bytes');
+  assert.equal(session.state.runtimeBytes.every((byte) => byte === 0), true, 'release zero-fills the copy that was read');
+  // The credential is injected only while the access token still covers the inject window: expired at inject time, nothing is sent.
+  const expiring = fakeRuntime({ copy: derived });
+  const clock2 = { now: NOW };
+  const late = ownerSession(expiring, ownerLogin({ expMs: NOW + 45 * MINUTE }), { clock: clock2 });
+  await late.load({ ownerFile: FILE });
+  clock2.now = NOW + 45 * MINUTE - 474_000;
+  await assert.rejects(late.inject(ROBOT), failure('STREAM_UNSAFE', 'access-near-expiry'));
+  assert.deepEqual(expiring.calls, [], 'the runtime was never asked to inject');
+  assert.equal(late.state.injected, false);
+  assert.equal(late.state.injectConfirmed, false);
+  assert.deepEqual(late.state.gates.atInject, { result: 'refused', accessValidMinutes: 7, requiredValidMinutes: 8 });
+  clock2.now = NOW + 45 * MINUTE - 475_000;
+  await late.inject(ROBOT);
+  assert.equal(late.state.injected, true);
+  assert.equal(late.state.gates.atInject.result, 'pass');
+  // A load that the gate refused cannot be injected.
+  const refused = ownerSession(fakeRuntime(), ownerLogin({ expMs: NOW + 10 * MINUTE }));
+  await assert.rejects(refused.load({ ownerFile: FILE }), failure('STREAM_UNSAFE', 'access-near-expiry'));
+  await assert.rejects(refused.inject(ROBOT), failure('USAGE', 'bad-variable'));
+  // A failed derivation records the claim problem and the owner bytes are wiped anyway.
+  const wrong = Buffer.from(ownerLogin({ claim: 'acct-fake-9999' }));
+  const claimed = ownerSession(fakeRuntime(), wrong, { readOwner: async () => ({ bytes: wrong }) });
+  await assert.rejects(claimed.load({ ownerFile: FILE }), failure('STREAM_UNSAFE', 'auth-invalid:account-claim'));
+  assert.equal(claimed.state.accountClaim, 'mismatch');
+  assert.equal(claimed.state.derived, false);
+  assert.equal(wrong.every((byte) => byte === 0), true);
+  const claimless = ownerSession(fakeRuntime(), ownerLogin({ claim: null }));
+  await assert.rejects(claimless.load({ ownerFile: FILE }), failure('STREAM_UNSAFE', 'auth-invalid:account-claim'));
+  assert.equal(claimless.state.accountClaim, 'absent');
+  const missingLogin = ownerSession(fakeRuntime(), null, { readOwner: async () => { throw new CodexAuthError('NOT_SEEDED', 'owner-login-missing'); } });
+  await assert.rejects(missingLogin.load({ ownerFile: FILE }), failure('NOT_SEEDED', 'owner-login-missing'));
+  assert.equal(missingLogin.state.accountClaim, null);
+  assert.equal(missingLogin.state.derived, false);
+});
+
+test('a changed, unparsable or missing robot copy fails with runtime-copy-changed or runtime-auth-missing, is removed by the hash of what was read, never throws while classifying, and nothing is written anywhere', async (t) => {
+  const owner = ownerLogin({ expMs: NOW + 2 * HOUR });
+  const { derived } = deriveAccessOnlyAuth(owner, { now: NOW });
+  const writes = spyFs(t, WRITE_FUNCTIONS);
+  const text = derived.toString('utf8');
+  const sameLength = Buffer.from(text.replace('"account_id":"acct-fake-0001"', '"account_id":"acct-fake-0002"'));
+  assert.equal(sameLength.length, derived.length);
+  assert.notDeepEqual(sameLength, derived);
+  const withRefresh = edited(derived, (value) => { value.tokens.refresh_token = 'rt-fake-injected-0123456789'; });
+  const cases = [
+    ['a same-length rewrite', sameLength, { state: 'changed', accessOnly: true, newTokenValues: true }],
+    ['a pretty-printed rewrite', Buffer.from(JSON.stringify(parsed(derived), null, 2)), { state: 'changed', accessOnly: true, newTokenValues: false }],
+    ['a copy with a refresh token', withRefresh, { state: 'changed', accessOnly: false, newTokenValues: true }],
+    ['a copy that is not JSON', Buffer.from('not json at all'), { state: 'changed', accessOnly: false, newTokenValues: null }],
+    ['an empty copy', Buffer.alloc(0), { state: 'changed', accessOnly: false, newTokenValues: null }],
+  ];
+  for (const [name, copy, expected] of cases) {
+    const runtime = fakeRuntime({ copy });
+    const session = ownerSession(runtime, owner);
+    await session.load({ ownerFile: FILE });
+    await session.inject(ROBOT);
+    await assert.rejects(session.persistAndRemove(ROBOT, { confirmed: true }), failure('COPYBACK_REFUSED', 'runtime-copy-changed'), name);
+    // The copy is removed before the refusal is raised, by the hash of what was read.
+    assert.deepEqual(runtime.calls.map((call) => call[0]), ['inject', 'readForCopyBack', 'remove'], name);
+    assert.equal(runtime.calls[2][2], sha256Hex(copy), name);
+    assert.deepEqual(session.state.runtimeCopy, { ...expected, removed: true }, name);
+    assert.equal(session.state.persisted && session.state.removed, true, name);
+  }
+  // Classification never throws, whatever the bytes are.
+  for (const junk of [Buffer.from('not json'), Buffer.from('null'), Buffer.from('[]'), Buffer.from('{"tokens":5}'), Buffer.alloc(0), Buffer.from([0xff, 0xfe, 0x00])]) {
+    assert.doesNotThrow(() => { isAccessOnly(junk); newTokenValues(junk, derived); newTokenValues(derived, junk); });
+  }
+  assert.equal(newTokenValues(Buffer.from('not json'), derived), null);
+  assert.equal(newTokenValues(Buffer.from('{"tokens":5}'), derived), null);
+  assert.equal(newTokenValues(derived, derived), false);
+  assert.equal(newTokenValues(derived, Buffer.from('not json')), true);
+  // isAccessOnly: the derived shape only.
+  assert.equal(isAccessOnly(derived), true);
+  const shapes = [
+    ['a refresh token', withRefresh], ['an id token that differs', edited(derived, (v) => { v.tokens.id_token = 'other.jwt.token'; })],
+    ['an extra top-level key', edited(derived, (v) => { v.agent_identity = {}; })], ['an extra token key', edited(derived, (v) => { v.tokens.extra = 'x'; })],
+    ['the managed auth_mode', edited(derived, (v) => { v.auth_mode = 'chatgpt'; })], ['an API key', edited(derived, (v) => { v.OPENAI_API_KEY = 'sk-fake'; })],
+    ['no last_refresh', edited(derived, (v) => { delete v.last_refresh; })], ['a bad last_refresh', edited(derived, (v) => { v.last_refresh = 'yesterday'; })],
+    ['no account id', edited(derived, (v) => { v.tokens.account_id = ''; })], ['no tokens', edited(derived, (v) => { delete v.tokens; })],
+    ['a missing token key', edited(derived, (v) => { delete v.tokens.refresh_token; })], ['an array', Buffer.from('[]')], ['not JSON', Buffer.from('nope')],
+    ['an empty buffer', Buffer.alloc(0)],
+  ];
+  for (const [name, bytes] of shapes) assert.equal(isAccessOnly(bytes), false, name);
+  assert.equal(isAccessOnly('a string'), false);
+  assert.equal(isAccessOnly(null), false);
+  // The copy is missing: confirmed gives runtime-auth-missing, unconfirmed gives nothing. Nothing is removed in either case.
+  for (const confirmed of [true, false]) {
+    const runtime = fakeRuntime({ readError: codeError('NOT_FOUND') });
+    const session = ownerSession(runtime, owner);
+    await session.load({ ownerFile: FILE });
+    await session.inject(ROBOT);
+    if (confirmed) await assert.rejects(session.persistAndRemove(ROBOT, { confirmed }), failure('COPYBACK_REFUSED', 'runtime-auth-missing'));
+    else await session.persistAndRemove(ROBOT, { confirmed });
+    assert.deepEqual(runtime.calls.map((call) => call[0]), ['inject', 'readForCopyBack']);
+    assert.deepEqual(session.state.runtimeCopy, { state: 'missing', accessOnly: null, newTokenValues: null, removed: false });
+    assert.equal(session.state.persisted && session.state.removed, true);
+  }
+  // A read failure is 26 credential-not-removed and leaves the copy unaccounted for.
+  const unreadable = fakeRuntime({ readError: codeError('BUSY') });
+  const stuck = ownerSession(unreadable, owner);
+  await stuck.load({ ownerFile: FILE });
+  await stuck.inject(ROBOT);
+  await assert.rejects(stuck.persistAndRemove(ROBOT, { confirmed: true }), failure('CLEANUP_INCOMPLETE', 'credential-not-removed'));
+  assert.equal(stuck.state.persisted, false);
+  assert.equal(stuck.state.removed, false);
+  // A removal failure keeps the copy classified and unremoved, and a retry removes it with the same hash.
+  const flaky = fakeRuntime({ copy: derived, removeError: codeError('REMOVE_MISMATCH') });
+  const retry = ownerSession(flaky, owner);
+  await retry.load({ ownerFile: FILE });
+  await retry.inject(ROBOT);
+  await assert.rejects(retry.persistAndRemove(ROBOT, { confirmed: true }), failure('CLEANUP_INCOMPLETE', 'credential-not-removed'));
+  assert.equal(retry.state.persisted, true);
+  assert.equal(retry.state.removed, false);
+  flaky.remove = async (robot, sha) => { flaky.calls.push(['remove', robot, sha]); return { ok: true, removed: true }; };
+  await retry.persistAndRemove(ROBOT, { confirmed: true });
+  assert.equal(retry.state.removed, true);
+  assert.deepEqual(flaky.calls.filter((call) => call[0] === 'readForCopyBack').length, 1, 'the copy is read once');
+  assert.deepEqual(flaky.calls.filter((call) => call[0] === 'remove').map((call) => call[2]), [sha256Hex(derived), sha256Hex(derived)]);
+  assert.deepEqual(writes.map((call) => call.name), [], 'nothing is written anywhere');
+});
+
+test('recovery of a route-A marker discards the leftover copy inside the container, never brings its bytes to the host, never persists it and never reads the owner login', async (t) => {
+  const writes = spyFs(t, WRITE_FUNCTIONS);
+  const forbidden = () => { throw new Error('this call must not happen during a route-A recovery'); };
+  const make = (discard) => {
+    const runtime = fakeRuntime({ discard });
+    runtime.readForCopyBack = forbidden;
+    runtime.remove = forbidden;
+    runtime.inject = forbidden;
+    return { runtime, session: createOwnerCredentialSession({ runtime, runDeadline: NOW + RUN_TIMEOUT_MS, injectWindowMs: 175_000, now: () => NOW, readOwner: forbidden }) };
+  };
+  const wait = (session) => { session.holdLock(true); return session; };
+  // An access-only leftover is removed and gives no refusal.
+  const clean = make({ removed: true, accessOnly: true });
+  assert.deepEqual(await wait(clean.session).recover(ROBOT), { refusal: null });
+  assert.deepEqual(clean.session.state.recoveredCopy, { removed: true, accessOnly: true });
+  assert.deepEqual(clean.runtime.calls.map((call) => call[0]), ['discard']);
+  assert.deepEqual(clean.runtime.calls[0][1], ROBOT);
+  // The owner login was never read: nothing was derived and no gate was evaluated.
+  assert.equal(clean.session.state.derived, false);
+  assert.equal(clean.session.state.loaded, null);
+  assert.deepEqual(clean.session.state.gates, { atDerive: null, atInject: null });
+  // The leftover of this run's own copy accounting is untouched.
+  assert.equal(clean.session.state.persisted, false);
+  assert.equal(clean.session.state.removed, false);
+  assert.equal(clean.session.state.runtimeBytes, null);
+  // A leftover that was not access-only is removed and refused with 24, for the caller to raise after the robot is gone.
+  const odd = make({ removed: true, accessOnly: false });
+  const { refusal } = await wait(odd.session).recover(ROBOT);
+  assert.ok(refusal instanceof CodexAuthError);
+  assert.equal(refusal.code, 'COPYBACK_REFUSED');
+  assert.equal(refusal.reason, 'runtime-copy-changed');
+  assert.equal(refusal.exitCode, 24);
+  assert.deepEqual(odd.session.state.recoveredCopy, { removed: true, accessOnly: false });
+  // No leftover copy gives no refusal.
+  const none = make({ removed: false, accessOnly: null });
+  assert.deepEqual(await wait(none.session).recover(ROBOT), { refusal: null });
+  assert.deepEqual(none.session.state.recoveredCopy, { removed: false, accessOnly: null });
+  // A runtime failure is 26 recovery-incomplete.
+  const broken = make(null);
+  broken.runtime.discard = async () => { throw codeError('BUSY'); };
+  await assert.rejects(wait(broken.session).recover(ROBOT), failure('CLEANUP_INCOMPLETE', 'recovery-incomplete'));
+  assert.deepEqual(writes.map((call) => call.name), []);
+});
+
+test('coverage is proven only for byte-identical pre- and post-run owner reads, n/a only for a result that never derived, and unproven otherwise, while the references still cover both reads', (t) => {
+  const first = ownerLogin({ seed: 'first' });
+  const second = ownerLogin({ seed: 'second' });
+  const never = { owner: { derived: false } };
+  const derivedResult = { owner: { derived: true } };
+  const unproven = failure('STREAM_UNSAFE', 'scan-reference-missing');
+  assert.equal(assertOwnerScanCoverage({ preBytes: first, postBytes: Buffer.from(first), result: derivedResult }), 'proven');
+  assert.equal(assertOwnerScanCoverage({ preBytes: first, postBytes: Buffer.from(first), result: null }), 'proven');
+  assert.equal(assertOwnerScanCoverage({ preBytes: first, postBytes: Buffer.from(first), result: never }), 'proven');
+  assert.throws(() => assertOwnerScanCoverage({ preBytes: first, postBytes: second, result: derivedResult }), unproven);
+  // One differing byte is enough.
+  const flipped = Buffer.from(first);
+  flipped[flipped.length - 3] ^= 0x01;
+  assert.throws(() => assertOwnerScanCoverage({ preBytes: first, postBytes: flipped, result: derivedResult }), unproven);
+  assert.throws(() => assertOwnerScanCoverage({ preBytes: first, postBytes: null, result: derivedResult }), unproven);
+  assert.throws(() => assertOwnerScanCoverage({ preBytes: null, postBytes: first, result: derivedResult }), unproven);
+  assert.throws(() => assertOwnerScanCoverage({ preBytes: first, postBytes: second, result: null }), unproven);
+  assert.throws(() => assertOwnerScanCoverage({ preBytes: null, postBytes: null, result: null }), unproven);
+  assert.throws(() => assertOwnerScanCoverage({ preBytes: first, postBytes: second, result: {} }), unproven);
+  assert.throws(() => assertOwnerScanCoverage({ preBytes: first, postBytes: second, result: { owner: {} } }), unproven);
+  assert.throws(() => assertOwnerScanCoverage({ preBytes: first, postBytes: second, result: { owner: { derived: null } } }), unproven);
+  // n/a only when the result shows that the worker never derived a credential.
+  assert.equal(assertOwnerScanCoverage({ preBytes: first, postBytes: second, result: never }), 'n/a');
+  assert.equal(assertOwnerScanCoverage({ preBytes: null, postBytes: null, result: never }), 'n/a');
+  // The references cover both reads, with the owner bytes and the credential derived from each.
+  const references = [...ownerScanReferences(first, { now: NOW }), ...ownerScanReferences(second, { now: NOW })];
+  assert.equal(references.length, 4);
+  assert.deepEqual(references[0], first);
+  assert.deepEqual(references[1], deriveAccessOnlyAuth(first, { now: NOW }).derived);
+  assert.deepEqual(references[3], deriveAccessOnlyAuth(second, { now: NOW }).derived);
+  assert.deepEqual(ownerScanReferences(ownerLogin({ claim: null }), { now: NOW }).length, 1, 'the derived entry is skipped when the extraction refuses');
+  for (const junk of [null, undefined, 'text', Buffer.from('not json'), Buffer.alloc(0)]) assert.doesNotThrow(() => ownerScanReferences(junk));
+  assert.deepEqual(ownerScanReferences('text'), []);
+  // A derived whole-file copy planted in an artifact is found, with the field name only, and so is one from the second read.
+  const dir = sandbox(t);
+  fs.writeFileSync(path.join(dir, 'a.log'), `noise ${deriveAccessOnlyAuth(first, { now: NOW }).derived.toString('base64')} noise`);
+  fs.writeFileSync(path.join(dir, 'b.log'), `noise ${parsed(second).tokens.access_token} noise`);
+  const { leaks } = scanLeaks(dir, references);
+  const found = leaks.map((leak) => `${leak.file}:${leak.field}`);
+  assert.ok(found.includes('a.log:wholeFileBase64'));
+  assert.ok(found.includes('b.log:accessToken'));
+  assert.deepEqual([...new Set(leaks.map((leak) => leak.file))].sort(), ['a.log', 'b.log']);
+  assert.equal(JSON.stringify(leaks).includes(parsed(second).tokens.access_token), false);
+  // Without any reference the scan refuses, so the caller must skip it explicitly for an n/a coverage.
+  assert.throws(() => scanLeaks(dir, []), unproven);
+});
+
+test('a pending route-A marker makes the run spawn the worker for recovery when the owner gate fails, and the worker\'s owner reason becomes the exit code', () => {
+  const failureOf = (reason) => ({ code: 'STREAM_UNSAFE', reason });
+  assert.deepEqual(planOwnerRun({ pendingRecovery: false, ownerGateFailure: null }), { spawn: true, spawnedForRecovery: false, earlyFailure: null });
+  assert.deepEqual(planOwnerRun({ pendingRecovery: true, ownerGateFailure: null }), { spawn: true, spawnedForRecovery: false, earlyFailure: null });
+  const gate = failureOf('access-near-expiry');
+  assert.deepEqual(planOwnerRun({ pendingRecovery: true, ownerGateFailure: gate }), { spawn: true, spawnedForRecovery: true, earlyFailure: null });
+  assert.deepEqual(planOwnerRun({ pendingRecovery: false, ownerGateFailure: gate }), { spawn: false, spawnedForRecovery: false, earlyFailure: gate });
+  const missing = { code: 'NOT_SEEDED', reason: 'owner-login-missing' };
+  assert.deepEqual(planOwnerRun({ pendingRecovery: false, ownerGateFailure: missing }).earlyFailure, missing);
+  // The recovery run's coverage is n/a, and the worker's owner reason is the exit code of the run.
+  assert.equal(assertOwnerScanCoverage({ preBytes: null, postBytes: null, result: { owner: { derived: false } } }), 'n/a');
+  const complete = { credentialPersisted: true, credentialRemoved: true, robotDeleted: true, folderDeleted: true };
+  const outcome = decideRunOutcome({ leaks: [], coverageFailure: false, result: { code: 'NOT_SEEDED', reason: 'owner-login-missing', owner: { derived: false }, cleanup: complete }, exitedCode: 1 });
+  assert.deepEqual([outcome.result, outcome.code, outcome.reason, outcome.cleanup], ['failed', 'NOT_SEEDED', 'owner-login-missing', 'complete']);
+  assert.equal(EXIT_CODES[outcome.code], 10);
+  // Cleanup that did not complete turns the same worker result into 26.
+  const stuck = decideRunOutcome({ leaks: [], result: { code: 'NOT_SEEDED', reason: 'owner-login-missing', cleanup: { ...complete, robotDeleted: false } }, exitedCode: 1 });
+  assert.deepEqual([stuck.code, stuck.reason], ['CLEANUP_INCOMPLETE', 'recovery-incomplete']);
+});
+
+test('no test in this file touched the real account\'s .codex directory', () => {
+  assert.deepEqual(blockedAccess, []);
+  // Positive control: the guard does block an access to the guarded directory.
+  assert.throws(() => fs.existsSync(path.join(REAL_HOME, '.codex')), /blocked access to the real account \.codex/);
+  assert.equal(blockedAccess.length, 1);
+  blockedAccess.length = 0;
 });
