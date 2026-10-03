@@ -13,6 +13,7 @@ import { isAdminUser } from './services/auth/adminUser.js';
 import {
     completeInitialApplicationRoute,
     mountInitialApplicationRoute,
+    resolveDeniedAdminRoute,
     resolveInitialHashedRoute
 } from './services/runtime/initial-application-route.js';
 import { installAuthNavigationGuard } from './services/infrastructure/authNavigationGuard.js';
@@ -499,10 +500,10 @@ async function start() {
         }
         const routePolicy = getRuntimeComponentPolicy(context.plugins, pageName);
         if (routePolicy?.adminOnly && !isAdminUser(context.authenticatedUser)) {
-            window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
-            pageName = 'file-exp';
-            url = 'file-exp';
-            suppressNavigationHash = false;
+            ({ pageName, url, preserveHash: suppressNavigationHash } = resolveDeniedAdminRoute({
+                route: { pageName, url, preserveHash: suppressNavigationHash },
+                pageContent
+            }));
         } else {
             await runtimePluginLoader.ensureComponentRegistered(pageName, context.plugins);
         }

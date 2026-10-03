@@ -549,6 +549,10 @@ export class FileExp {
     }
 
     async afterRender() {
+        // A page that was replaced before this render started binds no listeners and renders no slots.
+        if (this.element?.isConnected === false) {
+            return;
+        }
         return runLayoutAfterRender(this, {
             previewLines: LARGE_FILE_PREVIEW_LINES
         });
@@ -1333,7 +1337,7 @@ export class FileExp {
 
         const targetPath = this.state.selectedPath || normalizedPath;
         const newUrl = buildFileExpHash(targetPath);
-        if (window.location.hash !== newUrl) {
+        if (this.element?.isConnected !== false && window.location.hash !== newUrl) {
             const method = historyMode === 'replace' ? 'replaceState' : 'pushState';
             history[method](null, '', newUrl);
         }
