@@ -200,7 +200,7 @@ test('spec 06 drives the RoboTeam page through the conversation skills helpers',
 
 test('the approval module reads the conversation from the RoboTeam link', () => {
     const approval = read('lib/copilot-live-skills-approval.mjs');
-    assert.match(approval, /conversationFromSkillsURL\(settingsURL, baseURL\)\.sessionId/);
+    assert.match(approval, /conversationFromSkillsURL\(settingsURL, baseURL, \{ robotId: fixture\.robotId \}\)\.sessionId/);
 });
 
 const LABEL = 'unexecuted until the deployment gate (D1/D2); Copilot-family flows are excluded from the 2026-10-02 post-merge acceptance';

@@ -13,8 +13,7 @@ export function liveSkillsHash(value) {
     return createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex');
 }
 
-// The Box mounts the workspace at its own host path, so the observer-visible fixture
-// folder lives under the admitted root. Only the ALA-native namespace is always /workspace.
+// Observer and native execution use the same canonical selected workspace path.
 export function liveSkillsWorkspace(workspaceRoot, folder) {
     assert.match(folder, /^copilot-live-skills-[0-9a-f-]{36}$/);
     return path.posix.join(assertBoxWorkspacePath(workspaceRoot), folder);
@@ -25,21 +24,28 @@ export function createLiveSkillsFixture(workspaceRoot) {
     const folder = `copilot-live-skills-${runId}`;
     const prefix = `live-${runId.slice(0, 8)}`;
     const make = (role) => ({ name: `${prefix}-${role}`, descriptorMarker: randomUUID(), helperMarker: randomUUID() });
-    return { runId, folder, workspace: liveSkillsWorkspace(workspaceRoot, folder), control: make('control'), probe: make('probe'), added: make('added') };
+    const repositoryName = `copilot-live-source-${runId}`;
+    const workspace = liveSkillsWorkspace(workspaceRoot, folder);
+    const repositoryRoot = path.posix.join(workspaceRoot, repositoryName);
+    return { runId, folder, workspace, robotId: null, robotName: `copilot-live-${runId}`, repositoryName, repositoryRoot,
+        ownedPaths: [workspace, repositoryRoot], control: make('control'), probe: make('probe'), added: make('added') };
 }
 
 export function liveSkillSources(fixture, skill, workspaceRoot) {
     assert.match(fixture.runId, UUID);
     assert.equal(fixture.folder, `copilot-live-skills-${fixture.runId}`);
     assert.equal(fixture.workspace, liveSkillsWorkspace(workspaceRoot, fixture.folder), 'The fixture is not under the admitted workspace root.');
+    assert.equal(fixture.repositoryName, `copilot-live-source-${fixture.runId}`);
+    assert.equal(fixture.repositoryRoot, `${workspaceRoot}/${fixture.repositoryName}`);
+    assert.equal(fixture.robotName, `copilot-live-${fixture.runId}`);
     assert.match(skill.name, /^live-[a-f0-9]{8}-(control|probe|added)$/);
+    assert.ok(skill.name.startsWith(`live-${fixture.runId.slice(0, 8)}-`));
     assert.match(skill.descriptorMarker, UUID);
     assert.match(skill.helperMarker, UUID);
-    const descriptor = `---\nname: ${skill.name}\ndescription: Run the explicit live skills conversation check and produce its fresh receipt.\n---\n\nUse this skill only when named in the current request. The request supplies a phase UUID. Run the receipt.mjs helper adjacent to this SKILL.md with Node.js, passing that UUID as its sole argument. Run the helper exactly once. Use the helper from the currently selected skill catalog. Never write or edit receipts yourself. Report the helper's output and this descriptor value verbatim: ${skill.descriptorMarker}\n`;
-    // ALA binds the selected outer folder as native /workspace. Only the observer uses fixture.workspace
-    // under the admitted root; the helper source never contains the outer root.
-    // The phase is a public challenge. Values used as answers exist only in the descriptor/helper source.
-    const helper = `import { createHash } from 'node:crypto';\nimport { readFileSync, writeFileSync } from 'node:fs';\nimport { fileURLToPath } from 'node:url';\nconst phase = process.argv[2];\nif (!${UUID}.test(phase || '') || process.argv.length !== 3) throw new Error('Pass one phase UUID');\nconst marker = ${JSON.stringify(skill.helperMarker)};\nconst receipt = { version: 1, runId: ${JSON.stringify(fixture.runId)}, phase, skill: ${JSON.stringify(skill.name)}, marker, executedPath: fileURLToPath(import.meta.url), helperSha256: createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).digest('hex'), createdAt: new Date().toISOString(), pid: process.pid };\nwriteFileSync(${JSON.stringify('/workspace/.receipts/')} + phase + '-' + receipt.skill + '.json', JSON.stringify(receipt) + '\\n', { flag: 'wx', mode: 0o600 });\nconsole.log(marker);\n`;
+    const descriptor = `---\nname: ${skill.name}\ndescription: Run the explicit live skills conversation check and produce its fresh receipt.\n---\n\nUse this skill only when named in the current request. The request supplies a phase UUID. Run the receipt.mjs helper through its installed live link at ${fixture.workspace}/.agents/skills/${skill.name}/receipt.mjs with Node.js, passing that UUID as its sole argument. Run the helper exactly once. Use the helper from the currently selected skill catalog. Never write or edit receipts yourself. Report the helper's output and this descriptor value verbatim: ${skill.descriptorMarker}\n`;
+    // The public challenge is separate from values available only in current descriptor/helper bytes.
+    // Node resolves import.meta.url through the live link; argv[1] records the invoked link.
+    const helper = `import { createHash } from 'node:crypto';\nimport { readFileSync, writeFileSync, realpathSync } from 'node:fs';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\nconst phase = process.argv[2];\nif (!${UUID}.test(phase || '') || process.argv.length !== 3) throw new Error('Pass one phase UUID');\nconst marker = ${JSON.stringify(skill.helperMarker)};\nconst cwd = realpathSync(process.cwd());\nif (cwd !== ${JSON.stringify(fixture.workspace)}) throw new Error('Unexpected execution folder');\nconst invokedPath = path.resolve(process.argv[1]);\nconst resolvedSource = fileURLToPath(import.meta.url);\nif (invokedPath !== path.join(cwd, '.agents', 'skills', ${JSON.stringify(skill.name)}, 'receipt.mjs') || realpathSync(invokedPath) !== resolvedSource || resolvedSource !== ${JSON.stringify(path.posix.join(fixture.repositoryRoot, 'skills', skill.name, 'receipt.mjs'))}) throw new Error('Unexpected live skill source');\nconst receipt = { version: 2, runId: ${JSON.stringify(fixture.runId)}, phase, skill: ${JSON.stringify(skill.name)}, marker, invokedPath, resolvedSource, cwd, helperSha256: createHash('sha256').update(readFileSync(resolvedSource)).digest('hex'), createdAt: new Date().toISOString(), pid: process.pid };\nwriteFileSync(path.join(cwd, '.receipts', phase + '-' + receipt.skill + '.json'), JSON.stringify(receipt) + '\\n', { flag: 'wx', mode: 0o600 });\nconsole.log(marker);\n`;
     return { descriptor, helper, descriptorSha256: liveSkillsHash(descriptor), helperSha256: liveSkillsHash(helper) };
 }
 
@@ -49,8 +55,9 @@ export function liveSkillsPrompt({ phase, selected }) {
     return `Use each of these currently available skills for phase ${phase}: ${selected.map(skill => skill.name).join(', ')}. Read each selected skill's current instructions, run its adjacent receipt helper once as instructed, and report its current descriptor value and helper output. Discover the currently registered skill paths from the current catalog. Use cat to read the selected current SKILL.md and helper source files. If a directory listing is needed, use ls or ls -la only on the current skill catalog directory or a selected skill's directory. Use node to run each adjacent receipt helper with the phase UUID as its sole argument, as instructed by that skill. Use literal absolute paths and arguments; commands may be sequenced with &&. Use only these command forms for this check. Do not reuse values or helper paths from earlier turns. Do not create, copy, alter or remove any files yourself; only the selected helpers may write their own receipts. Do not invoke other skills. Finish this turn after reporting the values.`;
 }
 
-export function policyEvidence(catalog, sessionId = null) {
-    assert.equal(catalog.robot, 'default');
+export function policyEvidence(catalog, sessionId = null, robotName) {
+    assert.ok(typeof robotName === 'string' && robotName !== 'default', 'An explicit owned robot name is required.');
+    assert.equal(catalog.robot, robotName);
     assert.equal(catalog.scope, sessionId ? 'conversation' : 'defaults');
     assert.equal(catalog.sessionId, sessionId);
     assert.ok(Number.isSafeInteger(catalog.policyVersion));
@@ -67,7 +74,7 @@ export function isCompletedLiveSkillsTurn(snapshot, baselineIds) {
 }
 
 export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, priorTurnIds, sessionId, nativeIdentity,
-    fixture, workspaceRoot, phase, selected, available, absent = [], startedAt, finishedAt, expectedPolicy, priorReceiptNames = [], priorReceiptHashes = {}, priorRevision }) {
+    fixture, workspaceRoot, phase, selected, available, absent = [], startedAt, finishedAt, expectedPolicy, priorReceiptNames = [], priorReceiptHashes = {}, priorRevision, revisionChange }) {
     assert.ok(isCompletedLiveSkillsTurn(snapshot, baselineIds), 'The persisted native turn is not complete.');
     // Both the capture metadata and every persisted cwd must follow the one admitted root.
     const workspace = liveSkillsWorkspace(workspaceRoot, fixture.folder);
@@ -90,52 +97,96 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
         assert.ok(assistant.text.includes(marker), 'The assistant did not report a current source-only answer.');
     }
     assert.equal(session.engine?.type, 'ala');
+    assert.equal(session.engine.version, 1);
     assert.equal(session.engine.backend, 'codex');
     assert.equal(session.engine.sessionId, sessionId);
+    assert.match(fixture.robotId || '', /^[a-z0-9][a-z0-9-]{2,63}$/, 'An explicit owned robot ID is required.');
+    assert.equal(snapshot.robot.id, fixture.robotId);
+    assert.equal(snapshot.robot.name, fixture.robotName);
+    assert.equal(snapshot.robot.repository.name, fixture.repositoryName);
+    assert.equal(snapshot.robot.repository.source, fixture.repositoryRoot);
+    assert.match(snapshot.robot.repository.generation, UUID);
+    assert.equal(session.engine.robotId, fixture.robotId);
     assert.equal(session.engine.cwd, workspace);
     assert.equal(session.engine.home, `${snapshot.robotRoot}/home`);
     const native = snapshot.native;
     assert.equal(native?.id, sessionId);
-    assert.equal(native.version, 1);
     assert.equal(native.home, session.engine.home);
     assert.equal(native.workspace, workspace);
     assert.equal(native.agent, 'codex');
     assert.ok(typeof native.continuation?.threadId === 'string' && native.continuation.threadId.length > 0,
         'Completed deployed turn has no native continuation.');
-    const identity = { sessionId, home: native.home, workspace: native.workspace, agent: native.agent, threadId: native.continuation.threadId };
+    const nativeTurns = native.turns.filter(turn => turn.turnId === assistant.turnId);
+    assert.equal(nativeTurns.length, 1, 'Browser message must join exactly one ALA turn.');
+    assert.equal(nativeTurns[0].status, 'completed');
+    const nativeFinal = nativeTurns[0].final;
+    assert.equal(typeof nativeFinal, 'string', 'Completed turn lacks an ALA final record.');
+    const presentations = (session.presentations || []).filter(presentation => presentation.turnId === assistant.turnId
+        || presentation.assistantMessageId === assistant.id);
+    assert.ok(presentations.length <= 1, 'Completed message has ambiguous presentation metadata.');
+    let displayedFinal = nativeFinal;
+    if (presentations.length) {
+        const [presentation] = presentations;
+        assert.equal(presentation.turnId, assistant.turnId, 'Thinking link belongs to another turn.');
+        assert.equal(presentation.assistantMessageId, assistant.id, 'Thinking link belongs to another message.');
+        assert.equal(presentation.thinkingUrl, `/base-agent-additional-server/roboTeamAgent/3001/webchat-logs/${sessionId}/${assistant.id}`,
+            'Thinking link must name this session and assistant message on the supported route.');
+        displayedFinal += `\n\n[View Thinking](${presentation.thinkingUrl})`;
+    }
+    assert.equal(assistant.text, displayedFinal, 'Completed presentation must contain the exact ALA final and its bound thinking link.');
+    assert.ok(!FAILURE.test(nativeFinal), 'Completed native final contains a provider/runtime failure.');
+    for (const marker of selected.flatMap(skill => [skill.descriptorMarker, skill.helperMarker])) {
+        assert.ok(nativeFinal.includes(marker), 'The native final did not report a current source-only answer.');
+    }
+    assert.equal(nativeTurns[0].user, user[0].text);
+    const nativeStarted = Date.parse(nativeTurns[0].startedAt), nativeEnded = Date.parse(nativeTurns[0].endedAt);
+    assert.ok(nativeStarted >= startedAt && nativeStarted <= nativeEnded && nativeEnded <= finishedAt, 'ALA turn is stale or outside this submission.');
+    const identity = { sessionId, robotId: fixture.robotId, home: native.home, workspace: native.workspace, agent: native.agent, threadId: native.continuation.threadId };
     if (nativeIdentity) assert.deepEqual(identity, nativeIdentity, 'The native conversation changed between phases.');
     const execution = session.skillExecution;
     assert.match(execution.revision, HASH);
-    if (priorRevision) assert.notEqual(execution.revision, priorRevision, 'The mutated phase reused the prior captured catalog revision.');
-    assert.equal(execution.catalogPath, `${snapshot.robotRoot}/runtime/skill-catalogs/${execution.revision}`);
-    assert.equal(execution.catalogId, execution.revision);
-    assert.equal(execution.cwd, workspace);
+    assert.equal(execution.live, true, 'Execution must use installed live skills.');
+    if (priorRevision) {
+        assert.ok(['same', 'changed'].includes(revisionChange), 'Declare whether link membership changed.');
+        if (revisionChange === 'same') assert.equal(execution.revision, priorRevision, 'Byte edits changed installed-link revision.');
+        else assert.notEqual(execution.revision, priorRevision, 'Changed membership reused installed-link revision.');
+    }
     assert.equal(execution.policyVersion, expectedPolicy.policyVersion);
-    assert.deepEqual(policyEvidence(inventory, sessionId), expectedPolicy);
+    assert.deepEqual(policyEvidence(inventory, sessionId, fixture.robotName), expectedPolicy);
     assert.equal(inventory.lastRevision, execution.revision, 'Inventory does not refer to this completed turn.');
     assert.equal(inventory.activeRevision, null);
     assert.equal(inventory.cwd, workspace);
-    assert.equal(session.skillPolicyRef, execution.policyId);
-    assert.equal(execution.policyId, sessionId);
-    assert.equal(snapshot.catalog?.version, 1);
-    assert.equal(snapshot.catalog.revision, execution.revision, 'A different catalog was supplied as execution evidence.');
-    assert.equal(snapshot.catalog.policyVersion, execution.policyVersion);
+    assert.equal(session.skillPolicyRef, sessionId);
+    assert.equal(snapshot.catalog.revision, execution.revision, 'A different link record was supplied as execution evidence.');
+    assert.equal(liveSkillsHash(snapshot.catalog.links), execution.revision, 'Revision must identify managed installed links.');
     assert.deepEqual(snapshot.catalog.entries, execution.entries);
-    assert.deepEqual(execution.resolvedSkills, execution.entries.map(entry => entry.identity));
     assert.equal(new Set(execution.entries.map(entry => entry.name)).size, execution.entries.length);
+    assert.ok(selected.length > 0 && selected.every(skill => available.some(entry => entry.name === skill.name)), 'Selected helper must be available in this turn.');
     for (const skill of available) {
         const entries = execution.entries.filter(entry => entry.name === skill.name);
         assert.equal(entries.length, 1, `Captured execution must include ${skill.name}.`);
-        assert.equal(entries[0].identity, `workspace:${fixture.folder}/.agents/skills/${skill.name}`);
+        assert.equal(entries[0].identity, `${fixture.repositoryName}/${skill.name}`);
         assert.match(entries[0].fingerprint, HASH);
+        assert.equal(entries[0].source, fixture.repositoryName);
+        assert.equal(entries[0].sourcePath, `${fixture.repositoryRoot}/skills/${skill.name}`);
+        const link = snapshot.catalog.links.filter(link => link.destination === `${workspace}/.agents/skills/${skill.name}`);
+        assert.equal(link.length, 1, 'Selected source lacks a managed installed link.');
+        assert.equal(link[0].repoName, fixture.repositoryName);
+        assert.equal(link[0].sourcePath, `skills/${skill.name}`);
+        assert.equal(path.posix.resolve(path.posix.dirname(link[0].destination), link[0].linkTarget), entries[0].sourcePath);
+        assert.equal(snapshot.liveLinks[skill.name].destination, link[0].destination);
+        assert.equal(snapshot.liveLinks[skill.name].linkTarget, link[0].linkTarget);
+        assert.equal(snapshot.liveLinks[skill.name].resolvedSource, entries[0].sourcePath);
         const source = liveSkillSources(fixture, skill, workspaceRoot);
         assert.deepEqual(snapshot.capturedFiles[skill.name], { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 },
             `Captured files for ${skill.name} are stale or came from a different source.`);
     }
     for (const skill of absent) {
-        assert.ok(!execution.entries.some(entry => entry.name === skill.name || entry.identity === `workspace:${fixture.folder}/.agents/skills/${skill.name}`),
+        assert.ok(!execution.entries.some(entry => entry.name === skill.name || entry.identity === `${fixture.repositoryName}/${skill.name}`),
             `Disabled/deleted ${skill.name} remains in this turn's captured catalog.`);
         assert.equal(snapshot.capturedFiles[skill.name], undefined);
+        assert.ok(!snapshot.catalog.links.some(link => link.destination === `${workspace}/.agents/skills/${skill.name}`));
+        assert.equal(snapshot.liveLinks[skill.name], undefined);
     }
     for (const [name, sha256] of Object.entries(priorReceiptHashes)) {
         assert.equal(liveSkillsHash(snapshot.receipts[name]), sha256, 'A prior helper receipt changed.');
@@ -145,22 +196,23 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
     assert.deepEqual(newReceiptNames, expectedNames, 'Missing, extra or unexpected helper receipts were produced by this turn.');
     for (const skill of selected) {
         const receipt = snapshot.receipts[`${phase}-${skill.name}.json`];
-        assert.equal(receipt.version, 1);
+        assert.equal(receipt.version, 2);
         assert.equal(receipt.runId, fixture.runId);
         assert.equal(receipt.phase, phase);
         assert.equal(receipt.skill, skill.name);
         assert.equal(receipt.marker, skill.helperMarker);
-        assert.equal(receipt.executedPath, `/workspace/.agents/skills/${skill.name}/receipt.mjs`,
-            'The receipt came from a copied helper outside its selected native skill mount.');
+        assert.equal(receipt.invokedPath, `${workspace}/.agents/skills/${skill.name}/receipt.mjs`, 'The receipt came from a copied helper outside its installed live link.');
+        assert.equal(receipt.resolvedSource, `${fixture.repositoryRoot}/skills/${skill.name}/receipt.mjs`);
+        assert.equal(receipt.cwd, workspace);
         assert.equal(receipt.helperSha256, liveSkillSources(fixture, skill, workspaceRoot).helperSha256);
         assert.ok(Number.isSafeInteger(receipt.pid) && receipt.pid > 0);
         assert.ok(Number.isFinite(Date.parse(receipt.createdAt)) && Date.parse(receipt.createdAt) >= startedAt
             && Date.parse(receipt.createdAt) <= finishedAt, 'Receipt is stale or outside the native turn.');
     }
     return { identity, turnId: assistant.turnId, messageId: assistant.id, phase,
-        revision: execution.revision, policyId: execution.policyId, policyVersion: execution.policyVersion,
+        revision: execution.revision, policyId: session.skillPolicyRef, policyVersion: execution.policyVersion,
         selected: selected.map(skill => skill.name), available: available.map(skill => skill.name), absent: absent.map(skill => skill.name),
         capturedEntries: execution.entries.filter(entry => [...available, ...absent].some(skill => skill.name === entry.name)),
         receipts: expectedNames.map(name => ({ name, sha256: liveSkillsHash(snapshot.receipts[name]) })),
-        assistantSha256: liveSkillsHash(assistant.text), native: identity };
+        assistantSha256: liveSkillsHash(assistant.text), nativeFinalSha256: liveSkillsHash(nativeFinal), native: identity };
 }

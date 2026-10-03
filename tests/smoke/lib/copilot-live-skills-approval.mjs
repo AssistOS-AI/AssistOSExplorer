@@ -6,7 +6,7 @@ function literalTokens(command) {
     assert.ok(typeof command === 'string' && command.length > 0 && command.length <= 4096, 'Invalid approval command length.');
     // A deliberately small shell subset: literal words/quotes and &&. Reject
     // expansions and escapes even inside quotes, before interpreting any text.
-    assert.match(command, /^[A-Za-z0-9_./ &'"-]+$/, 'Approval contains unsupported shell syntax.');
+    assert.match(command, /^[\p{L}\p{N}\p{M}_./ &'"-]+$/u, 'Approval contains unsupported shell syntax.');
     const tokens = [];
     let word = '', quote = null, started = false;
     const flush = () => {
@@ -58,15 +58,27 @@ export function parseLiveSkillsApprovalCommand(command) {
 
 export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseURL, snapshot, fixture, workspaceRoot,
     sessionId, phase, selected, baselineIds, decisions, nativeIdentity }) {
-    // Observer evidence uses the admitted outer root. The approval request itself is in the ALA-native /workspace namespace.
+    // Browser evidence and native approval commands use the canonical execution folder.
     const workspace = liveSkillsWorkspace(workspaceRoot, fixture.folder);
     assert.equal(fixture.workspace, workspace, 'The fixture is not under the admitted workspace root.');
-    assert.equal(conversationFromSkillsURL(settingsURL, baseURL).sessionId, sessionId, 'Approval changed browser conversation.');
+    assert.equal(conversationFromSkillsURL(settingsURL, baseURL, { robotId: fixture.robotId }).sessionId, sessionId, 'Approval changed browser conversation.');
     const url = new URL(browserURL);
     assert.equal(url.origin, new URL(baseURL).origin);
     assert.equal(url.pathname, '/webchat');
     assert.equal(url.searchParams.get('agent'), 'roboTeamAgent');
-    assert.equal(url.searchParams.get('robot'), 'default');
+    assert.equal(url.searchParams.get('robot'), fixture.robotName);
+    assert.equal(snapshot.robot.id, fixture.robotId);
+    assert.equal(snapshot.robot.name, fixture.robotName);
+    assert.equal(snapshot.robot.repository.name, fixture.repositoryName);
+    assert.equal(snapshot.robot.repository.source, fixture.repositoryRoot);
+    assert.equal(snapshot.session.engine.type, 'ala');
+    assert.equal(snapshot.session.engine.version, 1);
+    assert.equal(snapshot.session.engine.sessionId, sessionId);
+    assert.equal(snapshot.session.engine.home, snapshot.native.home);
+    assert.equal(snapshot.session.engine.cwd, workspace);
+    assert.equal(snapshot.session.engine.robotId, fixture.robotId);
+    assert.equal(snapshot.session.engine.backend, 'codex');
+    assert.equal(snapshot.native.home, `${snapshot.robotRoot}/home`);
     const directory = url.searchParams.get('workspace-dir') || url.searchParams.get('dir');
     assert.ok([fixture.folder, workspace].includes(directory), 'Approval changed browser workspace.');
     assert.equal(snapshot.session.sessionId, sessionId);
@@ -74,7 +86,7 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
     assert.equal(snapshot.native.id, sessionId);
     assert.equal(snapshot.native.workspace, workspace);
     assert.equal(snapshot.native.agent, 'codex');
-    if (nativeIdentity) assert.deepEqual({ sessionId, home: snapshot.native.home, workspace: snapshot.native.workspace,
+    if (nativeIdentity) assert.deepEqual({ sessionId, robotId: fixture.robotId, home: snapshot.native.home, workspace: snapshot.native.workspace,
         agent: snapshot.native.agent, threadId: snapshot.native.continuation.threadId }, nativeIdentity,
     'Approval changed the continuing native conversation.');
     assert.equal(snapshot.session.skillExecution.active, true, 'Approval requires the currently active native turn.');
@@ -88,32 +100,48 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
     const detail = JSON.parse(ui.detail);
     assert.equal(detail.threadId, snapshot.native.continuation.threadId, 'Approval belongs to another native conversation.');
     assert.match(detail.turnId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    assert.equal(detail.cwd, '/workspace');
+    assert.equal(detail.cwd, workspace);
     assert.equal(detail.item?.type, 'commandExecution', 'Only a concrete native command can be approved.');
     assert.ok(typeof detail.itemId === 'string' && detail.itemId.length > 0);
     assert.equal(detail.item.id, detail.itemId);
-    assert.equal(detail.item.cwd, '/workspace');
+    assert.equal(detail.item.cwd, workspace);
     assert.equal(detail.item.command, detail.command);
     assert.equal(detail.permissions, undefined, 'Permission profile grants are outside this gate.');
     const activeRevision = snapshot.session.skillExecution.revision;
+    assert.equal(snapshot.session.skillExecution.live, true);
     assert.equal(snapshot.catalog.revision, activeRevision);
+    assert.equal(liveSkillsHash(snapshot.catalog.links), activeRevision);
+    assert.ok(selected.length > 0 && new Set(selected.map(skill => skill.name)).size === selected.length);
     const files = new Map();
     for (const skill of selected) {
         const source = liveSkillSources(fixture, skill, workspaceRoot);
         assert.deepEqual(snapshot.capturedFiles[skill.name], { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 });
         const entry = snapshot.catalog.entries.filter(entry => entry.name === skill.name);
         assert.equal(entry.length, 1);
-        assert.equal(entry[0].identity, `workspace:${fixture.folder}/.agents/skills/${skill.name}`);
-        assert.ok(snapshot.session.skillExecution.resolvedSkills.includes(entry[0].identity));
-        files.set(`/workspace/.agents/skills/${skill.name}/SKILL.md`, { skill: skill.name, helper: false });
-        files.set(`/workspace/.agents/skills/${skill.name}/receipt.mjs`, { skill: skill.name, helper: true });
+        assert.equal(entry[0].identity, `${fixture.repositoryName}/${skill.name}`);
+        assert.ok(snapshot.session.skillExecution.entries.some(item => item.identity === entry[0].identity));
+        const destination = `${workspace}/.agents/skills/${skill.name}`;
+        const sourcePath = `${fixture.repositoryRoot}/skills/${skill.name}`;
+        const links = snapshot.catalog.links.filter(link => link.destination === destination);
+        assert.equal(links.length, 1);
+        assert.equal(links[0].repoName, fixture.repositoryName);
+        assert.equal(links[0].sourcePath, `skills/${skill.name}`);
+        assert.equal(snapshot.liveLinks[skill.name].destination, destination);
+        assert.equal(snapshot.liveLinks[skill.name].linkTarget, links[0].linkTarget);
+        assert.equal(snapshot.liveLinks[skill.name].resolvedSource, sourcePath);
+        assert.equal(entry[0].sourcePath, sourcePath);
+        for (const directory of [destination, sourcePath]) {
+            files.set(`${directory}/SKILL.md`, { skill: skill.name, helper: false });
+            files.set(`${directory}/receipt.mjs`, { skill: skill.name, helper: directory === destination });
+        }
     }
     // Native commandActions can be "unknown" for a compound command. They are
     // diagnostic metadata, never authority to approve an unchecked operation.
     const parsed = parseLiveSkillsApprovalCommand(detail.command);
     const helpers = [];
     const approvedHelpers = new Set(decisions.flatMap(decision => decision.helpers || (decision.helper ? [decision.helper] : [])));
-    const directories = new Set(['/workspace/.agents/skills', ...selected.map(skill => `/workspace/.agents/skills/${skill.name}`)]);
+    const directories = new Set([`${workspace}/.agents/skills`, `${fixture.repositoryRoot}/skills`,
+        ...selected.flatMap(skill => [`${workspace}/.agents/skills/${skill.name}`, `${fixture.repositoryRoot}/skills/${skill.name}`])]);
     for (const argv of parsed.operations) {
         if (argv[0] === 'cat') {
             assert.ok(argv.length > 1 && argv.slice(1).every(file => files.has(file)), 'Read escaped the selected skill sources.');

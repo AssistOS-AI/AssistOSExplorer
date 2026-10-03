@@ -10,10 +10,13 @@ import { liveSkillsHash, liveSkillsWorkspace, UUID } from './copilot-live-skills
 import { inside, requireMount, rejectShadows } from './local-snapshot-bindings.mjs';
 
 const CONTRACT_FILES = [
+    'server/ala-command.mjs', 'server/workspace-root.mjs', 'copilot/src/lib/config/achillesSettings.mjs',
+    'copilot/src/lib/storage/privateDataRoot.mjs', 'copilot/src/lib/storage/workspaceStateLock.mjs',
+    'copilot/src/permissions/protocol.mjs',
     'server/copilot-context.mjs', 'server/constants.mjs', 'server/robot-store.mjs',
-    'server/live-skill-catalog.mjs', 'server/skill-catalog-api.mjs',
+    'server/live-skill-catalog.mjs', 'server/live-skill-install.mjs', 'server/skill-catalog-api.mjs',
     'copilot/src/lib/storage/conversationSessionStore.mjs', 'copilot/src/lib/skills/robotSkillCatalog.mjs',
-    'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
+    'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
 ];
 
 function command(args, input = '') {
@@ -115,22 +118,28 @@ export async function readRegistryAndRuntime({ workspaceRoot }) {
 // Executed inside the exact running RoboTeam container. Never instantiate RobotStore, execute helpers,
 // update settings, or read native auth/progress. All paths below are derived and confined.
 // `/data` and `/code` are runtime locations of the RoboTeam container. The workspace root is the admitted host path.
-export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, contractFiles, expectedRepository, workspaceRoot },
+export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, contractFiles, expectedRepository, workspaceRoot,
+    robotId, robotName, repositoryName, repositoryRoot, expectedAla },
     { dataRoot = '/data', codeRoot = '/code', fsApi, emit = value => console.log(JSON.stringify(value)) } = {}) {
     const assert = (await import('node:assert/strict')).default;
     const fs = fsApi || await import('node:fs');
     const path = await import('node:path');
+    const { pathToFileURL } = await import('node:url');
     const { createHash } = await import('node:crypto');
     const hash = value => createHash('sha256').update(value).digest('hex');
     assert.match(sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.match(folder, /^copilot-live-skills-[0-9a-f-]{36}$/);
-    // Lexical and canonical containment: the root, the repository and the run folder must each be their own realpath.
+    assert.match(robotId || '', /^[a-z0-9][a-z0-9-]{2,63}$/, 'An explicit owned robot ID is required.');
+    assert.equal(robotName, `copilot-live-${folder.slice('copilot-live-skills-'.length)}`);
+    assert.equal(repositoryName, `copilot-live-source-${folder.slice('copilot-live-skills-'.length)}`);
     assert.ok(typeof workspaceRoot === 'string' && path.isAbsolute(workspaceRoot) && path.normalize(workspaceRoot) === workspaceRoot
         && workspaceRoot !== '/' && !workspaceRoot.endsWith('/'));
     assert.equal(fs.realpathSync(workspaceRoot), workspaceRoot, 'The admitted workspace root must be canonical.');
     assert.ok(typeof expectedRepository === 'string' && expectedRepository.startsWith(`${workspaceRoot}/`));
     const workspace = `${workspaceRoot}/${folder}`;
     assert.equal(fs.realpathSync(workspace), workspace, 'The run folder must be a real directory inside the admitted root.');
+    assert.equal(repositoryRoot, `${workspaceRoot}/${repositoryName}`);
+    assert.equal(fs.realpathSync(repositoryRoot), repositoryRoot, 'Registered fixture source must remain canonical.');
     function bytes(filename, root, limit = 4 * 1024 * 1024) {
         assert.ok(filename.startsWith(`${root}/`));
         assert.equal(fs.realpathSync(filename), filename, 'Evidence path contains a symlink.');
@@ -146,42 +155,115 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
         } finally { fs.closeSync(fd); }
     }
     const json = (filename, root, limit) => JSON.parse(bytes(filename, root, limit));
-    const robotRoots = [];
-    for (const entry of fs.readdirSync(`${dataRoot}/robots`, { withFileTypes: true })) {
-        if (!entry.isDirectory() || !/^[a-z0-9][a-z0-9-]{2,63}$/.test(entry.name)) continue;
-        const root = `${dataRoot}/robots/${entry.name}`;
-        const metadata = json(`${root}/metadata.json`, root);
-        if (metadata.name === 'default') { assert.equal(metadata.id, entry.name); robotRoots.push(root); }
+    const robotRoot = `${dataRoot}/robots/${robotId}`;
+    assert.equal(fs.realpathSync(robotRoot), robotRoot);
+    const robotFile = `${robotRoot}/metadata.json`;
+    const robotBytes = bytes(robotFile, robotRoot);
+    const metadata = JSON.parse(robotBytes);
+    assert.equal(metadata.schema, 'roboteam-robot-v1');
+    assert.equal(metadata.id, robotId);
+    assert.equal(metadata.name, robotName);
+    const registered = (metadata.skillsets || []).filter(source => source.name === repositoryName);
+    assert.equal(registered.length, 1, 'Fixture source is not registered on the owned robot.');
+    assert.equal(registered[0].source, repositoryRoot);
+    assert.match(registered[0].generation, /^[0-9a-f-]{36}$/);
+    const codeHashes = await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi });
+    const sessionFile = `${workspace}/.roboteam/sessions/${sessionId}.json`;
+    const sessionBytes = bytes(sessionFile, workspace);
+    const saved = JSON.parse(sessionBytes);
+    assert.equal(saved.version, 2);
+    assert.equal(saved.sessionId, sessionId);
+    assert.equal(saved.cwd, workspace);
+    if (saved.engine) {
+        assert.equal(saved.engine.robotId, robotId);
+        assert.equal(saved.engine.home, `${robotRoot}/home`);
+        assert.equal(fs.realpathSync(saved.engine.home), saved.engine.home);
+        assert.equal(saved.engine.cwd, workspace);
     }
-    assert.equal(robotRoots.length, 1);
-    const robotRoot = robotRoots[0];
-    const session = json(`${robotRoot}/copilot/sessions/${sessionId}.json`, robotRoot);
-    assert.equal(session.sessionId, sessionId);
-    assert.equal(session.cwd, workspace);
-    let native = null;
-    if (session.engine) {
-        assert.equal(session.engine.home, `${robotRoot}/home`);
-        assert.equal(session.engine.cwd, workspace);
-        const nativeFile = `${session.engine.home}/.ala/sessions/${sessionId}.json`;
-        if (fs.existsSync(nativeFile)) {
-            const value = json(nativeFile, robotRoot);
-            native = { version: value.version, id: value.id, home: value.home, workspace: value.workspace,
-                agent: value.agent, continuation: { threadId: value.continuation?.threadId } };
-        }
+    const transcriptFile = `${workspace}/.roboteam/.ala/sessions/${sessionId}.jsonl`;
+    const transcriptBytes = fs.existsSync(transcriptFile) ? bytes(transcriptFile, workspace) : null;
+    // Bind the supported reader to the explicitly selected deployed ALA package before importing it.
+    assert.ok(expectedAla && expectedAla.root.startsWith(`${workspaceRoot}/`));
+    const { resolveAlaCommand } = await import(pathToFileURL(`${codeRoot}/server/ala-command.mjs`).href);
+    const actualCommand = fs.realpathSync(process.env.ACHILLES_ALA_COMMAND || resolveAlaCommand());
+    assert.equal(actualCommand, expectedAla.command, 'Deployed ALA command differs from the selected source.');
+    const alaHashes = {};
+    for (const file of ['package.json', 'bin/ala.mjs', 'src/transcript.mjs']) {
+        alaHashes[file] = hash(bytes(`${expectedAla.root}/${file}`, expectedAla.root));
     }
-    const capturedFiles = {};
+    assert.deepEqual(alaHashes, expectedAla.hashes, 'Deployed ALA reader differs from its pinned source.');
+    assert.equal(JSON.parse(bytes(`${expectedAla.root}/package.json`, expectedAla.root)).name, 'advanced-language-agent');
+    // Resolve ALA through the deployed RoboTeam adapter, whose exact source is included in contract hashes.
+    const { alaTranscript, alaSessionsRoot } = await import(pathToFileURL(`${codeRoot}/copilot/src/lib/execution/alaTranscript.mjs`).href);
+    const { ConversationSessionStore } = await import(pathToFileURL(`${codeRoot}/copilot/src/lib/storage/conversationSessionStore.mjs`).href);
+    const session = new ConversationSessionStore({ workingDir: workspace }).loadSession(sessionId);
+    const nativeSession = transcriptBytes === null ? null : alaTranscript.readSessionSync(alaSessionsRoot(workspace), sessionId);
+    assert.equal(hash(bytes(sessionFile, workspace)), hash(sessionBytes), 'Session metadata changed during composition.');
+    if (transcriptBytes !== null) assert.equal(hash(bytes(transcriptFile, workspace)), hash(transcriptBytes), 'ALA transcript changed during composition.');
+    for (const turn of saved.turns.filter(turn => turn.context !== false && turn.status === 'completed')) {
+        const matches = (nativeSession?.turns || []).filter(native => native.turnId === turn.turnId);
+        assert.equal(matches.length, 1, 'Completed browser turn lacks its ALA transcript turn.');
+        assert.equal(matches[0].status, 'completed', 'Completed browser turn has a failed native outcome.');
+        assert.equal(typeof matches[0].final, 'string', 'Completed browser turn lacks an ALA final record.');
+    }
+    if (nativeSession?.continuation?.threadId !== undefined) assert.match(nativeSession.continuation.threadId, /^[A-Za-z0-9_-]{1,128}$/);
+    // Presentation links are RoboTeam metadata, separate from ALA's raw final text.
+    // Carry only the exact session/message binding; never render or project the recorded thinking log.
+    const presentations = saved.turns.filter(turn => typeof turn.thinkingUrl === 'string' && turn.thinkingUrl.length > 0)
+        .map(({ turnId, assistantMessageId, thinkingUrl }) => {
+            assert.equal(thinkingUrl, `/base-agent-additional-server/roboTeamAgent/3001/webchat-logs/${sessionId}/${assistantMessageId}`,
+                'Thinking link must remain on this session/message route.');
+            return { turnId, assistantMessageId, thinkingUrl };
+        });
+    const native = nativeSession === null ? null : { id: nativeSession.id, home: saved.engine?.home,
+        workspace: saved.engine?.cwd, agent: nativeSession.agent,
+        continuation: { threadId: nativeSession.continuation?.threadId },
+        turns: nativeSession.turns.map(({ turnId, user, final, status, startedAt, endedAt }) => ({ turnId, user, final, status, startedAt, endedAt })) };
+    const capturedFiles = {}, liveLinks = {};
     let catalog = null;
-    if (session.skillExecution?.catalogPath) {
-        const { catalogPath, revision } = session.skillExecution;
-        assert.match(revision, /^[0-9a-f]{64}$/);
-        assert.equal(catalogPath, `${robotRoot}/runtime/skill-catalogs/${revision}`);
-        catalog = json(`${catalogPath}/.catalog.json`, robotRoot);
+    if (session.skillExecution) {
+        assert.equal(session.skillExecution.live, true, 'Copied catalogs are not live execution evidence.');
+        const recordFile = `${workspace}/.agents/.roboteam-links.json`;
+        const recordBytes = bytes(recordFile, workspace);
+        const links = JSON.parse(recordBytes);
+        assert.ok(Array.isArray(links));
+        assert.equal(hash(JSON.stringify(links)), session.skillExecution.revision);
+        const destinations = new Set();
+        for (const link of links) {
+            assert.equal(path.dirname(link.destination), `${workspace}/.agents/skills`);
+            assert.ok(!destinations.has(link.destination), 'Duplicate managed link destination.');
+            destinations.add(link.destination);
+            assert.ok(fs.lstatSync(link.destination).isSymbolicLink(), 'Installed skill must be an actual symlink.');
+            assert.equal(fs.readlinkSync(link.destination), link.linkTarget);
+        }
+        catalog = { revision: session.skillExecution.revision, links, entries: session.skillExecution.entries };
         for (const name of skillNames) {
             assert.match(name, /^live-[a-f0-9]{8}-(control|probe|added)$/);
-            if (!catalog.entries.some(entry => entry.name === name)) continue;
-            capturedFiles[name] = { descriptorSha256: hash(bytes(`${catalogPath}/${name}/SKILL.md`, robotRoot)),
-                helperSha256: hash(bytes(`${catalogPath}/${name}/receipt.mjs`, robotRoot)) };
+            const entries = catalog.entries.filter(entry => entry.name === name);
+            if (!entries.length) {
+                assert.ok(!destinations.has(`${workspace}/.agents/skills/${name}`), 'Absent skill remains installed.');
+                assert.ok(!fs.existsSync(`${workspace}/.agents/skills/${name}`), 'Absent skill remains linked.');
+                continue;
+            }
+            assert.equal(entries.length, 1);
+            const source = `${repositoryRoot}/skills/${name}`;
+            const destination = `${workspace}/.agents/skills/${name}`;
+            const selected = links.filter(link => link.destination === destination);
+            assert.equal(selected.length, 1, 'Selected fixture skill lacks its managed link.');
+            const [link] = selected;
+            assert.equal(entries[0].identity, `${repositoryName}/${name}`);
+            assert.equal(entries[0].sourcePath, source);
+            assert.equal(link.repoName, repositoryName);
+            assert.equal(link.sourcePath, `skills/${name}`);
+            assert.equal(path.resolve(path.dirname(destination), link.linkTarget), source);
+            assert.equal(fs.realpathSync(destination), source, 'Live skill link was retargeted.');
+            capturedFiles[name] = { descriptorSha256: hash(bytes(`${source}/SKILL.md`, repositoryRoot)),
+                helperSha256: hash(bytes(`${source}/receipt.mjs`, repositoryRoot)) };
+            assert.equal(fs.realpathSync(destination), source, 'Live link changed during source read.');
+            assert.equal(fs.readlinkSync(destination), link.linkTarget);
+            liveLinks[name] = { destination, linkTarget: link.linkTarget, resolvedSource: source };
         }
+        assert.equal(hash(bytes(recordFile, workspace)), hash(recordBytes), 'Managed links changed during source read.');
     }
     const receipts = {};
     const receiptRoot = `${workspace}/.receipts`;
@@ -190,11 +272,15 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
         assert.match(name, /^[a-f0-9-]{36}-live-[a-f0-9]{8}-(control|probe|added)\.json$/);
         receipts[name] = json(`${receiptRoot}/${name}`, workspace, 4096);
     }
-    const codeHashes = await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi });
-    emit({ workspaceRoot, robotRoot, session: { sessionId: session.sessionId, cwd: session.cwd,
-        engine: session.engine, skillPolicyRef: session.skillPolicyRef, skillExecution: session.skillExecution,
-        messages: session.messages.map(({ id, role, text, status, turnId }) => ({ id, role, text, status, turnId })) },
-        native, catalog, capturedFiles, receipts, codeHashes, capturedAt: new Date().toISOString() });
+    assert.equal(hash(bytes(robotFile, robotRoot)), hash(robotBytes), 'Owned robot registration changed during capture.');
+    assert.deepEqual(await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi }), codeHashes, 'Copilot source changed during composition.');
+    for (const file of Object.keys(expectedAla.hashes)) assert.equal(hash(bytes(`${expectedAla.root}/${file}`, expectedAla.root)), expectedAla.hashes[file], 'ALA source changed during composition.');
+    emit({ workspaceRoot, robotRoot, robot: { id: robotId, name: robotName, repository: { name: registered[0].name, source: registered[0].source, generation: registered[0].generation } },
+        session: { sessionId: session.sessionId, cwd: session.cwd, engine: session.engine,
+            skillPolicyRef: session.skillPolicyRef, skillExecution: session.skillExecution, presentations,
+            messages: session.messages.filter(message => ['user', 'assistant'].includes(message.role))
+                .map(({ id, role, text, status, turnId }) => ({ id, role, text, status, turnId })) },
+        native, catalog, capturedFiles, liveLinks, receipts, codeHashes, alaBinding: expectedAla, capturedAt: new Date().toISOString() });
 }
 
 const RUNTIME_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -214,7 +300,7 @@ const SUBJECT = 'Live skills runtime';
 //     emits it for every runtime that has the root project bind; it needs allow-listing only when the verified
 //     source lives below it, because only then does it overlap a path the evidence reads.
 // /Agent and the AgentLib grant are always emitted exactly once, read-only, so both are required.
-export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository, { workspaceRoot, fixtureWorkspace = null, fsApi = null } = {}) {
+export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository, { workspaceRoot, fixtureWorkspace = null, fixtureRepository = null, alaSource = null, fsApi = null } = {}) {
     const root = assertBoxWorkspacePath(workspaceRoot);
     assert.match(runtime.containerId, /^[0-9a-f]{64}$/);
     assert.match(runtime.instanceId, UUID);
@@ -261,6 +347,16 @@ export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository, { 
     if (fixtureWorkspace !== null) {
         assert.equal(fixtureWorkspace, liveSkillsWorkspace(root, path.posix.basename(fixtureWorkspace)), 'The run folder is not under the admitted root.');
         protectedPaths.push(fixtureWorkspace);
+    }
+    if (alaSource !== null) {
+        assert.ok(alaSource.startsWith(`${root}/`) && path.posix.normalize(alaSource) === alaSource);
+        protectedPaths.push(alaSource);
+        // Ploinky link-install uses a canonical same-path source grant, writable for this global agent.
+        if (runtime.mounts.some(mount => mount.Destination === alaSource)) allowed.push(requireMount(runtime.mounts, alaSource, alaSource, options));
+    }
+    if (fixtureRepository !== null) {
+        assert.ok(fixtureRepository.startsWith(`${root}/copilot-live-source-`) && path.posix.dirname(fixtureRepository) === root);
+        protectedPaths.push(fixtureRepository);
     }
     rejectShadows(runtime.mounts, protectedPaths, allowed, { subject: SUBJECT });
     return runtime;
@@ -320,6 +416,14 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
     assert.ok(hostRepository.startsWith(`${hostWorkspace}/`) && path.posix.normalize(hostRepository) === hostRepository,
         'Verified AchillesCLI must belong to the selected workspace.');
     const expectedRepository = hostRepository;
+    assert.ok(env.SMOKE_ALA_COMMAND && path.isAbsolute(env.SMOKE_ALA_COMMAND), 'Set SMOKE_ALA_COMMAND to the exact selected deployed ALA bin/ala.mjs.');
+    const alaCommand = fsApi.realpathSync(env.SMOKE_ALA_COMMAND);
+    const alaRoot = path.posix.dirname(path.posix.dirname(alaCommand));
+    assert.equal(alaCommand, `${alaRoot}/bin/ala.mjs`);
+    assert.ok(alaRoot.startsWith(`${hostWorkspace}/`), 'Selected ALA must belong to the admitted workspace.');
+    assert.equal(JSON.parse(fsApi.readFileSync(`${alaRoot}/package.json`, 'utf8')).name, 'advanced-language-agent');
+    const expectedAla = { command: alaCommand, root: alaRoot, hashes: Object.fromEntries(['package.json', 'bin/ala.mjs', 'src/transcript.mjs']
+        .map(file => [file, liveSkillsHash(fsApi.readFileSync(`${alaRoot}/${file}`))])) };
     // A local or managed AgentLib is shadowed read-only at its own path below the root; an image AgentLib has no alias.
     const libRelative = release.agentLib?.mode && release.agentLib.mode !== 'image' ? release.agentLib.sourceRelativePath : null;
     const agentLibAlias = typeof libRelative === 'string' && libRelative !== 'image' ? path.posix.join(hostWorkspace, libRelative) : null;
@@ -327,7 +431,7 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
         'The AgentLib source must lie inside the admitted root.');
     const codeHashes = Object.fromEntries(CONTRACT_FILES.map(file => [file, liveSkillsHash(fsApi.readFileSync(path.join(hostRepository, 'roboTeamAgent', file)))]));
     let initialRuntime;
-    async function binding(fixtureWorkspace = null) {
+    async function binding(fixtureWorkspace = null, fixtureRepository = null) {
         const [outer] = await runCommand(['inspect', box.containerId]);
         assert.equal(outer.Id, box.containerId);
         assert.equal(outer.State.Running, true);
@@ -336,9 +440,9 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
         validateOuterWorkspaceBinding(outer, hostWorkspace, expectedRepository, fsApi.realpathSync);
         const runtime = validateLiveSkillsRuntimeBinding(await runCommand(['exec', '-i', '--user', 'podman', box.containerId,
             'node', '--input-type=module', '-'], program(readRegistryAndRuntime, { workspaceRoot: hostWorkspace })), expectedRepository,
-        { workspaceRoot: hostWorkspace, fixtureWorkspace, fsApi });
-        rejectOuterRuntimeShadows(outer, hostWorkspace, [...liveSkillsProtectedSources(runtime, expectedRepository, hostWorkspace),
-            ...(fixtureWorkspace ? [fixtureWorkspace] : [])], agentLibAlias);
+        { workspaceRoot: hostWorkspace, fixtureWorkspace, fixtureRepository, alaSource: alaRoot, fsApi });
+        rejectOuterRuntimeShadows(outer, hostWorkspace, [...liveSkillsProtectedSources(runtime, expectedRepository, hostWorkspace), alaRoot,
+            ...(fixtureWorkspace ? [fixtureWorkspace] : []), ...(fixtureRepository ? [fixtureRepository] : [])], agentLibAlias);
         if (initialRuntime) assert.deepEqual(runtime, initialRuntime, 'RoboTeam runtime was replaced, restarted or remounted during the test.');
         else initialRuntime = runtime;
         return runtime;
@@ -349,21 +453,25 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
         workspaceRoot: hostWorkspace,
         async capture({ sessionId, fixture }) {
             assert.equal(fixture.workspace, liveSkillsWorkspace(hostWorkspace, fixture.folder), 'The fixture is not under the admitted workspace root.');
-            const runtime = await binding(fixture.workspace);
+            assert.match(fixture.robotId || '', /^[a-z0-9][a-z0-9-]{2,63}$/, 'An explicit owned robot ID is required.');
+            assert.equal(fixture.repositoryRoot, `${hostWorkspace}/${fixture.repositoryName}`);
+            const runtime = await binding(fixture.workspace, fixture.repositoryRoot);
             const snapshot = await runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
                 'node', '--input-type=module', '-'], program(readLiveSkillsSnapshot, {
                 sessionId, folder: fixture.folder, skillNames: [fixture.control.name, fixture.probe.name, fixture.added.name], contractFiles: CONTRACT_FILES,
-                expectedRepository, workspaceRoot: hostWorkspace,
+                expectedRepository, workspaceRoot: hostWorkspace, robotId: fixture.robotId, robotName: fixture.robotName,
+                repositoryName: fixture.repositoryName, repositoryRoot: fixture.repositoryRoot, expectedAla,
             }));
             assert.equal(snapshot.workspaceRoot, hostWorkspace, 'The runtime capture used a different workspace root.');
             assert.deepEqual(snapshot.codeHashes, codeHashes, 'Running Copilot source differs from the verified checkout.');
+            assert.deepEqual(snapshot.alaBinding, expectedAla, 'Runtime ALA evidence does not match selected source.');
             return snapshot;
         },
         async finish() {
             await binding();
             const after = await collect();
             assert.ok(sameCopilotReleaseGeneration(release, after), 'The release/Box generation changed during the live skill mutations.');
-            return { release: after, runtime: initialRuntime, contractHashes: codeHashes };
+            return { release: after, runtime: initialRuntime, contractHashes: codeHashes, alaBinding: expectedAla };
         },
     };
 }
