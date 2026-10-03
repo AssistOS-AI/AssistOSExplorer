@@ -705,3 +705,213 @@ test('the client poll rejects a budget that is not a finite number of at least z
   // Zero and a finite budget are still accepted.
   assert.equal((await pollCodexClient(pollFixture([identityWith(1)]).runtime, ROBOT, { timeoutMs: 0 })).cli.count, 1);
 });
+
+// ---- route A: the native digest and the in-container discard ----------------------------------------------------------
+import { discardCodexAuth, readCodexNativeDigest } from './codex-test-auth-runtime.mjs';
+import { deriveAccessOnlyBytes, isAccessOnly } from './codex-test-auth-owner.mjs';
+
+const GENERATION = sha('route-a-generation');
+const NATIVE_PATH = 'lib/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex/codex';
+
+// A fake tool-cache generation holding a native binary (a few MiB, so the hash loop runs more than once).
+function nativeFixture(t, bytes = Buffer.from('fake native binary bytes '.repeat(150_000))) {
+  const w = world(t);
+  const generation = path.join(w.data, 'tool-cache', 'codex', 'generations', GENERATION);
+  const binary = path.join(generation, NATIVE_PATH);
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
+  fs.writeFileSync(binary, bytes, { mode: 0o755 });
+  const options = { ...w.options, platform: 'linux-x64' };
+  return { ...w, generation, binary, bytes, options, args: { generation: GENERATION, relativePaths: { 'linux-x64': NATIVE_PATH } } };
+}
+
+test('readCodexNativeDigest hashes the allowlisted native file below the generation for the current platform and refuses symlinks, traversal and missing files', async (t) => {
+  const f = nativeFixture(t);
+  assert.ok(f.bytes.length > 2 * 1024 * 1024);
+  const expected = { ok: true, generation: GENERATION, platform: 'linux-x64', sha256: sha(f.bytes), size: f.bytes.length };
+  assert.deepEqual(await readCodexNativeDigest(f.args, f.options), expected);
+  const serialized = runSerialized(readCodexNativeDigest, f.args, f.options);
+  assert.equal(serialized.status, 0);
+  assert.deepEqual(serialized.json, expected);
+  assert.equal(credentialProgram(readCodexNativeDigest, f.args, f.options).includes(sha(f.bytes)), false);
+  // The default platform is the container's own; an entry for another platform gives no digest and reads nothing.
+  assert.deepEqual(await readCodexNativeDigest(f.args, { ...f.options, platform: 'darwin-arm64' }),
+    { ok: true, generation: GENERATION, platform: 'darwin-arm64', sha256: null, size: null });
+  assert.deepEqual(await readCodexNativeDigest({ generation: GENERATION, relativePaths: {} }, f.options),
+    { ok: true, generation: GENERATION, platform: 'linux-x64', sha256: null, size: null });
+  const own = `${process.platform}-${process.arch}`;
+  const inferred = await readCodexNativeDigest({ generation: GENERATION, relativePaths: { [own]: NATIVE_PATH } }, { ...f.options, platform: undefined });
+  assert.equal(inferred.platform, own);
+  assert.equal(inferred.sha256, sha(f.bytes));
+  // Arguments: the generation id and every relative path are validated before anything is read.
+  const bad = ['../x', '/etc/passwd', 'a//b', '', 'a/./b', 'a/../b', 'a b/c', 'a/b\\c', `${'a/'.repeat(16)}a`, 'a'.repeat(129), `${'a'.repeat(100)}/`.repeat(6), '.hidden/x', 7, null, ['x']];
+  for (const relative of bad) {
+    await rejectsWith(readCodexNativeDigest({ generation: GENERATION, relativePaths: { 'linux-x64': relative } }, f.options), 'INVALID_ARGUMENT');
+    assert.equal(runSerialized(readCodexNativeDigest, { generation: GENERATION, relativePaths: { 'linux-x64': relative } }, f.options).json.code, 'INVALID_ARGUMENT');
+  }
+  // A malformed entry for another platform is refused too.
+  await rejectsWith(readCodexNativeDigest({ generation: GENERATION, relativePaths: { 'linux-x64': NATIVE_PATH, 'linux-arm64': '../x' } }, f.options), 'INVALID_ARGUMENT');
+  for (const generation of ['', 'A'.repeat(64), 'a'.repeat(63), `${'a'.repeat(62)}..`, '../'.repeat(22), 7, null, undefined]) {
+    await rejectsWith(readCodexNativeDigest({ generation, relativePaths: f.args.relativePaths }, f.options), 'INVALID_ARGUMENT');
+  }
+  for (const relativePaths of [null, undefined, [NATIVE_PATH], NATIVE_PATH]) {
+    await rejectsWith(readCodexNativeDigest({ generation: GENERATION, relativePaths }, f.options), 'INVALID_ARGUMENT');
+  }
+  await rejectsWith(readCodexNativeDigest(undefined, f.options), 'INVALID_ARGUMENT');
+  // Missing generation, missing file, and a symlinked or non-directory generation.
+  await rejectsWith(readCodexNativeDigest({ generation: sha('another'), relativePaths: f.args.relativePaths }, f.options), 'NOT_FOUND');
+  await rejectsWith(readCodexNativeDigest({ generation: GENERATION, relativePaths: { 'linux-x64': 'lib/missing/codex' } }, f.options), 'NOT_FOUND');
+  const vendor = path.join(f.generation, 'lib', 'node_modules', '@openai', 'codex-linux-x64', 'vendor');
+  // A symlinked intermediate directory is refused, even though the file behind it is the right one.
+  const moved = path.join(f.data, 'moved-vendor');
+  fs.renameSync(vendor, moved);
+  fs.symlinkSync(moved, vendor);
+  await rejectsWith(readCodexNativeDigest(f.args, f.options), 'UNSAFE_PATH');
+  assert.equal(runSerialized(readCodexNativeDigest, f.args, f.options).json.code, 'UNSAFE_PATH');
+  fs.rmSync(vendor);
+  fs.renameSync(moved, vendor);
+  assert.equal((await readCodexNativeDigest(f.args, f.options)).sha256, sha(f.bytes));
+  // A symlinked or non-regular final file is refused.
+  const other = path.join(f.data, 'other-binary');
+  fs.writeFileSync(other, f.bytes);
+  fs.rmSync(f.binary);
+  fs.symlinkSync(other, f.binary);
+  await rejectsWith(readCodexNativeDigest(f.args, f.options), 'UNSAFE_PATH');
+  fs.rmSync(f.binary);
+  fs.mkdirSync(f.binary);
+  await rejectsWith(readCodexNativeDigest(f.args, f.options), 'UNSAFE_PATH');
+  fs.rmSync(f.binary, { recursive: true });
+  await rejectsWith(readCodexNativeDigest(f.args, f.options), 'NOT_FOUND');
+  // A symlinked generation directory is malformed.
+  const real = path.join(f.data, 'real-generation');
+  fs.renameSync(f.generation, real);
+  fs.symlinkSync(real, f.generation);
+  await rejectsWith(readCodexNativeDigest(f.args, f.options), 'MALFORMED');
+});
+
+test('the host runtime asks for the native digest with non-secret arguments only, empty stdin and a 60 s bound', async () => {
+  const BOX = 'ploinky-box-fake-0123456789ab';
+  const RT = 'b'.repeat(64);
+  const digest = { ok: true, generation: GENERATION, platform: 'linux-x64', sha256: 'c'.repeat(64), size: 42 };
+  const calls = [];
+  const runCommand = async (argv, input = '', limits = {}) => {
+    calls.push({ argv, input, limits });
+    return { exitCode: 0, stdout: Buffer.from(`${JSON.stringify(digest)}\n`) };
+  };
+  const runtime = createCodexRuntime({ box: BOX, runCommand, sleep: async () => {} });
+  runtime.bindRoboTeam(RT);
+  assert.deepEqual(await runtime.nativeDigest({ generation: GENERATION, relativePaths: { 'linux-x64': NATIVE_PATH } }), digest);
+  assert.equal(calls.length, 1);
+  const [{ argv, input, limits }] = calls;
+  assert.deepEqual(argv.slice(0, 12), ['exec', '-i', '--user', 'podman', BOX, 'podman', 'exec', '-i', RT, 'node', '--input-type=module', '-e']);
+  assert.equal(argv.length, 13);
+  assert.equal(input, '', 'nothing travels on stdin');
+  assert.equal(limits.timeoutMs, 60_000);
+  assert.match(argv[12], /readCodexNativeDigest/);
+  assert.match(argv[12], new RegExp(`"generation":"${GENERATION}"`));
+  assert.match(argv[12], /"relativePaths":\{"linux-x64":"lib\/node_modules/);
+  // A program failure is a code, never a message.
+  const failing = createCodexRuntime({ box: BOX, runCommand: async () => ({ exitCode: 1, stdout: Buffer.from('{"ok":false,"code":"UNSAFE_PATH"}\n') }) });
+  failing.bindRoboTeam(RT);
+  await assert.rejects(failing.nativeDigest({ generation: GENERATION, relativePaths: {} }), (error) => error instanceof RuntimeProgramError && error.code === 'UNSAFE_PATH');
+});
+
+test('discardCodexAuth removes a leftover copy inside the container, reports only removed and accessOnly, honours BUSY, refuses symlinks and hard links, and agrees with isAccessOnly', async (t) => {
+  const w = world(t);
+  const derived = deriveAccessOnlyBytes({ accessToken: 'hdr.payload.sig', accountId: 'acct-fake-0001', lastRefresh: '2026-10-03T12:00:00.123456789Z' });
+  const SHAPE_KEYS = ['ok', 'removed', 'accessOnly'];
+  // Absent: nothing to remove, in-process and serialized.
+  assert.deepEqual(await discardCodexAuth(w.robot, w.options), { ok: true, removed: false, accessOnly: null });
+  assert.deepEqual(runSerialized(discardCodexAuth, w.robot, w.options).json, { ok: true, removed: false, accessOnly: null });
+  // An access-only copy is removed and reported, and the output never carries the bytes, a digest or the token.
+  fs.writeFileSync(w.auth, derived, { mode: 0o600 });
+  const text = credentialProgram(discardCodexAuth, w.robot, w.options);
+  assert.equal(text.includes('hdr.payload.sig'), false);
+  const direct = await discardCodexAuth(w.robot, w.options);
+  assert.deepEqual(direct, { ok: true, removed: true, accessOnly: true });
+  assert.deepEqual(Object.keys(direct), SHAPE_KEYS);
+  assert.equal(fs.existsSync(w.auth), false);
+  fs.writeFileSync(w.auth, derived, { mode: 0o600 });
+  const serialized = runSerialized(discardCodexAuth, w.robot, w.options);
+  assert.equal(serialized.status, 0);
+  assert.deepEqual(serialized.json, { ok: true, removed: true, accessOnly: true });
+  assert.equal(serialized.stdout.includes('hdr.payload.sig') || serialized.stdout.includes(derived.toString('base64')) || serialized.stdout.includes(sha(derived)), false);
+  assert.equal(fs.existsSync(w.auth), false);
+  // Idempotent: a second discard finds nothing.
+  assert.deepEqual(await discardCodexAuth(w.robot, w.options), { ok: true, removed: false, accessOnly: null });
+  // A copy with a refresh token is removed and reported as not access-only.
+  fs.writeFileSync(w.auth, authBytes('refreshable'), { mode: 0o600 });
+  assert.deepEqual(await discardCodexAuth(w.robot, w.options), { ok: true, removed: true, accessOnly: false });
+  // BUSY while an ALA process has the robot home, in both spellings, and the copy stays.
+  fs.writeFileSync(w.auth, derived, { mode: 0o600 });
+  w.addProcess(901, ['node', '/ala/bin/ala.mjs', '--ca', 'codex', '--home', w.home, '--cwd', '/workspace/x']);
+  await rejectsWith(discardCodexAuth(w.robot, w.options), 'BUSY');
+  assert.deepEqual(runSerialized(discardCodexAuth, w.robot, w.options).json, { ok: false, code: 'BUSY' });
+  assert.equal(fs.existsSync(w.auth), true);
+  fs.rmSync(path.join(w.proc, '901'), { recursive: true });
+  w.addProcess(902, ['node', 'ala.mjs', `--home=${w.home}`]);
+  await rejectsWith(discardCodexAuth(w.robot, w.options), 'BUSY');
+  fs.rmSync(path.join(w.proc, '902'), { recursive: true });
+  // A symlink and a hard link are refused and left in place.
+  const target = path.join(w.data, 'elsewhere.json');
+  fs.writeFileSync(target, derived, { mode: 0o600 });
+  fs.rmSync(w.auth);
+  fs.symlinkSync(target, w.auth);
+  await rejectsWith(discardCodexAuth(w.robot, w.options), 'UNSAFE_PATH');
+  assert.equal(fs.lstatSync(w.auth).isSymbolicLink(), true);
+  fs.rmSync(w.auth);
+  fs.linkSync(target, w.auth);
+  await rejectsWith(discardCodexAuth(w.robot, w.options), 'UNSAFE_PATH');
+  assert.equal(fs.existsSync(w.auth), true);
+  fs.rmSync(w.auth);
+  fs.writeFileSync(w.auth, Buffer.alloc(64 * 1024 + 1, 0x20), { mode: 0o600 });
+  await rejectsWith(discardCodexAuth(w.robot, w.options), 'UNSAFE_PATH');
+  fs.rmSync(w.auth);
+  await rejectsWith(discardCodexAuth({ ...ROBOT, robotName: 'codex-auth-test-other' }, w.options), 'WRONG_ROBOT');
+  await rejectsWith(discardCodexAuth({ robotId: '../x', robotName: ROBOT.robotName }, w.options), 'INVALID_ARGUMENT');
+  // The in-container predicate agrees with the host's isAccessOnly on every input of a table.
+  const parsedDerived = JSON.parse(derived.toString('utf8'));
+  const variant = (change) => { const value = structuredClone(parsedDerived); change(value); return Buffer.from(JSON.stringify(value)); };
+  const table = [
+    derived, Buffer.from(JSON.stringify(parsedDerived, null, 2)), variant((v) => { v.tokens.refresh_token = 'rt-fake-injected-0123456789'; }),
+    variant((v) => { v.tokens.id_token = 'other.jwt.tok'; }), variant((v) => { v.agent_identity = {}; }), variant((v) => { v.tokens.extra = 'x'; }),
+    variant((v) => { v.auth_mode = 'chatgpt'; }), variant((v) => { v.OPENAI_API_KEY = 'sk-fake'; }), variant((v) => { delete v.last_refresh; }),
+    variant((v) => { v.last_refresh = 'yesterday'; }), variant((v) => { v.last_refresh = '2026-10-03T12:00:00.123456789+02:00'; }),
+    variant((v) => { v.tokens.account_id = ''; }), variant((v) => { delete v.tokens; }), variant((v) => { delete v.tokens.refresh_token; }),
+    variant((v) => { v.tokens.access_token = ''; v.tokens.id_token = ''; }), Buffer.from('[]'), Buffer.from('null'), Buffer.from('not json'), Buffer.alloc(0),
+    authBytes('managed'),
+  ];
+  for (const [index, bytes] of table.entries()) {
+    fs.writeFileSync(w.auth, bytes, { mode: 0o600 });
+    const reported = await discardCodexAuth(w.robot, w.options);
+    assert.deepEqual(reported, { ok: true, removed: true, accessOnly: isAccessOnly(bytes) }, `table row ${index}`);
+    fs.writeFileSync(w.auth, bytes, { mode: 0o600 });
+    assert.equal(runSerialized(discardCodexAuth, w.robot, w.options).json.accessOnly, isAccessOnly(bytes), `serialized table row ${index}`);
+  }
+  assert.equal(table.filter((bytes) => isAccessOnly(bytes)).length, 3, 'the table covers accepted shapes as well as refused ones');
+  // The host discard polls BUSY inside its budget, stops at once on any other code, sends no stdin and returns only two fields.
+  const BOX = 'ploinky-box-fake-0123456789ab';
+  const RT = 'd'.repeat(64);
+  const calls = [];
+  const replies = [];
+  const runCommand = async (argv, input = '', limits = {}) => { calls.push({ argv, input, limits }); return replies.shift(); };
+  const sleeps = [];
+  const runtime = createCodexRuntime({ box: BOX, runCommand, sleep: async (milliseconds) => { sleeps.push(milliseconds); } });
+  runtime.bindRoboTeam(RT);
+  const busy = { exitCode: 1, stdout: Buffer.from('{"ok":false,"code":"BUSY"}\n') };
+  replies.push(busy, busy, { exitCode: 0, stdout: Buffer.from('{"ok":true,"removed":true,"accessOnly":true}\n') });
+  assert.deepEqual(await runtime.discard(w.robot, { timeoutMs: 5000, intervalMs: 3 }), { removed: true, accessOnly: true });
+  assert.equal(calls.length, 3);
+  assert.deepEqual(sleeps, [3, 3]);
+  for (const call of calls) {
+    assert.equal(call.input, '');
+    assert.match(call.argv[12], /discardCodexAuth/);
+    assert.match(call.argv[12], /"robotId":"codex-auth-test-r1-ab12"/);
+  }
+  replies.push(busy);
+  await assert.rejects(runtime.discard(w.robot, { timeoutMs: 0, intervalMs: 1 }), (error) => error.code === 'BUSY');
+  replies.push({ exitCode: 1, stdout: Buffer.from('{"ok":false,"code":"UNSAFE_PATH"}\n') });
+  await assert.rejects(runtime.discard(w.robot), (error) => error.code === 'UNSAFE_PATH');
+  // Only removed and accessOnly come back, whatever else the program printed.
+  replies.push({ exitCode: 0, stdout: Buffer.from('{"ok":true,"removed":false,"accessOnly":null,"base64":"AAAA"}\n') });
+  assert.deepEqual(await runtime.discard(w.robot), { removed: false, accessOnly: null });
+});

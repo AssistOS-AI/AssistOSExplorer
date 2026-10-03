@@ -131,8 +131,24 @@ async function makeHelpers(options = {}) {
     }
     return raw.toString('utf8').split('\0').filter(Boolean).map((entry) => entry.split('=', 1)[0]);
   };
+  // The in-container twin of isAccessOnly (lib/codex-test-auth-owner.mjs): true only for the derived access-only shape, which has an
+  // empty refresh token. It never throws, so a copy that is not JSON simply reports false.
+  const accessOnly = (bytes) => {
+    try {
+      const plain = (item) => item !== null && typeof item === 'object' && !Array.isArray(item);
+      const keysAre = (item, names) => JSON.stringify(Object.keys(item).sort()) === JSON.stringify([...names].sort());
+      const value = JSON.parse(Buffer.from(bytes).toString('utf8'));
+      if (!plain(value) || !keysAre(value, ['auth_mode', 'OPENAI_API_KEY', 'tokens', 'last_refresh'])) return false;
+      if (value.auth_mode !== 'chatgptAuthTokens' || value.OPENAI_API_KEY !== null) return false;
+      const { tokens } = value;
+      if (!plain(tokens) || !keysAre(tokens, ['id_token', 'access_token', 'refresh_token', 'account_id'])) return false;
+      const filled = (item) => typeof item === 'string' && item !== '';
+      return tokens.refresh_token === '' && tokens.id_token === tokens.access_token && filled(tokens.access_token) && filled(tokens.account_id)
+        && filled(value.last_refresh) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value.last_refresh);
+    } catch { return false; }
+  };
   return { fs, dataRoot, procRoot, expectedUid, AUTH_LIMIT, fail, sha256, lstat, readNoFollow, readJson, readStdin, validRobot, checkRobot,
-    commandLines, robotCli, environmentNames, ROBOT_ID };
+    commandLines, robotCli, environmentNames, accessOnly, ROBOT_ID };
 }
 
 // Lists every robot, and for test robots only whether a native credential file is present (an lstat, never a read).
@@ -204,6 +220,60 @@ export async function readCodexClientIdentity({ robotId = null, robotName = null
   return { ok: true, package: '@openai/codex', version, generation, cli, codexConfigTomlPresent };
 }
 
+// Hashes the native Codex binary of one tool-cache generation, so the host can tell which exact build a robot would run. The relative
+// path comes from the host's allowlist, one entry per platform. It is checked segment by segment and nothing outside the generation
+// is read. The digest of a public binary is not a credential.
+export async function readCodexNativeDigest({ generation, relativePaths } = {}, options = {}) {
+  const h = await makeHelpers(options);
+  if (typeof generation !== 'string' || !/^[0-9a-f]{64}$/.test(generation) || relativePaths === null || typeof relativePaths !== 'object'
+    || Array.isArray(relativePaths)) throw h.fail('INVALID_ARGUMENT');
+  const segmentsOf = (relative) => {
+    if (typeof relative !== 'string' || relative.length === 0 || relative.length > 512) throw h.fail('INVALID_ARGUMENT');
+    const segments = relative.split('/');
+    if (segments.length > 16 || !segments.every((segment) => /^[A-Za-z0-9@_+-][A-Za-z0-9@._+-]{0,127}$/.test(segment))) throw h.fail('INVALID_ARGUMENT');
+    return segments;
+  };
+  const allowed = Object.fromEntries(Object.entries(relativePaths).map(([name, relative]) => [name, segmentsOf(relative)]));
+  const platform = options.platform || `${process.platform}-${process.arch}`;
+  if (!Object.hasOwn(allowed, platform)) return { ok: true, generation, platform, sha256: null, size: null };
+  const base = `${h.dataRoot}/tool-cache/codex/generations/${generation}`;
+  const root = h.lstat(base);
+  if (root === null) throw h.fail('NOT_FOUND');
+  if (root.isSymbolicLink() || !root.isDirectory()) throw h.fail('MALFORMED');
+  const segments = allowed[platform];
+  let current = base;
+  segments.forEach((segment, index) => {
+    current = `${current}/${segment}`;
+    const stat = h.lstat(current);
+    if (stat === null) throw h.fail('NOT_FOUND');
+    if (stat.isSymbolicLink() || (index === segments.length - 1 ? !stat.isFile() : !stat.isDirectory())) throw h.fail('UNSAFE_PATH');
+  });
+  const { createHash } = await import('node:crypto');
+  const O = h.fs.constants;
+  const LIMIT = 512 * 1024 * 1024;
+  let fd;
+  try { fd = h.fs.openSync(current, O.O_RDONLY | O.O_NOFOLLOW | O.O_NONBLOCK); } catch (error) {
+    throw h.fail(error.code === 'ENOENT' ? 'NOT_FOUND' : 'UNSAFE_PATH');
+  }
+  try {
+    const before = h.fs.fstatSync(fd);
+    if (!before.isFile() || before.size > LIMIT) throw h.fail('UNSAFE_PATH');
+    const hash = createHash('sha256');
+    const buffer = Buffer.alloc(1024 * 1024);
+    let size = 0;
+    for (;;) {
+      const count = h.fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      hash.update(buffer.subarray(0, count));
+      size += count;
+      if (size > LIMIT) throw h.fail('UNSAFE_PATH');
+    }
+    const after = h.fs.fstatSync(fd);
+    if (size !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw h.fail('UNSAFE_PATH');
+    return { ok: true, generation, platform, sha256: hash.digest('hex'), size };
+  } finally { h.fs.closeSync(fd); }
+}
+
 // Credential bytes arrive on stdin. Nothing about them is ever printed.
 export async function injectCodexAuth(args, options = {}) {
   const h = await makeHelpers(options);
@@ -259,6 +329,22 @@ export async function removeCodexAuth(args, options = {}) {
   if (h.sha256(h.readNoFollow(robot.auth, h.AUTH_LIMIT)) !== request.expectedSha256) throw h.fail('REMOVE_MISMATCH');
   h.fs.unlinkSync(robot.auth);
   return { ok: true, removed: true };
+}
+
+// Route-A recovery of a crashed run: removes the leftover credential copy inside the container and reports only whether it was the
+// access-only shape. The bytes are never returned, so they never reach a host process. BUSY while an ALA process still has the robot home.
+export async function discardCodexAuth(args, options = {}) {
+  const h = await makeHelpers(options);
+  const robot = h.checkRobot(args);
+  const busy = h.commandLines().some(({ args: argv }) => argv.some((arg, index) => (arg === '--home' && argv[index + 1] === robot.home)
+    || arg === `--home=${robot.home}`));
+  if (busy) throw h.fail('BUSY');
+  if (h.lstat(robot.auth) === null) return { ok: true, removed: false, accessOnly: null };
+  const bytes = h.readNoFollow(robot.auth, h.AUTH_LIMIT);
+  const accessOnly = h.accessOnly(bytes);
+  if (h.sha256(h.readNoFollow(robot.auth, h.AUTH_LIMIT)) !== h.sha256(bytes)) throw h.fail('REMOVE_MISMATCH');
+  h.fs.unlinkSync(robot.auth);
+  return { ok: true, removed: true, accessOnly };
 }
 
 // Reads RoboTeam's session file and ALA's own transcript for the run folder. Never a credential file and never the
@@ -479,6 +565,21 @@ export function createCodexRuntime({ box, runCommand = defaultRunCommand, git = 
       }
     },
     async remove(robot, expectedSha256) { return inRoboTeam(removeCodexAuth, robot, { input: JSON.stringify({ expectedSha256 }) }); },
+    // Route A: the native binary's digest for the generation the robot would run (non-secret arguments, empty stdin).
+    async nativeDigest({ generation, relativePaths }) { return inRoboTeam(readCodexNativeDigest, { generation, relativePaths }, { timeoutMs: 60_000 }); },
+    // Route-A recovery: removes the leftover copy inside the container and polls BUSY like `readForCopyBack`.
+    async discard(robot, { timeoutMs = 30_000, intervalMs = 1000 } = {}) {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        try {
+          const { removed, accessOnly } = await inRoboTeam(discardCodexAuth, robot);
+          return { removed, accessOnly };
+        } catch (error) {
+          if (error.code !== 'BUSY' || Date.now() >= deadline) throw error;
+          await sleep(intervalMs);
+        }
+      }
+    },
     async turnIdentity(args) { return inRoboTeam(readCodexTurnIdentity, args); },
     async cliCount(robotName) { return (await inRoboTeam(waitRobotCliExit, { robotName })).count; },
     async waitCliExit(robotName, { timeoutMs = 180_000, intervalMs = 2000 } = {}) {
