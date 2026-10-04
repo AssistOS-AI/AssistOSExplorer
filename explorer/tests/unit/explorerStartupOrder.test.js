@@ -30,6 +30,62 @@ test('initial route replaces the static spinner before WebSkel mounts its loader
     assert.ok(mountIndex > removeIndex);
 });
 
+test('W1 page-change guards are installed in order, without an inline wrapper, and the denied-route fallback stays in its branch', () => {
+    const source = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
+    const at = (text, from = 0) => {
+        const index = source.indexOf(text, from);
+        assert.ok(index >= 0, `missing: ${text}`);
+        return index;
+    };
+    const order = [
+        'installExplorerResourceLoader(webSkel);',
+        'installDetachedRenderGuard(webSkel);',
+        'installPageChangeGuard(webSkel,',
+        'webSkel.setDomElementForPages(pageContent);',
+        'await mountInitialApplicationRoute({'
+    ].map((text) => at(text));
+
+    order.forEach((index, position) => {
+        if (position > 0) {
+            assert.ok(index > order[position - 1], `out of order: ${position}`);
+        }
+    });
+    assert.equal(source.includes('originalChangeToDynamicPage'), false);
+
+    const adminBranch = at('if (routePolicy?.adminOnly && !isAdminUser(context.authenticatedUser)) {');
+    const denied = at('resolveDeniedAdminRoute({', adminBranch);
+    const elseBranch = at('} else {', adminBranch);
+    assert.ok(denied < elseBranch, 'resolveDeniedAdminRoute must sit inside the admin-only branch');
+});
+
+test('W2 bootstrap resolves its route from the current address right after the page root is set', () => {
+    const source = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
+    const at = (text, from = 0) => {
+        const index = source.indexOf(text, from);
+        assert.ok(index >= 0, `missing: ${text}`);
+        return index;
+    };
+    const rootSet = at('webSkel.setDomElementForPages(pageContent);');
+    const resolve = at('resolveBootRoute({', rootSet);
+    const fileRouteFlag = at('const isFileExplorerRoute', resolve);
+    const policy = at('if (!isFileExplorerRoute) {', fileRouteFlag);
+    const mount = at('await mountInitialApplicationRoute({', policy);
+
+    assert.ok(rootSet < resolve && resolve < fileRouteFlag && fileRouteFlag < policy && policy < mount);
+    // A navigation event that fires between these two points would be lost, so no await may separate them.
+    assert.doesNotMatch(source.slice(rootSet, resolve), /\bawait\b/);
+    const resolveCall = source.slice(resolve, at('});', resolve));
+    assert.match(resolveCall, /capturedRoute: initialHashedRoute\b/);
+    assert.match(resolveCall, /currentHash: window\.location\.hash/);
+    assert.match(resolveCall, /^\s*roomEntry,?\s*$/m);
+    assert.match(resolveCall, /isWebSkelComponent: .*webSkel\.configs\?\.components/);
+    // The route policy must look up the re-resolved page, not the startup capture.
+    assert.match(source.slice(policy, mount), /getRuntimeComponentPolicy\(context\.plugins, pageName\)/);
+    assert.match(source, /const initialHashedRoute = resolveInitialHashedRoute\(window\.location\.hash\);/);
+    assert.match(source, /initialHashedRoute\?\.pageName === 'agent-runtime-wait'/);
+    assert.doesNotMatch(source, /preserveHash: suppressNavigationHash \} = initialHashedRoute\);/);
+});
+
 test('file explorer refreshes plugin slots when deferred discovery completes', () => {
     const mainSource = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
     const hostSource = fs.readFileSync(

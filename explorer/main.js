@@ -3,6 +3,7 @@ import assistosSDK, { initialiseAssistOS } from './services/assistosSDK.js';
 import { createComponentRegistry } from './services/runtime/componentRegistry.js';
 import { createRuntimePluginLoader } from './services/runtime/runtimePluginLoader.js';
 import { installExplorerResourceLoader } from './services/runtime/explorerResourceLoader.js';
+import { installDetachedRenderGuard, installPageChangeGuard } from './services/runtime/pageChangeGuards.js';
 import { filterRuntimePluginsByPolicy, forEachRuntimePluginEntry } from './utils/pluginUtils.core.js';
 import { initializeTheme } from './shared/ui/theme.js';
 import { openExpandedModal, restoreExpandedModal } from './shared/ui/expanded-modal.js';
@@ -12,6 +13,8 @@ import { isAdminUser } from './services/auth/adminUser.js';
 import {
     completeInitialApplicationRoute,
     mountInitialApplicationRoute,
+    resolveBootRoute,
+    resolveDeniedAdminRoute,
     resolveInitialHashedRoute
 } from './services/runtime/initial-application-route.js';
 import { installAuthNavigationGuard } from './services/infrastructure/authNavigationGuard.js';
@@ -232,6 +235,7 @@ async function start() {
     const workspaceRootPromise = roomEntry ? Promise.resolve('') : bootstrapWorkspaceRoot();
     const webSkel = await WebSkel.initialise('webskel.json');
     installExplorerResourceLoader(webSkel);
+    installDetachedRenderGuard(webSkel);
     webSkel.appServices = assistosSDK;
     await workspaceRootPromise;
 
@@ -444,13 +448,10 @@ async function start() {
             return result;
         };
 
-        const originalChangeToDynamicPage = webSkel.changeToDynamicPage;
-        if (typeof originalChangeToDynamicPage === 'function') {
-            webSkel.changeToDynamicPage = async (componentName, ...args) => {
-                await ensureComponentRegistered(componentName);
-                return originalChangeToDynamicPage.call(webSkel, componentName, ...args);
-            };
-        }
+        installPageChangeGuard(webSkel, {
+            ensureComponentRegistered,
+            getPageRoot: () => document.querySelector('#page_content')
+        });
     };
 
     installRuntimeComponentGuards();
@@ -479,18 +480,14 @@ async function start() {
     webSkel.setDomElementForPages(pageContent);
     const loader = document.querySelector("#before_webskel_loader");
 
-    let pageName;
-    let url;
-    let suppressNavigationHash = false;
-    if (initialHashedRoute) {
-        ({ pageName, url, preserveHash: suppressNavigationHash } = initialHashedRoute);
-    } else if (ROOM_ID_PATTERN.test(String(new URLSearchParams(window.location.search || '').get('roomId') || '').trim())) {
-        pageName = 'webmeet-dashboard';
-        url = 'webmeet-dashboard';
-    } else {
-        pageName = 'file-exp';
-        url = 'file-exp';
-    }
+    // WebSkel ignored history events until the page root was set. Re-read the address now, with nothing
+    // asynchronous between setDomElementForPages and this call, and mount the page the user navigated to last.
+    let { pageName, url, preserveHash: suppressNavigationHash } = resolveBootRoute({
+        capturedRoute: initialHashedRoute,
+        currentHash: window.location.hash,
+        roomEntry,
+        isWebSkelComponent: (name) => Boolean(webSkel.configs?.components?.some((component) => component.name === name))
+    });
 
     const isFileExplorerRoute = !roomEntry && pageName === 'file-exp';
     if (!isFileExplorerRoute) {
@@ -500,10 +497,10 @@ async function start() {
         }
         const routePolicy = getRuntimeComponentPolicy(context.plugins, pageName);
         if (routePolicy?.adminOnly && !isAdminUser(context.authenticatedUser)) {
-            window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
-            pageName = 'file-exp';
-            url = 'file-exp';
-            suppressNavigationHash = false;
+            ({ pageName, url, preserveHash: suppressNavigationHash } = resolveDeniedAdminRoute({
+                route: { pageName, url, preserveHash: suppressNavigationHash },
+                pageContent
+            }));
         } else {
             await runtimePluginLoader.ensureComponentRegistered(pageName, context.plugins);
         }

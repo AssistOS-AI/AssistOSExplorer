@@ -40,6 +40,10 @@ async function loadTreeContext(fileExp, targetDirectoryPath, options = {}) {
 }
 
 export async function loadStateFromURL(fileExp) {
+    // A page that was replaced before or while it loaded must not load a route or write history.
+    if (fileExp.element?.isConnected === false) {
+        return;
+    }
     {
         const rawPath = window.location.hash.split('#file-exp')[1] || '/';
         let path = rawPath;
@@ -97,7 +101,7 @@ export async function loadStateFromURL(fileExp) {
                 await fileExp.setEntries(parentEntries);
                 await fileExp.openFile(path);
                 const newUrl = buildFileExpHash(path);
-                if (window.location.hash !== newUrl) {
+                if (fileExp.element?.isConnected !== false && window.location.hash !== newUrl) {
                     history.pushState(null, '', newUrl);
                 }
                 fileExp.invalidate();
@@ -145,7 +149,7 @@ export async function loadDirectory(fileExp, path = fileExp.state.path) {
         fileExp.state.treeRootPath = normalizedPath;
 
         const newUrl = buildFileExpHash(normalizedPath);
-        if (window.location.hash !== newUrl) {
+        if (fileExp.element?.isConnected !== false && window.location.hash !== newUrl) {
             history.pushState(null, '', newUrl);
         }
 
