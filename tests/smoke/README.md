@@ -454,7 +454,7 @@ agent was actually started or stopped.
 Opt-in checks:
 
 - `SMOKE_OPEN_INTERPRETER=1` runs Copilot semantic routing and AKU memory checks that require configured external provider runtime.
-- `SMOKE_CODEX_DELEGATION=1` enables spec 06, which opens Copilot from an Explorer folder, requires delegation to exact `codexAgent`, verifies the structured task reaches `COMPLETED`, and proves the requested file contents through Explorer UI. Configure and validate Soul Gateway's `fast` tier before running it.
+- `SMOKE_CODEX_DELEGATION=1` selects the current C4 workflow delegation spec. Copilot starts one run-owned terminal workflow through `launch-workflow`; exactly one canonical matching Codex-only worker must produce the requested file, helper receipt and completed native child proof. The front backend is recorded separately through `SMOKE_C4_FRONT_BACKEND` and its configuration remains unchanged. Enabled live execution is refused until the reviewed phase6 runner and independently verified B+C setup exist. See [workflow delegation](./copilot-workflow-delegation_codex.md).
 - The ordinary Copilot folder-launch spec requires `SMOKE_RELEASE_MANIFEST` and
   binds that immutable 421 release bundle to the running outer Box before and
   after Playwright. For public QA, keep `SMOKE_BASE_URL` on the real public
@@ -830,7 +830,7 @@ in `MINIMUM_REVISIONS`. Update this section in the same change.
 
 ## Composed Copilot live skills gate
 
-Run `npm run test:copilot-live-skills` on the selected local or QA deployment host with the exact Box, workspace and release manifest pins described in [copilot-live-skills.md](./copilot-live-skills.md). One continuing deployed native conversation covers descriptor edits, helper-only edits, addition, UI disable/re-enable and deletion. Every turn requires its captured catalog, unchanged native continuation and fresh helper-written receipt; the test has no acceptance retries. The run folder, source generation, in-Box reader and turn validation all derive from the one workspace root proven from the inspected Box, which may contain spaces and Unicode. The disable and re-enable turns drive RoboTeam's Conversation skills page (WebChat menu) through `lib/conversation-skills.mjs`; those rewritten settings steps are unexecuted until the deployment gate (D1/D2); Copilot-family flows are excluded from the 2026-10-02 post-merge acceptance, and the gate stays blocked on SET-2. This supplements the separate native and settings tests.
+The C5 fixture and seven-phase callers use a run-owned uncommitted Git source, an explicit new Codex-only robot, absent-policy whole-source defaults and a separate execution folder. Current source hashes, actual Ploinky symlinks, native final text, helper receipts and policy isolation are described in [copilot-live-skills.md](./copilot-live-skills.md). Live execution remains blocked on SET-2 phase6 credential preflight, independently verified B+C and its reviewed integration; opting in cannot bypass the refusal. The disable/re-enable steps use RoboTeam's Conversation skills page (WebChat menu). The earlier rewrite was unexecuted until the deployment gate (D1/D2); Copilot-family flows are excluded from the 2026-10-02 post-merge acceptance. That historical status does not waive current gates. Offline fixture checks and one-test discovery do not claim deployed native execution passed.
 
 ## Codex-authenticated Copilot gate
 
