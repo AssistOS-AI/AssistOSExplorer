@@ -495,11 +495,42 @@ export function agentLeafPath({ observer, boxPrefix, containerId }) {
   return null;
 }
 
-// The MPS control daemons of the Box: processes placed exactly in <Box>/ploinky/core whose command is nvidia-cuda-mps-control.
-export function findMpsDaemons({ observer, boxPrefix, candidates = observer.scan() }) {
+// The MPS control daemon of the Box, from the product's own record (mirrors liveGpuCases.daemonIdentity). Never matched
+// by command name: Linux truncates /proc/<pid>/comm to 15 characters ("nvidia-cuda-mps"), and a name is not an identity.
+// Runs in the Box as the Box user: reads /run/ploinky/mps/state.json (the record ploinky's mps.mjs writes), proves the
+// recorded PID is alive with the recorded start time, and reports its cgroup as the Box sees it.
+export const MPS_DAEMON_STATE_PROGRAM = String.raw`
+const fs=require('node:fs');
+let state=null;
+try{const fd=fs.openSync('/run/ploinky/mps/state.json',fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);
+try{const st=fs.fstatSync(fd);if(!st.isFile()||st.uid!==process.getuid()||st.size>65536||(st.mode&0o777)!==0o600)throw Error('Unsafe state file');state=JSON.parse(fs.readFileSync(fd,'utf8'));}finally{fs.closeSync(fd);}}
+catch(e){if(e.code!=='ENOENT')throw e;}
+const daemon=state&&state.daemon&&Number.isSafeInteger(state.daemon.pid)?state.daemon:null;
+let alive=false,startTime=null,cgroup=null;
+if(daemon){try{const stat=fs.readFileSync('/proc/'+daemon.pid+'/stat','utf8');startTime=stat.slice(stat.lastIndexOf(')')+2).split(' ')[19];cgroup=fs.readFileSync('/proc/'+daemon.pid+'/cgroup','utf8').trim();alive=true;}catch(e){if(!['ENOENT','ESRCH'].includes(e.code))throw e;}}
+process.stdout.write(JSON.stringify({status:state?String(state.status||'').slice(0,32):null,daemon:daemon?{pid:daemon.pid,recordedStartTime:String(daemon.startTime),alive,startTime,cgroup}:null}));`;
+
+// The daemon as the Box sees it ({pid, startTime}, a Box PID), or null when none runs. A record that disagrees with /proc BLOCKS.
+export async function readMpsDaemon({ run = defaultRun, boxName }) {
+  const reply = checkedJson(await run('podman', [...coreArgs(boxName), 'node', '-e', MPS_DAEMON_STATE_PROGRAM], { timeoutMs: 20_000 }), 'MPS daemon record read');
+  const daemon = reply?.daemon;
+  if (!daemon || daemon.alive !== true) return null;
+  if (!Number.isSafeInteger(daemon.pid) || daemon.pid <= 1 || !/^[0-9]+$/.test(String(daemon.startTime))
+      || String(daemon.recordedStartTime) !== String(daemon.startTime) || daemon.cgroup !== '0::/ploinky/core') {
+    throw new EvidenceBlocked('The MPS daemon record disagrees with /proc (start time or cgroup), so the daemon is not provably the owned process.');
+  }
+  return { pid: daemon.pid, startTime: String(daemon.startTime) };
+}
+
+// The host process of that daemon: exactly one process in <Box>/ploinky/core whose PID-namespace chain is [host, Box] with
+// the Box PID, the same start identity, and that very cgroup (liveGpuCases.boxProcessOnHost). Never a name match.
+export function findMpsDaemon({ observer, boxPrefix, daemon, candidates }) {
   const core = `${boxPrefix}/ploinky/core`;
-  return candidates.map((pid) => observer.observe(pid)).filter((seen) => seen && seen.cgroup === core && seen.comm === 'nvidia-cuda-mps-control')
-    .map((seen) => ({ hostPid: seen.hostPid, bootId: seen.bootId, startIdentity: seen.startIdentity }));
+  const pids = candidates ?? observer.cgroupProcs(core) ?? [];
+  const matches = pids.map((pid) => observer.observe(pid)).filter((seen) => seen && seen.cgroup === core
+    && seen.nspid.length === 2 && seen.nspid[1] === daemon?.pid && String(seen.startIdentity) === String(daemon?.startTime));
+  if (matches.length !== 1) throw new EvidenceBlocked(`The MPS daemon ${daemon?.pid} cannot be mapped to exactly one host process in ${core} (${matches.length}).`);
+  return { hostPid: matches[0].hostPid, bootId: matches[0].bootId, startIdentity: String(matches[0].startIdentity) };
 }
 
 function verifyOwned(record, observed, { bootId, boxCgroupPrefix: prefix }) {
@@ -889,9 +920,11 @@ export function requireHardwareEnvironment(env = process.env, { home = env.HOME 
   else if (FOREIGN_BOX.test(box)) problems.push('SMOKE_PLOINKY_BOX_CONTAINER names the cleanup session\'s Box (foreign-workspace guard)');
   const workspace = String(env.SMOKE_WORKSPACE_ROOT || '').trim();
   if (workspace) {
-    const resolved = path.resolve(workspace);
+    // A path that exists is compared by its real path, so a symlink into a foreign workspace is refused too.
+    const real = (target) => { try { return fs.realpathSync(target); } catch { return path.resolve(target); } };
+    const resolved = real(workspace);
     for (const relative of FOREIGN_WORKSPACES) {
-      const foreign = path.join(home, relative);
+      const foreign = real(path.join(home, relative));
       if (resolved === foreign || resolved.startsWith(`${foreign}${path.sep}`)) problems.push(`SMOKE_WORKSPACE_ROOT is under ${foreign}, the cleanup session's workspace (foreign-workspace guard)`);
     }
   }

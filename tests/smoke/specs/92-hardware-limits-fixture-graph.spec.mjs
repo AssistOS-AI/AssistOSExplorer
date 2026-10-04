@@ -216,13 +216,19 @@ test.describe('Hardware limits fixture graph @hardware-limits', () => {
     const midpoint = await api.readOk();
     const runningB = await readRunningSet({ boxName });
     const refusal = await api.post({ action: 'apply', expectedToken: tokenOf(midpoint), containers: [graph.refusedInstance.key] });
-    expect(refusal.status, `Apply of the refused instance answered ${refusal.status} ${refusal.body?.error ?? ''}`).toBe(422);
+    // The server expands a refused root to the blocked dependants that recover with it (reconcile.mjs), so the answer is a
+    // 207 whose results name the root as refused and exactly those dependants as blocked.
+    expect(refusal.status, `Apply of the refused instance answered ${refusal.status} ${refusal.body?.error ?? ''}`).toBe(207);
     expect(refusal.body.ok).toBe(false);
-    const refusedResult = (refusal.body.results || []).find((result) => result.key === graph.refusedInstance.key);
-    expect(refusedResult?.state, 'the refused target must be reported as refused').toBe('refused');
+    const resultOf = (key) => (refusal.body.results || []).find((result) => result.key === key);
+    const refusedResult = resultOf(graph.refusedInstance.key);
+    expect(refusedResult?.state, 'the refused root must be reported as refused').toBe('refused');
     expect(refusedResult.problem?.state).toBe('refused');
     expect(refusedResult.problem?.code, 'the refusal carries its typed code').toEqual(expect.any(String));
     expect(refusedResult.problem.code.length).toBeGreaterThan(0);
+    expect([...(refusal.body.expandedContainers || [])].sort(), 'exactly the blocked dependants are coordinated with the root')
+      .toEqual([graph.dependantInstance.key, graph.staticInstance.key].sort());
+    for (const dependant of [graph.dependantInstance, graph.staticInstance]) expect(resultOf(dependant.key)?.state, `${dependant.key} must be reported as blocked`).toBe('blocked');
     const afterRefusal = await api.readOk();
     expect(instanceByKey(afterRefusal, graph.refusedInstance.key).instance.availability).toBe('refused');
     expect(instanceByKey(afterRefusal, graph.dependantInstance.key).instance.availability).toBe('blocked');

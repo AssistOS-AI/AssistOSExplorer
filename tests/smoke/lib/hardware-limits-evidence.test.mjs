@@ -23,7 +23,7 @@ import {
   createIdleGate,
   diffRunningSets,
   evaluateIdleGate,
-  findMpsDaemons,
+  findMpsDaemon,
   findSingleInstanceAgent,
   hostRunnerIdentities,
   inFlightCounts,
@@ -40,6 +40,7 @@ import {
   parseProof,
   readHostGpuIdentity,
   readLeaf,
+  readMpsDaemon,
   readRunningSet,
   readRunnerDigest,
   readRunnerProcesses,
@@ -801,12 +802,15 @@ test('boxCgroupPrefix reads the init PID and the exact Box ID from one inspectio
 const LEAF_A = `${REAL_PREFIX}/ploinky/agents/libpod-${ID_A}.scope`;
 function ownershipWorld() {
   const entries = {
-    6000: { startIdentity: '10', cgroup: `${REAL_PREFIX}/ploinky/core`, comm: 'nvidia-cuda-mps-control' },
-    6001: { startIdentity: '11', cgroup: `${REAL_PREFIX}/ploinky/core`, comm: 'nvidia-cuda-mps-server', ppid: 6000 },
+    // Real comm values are truncated to 15 characters: both the daemon and the server read "nvidia-cuda-mps".
+    6000: { startIdentity: '10', cgroup: `${REAL_PREFIX}/ploinky/core`, comm: 'nvidia-cuda-mps', nspid: [6000, 321] },
+    6001: { startIdentity: '11', cgroup: `${REAL_PREFIX}/ploinky/core`, comm: 'nvidia-cuda-mps', ppid: 6000 },
     6002: { startIdentity: '12', cgroup: LEAF_A, comm: 'llama-server' },
     6003: { startIdentity: '13', cgroup: `${REAL_PREFIX}/ploinky/agents/libpod-${ID_B}.scope`, comm: 'other-agent-cuda' },
     6004: { startIdentity: '14', cgroup: `${REAL_PREFIX}/ploinky/core`, comm: 'stray', ppid: 1 },
     6005: { startIdentity: '15', cgroup: INIT_CGROUP.replace(BOX_ID, 'd'.repeat(64)), comm: 'foreign-box-process' },
+    // A decoy that carries the untruncated name but is not the recorded daemon (another PID in the Box, another start time).
+    6007: { startIdentity: '17', cgroup: `${REAL_PREFIX}/ploinky/core`, comm: 'nvidia-cuda-mps-control', nspid: [6007, 322] },
     6006: { startIdentity: '16', cgroup: `${REAL_PREFIX}/ploinky/agents/libpod-${ID_B}.scope`, comm: 'child-of-daemon-elsewhere', ppid: 6000 },
   };
   return { entries, host: hostWorld(entries, [LEAF_A]) };
@@ -825,7 +829,7 @@ test('the MPS server of a registered daemon and the processes of a registered le
   const world = ownershipWorld();
   const query = { value: gpuXml() };
   const gate = await registeredGate(world, query);
-  assert.deepEqual(findMpsDaemons({ observer: world.host, boxPrefix: REAL_PREFIX }).map((record) => record.hostPid), [6000]);
+  assert.equal(findMpsDaemon({ observer: world.host, boxPrefix: REAL_PREFIX, daemon: { pid: 321, startTime: '10' } }).hostPid, 6000);
   gate.registerDaemon(6000);
   gate.registerLeaf(agentLeafPath({ observer: world.host, boxPrefix: REAL_PREFIX, containerId: ID_A }));
   query.value = listed(6001, 6002);
@@ -985,4 +989,70 @@ test('removeFixture stops at the first failing command and never touches the rep
   const none = [];
   await removeFixture({ run: async (command, args) => { none.push(args.join(' ')); return { status: 0 }; }, bin: 'ploinky', cwd: '/w', repo: 'hwlFixture', readSnapshot: async () => ({ agents: [] }) });
   assert.deepEqual(none, ['disable repo hwlFixture']);
+});
+
+// ---------------------------------------------------------------------------
+// The MPS daemon from the product's own record (NB1)
+
+const daemonReply = (overrides = {}) => ({ status: 'ready', daemon: { pid: 321, recordedStartTime: '10', alive: true, startTime: '10', cgroup: '0::/ploinky/core', ...overrides } });
+const recordRun = (reply) => (command, args) => ({ status: 0, stdout: JSON.stringify(reply), args });
+
+test('readMpsDaemon reads the daemon record through the core observer and returns its Box PID and start time', async () => {
+  const calls = [];
+  const daemon = await readMpsDaemon({ run: (command, args) => { calls.push(args); return { status: 0, stdout: JSON.stringify(daemonReply()) }; }, boxName: BOX });
+  assert.deepEqual(daemon, { pid: 321, startTime: '10' });
+  assert.deepEqual(calls[0].slice(0, 5), coreArgs(BOX));
+  assert.equal(calls[0].includes('node'), true);
+  assert.equal(await readMpsDaemon({ run: recordRun({ status: null, daemon: null }), boxName: BOX }), null);
+  assert.equal(await readMpsDaemon({ run: recordRun(daemonReply({ alive: false, startTime: null, cgroup: null })), boxName: BOX }), null);
+});
+
+test('readMpsDaemon BLOCKS when the record disagrees with /proc', async () => {
+  for (const overrides of [{ startTime: '99' }, { cgroup: '0::/ploinky/agents/x' }, { pid: 1 }, { recordedStartTime: 'abc', startTime: 'abc' }]) {
+    await assert.rejects(() => readMpsDaemon({ run: recordRun(daemonReply(overrides)), boxName: BOX }), EvidenceBlocked, JSON.stringify(overrides));
+  }
+  await assert.rejects(() => readMpsDaemon({ run: () => ({ status: 1, stdout: '', stderr: 'unsafe' }), boxName: BOX }), /daemon record read failed/);
+});
+
+test('findMpsDaemon maps the Box PID to exactly one host process by NSpid, start time and cgroup, never by name', () => {
+  const world = ownershipWorld();
+  const find = (daemon) => findMpsDaemon({ observer: world.host, boxPrefix: REAL_PREFIX, daemon });
+  assert.deepEqual(find({ pid: 321, startTime: '10' }), { hostPid: 6000, bootId: 'boot-1', startIdentity: '10' });
+  // Wrong start time, wrong Box PID, or a record naming the decoy's PID with the real start time: no match.
+  assert.throws(() => find({ pid: 321, startTime: '11' }), /exactly one host process .* \(0\)/);
+  assert.throws(() => find({ pid: 999, startTime: '10' }), EvidenceBlocked);
+  assert.throws(() => find({ pid: 322, startTime: '10' }), EvidenceBlocked);
+  // The decoy is selected only by its own recorded identity, and then only because it carries that identity, not its name.
+  assert.equal(find({ pid: 322, startTime: '17' }).hostPid, 6007);
+  // A process with the right NSpid and start time in another cgroup is not the daemon.
+  world.entries[6000] = { ...world.entries[6000], cgroup: `${REAL_PREFIX}/ploinky/agents/libpod-${ID_A}.scope` };
+  assert.throws(() => find({ pid: 321, startTime: '10' }), EvidenceBlocked);
+  assert.throws(() => findMpsDaemon({ observer: world.host, boxPrefix: REAL_PREFIX, daemon: { pid: 321, startTime: '10' }, candidates: [6000] }), EvidenceBlocked, 'the cgroup is re-checked even for supplied candidates');
+  // Two processes with the same identity are ambiguous.
+  const twin = ownershipWorld();
+  twin.entries[6008] = { ...twin.entries[6000], startIdentity: '10' };
+  assert.throws(() => findMpsDaemon({ observer: twin.host, boxPrefix: REAL_PREFIX, daemon: { pid: 321, startTime: '10' }, candidates: [6000, 6008] }), /\(2\)/);
+});
+
+test('regression: matching the daemon by the untruncated command name finds nothing, the record-based mapping finds it', () => {
+  const world = ownershipWorld();
+  const core = `${REAL_PREFIX}/ploinky/core`;
+  const byOldName = world.host.cgroupProcs(core).map((pid) => world.host.observe(pid)).filter((seen) => seen.cgroup === core && seen.comm === 'nvidia-cuda-mps-control' && seen.nspid.length === 2 && seen.startIdentity === '10');
+  assert.deepEqual(byOldName, [], 'the real daemon reads "nvidia-cuda-mps" in /proc/<pid>/comm, so the old name match cannot find it');
+  assert.equal('nvidia-cuda-mps-control'.length > 15 && world.entries[6000].comm === 'nvidia-cuda-mps-control'.slice(0, 15), true);
+  assert.equal(findMpsDaemon({ observer: world.host, boxPrefix: REAL_PREFIX, daemon: { pid: 321, startTime: '10' } }).hostPid, 6000);
+});
+
+test('the foreign-workspace guard compares real paths, so a symlink into a foreign workspace is refused', () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hwl-home-')));
+  try {
+    fs.mkdirSync(path.join(home, 'work', 'testExplorerFresh', 'inner'), { recursive: true });
+    fs.mkdirSync(path.join(home, 'work', 'owned'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'work', 'testExplorerFresh', 'inner'), path.join(home, 'work', 'looks-owned'));
+    const env = { SMOKE_DEPLOYMENT_MODE: 'box', SMOKE_BASE_URL: 'http://localhost:18080', SMOKE_PLOINKY_BOX_CONTAINER: BOX };
+    assert.throws(() => requireHardwareEnvironment({ ...env, SMOKE_WORKSPACE_ROOT: path.join(home, 'work', 'looks-owned') }, { home }), /foreign-workspace guard/);
+    assert.doesNotThrow(() => requireHardwareEnvironment({ ...env, SMOKE_WORKSPACE_ROOT: path.join(home, 'work', 'owned') }, { home }));
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

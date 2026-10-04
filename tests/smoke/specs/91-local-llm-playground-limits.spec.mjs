@@ -34,7 +34,7 @@ import {
   createHostObserver,
   createIdleGate,
   defaultRun,
-  findMpsDaemons,
+  findMpsDaemon,
   findSingleInstanceAgent,
   gpuQueryArgv,
   hostRunnerIdentities,
@@ -43,6 +43,7 @@ import {
   measureInference,
   readHostGpuIdentity,
   readLeaf,
+  readMpsDaemon,
   readRunnerDigest,
   readRunnerProcesses,
   readRunningSet,
@@ -230,16 +231,19 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
     });
   }
 
-  // Role-specific ownership (liveGpuGate): the Box's MPS control daemon (its server is the daemon's child in
-  // <Box>/ploinky/core) and the exact agent leaf (every process inside it is a client of this test). Nothing else is owned.
-  function registerOwners(containerId) {
-    const daemons = findMpsDaemons({ observer: state.observer, boxPrefix: state.boxPrefix });
-    expect(daemons.length, 'the Box must run its MPS control daemon once a GPU share is applied').toBeGreaterThanOrEqual(1);
-    for (const daemon of daemons) state.gate.registerDaemon(daemon.hostPid);
+  // Role-specific ownership (liveGpuGate): the Box's MPS control daemon, identified from the product's own record
+  // (/run/ploinky/mps/state.json read in the Box, mapped to the host by NSpid, start time and the exact
+  // <Box>/ploinky/core cgroup; never by command name), whose child is the MPS server, and the exact agent leaf (every
+  // process inside it is a client of this test). Nothing else is owned.
+  async function registerOwners(containerId) {
+    const recorded = await readMpsDaemon({ boxName: state.boxName });
+    expect(recorded, 'the Box must record a running MPS control daemon once a GPU share is applied').toBeTruthy();
+    const daemon = findMpsDaemon({ observer: state.observer, boxPrefix: state.boxPrefix, daemon: recorded });
+    state.gate.registerDaemon(daemon.hostPid);
     const leaf = agentLeafPath({ observer: state.observer, boxPrefix: state.boxPrefix, containerId });
     expect(leaf, `the cgroup leaf of ${containerId} must exist beneath the exact Box`).toBeTruthy();
     state.gate.registerLeaf(leaf);
-    return { daemons: daemons.map((daemon) => daemon.hostPid), leaf };
+    return { daemon: { hostPid: daemon.hostPid, boxPid: recorded.pid }, leaf };
   }
 
   // ---- 1 -----------------------------------------------------------------
@@ -289,7 +293,7 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
     evidence.write('91-budget-readback.json', { agent: AGENT_REF, instance: instance.key, budget: BUDGET, expectedMemoryBytes: memoryBytes, leaf: { path: leaf.leaf, cpuMax: leaf.cpuMax, memoryMax: leaf.memoryMax, swapMax: leaf.swapMax, pidsMax: leaf.pidsMax }, gpuShareMiB: state.shareMiB });
 
     // Run the small model on llama.cpp from the Local LLMs dashboard.
-    state.owners = registerOwners(state.containerId);
+    state.owners = await registerOwners(state.containerId);
     await state.gate.check('before-run', { minFreeMiB: state.shareMiB + 256 });
     const { dashboard, via } = await openDashboard(page);
     const form = await selectModelAndRunner(page, dashboard);
@@ -356,7 +360,7 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
     const inner = await readRunnerProcesses({ boxName: state.boxName, agentName: state.instanceKey });
     const hostIdentities = hostRunnerIdentities({ inner, containerId: state.containerId, observer: state.observer });
     const hostPids = hostIdentities.map((entry) => entry.hostPid);
-    state.owners = registerOwners(state.containerId);
+    state.owners = await registerOwners(state.containerId);
     await state.gate.check('inference-start');
 
     // One Playground request through the UI; its exact interval is the one the browser's own tool call recorded.
