@@ -7,9 +7,16 @@ import { assertBoxWorkspacePath, inspectBoxWorkspace } from './box-workspace.mjs
 import { collectCopilotReleaseEvidence, sameCopilotReleaseGeneration } from './copilot-release-evidence.mjs';
 import { validateWorkspaceSourceMount } from './live-box.mjs';
 import { liveSkillsHash, liveSkillsWorkspace, UUID } from './copilot-live-skills.mjs';
+import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
 import { inside, requireMount, rejectShadows } from './local-snapshot-bindings.mjs';
 
-const CONTRACT_FILES = [
+const CONTRACT_FILES = Object.freeze([
+    'server/soul-gateway-service.mjs', 'server/soul-gateway-opencode.mjs',
+    'server/soul-gateway-connection.mjs', 'server/agent-model-config.mjs',
+    'server/robot-skillsets.mjs', 'server/skill-policy.mjs', 'server/skill-files.mjs', 'server/copilot-skillset.mjs',
+    'server/skill-descriptor.mjs', 'server/skillsetMDParser.mjs', 'server/workspace-skill-source.mjs',
+    'server/required-skills.mjs', 'server/skill-repository-source.mjs', 'server/project-storage.mjs',
+    'server/repository-client.mjs', 'server/coding-agents.mjs', 'server/robot-shell.mjs',
     'server/ala-command.mjs', 'server/workspace-root.mjs', 'copilot/src/lib/config/achillesSettings.mjs',
     'copilot/src/lib/storage/privateDataRoot.mjs', 'copilot/src/lib/storage/workspaceStateLock.mjs',
     'copilot/src/permissions/protocol.mjs',
@@ -17,7 +24,9 @@ const CONTRACT_FILES = [
     'server/live-skill-catalog.mjs', 'server/live-skill-install.mjs', 'server/skill-catalog-api.mjs',
     'copilot/src/lib/storage/conversationSessionStore.mjs', 'copilot/src/lib/skills/robotSkillCatalog.mjs',
     'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
-];
+]);
+
+export { CONTRACT_FILES as LIVE_SKILLS_CONTRACT_FILES };
 
 function command(args, input = '') {
     return new Promise((resolve, reject) => {
@@ -451,6 +460,15 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
     return {
         release,
         workspaceRoot: hostWorkspace,
+        async fixtureOperation(action, fixture) {
+            assert.ok(['prepare', 'seed-defaults', 'remove-links', 'remove-folders'].includes(action));
+            assert.equal(fixture.workspace, liveSkillsWorkspace(hostWorkspace, fixture.folder));
+            const runtime = await binding(fixture.workspace, fixture.repositoryRoot);
+            return runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
+                'node', '--input-type=module', '-'], program(operateLiveSkillsFixture, {
+                action, fixture, workspaceRoot: hostWorkspace, expectedRepository, contractHashes: codeHashes,
+            }));
+        },
         async capture({ sessionId, fixture }) {
             assert.equal(fixture.workspace, liveSkillsWorkspace(hostWorkspace, fixture.folder), 'The fixture is not under the admitted workspace root.');
             assert.match(fixture.robotId || '', /^[a-z0-9][a-z0-9-]{2,63}$/, 'An explicit owned robot ID is required.');

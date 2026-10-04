@@ -6,19 +6,13 @@ import { randomUUID, createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import {
-    createLiveSkillsRuntimeReader, normalizeLiveSkillsImageId, program, readLiveSkillsCodeHashes, readLiveSkillsSnapshot,
+    LIVE_SKILLS_CONTRACT_FILES, createLiveSkillsRuntimeReader, normalizeLiveSkillsImageId, program, readLiveSkillsCodeHashes, readLiveSkillsSnapshot,
     readRegistryAndRuntime, validateLiveSkillsRuntimeBinding,
 } from './copilot-live-skills-runtime.mjs';
 import { createLiveSkillsFixture, liveSkillsHash, liveSkillSources, liveSkillsPrompt, policyEvidence, validateLiveSkillsTurn } from './copilot-live-skills.mjs';
 
 const digest = 'a'.repeat(64);
-const files = [
-    'server/ala-command.mjs', 'server/workspace-root.mjs', 'copilot/src/lib/config/achillesSettings.mjs',
-    'copilot/src/lib/storage/privateDataRoot.mjs', 'copilot/src/lib/storage/workspaceStateLock.mjs',
-    'copilot/src/permissions/protocol.mjs',
-    'server/copilot-context.mjs', 'server/constants.mjs', 'server/robot-store.mjs',
-    'server/live-skill-catalog.mjs', 'server/live-skill-install.mjs', 'server/skill-catalog-api.mjs', 'copilot/src/lib/storage/conversationSessionStore.mjs',
-    'copilot/src/lib/skills/robotSkillCatalog.mjs', 'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs'];
+const files = LIVE_SKILLS_CONTRACT_FILES;
 
 function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'AchillesCLI') {
     const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));

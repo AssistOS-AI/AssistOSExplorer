@@ -195,7 +195,7 @@ test('spec 06 drives the RoboTeam page through the conversation skills helpers',
         assert.match(spec, new RegExp(`\\b${name}\\b`), `spec 06 must use ${name}.`);
     }
     assert.doesNotMatch(spec, /function currentModal|currentModal\(/);
-    assert.match(spec, /robotId: defaultRobotId/);
+    assert.match(spec, /robotId: fixture\.robotId/);
 });
 
 test('the approval module reads the conversation from the RoboTeam link', () => {
