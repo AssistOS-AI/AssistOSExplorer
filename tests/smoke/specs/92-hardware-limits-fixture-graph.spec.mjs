@@ -22,11 +22,11 @@ import {
   agentByRef,
   createEvidenceWriter,
   createHardwareApi,
-  defaultRun,
   diffRunningSets,
   instanceByKey,
   onlyExpectedChanged,
   readRunningSet,
+  removeFixture,
   requireHardwareEnvironment,
   tokenOf,
   waitFor,
@@ -216,8 +216,13 @@ test.describe('Hardware limits fixture graph @hardware-limits', () => {
     const midpoint = await api.readOk();
     const runningB = await readRunningSet({ boxName });
     const refusal = await api.post({ action: 'apply', expectedToken: tokenOf(midpoint), containers: [graph.refusedInstance.key] });
-    expect(refusal.status, 'Apply of a refused instance must not succeed silently').not.toBe(500);
-    expect(JSON.stringify(refusal.body).toLowerCase(), 'the answer names the refusal').toContain('refus');
+    expect(refusal.status, `Apply of the refused instance answered ${refusal.status} ${refusal.body?.error ?? ''}`).toBe(422);
+    expect(refusal.body.ok).toBe(false);
+    const refusedResult = (refusal.body.results || []).find((result) => result.key === graph.refusedInstance.key);
+    expect(refusedResult?.state, 'the refused target must be reported as refused').toBe('refused');
+    expect(refusedResult.problem?.state).toBe('refused');
+    expect(refusedResult.problem?.code, 'the refusal carries its typed code').toEqual(expect.any(String));
+    expect(refusedResult.problem.code.length).toBeGreaterThan(0);
     const afterRefusal = await api.readOk();
     expect(instanceByKey(afterRefusal, graph.refusedInstance.key).instance.availability).toBe('refused');
     expect(instanceByKey(afterRefusal, graph.dependantInstance.key).instance.availability).toBe('blocked');
@@ -286,7 +291,6 @@ test.describe('Hardware limits fixture graph @hardware-limits', () => {
       await other.waitForTimeout(8000);
       afterWait = { requests: requests.length, navigations: navigations.length };
       expect(afterWait, 'a terminal page must not poll or reload').toEqual(settled);
-      expect(await other.evaluate(() => performance.getEntriesByType('navigation').length)).toBe(1);
     } finally {
       await context.close();
     }
@@ -301,20 +305,16 @@ test.describe('Hardware limits fixture graph @hardware-limits', () => {
       const page = await context.newPage();
       await signIn(page, smokeConfig.primaryUser, '/');
       const api = createHardwareApi({ request: page.request });
-      const bin = resolvePloinkyExecutable();
-      const run = (args) => defaultRun(bin, args, { cwd: smokeConfig.workspaceRoot, timeoutMs: 5 * 60_000 });
-      const commands = [];
-      const disable = (target) => {
-        const result = run(['disable', 'agent', target]);
-        commands.push({ args: ['disable', 'agent', target], status: result.status });
-        if (result.status !== 0) throw new Error(`ploinky disable agent ${target} exited ${result.status}.`);
-      };
-      for (const entry of [FIXTURE.static, FIXTURE.dependant, FIXTURE.refused, FIXTURE.aliased]) disable(ref(entry));
-      const stillAliased = agentByRef(await api.readOk(), ref(FIXTURE.aliased))?.containers?.some((instance) => instance.alias === FIXTURE.aliased.alias);
-      if (stillAliased) disable(FIXTURE.aliased.alias);
-      const repository = run(['disable', 'repo', FIXTURE.repo]);
-      commands.push({ args: ['disable', 'repo', FIXTURE.repo], status: repository.status });
-      if (repository.status !== 0) throw new Error(`ploinky disable repo ${FIXTURE.repo} exited ${repository.status}.`);
+      // Every instance is disabled by its exact registry key (also the alias instance) and every command is awaited.
+      // `ploinky disable agent` exits 0 for a target that is not enabled or ambiguous, so the exit status is not proof:
+      // the snapshot below is the authority.
+      const removal = await removeFixture({
+        bin: resolvePloinkyExecutable(),
+        cwd: smokeConfig.workspaceRoot,
+        repo: FIXTURE.repo,
+        order: [ref(FIXTURE.static), ref(FIXTURE.dependant), ref(FIXTURE.refused), ref(FIXTURE.aliased)],
+        readSnapshot: () => api.readOk(),
+      });
 
       const proven = await waitFor(async () => {
         const snapshot = await api.readOk();
@@ -325,7 +325,7 @@ test.describe('Hardware limits fixture graph @hardware-limits', () => {
         const running = new Set((await readRunningSet({ boxName })).map((entry) => entry.name));
         return ready.every((instance) => running.has(instance.key)) ? { instances: instances.length, ready: ready.length } : null;
       }, { timeoutMs: 3 * APPLY_BOUND_MS, intervalMs: 5000, label: `the ${EXPECTED_GRAPH_RUNTIMES}-runtime graph without the fixture` });
-      evidence.write('92-teardown.json', { commands, graph: proven });
+      evidence.write('92-teardown.json', { commands: removal.commands, graph: proven });
     } finally {
       await context.close();
     }

@@ -13,6 +13,7 @@
 // evidence redaction.
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -31,6 +32,9 @@ export const MPS_PIPE_DIRECTORY = '/run/ploinky-mps-pipe';
 // The small model of E2E-D (local-llms catalog, models.json: qwen2.5-0.5b-instruct-q4_k_m).
 export const SMALL_MODEL_ID = 'qwen2.5-0.5b-instruct-q4_k_m';
 export const SMALL_MODEL_SHA256 = '74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db';
+export const SMALL_MODEL_SIZE = 491400032;
+export const SMALL_MODEL_COMMIT = '9217f5db79a29953eb74d5343926648285ec7e67';
+export const RUNNER_EXECUTABLE = '/opt/llama.cpp/llama-server';
 
 // The least number of observations that must be taken WHILE a request is outstanding.
 export const INFERENCE_MIN_IN_FLIGHT = Object.freeze({ cgroup: 3, gpu: 2 });
@@ -285,11 +289,40 @@ export function runnerIdentity(runnerProcess, { share, label = 'runner' }) {
     problems,
     identity: {
       pid: runnerProcess.pid,
+      exe: runnerProcess.exe ?? null,
       uid: uid[0] ?? null,
       mps: Object.fromEntries(MPS_RUNNER_NAMES.map((name) => [name, cuda[name] ?? null])),
       cudaNames: names,
     },
   };
+}
+
+// The SHA-256 and size of the runner executable inside the agent (liveLlmCommands.LLM_IMAGE_DIGESTS, one file).
+export const RUNNER_DIGEST_PROGRAM = String.raw`
+const fs=require('node:fs');const crypto=require('node:crypto');
+const file='/opt/llama.cpp/llama-server';
+try{const hash=crypto.createHash('sha256');let size=0;const fd=fs.openSync(file,fs.constants.O_RDONLY);
+try{const buffer=Buffer.alloc(1<<20);for(;;){const n=fs.readSync(fd,buffer,0,buffer.length,null);if(!n)break;size+=n;hash.update(buffer.subarray(0,n));}}finally{fs.closeSync(fd);}
+process.stdout.write(JSON.stringify({file,sha256:hash.digest('hex'),size}));}
+catch(e){process.stdout.write(JSON.stringify({file,sha256:null,size:null,error:String(e.code||e.message).slice(0,40)}));}`;
+
+export async function readRunnerDigest({ run = defaultRun, boxName, agentName }) {
+  validateBoxName(agentName);
+  const parsed = checkedJson(await run('podman', [...nestedArgs(boxName), 'container', 'exec', agentName, 'node', '-e', RUNNER_DIGEST_PROGRAM], { timeoutMs: 120_000 }), 'Runner digest read');
+  if (!parsed || parsed.file !== RUNNER_EXECUTABLE || !/^[0-9a-f]{64}$/.test(String(parsed.sha256)) || !Number.isSafeInteger(parsed.size) || parsed.size < 1) {
+    throw new EvidenceBlocked(`The image holds no readable ${RUNNER_EXECUTABLE} to record a runner digest for (${String(parsed?.error || 'absent')}).`);
+  }
+  return { file: parsed.file, sha256: parsed.sha256, size: parsed.size };
+}
+
+// The device identity the host driver reports (one GPU row: uuid, driver version), to cross-check the Box's own report.
+export async function readHostGpuIdentity({ run = defaultRun, nvidiaSmi = 'nvidia-smi', uuid }) {
+  const text = checked(await run(nvidiaSmi, ['--query-gpu=uuid,driver_version', '--format=csv,noheader', '-i', uuid], { timeoutMs: 20_000 }), 'Host GPU identity query');
+  const rows = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => line.split(',').map((part) => part.trim()));
+  if (rows.length !== 1 || rows[0].length !== 2 || rows[0][0] !== uuid || !/^[0-9]+(?:\.[0-9]+){1,3}$/.test(rows[0][1])) {
+    throw new EvidenceBlocked('The host GPU identity query did not return exactly the selected device and a driver version.');
+  }
+  return { uuid: rows[0][0], driverVersion: rows[0][1] };
 }
 
 export async function readRunnerProcesses({ run = defaultRun, boxName, agentName }) {
@@ -372,7 +405,8 @@ export function cgroupWithin(candidate, prefix) {
 }
 
 // Host /proc observer: the identity of a process (boot ID, PID, start time), its cgroup, uid and PID namespaces.
-export function createHostObserver({ fsApi = fs, procRoot = '/proc' } = {}) {
+// `cgroupProcs(path)` lists the PIDs of one cgroup directory (null when it is gone).
+export function createHostObserver({ fsApi = fs, procRoot = '/proc', cgroupRoot = '/sys/fs/cgroup' } = {}) {
   const bootId = () => fsApi.readFileSync(`${procRoot}/sys/kernel/random/boot_id`, 'utf8').trim();
   const observe = (pid) => {
     if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('Invalid host PID');
@@ -381,6 +415,7 @@ export function createHostObserver({ fsApi = fs, procRoot = '/proc' } = {}) {
       const tail = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
       const status = fsApi.readFileSync(`${procRoot}/${pid}/status`, 'utf8');
       const cgroup = fsApi.readFileSync(`${procRoot}/${pid}/cgroup`, 'utf8');
+      const comm = (() => { try { return String(fsApi.readFileSync(`${procRoot}/${pid}/comm`, 'utf8')).trim(); } catch { return ''; } })();
       const uid = (/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m.exec(status) || []).slice(1, 5).map(Number);
       const nspid = (/^NSpid:\s+([0-9\s]+)$/m.exec(status) || [, ''])[1].trim().split(/\s+/).filter(Boolean).map(Number);
       const unified = /^0::(\/.*)$/m.exec(cgroup);
@@ -390,6 +425,7 @@ export function createHostObserver({ fsApi = fs, procRoot = '/proc' } = {}) {
         startIdentity: String(tail[19]),
         ppid: Number(tail[1]),
         cgroup: unified ? unified[1] : '',
+        comm,
         uid,
         nspid,
       };
@@ -399,7 +435,18 @@ export function createHostObserver({ fsApi = fs, procRoot = '/proc' } = {}) {
     }
   };
   const scan = () => fsApi.readdirSync(procRoot).filter((name) => /^[1-9][0-9]*$/.test(name)).map(Number);
-  return { bootId, observe, scan };
+  const cgroupProcs = (cgroupPath) => {
+    if (typeof cgroupPath !== 'string' || !cgroupPath.startsWith('/') || cgroupPath.includes('..')) throw new Error('Invalid cgroup path');
+    try {
+      const pids = String(fsApi.readFileSync(`${cgroupRoot}${cgroupPath}/cgroup.procs`, 'utf8')).split('\n').filter(Boolean);
+      if (pids.length > 4096 || pids.some((value) => !/^[1-9][0-9]{0,9}$/.test(value))) throw new Error('Unsupported cgroup.procs grammar');
+      return pids.map(Number);
+    } catch (error) {
+      if (['ENOENT', 'ESRCH', 'ENOTDIR'].includes(error.code)) return null;
+      throw error;
+    }
+  };
+  return { bootId, observe, scan, cgroupProcs };
 }
 
 // Map an in-agent runner process (its PID in the agent's namespace and its start time) to exactly one host process of
@@ -415,13 +462,44 @@ export function hostRunnerIdentities({ inner, containerId, observer, candidates 
   });
 }
 
-// The Box's own cgroup on the host, from the Box's main process.
+// The exact cgroup prefix of one Box, from its init process (mirrors ploinky tests/hardware-limits/liveGpuHost.mjs
+// boxCgroupPrefix). The Box's init runs in /ploinky/core, so the prefix is its host cgroup minus that suffix, and the
+// remainder must name this exact Box (the engine's libpod-<ID> scope, with the engine's own `container` leaf when it
+// adds one). Anything else cannot prove ancestry and BLOCKS.
+export function boxPrefixFromInit({ boxPid, boxId, observer }) {
+  if (!/^[a-f0-9]{64}$/.test(String(boxId)) || !Number.isSafeInteger(boxPid) || boxPid <= 0) throw new EvidenceBlocked('The Box has no host init PID, so its cgroup ancestry cannot be proved.');
+  const observed = observer.observe(boxPid);
+  const match = observed?.cgroup ? /^(\/.+)\/ploinky\/core$/.exec(observed.cgroup) : null;
+  if (!match) throw new EvidenceBlocked('The Box init process is not in /ploinky/core as the host sees it, so its cgroup ancestry cannot be proved.');
+  const parts = match[1].split('/');
+  const scope = new RegExp(`^libpod-${boxId}(?:\\.scope)?$`);
+  const last = parts.at(-1);
+  const before = parts.at(-2);
+  if (!(scope.test(last) || (last === 'container' && scope.test(before)))) throw new EvidenceBlocked('The Box init cgroup does not carry this exact Box identity, so its cgroup ancestry cannot be proved.');
+  return match[1];
+}
+
 export async function boxCgroupPrefix({ run = defaultRun, boxName, observer = createHostObserver() }) {
-  const pid = Number(String(checked(await run('podman', ['container', 'inspect', '--format', '{{.State.Pid}}', validateBoxName(boxName)], { timeoutMs: 15_000 }), 'Box inspection')).trim());
-  if (!Number.isSafeInteger(pid) || pid < 2) throw new EvidenceBlocked('The Box has no running main process.');
-  const seen = observer.observe(pid);
-  if (!seen || seen.cgroup.length < 2) throw new EvidenceBlocked('The Box main process has no readable cgroup.');
-  return seen.cgroup;
+  const text = String(checked(await run('podman', ['container', 'inspect', '--format', '{{.State.Pid}} {{.Id}}', validateBoxName(boxName)], { timeoutMs: 15_000 }), 'Box inspection')).trim();
+  const [pidText, boxId] = text.split(/\s+/);
+  return boxPrefixFromInit({ boxPid: Number(pidText), boxId, observer });
+}
+
+// The delegated agent leaf of one container beneath the Box (the nested engine's cgroupfs layout), or null.
+export function agentLeafPath({ observer, boxPrefix, containerId }) {
+  if (!/^[a-f0-9]{64}$/.test(String(containerId))) throw new Error('Invalid agent container identity');
+  for (const name of [`libpod-${containerId}`, `libpod-${containerId}.scope`]) {
+    const leaf = `${boxPrefix}/ploinky/agents/${name}`;
+    if (observer.cgroupProcs(leaf) !== null) return leaf;
+  }
+  return null;
+}
+
+// The MPS control daemons of the Box: processes placed exactly in <Box>/ploinky/core whose command is nvidia-cuda-mps-control.
+export function findMpsDaemons({ observer, boxPrefix, candidates = observer.scan() }) {
+  const core = `${boxPrefix}/ploinky/core`;
+  return candidates.map((pid) => observer.observe(pid)).filter((seen) => seen && seen.cgroup === core && seen.comm === 'nvidia-cuda-mps-control')
+    .map((seen) => ({ hostPid: seen.hostPid, bootId: seen.bootId, startIdentity: seen.startIdentity }));
 }
 
 function verifyOwned(record, observed, { bootId, boxCgroupPrefix: prefix }) {
@@ -502,11 +580,14 @@ export function summarizeGpuCheck(label, checkedGpu, runnerHostPids, at = Date.n
 // The idle gate bound to one device. `query()` returns the raw `nvidia-smi -q -x -i UUID` text; a query or
 // parse failure, a mode or device mismatch, an unsupported activity inventory or any foreign process BLOCKS.
 // Once a foreign process has appeared the gate is tripped: no later check passes.
-export function createIdleGate({ query, uuid, observer, boxPrefix, ownedPrefix = `${boxPrefix}/ploinky`, now = Date.now, sleep = realSleep }) {
+export function createIdleGate({ query, uuid, observer, boxPrefix, now = Date.now, sleep = realSleep }) {
   if (typeof query !== 'function' || !/^GPU-[a-fA-F0-9-]{8,64}$/.test(String(uuid)) || !observer || typeof boxPrefix !== 'string' || !boxPrefix.startsWith('/')) {
     throw new Error('The GPU gate needs its query, device UUID, host observer and Box cgroup prefix.');
   }
-  const ownedRecords = new Map();
+  const core = `${boxPrefix}/ploinky/core`;
+  const registry = new Map();
+  const daemons = new Set();
+  const leaves = new Set();
   const tolerated = new Map();
   const history = [];
   let tripped = null;
@@ -529,9 +610,28 @@ export function createIdleGate({ query, uuid, observer, boxPrefix, ownedPrefix =
       throw new EvidenceBlocked(`GPU idle gate blocked: ${reason} (${String(error.message).slice(0, 200)})`, { reason, label });
     }
   };
+  // Registration verifies on the spot: the process is observed now and lies beneath the exact Box.
+  const register = (hostPid, role) => {
+    const observed = observer.observe(hostPid);
+    if (!observed || !cgroupWithin(observed.cgroup, boxPrefix)) throw new EvidenceBlocked('GPU idle gate blocked: owned_provenance_unproved (the process is not provably beneath the exact Box)', { reason: 'owned_provenance_unproved', hostPid, role });
+    const record = { role, hostPid, bootId: observed.bootId, startIdentity: String(observed.startIdentity) };
+    registry.set(hostPid, record);
+    return record;
+  };
+  // A listed PID that is not registered may still be owned (liveGpuGate.discover): the MPS server a registered daemon
+  // spawned (placed exactly in <Box>/ploinky/core), or a process inside a registered owned agent leaf. Nothing else.
+  const discover = (pid) => {
+    const observed = observer.observe(pid);
+    if (!observed || !cgroupWithin(observed.cgroup, boxPrefix)) return null;
+    const parent = registry.get(observed.ppid);
+    const parentNow = parent && daemons.has(observed.ppid) ? observer.observe(observed.ppid) : null;
+    if (parentNow && parentNow.startIdentity === parent.startIdentity && parentNow.bootId === parent.bootId && observed.cgroup === core) return register(pid, 'mps-server');
+    for (const leaf of leaves) if (cgroupWithin(observed.cgroup, leaf)) return register(pid, 'mps-client');
+    return null;
+  };
   const decide = (label, parsed, options) => {
-    const outcome = evaluateIdleGate({ inventory: parsed.inventory, owned: [...ownedRecords.values()].filter((record) => parsed.inventory.processes.some((row) => row.pid === record.hostPid)),
-      observe: (pid) => observer.observe(pid), bootId: observer.bootId(), boxCgroupPrefix: boxPrefix, ...options });
+    const owned = parsed.inventory.processes.map((row) => registry.get(row.pid)).filter(Boolean);
+    const outcome = evaluateIdleGate({ inventory: parsed.inventory, owned, observe: (pid) => observer.observe(pid), bootId: observer.bootId(), boxCgroupPrefix: boxPrefix, ...options });
     history.push({ label, at: now(), listed: parsed.inventory.processes.map((row) => row.pid), freeMiB: parsed.memory.freeMiB, usedMiB: parsed.memory.usedMiB, tolerated: (outcome.tolerated || []).map((record) => record.hostPid), ...(outcome.vanished?.length ? { vanished: outcome.vanished } : {}) });
     if (history.length > 400) history.shift();
     if (outcome.state !== 'idle') {
@@ -544,9 +644,18 @@ export function createIdleGate({ query, uuid, observer, boxPrefix, ownedPrefix =
     get baseline() { return baseline; },
     get tripped() { return tripped; },
     history,
-    registerOwned(record) {
-      if (!record || !Number.isSafeInteger(record.hostPid)) throw new Error('An owned GPU process needs its host PID and identity.');
-      ownedRecords.set(record.hostPid, { hostPid: record.hostPid, bootId: record.bootId, startIdentity: String(record.startIdentity) });
+    // The MPS control daemon of the Box: registered by its tuple, the parent of every server the gate may exclude.
+    registerDaemon(hostPid) {
+      const observed = observer.observe(hostPid);
+      if (!observed || observed.cgroup !== core) throw new EvidenceBlocked('GPU idle gate blocked: owned_provenance_unproved (the MPS daemon is not in <Box>/ploinky/core)', { reason: 'owned_provenance_unproved', hostPid, role: 'mps-daemon' });
+      const record = register(hostPid, 'mps-daemon');
+      daemons.add(hostPid);
+      return record;
+    },
+    // An owned agent leaf: every process inside it is an mps-client of this test.
+    registerLeaf(leaf) {
+      if (typeof leaf !== 'string' || !cgroupWithin(leaf, `${boxPrefix}/ploinky/agents`) || leaf === `${boxPrefix}/ploinky/agents`) throw new Error('An owned leaf must be beneath the exact Box agents hierarchy.');
+      leaves.add(leaf);
     },
     // The run's FIRST check: records what A5 tolerates (never more than one display process).
     async initial() {
@@ -560,19 +669,13 @@ export function createIdleGate({ query, uuid, observer, boxPrefix, ownedPrefix =
       if (tripped) throw tripped;
       if (!baseline) throw new EvidenceBlocked('The GPU gate was used before its initial check.');
       const parsed = await read(label);
-      // A listed process whose host cgroup lies beneath the exact Box's delegated hierarchy belongs to this test's Box
-      // (its MPS server, daemon and agent leaves); its tuple is recorded here and re-proved by every later check.
-      for (const row of parsed.inventory.processes) {
-        if (ownedRecords.has(row.pid) || tolerated.has(row.pid)) continue;
-        const seen = observer.observe(row.pid);
-        if (seen && cgroupWithin(seen.cgroup, ownedPrefix)) ownedRecords.set(row.pid, { hostPid: row.pid, bootId: seen.bootId, startIdentity: String(seen.startIdentity) });
-      }
+      for (const row of parsed.inventory.processes) if (!registry.has(row.pid) && !tolerated.has(row.pid)) discover(row.pid);
       const outcome = decide(label, parsed, { tolerate: { mode: 'subset', recorded: [...tolerated.values()] } });
       if (parsed.memory.freeMiB < minFreeMiB) {
         tripped = new EvidenceBlocked(`GPU idle gate blocked: insufficient_free_memory (${parsed.memory.freeMiB} MiB free, ${minFreeMiB} MiB needed)`, { reason: 'insufficient_free_memory', label });
         throw tripped;
       }
-      return { ...parsed, owned: parsed.inventory.processes.map((row) => row.pid).filter((pid) => ownedRecords.has(pid)), tolerated: outcome.tolerated, vanished: outcome.vanished };
+      return { ...parsed, owned: parsed.inventory.processes.map((row) => row.pid).filter((pid) => registry.has(pid)), tolerated: outcome.tolerated, vanished: outcome.vanished };
     },
   };
 }
@@ -764,14 +867,60 @@ export function createEvidenceWriter({ dir }) {
 // ---------------------------------------------------------------------------
 // Environment prerequisites (fail closed: a missing prerequisite is an error, never a skip)
 
-// Only variables the plan documents (C2 common environment): SMOKE_DEPLOYMENT_MODE, SMOKE_BASE_URL, SMOKE_PLOINKY_BOX_CONTAINER.
-export function requireHardwareEnvironment(env = process.env) {
+// Only variables the plan documents (C2 common environment): SMOKE_DEPLOYMENT_MODE, SMOKE_BASE_URL, SMOKE_PLOINKY_BOX_CONTAINER,
+// plus SMOKE_WORKSPACE_ROOT for the foreign-workspace guard (plan C7). The guard refuses the cleanup session's Box,
+// workspaces and Router port: the E2E deployment is an owned workspace on its own ports (18080/17882).
+const FOREIGN_BOX = /^ploinky-box-testexplorerfresh-/;
+const FOREIGN_WORKSPACES = Object.freeze(['work/testExplorerFresh', 'cleanup-repair-claude-20261002']);
+const FOREIGN_ROUTER_PORT = '8080';
+
+export function requireHardwareEnvironment(env = process.env, { home = env.HOME || os.homedir() } = {}) {
   const problems = [];
   if (String(env.SMOKE_DEPLOYMENT_MODE || '').trim() !== 'box') problems.push('SMOKE_DEPLOYMENT_MODE must be "box"');
-  if (!String(env.SMOKE_BASE_URL || '').trim()) problems.push('SMOKE_BASE_URL must name the Router of the E2E deployment');
-  if (!BOX_NAME.test(String(env.SMOKE_PLOINKY_BOX_CONTAINER || ''))) problems.push('SMOKE_PLOINKY_BOX_CONTAINER must name the exact Box container');
+  const baseUrl = String(env.SMOKE_BASE_URL || '').trim();
+  if (!baseUrl) problems.push('SMOKE_BASE_URL must name the Router of the E2E deployment');
+  else {
+    let port = null;
+    try { port = new URL(baseUrl).port; } catch { problems.push('SMOKE_BASE_URL must be a URL'); }
+    if (port === FOREIGN_ROUTER_PORT) problems.push(`SMOKE_BASE_URL uses port ${FOREIGN_ROUTER_PORT}, the cleanup session's Router port (foreign-workspace guard)`);
+  }
+  const box = String(env.SMOKE_PLOINKY_BOX_CONTAINER || '');
+  if (!BOX_NAME.test(box)) problems.push('SMOKE_PLOINKY_BOX_CONTAINER must name the exact Box container');
+  else if (FOREIGN_BOX.test(box)) problems.push('SMOKE_PLOINKY_BOX_CONTAINER names the cleanup session\'s Box (foreign-workspace guard)');
+  const workspace = String(env.SMOKE_WORKSPACE_ROOT || '').trim();
+  if (workspace) {
+    const resolved = path.resolve(workspace);
+    for (const relative of FOREIGN_WORKSPACES) {
+      const foreign = path.join(home, relative);
+      if (resolved === foreign || resolved.startsWith(`${foreign}${path.sep}`)) problems.push(`SMOKE_WORKSPACE_ROOT is under ${foreign}, the cleanup session's workspace (foreign-workspace guard)`);
+    }
+  }
   if (problems.length) throw new Error(`The hardware-limits executors cannot run: ${problems.join('; ')}.`);
-  return { boxName: String(env.SMOKE_PLOINKY_BOX_CONTAINER) };
+  return { boxName: box };
+}
+
+// ---------------------------------------------------------------------------
+// Fixture removal (spec 92 teardown). Every instance of every fixture agent is disabled by its EXACT registry key
+// (an unambiguous direct match, also for the alias instance), then the repository. `ploinky disable agent` exits 0 for a
+// target that is not enabled or ambiguous, so the exit status is not proof: the caller proves removal from the snapshot.
+
+export async function removeFixture({ run = defaultRun, bin, cwd, repo, order = [], readSnapshot, timeoutMs = 5 * 60_000 }) {
+  if (!path.isAbsolute(String(cwd || ''))) throw new Error('The fixture teardown needs the absolute workspace directory.');
+  const snapshot = await readSnapshot();
+  const rank = (ref) => { const at = order.indexOf(ref); return at === -1 ? order.length : at; };
+  const targets = (snapshot.agents || []).filter((agent) => agent.ref.startsWith(`${repo}/`))
+    .sort((left, right) => rank(left.ref) - rank(right.ref))
+    .flatMap((agent) => (agent.containers || []).map((instance) => ({ ref: agent.ref, key: instance.key })))
+    .filter((target) => typeof target.key === 'string' && target.key);
+  const commands = [];
+  const execute = async (args) => {
+    const result = await run(bin, args, { cwd, timeoutMs });
+    commands.push({ args, status: result?.status ?? null });
+    if (!result || result.error || result.status !== 0) throw new Error(`ploinky ${args.join(' ')} failed (exit ${result?.status ?? 'unknown'}).`);
+  };
+  for (const target of targets) await execute(['disable', 'agent', target.key]);
+  await execute(['disable', 'repo', repo]);
+  return { commands, targets };
 }
 
 // ---------------------------------------------------------------------------

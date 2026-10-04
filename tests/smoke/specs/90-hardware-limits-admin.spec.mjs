@@ -33,6 +33,7 @@ import {
 } from '../lib/hardware-limits-evidence.mjs';
 
 const TARGET = 'tasksAgent';
+const GPU_TARGET_REF = 'local-llms/local-llm';
 const LIMITS = Object.freeze({ cpus: 0.5, memoryPercent: 10 });
 const APPLY_BOUND_MS = 5 * 60_000;
 const PARALLEL_BOUND_MS = 60_000;
@@ -42,6 +43,7 @@ const screenshot = (page, name) => page.screenshot({ path: smokeArtifactPath('hw
 const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 let boxName = '';
+const probeLog = {};
 
 test.describe('Hardware limits administrator panel and API @hardware-limits', () => {
   test.describe.configure({ mode: 'serial' });
@@ -296,12 +298,21 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
       expect(result.status, `memoryPercent ${memoryPercent}`).toBe(400);
       expect(result.body.error).toBe('invalid_limits');
     }
-    const vram = record('P-BND-2 vramPercent 8', await set({ gpu: { smPercent: 50, vramPercent: 8 } }));
-    expect(vram.status, 'vramPercent 8 (about 491 MiB) must be a typed 4xx rejection').toBeGreaterThanOrEqual(400);
-    expect(vram.status).toBeLessThan(500);
+    // The VRAM probe needs a GPU-eligible target: tasksAgent has no GPU grant, so its answer would be the
+    // generic gpu_sharing_unavailable and would never reach the 512 MiB minimum. local-llm is the GPU agent of the graph.
+    expect(base.gpu?.eligible, `MPS sharing must be eligible for the VRAM probe: ${String(base.gpu?.reason || 'no reason').slice(0, 200)}`).toBe(true);
+    const gpuAgent = agentByRef(base, GPU_TARGET_REF);
+    expect(gpuAgent, `${GPU_TARGET_REF} must be installed for the VRAM probe`).toBeTruthy();
+    const vram = record('P-BND-2 vramPercent 8', await api.post({ action: 'set_agent_limits', expectedToken: token, agentRef: GPU_TARGET_REF, limits: { gpu: { smPercent: 50, vramPercent: 8 } } }));
+    // 8 % of the 6144 MiB device is 491 MiB. The route's GPU qualification (409 gpu_sharing_unavailable) and the store
+    // (422 exceeds_envelope) both word the refusal "below the 512 MiB minimum"; any other message (no current GPU
+    // access, image not prepared, store busy) means the minimum was not reached and the probe fails.
+    expect(['409 gpu_sharing_unavailable', '422 exceeds_envelope'], `vramPercent 8 answered ${vram.status} ${vram.body.error}: ${String(vram.body.message || '').slice(0, 200)}`)
+      .toContain(`${vram.status} ${vram.body.error}`);
+    expect(String(vram.body.message), 'the refusal must name the 512 MiB minimum').toMatch(/below the 512 MiB minimum/);
     expect(vram.body.ok).toBe(false);
-    expect(typeof vram.body.error).toBe('string');
     expect(vram.body.committed).not.toBe(true);
+    await expectNoMutation(api, base, GPU_TARGET_REF);
     await expectNoMutation(api, base, ref);
 
     // P-BND-3: a body of 16,385 bytes (valid JSON padded with whitespace), an over-long and a non-ASCII reference.
@@ -337,7 +348,8 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
     expect(wrongOrigin.status).toBe(403);
     expect(wrongOrigin.body.ok).toBe(false);
     await expectNoMutation(api, base, ref);
-    evidence.write('90-api-probes-boundary.json', { token, probes });
+    probeLog.boundary = { token, probes };
+    evidence.write('probes.json', probeLog);
   });
 
   test('API probes: parallel setters, parallel Apply and a repeated Apply are serialized and idempotent', async ({ page }) => {
@@ -387,10 +399,13 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
       expect(again.body.ok).not.toBe(false);
       expect((again.body.results || []).every((result) => (result.state || result.status) === 'unchanged'), 'a repeated Apply must report unchanged').toBe(true);
     } else {
+      // The token is the current one, so the only acceptable refusal is a revision conflict.
       expect(again.status).toBe(409);
+      expect(again.body.error).toBe('revision_conflict');
     }
     const runningIdem = await readRunningSet({ boxName });
     expect(diffRunningSets(runningAfter, runningIdem).changed, 'a repeated Apply must not change any identity').toEqual([]);
-    evidence.write('90-api-probes-concurrency.json', { probes, winner, runningSetDiff: diff });
+    probeLog.concurrency = { probes, winner, runningSetDiff: diff };
+    evidence.write('probes.json', probeLog);
   });
 });

@@ -19,9 +19,13 @@ import { openExplorer } from '../lib/explorer.mjs';
 import {
   INFERENCE_CADENCE,
   MIB,
+  RUNNER_EXECUTABLE,
+  SMALL_MODEL_COMMIT,
   SMALL_MODEL_ID,
   SMALL_MODEL_SHA256,
+  SMALL_MODEL_SIZE,
   agentByRef,
+  agentLeafPath,
   boxCgroupPrefix,
   checked,
   cpuMaxMatches,
@@ -30,13 +34,16 @@ import {
   createHostObserver,
   createIdleGate,
   defaultRun,
+  findMpsDaemons,
   findSingleInstanceAgent,
   gpuQueryArgv,
   hostRunnerIdentities,
   instanceByKey,
   loadDeployedAnalysis,
   measureInference,
+  readHostGpuIdentity,
   readLeaf,
+  readRunnerDigest,
   readRunnerProcesses,
   readRunningSet,
   refusalCode,
@@ -214,13 +221,25 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
   }
 
   async function gpuGate(boxName, uuid) {
-    const gate = createIdleGate({
+    state.boxPrefix = await boxCgroupPrefix({ boxName, observer: state.observer });
+    return createIdleGate({
       query: async () => checked(await defaultRun('nvidia-smi', gpuQueryArgv(uuid), { timeoutMs: 20_000 }), 'nvidia-smi inventory'),
       uuid,
       observer: state.observer,
-      boxPrefix: await boxCgroupPrefix({ boxName, observer: state.observer }),
+      boxPrefix: state.boxPrefix,
     });
-    return gate;
+  }
+
+  // Role-specific ownership (liveGpuGate): the Box's MPS control daemon (its server is the daemon's child in
+  // <Box>/ploinky/core) and the exact agent leaf (every process inside it is a client of this test). Nothing else is owned.
+  function registerOwners(containerId) {
+    const daemons = findMpsDaemons({ observer: state.observer, boxPrefix: state.boxPrefix });
+    expect(daemons.length, 'the Box must run its MPS control daemon once a GPU share is applied').toBeGreaterThanOrEqual(1);
+    for (const daemon of daemons) state.gate.registerDaemon(daemon.hostPid);
+    const leaf = agentLeafPath({ observer: state.observer, boxPrefix: state.boxPrefix, containerId });
+    expect(leaf, `the cgroup leaf of ${containerId} must exist beneath the exact Box`).toBeTruthy();
+    state.gate.registerLeaf(leaf);
+    return { daemons: daemons.map((daemon) => daemon.hostPid), leaf };
   }
 
   // ---- 1 -----------------------------------------------------------------
@@ -270,6 +289,7 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
     evidence.write('91-budget-readback.json', { agent: AGENT_REF, instance: instance.key, budget: BUDGET, expectedMemoryBytes: memoryBytes, leaf: { path: leaf.leaf, cpuMax: leaf.cpuMax, memoryMax: leaf.memoryMax, swapMax: leaf.swapMax, pidsMax: leaf.pidsMax }, gpuShareMiB: state.shareMiB });
 
     // Run the small model on llama.cpp from the Local LLMs dashboard.
+    state.owners = registerOwners(state.containerId);
     await state.gate.check('before-run', { minFreeMiB: state.shareMiB + 256 });
     const { dashboard, via } = await openDashboard(page);
     const form = await selectModelAndRunner(page, dashboard);
@@ -284,19 +304,36 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
     expect(deployment.artifact?.sha256, 'the model file digest must be the pinned one').toBe(SMALL_MODEL_SHA256);
     await screenshot(page, '91-model-ready.png');
 
-    // The runner: exactly the three MPS variables of the saved share, one non-root user, the same agent generation.
+    // The device: the Box's report agrees with the host driver's own.
+    const hostGpu = await readHostGpuIdentity({ uuid: state.uuid });
+    expect(hostGpu.uuid).toBe(gpu.deviceUuid);
+    expect(hostGpu.driverVersion, 'the Box and the host driver must report one driver version').toBe(gpu.driverVersion);
+
+    // The model artifact: the pinned file (digest, size and source commit).
+    expect(deployment.artifact?.size, 'the model file size must be the pinned one').toBe(SMALL_MODEL_SIZE);
+    expect(deployment.artifact?.commit, 'the model source commit must be the pinned one').toBe(SMALL_MODEL_COMMIT);
+
+    // The runner: exactly the three MPS variables of the saved share, one non-root user, the same agent generation,
+    // and the executable's own digest recorded from inside the agent.
     const share = { smPercent: BUDGET.smPercent, memory: `0=${state.shareMiB}M` };
     const processes = await readRunnerProcesses({ boxName: state.boxName, agentName: instance.key });
     expect(processes.length, 'a llama-server runner must run in the agent').toBeGreaterThanOrEqual(1);
     const identities = processes.map((processInfo) => runnerIdentity(processInfo, { share }));
     for (const identity of identities) expect(identity.problems, identity.problems.join('; ')).toEqual([]);
-    for (const identity of identities) expect(identity.identity.uid, 'the runner runs as the Box user').toBe(1000);
+    for (const identity of identities) {
+      expect(identity.identity.uid, 'the runner runs as the Box user').toBe(1000);
+      expect(identity.identity.exe, 'the runner executable path').toBe(RUNNER_EXECUTABLE);
+    }
+    const runnerDigest = await readRunnerDigest({ boxName: state.boxName, agentName: instance.key });
     expect((await readRunningSet({ boxName: state.boxName })).find((candidate) => candidate.name === instance.key)?.id,
       'the agent must not restart while the model runs').toBe(entry.id);
-    evidence.write('91-runner-identity.json', {
+    evidence.write('runner-identity.json', {
       openedVia: via,
-      model: { id: deployment.modelId, runner: deployment.runnerId, sha256: deployment.artifact.sha256 },
+      gpu: { uuid: gpu.deviceUuid, driverVersion: gpu.driverVersion, deviceMemoryBytes: gpu.deviceMemoryBytes, hostCrossCheck: hostGpu },
+      model: { id: deployment.modelId, runner: deployment.runnerId, sha256: deployment.artifact.sha256, size: deployment.artifact.size, commit: deployment.artifact.commit },
+      runnerExecutable: runnerDigest,
       share,
+      owners: state.owners,
       runners: identities.map((identity) => identity.identity),
     });
   });
@@ -319,6 +356,7 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
     const inner = await readRunnerProcesses({ boxName: state.boxName, agentName: state.instanceKey });
     const hostIdentities = hostRunnerIdentities({ inner, containerId: state.containerId, observer: state.observer });
     const hostPids = hostIdentities.map((entry) => entry.hostPid);
+    state.owners = registerOwners(state.containerId);
     await state.gate.check('inference-start');
 
     // One Playground request through the UI; its exact interval is the one the browser's own tool call recorded.
@@ -350,6 +388,7 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
 
     const measured = await measureInference({
       request,
+      classify: state.deployed.classifyObservation,
       sampleLeaf: () => readLeaf({ boxName: state.boxName, containerId: state.containerId }),
       sampleGpu: async (label) => summarizeGpuCheck(label, await state.gate.check(label), hostPids),
       sampleMs: INFERENCE_CADENCE.sampleMs,
@@ -373,7 +412,7 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
     const violations = [...analysis.violations, ...lost, ...(measured.load.invalidResponses > 0 ? [`${measured.load.invalidResponses} later response(s) of the sustained load carried no text`] : [])];
     const trim = (samples) => (samples.length <= 120 ? samples : [...samples.slice(0, 60), ...samples.slice(-60)]);
     evidence.write('91-inference.json', { runner: hostIdentities, windowMs: measured.windowMs, load: measured.load, requestWindows: measured.windows.slice(0, 120), cgroupSamples: trim(measured.cgroup), gpuSamples: trim(measured.gpu), failure: measured.failure ? String(measured.failure.message).slice(0, 300) : null });
-    evidence.write('91-analysis.json', { violations, blockers: analysis.blockers, summary: analysis.summary });
+    evidence.write('analysis.json', { violations, blockers: analysis.blockers, summary: analysis.summary });
     evidence.write('91-response.json', { text: String(measured.kept?.text || '').slice(0, 400), completionTokens: measured.kept?.completionTokens ?? null });
     await screenshot(page, '91-playground-response.png');
 
@@ -430,7 +469,7 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
     }
     // Refused BEFORE launch: no runner process, no active deployment, no other identity created.
     const runners = await readRunnerProcesses({ boxName: state.boxName, agentName: state.instanceKey });
-    evidence.write('91-refusal.json', { ...refusal, runnerProcesses: runners.length, memoryMax: leaf.memoryMax });
+    evidence.write('refusal.json', { ...refusal, runnerProcesses: runners.length, memoryMax: leaf.memoryMax });
     expect(refusal.code, 'the typed refusal code').toBe('admission_insufficient_now');
     expect(runners.length, 'no runner process may exist after a refused Run').toBe(0);
     expect(ACTIVE_PHASES.has(refusal.phase), `no deployment may be active after a refused Run (phase ${refusal.phase})`).toBe(false);

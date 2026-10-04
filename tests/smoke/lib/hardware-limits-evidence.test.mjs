@@ -9,8 +9,10 @@ import {
   EvidenceBlocked,
   INFERENCE_MIN_IN_FLIGHT,
   agentByRef,
+  agentLeafPath,
   assertNoCredentials,
   boxCgroupPrefix,
+  boxPrefixFromInit,
   checked,
   classifyObservation,
   coreArgs,
@@ -21,6 +23,7 @@ import {
   createIdleGate,
   diffRunningSets,
   evaluateIdleGate,
+  findMpsDaemons,
   findSingleInstanceAgent,
   hostRunnerIdentities,
   inFlightCounts,
@@ -35,10 +38,13 @@ import {
   parseGpuUtilization,
   parseLeafSample,
   parseProof,
+  readHostGpuIdentity,
   readLeaf,
   readRunningSet,
+  readRunnerDigest,
   readRunnerProcesses,
   refusalCode,
+  removeFixture,
   requireHardwareEnvironment,
   resolveMemoryPercent,
   runnerIdentity,
@@ -66,13 +72,17 @@ function gpuXml({ uuid = UUID, mode = 'Default', processes = [], total = 6144, u
   return `<?xml version="1.0" ?><nvidia_smi_log><gpu id="00000000:01:00.0"><uuid>${uuid}</uuid><compute_mode>${mode}</compute_mode><fb_memory_usage><total>${total} MiB</total><reserved>1 MiB</reserved><used>${used} MiB</used><free>${total - used} MiB</free></fb_memory_usage><utilization><gpu_util>7 %</gpu_util></utilization>${processesSection ? `<processes>${rows}</processes>` : ''}${extra}</gpu></nvidia_smi_log>`;
 }
 
-function hostWorld(entries) {
+function hostWorld(entries, extraCgroups = []) {
   // entries: { pid: {startIdentity, cgroup, nspid, ppid, uid} }
   const bootId = 'boot-1';
   return {
     bootId: () => bootId,
-    observe: (pid) => (entries[pid] ? { hostPid: pid, bootId, ppid: 1, uid: [1000, 1000, 1000, 1000], nspid: [pid], ...entries[pid] } : null),
+    observe: (pid) => (entries[pid] ? { hostPid: pid, bootId, ppid: 1, comm: '', uid: [1000, 1000, 1000, 1000], nspid: [pid], ...entries[pid] } : null),
     scan: () => Object.keys(entries).map(Number),
+    cgroupProcs: (cgroupPath) => {
+      const members = Object.keys(entries).filter((pid) => entries[pid] && entries[pid].cgroup === cgroupPath).map(Number);
+      return members.length || (extraCgroups || []).includes(cgroupPath) ? members : null;
+    },
   };
 }
 
@@ -358,41 +368,6 @@ test('a foreign process that appears after the first check blocks even when a di
   await assert.rejects(() => gate.check('still tripped'), EvidenceBlocked);
 });
 
-test('an owned process is excluded only when its tuple and Box ancestry are freshly proven', async () => {
-  const xml = gpuXml({ processes: [{ pid: 7001, type: 'M+C', name: 'nvidia-cuda-mps-server', memory: 30 }] });
-  const host = world();
-  const gate = createIdleGate({ query: async () => xml, uuid: UUID, observer: createHostObserverFrom(host), boxPrefix: BOX_PREFIX });
-  // Unregistered: blocked.
-  const blocked = createIdleGate({ query: async () => gpuXml(), uuid: UUID, observer: host, boxPrefix: BOX_PREFIX });
-  await blocked.initial();
-  // The registered owned server passes on the second check.
-  const idle = { value: gpuXml() };
-  const owned = createIdleGate({ query: async () => idle.value, uuid: UUID, observer: host, boxPrefix: BOX_PREFIX });
-  await owned.initial();
-  owned.registerOwned({ hostPid: 7001, bootId: 'boot-1', startIdentity: '222' });
-  idle.value = xml;
-  assert.deepEqual((await owned.check('mps')).owned, [7001]);
-  // A reused PID (another start identity) is not owned.
-  const entries = { 7001: { startIdentity: '222', cgroup: `${BOX_PREFIX}/ploinky/core` } };
-  const reused = createIdleGate({ query: async () => idle.value, uuid: UUID, observer: hostWorld(entries), boxPrefix: BOX_PREFIX });
-  idle.value = gpuXml();
-  await reused.initial();
-  reused.registerOwned({ hostPid: 7001, bootId: 'boot-1', startIdentity: '222' });
-  entries[7001] = { startIdentity: '223', cgroup: `${BOX_PREFIX}/ploinky/core` };
-  idle.value = xml;
-  await assert.rejects(() => reused.check('reused'), (error) => error.detail.reason === 'owned_provenance_unproved');
-  // An owned record outside the Box's cgroup is not owned.
-  const outside = createIdleGate({ query: async () => idle.value, uuid: UUID, observer: hostWorld({ 7001: { startIdentity: '222', cgroup: '/user.slice/elsewhere' } }), boxPrefix: BOX_PREFIX });
-  idle.value = gpuXml();
-  await outside.initial();
-  outside.registerOwned({ hostPid: 7001, bootId: 'boot-1', startIdentity: '222' });
-  idle.value = xml;
-  await assert.rejects(() => outside.check('outside'), (error) => error.detail.reason === 'owned_provenance_unproved');
-  assert.ok(gate);
-});
-
-function createHostObserverFrom(host) { return host; }
-
 test('the gate refuses to run before its initial check, on a query failure and on insufficient free memory', async () => {
   const gate = gateOver(gpuXml());
   await assert.rejects(() => gate.check('early'), /before its initial check/);
@@ -440,7 +415,7 @@ test('createHostObserver reads identity, namespaces and cgroup from /proc and tr
   };
   const observer = createHostObserver({ fsApi, procRoot: '/p' });
   assert.equal(observer.bootId(), 'boot-xyz');
-  assert.deepEqual(observer.observe(42), { hostPid: 42, bootId: 'boot-xyz', startIdentity: '9001', ppid: 7, cgroup: `/user.slice/box.scope/ploinky/agents/libpod-${ID_A}.scope`, uid: [1000, 1000, 1000, 1000], nspid: [42, 17, 3] });
+  assert.deepEqual(observer.observe(42), { hostPid: 42, bootId: 'boot-xyz', startIdentity: '9001', ppid: 7, cgroup: `/user.slice/box.scope/ploinky/agents/libpod-${ID_A}.scope`, comm: '', uid: [1000, 1000, 1000, 1000], nspid: [42, 17, 3] });
   assert.equal(observer.observe(99), null);
   assert.deepEqual(observer.scan(), [42, 7]);
   assert.throws(() => observer.observe(0), /Invalid host PID/);
@@ -461,13 +436,6 @@ test('hostRunnerIdentities maps an in-agent runner to exactly one host process o
     903: { startIdentity: '9001', cgroup: `${BOX_PREFIX}/ploinky/agents/libpod-${ID_A}.scope`, nspid: [903, 123, 42] },
   });
   assert.throws(() => hostRunnerIdentities({ inner: [{ pid: 42, start: '9001' }], containerId: ID_A, observer: twin }), /\(2\)/);
-});
-
-test('boxCgroupPrefix is the cgroup of the Box main process', async () => {
-  const host = hostWorld({ 555: { startIdentity: '1', cgroup: BOX_PREFIX } });
-  assert.equal(await boxCgroupPrefix({ run: () => ({ status: 0, stdout: '555\n' }), boxName: BOX, observer: host }), BOX_PREFIX);
-  await assert.rejects(() => boxCgroupPrefix({ run: () => ({ status: 0, stdout: '0\n' }), boxName: BOX, observer: host }), /no running main process/);
-  await assert.rejects(() => boxCgroupPrefix({ run: () => ({ status: 0, stdout: '556\n' }), boxName: BOX, observer: host }), /no readable cgroup/);
 });
 
 // ---------------------------------------------------------------------------
@@ -739,31 +707,6 @@ test('waitFor returns the first truthy value and times out with its label', asyn
 // ---------------------------------------------------------------------------
 // Owned processes beneath the exact Box, refusal codes, share arithmetic and runner reads
 
-test('processes beneath the Box delegated hierarchy are owned; the foreign Box and unrelated users never are', async () => {
-  const entries = {
-    7001: { startIdentity: '222', cgroup: `${BOX_PREFIX}/ploinky/core` },
-    7002: { startIdentity: '223', cgroup: `${BOX_PREFIX}/ploinky/agents/libpod-${ID_A}.scope` },
-  };
-  const query = { value: gpuXml() };
-  const host = hostWorld(entries);
-  const gate = createIdleGate({ query: async () => query.value, uuid: UUID, observer: host, boxPrefix: BOX_PREFIX, sleep: async () => {} });
-  await gate.initial();
-  query.value = gpuXml({ processes: [{ pid: 7001, type: 'M+C', name: 'nvidia-cuda-mps-server', memory: 30 }, { pid: 7002, type: 'C', name: 'llama-server', memory: 700 }] });
-  const first = await gate.check('inference');
-  assert.deepEqual(first.owned.sort(), [7001, 7002]);
-  // The tuple is re-proved on every later check: a reused PID (another start identity) is no longer owned.
-  entries[7002] = { startIdentity: '999', cgroup: `${BOX_PREFIX}/ploinky/agents/libpod-${ID_A}.scope` };
-  await assert.rejects(() => gate.check('reused'), (error) => error.detail.reason === 'owned_provenance_unproved');
-  // A process of the Box but outside the delegated hierarchy, a foreign Box, and an unrelated user are foreign.
-  for (const cgroup of [`${BOX_PREFIX}/init.scope`, '/user.slice/ploinky-box-testexplorerfresh.scope/ploinky/core', '/user.slice/user-1000.slice']) {
-    const foreign = createIdleGate({ query: async () => query.value, uuid: UUID, observer: hostWorld({ 7001: { startIdentity: '1', cgroup }, 7002: { startIdentity: '2', cgroup } }), boxPrefix: BOX_PREFIX, sleep: async () => {} });
-    query.value = gpuXml();
-    await foreign.initial();
-    query.value = gpuXml({ processes: [{ pid: 7001, type: 'C', name: 'x', memory: 1 }] });
-    await assert.rejects(() => foreign.check('foreign'), (error) => error.detail.reason === 'gpu_busy' && error.detail.foreign.includes(7001));
-  }
-});
-
 test('a listed process that vanishes between the query and the host read is read again, not judged foreign', async () => {
   const entries = {};
   let reads = 0;
@@ -820,4 +763,226 @@ test('a reply that carries its own exact request window overrides the loop windo
   // Every sample was read well before the declared window, so none may count as in flight.
   assert.deepEqual(inFlightCounts(result.cgroup, result.gpu), { cgroup: 0, gpu: 0 });
   assert.ok(result.cgroup.length >= 2);
+});
+
+// ---------------------------------------------------------------------------
+// Box cgroup ancestry and role-specific ownership (B2). The Box init lives in <scope>/ploinky/core.
+
+const BOX_ID = 'f'.repeat(64);
+const REAL_PREFIX = `/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-${BOX_ID}.scope`;
+const INIT_CGROUP = `${REAL_PREFIX}/ploinky/core`;
+
+test('boxPrefixFromInit strips /ploinky/core and requires the exact Box identity', async () => {
+  const world = (cgroup) => hostWorld({ 555: { startIdentity: '1', cgroup } });
+  assert.equal(boxPrefixFromInit({ boxPid: 555, boxId: BOX_ID, observer: world(INIT_CGROUP) }), REAL_PREFIX);
+  const withContainerLeaf = `${REAL_PREFIX.replace(`.scope`, '')}/container/ploinky/core`;
+  assert.equal(boxPrefixFromInit({ boxPid: 555, boxId: BOX_ID, observer: world(withContainerLeaf) }), withContainerLeaf.replace('/ploinky/core', ''));
+  const refuse = (cgroup, pid = 555, id = BOX_ID) => assert.throws(() => boxPrefixFromInit({ boxPid: pid, boxId: id, observer: world(cgroup) }), EvidenceBlocked);
+  refuse(REAL_PREFIX);                                              // not in /ploinky/core: the old rule accepted this
+  refuse(`${REAL_PREFIX}/ploinky/agents`);                          // wrong suffix
+  refuse(INIT_CGROUP.replace(BOX_ID, 'e'.repeat(64)));              // another Box
+  refuse('/user.slice/ploinky/core');                               // no Box identity
+  refuse(INIT_CGROUP, 0);
+  refuse(INIT_CGROUP, 555, 'short');
+  assert.throws(() => boxPrefixFromInit({ boxPid: 999, boxId: BOX_ID, observer: world(INIT_CGROUP) }), /not in \/ploinky\/core/);
+});
+
+test('boxCgroupPrefix reads the init PID and the exact Box ID from one inspection', async () => {
+  const calls = [];
+  const host = hostWorld({ 555: { startIdentity: '1', cgroup: INIT_CGROUP } });
+  const prefix = await boxCgroupPrefix({ run: (command, args) => { calls.push(args); return { status: 0, stdout: `555 ${BOX_ID}\n` }; }, boxName: BOX, observer: host });
+  assert.equal(prefix, REAL_PREFIX);
+  assert.equal(calls[0].includes('{{.State.Pid}} {{.Id}}'), true);
+  await assert.rejects(() => boxCgroupPrefix({ run: () => ({ status: 0, stdout: `0 ${BOX_ID}\n` }), boxName: BOX, observer: host }), /no host init PID/);
+  await assert.rejects(() => boxCgroupPrefix({ run: () => ({ status: 0, stdout: `556 ${BOX_ID}\n` }), boxName: BOX, observer: host }), /not in \/ploinky\/core/);
+  await assert.rejects(() => boxCgroupPrefix({ run: () => ({ status: 1, stdout: '', stderr: 'no such container' }), boxName: BOX, observer: host }), /Box inspection failed/);
+});
+
+const LEAF_A = `${REAL_PREFIX}/ploinky/agents/libpod-${ID_A}.scope`;
+function ownershipWorld() {
+  const entries = {
+    6000: { startIdentity: '10', cgroup: `${REAL_PREFIX}/ploinky/core`, comm: 'nvidia-cuda-mps-control' },
+    6001: { startIdentity: '11', cgroup: `${REAL_PREFIX}/ploinky/core`, comm: 'nvidia-cuda-mps-server', ppid: 6000 },
+    6002: { startIdentity: '12', cgroup: LEAF_A, comm: 'llama-server' },
+    6003: { startIdentity: '13', cgroup: `${REAL_PREFIX}/ploinky/agents/libpod-${ID_B}.scope`, comm: 'other-agent-cuda' },
+    6004: { startIdentity: '14', cgroup: `${REAL_PREFIX}/ploinky/core`, comm: 'stray', ppid: 1 },
+    6005: { startIdentity: '15', cgroup: INIT_CGROUP.replace(BOX_ID, 'd'.repeat(64)), comm: 'foreign-box-process' },
+    6006: { startIdentity: '16', cgroup: `${REAL_PREFIX}/ploinky/agents/libpod-${ID_B}.scope`, comm: 'child-of-daemon-elsewhere', ppid: 6000 },
+  };
+  return { entries, host: hostWorld(entries, [LEAF_A]) };
+}
+const listed = (...pids) => gpuXml({ processes: pids.map((pid) => ({ pid, type: pid === 6001 ? 'M+C' : 'C', name: `p${pid}`, memory: 20 })) });
+async function registeredGate(world, query) {
+  const gate = createIdleGate({ query: async () => query.value, uuid: UUID, observer: world.host, boxPrefix: REAL_PREFIX, sleep: async () => {} });
+  const wanted = query.value;
+  query.value = gpuXml();
+  await gate.initial();
+  query.value = wanted;
+  return gate;
+}
+
+test('the MPS server of a registered daemon and the processes of a registered leaf are owned', async () => {
+  const world = ownershipWorld();
+  const query = { value: gpuXml() };
+  const gate = await registeredGate(world, query);
+  assert.deepEqual(findMpsDaemons({ observer: world.host, boxPrefix: REAL_PREFIX }).map((record) => record.hostPid), [6000]);
+  gate.registerDaemon(6000);
+  gate.registerLeaf(agentLeafPath({ observer: world.host, boxPrefix: REAL_PREFIX, containerId: ID_A }));
+  query.value = listed(6001, 6002);
+  assert.deepEqual((await gate.check('inference')).owned.sort(), [6001, 6002]);
+});
+
+test('ownership is role-specific: anything else beneath the Box, another Box or a reused daemon PID is foreign', async () => {
+  const blocked = async (query, mutate) => {
+    const world = ownershipWorld();
+    const gate = await registeredGate(world, query);
+    gate.registerDaemon(6000);
+    gate.registerLeaf(LEAF_A);
+    if (mutate) mutate(world);
+    return assert.rejects(() => gate.check('probe'), (error) => error.detail.reason === 'gpu_busy' && error.detail.why === 'not_recorded');
+  };
+  // A process in <Box>/ploinky/core that is not a child of the registered daemon.
+  await blocked({ value: listed(6004) });
+  // A process of another agent of the same Box: its leaf is not registered.
+  await blocked({ value: listed(6003) });
+  // A child of the registered daemon that is NOT placed in <Box>/ploinky/core is not its server.
+  await blocked({ value: listed(6006) });
+  // A process of another Box.
+  await blocked({ value: listed(6005) });
+  // The daemon PID was reused (another start identity): its former child is no longer the server of a registered daemon.
+  await blocked({ value: listed(6001) }, (world) => { world.entries[6000] = { ...world.entries[6000], startIdentity: '99' }; });
+  // Unregistered leaf: without registerLeaf the runner row is foreign.
+  const world = ownershipWorld();
+  const query = { value: gpuXml() };
+  const gate = await registeredGate(world, query);
+  gate.registerDaemon(6000);
+  query.value = listed(6002);
+  await assert.rejects(() => gate.check('no leaf'), (error) => error.detail.why === 'not_recorded');
+});
+
+test('registration refuses a daemon outside <Box>/ploinky/core and a leaf outside the Box agents hierarchy', async () => {
+  const world = ownershipWorld();
+  const gate = await registeredGate(world, { value: gpuXml() });
+  assert.throws(() => gate.registerDaemon(6002), EvidenceBlocked);
+  assert.throws(() => gate.registerDaemon(6005), EvidenceBlocked);
+  assert.throws(() => gate.registerDaemon(424242), EvidenceBlocked);
+  for (const bad of [REAL_PREFIX, `${REAL_PREFIX}/ploinky/agents`, `${REAL_PREFIX}/ploinky/core`, '/user.slice/elsewhere/ploinky/agents/libpod-x', 'relative']) assert.throws(() => gate.registerLeaf(bad), /beneath the exact Box agents hierarchy/);
+  assert.equal(agentLeafPath({ observer: world.host, boxPrefix: REAL_PREFIX, containerId: ID_C }), null);
+});
+
+test('regression: the old prefix (the init cgroup itself) classifies the MPS server and the runner as foreign', async () => {
+  const query = { value: gpuXml() };
+  const old = ownershipWorld();
+  // The previous behaviour used the Box init's own cgroup as the Box prefix and `<prefix>/ploinky` as the owned prefix.
+  const gate = createIdleGate({ query: async () => query.value, uuid: UUID, observer: old.host, boxPrefix: INIT_CGROUP, sleep: async () => {} });
+  await gate.initial();
+  assert.throws(() => gate.registerDaemon(6000), EvidenceBlocked);
+  query.value = listed(6001, 6002);
+  await assert.rejects(() => gate.check('inference'), (error) => error.detail.reason === 'gpu_busy' && error.detail.foreign.includes(6001));
+  // With the prefix derived the correct way the same inventory passes.
+  const world = ownershipWorld();
+  const good = await registeredGate(world, query);
+  good.registerDaemon(6000);
+  good.registerLeaf(LEAF_A);
+  assert.deepEqual((await good.check('inference')).owned.sort(), [6001, 6002]);
+});
+
+test('createHostObserver lists a cgroup directory and treats a missing one as absent', () => {
+  const fsApi = {
+    readFileSync: (file) => {
+      if (file === '/c/ploinky/agents/x/cgroup.procs') return '12\n34\n';
+      if (file === '/c/ploinky/agents/bad/cgroup.procs') return '12\nabc\n';
+      const error = new Error('gone'); error.code = 'ENOENT'; throw error;
+    },
+    readdirSync: () => [],
+  };
+  const observer = createHostObserver({ fsApi, cgroupRoot: '/c' });
+  assert.deepEqual(observer.cgroupProcs('/ploinky/agents/x'), [12, 34]);
+  assert.equal(observer.cgroupProcs('/ploinky/agents/none'), null);
+  assert.throws(() => observer.cgroupProcs('/ploinky/agents/bad'), /Unsupported cgroup.procs grammar/);
+  assert.throws(() => observer.cgroupProcs('/a/../b'), /Invalid cgroup path/);
+});
+
+// ---------------------------------------------------------------------------
+// Foreign-workspace guard (N5), runner digest and host GPU identity (N2)
+
+test('requireHardwareEnvironment refuses the cleanup session\'s Box, workspaces and Router port', () => {
+  const good = { SMOKE_DEPLOYMENT_MODE: 'box', SMOKE_BASE_URL: 'http://localhost:18080', SMOKE_PLOINKY_BOX_CONTAINER: BOX, SMOKE_WORKSPACE_ROOT: '/home/u/work/hwlReleasePre20261003' };
+  const options = { home: '/home/u' };
+  assert.deepEqual(requireHardwareEnvironment(good, options), { boxName: BOX });
+  assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-testexplorerfresh-9d2ec627469d' }, options), /cleanup session's Box/);
+  assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_BASE_URL: 'http://127.0.0.1:8080' }, options), /port 8080/);
+  assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_BASE_URL: 'not a url' }, options), /must be a URL/);
+  for (const workspace of ['/home/u/work/testExplorerFresh', '/home/u/work/testExplorerFresh/sub/dir', '/home/u/cleanup-repair-claude-20261002', '/home/u/cleanup-repair-claude-20261002/x/../y', '/home/u/work/testExplorerFresh/']) {
+    assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_WORKSPACE_ROOT: workspace }, options), /foreign-workspace guard/, workspace);
+  }
+  // Siblings that merely share a prefix are not foreign; an unset workspace is allowed for specs that do not use one.
+  assert.doesNotThrow(() => requireHardwareEnvironment({ ...good, SMOKE_WORKSPACE_ROOT: '/home/u/work/testExplorerFresh2' }, options));
+  assert.doesNotThrow(() => requireHardwareEnvironment({ ...good, SMOKE_WORKSPACE_ROOT: '' }, options));
+  assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_BASE_URL: 'http://localhost:8080', SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-testexplorerfresh-1' }, options), (error) => /port 8080/.test(error.message) && /cleanup session's Box/.test(error.message));
+});
+
+test('readRunnerDigest records the runner executable digest and fails when it is absent', async () => {
+  const digest = 'a'.repeat(64);
+  const ok = await readRunnerDigest({ run: () => ({ status: 0, stdout: JSON.stringify({ file: '/opt/llama.cpp/llama-server', sha256: digest, size: 1234 }) }), boxName: BOX, agentName: 'ploinky_llm' });
+  assert.deepEqual(ok, { file: '/opt/llama.cpp/llama-server', sha256: digest, size: 1234 });
+  await assert.rejects(() => readRunnerDigest({ run: () => ({ status: 0, stdout: JSON.stringify({ file: '/opt/llama.cpp/llama-server', sha256: null, size: null, error: 'ENOENT' }) }), boxName: BOX, agentName: 'ploinky_llm' }), /no readable \/opt\/llama.cpp\/llama-server/);
+  for (const sha256 of [null, 'abc', 'G'.repeat(64)]) {
+    await assert.rejects(() => readRunnerDigest({ run: () => ({ status: 0, stdout: JSON.stringify({ file: '/opt/llama.cpp/llama-server', sha256, size: 10 }) }), boxName: BOX, agentName: 'ploinky_llm' }), EvidenceBlocked);
+  }
+  await assert.rejects(() => readRunnerDigest({ run: () => ({ status: 0, stdout: JSON.stringify({ file: '/other', sha256: digest, size: 1 }) }), boxName: BOX, agentName: 'ploinky_llm' }), EvidenceBlocked);
+});
+
+test('readHostGpuIdentity returns exactly the selected device and a driver version', async () => {
+  assert.deepEqual(await readHostGpuIdentity({ run: () => ({ status: 0, stdout: `${UUID}, 595.91.07\n` }), uuid: UUID }), { uuid: UUID, driverVersion: '595.91.07' });
+  await assert.rejects(() => readHostGpuIdentity({ run: () => ({ status: 0, stdout: 'GPU-11111111-2222, 595.91.07\n' }), uuid: UUID }), EvidenceBlocked);
+  await assert.rejects(() => readHostGpuIdentity({ run: () => ({ status: 0, stdout: `${UUID}, 595.91.07\n${UUID}, 595.91.07\n` }), uuid: UUID }), EvidenceBlocked);
+  await assert.rejects(() => readHostGpuIdentity({ run: () => ({ status: 0, stdout: `${UUID}, N/A\n` }), uuid: UUID }), EvidenceBlocked);
+  await assert.rejects(() => readHostGpuIdentity({ run: () => ({ status: 9, stdout: '', stderr: 'no driver' }), uuid: UUID }), /Host GPU identity query failed/);
+});
+
+// ---------------------------------------------------------------------------
+// Fixture removal (B1): every run is awaited, instances are disabled by exact key, a failure stops the sequence.
+
+function fixtureSnapshot() {
+  return { agents: [
+    { ref: 'hwlFixture/static', containers: [{ key: 'ploinky_static_1' }] },
+    { ref: 'hwlFixture/aliased', containers: [{ key: 'ploinky_aliased_canonical', alias: null }, { key: 'ploinky_aliased_second', alias: 'second' }] },
+    { ref: 'hwlFixture/refused', containers: [{ key: 'ploinky_refused_1' }] },
+    { ref: 'hwlFixture/dependant', containers: [{ key: 'ploinky_dependant_1' }] },
+    { ref: 'AchillesIDE/tasksAgent', containers: [{ key: 'ploinky_tasks_1' }] },
+  ] };
+}
+const ORDER = ['hwlFixture/static', 'hwlFixture/dependant', 'hwlFixture/refused', 'hwlFixture/aliased'];
+
+test('removeFixture awaits every command and disables each fixture instance by its exact key, then the repository', async () => {
+  const log = [];
+  // A fake whose answer arrives later: a caller that does not await reads `status` of a Promise.
+  const run = (command, args, options) => new Promise((resolve) => setTimeout(() => { log.push({ command, args, cwd: options.cwd }); resolve({ status: 0, stdout: '', stderr: '' }); }, 5));
+  const result = await removeFixture({ run, bin: '/opt/ploinky/bin/ploinky', cwd: '/home/u/work/hwlReleasePre20261003', repo: 'hwlFixture', order: ORDER, readSnapshot: async () => fixtureSnapshot() });
+  assert.deepEqual(log.map((entry) => entry.args), [
+    ['disable', 'agent', 'ploinky_static_1'],
+    ['disable', 'agent', 'ploinky_dependant_1'],
+    ['disable', 'agent', 'ploinky_refused_1'],
+    ['disable', 'agent', 'ploinky_aliased_canonical'],
+    ['disable', 'agent', 'ploinky_aliased_second'],
+    ['disable', 'repo', 'hwlFixture'],
+  ]);
+  assert.ok(log.every((entry) => entry.command === '/opt/ploinky/bin/ploinky' && entry.cwd === '/home/u/work/hwlReleasePre20261003'));
+  assert.equal(result.commands.length, 6);
+  assert.ok(result.commands.every((command) => command.status === 0));
+  assert.equal(log.some((entry) => entry.args.includes('second') || entry.args.includes('tasks')), false, 'no bare alias and no non-fixture target');
+  assert.equal(JSON.stringify(log).includes('tasksAgent'), false);
+});
+
+test('removeFixture stops at the first failing command and never touches the repository after it', async () => {
+  const log = [];
+  const run = async (command, args) => { log.push(args.join(' ')); return { status: args.includes('ploinky_refused_1') ? 4 : 0, stdout: '' }; };
+  await assert.rejects(() => removeFixture({ run, bin: 'ploinky', cwd: '/w', repo: 'hwlFixture', order: ORDER, readSnapshot: async () => fixtureSnapshot() }), /disable agent ploinky_refused_1 failed \(exit 4\)/);
+  assert.deepEqual(log, ['disable agent ploinky_static_1', 'disable agent ploinky_dependant_1', 'disable agent ploinky_refused_1']);
+  await assert.rejects(() => removeFixture({ run: async () => ({ status: null, error: new Error('spawn ENOENT') }), bin: 'ploinky', cwd: '/w', repo: 'hwlFixture', readSnapshot: async () => fixtureSnapshot() }), /failed \(exit unknown\)/);
+  await assert.rejects(() => removeFixture({ run, bin: 'ploinky', cwd: 'relative', repo: 'hwlFixture', readSnapshot: async () => fixtureSnapshot() }), /absolute workspace directory/);
+  const none = [];
+  await removeFixture({ run: async (command, args) => { none.push(args.join(' ')); return { status: 0 }; }, bin: 'ploinky', cwd: '/w', repo: 'hwlFixture', readSnapshot: async () => ({ agents: [] }) });
+  assert.deepEqual(none, ['disable repo hwlFixture']);
 });
