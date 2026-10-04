@@ -657,6 +657,14 @@ On headed Linux without `DISPLAY`, the npm runner starts a deterministic 1920×1
   invokes the targeted restart without another authentication request, proves
   drain produced another callback acknowledgement, and reopens both markers.
 - `SMOKE_GITHUB=1` enables GitHub plugin authentication checks.
+- `SMOKE_HARDWARE_LIMITS=1` enables the hardware-limits executors: spec 90
+  (administrator panel and API probes, 6 tests), spec 92 (owned fixture graph,
+  4 tests) and spec 91 (local-llm Playground under budgets, 3 tests), run with
+  `npm run test:hardware-limits`. They need a gate-on Box deployment
+  (`SMOKE_DEPLOYMENT_MODE=box`, `SMOKE_BASE_URL`, `SMOKE_PLOINKY_BOX_CONTAINER`)
+  and fail, never skip, when a prerequisite is missing. Specs 91 and 92 also
+  read the deployed Ploinky clone's `tests/hardware-limits/liveLlmCommands.mjs`
+  (spec 91) and `SMOKE_PLOINKY_BIN` plus `SMOKE_WORKSPACE_ROOT` (spec 92).
 
 Run the Umami publication gate against a fresh Box Explorer stack:
 

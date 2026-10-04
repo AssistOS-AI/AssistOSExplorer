@@ -9,6 +9,7 @@
     "benchmark:ui:compare": "node ./scripts/compare-ui-benchmarks.mjs",
     "test": "node ./scripts/run-playwright.mjs",
     "test:optional-agents": "SMOKE_OPTIONAL_AGENTS=1 node ./scripts/run-playwright.mjs --project=chromium specs/03-optional-agents.spec.mjs",
+    "test:hardware-limits": "SMOKE_HARDWARE_LIMITS=1 node ./scripts/run-playwright.mjs --project=chromium --workers=1 --retries=0 specs/90-hardware-limits-admin.spec.mjs specs/92-hardware-limits-fixture-graph.spec.mjs specs/91-local-llm-playground-limits.spec.mjs",
     "test:gpt-researcher": "SMOKE_GPT_RESEARCHER=1 node ./scripts/run-playwright.mjs --project=chromium specs/34-gpt-researcher-routing.spec.mjs",
     "test:onlyoffice-confidential": "SMOKE_ONLYOFFICE=1 node ./scripts/run-playwright.mjs --project=chromium --workers=1 --retries=0 --grep 'Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart' specs/50-onlyoffice-dpu.spec.mjs",
     "test:qa": "SMOKE_QA_ACCEPTANCE=1 node ./scripts/run-playwright.mjs --project=chromium specs/80-explorer-qa-acceptance.spec.mjs",
