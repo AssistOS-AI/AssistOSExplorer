@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { openExplorer } from '../lib/explorer.mjs';
-import { createDirectory, openCopilotForDirectory } from '../lib/copilot.mjs';
 import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { setComposer, waitForWebchatIdle, cancelWebchatGenerationIfActive } from '../lib/webchat.mjs';
 import { createReleaseGateFailureCollector } from '../lib/release-gate-failures.mjs';
@@ -16,9 +15,10 @@ import {
     createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt,
     isCompletedLiveSkillsTurn, validateLiveSkillsTurn, policyEvidence, liveSkillsHash, LIVE_SKILLS_TURN_TIMEOUT_MS,
 } from '../lib/copilot-live-skills.mjs';
+import { assertLiveSkillsLivePreflight, createOwnedLiveSkillsFixture, liveSkillsPhasePlan, liveSkillsOwnedLaunchURL, defaultRobotEvidence } from '../lib/copilot-live-skills-fixture.mjs';
 import { createLiveSkillsRuntimeReader } from '../lib/copilot-live-skills-runtime.mjs';
 import {
-    ROBOTEAM_BASE_PATH, conversationFromSkillsURL, roboTeamRobotId, openConversationSkills,
+    ROBOTEAM_BASE_PATH, conversationFromSkillsURL, roboTeamRobotId, roboTeamApi, openConversationSkills,
     conversationSkillsState, setConversationSkill, refreshConversationSkills,
 } from '../lib/conversation-skills.mjs';
 
@@ -27,10 +27,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 // The conversation skill steps drive RoboTeam's Conversation skills page (WebChat menu), not an Explorer Settings tab.
 // Status: unexecuted until the deployment gate (D1/D2); Copilot-family flows are excluded from the 2026-10-02 post-merge acceptance.
-// This spec is also blocked on SET-2 (live-link evidence, registered-repository fixture and `.roboteam` session reader).
+// This spec is blocked on SET-2 phase6 credential preflight and independently verified B+C setup.
 // This gate deliberately submits exactly seven native turns. A failed completion is never retried.
 test.describe('Deployed Copilot live skills', () => {
     test.skip(!enabled, 'Opt in with SMOKE_COPILOT_LIVE_SKILLS=1 and exact host/release pins.');
+    test.beforeAll(() => assertLiveSkillsLivePreflight());
     test('one native conversation consumes local edits, additions, disable, re-enable and deletion', async ({ page }, testInfo) => {
         test.setTimeout(25 * 60_000);
         assert.equal(testInfo.retry, 0, 'Acceptance retries are forbidden.');
@@ -53,8 +54,10 @@ test.describe('Deployed Copilot live skills', () => {
         page.context().on('page', observe);
         let copilot;
         let settings;
-        let defaultRobotId;
-        let directoryCreated = false;
+        let existingDefaultId;
+        let existingDefaultBefore;
+        let roboTeam;
+        let owned;
         let receiptDirectoryCreated = false;
         let sessionId;
         let untouchedId;
@@ -65,48 +68,32 @@ test.describe('Deployed Copilot live skills', () => {
         const turnIds = [];
         let receiptNames = [];
         let receiptHashes = {};
-        const catalog = id => callAgentToolViaRouter(page, { agent: 'roboTeamAgent', tool: 'list_achilles_skills',
-            args: { robot: 'default', ...(id ? { sessionId: id } : {}) } });
+        const phases = liveSkillsPhasePlan(fixture);
+        const catalog = (id, robot = fixture.robotName) => callAgentToolViaRouter(page, { agent: 'roboTeamAgent', tool: 'list_achilles_skills',
+            args: { robot, ...(id ? { sessionId: id } : {}) } });
         const fsTool = (tool, args) => callAgentToolViaRouter(page, { agent: 'explorer', tool, args });
-        async function writeSource(relative, content) {
-            assert.ok(relative.startsWith(`${fixture.folder}/.agents/skills/`), 'Fixture writes must stay under the run skill folder.');
-            const result = await fsTool('write_file', { path: relative, content });
-            assert.match(result.rawText || '', /^Successfully wrote to /);
-            assert.equal((await fsTool('read_file', { path: relative })).rawText, content);
-        }
-        async function installSkill(skill) {
-            const relative = `${fixture.folder}/.agents/skills/${skill.name}`;
-            assert.match((await fsTool('create_directory', { path: relative })).rawText || '', /^Successfully created directory /);
-            const source = liveSkillSources(fixture, skill, workspaceRoot);
-            await writeSource(`${relative}/SKILL.md`, source.descriptor);
-            await writeSource(`${relative}/receipt.mjs`, source.helper);
-        }
         async function browserSessionId() {
             const href = await copilot.locator('#sessionSettingsLink').getAttribute('href');
-            return conversationFromSkillsURL(href, smokeConfig.baseURL, { robotId: defaultRobotId }).sessionId;
+            return conversationFromSkillsURL(href, smokeConfig.baseURL, { robotId: fixture.robotId }).sessionId;
         }
         // The robot id lives on RoboTeam's API, so it is read from a short-lived page under the RoboTeam route.
-        async function resolveDefaultRobotId() {
-            page.context().off('page', observe);
-            const roboTeam = await page.context().newPage();
-            try {
-                await roboTeam.goto(new URL(ROBOTEAM_BASE_PATH, smokeConfig.baseURL).toString(), { waitUntil: 'domcontentloaded' });
-                return await roboTeamRobotId(roboTeam, 'default');
-            } finally {
-                await roboTeam.close();
-                page.context().on('page', observe);
-            }
+        async function defaultPreservation() {
+            const rows = await owned.robots();
+            const matches = rows.robots.filter(robot => robot.id === existingDefaultId);
+            assert.equal(matches.length, 1);
+            return defaultRobotEvidence(matches[0], await catalog(null, 'default'));
         }
         async function unchangedPolicies() {
-            assert.deepEqual(policyEvidence(await catalog(), null), defaultsBefore, 'Robot defaults changed.');
-            assert.deepEqual(policyEvidence(await catalog(untouchedId), untouchedId), untouchedBefore, 'The other conversation policy changed.');
+            assert.deepEqual(policyEvidence(await catalog(), null, fixture.robotName), defaultsBefore, 'Robot defaults changed.');
+            assert.deepEqual(policyEvidence(await catalog(untouchedId), untouchedId, fixture.robotName), untouchedBefore, 'The other conversation policy changed.');
+            assert.deepEqual(await defaultPreservation(), existingDefaultBefore, 'Existing default configuration, policy or registration changed.');
         }
         async function toggleProbe(value) {
             assert.equal(await browserSessionId(), sessionId);
             if (!settings) settings = await openConversationSkills(copilot);
             else await refreshConversationSkills(settings);
             const before = await conversationSkillsState(settings);
-            assert.equal(before.robotId, defaultRobotId);
+            assert.equal(before.robotId, fixture.robotId);
             assert.equal(before.sessionId, sessionId);
             const item = before.items.filter(entry => entry.name === fixture.probe.name);
             assert.equal(item.length, 1);
@@ -123,7 +110,7 @@ test.describe('Deployed Copilot live skills', () => {
             await unchangedPolicies();
             await copilot.bringToFront();
         }
-        async function turn(label, selected, available, absent = []) {
+        async function turn({ label, selected, available, absent, revisionChange }) {
             evidence.currentPhase = { label, stage: 'baseline', startedAt: new Date().toISOString() };
             assert.equal(await browserSessionId(), sessionId, 'Browser changed conversation between phases.');
             await waitForWebchatIdle(copilot, smokeConfig.timeouts.navigation);
@@ -131,7 +118,7 @@ test.describe('Deployed Copilot live skills', () => {
             const baselineIds = baseline.session.messages.filter(message => message.role === 'assistant').map(message => message.id);
             assert.deepEqual(Object.fromEntries(Object.entries(baseline.receipts).map(([name, receipt]) => [name, liveSkillsHash(receipt)])), receiptHashes, 'Receipts changed outside a native turn.');
             const selection = await catalog(sessionId);
-            const expectedPolicy = policyEvidence(selection, sessionId);
+            const expectedPolicy = policyEvidence(selection, sessionId, fixture.robotName);
             const phase = randomUUID();
             const prompt = liveSkillsPrompt({ phase, selected });
             const hostStarted = Date.now();
@@ -168,7 +155,7 @@ test.describe('Deployed Copilot live skills', () => {
             evidence.currentPhase.stage = 'catalog, receipt and continuation validation';
             const proof = validateLiveSkillsTurn({ snapshot, inventory, baselineIds, priorTurnIds: turnIds, sessionId,
                 nativeIdentity, fixture, workspaceRoot, phase, selected, available, absent, expectedPolicy, priorReceiptNames: receiptNames, priorReceiptHashes: receiptHashes,
-                priorRevision: evidence.phases.at(-1)?.revision,
+                priorRevision: evidence.phases.at(-1)?.revision, revisionChange,
                 startedAt: Date.parse(baseline.capturedAt), finishedAt: Date.parse(snapshot.capturedAt) });
             const message = copilot.locator(`#chatList > .wa-message.in[data-message-id="${proof.messageId}"]`);
             const bubble = message.locator('.wa-message-bubble');
@@ -192,19 +179,33 @@ test.describe('Deployed Copilot live skills', () => {
             evidence.currentPhase = { label: 'setup', stage: 'Explorer and fixture setup' };
             await openExplorer(page);
             observe(page);
-            defaultRobotId = await resolveDefaultRobotId();
             const roots = (await fsTool('list_allowed_directories', {})).rawText || '';
             assert.ok(roots.split('\n').includes(workspaceRoot), 'Explorer is not serving the pinned Box workspace.');
-            defaultsBefore = policyEvidence(await catalog());
-            await createDirectory(page, fixture.folder, `/${fixture.folder}`);
-            directoryCreated = true;
-            copilot = await openCopilotForDirectory(page, `/${fixture.folder}`);
+            page.context().off('page', observe);
+            roboTeam = await page.context().newPage();
+            await roboTeam.goto(new URL(ROBOTEAM_BASE_PATH, smokeConfig.baseURL).toString(), { waitUntil: 'domcontentloaded' });
+            page.context().on('page', observe);
+            existingDefaultId = await roboTeamRobotId(roboTeam, 'default');
+            owned = createOwnedLiveSkillsFixture({ fixture, workspaceRoot, fsTool,
+                api: request => roboTeamApi(roboTeam, request), operate: action => reader.fixtureOperation(action, fixture),
+                listRepositories: async () => roboTeam.evaluate(async () => {
+                    const response = await fetch('/api/marketplace/list-repos', { credentials: 'include', cache: 'no-store' });
+                    if (!response.ok) throw new Error('Marketplace repository inventory failed.');
+                    const payload = await response.json();
+                    return payload.repositories;
+                }) });
+            existingDefaultBefore = await defaultPreservation();
+            evidence.ownership = await owned.setup();
+            receiptDirectoryCreated = true;
+            defaultsBefore = policyEvidence(await catalog(), null, fixture.robotName);
+            copilot = await page.context().newPage();
+            await copilot.goto(liveSkillsOwnedLaunchURL(smokeConfig.baseURL, fixture), { waitUntil: 'domcontentloaded' });
             await expect(copilot.locator('#cmd')).toBeEditable({ timeout: smokeConfig.timeouts.navigation });
             await waitForWebchatIdle(copilot, smokeConfig.timeouts.navigation);
             await copilot.locator('#settingsBtn').click();
             await expect(copilot.locator('#sessionSettingsLink')).toBeVisible();
             untouchedId = await browserSessionId();
-            untouchedBefore = policyEvidence(await catalog(untouchedId), untouchedId);
+            untouchedBefore = policyEvidence(await catalog(untouchedId), untouchedId, fixture.robotName);
             await copilot.locator('#settingsBtn').click();
             await copilot.locator('#sessionsBtn').click();
             await copilot.locator('.wa-session-list-new').click();
@@ -212,42 +213,38 @@ test.describe('Deployed Copilot live skills', () => {
             sessionId = await browserSessionId();
             await waitForWebchatIdle(copilot, smokeConfig.timeouts.navigation);
             evidence.conversation = { sessionId, untouchedId, workspaceRoot, workspace: fixture.workspace };
-            assert.match((await fsTool('create_directory', { path: `${fixture.folder}/.receipts` })).rawText || '', /^Successfully created directory /);
-            receiptDirectoryCreated = true;
-            await installSkill(fixture.control);
-            await installSkill(fixture.probe);
             const initial = await catalog(sessionId);
             const probe = initial.skills.filter(entry => entry.name === fixture.probe.name);
             assert.equal(probe.length, 1);
             assert.equal(probe[0].enabled, true);
             probeIdentity = probe[0].identity;
-            assert.equal(probeIdentity, `workspace:${fixture.folder}/.agents/skills/${fixture.probe.name}`);
-            await turn('original', [fixture.control, fixture.probe], [fixture.control, fixture.probe]);
+            assert.equal(probeIdentity, `${fixture.repositoryName}/${fixture.probe.name}`);
+            await turn(phases[0]);
 
             fixture.probe.descriptorMarker = randomUUID();
-            await writeSource(`${fixture.folder}/.agents/skills/${fixture.probe.name}/SKILL.md`, liveSkillSources(fixture, fixture.probe, workspaceRoot).descriptor);
-            await turn('descriptor edit', [fixture.control, fixture.probe], [fixture.control, fixture.probe]);
+            await owned.writeSource(`${fixture.repositoryName}/skills/${fixture.probe.name}/SKILL.md`, liveSkillSources(fixture, fixture.probe, workspaceRoot).descriptor);
+            await turn(phases[1]);
 
             fixture.probe.helperMarker = randomUUID();
-            await writeSource(`${fixture.folder}/.agents/skills/${fixture.probe.name}/receipt.mjs`, liveSkillSources(fixture, fixture.probe, workspaceRoot).helper);
-            await turn('helper-only edit', [fixture.control, fixture.probe], [fixture.control, fixture.probe]);
+            await owned.writeSource(`${fixture.repositoryName}/skills/${fixture.probe.name}/receipt.mjs`, liveSkillSources(fixture, fixture.probe, workspaceRoot).helper);
+            await turn(phases[2]);
 
-            await installSkill(fixture.added);
-            await turn('new skill', [fixture.control, fixture.added], [fixture.control, fixture.probe, fixture.added]);
+            await owned.installSkill(fixture.added);
+            await turn(phases[3]);
 
             await toggleProbe(false);
-            await turn('disabled probe', [fixture.control], [fixture.control, fixture.added], [fixture.probe]);
+            await turn(phases[4]);
 
             await toggleProbe(true);
-            await turn('re-enabled probe', [fixture.control, fixture.probe], [fixture.control, fixture.probe, fixture.added]);
+            await turn(phases[5]);
 
-            const removed = await fsTool('delete_directory', { path: `${fixture.folder}/.agents/skills/${fixture.probe.name}` });
+            const removed = await fsTool('delete_directory', { path: `${fixture.repositoryName}/skills/${fixture.probe.name}` });
             assert.match(removed.rawText || '', /^Successfully deleted directory /);
-            await turn('deleted probe', [fixture.control], [fixture.control, fixture.added], [fixture.probe]);
+            await turn(phases[6]);
             assert.equal(evidence.phases.length, 7);
             assert.equal(new Set(turnIds).size, 7);
             evidence.releaseAfter = await reader.finish();
-            evidence.policies = { defaults: defaultsBefore, untouched: untouchedBefore };
+            evidence.policies = { ownedDefaults: defaultsBefore, untouched: untouchedBefore, existingDefault: existingDefaultBefore };
             evidence.result = 'passed';
         } catch (error) {
             primaryError = error;
@@ -279,13 +276,15 @@ test.describe('Deployed Copilot live skills', () => {
             for (const candidate of [settings, copilot]) {
                 if (candidate && !candidate.isClosed()) await candidate.close().catch(error => { cleanupErrors.push('popup close failed'); failureCollector.add('popup close', error); });
             }
-            if (directoryCreated && cleanupErrors.length === 0) {
+            if (owned && cleanupErrors.length === 0) {
                 try {
-                    const removed = await fsTool('delete_directory', { path: fixture.folder });
-                    assert.match(removed.rawText || '', /^Successfully deleted directory /);
+                    await owned.cleanup({ quiescent: true });
+                    if (existingDefaultBefore) assert.deepEqual(await defaultPreservation(), existingDefaultBefore, 'Existing default changed during cleanup.');
                 }
-                catch (error) { cleanupErrors.push('run-owned source/receipt cleanup failed'); failureCollector.add('run-owned source/receipt cleanup', error); }
+                catch (error) { cleanupErrors.push('owned fixture cleanup failed; retain ownership'); failureCollector.add('owned fixture cleanup', error); }
             }
+            if (roboTeam && !roboTeam.isClosed()) await roboTeam.close().catch(error => { cleanupErrors.push('RoboTeam control page close failed'); failureCollector.add('control page close', error); });
+            evidence.fixtureState = owned?.state;
             evidence.cleanup = cleanupErrors.length ? cleanupErrors : 'passed';
             if (errors.length) failureCollector.add('browser errors', new Error(liveSkillsDiagnosticText(errors)));
             if (evidence.result !== 'passed' || primaryError || failureCollector.failures.length) evidence.result = 'failed';

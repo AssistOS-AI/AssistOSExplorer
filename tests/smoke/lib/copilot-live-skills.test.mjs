@@ -6,6 +6,7 @@ import {
     createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt,
     isCompletedLiveSkillsTurn, validateLiveSkillsTurn, policyEvidence, liveSkillsHash,
 } from './copilot-live-skills.mjs';
+import { currentLiveSkillsCase } from './copilot-live-skills-test-fixture.mjs';
 import { validateLiveSkillsRuntimeBinding } from './copilot-live-skills-runtime.mjs';
 
 // The Box mounts the workspace at its own host path. None of these is the retired /workspace alias,
@@ -20,46 +21,7 @@ function samePathFixture(root = ROOT) {
     return fixture;
 }
 
-function completedCase({ disabled = false, root = ROOT } = {}) {
-    const fixture = samePathFixture(root);
-    const phase = randomUUID();
-    const sessionId = randomUUID();
-    const turnId = randomUUID();
-    const robotRoot = '/data/robots/default-robot';
-    const revision = 'a'.repeat(64);
-    const selected = disabled ? [fixture.control] : [fixture.control, fixture.probe];
-    const available = selected;
-    const entries = selected.map(skill => ({ identity: `workspace:${fixture.folder}/.agents/skills/${skill.name}`,
-        name: skill.name, fingerprint: liveSkillsHash(liveSkillSources(fixture, skill, root)) }));
-    const policy = { mode: 'live', excludedSkills: disabled ? [`workspace:${fixture.folder}/.agents/skills/${fixture.probe.name}`] : [] };
-    const inventory = { robot: 'default', scope: 'conversation', sessionId, policy, policyVersion: 3,
-        cwd: fixture.workspace, lastRevision: revision, activeRevision: null };
-    const native = { version: 1, id: sessionId, home: `${robotRoot}/home`, workspace: fixture.workspace,
-        agent: 'codex', continuation: { threadId: randomUUID() } };
-    const snapshot = { robotRoot, workspaceRoot: root, native, capturedAt: new Date().toISOString(),
-        session: { sessionId, cwd: fixture.workspace, skillPolicyRef: sessionId,
-            engine: { type: 'ala', backend: 'codex', sessionId, home: native.home, cwd: fixture.workspace },
-            messages: [
-                { role: 'user', id: randomUUID(), text: liveSkillsPrompt({ phase, selected }), turnId, status: 'completed' },
-                { role: 'assistant', id: randomUUID(), text: selected.flatMap(skill => [skill.descriptorMarker, skill.helperMarker]).join('\n'), turnId, status: 'completed' },
-            ],
-            skillExecution: { active: false, revision, catalogId: revision, catalogPath: `${robotRoot}/runtime/skill-catalogs/${revision}`,
-                cwd: fixture.workspace, policyId: sessionId, policyVersion: 3, entries, resolvedSkills: entries.map(entry => entry.identity) },
-        },
-        catalog: { version: 1, revision, policyVersion: 3, entries: structuredClone(entries) },
-        capturedFiles: Object.fromEntries(selected.map(skill => {
-            const source = liveSkillSources(fixture, skill, root);
-            return [skill.name, { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 }];
-        })),
-        receipts: Object.fromEntries(selected.map(skill => [`${phase}-${skill.name}.json`, {
-            version: 1, runId: fixture.runId, phase, skill: skill.name, marker: skill.helperMarker,
-            executedPath: `/workspace/.agents/skills/${skill.name}/receipt.mjs`,
-            helperSha256: liveSkillSources(fixture, skill, root).helperSha256, createdAt: new Date().toISOString(), pid: 12,
-        }])),
-    };
-    return { workspaceRoot: root, fixture, phase, selected, available, absent: disabled ? [fixture.probe] : [], sessionId, snapshot, inventory,
-        baselineIds: [], priorTurnIds: [], expectedPolicy: policyEvidence(inventory, sessionId), startedAt: Date.now() - 1000, finishedAt: Date.now() + 1000 };
-}
+const completedCase = currentLiveSkillsCase;
 
 test('a native completion proves both current source values, exact captured catalog, receipts and continuation', () => {
     const input = completedCase();
@@ -137,18 +99,18 @@ const corruptions = {
     'changed native continuation': input => { input.nativeIdentity = { sessionId: input.sessionId,
         home: input.snapshot.native.home, workspace: input.fixture.workspace, agent: 'codex', threadId: randomUUID() }; },
     'fresh inventory substituted for captured catalog': input => { input.snapshot.catalog.revision = 'b'.repeat(64); },
-    'different captured path': input => { input.snapshot.session.skillExecution.catalogPath += '-other'; },
+    'different captured path': input => { input.snapshot.liveLinks[input.fixture.probe.name].destination += '-other'; },
     'stale catalog descriptor bytes': input => { input.snapshot.capturedFiles[input.fixture.probe.name].descriptorSha256 = 'b'.repeat(64); },
     'stale catalog helper bytes': input => { input.snapshot.capturedFiles[input.fixture.probe.name].helperSha256 = 'b'.repeat(64); },
-    'catalog selection mismatch': input => { input.snapshot.session.skillExecution.resolvedSkills = []; },
+    'catalog selection mismatch': input => { input.snapshot.session.skillExecution.entries = []; },
     'catalog entry mismatch': input => { input.snapshot.catalog.entries[0].fingerprint = 'b'.repeat(64); },
     'wrong policy version': input => { input.snapshot.session.skillExecution.policyVersion += 1; },
-    'wrong policy identity': input => { input.snapshot.session.skillExecution.policyId = randomUUID(); },
+    'wrong policy identity': input => { input.snapshot.session.skillPolicyRef = randomUUID(); },
     'wrong last revision': input => { input.inventory.lastRevision = 'b'.repeat(64); },
     'active inventory revision': input => { input.inventory.activeRevision = { revision: 'a'.repeat(64) }; },
     'missing fresh receipt': input => { delete input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`]; },
-    'copied helper outside registered mount': input => { input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].executedPath = '/workspace/copy/receipt.mjs'; },
-    'reused catalog after mutation': input => { input.priorRevision = input.snapshot.session.skillExecution.revision; },
+    'copied helper outside registered mount': input => { input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].invokedPath = '/workspace/copy/receipt.mjs'; },
+    'reused catalog after mutation': input => { input.priorRevision = input.snapshot.session.skillExecution.revision; input.revisionChange = 'changed'; },
     'wrong receipt helper hash': input => { input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].helperSha256 = 'b'.repeat(64); },
     'wrong receipt run': input => { input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].runId = randomUUID(); },
     'wrong receipt challenge': input => { input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].phase = randomUUID(); },
@@ -166,10 +128,9 @@ for (const [name, corrupt] of Object.entries(corruptions)) {
 
 test('disabled probe cannot remain registered merely because the model ignored it', () => {
     const input = completedCase({ disabled: true });
-    const entry = { name: input.fixture.probe.name, identity: `workspace:${input.fixture.folder}/.agents/skills/${input.fixture.probe.name}`, fingerprint: 'c'.repeat(64) };
+    const entry = { name: input.fixture.probe.name, identity: `${input.fixture.repositoryName}/${input.fixture.probe.name}`, fingerprint: 'c'.repeat(64) };
     input.snapshot.catalog.entries.push(entry);
     input.snapshot.session.skillExecution.entries.push(entry);
-    input.snapshot.session.skillExecution.resolvedSkills.push(entry.identity);
     assert.throws(() => validateLiveSkillsTurn(input), /remains in this turn/);
 });
 
@@ -227,12 +188,13 @@ test('runtime evidence binds the exact workspace, data and generated code to the
     }
 });
 
-test('native helper writes under the ALA selected-workspace mapping while the observer retains the outer path', () => {
+test('native helper writes under canonical cwd and records the registered source and live link', () => {
     const fixture = samePathFixture();
     const source = liveSkillSources(fixture, fixture.control, ROOT);
     assert.equal(fixture.workspace, `${ROOT}/${fixture.folder}`);
-    assert.ok(source.helper.includes('writeFileSync("/workspace/.receipts/"'));
-    assert.ok(!source.helper.includes(`${fixture.workspace}/.receipts`));
+    assert.ok(source.helper.includes(fixture.workspace));
+    assert.ok(source.helper.includes(fixture.repositoryRoot));
+    assert.ok(source.helper.includes("path.join(cwd, '.receipts'"));
     assert.ok(source.helper.includes(fixture.runId), 'Receipt identity remains tied to the run despite the namespace mapping.');
 });
 
@@ -243,8 +205,8 @@ for (const root of ROOTS) {
         assert.equal(fixture.workspace, `${root}/${fixture.folder}`, 'The fixture constructor ignored the admitted root.');
         const source = liveSkillSources(fixture, fixture.control, root);
         assert.match(source.descriptor, new RegExp(`name: ${fixture.control.name}\\n`));
-        assert.ok(source.helper.includes('writeFileSync("/workspace/.receipts/"'), 'The ALA-native receipts namespace must stay native.');
-        assert.ok(!source.helper.includes(root) || root === '/workspace', 'The outer root must not leak into the native helper.');
+        assert.ok(source.helper.includes(fixture.workspace), 'Native execution must retain its canonical cwd.');
+        assert.ok(source.helper.includes(fixture.repositoryRoot), 'Helper proof must bind the canonical registered source.');
         const input = completedCase({ root });
         const proof = validateLiveSkillsTurn(input);
         assert.equal(proof.native.workspace, `${root}/${input.fixture.folder}`);
@@ -300,13 +262,13 @@ const rootCorruptions = {
     'session cwd still on the retired alias': input => { input.snapshot.session.cwd = `/workspace/${input.fixture.folder}`; },
     'engine cwd under another root': input => { input.snapshot.session.engine.cwd = `/workspace/${input.fixture.folder}`; },
     'native workspace under another root': input => { input.snapshot.native.workspace = `${ROOT}-evil/${input.fixture.folder}`; },
-    'execution cwd under another root': input => { input.snapshot.session.skillExecution.cwd = `/workspace/${input.fixture.folder}`; },
+    'registered source path under another root': input => { input.snapshot.session.skillExecution.entries[0].sourcePath = `/workspace/${input.fixture.folder}`; },
     'inventory cwd under another root': input => { input.inventory.cwd = `${ROOT}/${input.fixture.folder}/..`; },
     'receipt executed from the outer root instead of the native mount': input => {
-        input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].executedPath = `${ROOT}/.agents/skills/${input.fixture.probe.name}/receipt.mjs`;
+        input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].invokedPath = `${ROOT}/.agents/skills/${input.fixture.probe.name}/receipt.mjs`;
     },
-    'receipt executed from the fixture folder': input => {
-        input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].executedPath = `${input.fixture.workspace}/.agents/skills/${input.fixture.probe.name}/receipt.mjs`;
+    'receipt invoked directly from the registered source': input => {
+        input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].invokedPath = `${input.fixture.repositoryRoot}/skills/${input.fixture.probe.name}/receipt.mjs`;
     },
 };
 for (const [name, corrupt] of Object.entries(rootCorruptions)) {
@@ -324,15 +286,16 @@ for (const root of ROOTS) {
     });
 }
 
-test('the ALA-native namespaces stay native: receipts directory, executed helper path and runtime locations', () => {
+test('canonical execution and registered helper paths preserve the robot runtime location', () => {
     for (const root of ROOTS) {
         const fixture = samePathFixture(root);
         const { helper } = liveSkillSources(fixture, fixture.control, root);
-        assert.ok(helper.includes('writeFileSync("/workspace/.receipts/"'));
+        assert.ok(helper.includes(fixture.workspace));
         const input = completedCase({ root });
         const receipt = Object.values(input.snapshot.receipts)[0];
-        assert.match(receipt.executedPath, /^\/workspace\/\.agents\/skills\/live-[a-f0-9]{8}-(control|probe)\/receipt\.mjs$/);
-        assert.equal(input.snapshot.robotRoot, '/data/robots/default-robot');
-        assert.ok(input.snapshot.session.skillExecution.catalogPath.startsWith('/data/robots/default-robot/runtime/skill-catalogs/'));
+        assert.ok(receipt.invokedPath.startsWith(input.fixture.workspace + '/.agents/skills/'));
+        assert.ok(receipt.resolvedSource.startsWith(input.fixture.repositoryRoot + '/skills/'));
+        assert.equal(input.snapshot.robotRoot, `/data/robots/${input.fixture.robotId}`);
+        assert.equal(input.snapshot.session.engine.home, `${input.snapshot.robotRoot}/home`);
     }
 });

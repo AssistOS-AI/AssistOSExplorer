@@ -2,35 +2,30 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { approveLiveSkillsRequest, validateLiveSkillsApproval, parseLiveSkillsApprovalCommand } from './copilot-live-skills-approval.mjs';
+import { currentLiveSkillsCase } from './copilot-live-skills-test-fixture.mjs';
 import { createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt } from './copilot-live-skills.mjs';
 
 // Approval commands run in the ALA-native /workspace namespace; the observer evidence uses the admitted outer root.
-const workspaceRoot = '/srv/fresh workspace';
+const workspaceRoot = '/srv/fresh-workspace';
 
 function fixtureCase() {
-    const fixture = createLiveSkillsFixture(workspaceRoot), sessionId = randomUUID(), phase = randomUUID(), turnId = randomUUID();
-    const selected = [fixture.control, fixture.probe];
-    const threadId = randomUUID(), nativeTurnId = randomUUID(), interactionId = `task_control_${randomUUID().replaceAll('-', '_')}`;
-    const revision = 'a'.repeat(64), baseURL = 'http://localhost:8080';
-    const command = `node /workspace/.agents/skills/${fixture.control.name}/receipt.mjs ${phase}`;
-    const detail = { threadId, turnId: nativeTurnId, itemId: 'native-item', cwd: '/workspace', command,
-        item: { id: 'native-item', type: 'commandExecution', cwd: '/workspace', command } };
-    const entries = selected.map(skill => ({ name: skill.name, identity: `workspace:${fixture.folder}/.agents/skills/${skill.name}` }));
-    return { fixture, workspaceRoot, sessionId, phase, selected, baselineIds: [], decisions: [], baseURL,
-        browserURL: `${baseURL}/webchat?agent=roboTeamAgent&robot=default&workspace-dir=${fixture.folder}`,
-        settingsURL: `${baseURL}/base-agent-additional-server/roboTeamAgent/3001/conversation-skills/default-abc123/${sessionId}`,
+    const current = currentLiveSkillsCase({ root: workspaceRoot });
+    const { fixture, snapshot, selected, sessionId, phase } = current;
+    const nativeTurnId = randomUUID(), interactionId = `task_control_${randomUUID().replaceAll('-', '_')}`;
+    const threadId = snapshot.native.continuation.threadId, baseURL = 'http://localhost:8080';
+    const command = `node ${fixture.workspace}/.agents/skills/${fixture.control.name}/receipt.mjs ${phase}`;
+    const detail = { threadId, turnId: nativeTurnId, itemId: 'native-item', cwd: fixture.workspace, command,
+        item: { id: 'native-item', type: 'commandExecution', cwd: fixture.workspace, command } };
+    snapshot.receipts = {};
+    snapshot.session.skillExecution.active = true;
+    snapshot.session.messages[1].status = 'pending';
+    return { ...current, decisions: [], baseURL,
+        browserURL: `${baseURL}/webchat?agent=roboTeamAgent&robot=${fixture.robotName}&workspace-dir=${fixture.folder}`,
+        settingsURL: `${baseURL}/base-agent-additional-server/roboTeamAgent/3001/conversation-skills/${fixture.robotId}/${sessionId}`,
         ui: { title: 'Codex permission request', detail: JSON.stringify(detail), options: [
             { id: `interaction-option-${interactionId}-0`, label: 'Deny', description: 'Decline this operation and continue the turn.' },
             { id: `interaction-option-${interactionId}-1`, label: 'Allow once', description: 'Approve this operation.' },
-        ] },
-        snapshot: { native: { id: sessionId, workspace: fixture.workspace, agent: 'codex', continuation: { threadId } },
-            session: { sessionId, cwd: fixture.workspace, skillExecution: { active: true, revision, resolvedSkills: entries.map(entry => entry.identity) },
-                messages: [{ role: 'user', id: randomUUID(), turnId, text: liveSkillsPrompt({ phase, selected }) },
-                    { role: 'assistant', id: randomUUID(), turnId, status: 'pending' }] },
-            catalog: { revision, entries }, capturedFiles: Object.fromEntries(selected.map(skill => {
-                const source = liveSkillSources(fixture, skill, workspaceRoot);
-                return [skill.name, { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 }];
-            })) } };
+        ] } };
 }
 
 function changeDetail(input, mutate) {
@@ -51,7 +46,7 @@ test('one-time helper approval binds current browser, captured sources, native c
 
 test('literal reads may cover only the selected current descriptor and helper files', () => {
     const input = fixtureCase();
-    command(input, `cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md /workspace/.agents/skills/${input.fixture.probe.name}/receipt.mjs`);
+    command(input, `cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md ${input.fixture.workspace}/.agents/skills/${input.fixture.probe.name}/receipt.mjs`);
     assert.equal(validateLiveSkillsApproval(input).helper, null);
 });
 
@@ -76,20 +71,20 @@ const corruptions = {
     'file changes': input => changeDetail(input, detail => { detail.item.type = 'fileChange'; }),
     'permission profile grant': input => changeDetail(input, detail => { detail.permissions = { filesystem: 'all' }; }),
     'foreign helper': input => command(input, `node /workspace/foreign/receipt.mjs ${input.phase}`),
-    'disabled or unselected helper': input => command(input, `node /workspace/.agents/skills/${input.fixture.added.name}/receipt.mjs ${input.phase}`),
-    'helper phase mismatch': input => command(input, `node /workspace/.agents/skills/${input.fixture.control.name}/receipt.mjs ${randomUUID()}`),
-    'extra argument': input => command(input, `node /workspace/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase} extra`),
-    'extra operator': input => command(input, `cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md; pwd`),
+    'disabled or unselected helper': input => command(input, `node ${input.fixture.workspace}/.agents/skills/${input.fixture.added.name}/receipt.mjs ${input.phase}`),
+    'helper phase mismatch': input => command(input, `node ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/receipt.mjs ${randomUUID()}`),
+    'extra argument': input => command(input, `node ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase} extra`),
+    'extra operator': input => command(input, `cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md; pwd`),
     'substitution': input => command(input, `cat $(pwd)/.agents/skills/${input.fixture.control.name}/SKILL.md`),
-    'arbitrary shell wrapper': input => command(input, `/bin/sh -c 'cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md'`),
+    'arbitrary shell wrapper': input => command(input, `/bin/sh -c 'cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md'`),
     'foreign read': input => command(input, 'cat /workspace/.env'),
-    'traversal': input => command(input, `cat /workspace/.agents/skills/${input.fixture.control.name}/../../../.env`),
+    'traversal': input => command(input, `cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/../../../.env`),
     'persistent grant only': input => { input.ui.options[1].label = 'Allow for native session'; },
     'ambiguous approval choice': input => { input.ui.options.push({ ...input.ui.options[1], id: input.ui.options[1].id.replace(/1$/, '2') }); },
     'different interaction id': input => { input.ui.options[0].id = `interaction-option-task_control_${randomUUID().replaceAll('-', '_')}-0`; },
     'catalog revision mismatch': input => { input.snapshot.catalog.revision = 'b'.repeat(64); },
     'changed current helper': input => { input.snapshot.capturedFiles[input.fixture.control.name].helperSha256 = 'b'.repeat(64); },
-    'excluded skill': input => { input.snapshot.session.skillExecution.resolvedSkills.pop(); },
+    'excluded skill': input => { input.snapshot.session.skillExecution.entries.pop(); },
     'truncated detail': input => { input.ui.detail = input.ui.detail.slice(0, -1); },
 };
 for (const [name, corrupt] of Object.entries(corruptions)) test(`approval rejects ${name}`, () => {
@@ -101,7 +96,7 @@ test('a previously approved interaction or helper is never approved a second tim
     const input = fixtureCase(), decision = validateLiveSkillsApproval(input);
     input.decisions.push(decision);
     assert.throws(() => validateLiveSkillsApproval(input), /already approved/);
-    command(input, `cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md`);
+    command(input, `cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md`);
     assert.throws(() => validateLiveSkillsApproval(input), /replayed/);
 });
 
@@ -155,22 +150,22 @@ test('no interaction causes no approval operation', async () => {
 
 test('the observed native bash wrapper and unknown commandActions require validation of both real operations', () => {
     const input = fixtureCase();
-    const inner = `ls -la /workspace/.agents/skills && cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md /workspace/.agents/skills/${input.fixture.probe.name}/SKILL.md`;
+    const inner = `ls -la ${input.fixture.workspace}/.agents/skills && cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md ${input.fixture.workspace}/.agents/skills/${input.fixture.probe.name}/SKILL.md`;
     command(input, `/bin/bash -lc '${inner}'`);
     changeDetail(input, detail => {
         detail.commandActions = detail.item.commandActions = [{ type: 'unknown', command: inner }];
-        detail.availableDecisions = ['accept', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['ls', '-la', '/workspace/.agents/skills'] } }, 'cancel'];
+        detail.availableDecisions = ['accept', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['ls', '-la', `${input.fixture.workspace}/.agents/skills`] } }, 'cancel'];
     });
     const idPrefix = input.ui.options[0].id.slice(0, -1);
     input.ui.options = [
         { id: `${idPrefix}0`, label: 'Allow once', description: 'Approve this operation.' },
-        { id: `${idPrefix}1`, label: 'Allow with execution policy amendment', description: '["ls","-la","/workspace/.agents/skills"]' },
+        { id: `${idPrefix}1`, label: 'Allow with execution policy amendment', description: JSON.stringify(['ls', '-la', `${input.fixture.workspace}/.agents/skills`]) },
         { id: `${idPrefix}2`, label: 'Cancel turn', description: 'Decline this operation and interrupt the turn.' },
     ];
     const decision = validateLiveSkillsApproval(input);
     assert.equal(decision.shell, '/bin/bash -lc');
-    assert.deepEqual(decision.operations, [['ls', '-la', '/workspace/.agents/skills'],
-        ['cat', `/workspace/.agents/skills/${input.fixture.control.name}/SKILL.md`, `/workspace/.agents/skills/${input.fixture.probe.name}/SKILL.md`]]);
+    assert.deepEqual(decision.operations, [['ls', '-la', `${input.fixture.workspace}/.agents/skills`],
+        ['cat', `${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md`, `${input.fixture.workspace}/.agents/skills/${input.fixture.probe.name}/SKILL.md`]]);
     assert.deepEqual(decision.helpers, []);
     assert.equal(decision.decision, 'accept');
     assert.equal(decision.optionId, 'choice_0');
@@ -178,19 +173,19 @@ test('the observed native bash wrapper and unknown commandActions require valida
 
 test('quoted literal paths and a chain of distinct current helpers keep every helper in the decision receipt', () => {
     const input = fixtureCase();
-    const helpers = input.selected.map(skill => `node '/workspace/.agents/skills/${skill.name}/receipt.mjs' '${input.phase}'`);
+    const helpers = input.selected.map(skill => `node '${input.fixture.workspace}/.agents/skills/${skill.name}/receipt.mjs' '${input.phase}'`);
     command(input, `/bin/bash -lc "${helpers.join(' && ')}"`);
     const decision = validateLiveSkillsApproval(input);
     assert.deepEqual(decision.helpers, input.selected.map(skill => skill.name));
     assert.equal(decision.operations.length, 2);
     input.decisions.push(decision);
-    command(input, `node /workspace/.agents/skills/${input.fixture.probe.name}/receipt.mjs ${input.phase}`);
+    command(input, `node ${input.fixture.workspace}/.agents/skills/${input.fixture.probe.name}/receipt.mjs ${input.phase}`);
     assert.throws(() => validateLiveSkillsApproval(input), /already approved/);
 });
 
 test('POSIX quote concatenation decodes to literal inner path quotes without evaluating shell text', () => {
     const input = fixtureCase();
-    const path = `/workspace/.agents/skills/${input.fixture.control.name}/SKILL.md`;
+    const path = `${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md`;
     const inner = `cat '${path}'`;
     const quoted = "'" + inner.replaceAll("'", "'\"'\"'") + "'";
     command(input, `/bin/bash -lc ${quoted}`);
@@ -200,7 +195,7 @@ test('POSIX quote concatenation decodes to literal inner path quotes without eva
 test('listing is restricted to the mounted catalog root or a selected skill directory', () => {
     const input = fixtureCase();
     for (const flags of ['', '-l ', '-a ', '-la ', '-al ', '-l -a ']) {
-        for (const path of ['/workspace/.agents/skills', `/workspace/.agents/skills/${input.fixture.control.name}`]) {
+        for (const path of [`${input.fixture.workspace}/.agents/skills`, `${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}`]) {
             command(input, `ls ${flags}'${path}'`);
             assert.equal(validateLiveSkillsApproval(input).operations[0].at(-1), path);
         }
@@ -208,30 +203,30 @@ test('listing is restricted to the mounted catalog root or a selected skill dire
 });
 
 const chainCorruptions = {
-    'foreign read after an allowed read': input => `cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md && cat /workspace/.env`,
-    'foreign operation before an allowed read': input => `pwd && cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md`,
-    'duplicate helper in one chain': input => Array(2).fill(`node /workspace/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase}`).join(' && '),
-    'foreign challenge in second helper': input => `node /workspace/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase} && node /workspace/.agents/skills/${input.fixture.probe.name}/receipt.mjs ${randomUUID()}`,
-    'extra helper argument in chain': input => `ls /workspace/.agents/skills && node /workspace/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase} extra`,
+    'foreign read after an allowed read': input => `cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md && cat /workspace/.env`,
+    'foreign operation before an allowed read': input => `pwd && cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md`,
+    'duplicate helper in one chain': input => Array(2).fill(`node ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase}`).join(' && '),
+    'foreign challenge in second helper': input => `node ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase} && node ${input.fixture.workspace}/.agents/skills/${input.fixture.probe.name}/receipt.mjs ${randomUUID()}`,
+    'extra helper argument in chain': input => `ls ${input.fixture.workspace}/.agents/skills && node ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase} extra`,
     'foreign directory listing': () => 'ls -la /workspace',
-    'unselected skill listing': input => `ls /workspace/.agents/skills/${input.fixture.added.name}`,
-    'recursive listing flag': () => 'ls -R /workspace/.agents/skills',
-    'two listing targets': () => 'ls /workspace/.agents/skills /workspace',
-    'empty leading operation': () => '&& ls /workspace/.agents/skills',
-    'empty trailing operation': () => 'ls /workspace/.agents/skills &&',
-    'empty middle operation': () => 'ls /workspace/.agents/skills && && ls /workspace/.agents/skills',
-    'environment assignment': input => `NODE_OPTIONS=--inspect node /workspace/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase}`,
-    'environment executable': input => `env node /workspace/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase}`,
-    'nested wrapper': input => `/bin/bash -lc "cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md"`,
-    'pipe': input => `cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md | cat`,
-    'redirect': input => `cat /workspace/.agents/skills/${input.fixture.control.name}/SKILL.md > /workspace/.receipts/forged`,
-    'or sequence': () => 'ls /workspace/.agents/skills || ls /workspace',
-    'background execution': () => 'ls /workspace/.agents/skills &',
+    'unselected skill listing': input => `ls ${input.fixture.workspace}/.agents/skills/${input.fixture.added.name}`,
+    'recursive listing flag': input => `ls -R ${input.fixture.workspace}/.agents/skills`,
+    'two listing targets': input => `ls ${input.fixture.workspace}/.agents/skills /workspace`,
+    'empty leading operation': input => `&& ls ${input.fixture.workspace}/.agents/skills`,
+    'empty trailing operation': input => `ls ${input.fixture.workspace}/.agents/skills &&`,
+    'empty middle operation': input => `ls ${input.fixture.workspace}/.agents/skills && && ls ${input.fixture.workspace}/.agents/skills`,
+    'environment assignment': input => `NODE_OPTIONS=--inspect node ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase}`,
+    'environment executable': input => `env node ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/receipt.mjs ${input.phase}`,
+    'nested wrapper': input => `/bin/bash -lc "cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md"`,
+    'pipe': input => `cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md | cat`,
+    'redirect': input => `cat ${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md > /workspace/.receipts/forged`,
+    'or sequence': input => `ls ${input.fixture.workspace}/.agents/skills || ls /workspace`,
+    'background execution': input => `ls ${input.fixture.workspace}/.agents/skills &`,
     'quoted substitution': () => 'cat "$(pwd)/.env"',
     'literal backtick substitution': () => 'cat `pwd`/.env',
-    'path expansion': () => 'cat /workspace/.agents/skills/*/SKILL.md',
+    'path expansion': input => `cat ${input.fixture.workspace}/.agents/skills/*/SKILL.md`,
     'escaped space': () => 'cat /workspace/foreign\\ file',
-    'newline': () => 'ls /workspace/.agents/skills\npwd',
+    'newline': input => `ls ${input.fixture.workspace}/.agents/skills\npwd`,
     'unclosed quote': () => 'cat "unfinished',
 };
 for (const [name, corrupt] of Object.entries(chainCorruptions)) test(`wrapped approval rejects ${name}`, () => {
@@ -248,24 +243,27 @@ test('an existing current-phase receipt prevents approving that helper again wit
 
 test('native commandActions cannot disguise a forbidden real command', () => {
     const input = fixtureCase();
-    changeDetail(input, detail => { detail.commandActions = [{ type: 'read', path: `/workspace/.agents/skills/${input.fixture.control.name}/SKILL.md` }]; });
+    changeDetail(input, detail => { detail.commandActions = [{ type: 'read', path: `${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}/SKILL.md` }]; });
     command(input, '/bin/bash -lc \'cat /workspace/.env\'');
     assert.throws(() => validateLiveSkillsApproval(input), /escaped/);
 });
 
 test('wrapper changes, appended outer commands, oversized input and empty body reject', () => {
-    for (const value of ["/bin/bash -c 'ls /workspace/.agents/skills'", "/bin/bash -lc ''",
-        "/bin/bash -lc 'ls /workspace/.agents/skills' && cat /workspace/.env", 'x'.repeat(4097)]) {
-        assert.throws(() => parseLiveSkillsApprovalCommand(value));
-    }
+    const input = fixtureCase();
+    for (const [value, reason] of [
+        [`/bin/bash -c 'ls ${input.fixture.workspace}/.agents/skills'`, /Unexpected shell wrapper flags/],
+        ["/bin/bash -lc ''", /Invalid approval command length/],
+        [`/bin/bash -lc 'ls ${input.fixture.workspace}/.agents/skills' && cat /workspace/.env`, /exactly one command body/],
+        ['x'.repeat(4097), /Invalid approval command length/],
+    ]) assert.throws(() => parseLiveSkillsApprovalCommand(value), reason);
 });
 
-test('approval evidence follows the admitted root while the approved command stays in the ALA-native /workspace namespace', () => {
+test('approval evidence follows the admitted root and the approved command uses the same canonical cwd', () => {
     const input = fixtureCase();
     assert.ok(!workspaceRoot.startsWith('/workspace'));
     assert.equal(validateLiveSkillsApproval(input).helper, input.fixture.control.name);
     const detail = JSON.parse(input.ui.detail);
-    assert.equal(detail.cwd, '/workspace');
+    assert.equal(detail.cwd, input.fixture.workspace);
     assert.equal(input.snapshot.session.cwd, `${workspaceRoot}/${input.fixture.folder}`);
 });
 
@@ -286,6 +284,31 @@ for (const [name, mutate] of Object.entries({
 
 test('approval accepts the browser directory spelled as the fixture folder or its full same-path workspace', () => {
     const input = fixtureCase();
-    input.browserURL = `${input.baseURL}/webchat?agent=roboTeamAgent&robot=default&workspace-dir=${encodeURIComponent(input.fixture.workspace)}`;
+    input.browserURL = `${input.baseURL}/webchat?agent=roboTeamAgent&robot=${input.fixture.robotName}&workspace-dir=${encodeURIComponent(input.fixture.workspace)}`;
     assert.equal(validateLiveSkillsApproval(input).helper, input.fixture.control.name);
+});
+
+test('selected registered source files may be read while helper execution must use the installed link', () => {
+    const input = fixtureCase();
+    command(input, `cat ${input.fixture.repositoryRoot}/skills/${input.fixture.probe.name}/SKILL.md ${input.fixture.repositoryRoot}/skills/${input.fixture.probe.name}/receipt.mjs`);
+    assert.equal(validateLiveSkillsApproval(input).helpers.length, 0);
+    command(input, `node ${input.fixture.repositoryRoot}/skills/${input.fixture.probe.name}/receipt.mjs ${input.phase}`);
+    assert.throws(() => validateLiveSkillsApproval(input), /escaped/);
+});
+
+test('literal canonical Unicode paths with spaces parse without permitting expansion', () => {
+    assert.deepEqual(parseLiveSkillsApprovalCommand("cat '/Volumes/Ünïcode ws/ñ 数据 café/SKILL.md' && ls '/Volumes/Ünïcode ws/ñ 数据 café'").operations,
+        [['cat', '/Volumes/Ünïcode ws/ñ 数据 café/SKILL.md'], ['ls', '/Volumes/Ünïcode ws/ñ 数据 café']]);
+    assert.throws(() => parseLiveSkillsApprovalCommand("cat '/Volumes/Ünïcode ws/$HOME/SKILL.md'"));
+});
+
+for (const [name, corrupt] of Object.entries({
+    'foreign settings-link robot': input => { input.settingsURL = input.settingsURL.replace(input.fixture.robotId, 'foreign-robot'); },
+    'default browser robot': input => { input.browserURL = input.browserURL.replace(input.fixture.robotName, 'default'); },
+    'foreign engine robot': input => { input.snapshot.session.engine.robotId = 'foreign-robot'; },
+    'foreign registered source': input => { input.snapshot.robot.repository.source += '-decoy'; },
+    'copied execution instead of live links': input => { input.snapshot.session.skillExecution.live = false; },
+})) test(`current approval rejects ${name}`, () => {
+    const input = fixtureCase(); corrupt(input);
+    assert.throws(() => validateLiveSkillsApproval(input));
 });
