@@ -120,7 +120,8 @@ test('WebChat streams transient progress envelopes for connection and ALA events
             await onEvent({ type: 'turn-started', ...turn, turnId });
             await onEvent({ type: 'progress', reason: 'Connecting to robot "default"' });
             await onEvent({ type: 'coding-agent-selected', agent: 'opencode' });
-            await onEvent({ type: 'coding-agent-message', agent: 'opencode', message: 'Reading files' });
+            await onEvent({ type: 'coding-agent-message', agent: 'opencode', message: 'Reading ' });
+            await onEvent({ type: 'coding-agent-message', agent: 'opencode', message: 'files\n' });
             const outputText = 'done';
             const session = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText);
             return { outputText, session };

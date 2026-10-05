@@ -8,7 +8,7 @@ import { parseWebchatInteractionResponse } from '../../permissions/protocol.mjs'
 import { createCurrentSessionEnvelope, createSelectedSessionEnvelope, createSessionListEnvelope } from './webchatSessionState.mjs';
 import { createWebchatSkillsEnvelope } from '../skills/workspaceSkillsState.mjs';
 import { createWebchatRuntimeStateEnvelope } from './webchatRuntimeState.mjs';
-import { createWebchatProgressEnvelope, codingAgentLabel } from './webchatProgressState.mjs';
+import { createProgressLineBuffer, createWebchatProgressEnvelope, codingAgentLabel } from './webchatProgressState.mjs';
 import { executeRuntimeCommand } from '../cli/cliRuntimeCommands.mjs';
 import { handleWebchatControlChunk, isWebchatEscapeControlChunk } from './webchatControl.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
@@ -107,6 +107,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             const envelope = createWebchatProgressEnvelope(reason, extra);
             if (envelope) send(envelope, context);
         };
+        const agentLines = createProgressLineBuffer((line) => sendProgress(line, { type: 'coding-agent-message' }));
         const onEvent = async (event) => {
             if (event.type === 'turn-started') {
                 engineStarted = true;
@@ -116,7 +117,9 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 sendProgress(event.reason);
             } else if (event.type === 'coding-agent-selected') {
                 sendProgress(`Routing to ${codingAgentLabel(event.agent)}`, { type: 'coding-agent' });
-            } else if (event.type === 'coding-agent-message' || event.type === 'agentlib-tool') {
+            } else if (event.type === 'coding-agent-message') {
+                agentLines.push(event);
+            } else if (event.type === 'agentlib-tool') {
                 sendProgress(event.message || event.reason, { tool: event.tool || '', type: event.type });
             }
             if (event.type === 'coding-agent-selected' && connection.sessionId === sessionId) {
