@@ -56,8 +56,7 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false, executio
     const configFile = path.join(home, '.ala', 'config.json');
     const setModels = (models) => alaConfig.saveConfig(configFile, { codingAgent: 'codex', models, efforts: {} });
     await setModels({ codex: 'native-first' });
-    let workflowCatalog;
-    const catalog = { async refresh() { return { workflowCatalog, skills: records.map((record) => ({ ...record })),
+    const catalog = { async refresh() { return { skills: records.map((record) => ({ ...record })),
         taskRepositories: records.filter((record) => record.enabled).map((record) => record.skillDir) }; } };
     const installation = {
         entryPath: childEntry, loadConfig: alaConfig.loadConfig, saveConfig: alaConfig.saveConfig,
@@ -69,7 +68,6 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false, executio
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
     t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); await fs.rm(home, { recursive: true, force: true }); });
     return { workingDir, engine, store, installation, sessionId: session.sessionId, home, configFile,
-        setWorkflowCatalog: next => { workflowCatalog = next; },
         setSkills: (next) => { records = next; }, setModels };
 }
 
@@ -196,17 +194,14 @@ test('coding provider names remain ordinary prompts without removed launcher rou
 });
 
 
-test('workflow catalog is prepended to the user prompt without hardcoded robot instructions', async t => {
+test('the prompt carries no workflow catalog; robots list workflows through a skill', async t => {
     const h = await harness(t);
-    h.setWorkflowCatalog([{ id: 'software-change', name: 'Software change', description: 'Use for reviewing reports', tasks: [] }]);
     const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Review the report' });
     const output = JSON.parse(result.outputText);
-    assert.match(output.prompt, /Use for reviewing reports/);
-    assert.match(output.prompt, /software-change/);
     assert.match(output.prompt, /Review the report/);
+    assert.doesNotMatch(output.prompt, /Available workflow types|catalog data/);
     assert.doesNotMatch(output.prompt, /You cannot run tasks yourself/);
 });
-
 
 test('explicit skill selection stays in the caller prompt without ALA skill options', async t => {
     const h = await harness(t);

@@ -197,8 +197,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             temporary = await fs.mkdtemp(path.join(root, 'turn-'));
             await fs.chmod(temporary, 0o700);
             const nativePrompt = buildNativePrompt({ prompt, resume: config.resume,
-                selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt,
-                workflowCatalog: snapshot.workflowCatalog });
+                selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
 
             const taskFile = path.join(temporary, 'prompt.txt');
             const userFile = path.join(temporary, 'user.txt');

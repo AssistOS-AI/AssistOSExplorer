@@ -1,33 +1,33 @@
 ---
 name: launch-workflow
-description: Start one RoboFlow task flow for a user objective on the workspace workflow types, and return immediately. Use when the user asks for work that a workflow team should carry out.
+description: Start one RoboFlow task flow for a user objective on a workspace workflow type, and return immediately. Use when the user asks for work that a workflow team should carry out. Get the workflow ids from list-workflows first.
 ---
 
 # Launch Workflow
 
 ## Description
-You are the workspace copilot. You can only choose which workflow to run and start it. A RoboFlow task flow owns its own execution: RoboFlow matches each task to an available robot and traverses the directed graph. Branching tasks choose an outgoing edge; terminal nodes finish the workflow. You do not run tasks yourself, do not delegate to individual robots, and do not control the flow after starting it.
+Starts one RoboFlow task flow. A task flow owns its own execution: RoboFlow matches each task to an available robot and traverses the directed graph. Branching tasks choose an outgoing edge; terminal nodes finish the workflow. This skill only starts a flow. It does not run tasks, does not delegate to individual robots, and does not control the flow after it starts.
 
-The workflow catalog is supplied in your turn context. Each entry has an id, a name, a description, and task names, prompts and execution types. The default workflow lists its supported execution modes. Use it to choose a workflow; never invent an id.
+This skill does not list workflows. Run the list-workflows skill to get the current workflow ids, descriptions, tasks and execution modes, then choose one.
 
 ## Input Format
 Pass one JSON object, or a short command line, through `--input`:
 
-- `{"action":"list-workflows"}`
 - `{"action":"start","workflowTypeId":"<id>","objective":"<self-contained task>","folder":"<workspace path>"}`
+- `{"action":"start","workflowTypeId":"default","executionType":"terminal","objective":"<self-contained task>"}`
 
-Command lines: `list-workflows`, `start <workflowTypeId> :: <objective>` for ordinary graphs. Use JSON with executionType for default.
+Command line: `start <workflowTypeId> :: <objective>` for workflows that do not need an execution type. Use JSON with `executionType` for a workflow that list-workflows marks as needing one, such as `default`.
 
 ## Output Format
 `start` starts the flow and returns immediately; it never waits for the flow to finish. The run keeps running as a background task in the conversation. That task carries the link to the flow page, which opens in the WebChat side panel and shows the graph, the phases and their live logs.
 
 ## Constraints
-- Match the user's request to one workflow from the catalog; prefer the `default` workflow when nothing more specific fits.
+- Use only a workflow id returned by list-workflows; never invent an id. Prefer the `default` workflow when nothing more specific fits.
 - Pass the user's objective as a self-contained task. The workflow team does not see this conversation.
-- Choose executionType terminal, desktop or browser when starting workflow default. For every other workflow, omit executionType: the graph owns execution modes. Never choose robots, skillsets or graph transitions.
+- Choose `executionType` terminal, desktop or browser only for a workflow that needs one, such as `default`. For every other workflow, omit it: the graph owns execution modes. Never choose robots, skillsets or graph transitions.
 - Start one workflow per user objective. If the user asks for follow-up work after a flow finished, start a new flow.
 
 ## Example
-1. The catalog lists `default` as a single-node graph supporting terminal, browser and desktop.
+1. list-workflows lists `default` as a single-task workflow that needs an execution type of terminal, desktop or browser.
 2. `{"action":"start","workflowTypeId":"default","executionType":"terminal","objective":"Summarize the repository README into a new file","folder":"/workspace/project"}` starts the flow.
 3. The tool acknowledges that the flow started and returns; the link to the flow page lives on the background task.

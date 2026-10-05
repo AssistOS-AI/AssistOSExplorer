@@ -4,9 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { skillError } from './skill-files.mjs';
 export const copilotSkillsRoot = path.resolve(fileURLToPath(new URL('../copilot/src/skills/', import.meta.url)));
+// Bundled skills RoboTeam mounts itself; they are never selectable in a skillset.
+export const WEBCHAT_WORKFLOW_SKILLS = Object.freeze(['list-workflows', 'launch-workflow']);
+const REQUIRED_ONLY_SKILLS = new Set(['workflow-creator', 'require-human-input', ...WEBCHAT_WORKFLOW_SKILLS]);
 
 export function copilotSkillset() {
-    const skills = fs.readdirSync(copilotSkillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !['workflow-creator', 'require-human-input'].includes(entry.name)).map((entry) => {
+    const skills = fs.readdirSync(copilotSkillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !REQUIRED_ONLY_SKILLS.has(entry.name)).map((entry) => {
         const text = fs.readFileSync(new URL(`../copilot/src/skills/${entry.name}/SKILL.md`, import.meta.url), 'utf8');
         return { name: entry.name, directory: entry.name,
             description: text.match(/^description:\s*(.+)$/m)?.[1] || entry.name };

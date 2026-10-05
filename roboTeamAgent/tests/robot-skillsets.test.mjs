@@ -341,7 +341,7 @@ test('default chat gets copilot while a saved delegated default conversation sta
     const chatId = crypto.randomUUID();
     const chat = await catalog.refresh(chatId);
     assert.deepEqual(chat.skills.filter(skill => skill.enabled).map(skill => skill.name).sort(),
-        ['bash', 'launch-gpt-researcher', 'launch-workflow']);
+        ['bash', 'launch-gpt-researcher']);
     assert.equal(catalog.command, undefined);
     const empty = await f.skillsets.start(robot, {}, (_robot, selection) => selection);
     session = { skillPolicyRef: empty.policyId };

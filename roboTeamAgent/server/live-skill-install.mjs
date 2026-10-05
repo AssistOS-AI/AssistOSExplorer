@@ -5,12 +5,12 @@ import crypto from 'node:crypto';
 import { repositoryClient } from './repository-client.mjs';
 
 // Selection belongs to RoboTeam. Ploinky alone publishes/removes filesystem links.
-export async function installLiveSkills({ service, robot, policyId, cwd, client }) {
+export async function installLiveSkills({ service, robot, policyId, cwd, client, workflowSkills = false }) {
     client ||= service.repositoriesClient || await repositoryClient();
     const policy = await service.policies.read(robot.id, policyId);
     if (!policy) throw new Error('Missing conversation skill policy');
     if (policy.mode === 'pinned') throw new Error('Pinned snapshots cannot be mounted as live skills; select current skills first');
-    const inventory = await service.live.resolve(robot, policy, cwd);
+    const inventory = await service.live.resolve(robot, policy, cwd, { workflowSkills });
     const repositories = await client.listRepositories();
     const entries = inventory.entries.filter(entry => entry.enabled);
     const repos = [];

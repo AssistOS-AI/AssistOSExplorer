@@ -20,7 +20,7 @@ try {
     const { setRobotContext } = await import('../copilot/src/lib/execution/robotContext.mjs');
     setRobotContext(context);
     const { main } = await import('../copilot/src/index.mjs');
-    await main(args, { workflowCatalog: true, systemPrompt: WORKSPACE_COPILOT_PROMPT });
+    await main(args, { workflowSkills: true, systemPrompt: WORKSPACE_COPILOT_PROMPT });
 } catch (error) {
     console.error('Robot CLI failed:', error.message);
     process.exitCode = error?.exitCode === 130 ? 130 : 1;

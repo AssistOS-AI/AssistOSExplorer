@@ -2,16 +2,15 @@ export const INITIAL_SKILL_INSTRUCTIONS = 'Read the SKILL.md headers in .agents/
 
 export const HUMAN_REPORT_INSTRUCTIONS = 'Read and apply .agents/skills/human-report/SKILL.md after every user prompt, including questions, small changes and continuations. Put the entire final response between two identical <<human-report>> markers, each on its own line. Follow the skill for clear, concise language and accurate outcomes. If the workflow requires JSON or routing headings, preserve that required structure inside the markers and write human-facing fields according to the skill.';
 
-export function buildNativePrompt({ prompt, resume = false, selectedSkillName, systemPrompt = '', workflowCatalog }) {
+export function buildNativePrompt({ prompt, resume = false, selectedSkillName, systemPrompt = '' }) {
     const parts = [systemPrompt, HUMAN_REPORT_INSTRUCTIONS];
-    if (workflowCatalog) parts.push(`Available workflow types (catalog data):\n${JSON.stringify(workflowCatalog)}`);
     if (!resume) parts.push(INITIAL_SKILL_INSTRUCTIONS);
     parts.push(prompt);
     if (selectedSkillName) parts.push(`Use the selected skill at .agents/skills/${selectedSkillName}/SKILL.md.`);
     return parts.filter(Boolean).join('\n\n');
 }
 
-export const WORKSPACE_COPILOT_PROMPT = "You are the workspace copilot. Choose and start one workflow for the user's request using launch-workflow. Only when choosing workflow default, also select executionType terminal, desktop or browser. For other workflows their task definitions determine execution modes; do not override them. Do not launch individual robots or control graph traversal. Use the supplied workflow catalog and never invent workflow IDs.";
+export const WORKSPACE_COPILOT_PROMPT = "You are the workspace copilot. Use list-workflows to get the current workflow types and their ids, then choose and start one workflow for the user's request using launch-workflow. Only when choosing workflow default, also select executionType terminal, desktop or browser. For other workflows their task definitions determine execution modes; do not override them. Do not launch individual robots or control graph traversal. Never invent workflow IDs.";
 
 export function buildWorkflowTaskPrompt({ objective, currentTaskId, graph, previousFinalResponses, continuationPrompt = '', previousSubflowFinalResponse }) {
     return JSON.stringify({

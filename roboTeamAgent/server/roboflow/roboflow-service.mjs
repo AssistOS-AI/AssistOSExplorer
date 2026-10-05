@@ -38,6 +38,9 @@ export class RoboFlowService {
         this.random = options.random || Math.random;
         this.workspaceRoot = options.workspaceRoot || this.runtimeManager?.workspaceRoot || path.dirname(this.database.file);
         this.maxVisits = Number(options.maxVisits ?? process.env.ROBOTEAM_WORKFLOW_MAX_VISITS ?? 500);
+        this.presetRetryMs = Number(options.presetRetryMs ?? 5000);
+        this.closed = false;
+        this.presetTimer = null;
         if (!Number.isSafeInteger(this.maxVisits) || this.maxVisits < 1) throw new Error('Workflow visit limit must be a positive integer');
         this.discover = options.discoverSkillsets || (() => discoverWorkflowSkillsets(this.skillsets?.repositoriesClient));
         this.bindings = new Map();
@@ -63,7 +66,10 @@ export class RoboFlowService {
         await this.registry.initialize();
         await this.store.clearLegacyOnce();
         await ensureDefaultWorkflow(this.registry);
-        await ensureCodeDevelopmentWorkflow(this.registry, this.skillsets);
+        // The preset needs the Ploinky marketplace, which may not route to this
+        // agent until it is ready (for example during a reinstall). It is created
+        // in the background so startup never waits for or fails on it.
+        this.presetReady = this._ensureCodeDevelopmentPreset();
         for (const flow of await this.store.list()) if (flow.status !== 'pending' && !terminal(flow.status)) await this.store.update(flow.id, current => {
             current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
             for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'paused'; instance.error = current.error; instance.endedAt = current.finishedAt; }
@@ -81,6 +87,26 @@ export class RoboFlowService {
             void this._serialize(flow.parentFlowId, () => this.subflows.reconcile(flow.parentFlowId))
                 .catch(error => this._serialize(flow.parentFlowId, () => this._fail(flow.parentFlowId, error.message)).catch(() => {}));
         };
+    }
+    async _ensureCodeDevelopmentPreset() {
+        let reported = false;
+        while (!this.closed) {
+            try {
+                await ensureCodeDevelopmentWorkflow(this.registry, this.skillsets);
+                if (reported) console.log('[roboflow] Code Development workflow is available.');
+                return true;
+            } catch (error) {
+                if (this.closed) return false;
+                if (!reported) console.error(`[roboflow] Code Development workflow is not available yet (${error.message}); retrying every ${this.presetRetryMs} ms.`);
+                reported = true;
+            }
+            await new Promise((resolve) => {
+                this.presetWake = resolve;
+                this.presetTimer = setTimeout(resolve, this.presetRetryMs);
+            });
+            this.presetTimer = null; this.presetWake = null;
+        }
+        return false;
     }
     _derive(flow) {
         if (flow.status === 'terminated') return;
@@ -581,5 +607,5 @@ export class RoboFlowService {
         this.generationTasks.delete(id);
         return info;
     }
-    async close() { this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
+    async close() { this.closed = true; clearTimeout(this.presetTimer); this.presetWake?.(); this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
 }

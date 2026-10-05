@@ -27,6 +27,7 @@ async function fixture(t, options = {}) {
         discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }), ...options });
     service.skillsets.repositoriesClient ||= { listRepositories: async () => [{ name: 'DocumentationSkills', source: root, origin: 'local' }] };
     await service.initialize();
+    await service.presetReady;
     t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });
     async function finish(index, result = 'Done', state = 'completed') {
         service.onRuntimeTaskEvent({ kind: 'terminal', taskId: started[index].taskId, result, state });
@@ -595,4 +596,42 @@ test('terminating a parent terminates running and pending children without launc
     await assert.rejects(f.service.resumeInstance(parent.id, parent.instances[0].id, 'Again'), /Terminated/);
     assert.equal((await f.service.getFlow(parent.id)).status, 'terminated');
     assert.equal(f.started.length, 2);
+});
+
+test('startup does not wait for the marketplace; the Code Development preset appears once it answers', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-preset-'));
+    let attempts = 0;
+    const repositoriesClient = { listRepositories: async () => {
+        attempts += 1;
+        if (attempts < 3) throw Object.assign(new Error('Marketplace request failed: EDGE_GENERATION_INACTIVE'), { code: 'EDGE_GENERATION_INACTIVE' });
+        return [{ name: 'DocumentationSkills', source: root, origin: 'local' }];
+    } };
+    const service = new RoboFlowService({ robotStore: { list: async () => [] }, runtimeManager: { resolveCwd: async value => value || root },
+        skillsets: { repositoriesClient }, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), presetRetryMs: 10 });
+    const errors = [];
+    const originalError = console.error;
+    console.error = (message) => errors.push(String(message));
+    t.after(async () => { console.error = originalError; await service.close(); await fs.rm(root, { recursive: true, force: true }); });
+    await service.initialize();
+    assert.equal(await service.registry.get('code-development'), null);
+    assert.ok(await service.registry.get('default'));
+    assert.equal(await service.presetReady, true);
+    assert.equal(attempts, 3);
+    assert.ok(await service.registry.get('code-development'));
+    assert.equal(errors.filter((line) => line.includes('Code Development workflow is not available yet')).length, 1);
+});
+
+test('closing the service stops a preset retry that is still waiting', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-preset-close-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const service = new RoboFlowService({ robotStore: { list: async () => [] }, runtimeManager: { resolveCwd: async value => value || root },
+        skillsets: { repositoriesClient: { listRepositories: async () => { throw new Error('unavailable'); } } },
+        databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), presetRetryMs: 60000 });
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+        await service.initialize();
+        await service.close();
+        assert.equal(await service.presetReady, false);
+    } finally { console.error = originalError; }
 });

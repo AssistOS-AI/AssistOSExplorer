@@ -16,7 +16,6 @@ export function normalizeRequest(promptText) {
     }
     const [action, ...rest] = text.split(/\s+/);
     const remainder = rest.join(' ');
-    if (action === 'list-workflows') return { action };
     if (action === 'start') {
         const separator = remainder.indexOf('::');
         if (separator < 0) throw new Error('use start <workflowTypeId> :: <objective>');
@@ -28,18 +27,10 @@ export function normalizeRequest(promptText) {
 export async function action(invocation = {}) {
     try {
         const request = normalizeRequest(invocation.promptText);
-        const client = await createRoboTeamClient(invocation);
         const actionName = trim(request.action);
-
-        if (actionName === 'list-workflows') {
-            const result = await client.call('roboflow_list_workflows', {});
-            const workflows = result.workflows || [];
-            if (!workflows.length) return 'No RoboFlow workflow types are defined yet.';
-            return workflows.map((workflow) => {
-                const members = (workflow.tasks || []).map(task => task.name).join(', ');
-                return `- ${workflow.id} — ${workflow.name}${workflow.description ? ` — ${workflow.description}` : ''} (${members})`;
-            }).join('\n');
-        }
+        // Listing workflows is the list-workflows skill's job.
+        if (actionName !== 'start') throw new Error('unsupported workflow action; use list-workflows to list workflows');
+        const client = await createRoboTeamClient(invocation);
 
         if (actionName === 'start') {
             const workflowTypeId = trim(request.workflowTypeId);

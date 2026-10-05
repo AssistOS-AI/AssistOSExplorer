@@ -3,7 +3,7 @@ import { projectDirectories } from './project-storage.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector } from './copilot-skillset.mjs';
+import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector, WEBCHAT_WORKFLOW_SKILLS } from './copilot-skillset.mjs';
 import { inspectSkill, explicitSkillDirectories } from './workspace-skill-source.mjs';
 import { atomicJson, inside, hashValue, readSkillTree, treeFingerprint, writeSkillTree, catalogDigest, skillError } from './skill-files.mjs';
 
@@ -48,7 +48,8 @@ export class LiveSkillCatalog {
     constructor(service) { this.service = service; }
     root(robotId) { return path.join(this.service.robotStore.robotPath(robotId), 'runtime', 'skill-catalogs'); }
 
-    async resolve(robot, policy, cwd) {
+    // workflowSkills adds list-workflows and launch-workflow, which only WebChat conversations receive.
+    async resolve(robot, policy, cwd, { workflowSkills = false } = {}) {
         const workspace = await fs.realpath(this.service.workspaceRoot);
         const scope = await fs.realpath(policy.scopeRoot);
         if (scope !== path.resolve(policy.scopeRoot) || !inside(workspace, scope)) throw skillError('saved skill scope is outside the workspace');
@@ -158,7 +159,8 @@ export class LiveSkillCatalog {
             entry.reason = 'Provided automatically by DocumentationSkills';
         }
         entries.push(required);
-        for (const name of [policy.workflowCreator && 'workflow-creator', policy.allowsHumanInput && 'require-human-input'].filter(Boolean)) {
+        for (const name of [policy.workflowCreator && 'workflow-creator', policy.allowsHumanInput && 'require-human-input',
+            ...(workflowSkills ? WEBCHAT_WORKFLOW_SKILLS : [])].filter(Boolean)) {
             const root = await fs.realpath(copilotSkillsRoot);
             const sourcePath = await fs.realpath(path.join(root, name));
             if (!inside(root, sourcePath)) throw skillError(`Required ${name} skill is outside its repository`);
@@ -166,8 +168,10 @@ export class LiveSkillCatalog {
             for (const entry of entries) if (entry.name === name) {
                 entry.enabled = false; entry.readOnly = true; entry.state = 'shadowed';
             }
+            // The WebChat workflow skills install like the bundled copilot skills they were.
             entries.push({ ...inspected, identity: `required/${name}`, source: 'RoboFlow', sourceId: 'required',
                 sourcePath, owner: root, type: 'anthropic', required: true, readOnly: true,
+                ...(WEBCHAT_WORKFLOW_SKILLS.includes(name) ? { builtin: true } : {}),
                 enabled: true, explicit: true, state: 'selected' });
         }
         const groups = new Map();

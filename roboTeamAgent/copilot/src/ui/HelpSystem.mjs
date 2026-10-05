@@ -7,7 +7,7 @@ const HELP_TOPICS = {
     },
     skills: {
         title: 'Anthropic skills',
-        content: 'Skills use SKILL.md and directly executable scripts. The built-ins are bash, launch-gpt-researcher and launch-workflow. /exec runs an enabled skill through ALA. Manage repositories and skill selection in RoboTeam or Explorer. The CLI loads configured skills automatically and does not manage them.',
+        content: 'Skills use SKILL.md and directly executable scripts. The built-ins are bash and launch-gpt-researcher; WebChat conversations also get list-workflows and launch-workflow. /exec runs an enabled skill through ALA. Manage repositories and skill selection in RoboTeam or Explorer. The CLI loads configured skills automatically and does not manage them.',
     },
     sessions: {
         title: 'Workspace conversations',
