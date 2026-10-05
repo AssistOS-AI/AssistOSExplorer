@@ -20,7 +20,11 @@ const CODING_AGENT_PACKAGES = Object.freeze({
 const PIN_VARIABLES = Object.freeze(Object.fromEntries(
     Object.keys(CODING_AGENT_PACKAGES).map((name) => [name, `ROBOTEAM_${name.toUpperCase()}_VERSION`]),
 ));
-const PIN_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
+// Canonical semver only, so the recorded string is the version npm installs:
+// no leading zeros, no empty or zero-padded prerelease identifiers, no build metadata.
+const PIN_NUMBER = '(?:0|[1-9]\\d*)';
+const PIN_PRERELEASE_ID = '(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)';
+const PIN_PATTERN = new RegExp(`^${PIN_NUMBER}\\.${PIN_NUMBER}\\.${PIN_NUMBER}(?:-${PIN_PRERELEASE_ID}(?:\\.${PIN_PRERELEASE_ID})*)?$`, 'u');
 
 // Operator pins: exact versions only. Unset or empty means unpinned (track upstream);
 // anything else that is not an exact version throws so a typo never silently unpins.
@@ -84,6 +88,11 @@ export class ToolCache {
         this.log = options.log || ((message) => console.log(message));
         this.refreshIntervalMs = Math.max(60000, Number(options.refreshIntervalMs) || TOOL_REFRESH_INTERVAL_MS);
         this.now = options.now || Date.now;
+        if (options.versionPins) {
+            for (const name of Object.keys(options.versionPins)) {
+                if (!Object.hasOwn(PIN_VARIABLES, name)) throw new TypeError(`unknown version pin: ${name}`);
+            }
+        }
         this.versionPins = options.versionPins
             ? codingAgentVersionPins(Object.fromEntries(Object.entries(options.versionPins).map(([name, value]) => [PIN_VARIABLES[name], value])))
             : codingAgentVersionPins(options.processEnv || process.env);

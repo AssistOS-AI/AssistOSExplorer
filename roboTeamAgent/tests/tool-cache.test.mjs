@@ -230,17 +230,19 @@ test('T5 pin parsing: empty means unpinned, exact versions are accepted, everyth
         assert.deepEqual(makeCache('/tmp/unused-pin-root', env, exec).versionPins, {});
         assert.deepEqual({ ...toolCacheInternals.codingAgentVersionPins(env) }, {});
     }
-    for (const value of [PIN, '0.0.0', '999999.0.0', '1.2.3-rc.1', '1.2.3-beta-2']) {
+    for (const value of [PIN, '0.0.0', '999999.0.0', '1.2.3-rc.1', '1.2.3-beta-2', '1.2.3-0', '1.2.3-rc.0', '1.2.3-0a', '1.2.3--', '10.20.30']) {
         assert.equal(makeCache('/tmp/unused-pin-root', { ROBOTEAM_CODEX_VERSION: value }, exec).versionPins.codex, value);
     }
     const bad = ['latest', '^0.160.0', '~0.160.0', '0.160', '0', 'v0.160.0', ' 0.160.0', '0.160.0 ', '0.160.0\n', '0.160.0;x', '0.160.0+build',
-        '１.160.0', '０.160.0', '0.160.0-', '>=0.160.0', '0.160.x', '1.2.3-' + 'a'.repeat(60), 'a'.repeat(200)];
+        '１.160.0', '０.160.0', '0.160.0-', '0.160.00', '00.160.0', '01.2.3', '1.2.3-', '1.2.3-a..b', '1.2.3-a.', '1.2.3-.a', '1.2.3-01', '1.2.3-rc.01', '1.2.3-rc_1', '>=0.160.0', '0.160.x', '1.2.3-' + 'a'.repeat(60), 'a'.repeat(200)];
     for (const variable of ['ROBOTEAM_CODEX_VERSION', 'ROBOTEAM_OPENCODE_VERSION', 'ROBOTEAM_PI_VERSION']) {
         for (const value of bad) {
             assert.throws(() => makeCache('/tmp/unused-pin-root', { [variable]: value }, exec), { name: 'TypeError', message: `invalid ${variable}` }, `${variable}=${JSON.stringify(value)}`);
         }
     }
     assert.throws(() => makeCache('/tmp/unused-pin-root', { ROBOTEAM_CODEX_VERSION: PIN }, exec, { versionPins: { codex: 'latest' } }), /invalid ROBOTEAM_CODEX_VERSION/);
+    assert.throws(() => makeCache('/tmp/unused-pin-root', {}, exec, { versionPins: { codex: PIN, claude: PIN } }), { name: 'TypeError', message: 'unknown version pin: claude' });
+    assert.equal(makeCache('/tmp/unused-pin-root', {}, exec, { versionPins: { pi: '2.0.0' } }).versionPins.pi, '2.0.0');
     assert.ok(Object.isFrozen(toolCacheInternals.codingAgentVersionPins({ ROBOTEAM_CODEX_VERSION: PIN })));
 });
 
