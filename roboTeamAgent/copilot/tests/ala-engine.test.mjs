@@ -290,3 +290,12 @@ test('an explicit task agent and model are passed to ALA; otherwise ALA reads th
     assert.deepEqual([explicit.ca, explicit.modelOverride, explicit.model], ['codex', 'task-model', 'task-model']);
     assert.deepEqual(await task.engine.getModel({ sessionId: task.sessionId }), { backend: 'codex', model: 'task-model', effort: null });
 });
+
+test('a conversation whose agent the robot no longer enables asks for a new session', async (t) => {
+    const h = await harness(t);
+    await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Now' });
+    h.installation.discoverCodingAgents = async () => [{ name: 'claude', binary: process.execPath, available: true }];
+    const expected = { message: 'This conversation used Codex, which is not enabled for this robot. Create a new session.' };
+    await assert.rejects(h.engine.getModel({ sessionId: h.sessionId }), expected);
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Again' }), expected);
+});

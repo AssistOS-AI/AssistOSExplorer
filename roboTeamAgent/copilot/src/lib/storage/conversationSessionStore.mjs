@@ -79,7 +79,7 @@ function normalizeEngine(raw, sessionId) {
         || assertSessionId(raw.sessionId) !== sessionId
         || typeof raw.home !== 'string' || !path.isAbsolute(raw.home)
         || typeof raw.cwd !== 'string' || !path.isAbsolute(raw.cwd)
-        || (raw.backend !== null && !['codex', 'opencode', 'pi'].includes(raw.backend))) {
+        || (raw.backend !== null && !['codex', 'opencode', 'pi', 'claude'].includes(raw.backend))) {
         throw new Error('invalid_session_engine');
     }
     if (raw.robotId !== undefined && !/^[a-z0-9][a-z0-9-]{2,63}$/.test(raw.robotId)) throw new Error('invalid_session_robot');

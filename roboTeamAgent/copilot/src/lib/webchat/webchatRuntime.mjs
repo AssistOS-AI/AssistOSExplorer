@@ -63,9 +63,18 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
         if (context.sourceTabId) send({ __webchatSession: 1, version: 1, event: 'error', sessionId, error: text }, context);
         else write(`${text}\n`);
     };
+    // A conversation that cannot run (for example, its agent is no longer enabled
+    // for the robot) reports why in the chat; the runtime stays up for a new session.
     const publishModel = async (session, context) => {
-        const selection = runtime.engine.getModel ? await runtime.engine.getModel({ sessionId: session.sessionId })
-            : { backend: session.engine?.backend, model: null };
+        let selection;
+        try {
+            selection = runtime.engine.getModel ? await runtime.engine.getModel({ sessionId: session.sessionId })
+                : { backend: session.engine?.backend, model: null };
+        } catch (error) {
+            send(createWebchatRuntimeStateEnvelope(null, { backend: null }), context);
+            fail(error, context, session.sessionId);
+            return;
+        }
         send(createWebchatRuntimeStateEnvelope(selection.model, { backend: selection.backend || null, effort: selection.effort }), context);
     };
     const connectionFor = (context) => {
@@ -206,8 +215,10 @@ export async function runWebchatInteractive(runtime) {
         afterAnswer: () => workspaceFileIndex.refresh({ afterCurrent: true }),
     });
     emitSessionUpdate(runtime.initialSession, {}, { event: 'current' });
-    const selection = runtime.engine.getModel ? await runtime.engine.getModel({ sessionId: runtime.initialSession.sessionId }) : null;
-    const backend = selection?.backend || runtime.initialSession.engine?.backend || null;
+    // Each tab connection reports a failing conversation; startup must not exit on it.
+    const selection = runtime.engine.getModel
+        ? await runtime.engine.getModel({ sessionId: runtime.initialSession.sessionId }).catch(() => ({ backend: null, model: null })) : null;
+    const backend = selection ? selection.backend || null : runtime.initialSession.engine?.backend || null;
     process.stdout.write(`${JSON.stringify(createWebchatRuntimeStateEnvelope(
         selection?.model || null, { backend, effort: selection?.effort },
     ))}\n`);

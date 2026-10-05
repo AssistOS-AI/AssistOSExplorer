@@ -2,12 +2,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { installSoulGatewayPlugin } from './soul-gateway-service.mjs';
 import { ensureAgentConfig } from './agent-model-config.mjs';
-import { normalizeCodingAgents } from './coding-agents.mjs';
+import { CODING_AGENT_NAMES } from './coding-agents.mjs';
 
-function shellEnvironment({ codingAgents, binPath, cacheRoot = '/data/tool-cache' } = {}) {
-    const selected = normalizeCodingAgents(codingAgents);
-    const shellName = selected.length === 3 ? 'shell' : `shell-${[...selected].sort().join('-')}`;
-    const directory = binPath || `${cacheRoot}/shell-selections/${shellName}/bin`;
+// The robot shell offers every coding agent; the robot's selection only
+// configures which agents ALA runs.
+function shellEnvironment({ binPath, cacheRoot = '/data/tool-cache' } = {}) {
+    const directory = binPath || `${cacheRoot}/shell-selections/shell/bin`;
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
     return `# Ploinky loader options do not apply to interactive coding-agent CLIs.
 unset NODE_OPTIONS
@@ -17,7 +17,9 @@ export XDG_CACHE_HOME="$HOME/.cache"
 export XDG_DATA_HOME="$HOME/.local/share"
 export XDG_STATE_HOME="$HOME/.local/state"
 export PI_CODING_AGENT_DIR="$HOME/.pi/agent"
-unset CODEX_BIN OPENCODE_BIN PI_BIN
+# Claude Code keeps its login and sessions here; ALA reads the same directory.
+export CLAUDE_CONFIG_DIR="$HOME/.claude"
+unset CODEX_BIN OPENCODE_BIN PI_BIN CLAUDE_BIN
 roboteam_saved_ifs=$IFS
 IFS=:
 roboteam_clean_path=
@@ -29,7 +31,7 @@ for roboteam_path in $PATH; do
 done
 IFS=$roboteam_saved_ifs
 export PATH=${quote(directory)}:"$roboteam_clean_path"
-${selected.map(name => `export ${name.toUpperCase()}_BIN=${quote(path.join(directory, name))}`).join('\n')}
+${CODING_AGENT_NAMES.map(name => `export ${name.toUpperCase()}_BIN=${quote(path.join(directory, name))}`).join('\n')}
 unset roboteam_saved_ifs roboteam_clean_path roboteam_path
 `;
 }
@@ -38,7 +40,7 @@ const SOURCE = '\n# RoboTeam shared coding-agent environment\n. "$HOME/.roboteam
 export async function prepareRobotShell(home, options) {
     const stat = await fs.lstat(home);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe robot home');
-    for (const directory of ['.codex', '.config/opencode/plugins', '.cache', '.local/share', '.local/state', '.pi/agent']) {
+    for (const directory of ['.codex', '.config/opencode/plugins', '.cache', '.local/share', '.local/state', '.pi/agent', '.claude']) {
         let current = home;
         for (const segment of directory.split('/')) {
             current = path.join(current, segment);

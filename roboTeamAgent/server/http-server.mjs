@@ -460,12 +460,11 @@ export function createRoboTeamServer(options) {
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const directory = await robotTerminalDirectory(robotStore, terminalRobotId, runtimeManager.workspaceRoot);
                 const codingAgents = robotCodingAgents(robot);
-                const tools = await runtimeManager.toolCache.prepareShellTools(codingAgents);
+                const tools = await runtimeManager.toolCache.prepareShellTools();
                 await prepareRobotShell(path.join(robotStore.robotPath(terminalRobotId), 'home'), {
                     codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
                 });
                 await runtimeManager.prepareOpenCode?.(terminalRobotId);
-                await runtimeManager.prepareRobotSkills?.(robot, path.join(runtimeManager.workspaceRoot, directory));
                 return sendJson(res, 200, { ok: true, directory });
             }
 

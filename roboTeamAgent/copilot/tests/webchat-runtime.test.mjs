@@ -75,6 +75,40 @@ test('WebChat publishes effort on connection, model selection, session selection
     assert.ok(states().every((state) => state.targetTabId === 'tabA'));
 });
 
+test('a conversation that cannot run reports why and WebChat still creates a new session', async (t) => {
+    const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-webchat-disabled-agent-'));
+    t.after(() => fs.rm(workingDir, { recursive: true, force: true }));
+    const sessionStore = new ConversationSessionStore({ workingDir });
+    const initialSession = await sessionStore.ensureCurrentSession();
+    const message = 'This conversation used OpenCode, which is not enabled for this robot. Create a new session.';
+    const engine = {
+        getModel: async ({ sessionId }) => {
+            if (sessionId === initialSession.sessionId) throw new Error(message);
+            return { backend: 'claude', model: null, effort: null };
+        },
+    };
+    const output = eventQueue();
+    const runtime = { workingDir, sessionStore, initialSession, engine,
+        historyManager: new HistoryManager({ workingDir }), skillCatalog: { getSkills: () => [] }, settings: {} };
+    const dispatcher = createWebchatDispatcher(runtime, { write: (value) => output.write(value) });
+    t.after(() => dispatcher.cancel());
+    const send = async (text) => {
+        dispatcher.receive(JSON.stringify({ __webchatMessage: 1, version: 1, text,
+            sourceTabId: 'tabA', sourcePageInstanceId: 'page1', presentation: { visible: false } }));
+        await dispatcher.drain();
+    };
+    await send('/session new');
+    const errors = output.events.filter((event) => event.event === 'error');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].error, /This conversation used OpenCode, which is not enabled for this robot\. Create a new session\./);
+    const selected = output.events.filter((event) => event.__webchatSession && event.event === 'selected');
+    assert.equal(selected.length, 1);
+    assert.notEqual(selected[0].session?.sessionId ?? selected[0].sessionId, initialSession.sessionId);
+    const states = output.events.filter((event) => event.__webchatRuntimeState);
+    assert.equal(states[0].backend, null);
+    assert.equal(states.at(-1).backend, 'claude');
+});
+
 test('WebChat streams transient progress envelopes for connection and ALA events', async (t) => {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-webchat-progress-'));
     t.after(() => fs.rm(workingDir, { recursive: true, force: true }));
