@@ -11,7 +11,7 @@ export ACHILLES_ALA_COMMAND=/absolute/path/to/AdvancedLanguageAgent/bin/ala.mjs
 node src/cli.mjs --dir /absolute/path/to/project
 ```
 
-Run this command from `achilles-cli/`. Under RoboTeam, `ACHILLES_ALA_HOME` is the robot home, mounted writable and shared by every conversation so credentials and coding-agent state stay with the robot. The ALA home holds `.ala/config.json` and the coding agents' own state; conversations are not stored there. A standalone run without `ACHILLES_ALA_HOME` uses the user's home directory; `ACHILLES_ALA_HOME` may select an existing administrator-provisioned home. Configure native login there rather than copying credentials from another user or robot.
+Run this command from `achilles-cli/`. Under RoboTeam, `ACHILLES_ALA_HOME` is the robot home, mounted writable and shared by every conversation so credentials and coding-agent state stay with the robot. The ALA home holds `.ala/config.json`, which names the robot's coding agent and one model and effort per agent, and the coding agents' own state; conversations are not stored there. A standalone run without `ACHILLES_ALA_HOME` uses the user's home directory; `ACHILLES_ALA_HOME` may select an existing administrator-provisioned home. Configure native login there rather than copying credentials from another user or robot.
 
 ## Commands
 
@@ -39,7 +39,7 @@ A prompt argument runs once:
 node src/cli.mjs --dir /absolute/path/to/project "Explain this project's entry points."
 ```
 
-`/model` lists native models and their supported efforts. `/model <id> [effort|default]` stores the model and effort in the robot home `.ala/config.json`. `/model default` clears both overrides for that backend. Full-access remains inside ALA's sandbox. Codex and OpenCode support forwarded native approval requests; Pi supports full-access only and requires version 0.85.1 or a verified compatible RPC release. The UI does not cache approvals.
+`/model` lists native models and their supported efforts. `/model <id> [effort|default]` stores the model and effort for the conversation's agent in the robot home `.ala/config.json`; the folder's `.roboteam/settings.json` holds no coding-agent models. Each turn passes no `--config` and adds `--model` only for an explicit per-execution model. `/model default` clears both overrides for that backend. Full-access remains inside ALA's sandbox. Codex and OpenCode support forwarded native approval requests; Pi supports full-access only and requires version 0.85.1 or a verified compatible RPC release. The UI does not cache approvals.
 
 ## Product skills
 

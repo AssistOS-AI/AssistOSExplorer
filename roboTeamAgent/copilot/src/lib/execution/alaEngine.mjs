@@ -114,36 +114,32 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const home = await executionHome(env);
         const resumeBackend = validateNativeSession(session, home, cwd);
         const stored = settings.readAchillesSettings?.(cwd) || {};
-        let models = { ...(settings.getCodingAgentModels?.(cwd) || stored.codingAgents?.models || {}) };
-        let efforts = { ...(stored.codingAgents?.efforts || {}) };
-        const priority = stored.codingAgents?.priority || BACKENDS;
-        if (!Array.isArray(priority) || !priority.length || priority.some((name) => !BACKENDS.includes(name))
-            || new Set(priority).size !== priority.length) throw new Error('Invalid workspace codingAgents.priority.');
         const permissionMode = execution.permissions || settings.getPermissionMode?.(cwd) || stored.permissionMode || 'full-access';
         if (!['ask-for-approval', 'full-access'].includes(permissionMode)) throw new Error('Invalid native permission mode.');
         const api = await installed;
-        const configPath = await modelConfigPath(home);
-        const nativeConfigExists = await fs.stat(configPath).then(() => true, (error) => {
-            if (error.code === 'ENOENT') return false;
-            throw error;
-        });
-        if (nativeConfigExists && api.loadConfig) {
-            const nativeConfig = await api.loadConfig(configPath);
-            models = { ...nativeConfig.codingAgents.models };
-            efforts = { ...nativeConfig.codingAgents.efforts };
-        }
+        // The robot's coding agent, models and efforts live in ALA's config in
+        // the robot home; ALA reads it itself, RoboTeam reads it to know the backend.
+        const native = api.loadConfig ? await api.loadConfig(await modelConfigPath(home)) : { models: {}, efforts: {} };
+        const models = { ...native.models };
+        const efforts = { ...native.efforts };
         const envSnapshot = nativeEnvironment(env, home);
-        const agents = await api.discoverCodingAgents({ env: envSnapshot, priority });
-        const backend = resumeBackend || session.engine?.backend || execution.backend || agents.find((entry) => entry.available)?.name;
+        const agents = await api.discoverCodingAgents({ env: envSnapshot });
+        const isInstalled = (name) => agents.some((entry) => entry.name === name && entry.available);
+        // ALA resumes a conversation on its own agent; otherwise it uses the
+        // configured agent, then the first available. An explicit task agent or a
+        // conversation bound before its first native turn is passed as --ca.
+        const requestedBackend = execution.backend || (!resumeBackend && session.engine?.backend) || null;
+        const backend = resumeBackend || requestedBackend
+            || (isInstalled(native.codingAgent) ? native.codingAgent : agents.find((entry) => entry.available)?.name);
         if (execution.model) {
             if (execution.model !== models[backend]) delete efforts[backend];
             models[backend] = execution.model;
         }
-        if (!backend || !agents.some((entry) => entry.name === backend && entry.available)) {
+        if (!backend || !isInstalled(backend)) {
             throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN or PI_BIN and authenticate it in the dedicated ALA home.`);
         }
-        return { cwd, home, workspaceRoot, session, resume: Boolean(resumeBackend), backend, models, efforts, priority,
-            permissionMode, api, agents, env: envSnapshot, websearch: stored.codingAgents?.websearch === true };
+        return { cwd, home, workspaceRoot, session, resume: Boolean(resumeBackend), backend,
+            requestedBackend: resumeBackend ? null : requestedBackend, models, efforts, permissionMode, api, agents, env: envSnapshot };
     }
 
     async function executeTurn({ sessionId, turnId = randomUUID(), prompt, skillName, context = {}, signal, onEvent, onControl } = {}) {
@@ -206,19 +202,18 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
 
             const taskFile = path.join(temporary, 'prompt.txt');
             const userFile = path.join(temporary, 'user.txt');
-            const configFile = path.join(temporary, 'config.json');
             await Promise.all([
                 fs.writeFile(taskFile, sanitize(nativePrompt), { mode: 0o600, flag: 'wx' }),
                 fs.writeFile(userFile, sanitize(context.rawText || prompt), { mode: 0o600, flag: 'wx' }),
-                fs.writeFile(configFile, JSON.stringify({ version: 1, taskRepositories: [],
-                    codingAgents: { priority: config.priority, models: config.models, efforts: config.efforts, websearch: config.websearch } }), { mode: 0o600, flag: 'wx' }),
             ]);
             controller.signal.throwIfAborted();
             await sessionStore.bindEngine(sessionId, { home, cwd, backend, robotId: execution.robotId });
-            const args = ['--ca', backend, '--home', home, '--cwd', cwd, '--session-id', sessionId,
+            // ALA reads the coding agent, model and effort from the config in --home.
+            const args = ['--home', home, '--cwd', cwd, '--session-id', sessionId,
                 '--turn-id', turnId, '--user-message-file', userFile,
                 '--control-stdin', '--permissions', permissionMode, '--taskFile', taskFile,
-                '--config', configFile, '--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
+                '--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
+            if (config.requestedBackend) args.push('--ca', config.requestedBackend);
             // The workspace is mounted read-only at its canonical path; the writable
             // cwd is the --cwd grant. ALA mounts exactly what it is given.
             if (config.workspaceRoot !== cwd) args.push('--folder', config.workspaceRoot);
@@ -226,7 +221,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) args.push('--folder', env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, 'as', 'roboflow-human-input');
 
             if (config.resume) args.push('--resume-session');
-            if (config.models[backend]) args.push('--model', config.models[backend]);
+            if (execution.model) args.push('--model', execution.model);
             if (execution.mcpServers) args.push('--MCPServers', execution.mcpServers);
 
             const isNode = /\.(?:mjs|cjs|js)$/i.test(api.entryPath);
@@ -417,19 +412,14 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (backend !== config.backend) throw new Error('The conversation backend changed; reload /model.');
             await withWorkspaceMutation(config.cwd, async () => {
                 const configPath = await modelConfigPath(config.home);
-                const exists = await fs.stat(configPath).then(() => true, (error) => {
-                    if (error.code === 'ENOENT') return false;
-                    throw error;
-                });
                 const saved = await config.api.loadConfig(configPath);
-                const models = { ...(exists ? saved.codingAgents.models : config.models) };
-                const efforts = { ...(exists ? saved.codingAgents.efforts : config.efforts) };
+                const models = { ...saved.models };
+                const efforts = { ...saved.efforts };
                 if (model === null) delete models[backend];
                 else models[backend] = model;
                 if (model && effort) efforts[backend] = effort;
                 else delete efforts[backend];
-                await config.api.saveConfig(configPath, { ...saved,
-                    codingAgents: { ...saved.codingAgents, models, efforts } });
+                await config.api.saveConfig(configPath, { ...saved, models, efforts });
             });
         },
         async listModels({ sessionId, signal } = {}) {

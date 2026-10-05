@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { withoutSummaryMarkers } from '../../../../shared/impact-summary.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -152,9 +153,10 @@ function buildMessages(metadata, alaSession, pendingText) {
             text: ala?.user ?? turn.userText ?? pendingText.get(turn.turnId) ?? '',
             attachments: turn.attachments, references: turn.references });
         const status = turn.status || ALA_STATUS[ala?.status] || 'pending';
+        // Human-report markers stay in the transcript and View Thinking, not in the chat.
         const text = ala?.final !== null && ala?.final !== undefined && turn.context !== false
-            ? withThinkingLink(ala.final, turn.thinkingUrl)
-            : (turn.text ?? '');
+            ? withThinkingLink(withoutSummaryMarkers(ala.final), turn.thinkingUrl)
+            : withoutSummaryMarkers(turn.text ?? '');
         const durationMs = turn.durationMs ?? ala?.durationMs;
         // A slash command without visible output keeps only its input.
         const silentCommand = turn.context === false && turn.status === 'completed' && !turn.text;

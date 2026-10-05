@@ -5,14 +5,13 @@ import { pathToFileURL } from 'node:url';
 import { resolveAlaCommand } from '../../../server/ala-command.mjs';
 
 const args = process.argv.slice(2);
-const value = (flag) => args[args.indexOf(flag) + 1];
+const value = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
 const home = value('--home');
 const cwd = value('--cwd');
 const id = value('--session-id');
 if (!args.includes('--ignore') || value('--ignore') !== path.resolve(cwd, '.roboteam')) {
     throw new Error('Missing private workspace directory mask.');
 }
-const backend = value('--ca');
 if (args.includes('--ploinky-task')) throw new Error('Legacy Ploinky option was forwarded.');
 const folder = args[args.indexOf('as') - 1];
 if (value('--cwd') !== cwd) throw new Error('Missing canonical writable cwd');
@@ -22,9 +21,13 @@ if (args.includes('--external-workspace') || args.includes('--skill-catalog') ||
 if (!folder || value('as') !== 'ploinky-runtime') throw new Error('Missing generic runtime mount.');
 if (!(await fs.stat(path.join(folder, 'tasks.sock'))).isSocket()) throw new Error('Missing task notification socket.');
 const prompt = await fs.readFile(value('--taskFile'), 'utf8');
-const config = JSON.parse(await fs.readFile(value('--config'), 'utf8'));
-// Record the conversation through ALA's own session modules, as ALA does.
+if (args.includes('--config')) throw new Error('A per-turn ALA config was forwarded.');
 const alaRoot = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())));
+// Like ALA: the agent, model and effort come from the config in --home.
+const { loadConfig } = await import(pathToFileURL(path.join(alaRoot, 'src', 'config.mjs')));
+const config = await loadConfig(path.join(home, '.ala', 'config.json'));
+const backend = value('--ca') || config.codingAgent || 'codex';
+// Record the conversation through ALA's own session modules, as ALA does.
 const { openSessionState } = await import(pathToFileURL(path.join(alaRoot, 'src', 'session-state.mjs')));
 const { createTranscriptRecorder } = await import(pathToFileURL(path.join(alaRoot, 'src', 'transcript-recorder.mjs')));
 if (!process.env.ALA_SESSIONS) throw new Error('Missing ALA_SESSIONS.');
@@ -74,7 +77,7 @@ if (prompt.includes('MALFORMED')) {
     }
     const output = JSON.stringify({ prompt, skill: args.includes('--skill') ? value('--skill') : null, choice, resumed: args.includes('--resume-session'), config,
         openCodeModels, folders: args.flatMap((value, index) => value === '--folder' ? [{ source: args[index + 1], alias: args[index + 2] === 'as' ? args[index + 3] : null }] : []),
-        repositories: process.env.ALA_TASK_REPOSITORIES, model: args.includes('--model') ? value('--model') : null,
+        repositories: process.env.ALA_TASK_REPOSITORIES, model: value('--model') || config.models[backend] || null, modelOverride: value('--model') || null, ca: value('--ca') || null,
         credential: process.env.PLOINKY_AGENT_SECRET || process.env.SSO_ACCESS_TOKEN || null,
         privatePrompt: !args.some((arg) => arg.includes('PRIVATE_USER_PROMPT')) });
     if (prompt.includes('QUEUED_FOLLOWUP')) {

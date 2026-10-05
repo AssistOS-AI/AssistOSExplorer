@@ -2,39 +2,44 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-const CONFIG_VERSION = 1;
-const BACKENDS = ['codex', 'opencode', 'pi'];
-// OpenCode's built-in model. Pinning it in ALA's native config keeps headless
-// runs on the same default the terminal uses instead of OpenCode's internal
-// priority, which can prefer an unrelated provider model.
+import { normalizeCodingAgents } from './coding-agents.mjs';
+
+const CONFIG_FIELDS = new Set(['codingAgent', 'models', 'efforts']);
+// OpenCode's built-in model. Pinning it in ALA's config keeps headless runs on
+// the same default the terminal uses instead of OpenCode's internal priority,
+// which can prefer an unrelated provider model.
 export const DEFAULT_OPENCODE_MODEL = 'opencode/big-pickle';
 
 function isRecord(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-// Records the robot's default model for one coding backend in ALA's native
-// config without overwriting a model the user already selected.
-export async function ensureDefaultAgentModel(home, {
-    backend = 'opencode', model = DEFAULT_OPENCODE_MODEL,
-} = {}) {
-    if (!BACKENDS.includes(backend) || typeof model !== 'string' || !model.trim()) return null;
+// Keeps the robot's ALA config (<home>/.ala/config.json) in step with the
+// robot: codingAgent is the robot's agent, and OpenCode gets its default model
+// unless a model was already chosen. An explicit codingAgent replaces the saved
+// one; models and efforts chosen for any agent are kept. A config ALA would
+// reject is left untouched for ALA to report.
+export async function ensureAgentConfig(home, { codingAgents, codingAgent = null } = {}) {
+    const selected = normalizeCodingAgents(codingAgents);
     const directory = path.join(home, '.ala');
     const file = path.join(directory, 'config.json');
-    let current = null;
+    let current = {};
     try {
         current = JSON.parse(await fs.readFile(file, 'utf8'));
     } catch (error) {
-        if (error.code !== 'ENOENT') return null; // Leave an unreadable config to ALA.
+        if (error.code !== 'ENOENT') return null;
     }
-    if (current !== null && (!isRecord(current) || current.version !== CONFIG_VERSION)) return null;
-    const codingAgents = isRecord(current?.codingAgents) ? current.codingAgents : {};
-    const models = isRecord(codingAgents.models) ? codingAgents.models : {};
-    if (typeof models[backend] === 'string' && models[backend].trim()) return null;
+    if (!isRecord(current) || Object.keys(current).some(key => !CONFIG_FIELDS.has(key))) return null;
+    const models = isRecord(current.models) ? { ...current.models } : {};
     const record = {
-        version: CONFIG_VERSION,
-        codingAgents: { ...codingAgents, models: { ...models, [backend]: model.trim() } },
+        codingAgent: codingAgent || current.codingAgent || selected[0],
+        models,
+        efforts: isRecord(current.efforts) ? { ...current.efforts } : {},
     };
+    if (selected.includes('opencode') && !(typeof models.opencode === 'string' && models.opencode.trim())) {
+        models.opencode = DEFAULT_OPENCODE_MODEL;
+    }
+    if (JSON.stringify(record) === JSON.stringify(current)) return null;
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     const temporary = path.join(directory, `.config-${process.pid}-${randomUUID()}.tmp`);
     try {

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import {
     clearSelectedModel, getCurrentSessionId, getDisabledSkills, getPermissionMode,
     getSelectedModel, setPermissionMode, setCurrentSessionId, setDisabledSkills,
-    setSelectedModel, getCodingAgentModels, setCodingAgentModel, getAchillesSettingsPath,
+    setSelectedModel, getAchillesSettingsPath,
 } from '../src/lib/config/achillesSettings.mjs';
 
 function workspace(t) {
@@ -37,26 +37,16 @@ test('independent setting changes preserve each other and remain workspace scope
     assert.equal(getCurrentSessionId(dir), 'conversation-a');
 });
 
-test('native backend model selections never reinterpret or destroy a legacy model', async (t) => {
+test('coding-agent models are not folder settings; invalid permission modes leave settings unchanged', async (t) => {
     const dir = workspace(t);
     await setSelectedModel(dir, 'legacy/soul-model');
-    assert.deepEqual(getCodingAgentModels(dir), {});
-    await Promise.all([
-        setCodingAgentModel(dir, 'codex', 'native-codex'),
-        setCodingAgentModel(dir, 'opencode', 'provider/native'),
-        setCodingAgentModel(dir, 'pi', 'native-pi'),
-    ]);
-    assert.deepEqual(getCodingAgentModels(dir), {
-        codex: 'native-codex', opencode: 'provider/native', pi: 'native-pi',
-    });
-    await setCodingAgentModel(dir, 'codex', null);
-    assert.deepEqual(getCodingAgentModels(dir), { opencode: 'provider/native', pi: 'native-pi' });
-    assert.equal(getSelectedModel(dir), 'legacy/soul-model');
+    const settings = await import('../src/lib/config/achillesSettings.mjs');
+    assert.equal(settings.getCodingAgentModels, undefined);
+    assert.equal(settings.setCodingAgentModel, undefined);
     const before = fs.readFileSync(getAchillesSettingsPath(dir), 'utf8');
-    await assert.rejects(setCodingAgentModel(dir, '__proto__', 'bad'), /supported coding backend/);
-    await assert.rejects(setCodingAgentModel(dir, 'pi', ''), /model name/);
     await assert.rejects(setPermissionMode(dir, 'unrestricted'), /ask-for-approval/);
     assert.equal(fs.readFileSync(getAchillesSettingsPath(dir), 'utf8'), before);
+    assert.equal(getSelectedModel(dir), 'legacy/soul-model');
 });
 
 test('malformed settings reads do not destroy persisted evidence', (t) => {

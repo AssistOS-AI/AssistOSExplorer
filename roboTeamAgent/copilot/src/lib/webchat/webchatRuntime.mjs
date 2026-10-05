@@ -65,7 +65,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
     };
     const publishModel = async (session, context) => {
         const selection = runtime.engine.getModel ? await runtime.engine.getModel({ sessionId: session.sessionId })
-            : { backend: session.engine?.backend, model: runtime.settings.getCodingAgentModels?.(runtime.workingDir)?.[session.engine?.backend] };
+            : { backend: session.engine?.backend, model: null };
         send(createWebchatRuntimeStateEnvelope(selection.model, { backend: selection.backend || null, effort: selection.effort }), context);
     };
     const connectionFor = (context) => {
@@ -209,7 +209,7 @@ export async function runWebchatInteractive(runtime) {
     const selection = runtime.engine.getModel ? await runtime.engine.getModel({ sessionId: runtime.initialSession.sessionId }) : null;
     const backend = selection?.backend || runtime.initialSession.engine?.backend || null;
     process.stdout.write(`${JSON.stringify(createWebchatRuntimeStateEnvelope(
-        selection ? selection.model : backend ? runtime.settings.getCodingAgentModels(runtime.workingDir)[backend] || null : null, { backend, effort: selection?.effort },
+        selection?.model || null, { backend, effort: selection?.effort },
     ))}\n`);
     const decoder = new StringDecoder('utf8');
     let partial = '';

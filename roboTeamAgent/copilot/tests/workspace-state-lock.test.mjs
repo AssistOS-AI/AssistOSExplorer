@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { acquireExecutionLease, withWorkspaceMutation } from '../src/lib/storage/workspaceStateLock.mjs';
-import { getCodingAgentModels, getPermissionMode, getCurrentSessionId } from '../src/lib/config/achillesSettings.mjs';
+import { getDisabledSkills, getSelectedModel, getPermissionMode, getCurrentSessionId } from '../src/lib/config/achillesSettings.mjs';
 import { HistoryManager } from '../src/repl/HistoryManager.mjs';
 
 const lockModule = new URL('../src/lib/storage/workspaceStateLock.mjs', import.meta.url).href;
@@ -62,8 +62,8 @@ test('separate processes preserve concurrent settings and multiline history in o
     const scripts = [
         `await settings.setPermissionMode(dir, 'full-access');`,
         `await settings.setCurrentSessionId(dir, 'session-shared');`,
-        `await settings.setCodingAgentModel(dir, 'codex', 'native-codex');`,
-        `await settings.setCodingAgentModel(dir, 'pi', 'native-pi');`,
+        `await settings.setSelectedModel(dir, 'shared-model');`,
+        `await settings.setDisabledSkills(dir, ['skill-a']);`,
     ];
     const workers = scripts.map((setting, index) => child(t, dir, `
         const history = new HistoryManager({ workingDir: dir });
@@ -77,7 +77,8 @@ test('separate processes preserve concurrent settings and multiline history in o
     await Promise.all(workers.map((worker) => worker.done));
     assert.equal(getPermissionMode(dir), 'full-access');
     assert.equal(getCurrentSessionId(dir), 'session-shared');
-    assert.deepEqual(getCodingAgentModels(dir), { codex: 'native-codex', pi: 'native-pi' });
+    assert.equal(getSelectedModel(dir), 'shared-model');
+    assert.deepEqual(getDisabledSkills(dir), ['skill-a']);
     const entries = new HistoryManager({ workingDir: dir }).getAll();
     assert.deepEqual(entries.slice().sort(), scripts.flatMap((_, index) =>
         Array.from({ length: 12 }, (_, i) => `writer-${index}\n${i}`)).sort());
@@ -114,7 +115,7 @@ test('a genuinely exited process leaves a recoverable execution lease', async (t
     const contenders = [0, 1].map((index) => child(t, dir, `
         try {
             const release = await acquireExecutionLease(dir, 'abandoned');
-            await withWorkspaceMutation(dir, () => settings.setCodingAgentModel(dir, ${JSON.stringify(index ? 'pi' : 'codex')}, 'recovered'));
+            await withWorkspaceMutation(dir, () => settings.setSelectedModel(dir, ${JSON.stringify(index ? 'recovered-b' : 'recovered-a')}));
             await release();
         } catch (error) {
             if (!['WORKSPACE_STATE_BUSY', 'WORKSPACE_STATE_LOCK_RECOVERY'].includes(error.code)) throw error;
@@ -123,7 +124,7 @@ test('a genuinely exited process leaves a recoverable execution lease', async (t
     await Promise.all(contenders.map((worker) => worker.ready));
     contenders.forEach((worker) => worker.proc.send('go'));
     await Promise.all(contenders.map((worker) => worker.done));
-    assert.ok(Object.values(getCodingAgentModels(dir)).includes('recovered'));
+    assert.ok(['recovered-a', 'recovered-b'].includes(getSelectedModel(dir)));
     const release = await acquireExecutionLease(dir, 'abandoned');
     await release();
 });

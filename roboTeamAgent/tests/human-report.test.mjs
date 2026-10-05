@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { scanSummaryLines, summaryRanges } from '../shared/impact-summary.mjs';
+import { scanSummaryLines, summaryRanges, withoutSummaryMarkers } from '../shared/impact-summary.mjs';
 import { advanceSummaryFile } from '../shared/summary-file-index.mjs';
 import { parseRoute, extractJson } from '../server/roboflow/result-parser.mjs';
 import { requiredHumanReportSkill } from '../server/required-skills.mjs';
@@ -71,4 +71,13 @@ test('required skill resolves the renamed source as enabled and read-only', asyn
     assert.equal(entry.identity, 'required/human-report');
     assert.equal(entry.sourcePath, skill);
     for (const flag of ['enabled', 'required', 'readOnly']) assert.equal(entry[flag], true);
+});
+
+test('chat text drops report marker lines, keeps the report and fenced examples', () => {
+    assert.equal(withoutSummaryMarkers('<<human-report>>\nAll done.\n<<human-report>>'), 'All done.');
+    assert.equal(withoutSummaryMarkers('{"edge":"a"}\n\n<<human-report>>\nRouted.\n<<human-report>>\n'), '{"edge":"a"}\n\nRouted.');
+    const fenced = 'Example:\n```\n<<human-report>>\n```';
+    assert.equal(withoutSummaryMarkers(fenced), fenced);
+    assert.equal(withoutSummaryMarkers('No markers here.\n'), 'No markers here.\n');
+    assert.equal(withoutSummaryMarkers('Inline <<human-report>> text'), 'Inline <<human-report>> text');
 });

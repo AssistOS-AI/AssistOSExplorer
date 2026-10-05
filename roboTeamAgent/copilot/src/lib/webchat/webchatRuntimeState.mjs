@@ -1,5 +1,3 @@
-import { setCodingAgentModel } from '../config/achillesSettings.mjs';
-
 export function createWebchatRuntimeStateEnvelope(model, { backend = null, effort = null } = {}) {
     return {
         __webchatRuntimeState: 1,
@@ -17,9 +15,9 @@ export function emitWebchatRuntimeState(model, { backend = null, effort = null, 
     return envelope;
 }
 
-export async function selectWebchatRuntimeModel({ workingDir, backend, model, effort = null, persist = null, slashState, emitRuntimeState = emitWebchatRuntimeState }) {
-    if (persist) await persist({ backend, model, effort });
-    else await setCodingAgentModel(workingDir, backend, model);
+// The model and effort are saved in the robot's ALA config through persist.
+export async function selectWebchatRuntimeModel({ backend, model, effort = null, persist, slashState, emitRuntimeState = emitWebchatRuntimeState }) {
+    await persist({ backend, model, effort });
     slashState.pinnedModel = model || null;
     emitRuntimeState(slashState.pinnedModel, { backend, effort });
     return slashState.pinnedModel;

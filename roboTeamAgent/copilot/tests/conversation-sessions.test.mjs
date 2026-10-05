@@ -263,12 +263,13 @@ test('conversation text comes from the ALA transcript; RoboTeam keeps only turn 
     const recorder = ala.createTranscriptRecorder(state, turnId);
     await recorder.user('question');
     recorder.observe({ type: 'coding-agent-message', message: 'thinking', outputKind: 'assistant', outputComplete: true });
-    await recorder.finish({ result: 'answer from ALA', status: 'completed' });
+    await recorder.finish({ result: '<<human-report>>\nanswer from ALA\n<<human-report>>', status: 'completed' });
     await state.close();
     await store.completeTurn(sessionId, turn.assistantMessageId, 'answer from ALA', { thinkingUrl: '/logs/x' });
 
     const persisted = JSON.parse(fs.readFileSync(store.sessionPath(sessionId), 'utf8'));
     assert.equal(JSON.stringify(persisted).includes('answer from ALA'), false);
+    assert.match(store.turnForMessage(sessionId, turn.assistantMessageId).ala.final, /^<<human-report>>\n/);
     assert.equal(JSON.stringify(persisted).includes('question'), false);
     const messages = new ConversationSessionStore({ workingDir }).loadSession(sessionId).messages;
     assert.deepEqual(messages.map(({ role, text, status }) => ({ role, text, status })), [

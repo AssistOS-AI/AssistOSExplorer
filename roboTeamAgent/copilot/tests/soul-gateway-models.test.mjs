@@ -9,6 +9,7 @@ import { ConversationSessionStore } from '../src/lib/storage/conversationSession
 import { loadAutocompleteCatalog } from '../src/mcp/list-slash-commands.mjs';
 import { prepareRobotShell } from '../../server/robot-shell.mjs';
 import { createSoulGatewayOpenCode } from '../../server/soul-gateway-opencode.mjs';
+import { resolveAlaCommand } from '../../server/ala-command.mjs';
 
 test('webchat autocomplete and robot execution receive the same dynamic OpenCode provider', async (t) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-soul-models-'));
@@ -29,6 +30,11 @@ test('webchat autocomplete and robot execution receive the same dynamic OpenCode
     const sessions = new ConversationSessionStore({ workingDir: dir });
     const session = await sessions.createSession();
     let modelId = 'provider-a/model-from-gateway';
+    // The robot's selected model lives in its ALA config.
+    await fs.writeFile(path.join(home, '.ala', 'config.json'), JSON.stringify({
+        codingAgent: 'opencode', models: { opencode: `soul-gateway/${modelId}` }, efforts: {} }));
+    const alaRoot = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())));
+    const { loadConfig } = await import(pathToFileURL(path.join(alaRoot, 'src', 'config.mjs')).href);
     let prepares = 0;
     const gateway = createSoulGatewayOpenCode({
         connect: async () => ({ scope: 'robot-test', request: async () => { prepares++; return { data: [{ id: modelId }] }; } }),
@@ -37,7 +43,7 @@ test('webchat autocomplete and robot execution receive the same dynamic OpenCode
     const { SoulGateway } = await import(pathToFileURL(path.join(home, '.config/opencode/plugins/soul-gateway.js')));
     const skills = { getSkills: () => [], async refresh() { return { skills: [], taskRepositories: [] }; } };
     const installation = {
-        entryPath: fileURLToPath(new URL('./fixtures/ala-engine-child.mjs', import.meta.url)),
+        entryPath: fileURLToPath(new URL('./fixtures/ala-engine-child.mjs', import.meta.url)), loadConfig,
         async discoverCodingAgents() { return [{ name: 'opencode', binary: '/unused/opencode', available: true }]; },
         createCodingAgentService({ env, workspace }) {
             // Model discovery mounts the canonical cwd and the robot home, so the
@@ -56,8 +62,7 @@ test('webchat autocomplete and robot execution receive the same dynamic OpenCode
         },
     };
     const engine = createAlaEngine({ workingDir: dir, sessionStore: sessions, skillCatalog: skills,
-        installation, settings: { readAchillesSettings: () => ({}),
-            getCodingAgentModels: () => ({ opencode: `soul-gateway/${modelId}` }) } });
+        installation, settings: { readAchillesSettings: () => ({}) } });
     t.after(async () => { await engine.close(); await gateway.close(); await fs.rm(dir, { recursive: true, force: true }); });
     await engine.getModel({ sessionId: session.sessionId });
     assert.equal(prepares, 0, 'Reading the selected model does not fetch the catalog');

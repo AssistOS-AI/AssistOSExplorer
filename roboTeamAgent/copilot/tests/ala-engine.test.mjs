@@ -4,12 +4,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveAlaCommand } from '../../server/ala-command.mjs';
 import { createAlaEngine } from '../src/lib/execution/alaEngine.mjs';
 import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
 import { HUMAN_REPORT_INSTRUCTIONS, INITIAL_SKILL_INSTRUCTIONS } from '../src/lib/prompts.mjs';
 
 const childEntry = fileURLToPath(new URL('./fixtures/ala-engine-child.mjs', import.meta.url));
+
+async function loadAlaConfigModule() {
+    const root = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())));
+    return import(pathToFileURL(path.join(root, 'src', 'config.mjs')).href);
+}
 
 test('queued native input permits another final event and returns the last execution result', async (t) => {
     const h = await harness(t);
@@ -41,22 +47,30 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false, executio
     const store = new ConversationSessionStore({ workingDir });
     const session = await store.createSession();
     let records = [{ name: 'bash', description: 'Run commands', skillDir: workingDir, enabled: true }];
-    let models = { codex: 'native-first' };
+    // Each harness has its own robot home holding the ALA config.
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-engine-home-'));
+    const oldHome = process.env.ACHILLES_ALA_HOME;
+    process.env.ACHILLES_ALA_HOME = home;
+    t.after(() => { if (oldHome === undefined) delete process.env.ACHILLES_ALA_HOME; else process.env.ACHILLES_ALA_HOME = oldHome; });
+    const alaConfig = await loadAlaConfigModule();
+    const configFile = path.join(home, '.ala', 'config.json');
+    const setModels = (models) => alaConfig.saveConfig(configFile, { codingAgent: 'codex', models, efforts: {} });
+    await setModels({ codex: 'native-first' });
     let workflowCatalog;
     const catalog = { async refresh() { return { workflowCatalog, skills: records.map((record) => ({ ...record })),
         taskRepositories: records.filter((record) => record.enabled).map((record) => record.skillDir) }; } };
     const installation = {
-        entryPath: childEntry,
+        entryPath: childEntry, loadConfig: alaConfig.loadConfig, saveConfig: alaConfig.saveConfig,
         async discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; },
     };
     const engine = createAlaEngine({ workingDir, sessionStore: store, skillCatalog: catalog, installation,
         execution, webchatLogsBase,
-        settings: { readAchillesSettings: () => ({}), getCodingAgentModels: () => models, getPermissionMode: () => 'ask-for-approval' },
+        settings: { readAchillesSettings: () => ({}), getPermissionMode: () => 'ask-for-approval' },
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
-    t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); });
-    return { workingDir, engine, store, installation, sessionId: session.sessionId,
+    t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); await fs.rm(home, { recursive: true, force: true }); });
+    return { workingDir, engine, store, installation, sessionId: session.sessionId, home, configFile,
         setWorkflowCatalog: next => { workflowCatalog = next; },
-        setSkills: (next) => { records = next; }, setModels: (next) => { models = next; } };
+        setSkills: (next) => { records = next; }, setModels };
 }
 
 test('a competing turn is rejected before placeholders, while native approval is waiting', { timeout: 15000 }, async (t) => {
@@ -89,8 +103,9 @@ test('stderr final and stdout produce one persisted answer; live selection is pr
     const output = JSON.parse(result.outputText);
     assert.equal(output.privatePrompt, true);
     assert.equal(output.credential, null);
-    assert.deepEqual(output.config.taskRepositories, []);
     assert.equal(output.model, 'native-first');
+    assert.equal(output.modelOverride, null);
+    assert.equal(output.ca, null);
     assert.equal(result.session.messages[0].text, 'Original UI request');
     assert.equal(result.session.messages[1].text, result.outputText);
     // Progress is transient: it is emitted as events but never persisted on the message.
@@ -102,12 +117,12 @@ test('stderr final and stdout produce one persisted answer; live selection is pr
     assert.equal(JSON.stringify(events).includes('secret-token-for-test'), false);
     assert.equal(JSON.stringify(result.session).includes('secret-token-for-test'), false);
     h.setSkills([{ name: 'bash', skillDir: h.workingDir, enabled: false }]);
-    h.setModels({});
+    await h.setModels({});
     const next = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Second' })).outputText);
     assert.equal(next.resumed, true);
     assert.equal(next.model, null);
     assert.equal(next.repositories, '');
-    assert.deepEqual(next.config.codingAgents.models, {});
+    assert.deepEqual(next.config.models, {});
     assert.equal(next.prompt.includes('PRIVATE_USER_PROMPT'), false);
 });
 
@@ -205,27 +220,24 @@ test('explicit skill selection stays in the caller prompt without ALA skill opti
 });
 
 test('model and effort persist in the native ALA config and survive continuation and reset', async (t) => {
-    const { resolveAlaInstallation } = await import('../src/lib/execution/alaInstallation.mjs');
-    const api = await resolveAlaInstallation();
+    const api = await loadAlaConfigModule();
     const h = await harness(t);
-    h.installation.loadConfig = api.loadConfig;
-    h.installation.saveConfig = api.saveConfig;
     await h.engine.setModel({ sessionId: h.sessionId, backend: 'codex', model: 'native-new', effort: 'high' });
     const events = [];
     const first = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'First', onEvent: (event) => events.push(event) });
     assert.equal(events.find((event) => event.type === 'coding-agent-selected').effort, 'high');
     const file = path.join(first.session.engine.home, '.ala/config.json');
-    assert.equal((await api.loadConfig(file)).codingAgents.efforts.codex, 'high');
+    assert.equal((await api.loadConfig(file)).efforts.codex, 'high');
     const output = JSON.parse(first.outputText);
-    assert.equal(output.config.codingAgents.models.codex, 'native-new');
-    assert.equal(output.config.codingAgents.efforts.codex, 'high');
+    assert.equal(output.config.models.codex, 'native-new');
+    assert.equal(output.config.efforts.codex, 'high');
     const next = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Second' })).outputText);
     assert.equal(next.resumed, true);
-    assert.equal(next.config.codingAgents.efforts.codex, 'high');
+    assert.equal(next.config.efforts.codex, 'high');
     await h.engine.setModel({ sessionId: h.sessionId, backend: 'codex', model: null });
     const reset = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Third' })).outputText);
-    assert.equal(reset.config.codingAgents.models.codex, undefined);
-    assert.equal(reset.config.codingAgents.efforts.codex, undefined);
+    assert.equal(reset.config.models.codex, undefined);
+    assert.equal(reset.config.efforts.codex, undefined);
 });
 
 
@@ -268,4 +280,14 @@ test('workflow human-input channel is mounted explicitly into the native sandbox
     });
     const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Check workflow callback mount' });
     assert.ok(JSON.parse(result.outputText).folders.some(folder => folder.source === h.workingDir && folder.alias === 'roboflow-human-input'));
+});
+
+test('an explicit task agent and model are passed to ALA; otherwise ALA reads them from the robot config', async t => {
+    const plain = await harness(t);
+    const fromConfig = JSON.parse((await plain.engine.executeTurn({ sessionId: plain.sessionId, prompt: 'Config' })).outputText);
+    assert.deepEqual([fromConfig.ca, fromConfig.modelOverride, fromConfig.model], [null, null, 'native-first']);
+    const task = await harness(t, {}, { execution: { backend: 'codex', model: 'task-model' } });
+    const explicit = JSON.parse((await task.engine.executeTurn({ sessionId: task.sessionId, prompt: 'Task' })).outputText);
+    assert.deepEqual([explicit.ca, explicit.modelOverride, explicit.model], ['codex', 'task-model', 'task-model']);
+    assert.deepEqual(await task.engine.getModel({ sessionId: task.sessionId }), { backend: 'codex', model: 'task-model', effort: null });
 });

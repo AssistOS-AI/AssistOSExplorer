@@ -44,3 +44,25 @@ export function withoutSummaryBlocks(source) {
     }
     return text;
 }
+
+// Chat display only: drops the marker lines themselves and keeps the report
+// text. Markers inside code fences are content and stay. Text without markers
+// is returned unchanged.
+export function withoutSummaryMarkers(source) {
+    const text = String(source ?? '');
+    let fence = null;
+    let removed = false;
+    const kept = (text.match(/[^\n]*\n|[^\n]+$/g) || []).filter((line) => {
+        const value = line.replace(/\r?\n$/, '');
+        const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(value);
+        if (opening) {
+            if (!fence) fence = { char: opening[1][0], length: opening[1].length };
+            else if (opening[1][0] === fence.char && opening[1].length >= fence.length && !opening[2].trim()) fence = null;
+            return true;
+        }
+        if (fence || value.trim() !== SUMMARY_MARKER) return true;
+        removed = true;
+        return false;
+    });
+    return removed ? kept.join('').replace(/^\s*\n/, '').replace(/\s+$/, '') : text;
+}

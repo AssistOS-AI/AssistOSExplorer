@@ -130,30 +130,3 @@ export async function setDisabledSkills(workingDir, skillNames) {
     });
 }
 
-export function getCodingAgentModels(workingDir = process.cwd()) {
-    const models = readAchillesSettings(workingDir).codingAgents?.models;
-    if (!models || typeof models !== 'object' || Array.isArray(models)) return {};
-    return Object.fromEntries(Object.entries(models)
-        .filter(([, model]) => typeof model === 'string' && model.trim())
-        .map(([backend, model]) => [backend, model.trim()]));
-}
-
-export async function setCodingAgentModel(workingDir, backend, modelOrNull) {
-    if (!['codex', 'opencode', 'pi'].includes(backend)) {
-        throw new Error('Select a supported coding backend: codex, opencode, or pi.');
-    }
-    if (modelOrNull !== null && (typeof modelOrNull !== 'string' || !modelOrNull.trim())) {
-        throw new Error('A native model name or null is required.');
-    }
-    const model = modelOrNull === null ? null : modelOrNull.trim();
-    return mutateSettings(workingDir, (settings) => {
-        const codingAgents = settings.codingAgents && typeof settings.codingAgents === 'object'
-            && !Array.isArray(settings.codingAgents) ? settings.codingAgents : {};
-        const models = codingAgents.models && typeof codingAgents.models === 'object'
-            && !Array.isArray(codingAgents.models) ? { ...codingAgents.models } : {};
-        if (model === null) delete models[backend];
-        else models[backend] = model;
-        settings.codingAgents = { ...codingAgents, models };
-        return model;
-    });
-}

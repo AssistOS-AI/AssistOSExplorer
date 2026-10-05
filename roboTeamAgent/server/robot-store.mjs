@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { DATA_DIR } from './constants.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { normalizeCodingAgents } from './coding-agents.mjs';
+import { ensureAgentConfig } from './agent-model-config.mjs';
 
 const ROBOT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
@@ -266,6 +267,8 @@ export class RobotStore {
         const selected = normalizeCodingAgents(codingAgents);
         return this.withRobot(robotId, async (robot, save) => {
             await save({ ...robot, codingAgents: selected });
+            // ALA reads the robot's agent from its config in the robot home.
+            await ensureAgentConfig(path.join(this.robotPath(robotId), 'home'), { codingAgents: selected, codingAgent: selected[0] });
             return { ...robot, codingAgents: selected };
         });
     }
