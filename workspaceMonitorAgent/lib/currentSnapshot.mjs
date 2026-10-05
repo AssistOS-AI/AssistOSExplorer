@@ -15,6 +15,10 @@ function boundedString(value, fallback = '', maxLength = 512) {
     return String(value ?? fallback).slice(0, maxLength);
 }
 
+function boundedHardwareText(value, maximum) {
+    return Buffer.from(String(value ?? '')).subarray(0, maximum).toString('utf8').replace(/\uFFFD$/, '');
+}
+
 function finiteMetric(value) {
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? number : 0;
@@ -28,8 +32,78 @@ function normalizeMetrics(value = {}) {
     };
 }
 
+function exactIdentity(value, maximum = 1024) {
+    return typeof value === 'string' && Buffer.byteLength(value) <= maximum ? value : '';
+}
+
+function normalizeProblem(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const result = {};
+    for (const field of ['state', 'code', 'field']) {
+        if (typeof value[field] === 'string') result[field] = boundedHardwareText(value[field], 128);
+    }
+    for (const field of ['reason', 'fix']) {
+        if (typeof value[field] === 'string') result[field] = boundedHardwareText(value[field], 2048);
+    }
+    for (const field of ['key', 'ref']) {
+        if (typeof value[field] === 'string') result[field] = exactIdentity(value[field], field === 'ref' ? 257 : 1024);
+    }
+    for (const field of ['blockedBy', 'rootCause']) {
+        if (!value[field] || typeof value[field] !== 'object') continue;
+        const source = value[field];
+        result[field] = { key: exactIdentity(source.key), ref: exactIdentity(source.ref, 257) };
+        if (field === 'rootCause') {
+            result[field].field = boundedHardwareText(source.field, 128);
+            result[field].reason = boundedHardwareText(source.reason, 2048);
+            result[field].fix = boundedHardwareText(source.fix, 2048);
+        }
+    }
+    if (Array.isArray(value.requested)) result.requested = value.requested.slice(0, 4).map((entry) => ({
+        field: boundedHardwareText(entry?.field, 128),
+        value: typeof entry?.value === 'number' && Number.isFinite(entry.value) ? entry.value : boundedHardwareText(entry?.value, 256),
+        source: boundedHardwareText(entry?.source, 128),
+    }));
+    if (Array.isArray(value.causalPath)) {
+        let bytes = 0;
+        result.causalPath = [];
+        for (const entry of value.causalPath.slice(0, 32)) {
+            const key = exactIdentity(entry);
+            if (!key || bytes + Buffer.byteLength(key) > 8192) break;
+            bytes += Buffer.byteLength(key);
+            result.causalPath.push(key);
+        }
+        result.omittedPathCount = value.causalPath.length - result.causalPath.length;
+    }
+    for (const field of ['additionalCauseCount', 'omittedPathCount']) {
+        if (Number.isSafeInteger(value[field]) && value[field] >= 0) result[field] = (result[field] || 0) + value[field];
+    }
+    while (result.causalPath?.length && Buffer.byteLength(JSON.stringify(result)) > 16 * 1024) {
+        result.causalPath.pop();
+        result.omittedPathCount = (result.omittedPathCount || 0) + 1;
+    }
+    return result;
+}
+
+function normalizeLimits(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const result = {};
+    for (const [resource, fields, assurances] of [
+        ['cpu', ['cores'], ['kernel', 'none']],
+        ['memory', ['bytes'], ['kernel', 'none']],
+        ['gpu', ['smPercent', 'vramBytes'], ['best-effort', 'none']],
+    ]) {
+        const source = value[resource];
+        if (!source || !assurances.includes(source.assurance)) continue;
+        if (fields.some((field) => source[field] != null && (!Number.isFinite(source[field]) || source[field] < 0 || source[field] > Number.MAX_SAFE_INTEGER))) continue;
+        if (resource === 'gpu' && source.smPercent > 100) continue;
+        if (source.assurance !== 'none' && fields.some((field) => !(source[field] > 0))) continue;
+        result[resource] = { ...Object.fromEntries(fields.map((field) => [field, source[field] ?? null])), assurance: source.assurance };
+    }
+    return Object.keys(result).length ? result : null;
+}
+
 function normalizeRuntime(value = {}) {
-    return {
+    const runtime = {
         containerName: boundedString(value?.containerName),
         agentName: boundedString(value?.agentName, '-'),
         repoName: boundedString(value?.repoName, '-'),
@@ -44,6 +118,15 @@ function normalizeRuntime(value = {}) {
         },
         metrics: normalizeMetrics(value?.metrics),
     };
+    const limits = normalizeLimits(value.limits);
+    if (limits) runtime.limits = limits;
+    if (['starting', 'ready', 'refused', 'blocked', 'failed', 'stopped'].includes(value.availability)) {
+        runtime.availability = value.availability;
+        if (['refused', 'blocked', 'failed', 'stopped'].includes(value.availability)) runtime.state.ready = false;
+        runtime.problem = normalizeProblem(value.problem);
+    }
+    if (['applied', 'pending', 'not-enabled', 'unavailable'].includes(value.limitsState)) runtime.limitsState = value.limitsState;
+    return runtime;
 }
 
 export function normalizeCurrentSnapshot(value) {

@@ -1,0 +1,24 @@
+hardware-limits-panel { display: block; }
+.hardware-limits-panel { color: var(--text); }
+.hardware-limits-toolbar, .hardware-limit-fields, .hardware-policy-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.hardware-limits-toolbar { justify-content: space-between; margin-bottom: 16px; }
+.hardware-limits-panel p { margin: 8px 0; overflow-wrap: anywhere; }
+.hardware-limits-facts, .hardware-limit-help, .hardware-instance-detail { color: var(--text-soft); font-size: 0.9rem; }
+.hardware-policy { border-top: 1px solid var(--border); padding: 16px 0; }
+.hardware-policy h3 { margin: 0 0 8px; font-size: 1rem; overflow-wrap: anywhere; }
+.hardware-limit-fields { align-items: flex-start; margin: 12px 0; }
+.hardware-limit-field { display: grid; gap: 5px; }
+.hardware-limit-field input { width: 112px; box-sizing: border-box; }
+.hardware-policy-actions { margin-bottom: 12px; }
+.hardware-instances { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.hardware-instances th, .hardware-instances td { padding: 8px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+.hardware-instances th { color: var(--text-soft); font-weight: 500; }
+.hardware-instances td:first-child { max-width: 230px; overflow-wrap: anywhere; }
+.hardware-instances code { display: block; font-size: 0.8rem; white-space: normal; }
+.hardware-limits-error, .hardware-instance-problem { color: var(--danger); }
+.hardware-limits-conflict { padding: 8px 12px; border-left: 3px solid var(--warning); background: var(--surface-soft); }
+.hardware-limit-help { padding-top: 12px; border-top: 1px solid var(--border); }
+.hardware-limit-help summary { cursor: pointer; color: var(--text); }
+.hardware-instance-state { font-weight: 600; }
+.hardware-instances .general-button { white-space: nowrap; }
+@media (max-width: 740px) { .hardware-instances { display: block; overflow-x: auto; } }

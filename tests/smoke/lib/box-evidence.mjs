@@ -30,6 +30,10 @@ const BOX_LABELS = Object.freeze({
 // gate accepts that surface only when the operator names the exact
 // fingerprint in SMOKE_BOX_GPU_GRANT.
 export const GPU_GRANT_LABEL = 'io.assistos.ploinky-box.gpu-grant';
+export const HARDWARE_LIMITS_LABEL = 'io.assistos.ploinky-box.hardware-limits';
+const HARDWARE_MARKER_PATH = '/etc/ploinky-box-hardware-limits.json';
+const HARDWARE_STORE_PATH = '/run/ploinky/hardware-limits';
+const MPS_TOOLS = ['/usr/local/nvidia/bin/nvidia-cuda-mps-control', '/usr/local/nvidia/bin/nvidia-cuda-mps-server'];
 const GPU_GRANT_MARKER_PATH = '/etc/ploinky-box-gpu-grant.json';
 const GPU_GRANT_CDI_SPEC_PATH = '/etc/cdi/ploinky-gpu.json';
 const GPU_DRIVER_DIRECTORY = '/usr/local/nvidia';
@@ -138,6 +142,101 @@ export function readExpectedGpuGrant(env = process.env) {
   return text ? exactGpuGrant(text, 'SMOKE_BOX_GPU_GRANT') : null;
 }
 
+function canonicalSource(value, name) {
+  const source = exactString(value, name);
+  if (!path.posix.isAbsolute(source) || path.posix.normalize(source) !== source) throw new Error(`${name} must be an exact canonical absolute source.`);
+  return source;
+}
+
+function expectedHardware(value) {
+  if (value == null) return null;
+  const fingerprint = exactGpuGrant(value.fingerprint, 'expected hardware-limits fingerprint');
+  const markerSource = canonicalSource(value.markerSource, 'expected hardware-limits marker source');
+  const storeSource = canonicalSource(value.storeSource, 'expected hardware-limits store source');
+  const instanceRoot = path.posix.dirname(storeSource);
+  if (path.posix.basename(storeSource) !== 'store' || path.posix.basename(path.posix.dirname(instanceRoot)) !== 'hardware-limits'
+    || markerSource !== path.posix.join(instanceRoot, fingerprint, 'marker.json')) {
+    throw new Error('Hardware limits sources must identify the exact instance store and fingerprint marker.');
+  }
+  return { fingerprint, markerSource, storeSource };
+}
+
+export function readExpectedHardwareLimits(env = process.env) {
+  const fingerprint = String(env.SMOKE_BOX_HARDWARE_LIMITS ?? '').trim();
+  if (!fingerprint) {
+    if (env.SMOKE_BOX_HARDWARE_MARKER_SOURCE || env.SMOKE_BOX_HARDWARE_STORE_SOURCE) throw new Error('Hardware bind sources require SMOKE_BOX_HARDWARE_LIMITS.');
+    return null;
+  }
+  return expectedHardware({ fingerprint, markerSource: env.SMOKE_BOX_HARDWARE_MARKER_SOURCE, storeSource: env.SMOKE_BOX_HARDWARE_STORE_SOURCE });
+}
+
+export function readExpectedMpsTools(env = process.env) {
+  const controlSource = String(env.SMOKE_BOX_MPS_CONTROL_SOURCE || '');
+  const serverSource = String(env.SMOKE_BOX_MPS_SERVER_SOURCE || '');
+  if (!controlSource && !serverSource) return null;
+  return {
+    controlSource: canonicalSource(controlSource, 'SMOKE_BOX_MPS_CONTROL_SOURCE'),
+    serverSource: canonicalSource(serverSource, 'SMOKE_BOX_MPS_SERVER_SOURCE'),
+  };
+}
+
+function requireHardwareMounts(mounts, expected, expectedMpsTools, gpuGrant) {
+  const wiring = expectedHardware(expected);
+  if (!Array.isArray(mounts)) {
+    if (wiring || expectedMpsTools) throw new Error('Hardware wiring requires the exact inspected mount inventory.');
+    return null;
+  }
+  function bind(destination, source, writable) {
+    const found = mounts.filter((mount) => mount?.Destination === destination);
+    if (found.length !== 1 || found[0].Type !== 'bind' || found[0].RW !== writable || found[0].Source !== source) {
+      throw new Error(`Hardware wiring requires exactly one ${writable ? 'read-write' : 'read-only'} ${destination} bind from its exact source.`);
+    }
+  }
+  const targets = [HARDWARE_MARKER_PATH, HARDWARE_STORE_PATH, ...MPS_TOOLS];
+  for (const mount of mounts) {
+    const destination = mount?.Destination;
+    if (typeof destination !== 'string') continue;
+    if (wiring && ![HARDWARE_MARKER_PATH, HARDWARE_STORE_PATH].includes(destination) && typeof mount.Source === 'string') {
+      const privateRoot = path.posix.dirname(wiring.storeSource);
+      const source = path.posix.normalize(mount.Source);
+      if (source === privateRoot || source.startsWith(`${privateRoot}/`) || privateRoot.startsWith(`${source.replace(/\/$/, '')}/`)) throw new Error('Hardware private sources must not be exposed through an extra bind.');
+    }
+    const normalized = path.posix.normalize(destination);
+    if (targets.some((target) => target === normalized || target.startsWith(`${normalized.replace(/\/$/, '')}/`) || normalized.startsWith(`${target}/`))) {
+      if (!targets.includes(destination)) throw new Error('Hardware wiring rejects extra mounts shadowing a marker, store, or MPS tool.');
+      if ([HARDWARE_MARKER_PATH, HARDWARE_STORE_PATH].includes(destination) && !wiring) throw new Error('Hardware binds require explicit SMOKE_BOX_HARDWARE_LIMITS expectations.');
+      if (MPS_TOOLS.includes(destination) && !expectedMpsTools) throw new Error('MPS tool binds require an explicit MPS expectation and GPU marker.');
+    }
+  }
+  if (wiring) {
+    bind(HARDWARE_MARKER_PATH, wiring.markerSource, false);
+    bind(HARDWARE_STORE_PATH, wiring.storeSource, true);
+  }
+  if (expectedMpsTools) {
+    if (!gpuGrant) throw new Error('MPS tool binds require the expected GPU grant marker.');
+    bind(MPS_TOOLS[0], canonicalSource(expectedMpsTools.controlSource, 'expected MPS control source'), false);
+    bind(MPS_TOOLS[1], canonicalSource(expectedMpsTools.serverSource, 'expected MPS server source'), false);
+  }
+  return wiring;
+}
+
+function mpsMarkerProof(marker, tools, gpuGrant) {
+  if (!tools) {
+    if (marker != null) throw new Error('MPS marker content requires an explicit tooling expectation.');
+    return null;
+  }
+  if (!marker || marker.fingerprint !== gpuGrant || marker.state !== 'active' || !marker.mps) throw new Error('MPS tool evidence requires actual active GPU marker content with its exact fingerprint and MPS descriptors.');
+  const proof = { fingerprint: gpuGrant, state: 'active', mps: {} };
+  for (const [name, source, destination] of [
+    ['control', tools.controlSource, MPS_TOOLS[0]],
+    ['server', tools.serverSource, MPS_TOOLS[1]],
+  ]) {
+    if (marker.mps[name]?.source !== source || marker.mps[name]?.destination !== destination) throw new Error('MPS marker descriptor must match the exact expected source and read-only Box tool destination.');
+    proof.mps[name] = { source, destination };
+  }
+  return proof;
+}
+
 function assertGpuGrantLabel(labels, expectedGpuGrant) {
   const expected = expectedGpuGrant == null ? null : exactGpuGrant(expectedGpuGrant, 'expected Box GPU grant');
   const present = Object.hasOwn(labels, GPU_GRANT_LABEL);
@@ -195,6 +294,7 @@ function exactBoxLabels(labels, {
   selectedMediaHostPort,
   expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
   expectedGpuGrant = null,
+  expectedHardwareLimits = null,
 } = {}) {
   const source = record(labels, 'outer container Config.Labels');
   const routerBindAddress = assertRouterBindAddressLabel(source, expectedRouterBindAddress);
@@ -203,12 +303,17 @@ function exactBoxLabels(labels, {
   // outer image and the library, so an image selection carries no content
   // fingerprint or Git commit label; a local checkout carries both.
   const imageAgentLib = source[BOX_LABELS.agentLibMode] === 'image';
+  const hardware = expectedHardware(expectedHardwareLimits);
+  if ((hardware === null && Object.hasOwn(source, HARDWARE_LIMITS_LABEL)) || (hardware && source[HARDWARE_LIMITS_LABEL] !== hardware.fingerprint)) {
+    throw new Error('Outer Box hardware-limits label requires its exact explicit expectation.');
+  }
   const semanticEntries = Object.entries(source)
     .sort(([left], [right]) => left.localeCompare(right));
   const expectedNames = [
     ...Object.values(BOX_LABELS).filter((name) => !imageAgentLib || !IMAGE_AGENTLIB_ABSENT_LABELS.includes(name)),
     ...(routerBindAddress === DEFAULT_ROUTER_BIND_ADDRESS ? [] : [ROUTER_BIND_ADDRESS_LABEL]),
     ...(gpuGrant === null ? [] : [GPU_GRANT_LABEL]),
+    ...(hardware === null ? [] : [HARDWARE_LIMITS_LABEL]),
   ].sort();
   if (JSON.stringify(semanticEntries.map(([name]) => name)) !== JSON.stringify(expectedNames)) {
     throw new Error(`Outer container Box labels must be exactly ${JSON.stringify(expectedNames)}.`);
@@ -296,6 +401,7 @@ function exactBoxLabels(labels, {
     agentLibSourceRelativePath,
     ...(imageAgentLib ? {} : { agentLibCommit }),
     ...(gpuGrant === null ? {} : { gpuGrant }),
+    ...(hardware === null ? {} : { hardwareLimits: hardware.fingerprint }),
   });
 }
 
@@ -424,6 +530,9 @@ export function buildBoxEvidence({
   publicIPv4,
   expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
   expectedGpuGrant = null,
+  expectedHardwareLimits = null,
+  expectedMpsTools = null,
+  observedGpuMarker = null,
 }) {
   const container = oneInspectRecord(containerInspect, 'outer container inspection');
   const image = oneInspectRecord(imageInspect, 'outer image inspection');
@@ -466,9 +575,12 @@ export function buildBoxEvidence({
     selectedMediaHostPort,
     expectedRouterBindAddress,
     expectedGpuGrant,
+    expectedHardwareLimits,
   });
   if (semanticLabels.agentLibMode === 'image') requireUnshadowedImageAgentLib(container.Mounts);
   requireGpuGrantMounts(container.Mounts, semanticLabels.gpuGrant ?? null);
+  const hardwareWiring = requireHardwareMounts(container.Mounts, expectedHardwareLimits, expectedMpsTools, semanticLabels.gpuGrant ?? null);
+  const mpsMarker = mpsMarkerProof(observedGpuMarker, expectedMpsTools, semanticLabels.gpuGrant ?? null);
   inspectBoxWorkspace(container);
   return validateBoxEvidence({
     containerName,
@@ -483,6 +595,9 @@ export function buildBoxEvidence({
     selectedRouterHostPort,
     normalizedPortBindings: normalized,
     securityOptions,
+    ...(hardwareWiring ? { hardwareWiring } : {}),
+    ...(expectedMpsTools ? { mpsTools: expectedMpsTools } : {}),
+    ...(mpsMarker ? { mpsMarker } : {}),
   }, {
     expectedContainerName,
     expectedImageId,
@@ -491,6 +606,8 @@ export function buildBoxEvidence({
     publicIPv4,
     expectedRouterBindAddress,
     expectedGpuGrant,
+    expectedHardwareLimits,
+    expectedMpsTools,
   });
 }
 
@@ -502,6 +619,8 @@ export function validateBoxEvidence(input, {
   publicIPv4,
   expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
   expectedGpuGrant = null,
+  expectedHardwareLimits = null,
+  expectedMpsTools = null,
 } = {}) {
   const evidence = record(input, 'Box evidence');
   if (evidence.containerName !== expectedContainerName) throw new Error('Box evidence container name mismatch.');
@@ -534,6 +653,8 @@ export function validateBoxEvidence(input, {
         ? [[ROUTER_BIND_ADDRESS_LABEL, evidence.semanticLabels.routerBindAddress]] : []),
       ...(Object.hasOwn(evidence.semanticLabels || {}, 'gpuGrant')
         ? [[GPU_GRANT_LABEL, evidence.semanticLabels.gpuGrant]] : []),
+      ...(Object.hasOwn(evidence.semanticLabels || {}, 'hardwareLimits')
+        ? [[HARDWARE_LIMITS_LABEL, evidence.semanticLabels.hardwareLimits]] : []),
     ]),
     {
       expectedImageRef,
@@ -542,8 +663,13 @@ export function validateBoxEvidence(input, {
       selectedMediaHostPort,
       expectedRouterBindAddress,
       expectedGpuGrant,
+      expectedHardwareLimits,
     },
   );
+  const hardwareWiring = expectedHardware(expectedHardwareLimits);
+  if (JSON.stringify(evidence.hardwareWiring ?? null) !== JSON.stringify(hardwareWiring)) throw new Error('Box hardware-limits evidence must retain the exact inspected sources.');
+  if (JSON.stringify(evidence.mpsTools ?? null) !== JSON.stringify(expectedMpsTools)) throw new Error('Box MPS evidence requires the exact expected tool sources.');
+  const mpsMarker = mpsMarkerProof(evidence.mpsMarker, expectedMpsTools, semanticLabels.gpuGrant ?? null);
   return Object.freeze({
     containerName: evidence.containerName,
     containerId,
@@ -557,6 +683,9 @@ export function validateBoxEvidence(input, {
     selectedRouterHostPort,
     normalizedPortBindings: normalized,
     securityOptions,
+    ...(hardwareWiring ? { hardwareWiring } : {}),
+    ...(expectedMpsTools ? { mpsTools: expectedMpsTools } : {}),
+    ...(mpsMarker ? { mpsMarker } : {}),
   });
 }
 

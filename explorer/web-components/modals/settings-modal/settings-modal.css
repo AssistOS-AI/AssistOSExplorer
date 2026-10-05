@@ -58,6 +58,10 @@ settings-modal[data-active-tab="users"] .modal-actions {
     display: none !important;
 }
 
+settings-modal[data-active-tab="hardware"] .modal-actions {
+    display: none !important;
+}
+
 settings-modal[data-active-tab="avatar"] .modal-actions {
     display: none !important;
 }

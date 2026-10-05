@@ -123,3 +123,24 @@ test('Explorer documentation replaces its header brand with a breadcrumb', () =>
     assert.match(partialLoader, /includeAgentLevel:\s*false/);
     assert.match(styles, /\.site-header \.breadcrumbs\s*\{/);
 });
+
+test('hardware policy documentation matches the separate editor and applied memory byte schema', () => {
+    const modal = readExplorerText('web-components/modals/settings-modal/settings-modal.html');
+    const settings = readText('docs/specs/DS008-user-settings.md');
+    const operations = readText('docs/workspace-operations.html');
+    const monitor = readText('workspaceMonitorAgent/docs/specs/DS004-monitoring-and-history.md');
+    const tools = readText('workspaceMonitorAgent/docs/mcp-tools.html');
+    const administration = modal.match(/<section[^>]*data-section="users"[^>]*>([\s\S]*?)<\/section>/)?.[1];
+    assert.ok(administration);
+    assert.doesNotMatch(administration, /hardware-limits-panel|<input|<form/);
+    assert.match(modal, /data-hardware-tab hidden[^>]*>Hardware limits/);
+    assert.match(settings, /Hardware limits is a separate editable administrator tab/);
+    assert.match(settings, /Apply sends exact registry keys/);
+    assert.match(settings, /Conflicts preserve unsaved edits/);
+    assert.match(operations, /limits\.memory\.bytes/);
+    assert.match(monitor, /`limits\.memory` \(bytes, assurance\)/);
+    assert.match(tools, /limits\.memory=\{bytes,assurance\}/);
+    assert.match(operations, /best-effort, not a security boundary/);
+    assert.match(operations, /exposure is accepted for v1/);
+    assert.match(operations, /optional no-wait child refusal leaves its parent ready/);
+});

@@ -10,6 +10,7 @@
         <button type="button" class="settings-tab" data-local-action="switchTab agents" data-tab="agents" role="tab" aria-selected="true">Agents</button>
         <button type="button" class="settings-tab" data-local-action="switchTab plugins" data-tab="plugins" role="tab" aria-selected="false">Plugins</button>
         <button type="button" class="settings-tab" data-local-action="switchTab users" data-tab="users" data-admin-tab hidden role="tab" aria-selected="false">Administration</button>
+        <button type="button" class="settings-tab" data-local-action="switchTab hardware" data-tab="hardware" data-hardware-tab hidden role="tab" aria-selected="false">Hardware limits</button>
         <button type="button" class="settings-tab" data-local-action="switchTab keymap" data-tab="keymap" role="tab" aria-selected="false">Keymap</button>
         <button type="button" class="settings-tab" data-local-action="switchTab editor" data-tab="editor" role="tab" aria-selected="false">Editor</button>
         <button type="button" class="settings-tab" data-local-action="switchTab theme" data-tab="theme" role="tab" aria-selected="false">Theme</button>
@@ -110,6 +111,10 @@
                     </div>
                 </article>
             </div>
+        </section>
+
+        <section class="settings-section hidden" data-section="hardware" aria-label="Hardware limits">
+            <p class="plugin-settings-description">Loading hardware limits…</p>
         </section>
 
         <section class="settings-section hidden" data-section="users" aria-label="Administration">

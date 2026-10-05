@@ -5,6 +5,8 @@ import {
   buildBoxEvidence,
   GPU_GRANT_LABEL,
   imageAgentLibSourceIdHash,
+  HARDWARE_LIMITS_LABEL,
+  readExpectedHardwareLimits,
   normalizeOuterPortBindings,
   readExpectedGpuGrant,
   validateExternalTcpNegativeEvidence,
@@ -77,6 +79,80 @@ function imageInspect() {
     },
   }];
 }
+
+const HARDWARE_FINGERPRINT = '7'.repeat(64);
+const HARDWARE_EXPECTED = {
+  fingerprint: HARDWARE_FINGERPRINT,
+  markerSource: `/verified/home/.ploinky-box/hardware-limits/ploinky-box-release-audit/${HARDWARE_FINGERPRINT}/marker.json`,
+  storeSource: '/verified/home/.ploinky-box/hardware-limits/ploinky-box-release-audit/store',
+};
+
+function hardwareInspect() {
+  const inspected = containerInspect();
+  inspected[0].Config.Labels[HARDWARE_LIMITS_LABEL] = HARDWARE_FINGERPRINT;
+  inspected[0].Mounts.push(
+    { Type: 'bind', Source: HARDWARE_EXPECTED.markerSource, Destination: '/etc/ploinky-box-hardware-limits.json', RW: false },
+    { Type: 'bind', Source: HARDWARE_EXPECTED.storeSource, Destination: '/run/ploinky/hardware-limits', RW: true },
+  );
+  return inspected;
+}
+
+test('X.store-rw-marker-ro', () => {
+  const options = { ...expected(), expectedHardwareLimits: HARDWARE_EXPECTED };
+  const build = (inspection) => buildBoxEvidence({ containerInspect: inspection, imageInspect: imageInspect(), ...options });
+  const evidence = build(hardwareInspect());
+  assert.equal(evidence.semanticLabels.hardwareLimits, HARDWARE_FINGERPRINT);
+  assert.deepEqual(evidence.hardwareWiring, HARDWARE_EXPECTED);
+  assert.deepEqual(validateBoxEvidence(JSON.parse(JSON.stringify(evidence)), options), evidence);
+  for (const change of [
+    (mounts) => { mounts[1].RW = true; },
+    (mounts) => { mounts[2].RW = false; },
+    (mounts) => { mounts[1].Source = `/foreign/${HARDWARE_FINGERPRINT}/marker.json`; },
+    (mounts) => { mounts[2].Source = '/foreign/store'; },
+    (mounts) => { mounts[1].Type = 'volume'; },
+    (mounts) => { mounts.push({ ...mounts[2] }); },
+    (mounts) => { mounts.push({ Type: 'bind', Source: '/foreign', Destination: '/run/ploinky', RW: true }); },
+    (mounts) => { mounts.push({ Type: 'bind', Source: HARDWARE_EXPECTED.storeSource, Destination: '/workspace/leak', RW: true }); },
+    (mounts) => { mounts.pop(); },
+  ]) { const inspection = hardwareInspect(); change(inspection[0].Mounts); assert.throws(() => build(inspection), /Hardware|hardware/); }
+  const changed = structuredClone(evidence);
+  changed.hardwareWiring.storeSource = '/foreign/store';
+  assert.throws(() => validateBoxEvidence(changed, options), /exact inspected sources/);
+});
+
+test('X.hardware-unexpected-bind-rejected', () => {
+  assert.throws(() => buildBoxEvidence({ containerInspect: hardwareInspect(), imageInspect: imageInspect(), ...expected() }), /explicit expectation/);
+  const noLabel = hardwareInspect();
+  delete noLabel[0].Config.Labels[HARDWARE_LIMITS_LABEL];
+  assert.throws(() => buildBoxEvidence({ containerInspect: noLabel, imageInspect: imageInspect(), ...expected() }), /Hardware binds require/);
+  assert.throws(() => readExpectedHardwareLimits({ SMOKE_BOX_HARDWARE_LIMITS: HARDWARE_FINGERPRINT }), /marker source/);
+  assert.deepEqual(readExpectedHardwareLimits({ SMOKE_BOX_HARDWARE_LIMITS: HARDWARE_FINGERPRINT, SMOKE_BOX_HARDWARE_MARKER_SOURCE: HARDWARE_EXPECTED.markerSource, SMOKE_BOX_HARDWARE_STORE_SOURCE: HARDWARE_EXPECTED.storeSource }), HARDWARE_EXPECTED);
+  assert.equal(readExpectedHardwareLimits({}), null);
+});
+
+test('X.tool-binds-ro', () => {
+  const gpu = '8'.repeat(64);
+  const tools = { controlSource: '/usr/bin/nvidia-cuda-mps-control', serverSource: '/usr/bin/nvidia-cuda-mps-server' };
+  const inspected = containerInspect();
+  inspected[0].Config.Labels[GPU_GRANT_LABEL] = gpu;
+  inspected[0].Mounts.push({ Type: 'bind', Source: `/verified/gpu/${gpu}/marker.json`, Destination: '/etc/ploinky-box-gpu-grant.json', RW: false });
+  inspected[0].Mounts.push({ Type: 'bind', Source: `/verified/gpu/${gpu}/box.json`, Destination: '/etc/cdi/ploinky-gpu.json', RW: false });
+  inspected[0].Mounts.push(...Object.entries(tools).map(([key, source]) => ({ Type: 'bind', Source: source, Destination: `/usr/local/nvidia/bin/nvidia-cuda-mps-${key === 'controlSource' ? 'control' : 'server'}`, RW: false })));
+  const options = { ...expected(), expectedGpuGrant: gpu, expectedMpsTools: tools };
+  const observedGpuMarker = { fingerprint: gpu, state: 'active', mps: {
+    control: { source: tools.controlSource, destination: '/usr/local/nvidia/bin/nvidia-cuda-mps-control' },
+    server: { source: tools.serverSource, destination: '/usr/local/nvidia/bin/nvidia-cuda-mps-server' },
+  } };
+  const build = (inspection) => buildBoxEvidence({ containerInspect: inspection, imageInspect: imageInspect(), ...options, observedGpuMarker });
+  assert.deepEqual(build(inspected).mpsTools, tools);
+  assert.throws(() => buildBoxEvidence({ containerInspect: inspected, imageInspect: imageInspect(), ...options }), /actual active GPU marker/);
+  assert.throws(() => buildBoxEvidence({ containerInspect: inspected, imageInspect: imageInspect(), ...expected(), expectedGpuGrant: gpu }), /explicit MPS expectation/);
+  for (const mutate of [
+    (mounts) => { mounts[3].RW = true; },
+    (mounts) => { mounts[4].Source = '/substituted/server'; },
+    (mounts) => { mounts.pop(); },
+  ]) { const changed = structuredClone(inspected); mutate(changed[0].Mounts); assert.throws(() => build(changed), /Hardware wiring requires/); }
+});
 
 function imageAgentLibInspect() {
     const inspected = containerInspect();

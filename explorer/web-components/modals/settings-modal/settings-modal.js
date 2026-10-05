@@ -22,6 +22,7 @@ import { avatarController, defaultAvatarConfig } from "./settings-avatar-control
 import { runtimeSettingsController } from "./settings-runtime-controller.js";
 import { accountController } from "./settings-account-controller.js";
 import { usersController } from "./settings-users-controller.js";
+import { hardwareController } from "./settings-hardware-controller.js";
 
 const BASE_TABS = ['account', 'agents', 'plugins', 'keymap', 'editor', 'theme', 'avatar'];
 
@@ -39,7 +40,7 @@ export class SettingsModal {
         this.element = element;
         this.invalidate = invalidate;
         this.props = props || {};
-        const initialTab = [...BASE_TABS, 'users'].includes(this.props.tab) ? this.props.tab : 'agents';
+        const initialTab = [...BASE_TABS, 'users', 'hardware'].includes(this.props.tab) ? this.props.tab : 'agents';
         this.requestedInitialTab = initialTab;
         this.state = {
             activeTab: initialTab,
@@ -83,6 +84,8 @@ export class SettingsModal {
             usersAccessChecked: false,
             usersAccess: false,
             accountSettingsAccess: false,
+            hardwareAccessChecked: false,
+            hardwareAccess: false,
         };
         this.invalidate();
     }
@@ -98,6 +101,7 @@ export class SettingsModal {
         this.updateThemeSelection();
         this.bindEvents();
         this.refreshUsersAccess();
+        void this.refreshHardwareAccess();
         if (this.state.activeTab === "plugins" && !this.state.pluginDataLoaded) {
             await this.loadPluginSettingsData();
         }
@@ -119,6 +123,8 @@ export class SettingsModal {
         this.accountSection = this.element.querySelector('[data-section="account"]');
         this.usersSection = this.element.querySelector('[data-section="users"]');
         this.usersTab = this.element.querySelector('[data-admin-tab]');
+        this.hardwareTab = this.element.querySelector('[data-hardware-tab]');
+        this.hardwareSection = this.element.querySelector('[data-section="hardware"]');
         this.listEl = this.element.querySelector("#keymapList");
         this.warningEl = this.element.querySelector("#keymapWarning");
         this.pluginSettingsListEl = this.element.querySelector("#pluginSettingsList");
@@ -196,6 +202,7 @@ export class SettingsModal {
         const allowedTabs = this.getAllowedTabs();
         this.state.activeTab = allowedTabs.includes(tab) ? tab : 'agents';
         this.updateTabUI();
+        if (this.state.activeTab === 'hardware') void this.loadHardwarePanel();
         if (this.state.activeTab === "plugins" && !this.state.pluginDataLoaded) {
             this.loadPluginSettingsData().catch((error) => {
                 this.state.pluginStatus = error?.message || "Failed to load plugin settings.";
@@ -225,7 +232,10 @@ export class SettingsModal {
     }
 
     getAllowedTabs() {
-        return this.state.usersAccess || this.state.accountSettingsAccess ? [...BASE_TABS, 'users'] : BASE_TABS;
+        return [...BASE_TABS,
+            ...(this.state.usersAccess || this.state.accountSettingsAccess ? ['users'] : []),
+            ...(this.state.hardwareAccess ? ['hardware'] : []),
+        ];
     }
 
     updateTabUI() {
@@ -242,6 +252,8 @@ export class SettingsModal {
         if (this.usersTab) {
             this.usersTab.hidden = !this.state.usersAccess && !this.state.accountSettingsAccess;
         }
+        if (this.hardwareTab) this.hardwareTab.hidden = !this.state.hardwareAccess;
+        this.hardwareSection?.querySelector('hardware-limits-panel')?.dispatchEvent(new CustomEvent('hardware-limits-active', { detail: this.state.activeTab === 'hardware' }));
 
         const sections = [
             { key: 'account', element: this.accountSection },
@@ -251,7 +263,8 @@ export class SettingsModal {
             { key: 'plugins', element: this.pluginsSection },
             { key: 'agents', element: this.agentsSection },
             { key: 'avatar', element: this.avatarSection },
-            { key: 'users', element: this.usersSection }
+            { key: 'users', element: this.usersSection },
+            { key: 'hardware', element: this.hardwareSection },
         ];
         sections.forEach(({ key, element }) => {
             if (!element) return;
@@ -263,6 +276,7 @@ export class SettingsModal {
         }
         if (this.actionsEl) {
             this.actionsEl.hidden = this.state.activeTab === "users"
+                || this.state.activeTab === "hardware"
                 || this.state.activeTab === "avatar"
                 || this.state.activeTab === "agents"
                 || this.state.activeTab === "account";
@@ -437,5 +451,6 @@ Object.assign(
     runtimeSettingsController,
     avatarController,
     accountController,
-    usersController
+    usersController,
+    hardwareController
 );

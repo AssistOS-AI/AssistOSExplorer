@@ -10,7 +10,9 @@ import {
     currentSnapshotState,
     readCurrentSnapshot,
     writeCurrentSnapshot,
+    normalizeCurrentSnapshot,
 } from '../lib/currentSnapshot.mjs';
+import { hardwareResourceDisplay, runtimeIsReady } from '../IDE-plugins/workspace-monitor/components/workspace-monitor-dashboard/workspace-monitor-resources.js';
 
 function snapshot(sampledAt) {
     return {
@@ -121,4 +123,48 @@ test('current snapshot rejects an oversized normalized projection before replaci
         total: { cpuPercent: 1, memoryBytes: 2 },
     }, env), /exceeds the supported size/);
     assert.deepEqual(await readCurrentSnapshot(env), original);
+});
+
+test('X.monitor-old-shape', () => {
+    const old = normalizeCurrentSnapshot(snapshot('2026-08-27T10:00:00.000Z'));
+    assert.deepEqual(Object.keys(old.runtimes[0]), ['containerName', 'agentName', 'repoName', 'runtime', 'enabled', 'state', 'metrics']);
+    assert.deepEqual(hardwareResourceDisplay(old.runtimes[0]), { cpu: '', memory: '', gpu: '', status: 'starting', reason: '' });
+    assert.equal(Object.hasOwn(old.runtimes[0], 'limits'), false);
+});
+
+test('X.monitor-readonly', () => {
+    const value = snapshot('2026-08-27T10:00:00.000Z');
+    Object.assign(value.runtimes[0], {
+        limits: { cpu: { cores: 0.5, assurance: 'kernel', secret: 'omit' }, memory: { bytes: 1024 ** 3, assurance: 'kernel' }, gpu: { smPercent: 25, vramBytes: 512 * 1024 ** 2, assurance: 'best-effort' }, env: { secret: 'omit' } },
+        availability: 'blocked', limitsState: 'applied',
+        problem: { state: 'blocked', reason: 'Needs dependency.', blockedBy: { key: 'direct', ref: 'repo/direct', privateField: 'omit' }, rootCause: { key: 'root', ref: 'repo/root', field: 'memory', reason: 'No memory controller.', fix: 'Host repair.', secret: 'omit' }, causalPath: ['explorer', 'direct', 'root'], privateField: 'omit' },
+    });
+    value.runtimes[0].state.ready = true;
+    const normalized = normalizeCurrentSnapshot(value).runtimes[0];
+    assert.equal(normalized.state.ready, false);
+    assert.equal(runtimeIsReady(normalized), false);
+    assert.doesNotMatch(JSON.stringify(normalized), /"omit"/);
+    assert.deepEqual(normalized.limits.memory, { bytes: 1024 ** 3, assurance: 'kernel' });
+    const display = hardwareResourceDisplay(normalized);
+    assert.match(display.cpu, /50% quota \(0.5 cores, kernel\)/);
+    assert.match(display.memory, /1.0 GB kernel limit/);
+    assert.match(display.gpu, /25% SM.*best-effort/);
+    assert.match(display.reason, /Blocked by repo\/direct.*Root refusal repo\/root.*Host repair/);
+    assert.equal(display.status, 'blocked');
+    assert.equal(value.runtimes[0].state.ready, true);
+});
+
+test('hardware projection bounds causal data and drops invalid limits without changing source', () => {
+    const value = snapshot('2026-08-27T10:00:00.000Z');
+    Object.assign(value.runtimes[0], {
+        availability: 'refused', limits: { cpu: { cores: NaN, assurance: 'kernel' }, memory: { bytes: -1, assurance: 'kernel' }, gpu: { smPercent: 101, vramBytes: 1, assurance: 'best-effort' } },
+        problem: { reason: 'ă'.repeat(6000), fix: 'x'.repeat(6000), rootCause: { reason: 'x'.repeat(6000), fix: 'x'.repeat(6000) }, causalPath: Array.from({ length: 40 }, () => 'x'.repeat(1024)), additionalCauseCount: 3 },
+    });
+    const normalized = normalizeCurrentSnapshot(value).runtimes[0];
+    assert.equal(Object.hasOwn(normalized, 'limits'), false);
+    assert.ok(Buffer.byteLength(normalized.problem.reason) <= 2048);
+    assert.ok(Buffer.byteLength(JSON.stringify(normalized.problem)) <= 16 * 1024);
+    assert.ok(normalized.problem.omittedPathCount > 0);
+    assert.equal(normalized.problem.additionalCauseCount, 3);
+    assert.ok(normalized.problem.rootCause);
 });
