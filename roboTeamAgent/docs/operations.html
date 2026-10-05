@@ -230,6 +230,7 @@ Continue with the tests.</code></pre>
 
   <h2>First-use preparation</h2>
   <p>The first operation that needs a coding agent or GUI automation server resolves the current release, installs it into <code>/data/tool-cache</code>, and validates it. Opening a Desktop prepares the robot's selected coding agents for robot-specific login. Later starts reuse the active generations. When release lookup fails, RoboTeam uses the last valid generation if one exists.</p>
+  <p>To pin a coding agent to one exact version, run <code>ploinky var ROBOTEAM_CODEX_VERSION 0.160.0</code> before starting the agent (likewise <code>ROBOTEAM_OPENCODE_VERSION</code> and <code>ROBOTEAM_PI_VERSION</code>). The value must be an exact <code>MAJOR.MINOR.PATCH</code> version, optionally with a <code>-prerelease</code> suffix; an unset or empty variable means the current release is used, and any other value (<code>latest</code>, ranges, a <code>v</code> prefix) stops RoboTeam from starting the tool cache. A pinned agent never uses a generation of a different version, even when installation fails.</p>
 
   <h2>Nested sandbox diagnostics</h2>
   <p>The current RoboTeam container cannot mount ALA's private procfs inside an additional user namespace. ALA therefore uses its capability-assisted private-proc path, retains its other Bubblewrap boundaries, and drops all capabilities before Codex starts. An error stating that neither private-proc path is available indicates a runtime capability or seccomp regression. RoboTeam must not bypass ALA or start Codex unsandboxed.</p>

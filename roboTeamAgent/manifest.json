@@ -42,7 +42,12 @@
         "7000:7000",
         "3001:3001"
       ],
-      "install": "sh /code/scripts/install.sh"
+      "install": "sh /code/scripts/install.sh",
+      "env": [
+        "ROBOTEAM_CODEX_VERSION",
+        "ROBOTEAM_OPENCODE_VERSION",
+        "ROBOTEAM_PI_VERSION"
+      ]
     }
   },
   "link-install": [

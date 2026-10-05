@@ -17,6 +17,26 @@ const CODING_AGENT_PACKAGES = Object.freeze({
     pi: Object.freeze({ packageName: '@earendil-works/pi-coding-agent', executable: 'pi' }),
 });
 
+const PIN_VARIABLES = Object.freeze(Object.fromEntries(
+    Object.keys(CODING_AGENT_PACKAGES).map((name) => [name, `ROBOTEAM_${name.toUpperCase()}_VERSION`]),
+));
+const PIN_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
+
+// Operator pins: exact versions only. Unset or empty means unpinned (track upstream);
+// anything else that is not an exact version throws so a typo never silently unpins.
+function codingAgentVersionPins(environment = process.env) {
+    const pins = {};
+    for (const [name, variable] of Object.entries(PIN_VARIABLES)) {
+        const value = environment?.[variable];
+        if (value === undefined || value === '') continue;
+        if (typeof value !== 'string' || value.length > 64 || !PIN_PATTERN.test(value)) {
+            throw new TypeError(`invalid ${variable}`);
+        }
+        pins[name] = value;
+    }
+    return Object.freeze(pins);
+}
+
 function toolProcessEnv(environment = process.env) {
     const sanitized = { ...environment };
     delete sanitized.NODE_OPTIONS;
@@ -64,6 +84,9 @@ export class ToolCache {
         this.log = options.log || ((message) => console.log(message));
         this.refreshIntervalMs = Math.max(60000, Number(options.refreshIntervalMs) || TOOL_REFRESH_INTERVAL_MS);
         this.now = options.now || Date.now;
+        this.versionPins = options.versionPins
+            ? codingAgentVersionPins(Object.fromEntries(Object.entries(options.versionPins).map(([name, value]) => [PIN_VARIABLES[name], value])))
+            : codingAgentVersionPins(options.processEnv || process.env);
         this.processEnv = toolProcessEnv(options.processEnv || process.env);
         this.inflight = new Map();
     }
@@ -241,7 +264,7 @@ export class ToolCache {
     async _prepareCodingAgent(name) {
         const definition = CODING_AGENT_PACKAGES[name];
         return this._prepare(name, async () => {
-            const version = await this._npmVersion(definition.packageName);
+            const version = this.versionPins[name] ?? await this._npmVersion(definition.packageName);
             return {
                 identity: { package: definition.packageName, version, runtime: process.versions.node },
                 versions: { [name]: version },
@@ -372,6 +395,10 @@ export class ToolCache {
             const stamp = JSON.parse(await fs.readFile(path.join(directory, 'stamp.json'), 'utf8'));
             if (stamp?.schema !== CACHE_SCHEMA || stamp.name !== name || stamp.generation !== descriptor.generation) throw new Error('invalid cached generation stamp');
             const codingAgent = CODING_AGENT_PACKAGES[name];
+            const pin = codingAgent ? this.versionPins[name] : undefined;
+            if (pin !== undefined && (descriptor.versions?.[name] !== pin || stamp.versions?.[name] !== pin)) {
+                throw new Error(`cached generation is not the pinned ${name} version ${pin}`);
+            }
             const required = codingAgent
                 ? [path.join(directory, 'bin', codingAgent.executable)]
                 : name === 'browser'
@@ -398,4 +425,4 @@ export class ToolCache {
     }
 }
 
-export const toolCacheInternals = { CACHE_SCHEMA, CODING_AGENT_PACKAGES, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, TOOL_MOUNT_PATH, generationName, safeVersion, toolProcessEnv };
+export const toolCacheInternals = { CACHE_SCHEMA, CODING_AGENT_PACKAGES, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, TOOL_MOUNT_PATH, codingAgentVersionPins, generationName, safeVersion, toolProcessEnv };
