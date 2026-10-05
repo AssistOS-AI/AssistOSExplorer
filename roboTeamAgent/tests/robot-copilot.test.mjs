@@ -105,17 +105,17 @@ export const createRepositoryClient = () => ({
     const store = new RobotStore({ dataDir });
     const robot = await store.create({ name: 'worker' });
     const sessionId = randomUUID();
-    const taskFile = path.join(root, 'task.txt');
     const run = async (prompt, resume = false) => {
-        await fs.writeFile(taskFile, prompt);
         return new Promise((resolve, reject) => {
             const child = spawn(process.execPath, ['--input-type=module', '-e',
                 `import { runRobotTask } from ${JSON.stringify(new URL('../server/robot-task.mjs', import.meta.url).href)}; await runRobotTask(process.argv.slice(2), ${JSON.stringify({ dataDir, alaCommand: entry })});`,
                 '--', fileURLToPath(import.meta.url), '--robot', robot.name, '--cwd', workspace, '--session-id', sessionId, '--ca', 'codex',
-                '--taskFile', taskFile, ...(resume ? ['--resume-session'] : [])], {
+                ...(resume ? ['--resume-session'] : [])], {
                 env: { ...process.env,
                     PLOINKY_WORKSPACE_ROOT: root }, stdio: ['pipe', 'pipe', 'pipe'],
             });
+            // The task prompt is the first record on the runner's stdin.
+            child.stdin.end(`${JSON.stringify({ type: 'prompt', prompt })}\n`);
             let stdout = ''; let stderr = '';
             child.stdout.on('data', (chunk) => { stdout += chunk; });
             child.stderr.on('data', (chunk) => { stderr += chunk; });

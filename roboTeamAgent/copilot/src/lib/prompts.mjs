@@ -2,9 +2,11 @@ export const INITIAL_SKILL_INSTRUCTIONS = 'Read the SKILL.md headers in .agents/
 
 export const HUMAN_REPORT_INSTRUCTIONS = 'Read and apply .agents/skills/human-report/SKILL.md after every user prompt, including questions, small changes and continuations. Put the entire final response between two identical <<human-report>> markers, each on its own line. Follow the skill for clear, concise language and accurate outcomes. If the workflow requires JSON or routing headings, preserve that required structure inside the markers and write human-facing fields according to the skill.';
 
+// The caller's system instructions, the report rule and the skill instruction
+// open a coding-agent session once; a resumed session already holds them, so
+// later turns carry only the user's message.
 export function buildNativePrompt({ prompt, resume = false, selectedSkillName, systemPrompt = '' }) {
-    const parts = [systemPrompt, HUMAN_REPORT_INSTRUCTIONS];
-    if (!resume) parts.push(INITIAL_SKILL_INSTRUCTIONS);
+    const parts = resume ? [] : [systemPrompt, HUMAN_REPORT_INSTRUCTIONS, INITIAL_SKILL_INSTRUCTIONS];
     parts.push(prompt);
     if (selectedSkillName) parts.push(`Use the selected skill at .agents/skills/${selectedSkillName}/SKILL.md.`);
     return parts.filter(Boolean).join('\n\n');

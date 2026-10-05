@@ -1,6 +1,5 @@
 import { createHumanInputChannel } from './human-input-channel.mjs';
-import { buildTaskPrompt } from '../copilot/src/lib/prompts.mjs';
-import { registerProject, executionDirectory, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
+import { registerProject, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
 import { requireWorkspaceRoot } from './workspace-root.mjs';
 import { workspaceDataPath } from './workspace-paths.mjs';
 import { installLiveSkills } from './live-skill-install.mjs';
@@ -523,18 +522,11 @@ export class RuntimeManager {
             await this._prepareRobotAgentState(originalHome);
             await this.prepareOpenCode(robot.id);
             const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
-            const runtimeDir = executionDirectory(this, cwd, task.alaSessionId || task.taskId);
             await this._prepareRobotAgentState(robotHome);
             await prepareRobotShell(robotHome);
-            await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
             await this._saveTask(task);
-            const taskFile = path.join(runtimeDir, `${task.taskId}.prompt`);
-            // Caller system instructions are prepended to the user prompt; ALA has
-            // no separate system-instruction option.
-            const taskText = buildTaskPrompt(task.request);
-            await fs.writeFile(taskFile, taskText, { mode: 0o600 });
             if (task.cancelRequested) throw new Error('task was paused');
-            const args = ['--home', robotHome, '--cwd', cwd, '--taskFile', taskFile, '--ca', codingAgent];
+            const args = ['--home', robotHome, '--cwd', cwd, '--ca', codingAgent];
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
             // Catalog capture belongs to the wrapper's actual execution boundary after queue/cache wait.
@@ -573,6 +565,10 @@ export class RuntimeManager {
                 '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
             child.stdin?.on('error', () => {});
+            // The task prompt is the first control record. The copilot engine adds
+            // the caller's system instructions when it opens the native session.
+            child.stdin?.write(`${JSON.stringify({ type: 'prompt', prompt: task.request.task,
+                ...(task.request.systemPrompt ? { systemPrompt: task.request.systemPrompt } : {}) })}\n`);
             const resultDecoder = new StringDecoder('utf8');
             let resultBytes = 0;
             child.stdout?.on('data', (chunk) => {
@@ -652,7 +648,7 @@ export class RuntimeManager {
         }
         const message = String(prompt || '').trim();
         if (!message || message.length > 32768) throw new Error('Message must contain 1 to 32768 characters.');
-        const command = { type: 'message', id: crypto.randomUUID(), message: buildTaskPrompt({ task: message }) };
+        const command = { type: 'message', id: crypto.randomUUID(), message };
         if (!task.controlReady) {
             if (task.pendingMessages.length >= 100) throw new Error('Task message queue is full.');
             task.pendingMessages.push(command);

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { buildTaskPrompt } from '../copilot/src/lib/prompts.mjs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -128,11 +127,13 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
         invocations.push({ command, args, options });
         const child = new EventEmitter();
         child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+        child.stdin = new PassThrough(); child.written = '';
+        child.stdin.on('data', (chunk) => { child.written += chunk; });
         children.push(child);
         return child;
     };
     const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, execFileImpl: async () => ({ stdout: '[]', stderr: '' }), toolCache: preparedToolCache });
-    const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', model: 'gpt-test' });
+    const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', model: 'gpt-test', systemPrompt: 'Route it' });
     const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second', ca: 'codex', mcpServers: 'roboTeamAgent=http://127.0.0.1:7000/mcp' });
     assert.match(first.taskId, /^[0-9a-f-]{36}$/);
     assert.equal(first.sessionUrl, undefined);
@@ -162,7 +163,9 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
     assert.equal(firstInvocation.args[3], '--home');
     assert.equal(firstInvocation.args[4], await fs.realpath(path.join(dataDir, 'robots', robot.id, 'home')));
     assert.deepEqual(firstInvocation.args.slice(5, 7), ['--cwd', workspace]);
-    assert.ok(firstInvocation.args.includes('--taskFile'));
+    // The task prompt is the runner's first stdin record, not a file.
+    assert.equal(firstInvocation.args.includes('--taskFile'), false);
+    assert.deepEqual(JSON.parse(children[firstIndex].written.split('\n')[0]), { type: 'prompt', prompt: 'Do work', systemPrompt: 'Route it' });
     assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--ca') + 1], 'codex');
     assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--session-id') + 1], first.taskId);
     assert.deepEqual(firstInvocation.args.slice(-2), ['--model', 'gpt-test']);
@@ -465,12 +468,12 @@ test('active message delivery waits for an ALA receipt and starting tasks queue 
     const task = { taskId: 'active-id', robotId: robot.id, state: 'starting', pendingMessages: [] };
     manager.tasks.set(task.taskId, task);
     assert.equal((await manager.sendTaskMessage(robot, task.taskId, 'first')).delivery, 'queued');
-    assert.equal(task.pendingMessages[0].message, buildTaskPrompt({ task: 'first' }));
+    assert.equal(task.pendingMessages[0].message, 'first');
     task.controlReady = true;
     task.state = 'running';
     task.child = { stdin: { write(line) {
         const command = JSON.parse(line);
-        assert.equal(command.message, buildTaskPrompt({ task: 'live' }));
+        assert.equal(command.message, 'live');
         const waiter = manager.messageWaiters.get(command.id);
         clearTimeout(waiter.timer);
         manager.messageWaiters.delete(command.id);

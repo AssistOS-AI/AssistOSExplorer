@@ -20,7 +20,12 @@ if (args.includes('--external-workspace') || args.includes('--skill-catalog') ||
 }
 if (!folder || value('as') !== 'ploinky-runtime') throw new Error('Missing generic runtime mount.');
 if (!(await fs.stat(path.join(folder, 'tasks.sock'))).isSocket()) throw new Error('Missing task notification socket.');
-const prompt = await fs.readFile(value('--taskFile'), 'utf8');
+if (args.includes('--taskFile') || args.includes('--user-message-file')) throw new Error('The turn prompt must arrive on stdin.');
+// Like ALA with --control-stdin: the first control record is the turn prompt.
+const stdinLines = readline.createInterface({ input: process.stdin })[Symbol.asyncIterator]();
+const first = JSON.parse((await stdinLines.next()).value);
+if (first.type !== 'prompt' || typeof first.prompt !== 'string') throw new Error('Missing turn prompt record.');
+const prompt = first.prompt;
 if (args.includes('--config')) throw new Error('A per-turn ALA config was forwarded.');
 const alaRoot = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())));
 // Like ALA: the agent, model and effort come from the config in --home.
@@ -33,7 +38,7 @@ const { createTranscriptRecorder } = await import(pathToFileURL(path.join(alaRoo
 if (!process.env.ALA_SESSIONS) throw new Error('Missing ALA_SESSIONS.');
 const state = await openSessionState({ id, sessionsRoot: process.env.ALA_SESSIONS, resume: args.includes('--resume-session') });
 const recorder = createTranscriptRecorder(state, value('--turn-id'));
-await recorder.user(await fs.readFile(value('--user-message-file'), 'utf8'));
+await recorder.user(first.displayText || first.prompt);
 await state.save({ agent: backend, continuation: state.record.continuation
     || (backend === 'opencode' ? { sessionId: 'fixture-opencode' } : { threadId: 'fixture-thread' }) });
 const emit = (event) => {
@@ -55,13 +60,12 @@ if (prompt.includes('MALFORMED')) {
         emit({ type: 'coding-agent-request', id: 'fixture-request', agent: backend, kind: 'permission',
             method: 'fixture/requestApproval', title: 'Fixture approval', message: 'Approve fixture?',
             options: [{ id: 'deny', label: 'Deny' }, { id: 'allow', label: 'Allow once' }] });
-        const input = readline.createInterface({ input: process.stdin });
-        for await (const line of input) {
+        for (let next = await stdinLines.next(); !next.done; next = await stdinLines.next()) {
+            const line = next.value;
             const response = JSON.parse(line);
             if (response.type !== 'interaction-response' || response.id !== 'fixture-request') process.exit(2);
             choice = response.cancelled ? 'cancelled' : response.optionId;
             emit({ type: 'coding-agent-request-resolved', id: response.id, reason: 'answered' });
-            input.close();
             break;
         }
     }

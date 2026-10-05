@@ -47,18 +47,17 @@ test('workflow payloads work inside reports and alongside a separate report', ()
     assert.throws(() => parseRoute(report('# nextEdgeId\ninvalid'), graph, 'review'));
 });
 
-test('initial, resumed, task and follow-up prompts carry the report contract', () => {
-    for (const text of [buildNativePrompt({ prompt: 'Question' }), buildNativePrompt({ prompt: 'Continue', resume: true }), buildTaskPrompt({ task: 'Work', systemPrompt: 'Routing' }), buildTaskPrompt({ task: 'Follow up' })]) {
+test('the report contract opens a session once; resumed turns and queued messages carry only the user text', async () => {
+    for (const text of [buildNativePrompt({ prompt: 'Question' }), buildTaskPrompt({ task: 'Work', systemPrompt: 'Routing' }), buildTaskPrompt({ task: 'Follow up' })]) {
         assert.ok(text.includes(HUMAN_REPORT_INSTRUCTIONS));
     }
-});
-
-test('live workflow messages keep the reporting instruction when queued', async () => {
+    assert.equal(buildNativePrompt({ prompt: 'Continue', resume: true }), 'Continue');
     const task = { robotId: 'robot', state: 'starting', controlReady: false, pendingMessages: [] };
     const manager = { tasks: new Map([['task', task]]) };
     const result = await RuntimeManager.prototype.sendTaskMessage.call(manager, { id: 'robot' }, 'task', 'Check again');
     assert.equal(result.delivery, 'queued');
-    assert.equal(task.pendingMessages[0].message, `${HUMAN_REPORT_INSTRUCTIONS}\n\nCheck again`);
+    // The copilot engine wraps live messages once before they reach ALA.
+    assert.equal(task.pendingMessages[0].message, 'Check again');
 });
 
 test('required skill resolves the renamed source as enabled and read-only', async t => {

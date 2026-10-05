@@ -9,7 +9,7 @@ import { resolveAlaInstallation } from './alaInstallation.mjs';
 import { alaSessionsRoot, readAlaSession } from './alaTranscript.mjs';
 import * as workspaceSettings from '../config/achillesSettings.mjs';
 import { acquireExecutionLease, withWorkspaceMutation } from '../storage/workspaceStateLock.mjs';
-import { ACHILLES_PRIVATE_DIRECTORY_NAME, ensureSafeAchillesPrivateDirectory, resolveAchillesWorkspaceRoot } from '../storage/privateDataRoot.mjs';
+import { ACHILLES_PRIVATE_DIRECTORY_NAME, resolveAchillesWorkspaceRoot } from '../storage/privateDataRoot.mjs';
 import { createPloinkyTaskContext } from '../ploinky/ploinkyTaskContext.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { webchatTurnLogUrl } from '../webchat/webchatTurnLog.mjs';
@@ -159,7 +159,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         let finish;
         const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
         active.add(operation);
-        let release, catalogRelease, turn, scriptContext, temporary, child, childDone;
+        let release, catalogRelease, turn, scriptContext, child, childDone;
         const env = { ...process.env };
         const sanitize = createSanitizer(context, env);
         const emit = async (event) => { await onEvent?.(sanitize(event)); };
@@ -193,24 +193,13 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 origin: structuredClone(context.origin || context.webchatOrigin || {}) };
             scriptContext = await createPloinkyTaskContext({ context: captured,
                 env, onTask: (task) => backgroundTasks?.observeScriptTask(task, captured) });
-            const root = ensureSafeAchillesPrivateDirectory(cwd, 'turns');
-            temporary = await fs.mkdtemp(path.join(root, 'turn-'));
-            await fs.chmod(temporary, 0o700);
             const nativePrompt = buildNativePrompt({ prompt, resume: config.resume,
                 selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
-
-            const taskFile = path.join(temporary, 'prompt.txt');
-            const userFile = path.join(temporary, 'user.txt');
-            await Promise.all([
-                fs.writeFile(taskFile, sanitize(nativePrompt), { mode: 0o600, flag: 'wx' }),
-                fs.writeFile(userFile, sanitize(context.rawText || prompt), { mode: 0o600, flag: 'wx' }),
-            ]);
             controller.signal.throwIfAborted();
             await sessionStore.bindEngine(sessionId, { home, cwd, backend, robotId: execution.robotId });
             // ALA reads the coding agent, model and effort from the config in --home.
             const args = ['--home', home, '--cwd', cwd, '--session-id', sessionId,
-                '--turn-id', turnId, '--user-message-file', userFile,
-                '--control-stdin', '--permissions', permissionMode, '--taskFile', taskFile,
+                '--turn-id', turnId, '--control-stdin', '--permissions', permissionMode,
                 '--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
             if (config.requestedBackend) args.push('--ca', config.requestedBackend);
             // The workspace is mounted read-only at its canonical path; the writable
@@ -229,6 +218,10 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: alaSessionsRoot(cwd) },
                 shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
             });
+            // The turn prompt is the first control record: ALA starts the coding
+            // agent with `prompt` and records `displayText` as the user's message.
+            child.stdin.write(`${JSON.stringify({ type: 'prompt', prompt: sanitize(nativePrompt),
+                displayText: sanitize(context.rawText || prompt) })}\n`);
             onControl?.((message) => {
                 if (message.type === 'message') message = { ...message, displayText: message.message, message: buildTaskPrompt({ task: message.message }) };
                 if (!child.stdin.destroyed && !controller.signal.aborted) child.stdin.write(JSON.stringify(message) + '\n');
@@ -271,8 +264,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             interactions?.cancelTurn(turnId);
             try {
                 if (childDone) await childDone.catch(() => {});
-                try { if (scriptContext) await scriptContext.close(); }
-                finally { if (temporary) await fs.rm(temporary, { recursive: true, force: true }); }
+                if (scriptContext) await scriptContext.close();
             } finally {
                 try { await catalogRelease?.(); } finally { try { await release?.(); } finally { active.delete(operation); finish(); } }
             }

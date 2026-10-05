@@ -1,4 +1,3 @@
-import fs from 'node:fs/promises';
 import readline from 'node:readline';
 import { prepareCopilotContext } from './copilot-context.mjs';
 import { setRobotContext } from '../copilot/src/lib/execution/robotContext.mjs';
@@ -27,19 +26,31 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         const skillSelection = process.env.ROBOTEAM_TASK_SKILL_SELECTION
             ? JSON.parse(process.env.ROBOTEAM_TASK_SKILL_SELECTION) : undefined;
         delete process.env.ROBOTEAM_TASK_SKILL_SELECTION;
+        // The first stdin line is the task prompt; the following lines are live
+        // control messages for the running turn.
+        input = readline.createInterface({ input: process.stdin });
+        let control;
+        let receivePrompt;
+        const promptRecord = new Promise((resolve) => { receivePrompt = resolve; });
+        input.on('line', (line) => {
+            try {
+                const message = JSON.parse(line);
+                if (receivePrompt) {
+                    if (message.type !== 'prompt' || typeof message.prompt !== 'string' || !message.prompt.trim()) throw new Error('The first task record must be the prompt.');
+                    receivePrompt(message); receivePrompt = null;
+                } else if (message.type === 'message') control?.(message);
+            } catch (error) { console.error(error.message || 'Invalid task control message.'); }
+        });
+        input.once('close', () => receivePrompt?.(null));
+        const task = await promptRecord;
+        if (!task) throw new Error('The task prompt was not received.');
         runtime = await createCliRuntime({ workingDir: options['--cwd'], skillRoots: [],
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
             execution: { captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
-                model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access' } }, { reattachExistingTasks: false });
-        let control;
-        input = readline.createInterface({ input: process.stdin });
-        input.on('line', (line) => {
-            try { const message = JSON.parse(line); if (message.type === 'message') control?.(message); }
-            catch { console.error('Invalid task control message.'); }
-        });
-        const prompt = await fs.readFile(options['--taskFile'], 'utf8');
-        const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt,
-            signal: controller.signal, context: { workingDir: options['--cwd'], rawText: prompt },
+                model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access',
+                ...(task.systemPrompt ? { systemPrompt: task.systemPrompt } : {}) } }, { reattachExistingTasks: false });
+        const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt: task.prompt,
+            signal: controller.signal, context: { workingDir: options['--cwd'], rawText: task.prompt },
             onControl: (send) => { control = send; },
             onEvent: (event) => { process.stderr.write('@@ALA_EVENT@@' + JSON.stringify(event) + '\n'); } });
         process.stdout.write(result.outputText);

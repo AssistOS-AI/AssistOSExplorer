@@ -151,7 +151,8 @@ test('UI history is never replayed and subsequent turns resume the native conver
     assert.ok(first.prompt.endsWith('\n\nNow'));
     assert.equal(first.prompt.includes('EXCLUDED_COMMAND_RESULT'), false);
     const second = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Again' })).outputText);
-    assert.equal(second.prompt, `${HUMAN_REPORT_INSTRUCTIONS}\n\nAgain`);
+    // The resumed native session already holds the system instructions.
+    assert.equal(second.prompt, 'Again');
     assert.equal(second.resumed, true);
 });
 
@@ -190,7 +191,7 @@ test('coding provider names remain ordinary prompts without removed launcher rou
     const delegated = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Ask codex to review this project' })).outputText);
     assert.ok(delegated.prompt.endsWith('\n\nAsk codex to review this project'));
     const mentioned = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'What is Codex?' })).outputText);
-    assert.equal(mentioned.prompt, `${HUMAN_REPORT_INSTRUCTIONS}\n\nWhat is Codex?`);
+    assert.equal(mentioned.prompt, 'What is Codex?');
 });
 
 
@@ -236,13 +237,16 @@ test('model and effort persist in the native ALA config and survive continuation
 });
 
 
-test('caller system instructions are prepended to the user prompt on initial and resumed calls', async t => {
+test('caller system instructions open the session once; resumed turns carry only the user message', async t => {
     const h = await harness(t, {}, { execution: { systemPrompt: 'Generate a directed task graph.' } });
-    for (const prompt of ['First request', 'Second request']) {
-        const output = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt })).outputText);
-        assert.ok(output.prompt.startsWith('Generate a directed task graph.'));
-        assert.match(output.prompt, new RegExp(prompt));
-    }
+    const first = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'First request' })).outputText);
+    assert.ok(first.prompt.startsWith('Generate a directed task graph.'));
+    assert.ok(first.prompt.endsWith('First request'));
+    const second = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Second request' })).outputText);
+    assert.equal(second.prompt, 'Second request');
+    const transcript = h.store.loadSession(h.sessionId).messages.filter((message) => message.role === 'user').map((message) => message.text);
+    assert.deepEqual(transcript, ['First request', 'Second request']);
+    await assert.rejects(fs.stat(path.join(h.workingDir, '.roboteam', 'turns')), { code: 'ENOENT' });
 });
 
 test('a webchat turn links the coding-agent output ALA recorded for it', async (t) => {
