@@ -265,9 +265,9 @@ export async function openFile(fileExp, filePath, {
                 );
             };
 
-            // The version info is requested first and the content right after it, without waiting in between.
-            // The baseline taken from this info is then never newer than the content, so a change that lands
-            // between the two requests is detected as a reload instead of being missed.
+            // The version info is requested before the content, without waiting in between. The two requests are
+            // independent and the server does not order them, so this only makes it likely that a change landing
+            // meanwhile shows up as a newer version on the next check, which reloads the file, instead of being missed.
             if (typeof onFileInfoRequested === 'function' && typeof fileExp.refreshSelectedFileVersionInfo === 'function') {
                 const fileInfoPromise = fileExp.refreshSelectedFileVersionInfo(filePath);
                 // The baseline consumer reports a failure; a read that fails first must not leave it unhandled.
