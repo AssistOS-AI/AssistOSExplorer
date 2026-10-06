@@ -31,12 +31,13 @@ const alaRoot = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())
 // Like ALA: the agent, model and effort come from the config in --home.
 const { loadConfig } = await import(pathToFileURL(path.join(alaRoot, 'src', 'config.mjs')));
 const config = await loadConfig(path.join(home, '.ala', 'config.json'));
-const backend = value('--ca') || config.codingAgent || 'codex';
 // Record the conversation through ALA's own session modules, as ALA does.
 const { openSessionState } = await import(pathToFileURL(path.join(alaRoot, 'src', 'session-state.mjs')));
 const { createTranscriptRecorder } = await import(pathToFileURL(path.join(alaRoot, 'src', 'transcript-recorder.mjs')));
 if (!process.env.ALA_SESSIONS) throw new Error('Missing ALA_SESSIONS.');
 const state = await openSessionState({ id, sessionsRoot: process.env.ALA_SESSIONS, resume: args.includes('--resume-session') });
+// Like ALA, a resumed session continues on its own agent when no --ca is given.
+const backend = value('--ca') || (args.includes('--resume-session') && state.record.agent) || config.codingAgent || 'codex';
 const recorder = createTranscriptRecorder(state, value('--turn-id'));
 await recorder.user(first.displayText || first.prompt);
 await state.save({ agent: backend, continuation: state.record.continuation

@@ -84,20 +84,33 @@ test('task runner uses robot home, persists a conversation, and resumes its nati
     await Promise.all([fs.mkdir(workspace), fs.mkdir(path.join(fake, 'src/coding-agents'), { recursive: true })]);
     await fs.writeFile(path.join(fake, 'package.json'), '{"name":"advanced-language-agent","type":"module"}');
     const entry = path.join(fake, 'ala.mjs');
-    await fs.copyFile(new URL('../copilot/tests/fixtures/ala-engine-child.mjs', import.meta.url), entry);
+    // The fixture imports RoboTeam modules relatively, so the fake entry loads it in place by URL.
+    await fs.writeFile(entry, `import ${JSON.stringify(new URL('../copilot/tests/fixtures/ala-engine-child.mjs', import.meta.url).href)};\n`);
     for (const module of ['config.mjs', 'coding-agents/service.mjs']) {
         await fs.writeFile(path.join(fake, 'src', module), `export * from ${JSON.stringify(pathToFileURL(path.join(real.packageRoot, 'src', module)).href)};`);
     }
     await fs.writeFile(path.join(fake, 'src/coding-agents/discovery.mjs'),
         `export async function discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; }`);
+    // The required human-report skill comes from a local DocumentationSkills repository.
+    const docs = path.join(root, 'DocumentationSkills');
+    await fs.mkdir(path.join(docs, 'skills/human-report'), { recursive: true });
+    await fs.writeFile(path.join(docs, 'skills/human-report/SKILL.md'), '---\nname: human-report\ndescription: Write the final report.\n---\nReport outcomes.\n');
+    const docsReal = await fs.realpath(docs);
     const clientFile = path.join(root, 'ploinky/Agent/client/RepositoryClient.mjs');
     await fs.mkdir(path.dirname(clientFile), { recursive: true });
     await fs.writeFile(clientFile, `import fs from 'node:fs/promises';
 import path from 'node:path';
 export const createRepositoryClient = () => ({
-    listRepositories: async () => [],
-    install: async ({ skillRepos }) => {
+    listRepositories: async () => [{ name: 'DocumentationSkills', source: ${JSON.stringify(docsReal)}, origin: 'local' }],
+    install: async ({ repos = [], skillRepos }) => {
         for (const entry of skillRepos) await fs.mkdir(path.join(entry.destination, '.agents/skills'), { recursive: true });
+        // Like the real client, publish each skill as a link to its repository source; reruns keep matching links.
+        for (const entry of repos) {
+            if (entry.repoName !== 'DocumentationSkills') throw new Error('Unknown repository ' + entry.repoName);
+            const target = path.join(${JSON.stringify(docsReal)}, entry.sourcePath);
+            const current = await fs.readlink(entry.destination).catch(() => null);
+            if (current !== target) await fs.symlink(target, entry.destination);
+        }
         return { conflicts: [] };
     },
     remove: async () => ({ conflicts: [] }),
@@ -137,7 +150,16 @@ export const createRepositoryClient = () => ({
     assert.equal(second.output.resumed, true);
     assert.equal(second.output.prompt.includes('First'), false);
     const continued = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
-    assert.equal(continued.messages.filter((message) => message.role === 'user').length, 2);
+    // Conversation text lives in ALA's transcript; the store composes it with the session metadata.
+    const previousRoot = process.env.PLOINKY_WORKSPACE_ROOT;
+    process.env.PLOINKY_WORKSPACE_ROOT = root;
+    let conversation;
+    try { conversation = new ConversationSessionStore({ workingDir: workspace }).loadSession(sessionId); }
+    finally { if (previousRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = previousRoot; }
+    assert.equal(conversation.messages.filter((message) => message.role === 'user').length, 2);
     assert.deepEqual(continued.skillSelection, firstSession.skillSelection);
+    // The live skill execution (the required human-report skill) is unchanged by the resumed turn.
+    assert.deepEqual(firstSession.skillExecution.entries.map((entry) => entry.name), ['human-report']);
+    assert.deepEqual(continued.skillExecution.entries, firstSession.skillExecution.entries);
     await assert.rejects(fs.stat(path.join(workspace, '.data/achilles-cli')), /ENOENT/);
 });
