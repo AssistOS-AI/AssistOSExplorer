@@ -570,3 +570,37 @@ test('managed repository origin lookups overlap, skip name matches and decide ov
         await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
 });
+
+test('managed repositories exposing one agent name keep first-wins precedence when origin lookups finish out of order', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-origin-precedence-'));
+    const originalPath = process.env.PATH;
+    try {
+        const managedRoot = path.join(workspaceRoot, '.ploinky', 'repos');
+        const names = ['repoA', 'repoB', 'repoC'];
+        for (const name of names) {
+            await writeApplication(path.join(managedRoot, name), 'sharedAgent', `plugin-${name.toLowerCase()}`);
+            await fs.mkdir(path.join(managedRoot, name, '.git'), { recursive: true });
+        }
+        await writeApplication(path.join(managedRoot, 'repoC'), 'uniqueAgent', 'unique');
+        // The earliest directory (readdir order) has the slowest origin lookup.
+        const ordered = (await fs.readdir(managedRoot)).filter((name) => names.includes(name));
+        const delays = Object.fromEntries(ordered.map((name, index) => [name, [0.6, 0.05, 0.3][index]]));
+        const origins = Object.fromEntries(ordered.map((name) => [name, `https://example.com/org/${name}`]));
+        const { binDir, logPath } = await installSlowGit(workspaceRoot, delays, origins);
+        process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+
+        // The aggregator sorts by component, so the expected list is the sequential result in that order;
+        // the winner of the shared agent name must be the earliest directory.
+        const firstId = `plugin-${ordered[0].toLowerCase()}`;
+        assert.deepEqual(aggregated.application['file-exp:toolbar'].map(plugin => [plugin.id, plugin.agent, plugin.assetRootPath]), [
+            [firstId, 'sharedAgent', `.ploinky/repos/${ordered[0]}/sharedAgent/IDE-plugins/${firstId}`],
+            ['unique', 'uniqueAgent', '.ploinky/repos/repoC/uniqueAgent/IDE-plugins/unique'],
+        ].sort((a, b) => a[0].localeCompare(b[0])));
+        const events = (await fs.readFile(logPath, 'utf8')).trim().split('\n').filter((line) => line.startsWith('end ')).map((line) => path.basename(line.slice(4)));
+        assert.notEqual(events[0], ordered[0], 'the earliest directory lookup must finish last for this test to be meaningful');
+    } finally {
+        process.env.PATH = originalPath;
+        await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+});
