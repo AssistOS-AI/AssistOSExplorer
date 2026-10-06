@@ -206,7 +206,8 @@ test('file explorer boot overlaps the shell, component and listing loads with th
     const start = functionSource(source, 'start');
 
     // The expanded modal shell loads without blocking boot; openExpandedModal waits on the stored promise.
-    assert.match(overlap, /webSkel\.expandedModalReady = webSkel\.ResourceManager\.loadComponent\(expandedModalConfig\)/);
+    assert.match(overlap, /webSkel\.ensureExpandedModalReady = createExpandedModalPreload\(webSkel\)/);
+    assert.match(overlap, /webSkel\.ensureExpandedModalReady\(\)\.catch\(/);
     assert.doesNotMatch(source, /await webSkel\.ResourceManager\.loadComponent\(expandedModalConfig\)/);
     // The listing prefetch and the file-exp component load are file-exp-route only and never run for room entries.
     assert.match(overlap, /if \(roomEntry \|\| expectedRoute\.pageName !== 'file-exp'\) \{\s*return;/);

@@ -116,8 +116,9 @@ export function openExpandedModal(descriptor = {}) {
     activePanel = record;
     persistResume(descriptor, key);
     const payload = { ...toModalPayload(descriptor), key };
-    // Explorer preloads the shell component without blocking startup (ui.expandedModalReady); no panel opens before it.
-    Promise.resolve(ui.expandedModalReady).then(() => ui.showModal(EXPANDED_MODAL_COMPONENT, payload, false, {
+    // Explorer preloads the shell component without blocking startup; no panel opens before it. A failed preload is
+    // retried by the next launch (ui.ensureExpandedModalReady), and overlapping launches share one attempt.
+    Promise.resolve().then(() => ui.ensureExpandedModalReady?.()).then(() => ui.showModal(EXPANDED_MODAL_COMPONENT, payload, false, {
         signal: record.controller.signal
     })).then((dialog) => {
         if (!dialog) return;

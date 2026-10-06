@@ -13,6 +13,7 @@ import { filterRuntimePluginsByPolicy, forEachRuntimePluginEntry } from './utils
 import { initializeTheme } from './shared/ui/theme.js';
 import { openExpandedModal, restoreExpandedModal } from './shared/ui/expanded-modal.js';
 import { installExpandedModalLoading } from './shared/ui/expanded-modal-loading.js';
+import { createExpandedModalPreload } from './shared/ui/expanded-modal-preload.js';
 import { fetchAuthenticatedUser } from './services/infrastructure/authApi.js';
 import { isAdminUser } from './services/auth/adminUser.js';
 import {
@@ -226,9 +227,9 @@ async function loadExplorerManifest() {
 function startBootOverlap(webSkel, { initialHashedRoute, roomEntry }) {
     // The shared shell is ready before toolbar interaction; plugin content stays lazy. It loads without blocking,
     // and openExpandedModal waits for it before the first panel opens.
-    const expandedModalConfig = webSkel.configs.components.find((component) => component.name === 'expanded-modal');
-    webSkel.expandedModalReady = webSkel.ResourceManager.loadComponent(expandedModalConfig);
-    webSkel.expandedModalReady.catch((error) => {
+    // A failed preload is not remembered: the next panel launch loads the shell again.
+    webSkel.ensureExpandedModalReady = createExpandedModalPreload(webSkel);
+    webSkel.ensureExpandedModalReady().catch((error) => {
         console.error('[explorer] Failed to preload the expanded modal shell:', error);
     });
 
