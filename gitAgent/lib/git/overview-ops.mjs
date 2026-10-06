@@ -49,7 +49,7 @@ export function createOverviewOps(ctx, ops) {
         }
         for (const entry of children) {
           if (!entry?.isDirectory?.()) continue;
-          if (entry.name.startsWith('.')) continue;
+          if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
           queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
         }
       }
