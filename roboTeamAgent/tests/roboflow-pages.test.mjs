@@ -102,3 +102,12 @@ test('agent pages mark an embeddable header and breadcrumbs', async t => {
         assert.match(html, /data-embed-breadcrumbs/, url);
     }
 });
+
+
+test('the graph router module is served to browser clients', async t => {
+    const request = await fixture(t);
+    const response = await request('/workflow-routing.js');
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /javascript/);
+    assert.match(await response.text(), /export function edgeRoute/);
+});

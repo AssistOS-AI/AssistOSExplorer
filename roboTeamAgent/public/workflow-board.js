@@ -1,3 +1,5 @@
+import { edgeRoute } from './workflow-routing.js';
+
 const svgNS = 'http://www.w3.org/2000/svg';
 export function drawBoard(container, graph, { readOnly = false, onChange = () => {}, onSelect = () => {}, onSelectEdge = () => {}, selectedEdgeId = null, states = {} } = {}) {
     container._workflowBoardCleanup?.();
@@ -16,6 +18,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
     for (const [name, value] of Object.entries({ id: markerId, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' })) marker.setAttribute(name, value);
     const arrow = document.createElementNS(svgNS, 'path'); arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z'); arrow.setAttribute('fill', 'currentColor'); marker.append(arrow); defs.append(marker); svg.append(defs);
     const nodeElements = new Map();
+    let offset = { x: 0, y: 0 };
     // End edges at the port's outer edge so the arrowhead is never covered by
     // the connection point.
     const PORT_OFFSET = 11;
@@ -40,19 +43,33 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         surface.style.transform = `translate(${(container.clientWidth - surface.offsetWidth * scale) / 2}px, ${(container.clientHeight - surface.offsetHeight * scale) / 2}px) scale(${scale})`;
     }
     function resizeSurface() {
-        const positions = graph.tasks.map(task => graph.layout[task.id]);
-        surface.style.width = `${Math.max(320, ...positions.map(point => point.x + 230))}px`;
-        surface.style.height = `${Math.max(220, ...positions.map(point => point.y + 130))}px`;
-        fitToContainer();
         edges();
+        fitToContainer();
     }
     function edges() {
         svg.querySelectorAll('.graph-edge, .graph-edge-hit, .graph-preview').forEach(edge => edge.remove());
-        for (const edge of graph.edges) {
+        const obstacles = graph.tasks.map(task => ({ ...graph.layout[task.id],
+            width: nodeElements.get(task.id)?.offsetWidth || 190, height: nodeElements.get(task.id)?.offsetHeight || 70 }));
+        const segments = [];
+        const routes = graph.edges.map(edge => {
             const start = point(edge.sourceTaskId, edge.sourcePort || 'right');
             const end = point(edge.targetTaskId, edge.targetPort || 'left');
-            const path = curve(start, end);
+            const route = edgeRoute(start, end, edge.sourcePort || 'right', edge.targetPort || 'left', obstacles, segments);
+            for (let i = 1; i < route.points.length; i++) segments.push([route.points[i - 1], route.points[i]]);
+            return { edge, ...route };
+        });
+        // Include return lanes and port approaches in the fitted board bounds.
+        offset = { x: 20 - Math.min(0, ...routes.map(route => route.minX)),
+            y: 20 - Math.min(0, ...routes.map(route => route.minY)) };
+        surface.style.width = `${offset.x + Math.max(320, ...graph.tasks.map(task => graph.layout[task.id].x + (nodeElements.get(task.id)?.offsetWidth || 190) + 30), ...routes.map(route => route.maxX + 20))}px`;
+        surface.style.height = `${offset.y + Math.max(220, ...graph.tasks.map(task => graph.layout[task.id].y + (nodeElements.get(task.id)?.offsetHeight || 70) + 30), ...routes.map(route => route.maxY + 20))}px`;
+        for (const [id, node] of nodeElements) {
+            node.style.left = `${graph.layout[id].x + offset.x}px`;
+            node.style.top = `${graph.layout[id].y + offset.y}px`;
+        }
+        for (const { edge, path, unroutable } of routes) {
             const line = document.createElementNS(svgNS, 'path'); line.classList.add('graph-edge');
+            if (unroutable) line.setAttribute('stroke-dasharray', '6 4');
             if (edge.id === selectedEdgeId) line.classList.add('selected');
             line.setAttribute('d', path); line.setAttribute('marker-end', `url(#${markerId})`);
             const hit = document.createElementNS(svgNS, 'path'); hit.classList.add('graph-edge-hit');
@@ -60,18 +77,19 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
             hit.setAttribute('aria-label', `Connection from ${edge.sourceTaskId} to ${edge.targetTaskId}`);
             hit.addEventListener('click', () => onSelectEdge(edge.id));
             hit.addEventListener('keydown', event => { if (!readOnly && ['Enter', ' '].includes(event.key)) { event.preventDefault(); onSelectEdge(edge.id); } });
+            for (const element of [hit, line]) element.setAttribute('transform', `translate(${offset.x} ${offset.y})`);
             svg.append(hit, line);
         }
     }
     surface.append(svg);
     container.append(surface);
     let connecting = null;
-    const localPoint = event => { const rect = surface.getBoundingClientRect(), scale = Number(surface.dataset.scale) || 1; return { x: (event.clientX - rect.left) / scale, y: (event.clientY - rect.top) / scale }; };
+    const localPoint = event => { const rect = surface.getBoundingClientRect(), scale = Number(surface.dataset.scale) || 1; return { x: (event.clientX - rect.left) / scale - offset.x, y: (event.clientY - rect.top) / scale - offset.y }; };
     const drawPreview = position => {
         svg.querySelector('.graph-preview')?.remove();
         if (!connecting) return;
         const start = point(connecting.taskId, connecting.side);
-        const preview = document.createElementNS(svgNS, 'path'); preview.classList.add('graph-preview'); preview.setAttribute('d', curve(start, position)); svg.append(preview);
+        const preview = document.createElementNS(svgNS, 'path'); preview.classList.add('graph-preview'); preview.setAttribute('d', curve(start, position)); preview.setAttribute('transform', `translate(${offset.x} ${offset.y})`); svg.append(preview);
     };
     const finishConnect = (event, cancelled = false) => {
         if (!connecting) return;
@@ -99,7 +117,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         const label = document.createElement('strong'); label.textContent = task.name;
         const detail = document.createElement('span'); detail.textContent = `${task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Sub-flows · ' : ''}${task.executionType || 'terminal / desktop / browser'}`}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
         node.append(label, detail);
-        const place = () => { node.style.left = `${graph.layout[task.id].x}px`; node.style.top = `${graph.layout[task.id].y}px`; };
+        const place = () => { node.style.left = `${graph.layout[task.id].x + offset.x}px`; node.style.top = `${graph.layout[task.id].y + offset.y}px`; };
         place();
         node.addEventListener('click', () => onSelect(task.id));
         if (!readOnly) {
