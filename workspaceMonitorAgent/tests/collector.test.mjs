@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -6,6 +9,7 @@ import {
     createSnapshotProcessor,
     PERSIST_INTERVAL_MS,
 } from '../lib/collector.mjs';
+import { createDatabaseHandleProvider, openDatabase, queryHistory } from '../lib/sqliteStore.mjs';
 
 const settings = {
     workspaceCpuPercent: 80,
@@ -108,4 +112,36 @@ test('current snapshot and history retries remain independent', async () => {
     assert.equal(errors.length, 2);
     assert.match(errors[0], /current snapshot write failed/);
     assert.match(errors[1], /sample persistence failed/);
+});
+
+test('the collector snapshot processor opens SQLite once and reopens it after a persist error', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-monitor-collector-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const env = { WORKSPACE_MONITOR_DATA_ROOT: root };
+    let opened = 0;
+    const databaseProvider = createDatabaseHandleProvider({
+        env,
+        openDatabaseImpl: (target) => { opened += 1; return openDatabase(target); },
+    });
+    t.after(() => databaseProvider.close());
+    const processSnapshot = createSnapshotProcessor({ readSettingsImpl: async () => settings, databaseProvider });
+    const start = Date.parse('2026-08-11T10:00:00Z');
+    for (let index = 0; index < 3; index += 1) {
+        assert.equal((await processSnapshot(snapshot(start + index * PERSIST_INTERVAL_MS))).persisted.length, 6);
+    }
+    assert.equal(opened, 1);
+
+    // Break the live handle behind the provider's back: the next persist fails, drops it, and the one after reopens.
+    databaseProvider.acquire().close();
+    await assert.rejects(processSnapshot(snapshot(start + 3 * PERSIST_INTERVAL_MS)));
+    assert.equal((await processSnapshot(snapshot(start + 3 * PERSIST_INTERVAL_MS + 1))).persisted.length, 6);
+    assert.equal(opened, 2);
+
+    const rows = queryHistory({
+        from: new Date(start - 1_000).toISOString(),
+        to: new Date(start + 600_000).toISOString(),
+        maxPoints: 600,
+        series: ['workspace.cpu'],
+    }, { env }).series['workspace.cpu'].values;
+    assert.equal(rows.length, 4);
 });

@@ -1,6 +1,6 @@
 import { writeCurrentSnapshot } from './currentSnapshot.mjs';
 import { readSettings } from './settings.mjs';
-import { persistSamples } from './sqliteStore.mjs';
+import { createDatabaseHandleProvider, persistSamples } from './sqliteStore.mjs';
 
 export const PERSIST_INTERVAL_MS = 10_000;
 const PRIVATE_PATH = '/api/edge/workspace-metrics';
@@ -47,9 +47,14 @@ function metricDefinitions(snapshot, settings) {
 
 export function createSnapshotProcessor({
     readSettingsImpl = readSettings,
-    persistSamplesImpl = persistSamples,
+    persistSamplesImpl = null,
+    databaseProvider = createDatabaseHandleProvider(),
     now = () => Date.now(),
 } = {}) {
+    // One database handle serves every persist of this collector process; a persist
+    // error closes and drops it, so the next persist reopens the database.
+    const persist = persistSamplesImpl
+        || ((samples, timestamp) => persistSamples(samples, timestamp, { databaseProvider }));
     const lastPersisted = new Map();
     return async function processSnapshot(snapshot) {
         const settings = await readSettingsImpl();
@@ -57,7 +62,7 @@ export function createSnapshotProcessor({
         const due = metricDefinitions(snapshot, settings).filter((metric) => Number.isFinite(metric.value)
             && timestamp - Number(lastPersisted.get(metric.key) || 0) >= PERSIST_INTERVAL_MS);
         if (!due.length) return { persisted: [] };
-        await persistSamplesImpl(due, timestamp);
+        await persist(due, timestamp);
         for (const metric of due) lastPersisted.set(metric.key, timestamp);
         return { persisted: due.map((metric) => metric.key) };
     };
