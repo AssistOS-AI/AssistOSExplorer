@@ -11,7 +11,7 @@ Explorer provides one workspace surface for navigating, creating, changing, loca
 
 ## Core Content
 
-In tree mode, page reload and deep links retain the workspace root and expand every ancestor of the directory or selected file from the URL. The selected path must not replace the tree root with its parent; workspace siblings remain visible.
+In tree mode, page reload and deep links retain the workspace root and expand every ancestor of the directory or selected file from the URL. The selected path must not replace the tree root with its parent; workspace siblings remain visible. A tree-mode deep link requests the listing of the target's parent together with the workspace root listing, and the listings of all ancestors that are not loaded yet are requested together before they are revealed in order; a tree with a specs filter keeps the one-by-one reveal. Opening a text file requests its version information before its content, without waiting in between, so a change that lands meanwhile is more likely to be detected by the later external-change check than missed, and the deep-link path refreshes the view once, through the open itself. The editor's external-change check does not run while the browser tab is hidden.
 
 Explorer must browse configured workspace roots, restore supported file and directory routes, and select the registered preview or editor for the chosen resource. Ordinary paths must use Explorer's filesystem contract. Virtual paths under `/Confidential` must use DPU operations and must not be translated into ordinary filesystem mutations.
 
