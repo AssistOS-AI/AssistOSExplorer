@@ -447,20 +447,32 @@ export async function aggregateIdePlugins(rootDir) {
       return;
     }
 
-    for (const pluginEntry of pluginEntries) {
-      if (!(await isDirectoryEntry(idePluginsDir, pluginEntry))) continue;
+    // Read every plugin config in parallel, then commit in readdir order so the
+    // aggregated output and warning order match a sequential scan.
+    const pluginReads = await Promise.all(pluginEntries.map(async (pluginEntry) => {
+      if (!(await isDirectoryEntry(idePluginsDir, pluginEntry))) return null;
       const pluginDir = path.join(idePluginsDir, pluginEntry.name);
       const configPath = path.join(pluginDir, 'config.json');
-      if (confinedRoot && !(await realPathWithin(configPath, confinedRoot))) continue;
-
-      let rawConfig;
+      if (confinedRoot && !(await realPathWithin(configPath, confinedRoot))) return null;
       try {
-        rawConfig = await fs.readFile(configPath, 'utf8');
+        return { pluginEntry, pluginDir, configPath, rawConfig: await fs.readFile(configPath, 'utf8') };
       } catch (error) {
-        if (error && typeof error === 'object' && error.code === 'ENOENT') {
+        return { pluginEntry, pluginDir, configPath, readError: error };
+      }
+    }));
+
+    for (const pluginRead of pluginReads) {
+      if (!pluginRead) continue;
+      const { pluginEntry, pluginDir, configPath, rawConfig, readError } = pluginRead;
+      if (readError) {
+        if (typeof readError === 'object' && readError.code === 'ENOENT') {
           continue;
         }
-        console.warn(`[filesystem-http] Skipping plugin ${pluginDir}: unable to read config.json (${error instanceof Error ? error.message : String(error)})`);
+        console.warn(`[filesystem-http] Skipping plugin ${pluginDir}: unable to read config.json (${readError instanceof Error ? readError.message : String(readError)})`);
+        continue;
+      }
+      // A zero-byte config.json is an unpublished placeholder, not a malformed one.
+      if (rawConfig.length === 0) {
         continue;
       }
 
@@ -535,6 +547,11 @@ export async function aggregateIdePlugins(rootDir) {
       physicalRoot = await fs.realpath(rootDir);
       entries = await fs.readdir(rootDir, { withFileTypes: true });
     } catch { return; }
+    // Qualify repositories in directory order. Origin lookups (lstat + git config)
+    // start as soon as a repository qualifies and run in parallel; results are
+    // committed below in the original order, followed by the sequential plugin
+    // scans, so first-wins precedence through visitedAgents is unchanged.
+    const repositories = [];
     for (const entry of entries) {
       if (entry.name.startsWith('.') || SKIP_DIRECTORY_NAMES.has(entry.name) || !(await isDirectoryEntry(rootDir, entry))) continue;
       const directory = path.join(rootDir, entry.name);
@@ -549,10 +566,13 @@ export async function aggregateIdePlugins(rootDir) {
         if (await realPathWithin(path.join(directory, child.name, 'manifest.json'), physicalRoot)) { hasAgents = true; break; }
       }
       if (!hasAgents) continue;
-      localRepositoryNames.add(entry.name);
-      const origin = await repositoryOrigin(directory);
+      repositories.push({ name: entry.name, directory, origin: repositoryOrigin(directory) });
+    }
+    for (const repository of repositories) {
+      localRepositoryNames.add(repository.name);
+      const origin = await repository.origin;
       if (origin) localRepositoryOrigins.add(origin);
-      await scanAgentDirectories(directory, physicalRoot);
+      await scanAgentDirectories(repository.directory, physicalRoot);
     }
   };
 
@@ -571,13 +591,25 @@ export async function aggregateIdePlugins(rootDir) {
       return;
     }
 
+    // Origin lookups run in parallel, only for names the local repositories did
+    // not already match (the name check short-circuits the lookup). Results are
+    // consumed in directory order; the sets are not written during this phase.
+    const candidates = [];
     for (const entry of repoEntries) {
       if (!(await isDirectoryEntry(repoRoot, entry))) continue;
       if (SKIP_DIRECTORY_NAMES.has(entry.name)) continue;
       const directory = path.join(repoRoot, entry.name);
-      if (applyLocalOverrides && (localRepositoryNames.has(entry.name)
-          || localRepositoryOrigins.has(await repositoryOrigin(directory)))) continue;
-      await scanAgentDirectories(directory);
+      const matchedByName = applyLocalOverrides && localRepositoryNames.has(entry.name);
+      candidates.push({
+        directory,
+        matchedByName,
+        origin: applyLocalOverrides && !matchedByName ? repositoryOrigin(directory) : null,
+      });
+    }
+    for (const candidate of candidates) {
+      if (candidate.matchedByName) continue;
+      if (candidate.origin && localRepositoryOrigins.has(await candidate.origin)) continue;
+      await scanAgentDirectories(candidate.directory);
     }
   };
 
