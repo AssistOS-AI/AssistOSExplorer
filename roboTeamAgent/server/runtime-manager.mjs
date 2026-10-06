@@ -2,7 +2,6 @@ import { createHumanInputChannel } from './human-input-channel.mjs';
 import { registerProject, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
 import { requireWorkspaceRoot } from './workspace-root.mjs';
 import { workspaceDataPath } from './workspace-paths.mjs';
-import { installLiveSkills } from './live-skill-install.mjs';
 import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
@@ -176,6 +175,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
                 '-e', 'XDG_CONFIG_HOME=/config/.config', '-e', 'XDG_CACHE_HOME=/config/.cache',
                 '-e', 'XDG_DATA_HOME=/config/.local/share', '-e', 'XDG_STATE_HOME=/config/.local/state',
                 '-e', 'PI_CODING_AGENT_DIR=/config/.pi/agent',
+                '-e', 'CLAUDE_CONFIG_DIR=/config/.claude',
             ] : []),
             '-v', `${homePath}:/config`,
             // The opened folder may be the workspace root itself. Mounting the
@@ -246,13 +246,6 @@ export class RuntimeManager {
         catch (error) { console.error('[roboTeamAgent] task observer failed:', error?.message || error); }
     }
 
-    async prepareRobotSkills(robot, cwd) {
-        if (!this.skillsets) return;
-        const { policyId } = await this.skillsets.defaults(robot);
-        await this.skillsets.policies.ensure(robot, policyId, { useDefaults: false });
-        await installLiveSkills({ service: this.skillsets, robot, policyId, cwd });
-    }
-
     async prepareOpenCode(robotId) {
         if (!/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) throw new Error('Invalid robot ID.');
         const home = path.join(this.dataDir, 'robots', robotId, 'home');
@@ -317,8 +310,6 @@ export class RuntimeManager {
             if (!cwdValue) await fs.mkdir(defaultCwd, { recursive: true });
             const cwd = cwdValue ? await this.resolveCwd(cwdValue) : await workspaceDataPath(defaultCwd, this.workspaceRoot);
             await fs.mkdir(cwd, { recursive: true });
-            await this.prepareRobotSkills(robot, cwd);
-            await fs.mkdir(cwd, { recursive: true });
             const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             await this._prepareRobotAgentState(originalHome);
             await this.prepareOpenCode(robot.id);
@@ -343,7 +334,7 @@ export class RuntimeManager {
             if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
             const [tools, shellTools] = await Promise.all([
                 this.toolCache.prepareMode(mode),
-                this.toolCache.prepareShellTools(codingAgents),
+                this.toolCache.prepareShellTools(),
             ]);
             await prepareRobotShell(robotHome, { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
             const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools });

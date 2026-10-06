@@ -15,6 +15,7 @@ const CODING_AGENT_PACKAGES = Object.freeze({
     codex: Object.freeze({ packageName: '@openai/codex', executable: 'codex' }),
     opencode: Object.freeze({ packageName: 'opencode-ai', executable: 'opencode' }),
     pi: Object.freeze({ packageName: '@earendil-works/pi-coding-agent', executable: 'pi' }),
+    claude: Object.freeze({ packageName: '@anthropic-ai/claude-code', executable: 'claude' }),
 });
 
 const PIN_VARIABLES = Object.freeze(Object.fromEntries(

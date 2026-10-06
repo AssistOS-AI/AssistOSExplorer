@@ -44,11 +44,11 @@ test('documentation explains executable placement and robot creation', async () 
 
     assert.match(readme, /Creating a robot creates metadata and persistent directories only/);
     assert.match(readme, /Codex, OpenCode, and Pi packages/);
-    assert.match(readme, /mounts only the selected coding-agent generations read-only/);
+    assert.match(readme, /mounts every coding-agent generation read-only/);
     assert.match(readme, /instead of being baked into the images or declared in RoboTeam's `package\.json`/);
     assert.match(images, /Codex is not baked in/);
     assert.match(images, /does not copy an image or install an executable/);
-    assert.match(images, /manual Desktop or Browser mounts only the robot's selected coding-agent generations/);
+    assert.match(images, /manual Desktop or Browser mounts every coding-agent generation/);
     assert.match(images, /last (?:valid|stamped) generation/i);
 });
 

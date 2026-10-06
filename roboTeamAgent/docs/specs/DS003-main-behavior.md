@@ -31,7 +31,7 @@ The MCP interface consists of `robot_create`, `robot_list`, `robot_delete`, `ope
 
 ### Robot conversations
 
-Administrators select the coding agent available to an existing robot through the Coding agent dialog opened from its card. The main page displays the configured agent; the creation form has no coding-agent selector. New robots enable OpenCode only. The same selection determines managed tools in WebChat, delegated MCP tasks and manual Desktop or terminal use. The dashboard permits one selection while the server retains support for multiple agents. DS004 defines persistence, compatibility and mount behavior.
+Administrators select the coding agent available to an existing robot through the Coding agent dialog opened from its card. The main page displays the configured agent; the creation form has no coding-agent selector. New robots enable OpenCode only. The dialog offers Codex, OpenCode, Pi and Claude Code, in that order. The same selection determines managed tools in WebChat, delegated MCP tasks and manual Desktop or terminal use. The dashboard permits one selection while the server retains support for multiple agents. DS004 defines persistence, compatibility and mount behavior.
 
 RoboTeam must declare the CLI/WebChat entrypoint; Explorer must select `robot=default` and the current directory. Every robot must support concurrent independent CLI conversations with one execution lease per conversation. A Simple task must use the same conversational wrapper and create a separate persisted session. Continuing it must reuse its ALA/native session, pinned backend, cwd and conversation skill policy.
 

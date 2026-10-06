@@ -197,7 +197,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
     return dialog;
 }
 
-const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi' };
+const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi', claude: 'Claude Code' };
 
 export function codingAgentLabel(names) {
     return names.map(name => CODING_AGENT_LABELS[name] || name).join(', ');
@@ -213,6 +213,7 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
                 <label><input type="radio" name="codingAgent" value="codex" required> Codex</label>
                 <label><input type="radio" name="codingAgent" value="opencode"> OpenCode</label>
                 <label><input type="radio" name="codingAgent" value="pi"> Pi</label>
+                <label><input type="radio" name="codingAgent" value="claude"> Claude Code</label>
             </fieldset>
             <p class="coding-agent-status"></p>
             <p class="message" role="status" aria-live="polite"></p>
@@ -221,7 +222,7 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
     dialog.querySelector('h2').textContent = `Coding agent · ${robot.name}`;
     const form = dialog.querySelector('form');
     const close = () => { dialog.close(); dialog.remove(); };
-    const names = robot.codingAgents || ['codex', 'opencode', 'pi'];
+    const names = robot.codingAgents || ['codex', 'opencode', 'pi', 'claude'];
     const busy = robot.run.state !== 'stopped' || ['queued', 'starting', 'running', 'pausing'].includes(robot.run.task?.state);
     for (const field of form.elements) {
         field.disabled = busy;

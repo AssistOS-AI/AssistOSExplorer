@@ -111,7 +111,12 @@ export class REPLSession {
 
     async _activateConversation(session) {
         this.currentConversation = session;
-        this.selectedModel = (await this.engine.getModel?.({ sessionId: session.sessionId }))?.model || null;
+        try { this.selectedModel = (await this.engine.getModel?.({ sessionId: session.sessionId }))?.model || null; }
+        catch (error) {
+            // The conversation cannot run here; say why and keep the REPL open for /session new.
+            this.selectedModel = null;
+            console.error(error.message);
+        }
         this.skillCatalog = this.skillCatalogService.forSession?.(session.sessionId) || this.skillCatalogService;
         if (this.skillCatalog.forSession) await this.reloadSkills();
         return session;

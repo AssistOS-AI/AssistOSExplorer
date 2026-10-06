@@ -49,13 +49,13 @@ test('startup warms every tool and concurrent requests reuse the same installati
     assert.equal(results[1].value, desktop);
     assert.equal(results[2].value, browser);
     assert.deepEqual(installs.sort(), [
-        '@earendil-works/pi-coding-agent@1.2.3', '@openai/codex@1.2.3',
+        '@anthropic-ai/claude-code@1.2.3', '@earendil-works/pi-coding-agent@1.2.3', '@openai/codex@1.2.3',
         '@playwright/mcp@1.2.3', 'opencode-ai@1.2.3', 'supergateway@1.2.3',
     ]);
     await fs.access(path.join(desktop.path, 'computer-use-linux'));
-    for (const name of ['codex', 'opencode', 'pi']) await fs.access(path.join(shell.binPath, name));
+    for (const name of ['codex', 'opencode', 'pi', 'claude']) await fs.access(path.join(shell.binPath, name));
     await cache.warmup();
-    assert.equal(installs.length, 5);
+    assert.equal(installs.length, 6);
 });
 
 test('startup failure leaves other families available and failed preparation can retry', async () => {

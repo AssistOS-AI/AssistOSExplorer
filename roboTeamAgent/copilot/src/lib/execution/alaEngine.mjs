@@ -13,8 +13,9 @@ import { ACHILLES_PRIVATE_DIRECTORY_NAME, resolveAchillesWorkspaceRoot } from '.
 import { createPloinkyTaskContext } from '../ploinky/ploinkyTaskContext.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { webchatTurnLogUrl } from '../webchat/webchatTurnLog.mjs';
+import { codingAgentLabel } from '../webchat/webchatProgressState.mjs';
 
-const BACKENDS = ['codex', 'opencode', 'pi'];
+const BACKENDS = ['codex', 'opencode', 'pi', 'claude'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
 const MAX_OUTPUT = 16 * 1024 * 1024;
 
@@ -57,7 +58,8 @@ function nativeEnvironment(env, home) {
     }
     return { ...result, HOME: home, CODEX_HOME: path.join(home, '.codex'),
         XDG_CONFIG_HOME: path.join(home, '.config'), XDG_DATA_HOME: path.join(home, '.local/share'),
-        XDG_CACHE_HOME: path.join(home, '.cache'), PI_CODING_AGENT_DIR: path.join(home, '.pi/agent') };
+        XDG_CACHE_HOME: path.join(home, '.cache'), PI_CODING_AGENT_DIR: path.join(home, '.pi/agent'),
+        CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
 }
 
 // Returns the backend to resume, or false when the conversation has no native
@@ -125,6 +127,10 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const envSnapshot = nativeEnvironment(env, home);
         const agents = await api.discoverCodingAgents({ env: envSnapshot });
         const isInstalled = (name) => agents.some((entry) => entry.name === name && entry.available);
+        // A native session resumes only on its own agent; the robot may no longer enable it.
+        if (resumeBackend && !isInstalled(resumeBackend)) {
+            throw new Error(`This conversation used ${codingAgentLabel(resumeBackend)}, which is not enabled for this robot. Create a new session.`);
+        }
         // ALA resumes a conversation on its own agent; otherwise it uses the
         // configured agent, then the first available. An explicit task agent or a
         // conversation bound before its first native turn is passed as --ca.
@@ -136,7 +142,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             models[backend] = execution.model;
         }
         if (!backend || !isInstalled(backend)) {
-            throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN or PI_BIN and authenticate it in the dedicated ALA home.`);
+            throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN, PI_BIN or CLAUDE_BIN and authenticate it in the dedicated ALA home.`);
         }
         return { cwd, home, workspaceRoot, session, resume: Boolean(resumeBackend), backend,
             requestedBackend: resumeBackend ? null : requestedBackend, models, efforts, permissionMode, api, agents, env: envSnapshot };
@@ -172,7 +178,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const { cwd, home, backend, api, permissionMode } = config;
             // Pi has no native ask mode. Reject before transcript or native state creation.
             if (backend === 'pi' && permissionMode === 'ask-for-approval') {
-                throw new Error('Pi does not support ask-for-approval; select full-access or use Codex/OpenCode.');
+                throw new Error('Pi does not support ask-for-approval; select full-access or use Codex, OpenCode or Claude Code.');
             }
             const snapshot = await skillCatalog.refresh(sessionId, { execution: true, cwd });
             catalogRelease = snapshot.release;
