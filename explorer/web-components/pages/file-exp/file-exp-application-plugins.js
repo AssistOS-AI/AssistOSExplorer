@@ -378,7 +378,7 @@ function stageApplicationPluginPlaceholders(fileExp) {
     stageSlotMounts(accountMenuContainer, APP_PLUGIN_SLOTS.accountMenu, accountMenuPlugins);
 }
 
-async function mountSlot(container, slot, plugins, context, { onlyKey = '', componentsReady = false, cancelled = () => false, background = false } = {}) {
+export async function mountSlot(container, slot, plugins, context, { onlyKey = '', componentsReady = false, cancelled = () => false, background = false } = {}) {
     if (!container) {
         return;
     }
@@ -391,26 +391,39 @@ async function mountSlot(container, slot, plugins, context, { onlyKey = '', comp
     const showLoadingPlaceholder = loadingClasses.length > 0;
     const stagedMounts = stageSlotMounts(container, slot, plugins, { deferMount: Boolean(onlyKey) });
 
+    const pendingPlugins = [];
+    const queuedKeys = new Set();
     for (const plugin of plugins) {
         const key = getPluginKey(plugin);
         if (onlyKey && key !== onlyKey) continue;
-        let mount = key ? stagedMounts.get(key) : null;
-        if (!key) continue;
+        const mount = key ? stagedMounts.get(key) : null;
+        // A repeated key shares one mount; only its first entry creates the element.
+        if (!key || queuedKeys.has(key)) continue;
 
-        let pluginElement = mount?.querySelector?.(plugin.component) || null;
+        const pluginElement = mount?.querySelector?.(plugin.component) || null;
         if (pluginElement && !pluginElement.hasAttribute('data-app-plugin-loading')) {
             updateMountedPluginElement(pluginElement, plugin, contextWithOrientation);
             continue;
         }
+        queuedKeys.add(key);
+        pendingPlugins.push({ plugin, key, mount, pluginElement });
+    }
 
-        if (!componentsReady) {
-            try {
-                await ensureRuntimeComponent(plugin.component);
-            } catch (error) {
-                console.error(`[app-plugins] Failed to load ${key}:`, error);
-                if (showLoadingPlaceholder) markPluginLoadingFailed(mount, plugin, error);
-                continue;
-            }
+    // Step 1: register every component of the slot together. One failing component fails only its plugin.
+    const registrations = componentsReady
+        ? pendingPlugins.map(() => ({ status: 'fulfilled' }))
+        : await Promise.allSettled(pendingPlugins.map(({ plugin }) => ensureRuntimeComponent(plugin.component)));
+
+    // Step 2: create and append the elements in plugin order so every presenter starts rendering at once.
+    const renderingPlugins = [];
+    for (const [index, entry] of pendingPlugins.entries()) {
+        const { plugin, key } = entry;
+        let { mount, pluginElement } = entry;
+        const registration = registrations[index];
+        if (registration.status === 'rejected') {
+            console.error(`[app-plugins] Failed to load ${key}:`, registration.reason);
+            if (showLoadingPlaceholder) markPluginLoadingFailed(mount, plugin, registration.reason);
+            continue;
         }
 
         if (!mount) {
@@ -439,12 +452,25 @@ async function mountSlot(container, slot, plugins, context, { onlyKey = '', comp
                 mount.appendChild(pluginElement);
             }
         }
+        renderingPlugins.push({
+            plugin,
+            key,
+            mount,
+            pluginElement,
+            ownsLoadingState: pluginElement.hasAttribute('data-app-plugin-loading')
+        });
+    }
+
+    // Step 3: await all renders together, then finalize each plugin in order.
+    const renders = await Promise.allSettled(renderingPlugins.map(async ({ pluginElement, ownsLoadingState }) => {
+        if (ownsLoadingState || background) {
+            await waitForPluginPresenterRender(pluginElement);
+            if (cancelled()) throw new Error('Panel closed');
+        }
+    }));
+    for (const [index, { plugin, key, mount, pluginElement, ownsLoadingState }] of renderingPlugins.entries()) {
         try {
-            const ownsLoadingState = pluginElement.hasAttribute('data-app-plugin-loading');
-            if (ownsLoadingState || background) {
-                await waitForPluginPresenterRender(pluginElement);
-                if (cancelled()) throw new Error('Panel closed');
-            }
+            if (renders[index].status === 'rejected') throw renders[index].reason;
             updateMountedPluginElement(pluginElement, plugin, contextWithOrientation);
             if (ownsLoadingState) {
                 pluginElement.classList.remove(...loadingClasses, 'app-plugin-loading-state', 'is-error');
@@ -641,11 +667,16 @@ async function performRenderApplicationPluginSlots(fileExp) {
     const accountMenuContext = buildPluginContext(fileExp, APP_PLUGIN_SLOTS.accountMenu, filesystemContext);
 
     updateLoadedToolbarPluginContexts(toolbarContainer, visibleToolbarPlugins, toolbarContext);
-    await mountSlot(toolbarPluginsDropdownContainer, APP_PLUGIN_SLOTS.toolbarPluginsDropdown, visibleToolbarDropdownPlugins, toolbarPluginsDropdownContext);
-    await mountSlot(rightBarContainer, APP_PLUGIN_SLOTS.rightBar, rightBarPlugins, rightBarContext);
-    await mountSlot(internalContainer, APP_PLUGIN_SLOTS.internal, internalPlugins, internalContext);
-    await mountSlot(globalContainer, APP_PLUGIN_SLOTS.global, globalPlugins, globalContext);
-    await mountSlot(accountMenuContainer, APP_PLUGIN_SLOTS.accountMenu, accountMenuPlugins, accountMenuContext);
+    // Slots are independent: one slot's failure must not keep another from mounting.
+    const slotResults = await Promise.allSettled([
+        mountSlot(toolbarPluginsDropdownContainer, APP_PLUGIN_SLOTS.toolbarPluginsDropdown, visibleToolbarDropdownPlugins, toolbarPluginsDropdownContext),
+        mountSlot(rightBarContainer, APP_PLUGIN_SLOTS.rightBar, rightBarPlugins, rightBarContext),
+        mountSlot(internalContainer, APP_PLUGIN_SLOTS.internal, internalPlugins, internalContext),
+        mountSlot(globalContainer, APP_PLUGIN_SLOTS.global, globalPlugins, globalContext),
+        mountSlot(accountMenuContainer, APP_PLUGIN_SLOTS.accountMenu, accountMenuPlugins, accountMenuContext)
+    ]);
+    const failedSlot = slotResults.find((result) => result.status === 'rejected');
+    if (failedSlot) throw failedSlot.reason;
 }
 
 export async function renderApplicationPluginSlots(fileExp) {

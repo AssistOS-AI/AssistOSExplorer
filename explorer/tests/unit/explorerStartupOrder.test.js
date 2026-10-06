@@ -5,6 +5,33 @@ import path from 'node:path';
 
 const explorerRoot = path.resolve(import.meta.dirname, '..', '..');
 
+// The source of one named function: from its signature through the matching closing brace.
+function functionSource(source, name) {
+    const start = source.search(new RegExp(`function ${name}\\(`));
+    assert.ok(start >= 0, `missing function ${name}`);
+    let depth = 0;
+    let parens = 0;
+    let bodyStart = -1;
+    for (let index = source.indexOf('(', start); index < source.length; index += 1) {
+        const char = source[index];
+        if (bodyStart < 0) {
+            if (char === '(') parens += 1;
+            if (char === ')') parens -= 1;
+            if (char === '{' && parens === 0) {
+                bodyStart = index;
+                depth = 1;
+            }
+            continue;
+        }
+        if (char === '{') depth += 1;
+        if (char === '}') {
+            depth -= 1;
+            if (depth === 0) return source.slice(start, index + 1);
+        }
+    }
+    assert.fail(`unterminated function ${name}`);
+}
+
 test('file explorer mounts before runtime plugin discovery completes', () => {
     const source = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
     const mountIndex = source.indexOf('await mountInitialApplicationRoute({');
@@ -14,10 +41,22 @@ test('file explorer mounts before runtime plugin discovery completes', () => {
     assert.ok(deferredRuntimeIndex > mountIndex);
     assert.match(source, /const isFileExplorerRoute = !roomEntry && pageName === 'file-exp'/);
     assert.match(source, /const \[explorerManifest, pluginPayload, pluginSettingsResult, authenticatedUser\] = await Promise\.all/);
-    assert.match(source, /RUNTIME_PLUGIN_MOUNT_GRACE_MS = 2500/);
+    // The fixed 2.5 s grace is gone: `ready` follows `discovered` through the idle-scheduled readiness module.
+    assert.doesNotMatch(source, /RUNTIME_PLUGIN_MOUNT_GRACE_MS/);
+    assert.doesNotMatch(source, /\b2500\b/);
+    assert.match(source, /import \{ scheduleRuntimePluginReady \} from '\.\/services\/runtime\/runtimePluginReadiness\.js'/);
     assert.match(source, /label: 'Explorer plugins',\s*operation: loadRuntimeContext/);
     assert.match(source, /detail: \{ phase: 'discovered' \}/);
-    assert.match(source, /detail: \{ phase: 'ready' \}/);
+    assert.match(source, /scheduleRuntimePluginReady\(\(event\) => window\.dispatchEvent\(event\)\)/);
+    assert.ok(
+        source.indexOf('scheduleRuntimePluginReady((event)') > source.indexOf("detail: { phase: 'discovered' }"),
+        'ready is scheduled only after the discovered dispatch'
+    );
+    const readinessSource = fs.readFileSync(path.join(explorerRoot, 'services', 'runtime', 'runtimePluginReadiness.js'), 'utf8');
+    assert.match(readinessSource, /detail: \{ phase: 'ready' \}/);
+    assert.match(readinessSource, /requestIdleCallback\(run, \{ timeout: RUNTIME_PLUGIN_READY_IDLE_TIMEOUT_MS \}\)/);
+    assert.match(readinessSource, /RUNTIME_PLUGIN_READY_IDLE_TIMEOUT_MS = 250/);
+    assert.match(readinessSource, /scheduler\.setTimeout\(run, 0\)/);
     assert.doesNotMatch(source, /runtimePluginLoader\.loadComponents\(/);
 });
 
@@ -107,18 +146,43 @@ test('optional plugin failures do not reject file explorer rendering', () => {
         'utf8'
     );
 
+    const mountSlotSource = functionSource(hostSource, 'mountSlot');
+    const stageSource = functionSource(hostSource, 'stageSlotMounts');
+    const loadingClassesSource = functionSource(hostSource, 'getPluginLoadingClasses');
+    const waitSource = functionSource(hostSource, 'waitForPluginPresenterRender');
+
     assert.match(hostSource, /stageSlotMounts\(container, slot, plugins, \{ deferMount: Boolean\(onlyKey\) \}\)/);
     assert.match(hostSource, /event\?\.detail\?\.phase === 'discovered'/);
-    assert.match(hostSource, /for \(const plugin of plugins\)/);
-    assert.match(hostSource, /pluginElement\.setAttribute\('data-app-plugin-loading'/);
-    assert.match(hostSource, /container\?\.classList\?\.contains\('app-plugin-account-slot'\)/);
-    assert.match(hostSource, /container\?\.classList\?\.contains\('app-plugin-bar'\)/);
-    assert.match(hostSource, /pluginElement\.classList\.add\(\.\.\.loadingClasses, 'app-plugin-loading-state'\)/);
-    assert.match(hostSource, /if \(!mount && showLoadingPlaceholder\) mount = createPluginMount\(key, slot\)/);
-    assert.match(hostSource, /if \(!mount\) \{\s*mount = createPluginMount\(key, slot\)/);
-    assert.match(hostSource, /await pluginElement\.presenterReadyPromise/);
-    assert.match(hostSource, /await pluginElement\.renderCompletePromise/);
-    assert.match(hostSource, /orderSlotMounts\(container, plugins, stagedMounts\)/);
+    // Old pin `for (const plugin of plugins)`: plugin order is still walked, and the three mount steps are explicit.
+    assert.match(stageSource, /for \(const plugin of plugins\)/);
+    assert.match(mountSlotSource, /for \(const plugin of plugins\)/);
+    const registerStep = mountSlotSource.indexOf('await Promise.allSettled(pendingPlugins.map(({ plugin }) => ensureRuntimeComponent(plugin.component)))');
+    const appendStep = mountSlotSource.indexOf('for (const [index, entry] of pendingPlugins.entries())');
+    const renderStep = mountSlotSource.indexOf('await Promise.allSettled(renderingPlugins.map(');
+    const finalizeStep = mountSlotSource.indexOf('for (const [index, { plugin, key, mount, pluginElement, ownsLoadingState }] of renderingPlugins.entries())');
+    assert.ok(registerStep > 0 && registerStep < appendStep && appendStep < renderStep && renderStep < finalizeStep, 'mountSlot registers, appends, renders, then finalizes');
+    assert.doesNotMatch(mountSlotSource, /await ensureRuntimeComponent\(/, 'registration is never awaited one plugin at a time');
+    // Old pins :113-:116, scoped to the functions that own them.
+    assert.match(stageSource, /pluginElement\.setAttribute\('data-app-plugin-loading'/);
+    assert.match(mountSlotSource, /pluginElement\.setAttribute\('data-app-plugin-loading'/);
+    assert.match(loadingClassesSource, /container\?\.classList\?\.contains\('app-plugin-account-slot'\)/);
+    assert.match(loadingClassesSource, /container\?\.classList\?\.contains\('app-plugin-bar'\)/);
+    assert.match(stageSource, /pluginElement\.classList\.add\(\.\.\.loadingClasses, 'app-plugin-loading-state'\)/);
+    assert.match(mountSlotSource, /pluginElement\.classList\.add\(\.\.\.loadingClasses, 'app-plugin-loading-state'\)/);
+    // Old pins :117-:118: both createPluginMount paths.
+    assert.match(stageSource, /if \(!mount && showLoadingPlaceholder\) mount = createPluginMount\(key, slot\)/);
+    assert.match(mountSlotSource, /if \(!mount\) \{\s*mount = createPluginMount\(key, slot\)/);
+    // Old pins :119-:120: the render waits. mountSlot waits through the shared helper, which owns both awaits.
+    assert.match(mountSlotSource, /await waitForPluginPresenterRender\(pluginElement\)/);
+    assert.match(waitSource, /await pluginElement\.presenterReadyPromise/);
+    assert.match(waitSource, /await pluginElement\.renderCompletePromise/);
+    // Old pin :121: mounts are ordered after staging, and again after all plugins finalized.
+    assert.match(stageSource, /orderSlotMounts\(container, plugins, stagedMounts\)/);
+    assert.ok(
+        mountSlotSource.lastIndexOf('orderSlotMounts(container, plugins, stagedMounts)') > finalizeStep,
+        'mountSlot orders its mounts after every plugin is finalized'
+    );
+    assert.match(hostSource, /const slotResults = await Promise\.allSettled\(\[/);
     assert.match(hostSource, /createLazyPluginButton\(plugin, key\)/);
     assert.match(hostSource, /data-app-plugin-trigger/);
     assert.match(hostSource, /loadToolbarPluginOnDemand\(fileExp, trigger\)/);

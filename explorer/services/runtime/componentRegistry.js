@@ -22,6 +22,10 @@ export function createComponentRegistry(webSkel) {
     }
 
     const componentCache = new Map();
+    // Loads that are still running, keyed like componentCache. Overlapping callers share one load, so a
+    // component is fetched, imported and registered once. A rejected load leaves no entry, and the next call
+    // starts over with a fresh runtimeImport URL.
+    const pendingLoads = new Map();
 
     const getCacheKey = (meta) => {
         const agent = meta?.agent;
@@ -98,14 +102,7 @@ export function createComponentRegistry(webSkel) {
         }, assetRetryOptions);
     };
 
-    const loadComponent = async (meta) => {
-        const cacheKey = getCacheKey(meta);
-        if (!cacheKey) {
-            return null;
-        }
-        if (componentCache.has(cacheKey)) {
-            return componentCache.get(cacheKey);
-        }
+    const loadUncachedComponent = async (meta, cacheKey) => {
         const registeredHostComponent = getRegisteredHostComponent(meta);
         if (registeredHostComponent) {
             componentCache.set(cacheKey, registeredHostComponent);
@@ -164,6 +161,24 @@ export function createComponentRegistry(webSkel) {
 
         componentCache.set(cacheKey, component);
         return component;
+    };
+
+    const loadComponent = async (meta) => {
+        const cacheKey = getCacheKey(meta);
+        if (!cacheKey) {
+            return null;
+        }
+        if (componentCache.has(cacheKey)) {
+            return componentCache.get(cacheKey);
+        }
+        let pending = pendingLoads.get(cacheKey);
+        if (!pending) {
+            pending = loadUncachedComponent(meta, cacheKey).finally(() => {
+                pendingLoads.delete(cacheKey);
+            });
+            pendingLoads.set(cacheKey, pending);
+        }
+        return pending;
     };
 
     return {
