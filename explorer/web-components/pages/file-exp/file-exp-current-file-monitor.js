@@ -21,13 +21,15 @@ export function stopCurrentFileViewWatch(fileExp) {
     fileExp.currentFileViewWatchInFlight = false;
 }
 
-export async function refreshCurrentFileViewBaseline(fileExp, pathValue = fileExp?.state?.selectedPath) {
+// `infoPromise` is a version info request for the same path that was started before the file content was read;
+// using it keeps the baseline from being newer than the content.
+export async function refreshCurrentFileViewBaseline(fileExp, pathValue = fileExp?.state?.selectedPath, infoPromise = null) {
     if (!canMonitorCurrentFileView(fileExp, pathValue)) {
         stopCurrentFileViewWatch(fileExp);
         return null;
     }
     try {
-        const info = await fileExp.refreshSelectedFileVersionInfo(pathValue);
+        const info = await (infoPromise || fileExp.refreshSelectedFileVersionInfo(pathValue));
         if (!info || fileExp?.normalizePath?.(fileExp.state.selectedPath || '') !== fileExp?.normalizePath?.(pathValue || '')) {
             return null;
         }

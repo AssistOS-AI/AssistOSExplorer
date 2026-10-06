@@ -1,4 +1,5 @@
 import { callExplorerTool, ensureSuccess, parseToolResult } from "../../../services/infrastructure/explorerApi.js";
+import { requestDirectoryListing, take as takePrefetchedListing } from "../../../services/runtime/initialListingPrefetch.js";
 
 export function createFileExpTooling() {
     const callTextTool = (name, args) => callExplorerTool(name, args);
@@ -8,17 +9,18 @@ export function createFileExpTooling() {
             const text = await callTextTool('read_text_file', { path });
             return { text };
         },
-        async listDirectoryDetailed(path) {
-            const raw = await callExplorerTool('list_directory_detailed', { path }, { raw: true, withLoader: false });
-            ensureSuccess(raw);
-            const parsed = parseToolResult(raw);
-            if (typeof parsed === 'string') {
-                return { text: parsed };
+        // `usePrefetch` lets the first load of a path use the listing requested while the file browser was
+        // loading. The caller sets it only after its own cache and in-flight checks, and never for a refresh.
+        async listDirectoryDetailed(path, { usePrefetch = false } = {}) {
+            const prefetched = usePrefetch ? takePrefetchedListing(path) : null;
+            if (prefetched) {
+                try {
+                    return await prefetched;
+                } catch (_) {
+                    // A failed prefetch is not an answer: ask again.
+                }
             }
-            if (!Array.isArray(parsed)) {
-                throw new Error('Invalid directory listing payload.');
-            }
-            return { text: JSON.stringify(parsed ?? []) };
+            return requestDirectoryListing(path);
         },
         async getFileInfo(path) {
             const raw = await callExplorerTool('get_file_info', { path }, { raw: true, withLoader: false });

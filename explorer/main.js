@@ -3,11 +3,17 @@ import assistosSDK, { initialiseAssistOS } from './services/assistosSDK.js';
 import { createComponentRegistry } from './services/runtime/componentRegistry.js';
 import { createRuntimePluginLoader } from './services/runtime/runtimePluginLoader.js';
 import { installExplorerResourceLoader } from './services/runtime/explorerResourceLoader.js';
+import { scheduleRuntimePluginReady } from './services/runtime/runtimePluginReadiness.js';
+import {
+    resolveInitialListingPaths,
+    start as startInitialListingPrefetch
+} from './services/runtime/initialListingPrefetch.js';
 import { installDetachedRenderGuard, installPageChangeGuard } from './services/runtime/pageChangeGuards.js';
 import { filterRuntimePluginsByPolicy, forEachRuntimePluginEntry } from './utils/pluginUtils.core.js';
 import { initializeTheme } from './shared/ui/theme.js';
 import { openExpandedModal, restoreExpandedModal } from './shared/ui/expanded-modal.js';
 import { installExpandedModalLoading } from './shared/ui/expanded-modal-loading.js';
+import { createExpandedModalPreload } from './shared/ui/expanded-modal-preload.js';
 import { fetchAuthenticatedUser } from './services/infrastructure/authApi.js';
 import { isAdminUser } from './services/auth/adminUser.js';
 import {
@@ -35,7 +41,6 @@ const EXPLORER_AGENT_ID = 'explorer';
 const RUNTIME_PLUGIN_TOOL = 'collect_ide_plugins';
 const ROOM_ID_PATTERN = /^room_[0-9a-fA-F-]{36}$/;
 const RUNTIME_PLUGINS_UPDATED_EVENT = 'assistos:runtime-plugins-updated';
-const RUNTIME_PLUGIN_MOUNT_GRACE_MS = 2500;
 
 function resolveRuntimeWaitRoute(hashValue) {
     try {
@@ -217,6 +222,35 @@ async function loadExplorerManifest() {
     }
 }
 
+// Work that the first paint needs and that depends on nothing but WebSkel: it runs while the workspace root
+// request is still in flight, so the module graph and the first listing are not fetched one step at a time.
+function startBootOverlap(webSkel, { initialHashedRoute, roomEntry }) {
+    // The shared shell is ready before toolbar interaction; plugin content stays lazy. It loads without blocking,
+    // and openExpandedModal waits for it before the first panel opens.
+    // A failed preload is not remembered: the next panel launch loads the shell again.
+    webSkel.ensureExpandedModalReady = createExpandedModalPreload(webSkel);
+    webSkel.ensureExpandedModalReady().catch((error) => {
+        console.error('[explorer] Failed to preload the expanded modal shell:', error);
+    });
+
+    // The route is read again once the page root is set; a different final route only wastes these requests.
+    const expectedRoute = resolveBootRoute({
+        capturedRoute: initialHashedRoute,
+        currentHash: window.location.hash,
+        roomEntry,
+        isWebSkelComponent: (name) => Boolean(webSkel.configs?.components?.some((component) => component.name === name))
+    });
+    if (roomEntry || expectedRoute.pageName !== 'file-exp') {
+        return;
+    }
+    startInitialListingPrefetch(resolveInitialListingPaths(window.location.hash));
+    const fileExpConfig = webSkel.configs.components.find((component) => component.name === 'file-exp');
+    if (fileExpConfig) {
+        // The route mount reports a failed load; this early start only has to avoid an unhandled rejection.
+        webSkel.ResourceManager.loadComponent(fileExpConfig).catch(() => {});
+    }
+}
+
 async function start() {
     initializeTheme();
     const initialHashedRoute = resolveInitialHashedRoute(window.location.hash);
@@ -237,6 +271,7 @@ async function start() {
     installExplorerResourceLoader(webSkel);
     installDetachedRenderGuard(webSkel);
     webSkel.appServices = assistosSDK;
+    startBootOverlap(webSkel, { initialHashedRoute, roomEntry });
     await workspaceRootPromise;
 
     const componentRegistry = createComponentRegistry(webSkel);
@@ -456,9 +491,6 @@ async function start() {
 
     installRuntimeComponentGuards();
     installExpandedModalLoading(webSkel);
-    // The shared shell is ready before toolbar interaction; plugin content stays lazy.
-    const expandedModalConfig = webSkel.configs.components.find(component => component.name === 'expanded-modal');
-    await webSkel.ResourceManager.loadComponent(expandedModalConfig);
 
     if (typeof window !== 'undefined') {
         window.UI = webSkel;
@@ -529,11 +561,7 @@ async function start() {
                     window.dispatchEvent(new CustomEvent(RUNTIME_PLUGINS_UPDATED_EVENT, {
                         detail: { phase: 'discovered' }
                     }));
-                    window.setTimeout(() => {
-                        window.dispatchEvent(new CustomEvent(RUNTIME_PLUGINS_UPDATED_EVENT, {
-                            detail: { phase: 'ready' }
-                        }));
-                    }, RUNTIME_PLUGIN_MOUNT_GRACE_MS);
+                    scheduleRuntimePluginReady((event) => window.dispatchEvent(event));
                 })
                 .catch((error) => {
                     console.error('[runtime-plugins] Failed to initialize plugins after Explorer mount:', error);

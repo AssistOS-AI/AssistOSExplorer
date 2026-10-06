@@ -676,6 +676,17 @@ export class FileExpEntries {
                 ancestors.unshift(parent);
                 parent = parent.slice(0, parent.lastIndexOf('/')) || '/';
             }
+            // Request every ancestor listing at once; the serial reveal below then finds each one cached or
+            // shares the request still in flight. Each reveal keeps its own generation checks. A filtered tree
+            // lists through filterEntriesForSpecs, so it is left to the serial path. loadDirectoryContent reports
+            // its own failures and does not reject.
+            if (!host.state?.filterSpecs && ancestors.length > 1) {
+                for (const ancestor of ancestors) {
+                    if (!treeViewState.childrenCache.has(ancestor)) {
+                        void Promise.resolve(host.loadDirectoryContent(ancestor)).catch(() => {});
+                    }
+                }
+            }
             for (const ancestor of ancestors) {
                 await this.revealTreeDirectory(ancestor, { preserveExisting: true, skipAncestors: true });
             }

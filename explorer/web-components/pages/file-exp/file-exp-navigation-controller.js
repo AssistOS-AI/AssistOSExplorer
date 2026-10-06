@@ -68,6 +68,12 @@ export async function loadStateFromURL(fileExp) {
         const entryName = path.substring(parentDir.length).replace(/^\//, '');
 
         try {
+            // In tree mode the workspace root listing is needed whatever the target is, so it is requested together
+            // with the parent listing. loadDirectoryContent caches and shares in-flight requests, and it does not
+            // reject, so the later loadTreeContext call reuses this one.
+            if (fileExp.state.directoryViewMode === 'tree' && parentDir !== '/') {
+                void Promise.resolve(fileExp.loadDirectoryContent('/')).catch(() => {});
+            }
             const parentEntries = await fileExp.loadDirectoryContent(parentDir);
             if (parentEntries === null) {
                 await fileExp.loadDirectory('/');
@@ -99,12 +105,15 @@ export async function loadStateFromURL(fileExp) {
                 fileExp.state.selectedPath = path;
                 fileExp.state.isEditing = false;
                 await fileExp.setEntries(parentEntries);
-                await fileExp.openFile(path);
+                const opened = await fileExp.openFile(path);
                 const newUrl = buildFileExpHash(path);
                 if (fileExp.element?.isConnected !== false && window.location.hash !== newUrl) {
                     history.pushState(null, '', newUrl);
                 }
-                fileExp.invalidate();
+                // A successful openFile already invalidated; only a failed one leaves the view to refresh here.
+                if (!opened) {
+                    fileExp.invalidate();
+                }
                 return;
             }
 
