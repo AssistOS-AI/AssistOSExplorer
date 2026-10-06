@@ -146,7 +146,8 @@ export async function openFile(fileExp, filePath, {
     invalidate = true,
     requestTimeoutMs = null,
     suppressReadErrorStatus = false,
-    preserveSaveStatus = false
+    preserveSaveStatus = false,
+    onFileInfoRequested = null
 }) {
     const effectiveTimeoutMs = resolveFileReadTimeoutMs(requestTimeoutMs);
     const run = async () => {
@@ -263,6 +264,16 @@ export async function openFile(fileExp, filePath, {
                     }
                 );
             };
+
+            // The version info is requested first and the content right after it, without waiting in between.
+            // The baseline taken from this info is then never newer than the content, so a change that lands
+            // between the two requests is detected as a reload instead of being missed.
+            if (typeof onFileInfoRequested === 'function' && typeof fileExp.refreshSelectedFileVersionInfo === 'function') {
+                const fileInfoPromise = fileExp.refreshSelectedFileVersionInfo(filePath);
+                // The baseline consumer reports a failure; a read that fails first must not leave it unhandled.
+                fileInfoPromise.catch(() => {});
+                onFileInfoRequested(fileInfoPromise);
+            }
 
             let contentResult;
             let truncated = false;
