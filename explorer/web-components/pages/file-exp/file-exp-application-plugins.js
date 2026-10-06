@@ -461,16 +461,14 @@ export async function mountSlot(container, slot, plugins, context, { onlyKey = '
         });
     }
 
-    // Step 3: await all renders together, then finalize each plugin in order.
-    const renders = await Promise.allSettled(renderingPlugins.map(async ({ pluginElement, ownsLoadingState }) => {
-        if (ownsLoadingState || background) {
-            await waitForPluginPresenterRender(pluginElement);
-            if (cancelled()) throw new Error('Panel closed');
-        }
-    }));
-    for (const [index, { plugin, key, mount, pluginElement, ownsLoadingState }] of renderingPlugins.entries()) {
+    // Step 3: each plugin is finalized as soon as its own render settles, so a slow plugin never holds back
+    // its siblings. The mounts are put in plugin order once every plugin has settled.
+    const finalized = await Promise.allSettled(renderingPlugins.map(async ({ plugin, key, mount, pluginElement, ownsLoadingState }) => {
         try {
-            if (renders[index].status === 'rejected') throw renders[index].reason;
+            if (ownsLoadingState || background) {
+                await waitForPluginPresenterRender(pluginElement);
+                if (cancelled()) throw new Error('Panel closed');
+            }
             updateMountedPluginElement(pluginElement, plugin, contextWithOrientation);
             if (ownsLoadingState) {
                 pluginElement.classList.remove(...loadingClasses, 'app-plugin-loading-state', 'is-error');
@@ -497,7 +495,9 @@ export async function mountSlot(container, slot, plugins, context, { onlyKey = '
             markPluginLoadingFailed(mount, plugin, error);
             console.error(`[app-plugins] Failed to render ${key}:`, error);
         }
-    }
+    }));
+    const abandoned = finalized.find((result) => result.status === 'rejected');
+    if (abandoned) throw abandoned.reason;
 
     orderSlotMounts(container, plugins, stagedMounts);
 }

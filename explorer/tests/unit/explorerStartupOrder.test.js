@@ -159,8 +159,14 @@ test('optional plugin failures do not reject file explorer rendering', () => {
     const registerStep = mountSlotSource.indexOf('await Promise.allSettled(pendingPlugins.map(({ plugin }) => ensureRuntimeComponent(plugin.component)))');
     const appendStep = mountSlotSource.indexOf('for (const [index, entry] of pendingPlugins.entries())');
     const renderStep = mountSlotSource.indexOf('await Promise.allSettled(renderingPlugins.map(');
-    const finalizeStep = mountSlotSource.indexOf('for (const [index, { plugin, key, mount, pluginElement, ownsLoadingState }] of renderingPlugins.entries())');
-    assert.ok(registerStep > 0 && registerStep < appendStep && appendStep < renderStep && renderStep < finalizeStep, 'mountSlot registers, appends, renders, then finalizes');
+    const finalizeStep = mountSlotSource.indexOf('const abandoned = finalized.find(');
+    assert.ok(registerStep > 0 && registerStep < appendStep && appendStep < renderStep && renderStep < finalizeStep, 'mountSlot registers, appends, renders and finalizes, then orders');
+    // Each plugin is finalized inside its own render chain: the wait, the loading-state cleanup and the failure
+    // state all sit in the per-plugin callback, not in a loop that starts after every render has settled.
+    const chain = mountSlotSource.slice(renderStep, finalizeStep);
+    assert.ok(chain.indexOf('await waitForPluginPresenterRender(pluginElement)') > 0
+        && chain.indexOf("removeAttribute('data-app-plugin-loading')") > chain.indexOf('await waitForPluginPresenterRender(pluginElement)')
+        && chain.indexOf('markPluginLoadingFailed(mount, plugin, error)') > chain.indexOf("removeAttribute('data-app-plugin-loading')"));
     assert.doesNotMatch(mountSlotSource, /await ensureRuntimeComponent\(/, 'registration is never awaited one plugin at a time');
     // Old pins :113-:116, scoped to the functions that own them.
     assert.match(stageSource, /pluginElement\.setAttribute\('data-app-plugin-loading'/);

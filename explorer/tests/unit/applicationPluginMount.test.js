@@ -307,3 +307,29 @@ test('T2: slots mount concurrently, so one slow slot does not delay another', as
         harness.restore();
     }
 });
+
+test('T2: a finished plugin is finalized while a slower sibling is still rendering', async () => {
+    const harness = createHarness({
+        plugins: { 'file-exp:right-bar': [plugin('a', 'plugin-a', 1), plugin('b', 'plugin-b', 2)] }
+    });
+    try {
+        harness.gate('register', 'plugin-a').resolve();
+        harness.gate('register', 'plugin-b').resolve();
+        const rendering = renderApplicationPluginSlots(harness.fileExp);
+        await tick();
+        harness.gate('render', 'plugin-a').resolve();
+        await tick();
+
+        const [mountA, mountB] = harness.barContainer.querySelectorAll('[data-app-plugin-key]');
+        assert.equal(mountA.querySelector('plugin-a').hasAttribute('data-app-plugin-loading'), false,
+            'A is finalized while B is pending');
+        assert.equal(mountB.querySelector('plugin-b').hasAttribute('data-app-plugin-loading'), true, 'B still loading');
+
+        harness.gate('render', 'plugin-b').resolve();
+        await rendering;
+        assert.equal(mountB.querySelector('plugin-b').hasAttribute('data-app-plugin-loading'), false);
+        assert.deepEqual(keysIn(harness.barContainer), ['agent/a', 'agent/b']);
+    } finally {
+        harness.restore();
+    }
+});
