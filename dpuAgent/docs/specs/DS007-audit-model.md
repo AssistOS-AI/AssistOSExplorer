@@ -15,7 +15,7 @@ This specification defines the active contract for dpuAgent.
 
 ### Summary
 
-DPU maintains an always-enabled append-only audit for security operations, file access, Explorer actions, and plugin usage. It never records AI, LLM, or Copilot prompts or responses. Daily files are retained for 90 days by default; deployments may set `DPU_AUDIT_RETENTION_DAYS` to another positive number of days.
+DPU maintains an always-enabled append-only audit for security operations, file access, Explorer actions, and plugin usage. It never records AI, LLM, or Copilot prompts or responses. Daily files are retained for 90 days by default; deployments may set `DPU_AUDIT_RETENTION_DAYS` to another positive number of days. Retention runs at most once per UTC day per data root across processes: after a successful prune DPU records the day in `<auditRoot>/.retention-day`, written through a uniquely named temporary file. The marker is best-effort. An unreadable or corrupt marker counts as absent, and a marker read or write error is logged and never fails an audit append. A marker only defers pruning, so lowering `DPU_AUDIT_RETENTION_DAYS` takes effect on the next UTC day.
 
 ### Architecture
 

@@ -27,6 +27,7 @@ const SECRET_MAP_FILE_PREFIX = 'DPUSECS1';
 const CONFIDENTIAL_CONTEXT = 'dpu:confidential:';
 const SECRET_MAP_CONTEXT = 'dpu:secret-map:';
 const DEFAULT_AUDIT_RETENTION_DAYS = 90;
+const AUDIT_RETENTION_MARKER_FILENAME = '.retention-day';
 const auditRetentionChecks = new Map();
 const DPU_RECORD_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 
@@ -321,10 +322,39 @@ function auditRetentionDays() {
   return Number.isFinite(configured) && configured > 0 ? Math.min(configured, 3650) : DEFAULT_AUDIT_RETENTION_DAYS;
 }
 
+// The retention marker lets separate processes (each Ploinky call may spawn a fresh
+// one) share the once-per-day retention check. Marker I/O is best-effort: an
+// unreadable or corrupt marker counts as absent, and no marker error may fail an
+// audit append.
+async function readAuditRetentionMarker(auditRoot) {
+  try {
+    return (await fs.readFile(path.join(auditRoot, AUDIT_RETENTION_MARKER_FILENAME), 'utf8')).trim();
+  } catch {
+    return '';
+  }
+}
+
+async function writeAuditRetentionMarker(auditRoot, dayKey) {
+  const markerPath = path.join(auditRoot, AUDIT_RETENTION_MARKER_FILENAME);
+  const tempPath = `${markerPath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await fs.mkdir(auditRoot, { recursive: true });
+    await fs.writeFile(tempPath, `${dayKey}\n`, 'utf8');
+    await fs.rename(tempPath, markerPath);
+  } catch (error) {
+    await fs.unlink(tempPath).catch(() => {});
+    console.warn(`[dpu] Could not persist the audit retention marker (${error?.code || 'error'}); retention will re-run on the next process.`);
+  }
+}
+
 export async function pruneExpiredAuditFiles(now = new Date()) {
   const auditRoot = getAuditRoot();
   const dayKey = now.toISOString().slice(0, 10);
   if (auditRetentionChecks.get(auditRoot) === dayKey) return;
+  if (await readAuditRetentionMarker(auditRoot) === dayKey) {
+    auditRetentionChecks.set(auditRoot, dayKey);
+    return;
+  }
   const cutoff = new Date(now.getTime() - auditRetentionDays() * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const files = await listAuditFiles();
   await Promise.all(files.map(async (fileName) => {
@@ -332,6 +362,7 @@ export async function pruneExpiredAuditFiles(now = new Date()) {
     if (match && match[1] < cutoff) await fs.unlink(getAuditFilePath(fileName)).catch(() => {});
   }));
   auditRetentionChecks.set(auditRoot, dayKey);
+  await writeAuditRetentionMarker(auditRoot, dayKey);
 }
 
 export async function appendAuditLine(fileName, line) {
