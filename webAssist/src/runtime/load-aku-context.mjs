@@ -1,4 +1,4 @@
-import { AgenticKnowledgeUnits } from 'achillesAgentLib';
+import { AgenticKnowledgeUnits } from 'achillesAgentLib/AgenticKnowledgeUnits';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { resolveSiteDataDir } from './akuStore.mjs';
