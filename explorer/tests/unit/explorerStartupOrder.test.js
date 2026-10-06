@@ -193,3 +193,24 @@ test('optional plugin failures do not reject file explorer rendering', () => {
     assert.match(layoutSource, /renderApplicationPluginSlots\(fileExp\)\.catch/);
     assert.doesNotMatch(layoutSource, /await renderApplicationPluginSlots\(fileExp\)/);
 });
+
+test('file explorer boot overlaps the shell, component and listing loads with the workspace root request', () => {
+    const source = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
+    const overlap = functionSource(source, 'startBootOverlap');
+    const start = functionSource(source, 'start');
+
+    // The expanded modal shell loads without blocking boot; openExpandedModal waits on the stored promise.
+    assert.match(overlap, /webSkel\.expandedModalReady = webSkel\.ResourceManager\.loadComponent\(expandedModalConfig\)/);
+    assert.doesNotMatch(source, /await webSkel\.ResourceManager\.loadComponent\(expandedModalConfig\)/);
+    // The listing prefetch and the file-exp component load are file-exp-route only and never run for room entries.
+    assert.match(overlap, /if \(roomEntry \|\| expectedRoute\.pageName !== 'file-exp'\) \{\s*return;/);
+    const guard = overlap.indexOf("expectedRoute.pageName !== 'file-exp'");
+    assert.ok(overlap.indexOf('startInitialListingPrefetch(resolveInitialListingPaths(window.location.hash))') > guard);
+    assert.ok(overlap.indexOf('webSkel.ResourceManager.loadComponent(fileExpConfig)') > guard);
+    // All of it starts after the resource loader and appServices exist and before the workspace root is awaited.
+    const installed = start.indexOf('installExplorerResourceLoader(webSkel);');
+    const appServices = start.indexOf('webSkel.appServices = assistosSDK;');
+    const overlapCall = start.indexOf('startBootOverlap(webSkel, { initialHashedRoute, roomEntry });');
+    const rootAwait = start.indexOf('await workspaceRootPromise;');
+    assert.ok(installed > 0 && installed < appServices && appServices < overlapCall && overlapCall < rootAwait);
+});

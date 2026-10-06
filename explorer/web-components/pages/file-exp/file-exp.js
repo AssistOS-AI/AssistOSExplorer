@@ -866,7 +866,11 @@ export class FileExp {
                 return await globalInflight.get(inflightKey);
             }
             const request = (async () => {
-            const result = await this.tooling.listDirectoryDetailed(normalizedPath);
+            // The listing prefetched during boot answers only a first, uncached load of a path that no mutation
+            // has invalidated since; a refresh (skipCache) or a newer generation always asks the server.
+            const result = await this.tooling.listDirectoryDetailed(normalizedPath, {
+                usePrefetch: !skipCache && cacheGeneration === 0
+            });
             const entries = parseDetailedDirectoryListing(result.text);
             let resolved = entries.map(entry => ({
                 ...entry,
