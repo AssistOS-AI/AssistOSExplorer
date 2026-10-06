@@ -46,7 +46,8 @@
       "env": [
         "ROBOTEAM_CODEX_VERSION",
         "ROBOTEAM_OPENCODE_VERSION",
-        "ROBOTEAM_PI_VERSION"
+        "ROBOTEAM_PI_VERSION",
+        "ROBOTEAM_CLAUDE_VERSION"
       ]
     }
   },
