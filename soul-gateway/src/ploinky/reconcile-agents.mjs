@@ -381,6 +381,7 @@ export async function reconcilePloinkyAgentRecords({
         async ({ agent, providerResult }) => {
             try {
                 return {
+                    ok: true,
                     value: await discoverAgentModels({
                         appCtx,
                         provider: providerResult.row,
@@ -388,7 +389,7 @@ export async function reconcilePloinkyAgentRecords({
                     }),
                 };
             } catch (err) {
-                return { error: err };
+                return { ok: false, error: err };
             }
         }
     );
@@ -398,7 +399,7 @@ export async function reconcilePloinkyAgentRecords({
         const { agent, providerResult } = entries[index];
         const outcome = outcomes[index];
         try {
-            if (outcome.error) {
+            if (!outcome.ok) {
                 throw outcome.error;
             }
             const modelSync = await applyAgentModels({
@@ -441,7 +442,7 @@ export async function reconcilePloinkyAgentRecords({
             log?.warn?.('ploinky agent model sync failed', {
                 subjectId: agent.subjectId,
                 routeKey: agent.routeKey,
-                error: err.message,
+                error: err?.message,
             });
             const fallbackResult = await upsertFallbackModel({
                 pool,

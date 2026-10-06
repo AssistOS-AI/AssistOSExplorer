@@ -905,30 +905,37 @@ describe('reconcilePloinkyAgentRecords (bounded model discovery)', () => {
         };
     }
 
-    it('discovers 15 agents with at most 4 in flight and finishes in a bounded wall time', async () => {
+    it('discovers 15 agents with at most 4 in flight', async () => {
         let inFlight = 0;
         let maxInFlight = 0;
-        const started = Date.now();
+        const discovered = [];
+        const applied = [];
+        const agents = manyAgents(15);
 
         await rawReconcilePloinkyAgentRecords({
             appCtx: makeAppCtx(),
-            discovery: { complete: true, agents: manyAgents(15) },
+            discovery: { complete: true, agents },
             daos: fakeDaos(),
             refresh: spyRefresh(),
-            discoverAgentModels: async () => {
+            discoverAgentModels: async ({ agent: a }) => {
                 inFlight += 1;
                 maxInFlight = Math.max(maxInFlight, inFlight);
                 await sleep(100);
                 inFlight -= 1;
+                discovered.push(a.subjectId);
                 return [];
             },
-            applyAgentModels: async () => null,
+            applyAgentModels: async ({ agent: a }) => {
+                applied.push(a.subjectId);
+                return null;
+            },
         });
 
-        const elapsed = Date.now() - started;
+        // 15 agents with 4 lanes saturate the limit; sequential would give 1.
         assert.equal(maxInFlight, 4);
-        // 15 agents / 4 lanes = 4 rounds of ~100 ms; sequential would be 1500 ms.
-        assert.ok(elapsed < 600, `elapsed ${elapsed} ms should be < 600 ms`);
+        const ids = agents.map((a) => a.subjectId);
+        assert.deepEqual([...discovered].sort(), [...ids].sort());
+        assert.deepEqual(applied, ids);
     });
 
     it('applies model writes sequentially in the original agent order', async () => {
@@ -994,6 +1001,33 @@ describe('reconcilePloinkyAgentRecords (bounded model discovery)', () => {
         assert.ok(fallback);
         assert.equal(fallback.metadata.modelSyncFallback, true);
         assert.equal(await daos.modelsDao.findByKey(null, 'demo/a1/default'), null);
+    });
+
+    it('treats a discovery rejected with undefined as a failure and writes the fallback model', async () => {
+        const daos = fakeDaos();
+        const summary = await rawReconcilePloinkyAgentRecords({
+            appCtx: makeAppCtx(),
+            discovery: { complete: true, agents: manyAgents(2) },
+            daos,
+            refresh: spyRefresh(),
+            discoverAgentModels: async ({ agent: a }) => {
+                if (a.agent === 'a1') {
+                    return Promise.reject(undefined);
+                }
+                return [];
+            },
+            applyAgentModels: async () => ({
+                discovered: 0,
+                created: 0,
+                updated: 0,
+                disabled: 0,
+            }),
+        });
+
+        assert.equal(summary.modelSyncFailed, 1);
+        const fallback = await daos.modelsDao.findByKey(null, 'demo/a1/default');
+        assert.ok(fallback);
+        assert.equal(fallback.metadata.modelSyncFallback, true);
     });
 
     it('still disables stale discovered rows on a complete discovery with parallel discovery', async () => {

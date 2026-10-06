@@ -96,13 +96,19 @@ describe('runPloinkyReconcileOnce', () => {
 });
 
 describe('startPloinkyDiscoveryTimer', () => {
-    it('skips a tick that fires while the previous reconcile is still running', async () => {
+    it('skips a tick that fires while the previous reconcile is still running', async (t) => {
+        t.mock.timers.enable({ apis: ['setInterval', 'Date'] });
         const appCtx = { config: {}, log: makeLog() };
         let reconcileCalls = 0;
         let releaseFirst;
         const firstDone = new Promise((resolve) => {
             releaseFirst = resolve;
         });
+        const flush = async () => {
+            for (let i = 0; i < 20; i += 1) {
+                await Promise.resolve();
+            }
+        };
 
         await withSchedulerMocks(
             {
@@ -119,18 +125,27 @@ describe('startPloinkyDiscoveryTimer', () => {
             async ({ startPloinkyDiscoveryTimer }) => {
                 const timer = startPloinkyDiscoveryTimer(appCtx, { intervalMs: 10 });
                 try {
-                    await new Promise((resolve) => setTimeout(resolve, 80));
-                    // Several ticks fired while pass 1 is blocked: only one ran.
+                    t.mock.timers.tick(10);
+                    await flush();
                     assert.equal(reconcileCalls, 1);
-                    assert.ok(
-                        appCtx.log.entries.warn.some((e) =>
-                            /skipping overlapping/.test(e.message)
-                        )
+
+                    // Two more ticks while pass 1 is still blocked: skipped.
+                    t.mock.timers.tick(10);
+                    t.mock.timers.tick(10);
+                    await flush();
+                    assert.equal(reconcileCalls, 1);
+                    const skips = appCtx.log.entries.warn.filter((e) =>
+                        /skipping overlapping/.test(e.message)
                     );
+                    assert.equal(skips.length, 2);
+                    assert.match(skips[1].message, /current pass running for 20 ms/);
+
+                    // Once pass 1 finishes, the next tick runs again.
                     releaseFirst();
-                    await new Promise((resolve) => setTimeout(resolve, 60));
-                    // Once pass 1 finished, later ticks run again.
-                    assert.ok(reconcileCalls >= 2);
+                    await flush();
+                    t.mock.timers.tick(10);
+                    await flush();
+                    assert.equal(reconcileCalls, 2);
                 } finally {
                     clearInterval(timer);
                     releaseFirst();
