@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { getDefaultLLMAgent, registerDefaultLLMAgent } from 'achillesAgentLib/LLMAgents';
 
 function safeParseJson(text) {
   try { return JSON.parse(text); } catch { return null; }
@@ -57,7 +56,8 @@ async function tryDeterministicMerge({ base = '', ours = '', theirs = '' } = {})
   }
 }
 
-function getDefaultAgent() {
+async function getDefaultAgent() {
+  const { getDefaultLLMAgent, registerDefaultLLMAgent } = await import('achillesAgentLib/LLMAgents');
   return (typeof getDefaultLLMAgent === 'function' && getDefaultLLMAgent())
     || (typeof registerDefaultLLMAgent === 'function' && registerDefaultLLMAgent());
 }
@@ -108,7 +108,7 @@ export default async function resolveConflict(input, context = {}) {
     return deterministic;
   }
 
-  const agent = getDefaultAgent();
+  const agent = await getDefaultAgent();
   if (!agent) {
     throw new Error('No default LLM agent available.');
   }
