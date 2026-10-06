@@ -456,7 +456,7 @@ export class RuntimeManager {
 
     async _runTask(robot, task) {
         if (task.cancelRequested || task.state !== 'queued') return;
-        let humanInputChannel;
+        let humanInputChannel, forcedFailure;
         const appendProgress = (chunk, output = {}) => {
             const previousLength = task.logTail.length;
             task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
@@ -520,6 +520,7 @@ export class RuntimeManager {
             const args = ['--home', robotHome, '--cwd', cwd, '--ca', codingAgent];
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
+            if (task.request.workflowRunId) args.push('--workflow-execution');
             // Catalog capture belongs to the wrapper's actual execution boundary after queue/cache wait.
             if (this.skillsets) {
                 const policyId = task.request.skillPolicyRef || task.alaSessionId;
@@ -568,6 +569,7 @@ export class RuntimeManager {
                 else task.result += resultDecoder.write(chunk);
             });
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
+                if (event.type === 'task-failed' && typeof event.message === 'string') forcedFailure ||= new Error(event.message);
                 if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
                 if (event.type === 'messages-cancelled') appendProgress(`\nCancelled ${event.count} queued message(s).\n`);
                 if (event.type === 'session-ready') {
@@ -593,6 +595,7 @@ export class RuntimeManager {
                 child.once('close', (code, signal) => {
                     progressParser.finish();
                     task.result += resultDecoder.end();
+                    if (forcedFailure) return reject(forcedFailure);
                     if (task.resultOverflow) return reject(new Error('Final response exceeds the 1 MiB limit'));
                     if (code === 0) resolve();
                     else reject(new Error(alaFailureMessage(signal || code, `${task.logTail}${task.result}`)));
@@ -601,7 +604,8 @@ export class RuntimeManager {
             if (!task.cancelRequested) task.state = 'completed';
             task.completedAt = new Date().toISOString();
         } catch (error) {
-            if (task.state !== 'paused') {
+            if (forcedFailure || task.state !== 'paused') {
+                error = forcedFailure || error;
                 task.state = 'failed'; task.error = String(error?.message || error); task.completedAt = new Date().toISOString();
             }
         } finally {
@@ -619,6 +623,7 @@ export class RuntimeManager {
                 this._emitTaskEvent({
                     kind: 'terminal', robotId: robot.id, taskId: task.taskId, state: task.state,
                     result: task.result, error: task.error || (task.resultOverflow ? 'Final response exceeds the 1 MiB limit' : null),
+                    ...(forcedFailure ? { forcedFailure: true } : {}),
                 });
             }
         }

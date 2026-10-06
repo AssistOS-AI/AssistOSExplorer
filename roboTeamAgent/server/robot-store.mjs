@@ -263,12 +263,12 @@ export class RobotStore {
         return metadata;
     }
 
-    async setCodingAgents(robotId, codingAgents) {
+    async setCodingAgents(robotId, codingAgents, { model, effort } = {}) {
         const selected = normalizeCodingAgents(codingAgents);
         return this.withRobot(robotId, async (robot, save) => {
-            await save({ ...robot, codingAgents: selected });
             // ALA reads the robot's agent from its config in the robot home.
-            await ensureAgentConfig(path.join(this.robotPath(robotId), 'home'), { codingAgents: selected, codingAgent: selected[0] });
+            await ensureAgentConfig(path.join(this.robotPath(robotId), 'home'), { codingAgents: selected, codingAgent: selected[0], model, effort });
+            await save({ ...robot, codingAgents: selected });
             return { ...robot, codingAgents: selected };
         });
     }

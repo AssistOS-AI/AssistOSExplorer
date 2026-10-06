@@ -150,10 +150,10 @@ export class RobotSkillsets {
         }
     }
 
-    async inventory(robot, { policyId, cwd, policy, workflowSkills = false } = {}) {
+    async inventory(robot, { policyId, cwd, policy, workflowSkills = false, workflowExecution = false } = {}) {
         policy ||= await this.policies.read(robot.id, policyId);
         if (!policy) throw invalid('skill policy is unavailable');
-        const result = await this.live.resolve(robot, policy, cwd, { workflowSkills });
+        const result = await this.live.resolve(robot, policy, cwd, { workflowSkills, workflowExecution });
         return { skills: result.entries.map((entry) => ({ ...entry, key: entry.identity, id: entry.identity,
             skillDir: entry.sourcePath, isInternal: Boolean(entry.builtin) })), diagnostics: result.diagnostics,
             policyVersion: policy.policyVersion, policy, scopeRoot: result.scopeRoot, cwd: result.cwd };

@@ -115,7 +115,19 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         if (!graph.edges.some(edge => edge.sourceTaskId === task.id)) node.classList.add('graph-terminal');
         if (states[task.id]) node.classList.add(`graph-state-${states[task.id]}`);
         const label = document.createElement('strong'); label.textContent = task.name;
-        const detail = document.createElement('span'); detail.textContent = `${task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Sub-flows · ' : ''}${task.executionType || 'terminal / desktop / browser'}`}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
+        const detail = document.createElement('span'); detail.className = 'graph-node-detail';
+        const detailText = document.createElement('span'); detailText.className = 'graph-node-detail-text'; detailText.textContent = `${task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Sub-flows · ' : ''}${task.executionType || 'terminal / desktop / browser'}`}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
+        detail.append(detailText);
+        if (task.allowsHumanInput && task.kind !== 'run-workflows') {
+            const icon = document.createElementNS(svgNS, 'svg');
+            icon.classList.add('graph-human-input');
+            for (const [name, value] of Object.entries({ viewBox: '0 0 24 24', role: 'img', 'aria-label': 'Allows human input', focusable: 'false' })) icon.setAttribute(name, value);
+            const title = document.createElementNS(svgNS, 'title'); title.textContent = 'Allows human input';
+            const person = document.createElementNS(svgNS, 'path');
+            person.setAttribute('d', 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0v1H5Z');
+            icon.append(title, person);
+            detail.append(icon);
+        }
         node.append(label, detail);
         const place = () => { node.style.left = `${graph.layout[task.id].x + offset.x}px`; node.style.top = `${graph.layout[task.id].y + offset.y}px`; };
         place();

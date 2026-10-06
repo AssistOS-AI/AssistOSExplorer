@@ -13,7 +13,7 @@ export function codeDevelopmentWorkflowDefinition(documentationSource = 'Documen
         entryTaskId: 'planning',
         tasks: [
             {
-                id: 'planning', name: 'Planning', executionType: 'terminal', creator: true,
+                id: 'planning', name: 'Planning', executionType: 'terminal', creator: true, allowsHumanInput: true,
                 skillsets: skills('gamp-specs', 'detect-main-behaviors'),
                 prompt: 'Read the user objective, repository instructions, relevant existing code and previousFinalResponses. Produce a detailed implementation plan with acceptance criteria, affected files and interfaces, dependencies, ordered implementation steps and a concrete testing strategy. On return from Validation, use its findings to plan the remaining work and preserve completed changes. Delegate implementation through planning-to-subflows using one or more workflows from the supplied catalog. This is your only outgoing edge. Order prerequisite work before dependent implementation, tests and documentation. Each child prompt must include its exact scope, relevant plan context, acceptance criteria, file ownership and appropriate tests. Children run sequentially in array order in the same folder. Each child receives the final response of the preceding workflow and must inspect the files left by earlier children. A failed or paused child blocks later work. Integrated testing belongs to Validation. If using the Standard development workflow (id default), set executionType to terminal. Select subflows-to-validation as afterWorkflowsEdgeId. Return the required creator response with the plan, delegated responsibilities and acceptance criteria for Validation.',
             },

@@ -26,11 +26,12 @@ const stdinLines = readline.createInterface({ input: process.stdin })[Symbol.asy
 const first = JSON.parse((await stdinLines.next()).value);
 if (first.type !== 'prompt' || typeof first.prompt !== 'string') throw new Error('Missing turn prompt record.');
 const prompt = first.prompt;
-if (args.includes('--config')) throw new Error('A per-turn ALA config was forwarded.');
+if (!args.includes('--config')) throw new Error('Missing isolated ALA invocation config.');
 const alaRoot = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())));
-// Like ALA: the agent, model and effort come from the config in --home.
+// Like ALA: an explicit --config controls this invocation without changing the home.
 const { loadConfig } = await import(pathToFileURL(path.join(alaRoot, 'src', 'config.mjs')));
-const config = await loadConfig(path.join(home, '.ala', 'config.json'));
+const config = await loadConfig(value('--config'));
+if (value('--config') === path.join(home, '.ala', 'config.json')) throw new Error('Shared robot config used for an invocation.');
 // Record the conversation through ALA's own session modules, as ALA does.
 const { openSessionState } = await import(pathToFileURL(path.join(alaRoot, 'src', 'session-state.mjs')));
 const { createTranscriptRecorder } = await import(pathToFileURL(path.join(alaRoot, 'src', 'transcript-recorder.mjs')));
@@ -52,7 +53,12 @@ process.on('SIGINT', async () => { await state.close().catch(() => {}); process.
 emit({ type: 'session-ready', sessionId: id });
 emit({ type: 'coding-agent-selected', agent: backend, permissionMode: value('--permissions') });
 emit({ type: 'coding-agent-message', agent: backend, message: 'Visible progress' });
-if (prompt.includes('MALFORMED')) {
+if (prompt.includes('FORCED_FAILURE')) {
+    const { reportTaskBlocked } = await import('../../src/skills/report-task-blocked/scripts/run.mjs');
+    const directory = args[args.indexOf('roboteam-task-failure') - 2];
+    await reportTaskBlocked({ message: 'Stopped at deployment: required access is unavailable.' }, { directory });
+    setInterval(() => {}, 1000);
+} else if (prompt.includes('MALFORMED')) {
     process.stderr.write('@@ALA_EVENT@@{invalid\n');
     setInterval(() => {}, 1000);
 } else {

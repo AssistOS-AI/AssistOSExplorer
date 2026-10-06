@@ -53,7 +53,13 @@ test('every robot gets list-workflows and launch-workflow in WebChat, and only t
         assert.ok(enabled(webchat).includes('list-workflows'), name);
         assert.ok(enabled(webchat).includes('launch-workflow'), name);
         assert.ok(webchat.entries.filter((entry) => ['list-workflows', 'launch-workflow'].includes(entry.name)).every((entry) => entry.required && entry.readOnly && entry.builtin));
+        const blocked = webchat.entries.find(entry => entry.name === 'report-task-blocked' && entry.enabled);
+        assert.equal(blocked, undefined);
         const task = await f.skillsets.live.resolve(robot, policy, f.project);
+        assert.equal(enabled(task).includes('report-task-blocked'), false);
+        const workflow = await f.skillsets.live.resolve(robot, policy, f.project, { workflowExecution: true });
+        const failure = workflow.entries.find(entry => entry.name === 'report-task-blocked');
+        assert.ok(failure?.enabled && failure.required && failure.readOnly && failure.executionOnly);
         assert.equal(enabled(task).some((skill) => ['list-workflows', 'launch-workflow'].includes(skill)), false, name);
     }
 });

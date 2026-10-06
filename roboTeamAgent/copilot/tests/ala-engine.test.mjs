@@ -215,7 +215,7 @@ test('explicit skill selection stays in the caller prompt without ALA skill opti
         prompt: 'Inspect', skillName: 'missing' }), /missing or disabled/);
 });
 
-test('model and effort persist in the native ALA config and survive continuation and reset', async (t) => {
+test('model and effort persist only in session metadata and survive continuation and reset', async (t) => {
     const api = await loadAlaConfigModule();
     const h = await harness(t);
     await h.engine.setModel({ sessionId: h.sessionId, backend: 'codex', model: 'native-new', effort: 'high' });
@@ -223,7 +223,12 @@ test('model and effort persist in the native ALA config and survive continuation
     const first = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'First', onEvent: (event) => events.push(event) });
     assert.equal(events.find((event) => event.type === 'coding-agent-selected').effort, 'high');
     const file = path.join(first.session.engine.home, '.ala/config.json');
-    assert.equal((await api.loadConfig(file)).efforts.codex, 'high');
+    assert.equal((await api.loadConfig(file)).efforts.codex, undefined);
+    assert.equal((await api.loadConfig(file)).models.codex, 'native-first');
+    const metadata = JSON.parse(await fs.readFile(h.store.sessionPath(h.sessionId), 'utf8'));
+    assert.deepEqual(metadata.modelOverride, { backend: 'codex', model: 'native-new', effort: 'high' });
+    const reloaded = new ConversationSessionStore({ workingDir: h.workingDir });
+    assert.deepEqual(reloaded.loadSession(h.sessionId).modelOverride, metadata.modelOverride);
     const output = JSON.parse(first.outputText);
     assert.equal(output.config.models.codex, 'native-new');
     assert.equal(output.config.efforts.codex, 'high');
@@ -232,7 +237,8 @@ test('model and effort persist in the native ALA config and survive continuation
     assert.equal(next.config.efforts.codex, 'high');
     await h.engine.setModel({ sessionId: h.sessionId, backend: 'codex', model: null });
     const reset = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Third' })).outputText);
-    assert.equal(reset.config.models.codex, undefined);
+    assert.equal(reset.config.models.codex, 'native-first');
+    assert.equal(h.store.loadSession(h.sessionId).modelOverride, undefined);
     assert.equal(reset.config.efforts.codex, undefined);
 });
 
@@ -298,4 +304,55 @@ test('a conversation whose agent the robot no longer enables asks for a new sess
     const expected = { message: 'This conversation used Codex, which is not enabled for this robot. Create a new session.' };
     await assert.rejects(h.engine.getModel({ sessionId: h.sessionId }), expected);
     await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Again' }), expected);
+});
+
+
+test('concurrent sessions keep independent model and effort choices while default sessions follow the robot', async t => {
+    const h = await harness(t);
+    const api = await loadAlaConfigModule();
+    await api.saveConfig(h.configFile, { codingAgent: 'codex', models: { codex: 'robot-model' }, efforts: { codex: 'low' } });
+    const second = await h.store.createSession({ select: false });
+    const inherited = await h.store.createSession({ select: false });
+    await Promise.all([
+        h.engine.setModel({ sessionId: h.sessionId, backend: 'codex', model: 'robot-model', effort: null }),
+        h.engine.setModel({ sessionId: second.sessionId, backend: 'codex', model: 'other-model', effort: 'high' }),
+    ]);
+    const results = await Promise.all([h.sessionId, second.sessionId, inherited.sessionId].map(sessionId =>
+        h.engine.executeTurn({ sessionId, prompt: 'Inspect' }).then(result => JSON.parse(result.outputText))));
+    assert.deepEqual(results.map(result => [result.config.models.codex, result.config.efforts.codex]),
+        [['robot-model', undefined], ['other-model', 'high'], ['robot-model', 'low']]);
+    assert.deepEqual(await api.loadConfig(h.configFile), { codingAgent: 'codex', models: { codex: 'robot-model' }, efforts: { codex: 'low' } });
+    await h.setModels({ codex: 'new-default' });
+    assert.equal((await h.engine.getModel({ sessionId: inherited.sessionId })).model, 'new-default');
+    assert.equal((await h.engine.getModel({ sessionId: second.sessionId })).model, 'other-model');
+    const reset = await h.engine.setModel({ sessionId: second.sessionId, backend: 'codex', model: null });
+    assert.deepEqual(reset, { backend: 'codex', model: 'new-default', effort: null });
+    await assert.rejects(h.engine.setModel({ sessionId: h.sessionId, backend: 'codex', model: '', effort: null }), /invalid_session_model/);
+});
+
+
+test('reported failure terminates ALA and persists a failed turn with the exact error', { timeout: 15000 }, async t => {
+    const h = await harness(t, {}, { execution: { workflowExecution: true } });
+    h.setSkills([{ name: 'report-task-blocked', description: 'Report inability to complete', skillDir: h.workingDir, enabled: true }]);
+    const events = [];
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'FORCED_FAILURE', onEvent: event => events.push(event) }),
+        error => error.message === 'Stopped at deployment: required access is unavailable.' && error.exitCode !== 130);
+    assert.equal(events.filter(event => event.type === 'task-failed').length, 1);
+    const session = h.store.loadSession(h.sessionId);
+    const answer = session.messages.find(message => message.role === 'assistant');
+    assert.equal(answer.status, 'failed');
+    assert.equal(answer.text, 'Stopped at deployment: required access is unavailable.');
+    h.setSkills([]);
+    await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Continue after restoring access' });
+});
+
+
+test('ordinary chat cannot use forced failure even if a stale catalog contains the skill', async t => {
+    const h = await harness(t);
+    h.setSkills([{ name: 'report-task-blocked', description: 'Stale skill', skillDir: h.workingDir, enabled: true }]);
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Normal chat' });
+    const output = JSON.parse(result.outputText);
+    assert.equal(output.folders.some(folder => folder.alias === 'roboteam-task-failure'), false);
+    assert.equal(output.folders.some(folder => folder.alias === 'report-task-blocked'), false);
+    assert.equal(output.prompt.includes('/workspace/report-task-blocked'), false);
 });

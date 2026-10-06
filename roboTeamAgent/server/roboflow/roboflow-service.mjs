@@ -385,9 +385,20 @@ export class RoboFlowService {
     }
     async _completed(binding, event) {
         const flow = await this.store.get(binding.flowId);
-        if (!flow || flow.humanInput?.status === 'pending' || (terminal(flow.status) && !binding.manual)) return;
+        if (!flow || flow.status === 'terminated') return;
         const instance = flow.instances.find(item => item.id === binding.instanceId);
-        if (!instance || terminal(instance.state)) return;
+        if (!instance || (terminal(instance.state) && !(event.forcedFailure && instance.state === 'paused'))) return;
+        if (event.forcedFailure && event.state === 'failed') {
+            await this.store.update(flow.id, current => {
+                const visit = current.instances.find(item => item.id === instance.id);
+                visit.state = 'failed'; visit.error = event.error; visit.endedAt = new Date().toISOString();
+                if (current.humanInput?.runtimeTaskId === event.taskId) current.humanInput = null;
+                current.error = event.error;
+                this._derive(current);
+            });
+            return;
+        }
+        if (flow.humanInput?.status === 'pending' || (terminal(flow.status) && !binding.manual)) return;
         if (event.state === 'paused') return this._fail(flow.id, event.error || `Task ${instance.taskId} paused`, 'paused');
         if (event.state !== 'completed' || event.error) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, 'failed');
         await this.store.writeOutput(flow.id, instance.id, event.result || '', 'result');
@@ -421,6 +432,7 @@ export class RoboFlowService {
             if (!flow || flow.status === 'terminated') return;
             const visit = flow.instances.find(item => item.id === binding.instanceId);
             if (!visit || visit.runtimeTaskId !== event.taskId) return;
+            if (event.kind === 'terminal' && event.forcedFailure) return this._completed(binding, event);
             if (flow.humanInput?.status === 'pending' && flow.humanInput.runtimeTaskId === event.taskId) {
                 if (event.kind === 'progress') await this.store.writeOutput(flow.id, visit.id, event.chunk, 'log', { assistant: event.outputKind === 'assistant', complete: event.outputComplete, outputId: event.outputId });
                 if (event.kind === 'terminal') {

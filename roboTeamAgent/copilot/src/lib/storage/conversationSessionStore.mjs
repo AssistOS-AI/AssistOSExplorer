@@ -26,7 +26,7 @@ const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 const TASK_ID_RE = /^task_[0-9a-f]{24}$/;
 const METADATA_VERSION = 2;
 const STATUSES = ['pending', 'completed', 'failed', 'interrupted'];
-const METADATA_FIELDS = ['skillPolicyRef', 'legacySkillSelection', 'skillSelection', 'skillExecution', 'previousSkillExecution'];
+const METADATA_FIELDS = ['skillPolicyRef', 'legacySkillSelection', 'skillSelection', 'skillExecution', 'previousSkillExecution', 'modelOverride'];
 
 function isInside(root, candidate) {
     const relative = path.relative(root, candidate);
@@ -87,6 +87,16 @@ function normalizeEngine(raw, sessionId) {
         ...(raw.robotId ? { robotId: raw.robotId } : {}) };
 }
 
+function normalizeModelOverride(raw) {
+    if (!raw || !['codex', 'opencode', 'pi', 'claude'].includes(raw.backend)
+        || typeof raw.model !== 'string' || !raw.model.trim() || raw.model.length > 512
+        || /[\x00-\x1f]/u.test(raw.model)
+        || (raw.effort != null && (typeof raw.effort !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(raw.effort)))) {
+        throw new Error('invalid_session_model_override');
+    }
+    return { backend: raw.backend, model: raw.model.trim(), effort: raw.effort || null };
+}
+
 function normalizeTurn(raw) {
     if (!raw || typeof raw !== 'object' || typeof raw.turnId !== 'string' || !raw.turnId.trim()) throw new Error('invalid_turn_id');
     const turn = {
@@ -131,7 +141,7 @@ function normalizeMetadata(raw, expectedId = '') {
         updatedAt: validTimestamp(raw.updatedAt, createdAt),
         turns,
         ...(raw.cwd && path.isAbsolute(raw.cwd) ? { cwd: raw.cwd } : {}),
-        ...Object.fromEntries(METADATA_FIELDS.filter((key) => raw[key] !== undefined).map((key) => [key, structuredClone(raw[key])])),
+        ...Object.fromEntries(METADATA_FIELDS.filter((key) => raw[key] !== undefined).map((key) => [key, key === 'modelOverride' ? normalizeModelOverride(raw[key]) : structuredClone(raw[key])])),
         ...(raw.engine === undefined ? {} : { engine: normalizeEngine(raw.engine, sessionId) }),
     };
 }
@@ -323,6 +333,18 @@ export class ConversationSessionStore {
         });
     }
 
+    #isWorkflowSession(sessionId) {
+        // Runtime task definitions are keyed by alaSessionId, including continuations.
+        const file = assertSafeAchillesPrivatePath(this.workingDir, `tasks/${sessionId}/task.json`, { type: 'file' });
+        try {
+            const task = JSON.parse(fs.readFileSync(file, 'utf8'));
+            return task.alaSessionId === sessionId && Boolean(task.request?.workflowRunId);
+        } catch (error) {
+            if (error.code === 'ENOENT') return false;
+            throw error;
+        }
+    }
+
     listSessions(currentSessionId = this.currentSessionId) {
         const marker = currentSessionId ? assertSessionId(currentSessionId) : null;
         const sessions = [];
@@ -339,6 +361,7 @@ export class ConversationSessionStore {
             const sessionId = entry.name.slice(0, -5);
             if (!SESSION_ID_RE.test(sessionId)) continue;
             try {
+                if (this.#isWorkflowSession(sessionId)) continue;
                 sessions.push(summarizeConversationSession(this.loadSession(sessionId)));
             } catch (cause) {
                 throw new Error(`Unable to read conversation ${sessionId}: ${cause.message}`, { cause });

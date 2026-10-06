@@ -635,3 +635,27 @@ test('closing the service stops a preset retry that is still waiting', async t =
         assert.equal(await service.presetReady, false);
     } finally { console.error = originalError; }
 });
+
+test('forced failure affects only its phase and keeps workflow state priority', async t => {
+    const f = await fixture(t); await f.service.createWorkflow(graph());
+    for (const otherState of [null, 'running', 'paused']) {
+        const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+        const runtimeTaskId = f.started.at(-1).taskId;
+        if (otherState) await f.service.store.update(flow.id, current => {
+            current.instances.push({ ...f.service._instance('b', current.instances.length), state: otherState });
+        });
+        f.service.onRuntimeTaskEvent({ kind: 'terminal', taskId: runtimeTaskId, state: 'failed', forcedFailure: true, error: 'Deployment access is unavailable.' });
+        while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
+        const updated = await f.service.store.get(flow.id);
+        assert.equal(updated.instances[0].state, 'failed');
+        assert.equal(updated.instances[0].error, 'Deployment access is unavailable.');
+        assert.equal(updated.status, otherState || 'failed');
+        if (otherState) assert.equal(updated.instances[1].state, otherState);
+        const count = f.started.length;
+        f.service.onRuntimeTaskEvent({ kind: 'terminal', taskId: runtimeTaskId, state: 'completed', result: 'Wrong success' });
+        while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
+        assert.equal((await f.service.store.get(flow.id)).instances[0].state, 'failed');
+        assert.equal(f.started.length, count);
+    }
+    assert.deepEqual(f.stopped, []);
+});

@@ -5,12 +5,12 @@ import crypto from 'node:crypto';
 import { repositoryClient } from './repository-client.mjs';
 
 // Selection belongs to RoboTeam. Ploinky alone publishes/removes filesystem links.
-export async function installLiveSkills({ service, robot, policyId, cwd, client, workflowSkills = false }) {
+export async function installLiveSkills({ service, robot, policyId, cwd, client, workflowSkills = false, workflowExecution = false }) {
     client ||= service.repositoriesClient || await repositoryClient();
     const policy = await service.policies.read(robot.id, policyId);
     if (!policy) throw new Error('Missing conversation skill policy');
     if (policy.mode === 'pinned') throw new Error('Pinned snapshots cannot be mounted as live skills; select current skills first');
-    const inventory = await service.live.resolve(robot, policy, cwd, { workflowSkills });
+    const inventory = await service.live.resolve(robot, policy, cwd, { workflowSkills, workflowExecution });
     const repositories = await client.listRepositories();
     const entries = inventory.entries.filter(entry => entry.enabled);
     const repos = [];
@@ -25,6 +25,8 @@ export async function installLiveSkills({ service, robot, policyId, cwd, client,
                 entry.sourcePath = source;
             }
         }
+        // Execution-only skills are mounted read-only by ALA, never linked into cwd or home.
+        if (entry.executionOnly) continue;
         if (source === path.join(cwd, '.agents', 'skills', entry.name)) continue;
         const candidates = repositories.filter(repo => repo.origin !== 'remote' && source.startsWith(`${repo.source}${path.sep}`))
             .sort((left, right) => right.source.length - left.source.length);
