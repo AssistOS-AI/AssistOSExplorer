@@ -883,6 +883,169 @@ async function withDb(fn) {
     }
 }
 
+describe('reconcilePloinkyAgentRecords (bounded model discovery)', () => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    function manyAgents(count) {
+        return Array.from({ length: count }, (_, i) =>
+            agent({
+                subjectId: `agent:demo/a${i}`,
+                routeKey: `demo-a${i}`,
+                agent: `a${i}`,
+                name: `Agent ${i}`,
+            })
+        );
+    }
+
+    function fakeDaos() {
+        return {
+            providersDao: makeFakeProvidersDao(),
+            modelsDao: makeFakeModelsDao(),
+            apiKeysDao: makeFakeApiKeysDao(),
+        };
+    }
+
+    it('discovers 15 agents with at most 4 in flight and finishes in a bounded wall time', async () => {
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const started = Date.now();
+
+        await rawReconcilePloinkyAgentRecords({
+            appCtx: makeAppCtx(),
+            discovery: { complete: true, agents: manyAgents(15) },
+            daos: fakeDaos(),
+            refresh: spyRefresh(),
+            discoverAgentModels: async () => {
+                inFlight += 1;
+                maxInFlight = Math.max(maxInFlight, inFlight);
+                await sleep(100);
+                inFlight -= 1;
+                return [];
+            },
+            applyAgentModels: async () => null,
+        });
+
+        const elapsed = Date.now() - started;
+        assert.equal(maxInFlight, 4);
+        // 15 agents / 4 lanes = 4 rounds of ~100 ms; sequential would be 1500 ms.
+        assert.ok(elapsed < 600, `elapsed ${elapsed} ms should be < 600 ms`);
+    });
+
+    it('applies model writes sequentially in the original agent order', async () => {
+        const agents = manyAgents(8);
+        const applied = [];
+        let applying = 0;
+        let maxApplying = 0;
+
+        await rawReconcilePloinkyAgentRecords({
+            appCtx: makeAppCtx(),
+            discovery: { complete: true, agents },
+            daos: fakeDaos(),
+            refresh: spyRefresh(),
+            // Earlier agents are slower, so discovery finishes out of order.
+            discoverAgentModels: async ({ agent: a }) => {
+                const index = Number(a.agent.slice(1));
+                await sleep((agents.length - index) * 15);
+                return [{ index }];
+            },
+            applyAgentModels: async ({ agent: a, discoveries }) => {
+                applying += 1;
+                maxApplying = Math.max(maxApplying, applying);
+                await sleep(5);
+                applied.push([a.subjectId, discoveries[0].index]);
+                applying -= 1;
+                return { discovered: 0, created: 0, updated: 0, disabled: 0 };
+            },
+        });
+
+        assert.deepEqual(
+            applied.map(([subjectId]) => subjectId),
+            agents.map((a) => a.subjectId)
+        );
+        assert.equal(maxApplying, 1);
+    });
+
+    it('handles a failing discovery as a model-sync failure with a fallback model, others unaffected', async () => {
+        const daos = fakeDaos();
+        const agents = manyAgents(5);
+        const summary = await rawReconcilePloinkyAgentRecords({
+            appCtx: makeAppCtx(),
+            discovery: { complete: true, agents },
+            daos,
+            refresh: spyRefresh(),
+            discoverAgentModels: async ({ agent: a }) => {
+                await sleep(10);
+                if (a.agent === 'a2') {
+                    throw new Error('models endpoint unavailable');
+                }
+                return [];
+            },
+            applyAgentModels: async () => ({
+                discovered: 0,
+                created: 0,
+                updated: 0,
+                disabled: 0,
+            }),
+        });
+
+        assert.equal(summary.modelSyncFailed, 1);
+        assert.equal(summary.scanned, 5);
+        const fallback = await daos.modelsDao.findByKey(null, 'demo/a2/default');
+        assert.ok(fallback);
+        assert.equal(fallback.metadata.modelSyncFallback, true);
+        assert.equal(await daos.modelsDao.findByKey(null, 'demo/a1/default'), null);
+    });
+
+    it('still disables stale discovered rows on a complete discovery with parallel discovery', async () => {
+        const stalePid = 'prov-stale';
+        const providersFake = makeFakeProvidersDao([
+            {
+                id: stalePid,
+                provider_key: providerKeyFor('agent:old/gone'),
+                display_name: 'Ploinky agent agent:old/gone',
+                kind: 'external_api',
+                adapter_key: 'ploinky-agent-openai',
+                auth_strategy: 'none',
+                provider_mode: 'external_api',
+                base_url: 'http://router.local',
+                enabled: true,
+                metadata: {
+                    discoverySource: DISCOVERY_MARKER,
+                    subjectId: 'agent:old/gone',
+                    routeKey: 'old-gone',
+                    repo: 'old',
+                    agent: 'gone',
+                },
+            },
+        ]);
+        const common = {
+            appCtx: makeAppCtx(),
+            daos: {
+                providersDao: providersFake,
+                modelsDao: makeFakeModelsDao(),
+                apiKeysDao: makeFakeApiKeysDao(),
+            },
+            refresh: spyRefresh(),
+            discoverAgentModels: async () => [],
+            applyAgentModels: async () => null,
+        };
+
+        const partial = await rawReconcilePloinkyAgentRecords({
+            ...common,
+            discovery: { complete: false, agents: manyAgents(6) },
+        });
+        assert.equal(partial.disabled, 0);
+        assert.equal(providersFake.rows.get(stalePid).enabled, true);
+
+        const complete = await rawReconcilePloinkyAgentRecords({
+            ...common,
+            discovery: { complete: true, agents: manyAgents(6) },
+        });
+        assert.equal(complete.disabled, 1);
+        assert.equal(providersFake.rows.get(stalePid).enabled, false);
+    });
+});
+
 describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
     it('writes schema-valid rows that pass the providers/models CHECK constraints', async () => {
         await withDb(async (db) => {

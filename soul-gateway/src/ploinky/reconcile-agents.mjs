@@ -49,6 +49,8 @@ export const DISCOVERY_MARKER = 'ploinky-agent-discovery';
 const ADAPTER_KEY = 'ploinky-agent-openai';
 
 const REFRESH_REASON = 'ploinky-agent-discovery.reconcile';
+// Upper bound on concurrent agent /v1/models discovery calls in one pass.
+const MODEL_DISCOVERY_CONCURRENCY = 4;
 
 function readConfigField(config, key) {
     if (config?.env && typeof config.env === 'object' && config.env[key] != null) {
@@ -295,9 +297,18 @@ export async function reconcilePloinkyAgentRecords({
     discovery,
     daos = DEFAULT_DAOS,
     refresh = performRuntimeRefresh,
-    syncAgentModels = syncAgentProviderModels,
+    discoverAgentModels = discoverAgentProviderModels,
+    applyAgentModels = applyAgentProviderModels,
+    syncAgentModels = null,
 }) {
     const { pool, log } = appCtx;
+    if (typeof syncAgentModels === 'function') {
+        // Combined discover+sync override (tests): the whole step runs in the
+        // sequential write phase.
+        discoverAgentModels = async () => null;
+        applyAgentModels = ({ appCtx: ctx, provider, agent }) =>
+            syncAgentModels({ appCtx: ctx, provider, agent });
+    }
     const summary = {
         scanned: 0,
         created: 0,
@@ -324,6 +335,8 @@ export async function reconcilePloinkyAgentRecords({
     // Keys we touched this pass — used to compute stale rows when complete.
     const seenProviderKeys = new Set();
 
+    // Phase 1: provider and key upserts, sequential, in discovery order.
+    const entries = [];
     for (const agent of agents) {
         summary.scanned += 1;
 
@@ -355,11 +368,44 @@ export async function reconcilePloinkyAgentRecords({
             subjectType: 'agent',
         });
 
+        entries.push({ agent, providerResult });
+    }
+
+    // Phase 2: network model discovery, at most MODEL_DISCOVERY_CONCURRENCY in
+    // flight. This is the only parallel part; it performs no DB writes and
+    // each call works on its own provider row, so outcomes (value or error)
+    // are captured per entry and applied in phase 3.
+    const outcomes = await mapWithConcurrency(
+        entries,
+        MODEL_DISCOVERY_CONCURRENCY,
+        async ({ agent, providerResult }) => {
+            try {
+                return {
+                    value: await discoverAgentModels({
+                        appCtx,
+                        provider: providerResult.row,
+                        agent,
+                    }),
+                };
+            } catch (err) {
+                return { error: err };
+            }
+        }
+    );
+
+    // Phase 3: DB writes, sequential, in the original agent order.
+    for (let index = 0; index < entries.length; index += 1) {
+        const { agent, providerResult } = entries[index];
+        const outcome = outcomes[index];
         try {
-            const modelSync = await syncAgentModels({
+            if (outcome.error) {
+                throw outcome.error;
+            }
+            const modelSync = await applyAgentModels({
                 appCtx,
                 provider: providerResult.row,
                 agent,
+                discoveries: outcome.value,
             });
             if (modelSync) {
                 const created = Number(modelSync.created || 0);
@@ -537,23 +583,57 @@ async function listAll(dao, pool) {
     return out;
 }
 
-async function syncAgentProviderModels({ appCtx, provider }) {
+/**
+ * Phase 2 step: network model discovery only (no DB writes). Returns null when
+ * the backend catalog is unavailable, which makes phase 3 skip the agent.
+ */
+async function discoverAgentProviderModels({ appCtx, provider }) {
     if (!appCtx?.services?.backendCatalog) {
         appCtx?.log?.debug?.('ploinky agent model sync skipped: backend catalog unavailable', {
             provider: provider?.provider_key || provider?.providerKey || null,
         });
         return null;
     }
-    const {
-        discoverProviderModels,
-        syncProviderModels,
-    } = await import('../runtime/providers/auto-provisioner.mjs');
-    const discoveries = await discoverProviderModels(appCtx, provider);
+    const { discoverProviderModels } = await import(
+        '../runtime/providers/auto-provisioner.mjs'
+    );
+    return discoverProviderModels(appCtx, provider);
+}
+
+/** Phase 3 step: persist the discovered models (DB writes). */
+async function applyAgentProviderModels({ appCtx, provider, discoveries }) {
+    if (discoveries === null || discoveries === undefined) {
+        return null;
+    }
+    const { syncProviderModels } = await import(
+        '../runtime/providers/auto-provisioner.mjs'
+    );
     return syncProviderModels(appCtx, provider, discoveries, {
         discoverySource: 'synced',
         disableMissing: true,
         refreshReason: REFRESH_REASON,
     });
+}
+
+/**
+ * Run `worker` over `items` with at most `limit` in flight; results keep the
+ * input order. `worker` must not throw (callers capture errors themselves).
+ */
+async function mapWithConcurrency(items, limit, worker) {
+    const results = new Array(items.length);
+    let next = 0;
+    const lanes = Array.from(
+        { length: Math.max(1, Math.min(limit, items.length)) },
+        async () => {
+            while (next < items.length) {
+                const index = next;
+                next += 1;
+                results[index] = await worker(items[index], index);
+            }
+        }
+    );
+    await Promise.all(lanes);
+    return results;
 }
 
 /**

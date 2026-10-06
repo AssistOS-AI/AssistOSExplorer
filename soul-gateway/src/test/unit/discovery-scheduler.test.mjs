@@ -94,3 +94,48 @@ describe('runPloinkyReconcileOnce', () => {
         });
     });
 });
+
+describe('startPloinkyDiscoveryTimer', () => {
+    it('skips a tick that fires while the previous reconcile is still running', async () => {
+        const appCtx = { config: {}, log: makeLog() };
+        let reconcileCalls = 0;
+        let releaseFirst;
+        const firstDone = new Promise((resolve) => {
+            releaseFirst = resolve;
+        });
+
+        await withSchedulerMocks(
+            {
+                isDiscoveryConfigured: () => true,
+                discoverPloinkyAgents: async () => ({ complete: true, agents: [] }),
+                reconcilePloinkyAgents: async () => {
+                    reconcileCalls += 1;
+                    if (reconcileCalls === 1) {
+                        await firstDone;
+                    }
+                    return {};
+                },
+            },
+            async ({ startPloinkyDiscoveryTimer }) => {
+                const timer = startPloinkyDiscoveryTimer(appCtx, { intervalMs: 10 });
+                try {
+                    await new Promise((resolve) => setTimeout(resolve, 80));
+                    // Several ticks fired while pass 1 is blocked: only one ran.
+                    assert.equal(reconcileCalls, 1);
+                    assert.ok(
+                        appCtx.log.entries.warn.some((e) =>
+                            /skipping overlapping/.test(e.message)
+                        )
+                    );
+                    releaseFirst();
+                    await new Promise((resolve) => setTimeout(resolve, 60));
+                    // Once pass 1 finished, later ticks run again.
+                    assert.ok(reconcileCalls >= 2);
+                } finally {
+                    clearInterval(timer);
+                    releaseFirst();
+                }
+            }
+        );
+    });
+});

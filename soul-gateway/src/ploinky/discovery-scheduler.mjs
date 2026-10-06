@@ -91,8 +91,18 @@ export function startPloinkyDiscoveryTimer(appCtx, options = {}) {
     }
 
     const intervalMs = options.intervalMs || PLOINKY_DISCOVERY_INTERVAL_MS;
+    // A pass that outlasts the interval must not stack a second pass on top
+    // of itself (same guard as src/background/scheduler.mjs).
+    let running = false;
     const timer = setInterval(() => {
-        void runPloinkyReconcileOnce(appCtx, { phase: 'timer' });
+        if (running) {
+            log?.warn?.('skipping overlapping ploinky agent reconcile');
+            return;
+        }
+        running = true;
+        void runPloinkyReconcileOnce(appCtx, { phase: 'timer' }).finally(() => {
+            running = false;
+        });
     }, intervalMs);
 
     if (typeof timer.unref === 'function') {
