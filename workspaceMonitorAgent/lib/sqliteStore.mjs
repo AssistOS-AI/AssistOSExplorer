@@ -56,15 +56,55 @@ export function openDatabase(env = process.env) {
     return database;
 }
 
+// Keeps one open database for a long-lived writer so the DDL and migration in
+// openDatabase run once per process instead of once per sample. The handle is
+// closed and dropped on any persist error, and reopened when the database file
+// was removed or replaced, so the next persist starts from a fresh open.
+export function createDatabaseHandleProvider({
+    env = process.env,
+    openDatabaseImpl = openDatabase,
+} = {}) {
+    let database = null;
+    let identity = null;
+    function fileIdentity() {
+        try {
+            const stat = fs.statSync(databasePath(env));
+            return `${stat.dev}:${stat.ino}`;
+        } catch {
+            return null;
+        }
+    }
+    function release() {
+        const current = database;
+        database = null;
+        identity = null;
+        if (!current) return;
+        try { current.close(); } catch { /* the handle is dropped either way */ }
+    }
+    return {
+        acquire() {
+            if (database && fileIdentity() !== identity) release();
+            if (!database) {
+                database = openDatabaseImpl(env);
+                identity = fileIdentity();
+            }
+            return database;
+        },
+        release,
+        close: release,
+    };
+}
+
 export function persistSamples(samples, sampledAt, {
     env = process.env,
     now = () => Date.now(),
     openDatabaseImpl = openDatabase,
+    databaseProvider = null,
 } = {}) {
     if (!Array.isArray(samples) || !samples.length) return;
     const timestamp = Number(sampledAt);
     if (!Number.isFinite(timestamp)) throw new Error('sampledAt must be a finite timestamp.');
-    const database = openDatabaseImpl(env);
+    const database = databaseProvider ? databaseProvider.acquire() : openDatabaseImpl(env);
     try {
         const insert = database.prepare(`
             INSERT INTO resource_samples (metric, sampled_at, value, threshold)
@@ -90,8 +130,11 @@ export function persistSamples(samples, sampledAt, {
             database.exec('ROLLBACK');
             throw error;
         }
+    } catch (error) {
+        if (databaseProvider) databaseProvider.release();
+        throw error;
     } finally {
-        database.close();
+        if (!databaseProvider) database.close();
     }
 }
 

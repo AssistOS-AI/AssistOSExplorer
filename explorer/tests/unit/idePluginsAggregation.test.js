@@ -467,3 +467,140 @@ test('aggregateIdePlugins discovers UserPersisto and EmailAgent settings from re
         ]
     );
 });
+
+test('a zero-byte plugin config.json is skipped silently while non-empty invalid JSON still warns', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-empty-config-'));
+    const warnings = [];
+    const originalWarn = console.warn;
+    try {
+        await writeApplication(path.join(workspaceRoot, 'repo'), 'goodAgent', 'good');
+        const emptyDir = path.join(workspaceRoot, 'repo', 'goodAgent', 'IDE-plugins', 'empty-plugin');
+        const brokenDir = path.join(workspaceRoot, 'repo', 'goodAgent', 'IDE-plugins', 'broken-plugin');
+        await fs.mkdir(emptyDir, { recursive: true });
+        await fs.mkdir(brokenDir, { recursive: true });
+        await fs.writeFile(path.join(emptyDir, 'config.json'), '');
+        await fs.writeFile(path.join(brokenDir, 'config.json'), '{ not json');
+        console.warn = (...args) => { warnings.push(args.join(' ')); };
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+        assert.deepEqual(aggregated.application['file-exp:toolbar'].map(plugin => plugin.id), ['good']);
+        assert.equal(warnings.some(message => message.includes('empty-plugin')), false, warnings.join('\n'));
+        assert.equal(warnings.some(message => message.includes('broken-plugin')), true, warnings.join('\n'));
+    } finally {
+        console.warn = originalWarn;
+        await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+});
+
+test('plugin configs read in parallel are merged in directory order', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-config-order-'));
+    try {
+        const repo = path.join(workspaceRoot, 'repo');
+        await writeAgentManifest(repo, 'orderAgent', {});
+        const ids = ['alpha', 'bravo', 'charlie', 'delta'];
+        for (const id of ids) {
+            await writePluginConfig(repo, 'orderAgent', id, {
+                pluginCategory: 'application', id, component: 'same-component', location: ['file-exp:toolbar'], type: 'global',
+            });
+        }
+        const sequentialOrder = (await fs.readdir(path.join(repo, 'orderAgent', 'IDE-plugins'))).filter(name => ids.includes(name));
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+        // Equal sort keys keep insertion (readdir) order because Array.prototype.sort is stable.
+        assert.deepEqual(aggregated.application['file-exp:toolbar'].map(plugin => plugin.id), sequentialOrder);
+    } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+// A stand-in `git` on PATH that answers `config --get remote.origin.url` after a
+// per-directory delay and logs when each lookup starts and finishes.
+async function installSlowGit(root, delaysByDirectoryName, origins) {
+    const binDir = path.join(root, 'bin');
+    const logPath = path.join(root, 'git-calls.log');
+    await fs.mkdir(binDir, { recursive: true });
+    const cases = Object.entries(delaysByDirectoryName).map(([name, delay]) =>
+        `  */${name}) sleep ${delay}; echo ${JSON.stringify(origins[name] || '')} ;;`).join('\n');
+    const script = `#!/bin/sh
+dir="$2"
+echo "start $dir" >> ${JSON.stringify(logPath)}
+case "$dir" in
+${cases}
+  *) ;;
+esac
+echo "end $dir" >> ${JSON.stringify(logPath)}
+`;
+    await fs.writeFile(path.join(binDir, 'git'), script, { mode: 0o755 });
+    return { binDir, logPath };
+}
+
+test('managed repository origin lookups overlap, skip name matches and decide overrides in directory order', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-origin-parallel-'));
+    const originalPath = process.env.PATH;
+    try {
+        const managedRoot = path.join(workspaceRoot, '.ploinky', 'repos');
+        // 'localRepo' is matched by name; 'aliasA' by origin; 'slowB' and 'fastC' are unmatched.
+        await writeApplication(path.join(workspaceRoot, 'localRepo'), 'localAgent', 'local');
+        await writeApplication(path.join(workspaceRoot, 'checkout'), 'checkoutAgent', 'checkout');
+        await writeApplication(path.join(managedRoot, 'localRepo'), 'staleByName', 'stale-name');
+        await writeApplication(path.join(managedRoot, 'aliasA'), 'staleByOrigin', 'stale-origin');
+        await writeApplication(path.join(managedRoot, 'slowB'), 'slowAgent', 'slow');
+        await writeApplication(path.join(managedRoot, 'fastC'), 'fastAgent', 'fast');
+        for (const directory of [path.join(workspaceRoot, 'checkout'), path.join(managedRoot, 'aliasA'), path.join(managedRoot, 'slowB'), path.join(managedRoot, 'fastC')]) {
+            await fs.mkdir(path.join(directory, '.git'), { recursive: true });
+        }
+        // The earlier directories are the slowest, so lookups finish out of order.
+        const { binDir, logPath } = await installSlowGit(workspaceRoot, { checkout: 0.1, aliasA: 0.6, slowB: 0.4, fastC: 0.05 }, {
+            checkout: 'https://example.com/org/checkout', aliasA: 'https://example.com/org/checkout', slowB: 'https://example.com/org/slow', fastC: 'https://example.com/org/fast',
+        });
+        process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+
+        assert.deepEqual(aggregated.application['file-exp:toolbar'].map(plugin => plugin.id).sort(), ['checkout', 'fast', 'local', 'slow']);
+
+        const events = (await fs.readFile(logPath, 'utf8')).trim().split('\n').map(line => line.split(' '));
+        const lookedUp = events.filter(([kind]) => kind === 'start').map(([, dir]) => path.basename(dir));
+        assert.equal(lookedUp.includes('localRepo'), false, 'a name match must not trigger an origin lookup');
+        let running = 0;
+        let maxRunning = 0;
+        for (const [kind, dir] of events) {
+            if (!['aliasA', 'slowB', 'fastC'].includes(path.basename(dir))) continue;
+            running += kind === 'start' ? 1 : -1;
+            maxRunning = Math.max(maxRunning, running);
+        }
+        assert.ok(maxRunning >= 3, `managed origin lookups should overlap, observed max ${maxRunning}`);
+    } finally {
+        process.env.PATH = originalPath;
+        await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+});
+
+test('managed repositories exposing one agent name keep first-wins precedence when origin lookups finish out of order', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-origin-precedence-'));
+    const originalPath = process.env.PATH;
+    try {
+        const managedRoot = path.join(workspaceRoot, '.ploinky', 'repos');
+        const names = ['repoA', 'repoB', 'repoC'];
+        for (const name of names) {
+            await writeApplication(path.join(managedRoot, name), 'sharedAgent', `plugin-${name.toLowerCase()}`);
+            await fs.mkdir(path.join(managedRoot, name, '.git'), { recursive: true });
+        }
+        await writeApplication(path.join(managedRoot, 'repoC'), 'uniqueAgent', 'unique');
+        // The earliest directory (readdir order) has the slowest origin lookup.
+        const ordered = (await fs.readdir(managedRoot)).filter((name) => names.includes(name));
+        const delays = Object.fromEntries(ordered.map((name, index) => [name, [0.6, 0.05, 0.3][index]]));
+        const origins = Object.fromEntries(ordered.map((name) => [name, `https://example.com/org/${name}`]));
+        const { binDir, logPath } = await installSlowGit(workspaceRoot, delays, origins);
+        process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+
+        // The aggregator sorts by component, so the expected list is the sequential result in that order;
+        // the winner of the shared agent name must be the earliest directory.
+        const firstId = `plugin-${ordered[0].toLowerCase()}`;
+        assert.deepEqual(aggregated.application['file-exp:toolbar'].map(plugin => [plugin.id, plugin.agent, plugin.assetRootPath]), [
+            [firstId, 'sharedAgent', `.ploinky/repos/${ordered[0]}/sharedAgent/IDE-plugins/${firstId}`],
+            ['unique', 'uniqueAgent', '.ploinky/repos/repoC/uniqueAgent/IDE-plugins/unique'],
+        ].sort((a, b) => a[0].localeCompare(b[0])));
+        const events = (await fs.readFile(logPath, 'utf8')).trim().split('\n').filter((line) => line.startsWith('end ')).map((line) => path.basename(line.slice(4)));
+        assert.notEqual(events[0], ordered[0], 'the earliest directory lookup must finish last for this test to be meaningful');
+    } finally {
+        process.env.PATH = originalPath;
+        await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+});

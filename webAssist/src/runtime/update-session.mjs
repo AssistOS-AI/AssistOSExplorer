@@ -1,4 +1,4 @@
-import { AgenticKnowledgeUnits } from 'achillesAgentLib';
+import { AgenticKnowledgeUnits } from 'achillesAgentLib/AgenticKnowledgeUnits';
 import path from 'node:path';
 import { initializeWebAssistDataRoot, normalizeSiteId, resolveSiteDataDir } from './akuStore.mjs';
 

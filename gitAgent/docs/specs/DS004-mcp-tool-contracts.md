@@ -73,6 +73,8 @@ Constraint M2.3: a failed quick-status operation in `git_repos_overview` marks t
 
 Constraint M2.4: the compact overview status has a 5-second subprocess deadline per repository. The detailed `git_status` operation has a separate 120-second deadline because it enumerates all untracked and matching ignored paths. The generic 20-second subprocess default does not apply to detailed status.
 
+Constraint M2.5: the recursive scan of `git_repos_overview` does not descend into dot-directories or `node_modules` directories, so a Git repository nested inside a `node_modules` directory is not listed in the overview. This changes discovery only; `git_status` flags and ignored-path reporting are unchanged.
+
 Constraint M3: mixed output formats for the same contract are forbidden unless explicitly declared.
 
 ### Invariants

@@ -83,3 +83,23 @@ test('repository overview keeps a repository loadable when its quick status fail
         await fs.rm(workspaceDir, { recursive: true, force: true });
     }
 });
+
+test('repository overview discovery skips node_modules but lists nested workspace repositories', async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'git-overview-nm-'));
+    try {
+        const vendored = path.join(workspaceDir, 'node_modules', 'x');
+        const nested = path.join(workspaceDir, 'src', 'x');
+        for (const dir of [vendored, nested]) {
+            await fs.mkdir(dir, { recursive: true });
+            runGit(['init'], dir);
+        }
+
+        const gitService = createGitService({ validatePath: async (value) => value });
+        const overview = await gitService.gitReposOverview({ path: workspaceDir });
+        const listed = overview.repos.map((repo) => repo.relativePath).sort();
+
+        assert.deepEqual(listed, ['src/x']);
+    } finally {
+        await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+});
