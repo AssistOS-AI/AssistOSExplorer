@@ -17,7 +17,7 @@ test('copilot cache preparation is silent but preparation failures remain visibl
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-cache-output-'));
     const keys = ['ROBOTEAM_DATA_DIR', 'ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID',
         'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND',
-        'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'PATH'];
+        'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH'];
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
     t.after(async () => {
         for (const key of keys) {
@@ -33,7 +33,9 @@ test('copilot cache preparation is silent but preparation failures remain visibl
     t.mock.method(ToolCache.prototype, 'prepareShellTools', async function (names) {
         for (const name of ['codex', 'pi', 'opencode']) this.log(`[tool-cache] using ${name} cache generation example`);
         if (fail) throw new Error('cache preparation failed');
-        assert.deepEqual(names, ['opencode']);
+        // Copilot preparation prepares every coding agent so any agent can be logged in before it is selected;
+        // the robot's configured agents are then chosen from the prepared set.
+        assert.equal(names, undefined);
         return { binPath: '/cached/bin', agents: { opencode: { binPath: '/cached/bin' } } };
     });
     await prepareCopilotContext('default', { dataDir: root });
