@@ -11,6 +11,7 @@ import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstalla
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
 import { ToolCache } from '../server/tool-cache.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
+import { alaTranscript, alaSessionsRoot } from '../copilot/src/lib/execution/alaTranscript.mjs';
 
 test('copilot cache preparation is silent but preparation failures remain visible', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-cache-output-'));
@@ -150,13 +151,20 @@ export const createRepositoryClient = () => ({
     assert.equal(second.output.resumed, true);
     assert.equal(second.output.prompt.includes('First'), false);
     const continued = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
-    // Conversation text lives in ALA's transcript; the store composes it with the session metadata.
+    // The store composes the conversation from the session metadata turns and ALA's transcript. It falls back to
+    // metadata text when the transcript has none, so the transcript is checked directly for both user prompts.
     const previousRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = root;
-    let conversation;
-    try { conversation = new ConversationSessionStore({ workingDir: workspace }).loadSession(sessionId); }
+    let conversation; let transcript;
+    try {
+        conversation = new ConversationSessionStore({ workingDir: workspace }).loadSession(sessionId);
+        transcript = alaTranscript.readSessionSync(alaSessionsRoot(workspace), sessionId);
+    }
     finally { if (previousRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = previousRoot; }
-    assert.equal(conversation.messages.filter((message) => message.role === 'user').length, 2);
+    const userTexts = conversation.messages.filter((message) => message.role === 'user').map((message) => message.text);
+    assert.equal(userTexts.length, 2);
+    assert.deepEqual(userTexts, ['First', 'Follow up']);
+    assert.deepEqual(transcript.turns.map((turn) => turn.user), ['First', 'Follow up']);
     assert.deepEqual(continued.skillSelection, firstSession.skillSelection);
     // The live skill execution (the required human-report skill) is unchanged by the resumed turn.
     assert.deepEqual(firstSession.skillExecution.entries.map((entry) => entry.name), ['human-report']);
