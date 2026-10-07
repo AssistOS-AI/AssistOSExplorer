@@ -21,7 +21,7 @@
   <table>
     <thead><tr><th>Published image</th><th>Public base</th><th>RoboTeam additions</th></tr></thead>
     <tbody>
-      <tr><td><code>assistos/roboteam-agent:runtime</code></td><td><code>quay.io/podman/upstream:latest</code>, resolved to one digest per publication</td><td>Node.js, npm, Bubblewrap, nested-container storage configuration, and the <code>roboteam-runtime-v4</code> contract. ALA comes from the workspace repository declared by RoboTeam's <code>link-install</code>; Codex is not baked in.</td></tr>
+      <tr><td><code>assistos/roboteam-agent:runtime</code></td><td>Digest-pinned stable Podman 5.8.7, including fixed amd64 and arm64 members</td><td>Node.js, npm, Bubblewrap, nested-container storage configuration, and the <code>roboteam-runtime-v5</code> contract. ALA comes from the workspace repository declared by RoboTeam's <code>link-install</code>; Codex is not baked in.</td></tr>
       <tr><td><code>assistos/roboteam-desktop:runtime</code></td><td>Digest-pinned <code>lscr.io/linuxserver/webtop:ubuntu-xfce</code></td><td>Node/npm, AT-SPI and X11 system support, the desktop MCP launch service, and no computer-use-linux or Supergateway installation.</td></tr>
       <tr><td><code>assistos/roboteam-browser:runtime</code></td><td>Digest-pinned <code>lscr.io/linuxserver/chromium</code></td><td>Node/npm and the service that connects cached Playwright MCP to visible Chromium through CDP. Playwright MCP is not baked in.</td></tr>
     </tbody>
@@ -49,6 +49,7 @@ class Cache,Previous storage</pre><figcaption><em>Startup tool preparation</em><
   <h2>Refresh, fallback, and size policy</h2>
   <p>Each tool family is resolved during startup and rechecked on demand after the fixed six-hour refresh interval. Simultaneous requests share one in-process preparation. A resolved version and its target image identify an immutable cache generation. New content is staged and validated before <code>current.json</code> is replaced atomically. If resolution, download, installation, or validation fails, RoboTeam uses the last stamped generation; startup logs a failure when no fallback exists, and a request fails clearly if its retry also fails.</p>
   <p>The operating-system and graphical base digests remain fixed in image definitions. Runtime tool versions are deliberately absent from those definitions, so updating a tool does not require publishing a new image.</p>
+  <p>The Podman controller is also fixed to an immutable stable release. Its fuse-overlayfs configuration keeps only the image store on the macOS virtiofs-backed data mount, uses <code>force_mask="0700"</code> for protected directories and merged-/usr links, and keeps transient container metadata on the outer container's local graphroot. GUI images pre-create the ToolCache bind targets.</p>
   <p>The graphical images are large because LinuxServer Webtop and Chromium include Selkies, a window manager, browser or desktop packages, audio support, and the supporting operating-system files. The custom MCP layers are a small part of the total. Browser and desktop are separate images, but the current browser base is not substantially smaller because it carries almost the same graphical streaming stack.</p>
 
   <h2>Local development loop</h2>
