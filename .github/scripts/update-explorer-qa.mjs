@@ -178,15 +178,13 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         const sources = pins();
         prove(sources.some(source => source.relative === '.runtime/ploinky')
             && sources.some(source => source.relative === EXPLORER_SOURCE), 'QA_UPDATE_SOURCES_INCOMPLETE');
-        const dependencyLock = readJson(path.join(scope.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json'));
-        const locked = dependencyLock.repositories?.achillesAgentLib;
-        prove(locked?.url === 'https://github.com/AssistOS-AI/AchillesAgentLib.git' && COMMIT.test(locked.commit), 'QA_UPDATE_AGENTLIB_LOCK_INVALID');
-        const agentLib = await adapters.verifyAgentLib(current, locked.commit);
-        for (const destination of ['/opt/ploinky', ...(agentLib.mode === 'image' ? [] : ['/opt/ploinky-agentlib'])]) {
-            const mounts = current.box.mounts.filter(mount => mount.Destination === destination);
-            prove(mounts.length === 1 && sources.some(source => path.join(scope.workspace, source.relative) === mounts[0].Source),
-                'QA_UPDATE_MOUNTED_SOURCE_NOT_CAPTURED');
-        }
+        // The Box image supplies AchillesAgentLib and is its only identity; the
+        // adapter admits only that image-owned selection, so Ploinky is the one
+        // mounted source.
+        const agentLib = await adapters.verifyAgentLib(current);
+        const mounts = current.box.mounts.filter(mount => mount.Destination === '/opt/ploinky');
+        prove(mounts.length === 1 && sources.some(source => path.join(scope.workspace, source.relative) === mounts[0].Source),
+            'QA_UPDATE_MOUNTED_SOURCE_NOT_CAPTURED');
         const runtime = await adapters.runtime(current);
         prove(Array.isArray(runtime.agents) && runtime.agents.length > 0, 'QA_UPDATE_AGENT_SELECTION_INVALID');
         const agents = [...runtime.agents].sort((a, b) => a.name.localeCompare(b.name));

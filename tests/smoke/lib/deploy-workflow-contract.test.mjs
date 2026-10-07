@@ -72,10 +72,9 @@ const WORKFLOWS = [
       'tunnelTokenSecret,',
       'MEDIA_PUBLIC_IPV4:',
       "addressMode: 'direct'",
-      'RUNTIME_DIR/ploinky-box/dependencies.lock.json',
-      'Ploinky AgentLib lock must select the canonical remote and one exact commit',
-      'BEGIN QA locked AgentLib verification',
-      'await adapters.verifyAgentLib(boxes[0], expectedCommit)',
+      'achillesAgentLib comes from the Box image; no commit is pinned.',
+      'BEGIN QA image-owned AgentLib verification',
+      'await adapters.verifyAgentLib(boxes[0])',
       'immutable source ${selection.sourceId}',
       "agent: 'AchillesIDE/explorer'",
       "'browser-auth'",
@@ -359,15 +358,14 @@ test('Explorer QA workflow rejects unsafe identity and tunnel state before SSH',
   assert.match(source, /install -m 600 "\$RUNNER_TEMP\/explorer_qa_known_hosts"/);
 });
 
-test('Explorer QA deploy resolves graph defaults and Ploinky-locked AgentLib independently', () => {
+test('Explorer QA deploy resolves graph defaults and takes AgentLib from the Box image, not a branch head', () => {
   const source = fs.readFileSync(
     path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'),
     'utf8',
   );
 
   assert.match(source, /resolve_default_branch\(\) \{/);
-  assert.match(source, /"\$RUNTIME_DIR\/ploinky-box\/dependencies\.lock\.json"/);
-  assert.match(source, /EXPECTED_AGENTLIB_BRANCH="\$\(resolve_default_branch "\$AGENTLIB_URL"\)"/);
+  assert.doesNotMatch(source, /dependencies\.lock\.json|resolve_default_branch "\$AGENTLIB_URL"|AchillesAgentLib\.git/);
   assert.match(source, /PLOINKY_BRANCH="\$\(resolve_default_branch "\$PLOINKY_URL"\)"/);
   assert.match(source, /checkout -B "\$PLOINKY_BRANCH" "refs\/remotes\/origin\/\$PLOINKY_BRANCH"/);
   assert.match(source, /branch --set-upstream-to="origin\/\$PLOINKY_BRANCH" "\$PLOINKY_BRANCH"/);
@@ -392,7 +390,7 @@ test('Explorer QA deploy explicitly reconciles every managed checkout to the sel
     graphBlock,
     /for repository_record in "\$\{GRAPH_REPOSITORIES\[@\]\}"; do[\s\S]*default_branch="\$\(resolve_default_branch "\$repository_url"\)"[\s\S]*BRANCH_ARGS\+=\(--repo-branch "\$repository_name=\$default_branch"\)[\s\S]*done/,
   );
-  assert.doesNotMatch(graphBlock, /--branch/, 'AgentLib branch selection happens only after reading the selected Ploinky lock');
+  assert.doesNotMatch(graphBlock, /--branch/, 'the graph selects no AgentLib branch; the Box image supplies AgentLib');
   assert.equal(
     source.match(/start explorer "\$\{BRANCH_ARGS\[@\]\}"/g)?.length,
     2,
@@ -402,38 +400,58 @@ test('Explorer QA deploy explicitly reconciles every managed checkout to the sel
   assert.match(source, /observed upstream: \$\{deployed_upstream:-<none>\}/);
 });
 
-test('Explorer QA Ploinky preflight accepts only its canonical locked AgentLib source', (t) => {
+test('Explorer QA takes AchillesAgentLib from the Box image and pins no commit', (t) => {
   const source = fs.readFileSync(
     path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'),
     'utf8',
   );
-  const marker = 'const lockFile = process.argv[2];';
+  // Ploinky no longer ships a dependency lock, so QA must neither read one nor
+  // compare the image's library with a branch head.
+  assert.doesNotMatch(source, /dependencies\.lock|EXPECTED_AGENTLIB|Ploinky locks achillesAgentLib|--expected-commit/);
+  const marker = '// BEGIN QA image-owned AgentLib verification';
   const markerIndex = source.indexOf(marker);
   const heredocStart = source.lastIndexOf("<<'NODE'\n", markerIndex);
   const scriptStart = heredocStart + "<<'NODE'\n".length;
   const scriptEnd = source.indexOf('\n          NODE', markerIndex);
-  assert.ok(heredocStart > 0 && scriptEnd > scriptStart, 'AgentLib validator heredoc must close');
+  assert.ok(markerIndex > 0 && heredocStart > 0 && scriptEnd > scriptStart, 'AgentLib verification heredoc must close');
+  assert.equal(
+    source.slice(source.lastIndexOf('\n', heredocStart) + 1, heredocStart).trim(),
+    'node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$BOX_INSTANCE"',
+    'the verifier receives only the rollback helper and the exact Box instance',
+  );
   const script = source.slice(scriptStart, scriptEnd).replace(/^          /gm, '');
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'explorer-qa-agentlib-validator-'));
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'explorer-qa-agentlib-verifier-'));
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
-  const lockFile = path.join(temporary, 'dependencies.lock.json');
-  const expectedCommit = 'a'.repeat(40);
-  const expectedSource = 'https://github.com/AssistOS-AI/AchillesAgentLib.git';
-  const run = (source) => {
-    fs.writeFileSync(lockFile, JSON.stringify({ repositories: { achillesAgentLib: source } }));
-    return spawnSync(
-      process.execPath,
-      ['--input-type=module', '-', lockFile],
-      { encoding: 'utf8', input: script },
-    );
+  const helper = path.join(temporary, 'helper.mjs');
+  const instance = 'ploinky-box-explorerqaworkspace-7a31ab7775eb';
+  const install = (selection) => fs.writeFileSync(helper, `
+export function productionAdapters() {
+  return {
+    boxes: () => [{ engine: 'podman', box: { name: ${JSON.stringify(instance)} } }],
+    async verifyAgentLib(...args) {
+      if (args.length !== 1) throw new Error('verifyAgentLib received ' + args.length + ' arguments');
+      return ${JSON.stringify(selection)};
+    },
   };
-
-  const valid = run({ url: expectedSource, commit: expectedCommit });
-  assert.equal(valid.status, 0, valid.stderr);
-  assert.equal(valid.stdout, `${expectedSource}\t${expectedCommit}`);
-  assert.notEqual(run({ url: expectedSource, commit: 'master' }).status, 0, 'mutable ref must fail');
-  assert.notEqual(run({ url: 'https://example.invalid/AchillesAgentLib.git', commit: expectedCommit }).status, 0, 'wrong remote must fail');
-  assert.notEqual(run({ url: expectedSource, commit: 'b'.repeat(39) }).status, 0, 'malformed revision must fail');
+}
+`);
+  const run = () => spawnSync(process.execPath, ['--input-type=module', '-', helper, instance],
+    { encoding: 'utf8', input: script });
+  const image = `sha256:${'d'.repeat(64)}`;
+  const selection = {
+    mode: 'image', contract: 'image-owned', imageId: image, sourceId: 'e'.repeat(64), sourceRelativePath: 'image',
+    packageName: 'ploinky-agent-lib', packageVersion: '1.2.3',
+    provenance: { repository: 'https://github.com/AssistOS-AI/AchillesAgentLib.git', branch: 'master', commit: 'a'.repeat(40) },
+  };
+  install(selection);
+  const verified = run();
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.equal(verified.stdout.trim(), `[deploy-qa] Verified image-supplied achillesAgentLib ploinky-agent-lib@1.2.3 from ${image}; `
+    + `immutable source ${'e'.repeat(64)}; build provenance https://github.com/AssistOS-AI/AchillesAgentLib.git@${'a'.repeat(40)} (diagnostic only).`);
+  install({ ...selection, packageVersion: null, provenance: null });
+  const unversioned = run();
+  assert.equal(unversioned.status, 0, unversioned.stderr);
+  assert.match(unversioned.stdout, /ploinky-agent-lib@unversioned .*build provenance unavailable \(diagnostic only\)\.$/m);
 });
 
 test('Explorer QA validates Ploinky AgentLib selection against the outer Box identity', () => {
@@ -443,10 +461,10 @@ test('Explorer QA validates Ploinky AgentLib selection against the outer Box ide
   );
 
   for (const required of [
-    'BEGIN QA locked AgentLib verification',
-    '"$BOX_INSTANCE" "$EXPECTED_AGENTLIB_COMMIT"',
+    'BEGIN QA image-owned AgentLib verification',
+    `"$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$BOX_INSTANCE" <<'NODE'`,
     'const adapters = productionAdapters();',
-    'await adapters.verifyAgentLib(boxes[0], expectedCommit)',
+    'await adapters.verifyAgentLib(boxes[0])',
     'immutable source ${selection.sourceId}',
   ]) {
     assert.equal(source.includes(required), true, `missing AgentLib outer Box identity contract: ${required}`);

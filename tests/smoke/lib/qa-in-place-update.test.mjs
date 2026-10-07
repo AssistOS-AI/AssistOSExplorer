@@ -28,9 +28,6 @@ function fixture(t) {
         '.ploinky/repos/AchillesCLI': { commit: LIB, branch: 'main', origin: 'https://github.com/AssistOS-AI/AchillesCLI.git' },
     };
     for (const relative of Object.keys(sourcePins)) fs.mkdirSync(path.join(scope.workspace, relative), { recursive: true });
-    write(path.join(scope.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json'), {
-        repositories: { achillesAgentLib: { url: 'https://github.com/AssistOS-AI/AchillesAgentLib.git', commit: LIB } },
-    });
     write(path.join(scope.workspace, '.ploinky/edge-desired.json'), {
         hosts: { 'explorer-qa.axiologic.dev': { agent: 'AchillesIDE/explorer' } },
         media: { publicIPv4: '45.136.70.141', addressMode: 'direct' },
@@ -64,8 +61,11 @@ function fixture(t) {
             if (state.dirty) throw Object.assign(Error('dirty'), { code: 'QA_SOURCE_NOT_CLEAN' });
             return structuredClone(sourcePins[path.relative(scope.workspace, directory)]);
         },
-        async verifyAgentLib(_item, expected) {
-            assert.equal(expected, LIB); return { mode: 'image', commit: LIB, fingerprint: IMAGE };
+        async verifyAgentLib(item, ...rest) {
+            // The Box image is the only AchillesAgentLib identity; nothing is pinned.
+            assert.equal(item.box.id, BOX); assert.deepEqual(rest, []);
+            return { mode: 'image', contract: 'image-owned', imageId: `sha256:${IMAGE}`, sourceId: LIB.repeat(2).slice(0, 64),
+                sourceRelativePath: 'image', packageName: 'ploinky-agent-lib', packageVersion: '1.0.0', provenance: null };
         },
         runtime: async () => ({ agents: structuredClone(agents), active: state.active,
             generation: state.generation, activationId: 'original-activation' }),
@@ -129,6 +129,22 @@ test('plan discovers default branch without fetching, locks, receipts or runtime
     assert.equal(result.changeValidation, 'requires-fetch');
     assert.equal(result.previousCommit, OLD); assert.equal(result.candidateCommit, NEXT);
     assert.deepEqual(f.events, []); assert.equal(fs.existsSync(f.receipt), false); f.unchangedData();
+});
+
+test('the update verifies the image-supplied AgentLib without any Ploinky dependency lock', async t => {
+    const f = fixture(t);
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json')), false);
+    assert.equal((await f.service.plan()).result, 'planned');
+    const rejected = fixture(t);
+    rejected.adapters.verifyAgentLib = async () => {
+        throw Object.assign(Error('QA_AGENTLIB_IMAGE_MODE_REQUIRED: the QA Box uses local mode.'), { code: 'QA_AGENTLIB_IMAGE_MODE_REQUIRED' });
+    };
+    await assert.rejects(rejected.service.plan(), { code: 'QA_AGENTLIB_IMAGE_MODE_REQUIRED' });
+    assert.deepEqual(rejected.events, [], 'planning takes no lock');
+    await assert.rejects(rejected.service.execute(rejected.receipt), { code: 'QA_AGENTLIB_IMAGE_MODE_REQUIRED' });
+    assert.deepEqual(rejected.events, ['lock', 'unlock'], 'refused under the workspace lock before any fetch, fast-forward or restart');
+    assert.equal(rejected.sourcePins[EXPLORER_SOURCE].commit, OLD);
+    rejected.unchangedData();
 });
 
 test('healthy update fast-forwards only Explorer and restarts only affected enabled agents', async t => {

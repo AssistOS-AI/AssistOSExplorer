@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 export const QA_SCOPE = Object.freeze({
     workspace: '/home/admin/explorerQaWorkspace',
@@ -19,8 +19,16 @@ export const QUIESCE_EXEC_TIMEOUT_MS = 900_000;
 const FULL_ID = /^[a-f0-9]{64}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const LABEL = 'io.assistos.ploinky-box.';
-const AGENTLIB_IMAGE_PROBE = '/usr/local/share/ploinky/agentlib/image-bundle.mjs';
+// The image owns its AchillesAgentLib checks. Ploinky runs the same probe; it
+// lives outside every host mount, so it is the image's own copy.
+const AGENTLIB_IMAGE_PROBE = '/usr/local/share/ploinky/smoke-libraries.mjs';
+// Boxes created by a Ploinky release before image-owned libraries labelled the
+// bundled commit and fingerprint and shipped this verifier. They are admitted
+// only as predecessors to capture and roll back, never as the current QA Box.
+const LEGACY_AGENTLIB_IMAGE_PROBE = '/usr/local/share/ploinky/agentlib/image-bundle.mjs';
 const AGENTLIB_IMAGE_PATH = '/opt/ploinky-agentlib';
+const AGENTLIB_PACKAGE_NAME = 'ploinky-agent-lib';
+const BOX_IMAGE_ID_ENV = 'PLOINKY_BOX_IMAGE_ID';
 const AUTH_FILES = ['.env', '.ploinky/master-key', '.ploinky/.secrets', '.ploinky/passwords.enc',
     '.ploinky/ploinky_subject_identity_ed25519_v1.enc'];
 const GENERATED_STATE = new Set(['agents.json', 'routing.json', 'running', 'run', 'logs', 'box', 'deps',
@@ -165,6 +173,7 @@ function durableEntries(root) {
 
 function assertImageAgentLibMounts(mounts) {
     requireProof(Array.isArray(mounts), 'QA_AGENTLIB_IMAGE_SHADOWED');
+    // The package, both verifiers, the provenance record and their interpreter.
     const protectedPaths = [AGENTLIB_IMAGE_PATH, path.posix.dirname(AGENTLIB_IMAGE_PROBE), '/usr/local/bin/node'];
     requireProof(mounts.every(mount => {
         const destination = mount.Destination;
@@ -182,25 +191,85 @@ function assertAgentLibImageIdentity(image, imageProof) {
         && imageProof.Config?.User === 'podman', 'QA_AGENTLIB_IMAGE_IDENTITY_INVALID');
 }
 
-function imageAgentLib(item, mounts, imageProof, imageReference) {
-    const labels = item.Config.Labels;
-    const image = String(item.Image || '').replace(/^sha256:/, '');
+/** Whether image-mode labels follow the retired commit-labelled contract. */
+function isLegacyImageAgentLib(labels) {
+    return Object.hasOwn(labels, LABEL + 'agentlib-commit') || Object.hasOwn(labels, LABEL + 'agentlib-fingerprint');
+}
+
+/** Ploinky's source identity of the AchillesAgentLib an outer image supplies: that image and the library. */
+export function imageAgentLibSourceId(imageId) {
+    return digest(JSON.stringify({ kind: 'image', library: 'achillesAgentLib', supplyingImageId: imageId }));
+}
+
+/**
+ * The package report of the image's own probe. As in Ploinky, the package must
+ * be AchillesAgentLib; the build provenance is diagnostic and never compared.
+ */
+function libraryReport(report, code) {
+    requireProof(report?.schema === 'ploinky.box.library-inspect/v1' && report.library === 'achillesAgentLib'
+        && report.packageName === AGENTLIB_PACKAGE_NAME
+        && (report.packageVersion === null || (typeof report.packageVersion === 'string' && report.packageVersion)), code);
+    const provenance = report.provenance && typeof report.provenance === 'object'
+        && typeof report.provenance.repository === 'string' && /^[a-f0-9]{40}$/.test(String(report.provenance.commit))
+        ? { repository: report.provenance.repository, branch: report.provenance.branch ?? null, commit: report.provenance.commit }
+        : null;
+    return { packageName: report.packageName, packageVersion: report.packageVersion, provenance };
+}
+
+function imageOwnedAgentLib(item, labels, image, imageProof) {
+    const imageId = `sha256:${image}`;
+    const sourceId = labels[LABEL + 'agentlib-source-id'];
+    requireProof(labels[LABEL + 'agentlib-source-path'] === 'image' && sourceId === imageAgentLibSourceId(imageId),
+        'QA_AGENTLIB_IMAGE_LABELS_INVALID');
+    const imageIdEnv = (Array.isArray(item.Config?.Env) ? item.Config.Env : [])
+        .filter(entry => String(entry).startsWith(`${BOX_IMAGE_ID_ENV}=`));
+    requireProof(imageIdEnv.length === 1 && imageIdEnv[0] === `${BOX_IMAGE_ID_ENV}=${imageId}`, 'QA_AGENTLIB_IMAGE_ID_ENV_INVALID');
+    const library = libraryReport(imageProof.agentLibInspection, 'QA_AGENTLIB_IMAGE_BUNDLE_INVALID');
+    requireProof(!item.State.Running || JSON.stringify(libraryReport(imageProof.runtimeAgentLibInspection,
+        'QA_AGENTLIB_RUNTIME_BUNDLE_INVALID')) === JSON.stringify(library), 'QA_AGENTLIB_RUNTIME_BUNDLE_INVALID');
+    return { mode: 'image', contract: 'image-owned', imageId, sourceId, sourceRelativePath: 'image', ...library };
+}
+
+function legacyImageAgentLibSelection(item, labels, image, imageProof) {
     const commit = labels[LABEL + 'agentlib-commit'];
     const fingerprint = labels[LABEL + 'agentlib-fingerprint'];
     const sourceId = labels[LABEL + 'agentlib-source-id'];
-    assertAgentLibImageIdentity(image, imageProof);
-    requireProof(imageProof.verifiedImageReference === imageReference
-        && String(imageProof.referenceImageId || '').replace(/^sha256:/, '') === image, 'QA_AGENTLIB_IMAGE_REFERENCE_CHANGED');
     requireProof(/^[a-f0-9]{40}$/.test(commit || '') && FULL_ID.test(fingerprint || '')
         && labels[LABEL + 'agentlib-source-path'] === 'image'
         && sourceId === digest(`image:sha256:${image}:${fingerprint}`), 'QA_AGENTLIB_IMAGE_LABELS_INVALID');
-    assertImageAgentLibMounts(mounts);
     const expected = { schemaVersion: 1, commit, fingerprint };
     const matches = proof => proof && proof.schemaVersion === expected.schemaVersion
         && proof.commit === commit && proof.fingerprint === fingerprint;
     requireProof(matches(imageProof.agentLibBundle), 'QA_AGENTLIB_IMAGE_BUNDLE_INVALID');
     requireProof(!item.State.Running || matches(imageProof.runtimeAgentLibBundle), 'QA_AGENTLIB_RUNTIME_BUNDLE_INVALID');
     return { mode: 'image', imageId: `sha256:${image}`, commit, fingerprint, sourceId, sourceRelativePath: 'image' };
+}
+
+function imageAgentLib(item, mounts, imageProof, imageReference) {
+    const labels = item.Config.Labels;
+    const image = String(item.Image || '').replace(/^sha256:/, '');
+    assertAgentLibImageIdentity(image, imageProof);
+    requireProof(imageProof.verifiedImageReference === imageReference
+        && String(imageProof.referenceImageId || '').replace(/^sha256:/, '') === image, 'QA_AGENTLIB_IMAGE_REFERENCE_CHANGED');
+    assertImageAgentLibMounts(mounts);
+    return isLegacyImageAgentLib(labels)
+        ? legacyImageAgentLibSelection(item, labels, image, imageProof)
+        : imageOwnedAgentLib(item, labels, image, imageProof);
+}
+
+/**
+ * A QA Box takes AchillesAgentLib from its own image under the image-owned
+ * contract. Anything else is an unexpected state that must not be deployed on.
+ */
+export function assertImageOwnedAgentLib(selection) {
+    if (selection?.mode === 'image' && selection.contract === 'image-owned') return selection;
+    const observed = !selection?.mode ? 'no AgentLib selection'
+        : selection.mode === 'image' ? 'image mode under the retired commit-labelled contract'
+            : `${selection.mode} mode`;
+    throw Object.assign(new Error(`QA_AGENTLIB_IMAGE_MODE_REQUIRED: the QA Box uses ${observed}. `
+        + 'A QA Box must take AchillesAgentLib from its Box image. Remove any achillesAgentLib checkout from the QA '
+        + 'workspace, deploy the Ploinky release with image-owned libraries, then redeploy.'),
+    { code: 'QA_AGENTLIB_IMAGE_MODE_REQUIRED' });
 }
 
 function inspectBoxIdentity(item, scope) {
@@ -301,11 +370,8 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             const mount = predecessor.box.mounts.find(item => item.Destination === destination);
             requireProof(sources.some(source => path.join(scope.workspace, source.relative) === mount.Source), 'QA_MOUNTED_SOURCE_NOT_CAPTURED');
         }
-        if (predecessor?.box.agentLib?.mode === 'image') {
-            const lock = readJson(path.join(scope.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json'));
-            requireProof(lock.repositories?.achillesAgentLib?.url === 'https://github.com/AssistOS-AI/AchillesAgentLib.git'
-                && lock.repositories.achillesAgentLib.commit === predecessor.box.agentLib.commit, 'QA_AGENTLIB_LOCK_MISMATCH');
-        }
+        // An image predecessor's AgentLib authority is its immutable image,
+        // already verified with that image's own probe when it was inspected.
         const authority = { version: 1, workspace: scope.workspace, backup, machineId: adapters.machineId(),
             createdAt: new Date().toISOString(), workspaceIdentity: stat ? identity(stat) : null,
             predecessor, sources, auth: stat ? secretIdentities(scope.workspace) : [],
@@ -496,8 +562,9 @@ export function productionAdapters(scope = QA_SCOPE) {
         }
         if (bundled) {
             const id = String(item.Image || '').replace(/^sha256:/, '');
+            const legacy = isLegacyImageAgentLib(item.Config.Labels);
             const commit = String(item.Config.Labels[LABEL + 'agentlib-commit'] || '');
-            requireProof(/^[a-f0-9]{40}$/.test(commit), 'QA_AGENTLIB_IMAGE_LABELS_INVALID');
+            requireProof(!legacy || /^[a-f0-9]{40}$/.test(commit), 'QA_AGENTLIB_IMAGE_LABELS_INVALID');
             assertImageAgentLibMounts(item.Mounts);
             assertAgentLibImageIdentity(id, proof);
             const pinned = /^[^\s]+@sha256:[a-f0-9]{64}$/.test(reference) ? reference
@@ -509,15 +576,27 @@ export function productionAdapters(scope = QA_SCOPE) {
             proof.verifiedImageReference = pinned;
             proof.referenceImageId = referenceImages[0].Id;
             // No workspace mounts or network are available to this immutable-image
-            // probe. Its verifier checks the sealed metadata, actual bytes and
-            // root ownership independently of the mutable Ploinky checkout.
-            proof.agentLibBundle = JSON.parse(command(engine, ['run', '--rm', '--network=none', '--pull=never',
-                '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--user=podman',
-                '--entrypoint=/usr/local/bin/node', id, AGENTLIB_IMAGE_PROBE, 'verify', '--expected-commit', commit],
-            { env, timeout: 60_000 }));
-            if (item.State?.Running === true) {
-                proof.runtimeAgentLibBundle = JSON.parse(command(engine, ['container', 'exec', '--user', 'podman', item.Id,
-                    '/usr/local/bin/node', AGENTLIB_IMAGE_PROBE, 'verify', '--expected-commit', commit], { env, timeout: 60_000 }));
+            // probe. The image's own verifier checks the protected package layout,
+            // actual modules and root ownership independently of the mutable
+            // Ploinky checkout. A retired commit-labelled image checks its label.
+            const sealed = ['run', '--rm', '--network=none', '--pull=never', '--read-only', '--cap-drop=ALL',
+                '--security-opt=no-new-privileges', '--user=podman'];
+            if (legacy) {
+                proof.agentLibBundle = JSON.parse(command(engine, [...sealed,
+                    '--entrypoint=/usr/local/bin/node', id, LEGACY_AGENTLIB_IMAGE_PROBE, 'verify', '--expected-commit', commit],
+                { env, timeout: 60_000 }));
+                if (item.State?.Running === true) {
+                    proof.runtimeAgentLibBundle = JSON.parse(command(engine, ['container', 'exec', '--user', 'podman', item.Id,
+                        '/usr/local/bin/node', LEGACY_AGENTLIB_IMAGE_PROBE, 'verify', '--expected-commit', commit], { env, timeout: 60_000 }));
+                }
+            } else {
+                const probe = [AGENTLIB_IMAGE_PROBE, 'inspect', 'achillesAgentLib'];
+                proof.agentLibInspection = JSON.parse(command(engine, [...sealed, '--tmpfs=/tmp:rw,nosuid,nodev,mode=1777',
+                    '--entrypoint=/usr/local/bin/node', id, ...probe], { env, timeout: 60_000 }));
+                if (item.State?.Running === true) {
+                    proof.runtimeAgentLibInspection = JSON.parse(command(engine, ['container', 'exec', '--user', 'podman', item.Id,
+                        '/usr/local/bin/node', ...probe], { env, timeout: 60_000 }));
+                }
             }
         }
         return { engine, box: sanitizeBox(item, scope, proof) };
@@ -577,23 +656,13 @@ export function productionAdapters(scope = QA_SCOPE) {
             }
             return result;
         },
-        async verifyAgentLib(item, expectedCommit) {
-            requireProof(/^[a-f0-9]{40}$/.test(expectedCommit || ''), 'QA_AGENTLIB_LOCK_MISMATCH');
+        // The current QA Box's AgentLib is the one its exact image supplies:
+        // inspection re-verifies both copies with the image's own probe. No
+        // commit is pinned; the build provenance is recorded as diagnostic.
+        async verifyAgentLib(item) {
             const current = inspect(item.engine, item.box.id);
             requireProof(current.box.contract === item.box.contract && current.box.running, 'QA_BOX_CHANGED_DURING_VERIFICATION');
-            const selection = current.box.agentLib;
-            requireProof(selection && ['image', 'managed', 'local'].includes(selection.mode)
-                && selection.commit === expectedCommit, 'QA_AGENTLIB_LOCK_MISMATCH');
-            if (selection.mode !== 'image') {
-                const source = current.box.mounts.find(mount => mount.Destination === AGENTLIB_IMAGE_PATH).Source;
-                const core = current.box.mounts.find(mount => mount.Destination === '/opt/ploinky').Source;
-                requireProof(adapters.sourcePin(source).commit === expectedCommit, 'QA_AGENTLIB_LOCK_MISMATCH');
-                adapters.sourcePin(core);
-                const { fingerprintSource, sourceIdHash } = await import(pathToFileURL(path.join(core, 'agentlib/fingerprint.mjs')).href);
-                const actual = fingerprintSource(source);
-                requireProof(actual.fingerprint === selection.fingerprint && sourceIdHash(actual.sourceId) === selection.sourceId
-                    && path.relative(scope.workspace, source) === selection.sourceRelativePath, 'QA_AGENTLIB_SOURCE_CHANGED');
-            }
+            const selection = assertImageOwnedAgentLib(current.box.agentLib);
             const final = inspect(item.engine, item.box.id);
             requireProof(final.box.contract === current.box.contract && final.box.running, 'QA_BOX_CHANGED_DURING_VERIFICATION');
             return selection;

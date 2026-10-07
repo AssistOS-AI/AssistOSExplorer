@@ -43,12 +43,17 @@ with absence checked again under the workspace lock. Removal remains a separate,
 explicit operation in `destroy-explorer-qa.yml`. For a fresh installation it resolves
 Ploinky and every managed application repository from each remote's configured
 default branch, while keeping explicit per-repository selections for the graph.
-It then reads the canonical achillesAgentLib URL and immutable commit from the
-selected Ploinky dependency lock, requires that commit to equal the AgentLib
-remote default-branch head, and leaves AgentLib on that exact locked commit
-without applying one global branch to the differently named application
-branches. Once every agent in the default graph is running, the workflow validates every managed
-repository revision and the outer Box's locked AgentLib identity. The paired
+It never applies one global branch to the differently named application
+branches. AchillesAgentLib is not a selected repository: the Box image supplies
+it and that exact outer image is its identity, so the workflow pins no AgentLib
+commit. Once every agent in the default graph is running, the workflow validates
+every managed repository revision and the outer Box's image-owned AgentLib: the
+image-owned labels and `PLOINKY_BOX_IMAGE_ID` bound to the outer image, and the
+image's own `smoke-libraries.mjs inspect achillesAgentLib` probe on the sealed
+image and in the running Box. The library's build provenance is recorded as
+diagnostic only. A current QA Box in any other AgentLib mode is refused with the
+observed mode and the recovery. A predecessor Box from a Ploinky release before
+image-owned libraries is still captured and rolled back by its own verifier. The paired
 destroy workflow requires only its explicit destructive confirmation and
 preserves the deployed runtime as the authority for teardown.
 

@@ -42,8 +42,8 @@ try {
         assert.equal(upstream, `origin/${wanted.branch}`);
         sources[relative] = { ...actual, upstream };
     }
-    const dependencyLock = JSON.parse(fs.readFileSync(path.join(QA_SCOPE.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json')));
-    const agentLib = await adapters.verifyAgentLib(current, dependencyLock.repositories.achillesAgentLib.commit);
+    // The Box image supplies AchillesAgentLib; the adapter verifies it against that exact image.
+    const agentLib = await adapters.verifyAgentLib(current);
     // The Box sees the host workspace at the same absolute path.
     const prefix = ['container', 'exec', '--user', 'podman', '--workdir', QA_SCOPE.workspace, current.box.id];
     const noWait = run(current.engine, [...prefix, 'node',

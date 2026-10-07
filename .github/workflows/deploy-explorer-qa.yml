@@ -1616,40 +1616,9 @@ jobs:
             exit 1
           fi
           echo "[deploy-qa] Ploinky runtime: $(git -C "$RUNTIME_DIR" rev-parse --short HEAD) ($PLOINKY_BRANCH)"
-          agentlib_selection="$(
-            node --input-type=module - \
-              "$RUNTIME_DIR/ploinky-box/dependencies.lock.json" <<'NODE'
-          import fs from 'node:fs';
-
-          const lockFile = process.argv[2];
-          const expectedUrl = 'https://github.com/AssistOS-AI/AchillesAgentLib.git';
-          const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-          const source = lock?.repositories?.achillesAgentLib;
-          const url = String(source?.url || '');
-          const commit = String(source?.commit || '');
-          if (url !== expectedUrl || !/^[a-f0-9]{40}$/.test(commit)) {
-            throw new Error('Ploinky AgentLib lock must select the canonical remote and one exact commit');
-          }
-          process.stdout.write(`${url}\t${commit}`);
-          NODE
-          )"
-          IFS=$'\t' read -r AGENTLIB_URL EXPECTED_AGENTLIB_COMMIT <<< "$agentlib_selection"
-          EXPECTED_AGENTLIB_BRANCH="$(resolve_default_branch "$AGENTLIB_URL")"
-          if ! agentlib_record="$(
-            git ls-remote --exit-code --heads \
-              "$AGENTLIB_URL" \
-              "refs/heads/$EXPECTED_AGENTLIB_BRANCH"
-          )"; then
-            echo "[deploy-qa] ERROR: achillesAgentLib has no '$EXPECTED_AGENTLIB_BRANCH' branch."
-            exit 1
-          fi
-          REMOTE_AGENTLIB_COMMIT="$(printf '%s\n' "$agentlib_record" | awk 'NR == 1 { print $1 }')"
-          if [ "$REMOTE_AGENTLIB_COMMIT" != "$EXPECTED_AGENTLIB_COMMIT" ]; then
-            echo "[deploy-qa] ERROR: Ploinky locks achillesAgentLib at $EXPECTED_AGENTLIB_COMMIT"
-            echo "[deploy-qa]        but $EXPECTED_AGENTLIB_BRANCH currently resolves to $REMOTE_AGENTLIB_COMMIT."
-            exit 1
-          fi
-          echo "[deploy-qa] Verified Ploinky's locked achillesAgentLib/$EXPECTED_AGENTLIB_BRANCH at $EXPECTED_AGENTLIB_COMMIT."
+          # The Box image supplies achillesAgentLib, identified by that exact
+          # image. It is verified with the image's own probe once the Box runs.
+          echo "[deploy-qa] achillesAgentLib comes from the Box image; no commit is pinned."
 
           ALA_URL='https://github.com/AssistOS-AI/AdvancedLanguageAgent.git'
           ALA_BRANCH="$(resolve_default_branch "$ALA_URL")"
@@ -2303,18 +2272,20 @@ jobs:
             echo "[deploy-qa] Verified $repository_name/$expected_branch at $deployed_commit."
           done
           verify_ala_checkout
-          node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$BOX_INSTANCE" "$EXPECTED_AGENTLIB_COMMIT" <<'NODE'
+          node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$BOX_INSTANCE" <<'NODE'
           import assert from 'node:assert/strict';
-          // BEGIN QA locked AgentLib verification
-          const [helper, instance, expectedCommit] = process.argv.slice(2);
+          // BEGIN QA image-owned AgentLib verification
+          const [helper, instance] = process.argv.slice(2);
           assert.equal(instance, 'ploinky-box-explorerqaworkspace-7a31ab7775eb');
           const { productionAdapters } = await import(helper);
           const adapters = productionAdapters();
           const boxes = adapters.boxes().filter(item => item.box.name === instance);
           assert.equal(boxes.length, 1, 'Current QA Box is ambiguous');
-          const selection = await adapters.verifyAgentLib(boxes[0], expectedCommit);
-          console.log(`[deploy-qa] Verified locked achillesAgentLib ${selection.mode} source at ${selection.commit}; immutable source ${selection.sourceId}.`);
-          // END QA locked AgentLib verification
+          const selection = await adapters.verifyAgentLib(boxes[0]);
+          const provenance = selection.provenance
+            ? `${selection.provenance.repository}@${selection.provenance.commit}` : 'unavailable';
+          console.log(`[deploy-qa] Verified image-supplied achillesAgentLib ${selection.packageName}@${selection.packageVersion ?? 'unversioned'} from ${selection.imageId}; immutable source ${selection.sourceId}; build provenance ${provenance} (diagnostic only).`);
+          // END QA image-owned AgentLib verification
           NODE
 
           echo "[deploy-qa] Verifying the loopback Router publication..."
