@@ -1,43 +1,65 @@
-import { withoutSummaryBlocks, summaryRanges } from '../../shared/impact-summary.mjs';
+import { withoutSummaryBlocks, withoutSummaryMarkers, summaryRanges } from '../../shared/impact-summary.mjs';
 import { invalid } from './graph.mjs';
-// Accept wrapped final responses and older payloads followed by a report.
+import { parseJsonObject, parseStructuredResponse } from './markdown-response.mjs';
+
+const decisionSchema = {
+    fields: {
+        message: 'text', nextEdgeId: { type: 'scalar', aliases: ['nextEdge', 'Edge'], normalizeJson: true }, afterWorkflowsEdgeId: 'scalar',
+    },
+    groups: [{ heading: 'workflow', collection: 'workflows', identity: 'workflowTypeId', fields: {
+        workflowTypeId: 'scalar', prompt: 'text', executionType: 'scalar',
+    } }],
+};
+const generationSchema = {
+    fields: { id: 'scalar', name: 'scalar', description: 'text', entryTaskId: 'scalar' },
+    groups: [
+        { heading: 'task', collection: 'tasks', identity: 'id', fields: {
+            id: 'scalar', name: 'scalar', prompt: 'text', executionType: 'scalar', skillsets: 'list',
+            creator: 'boolean', allowsHumanInput: 'boolean', kind: 'scalar',
+        } },
+        { heading: 'edge', collection: 'edges', identity: 'id', fields: {
+            id: 'scalar', sourceTaskId: 'scalar', targetTaskId: 'scalar', sourcePort: 'scalar', targetPort: 'scalar',
+        } },
+        { heading: 'position', collection: 'layout', identity: 'id', keyed: true, fields: {
+            id: 'scalar', x: 'number', y: 'number',
+        } },
+    ],
+};
+
+// Prefer the payload outside reports; retain legacy payloads inside the markers.
 function resultSource(source) {
     const text = String(source || '');
-    return withoutSummaryBlocks(text).trim() || summaryRanges(text).map(range => text.slice(range.start, range.end)).join('\n');
+    return withoutSummaryBlocks(text).trim() || summaryRanges(text).map(range => text.slice(range.start, range.end)).join('\n').trim();
 }
-const alias = /^(nextEdgeId|nextEdge|Edge)$/i;
-const scalar = value => typeof value === 'string' ? value.trim().replace(/^`+|`+$/g, '').trim() : '';
+
+// Strip presentation markers only when constructing downstream context, never on disk.
+// Keep the human findings alongside a structured payload so routing does not lose them.
+export function workflowResponseContext(source, graph, taskId) {
+    const text = String(source || '');
+    const node = graph.tasks.find(task => task.id === taskId);
+    const structured = node?.creator || graph.edges.filter(edge => edge.sourceTaskId === taskId).length > 1;
+    if (!structured) return { response: withoutSummaryMarkers(text) };
+    const humanReport = summaryRanges(text).map(range => text.slice(range.start, range.end).trim()).filter(Boolean).join('\n\n');
+    return { response: resultSource(text),
+        ...(withoutSummaryBlocks(text).trim() && humanReport ? { humanReport } : {}) };
+}
+
 export function extractJson(source) {
-    const text = resultSource(source).trim();
-    try { return JSON.parse(text); } catch { /* Native responses may wrap JSON in a fence. */ }
-    const blocks = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/gi)].map(match => match[1]);
-    if (blocks.length === 1) { try { return JSON.parse(blocks[0]); } catch { /* Report the contract failure below. */ } }
-    throw invalid('Expected one JSON object');
+    return parseJsonObject(resultSource(source).replace(/\r\n?/g, '\n'));
 }
+
+export function parseWorkflowResponse(source, { generation = false } = {}) {
+    return parseStructuredResponse(resultSource(source), generation ? generationSchema : decisionSchema);
+}
+
+export function routeFromResponse(response, graph, taskId) {
+    const id = response.nextEdgeId;
+    if (typeof id !== 'string' || !id) throw invalid('Branching task must return one unambiguous nextEdgeId');
+    const edge = graph.edges.find(entry => entry.id === id && entry.sourceTaskId === taskId);
+    if (!edge) throw invalid(`Selected edge is not outgoing from task ${taskId}: ${id}`);
+    return { message: response.message, nextEdgeId: edge.id, edge };
+}
+
 export function parseRoute(source, graph, taskId) {
-    source = resultSource(source);
-    const values = [];
-    let message;
-    let json;
-    try { json = extractJson(source); } catch { /* Markdown is the preferred response. */ }
-    if (json && typeof json === 'object' && !Array.isArray(json)) {
-        for (const [key, value] of Object.entries(json)) {
-            if (alias.test(key)) values.push(scalar(value));
-            if (key.toLowerCase() === 'message' && typeof value === 'string') message = value;
-        }
-    } else {
-        const text = String(source).replace(/\r\n?/g, '\n');
-        const headings = [...text.matchAll(/^\s*#{1,6}\s*(message|nextEdgeId|nextEdge|Edge)\s*\n/gmi)];
-        for (let index = 0; index < headings.length; index++) {
-            const match = headings[index];
-            const body = text.slice(match.index + match[0].length, headings[index + 1]?.index ?? text.length).trim();
-            if (alias.test(match[1])) values.push(scalar(body.replace(/^```[^\n]*\n/, '').replace(/\n```\s*$/, '')));
-            else message = body;
-        }
-    }
-    const unique = [...new Set(values)];
-    if (unique.length !== 1 || !unique[0]) throw invalid('Branching task must return one unambiguous nextEdgeId');
-    const edge = graph.edges.find(entry => entry.id === unique[0] && entry.sourceTaskId === taskId);
-    if (!edge) throw invalid(`Selected edge is not outgoing from task ${taskId}: ${unique[0]}`);
-    return { message, nextEdgeId: edge.id, edge };
+    return routeFromResponse(parseWorkflowResponse(source), graph, taskId);
 }

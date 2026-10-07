@@ -8,7 +8,7 @@ import { WorkflowRegistry } from './workflow-registry.mjs';
 import { TaskFlowStore } from './task-flow-store.mjs';
 import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator } from './graph.mjs';
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
-import { parseRoute, extractJson } from './result-parser.mjs';
+import { parseRoute, parseWorkflowResponse, workflowResponseContext } from './result-parser.mjs';
 import { generationPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
 import { ensureDefaultWorkflow } from './default-workflow.mjs';
 import { EXECUTION_TASK_TYPES, EXECUTION_TYPES, WORKFLOWS_DIR } from './constants.mjs';
@@ -182,16 +182,17 @@ export class RoboFlowService {
             const robot = pool[Math.min(pool.length - 1, Math.floor(this.random() * pool.length))];
             const previous = [];
             for (const visit of flow.instances) if (visit.state === 'completed') previous.push({ taskId: visit.taskId, instanceId: visit.id,
-                response: visit.creatorInstanceId && visit.childFlowIds
-                    ? JSON.stringify(await this.subflows.results(visit.childFlowIds))
-                    : await this.store.readOutput(id, visit.id, 'result') });
+                ...(visit.creatorInstanceId && visit.childFlowIds
+                    ? { response: JSON.stringify(await this.subflows.results(visit.childFlowIds)) }
+                    : workflowResponseContext(await this.store.readOutput(id, visit.id, 'result'), flow.graph, visit.taskId)) });
             let previousSubflowFinalResponse;
             if (flow.previousChildFlowId) {
                 const preceding = await this.store.get(flow.previousChildFlowId);
                 if (preceding?.status !== 'completed') throw invalid('The preceding sub-workflow must complete first');
                 const last = preceding.instances.at(-1);
                 if (!last) throw invalid('The preceding sub-workflow has no final task');
-                previousSubflowFinalResponse = await this.store.readOutput(preceding.id, last.id, 'result');
+                previousSubflowFinalResponse = workflowResponseContext(
+                    await this.store.readOutput(preceding.id, last.id, 'result'), preceding.graph, last.taskId).response;
             }
             const task = buildWorkflowTaskPrompt({ objective: flow.objective, currentTaskId: node.id, graph: flow.graph,
                 previousFinalResponses: previous, continuationPrompt, previousSubflowFinalResponse });
@@ -558,7 +559,7 @@ export class RoboFlowService {
         try {
             signal?.throwIfAborted();
             await this._startTask(robot, { cwd, task: description, runtimeTaskId, skillSets: [], systemPrompt: generationPrompt(catalog) });
-            const graph = normalizeWorkflow(extractJson(await completed));
+            const graph = normalizeWorkflow(parseWorkflowResponse(await completed, { generation: true }));
             const known = new Set(catalog.skillsets.map(set => set.id));
             if (graph.tasks.some(task => task.skillsets.some(id => !known.has(id)))) throw invalid('Generated graph contains an unknown skillset');
             return { graph, coverage: coverage(graph, await this.robotStore.list()), diagnostics: [...catalog.diagnostics, ...graphDiagnostics(graph)] };
@@ -586,7 +587,7 @@ export class RoboFlowService {
         try {
             await this._startTask(robot, { cwd, task: description, runtimeTaskId: record.runtimeTaskId, skillSets: [],
                 systemPrompt: generationPrompt(record.catalog) });
-            const graph = normalizeWorkflow(extractJson(await completed));
+            const graph = normalizeWorkflow(parseWorkflowResponse(await completed, { generation: true }));
             const known = new Set(record.catalog.skillsets.map(set => set.id));
             if (graph.tasks.some(task => task.skillsets.some(id => !known.has(id)))) throw invalid('Generated graph contains an unknown skillset');
             record.graph = { ...graph, coverage: coverage(graph, await this.robotStore.list()),

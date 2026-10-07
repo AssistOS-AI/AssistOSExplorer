@@ -11,6 +11,7 @@ import { coverage, canonicalSkillset, canonicalSkill, matchRobot, robotSelection
 const task = (id, extras = {}) => ({ id, name: id, prompt: `Execute ${id}`, executionType: 'terminal', skillsets: [], ...extras });
 const edge = (sourceTaskId, targetTaskId) => ({ id: `${sourceTaskId}-${targetTaskId}`, sourceTaskId, targetTaskId });
 const graph = () => ({ id: 'example', name: 'Example', entryTaskId: 'a', tasks: [task('a'), task('b'), task('c')], edges: [edge('a', 'b'), edge('a', 'c'), edge('b', 'a')] });
+const humanReport = text => `<<human-report>>\n${text}\n<<human-report>>`;
 async function fixture(t, options = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-graph-'));
     const robots = [{ id: 'default-id', name: 'default', codingAgents: ['codex'] }, { id: 'worker-id', name: 'worker', codingAgents: ['codex'] }];
@@ -73,6 +74,22 @@ test('cycles create distinct tasks, preserve only final response history and bra
     assert.deepEqual(tables, ['task_instances', 'workflow_runs', 'workflow_types']);
     const stored = f.service.database.db.prepare('SELECT record FROM task_instances').all().map(row => row.record).join();
     assert.ok(!stored.includes('Revised')); assert.ok(!stored.includes('SECRET INTERMEDIATE'));
+});
+
+test('routing keeps the original response for debugging and passes findings separately to the next task', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow(graph());
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    const payload = '# nextEdgeId\na-b';
+    const result = humanReport('The input validation needs a fix.') + '\n\n' + payload;
+    await f.finish(0, result);
+    const input = JSON.parse(f.started[1].request.task);
+    assert.equal(input.previousFinalResponses[0].response, payload);
+    assert.equal(input.previousFinalResponses[0].humanReport, 'The input validation needs a fix.');
+    assert.equal(await f.service.store.readOutput(flow.id, flow.instances[0].id, 'result'), result);
+    assert.equal((await f.service.getFlow(flow.id)).instances[0].finalResponse, result);
+    await f.finish(1, humanReport('Fixed the missing validation.'));
+    assert.equal(JSON.parse(f.started[2].request.task).previousFinalResponses[1].response, 'Fixed the missing validation.');
 });
 
 test('zero and one outgoing edge never require route output; repeated completion does not launch twice', async t => {
@@ -169,6 +186,104 @@ test('generation uses supplied system instructions and returns a validated unsav
     assert.equal(f.started[0].robot.name, 'default'); assert.equal(f.started[0].type, 'simple'); assert.match(f.started[0].request.systemPrompt, /workflow planner/);
     await f.finish(0, JSON.stringify(graph())); const generated = await pending;
     assert.equal(generated.graph.entryTaskId, 'a'); assert.equal(await f.service.registry.get('example'), null);
+});
+
+test('both generation entrypoints accept Markdown graphs and reject invalid Markdown drafts', async t => {
+    const f = await fixture(t);
+    const source = humanReport('Created a draft for review.') + '\n\n# name\nMarkdown draft\n# entryTaskId\none\n# task\none\n# name\nWork\n# executionType\nterminal\n# skillsets\n# allowsHumanInput\ntrue\n# prompt\n~~~~text\nImplement "quotes" without escaping.\n# task\nThis is literal prompt text.\n~~~~';
+    for (const browser of [false, true]) {
+        for (const invalid of [false, true]) {
+            const index = f.started.length;
+            const output = invalid ? source.replace('# skillsets\n', '# skillsets\n- unknown\n') : source;
+            const pending = browser ? await f.service.startGeneration({ description: 'Draft' }) : f.service.generateWorkflow({ description: 'Draft' });
+            const rejected = !browser && invalid ? assert.rejects(pending, /unknown skillset/) : null;
+            while (f.started.length === index) await new Promise(resolve => setImmediate(resolve));
+            assert.match(f.started[index].request.systemPrompt, /structured Markdown graph/);
+            await f.finish(index, output);
+            if (rejected) { await rejected; continue; }
+            if (browser) while (f.service.generationTasks.get(pending.id).status === 'running') await new Promise(resolve => setImmediate(resolve));
+            const result = browser ? f.service.generationInfo(pending.id) : await pending;
+            if (invalid) {
+                assert.equal(result.status, 'failed'); assert.match(result.error, /unknown skillset/);
+            } else {
+                assert.equal(result.graph.tasks[0].allowsHumanInput, true);
+                assert.equal(result.graph.tasks[0].prompt, 'Implement "quotes" without escaping.\n# task\nThis is literal prompt text.');
+                assert.deepEqual(result.graph.edges, []);
+            }
+        }
+    }
+    assert.equal(await f.service.registry.get('markdown-draft'), null);
+});
+
+test('Markdown child plans run in order, pass prior results and follow the saved continuation once', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow({ id: 'child', name: 'Child', entryTaskId: 'one', tasks: [task('one')], edges: [] });
+    await f.service.createWorkflow({ id: 'parent', name: 'Parent', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
+        edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' }, { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });
+    const parent = await f.service.startFlow({ workflowTypeId: 'parent', objective: 'Work' });
+    const firstPrompt = 'Implement "quoted" inputs.\n# workflow\nLiteral example.';
+    const payload = `# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n##Workflow\ndefault\n# executionType\nterminal\n# prompt\n~~~~text\n${firstPrompt}\n~~~~\n# workflow\nchild\n# prompt\nVerify the implementation.`;
+    const response = humanReport('Implement, then verify the change.') + '\n\n' + payload;
+    await f.finish(0, response);
+    const creator = (await f.service.getFlow(parent.id)).instances[0];
+    assert.equal(creator.childFlowIds.length, 2);
+    const [first, second] = creator.childFlowIds;
+    assert.equal((await f.service.getFlow(first)).objective, firstPrompt);
+    assert.equal((await f.service.getFlow(second)).status, 'pending');
+    assert.equal(f.started.length, 2);
+    await f.finish(0, response);
+    assert.equal(f.started.length, 2);
+    await f.finish(1, humanReport('Implemented "quotes".'));
+    assert.equal(f.started.length, 3);
+    assert.equal(JSON.parse(f.started[2].request.task).previousSubflowFinalResponse, 'Implemented "quotes".');
+    await f.finish(2, humanReport('Verified'));
+    assert.equal(f.started.length, 4);
+    assert.equal(JSON.parse(f.started[3].request.task).currentTaskId, 'end');
+    const previous = JSON.parse(f.started[3].request.task).previousFinalResponses;
+    assert.equal(previous[0].response, payload);
+    assert.equal(previous[0].humanReport, 'Implement, then verify the change.');
+    assert.deepEqual(JSON.parse(previous[1].response).map(child => child.result), ['Implemented "quotes".', 'Verified']);
+    assert.equal((await f.service.getFlow(first)).result, humanReport('Implemented "quotes".'));
+    await f.finish(3, 'Done');
+    assert.equal((await f.service.getFlow(parent.id)).status, 'completed');
+});
+
+test('invalid Markdown delegation never creates or starts a partial child group', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow({ id: 'child', name: 'Child', entryTaskId: 'one', tasks: [task('one')], edges: [] });
+    await f.service.createWorkflow({ id: 'parent', name: 'Parent', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
+        edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' }, { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });
+    const prefix = '# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n';
+    const child = '# workflow\nchild\n# prompt\nWork\n';
+    const invalid = [
+        prefix, prefix + '# workflow\nchild', prefix + '# workflow\nchild\n# prompt\n',
+        prefix + child + '# workflow\nmissing\n# prompt\nSecond',
+        prefix + child + '# workflow\nparent\n# prompt\nRecursive',
+        prefix + '# workflow\ndefault\n# prompt\nMissing mode',
+        prefix + child + '# executionType\nterminal', prefix + child.repeat(101),
+        prefix.replace('after\n', 'delegate\n') + child,
+        prefix + '# workflow\nchild\n# prompt\n' + 'x'.repeat(32769),
+        prefix + child + '# nextEdgeId\nother',
+    ];
+    for (const source of invalid) {
+        const index = f.started.length;
+        const parent = await f.service.startFlow({ workflowTypeId: 'parent', objective: 'Work' });
+        await f.finish(index, source);
+        assert.equal((await f.service.getFlow(parent.id)).status, 'failed');
+        assert.equal(f.started.length, index + 1);
+        assert.ok(!(await f.service.listFlows()).some(flow => flow.parentFlowId === parent.id));
+    }
+});
+
+test('a creator can choose an ordinary Markdown route without child fields', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow({ ...graph(), tasks: [task('a', { creator: true }), task('b'), task('c')] });
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    await f.finish(0, '# message\nReady\n##NEXT_EDGE_ID\na-c');
+    assert.equal(f.started.length, 2);
+    assert.equal(JSON.parse(f.started[1].request.task).currentTaskId, 'c');
+    await f.finish(1, 'Done');
+    assert.equal((await f.service.getFlow(flow.id)).status, 'completed');
 });
 
 test('restart pauses unfinished runs without replay and removes legacy workflow definitions', async t => {
@@ -495,7 +610,7 @@ test('a child question pauses the parent join and answering resumes the graph', 
     await f.service.createWorkflow({ id: 'parent', name: 'Parent', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
         edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' }, { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });
     const parent = await f.service.startFlow({ workflowTypeId: 'parent', objective: 'Work' });
-    await f.finish(0, JSON.stringify({ nextEdgeId: 'delegate', afterWorkflowsEdgeId: 'after', workflows: [{ workflowTypeId: 'child', prompt: 'Choose customer' }] }));
+    await f.finish(0, '# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n# workflow\nchild\n# prompt\nChoose customer');
     const child = (await f.service.listFlows()).find(flow => flow.parentFlowId === parent.id);
     const request = await f.service.requestHumanInput(f.started[1].taskId, { question: 'Q?', options: ['a', 'b', 'c'] });
     await f.finish(1, 'Waiting');

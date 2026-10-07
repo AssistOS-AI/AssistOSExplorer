@@ -1,4 +1,4 @@
-import { extractJson, parseRoute } from './result-parser.mjs';
+import { parseWorkflowResponse, routeFromResponse, workflowResponseContext } from './result-parser.mjs';
 import { hasCreators, isCoordinator, invalid, textField, workflowCatalogEntry } from './graph.mjs';
 import { EXECUTION_TYPES } from './constants.mjs';
 
@@ -13,10 +13,10 @@ export class Subflows {
             .map(graph => { const { tasks, ...entry } = workflowCatalogEntry(graph); return entry; });
     }
     async plan(flow, instance, output) {
-        const { edge } = parseRoute(output, flow.graph, instance.taskId);
+        const response = parseWorkflowResponse(output);
+        const { edge } = routeFromResponse(response, flow.graph, instance.taskId);
         if (!isCoordinator(flow.graph.tasks.find(task => task.id === edge.targetTaskId))) return { edge };
         if (flow.parentFlowId) throw invalid('Sub-workflows cannot delegate workflows');
-        const response = extractJson(output);
         const after = flow.graph.edges.find(item => item.id === response.afterWorkflowsEdgeId && item.sourceTaskId === edge.targetTaskId);
         if (!after) throw invalid('afterWorkflowsEdgeId must leave Run workflows');
         if (!Array.isArray(response.workflows) || response.workflows.length < 1 || response.workflows.length > 100) throw invalid('A task that allows sub-flows must choose 1 to 100 workflows');
@@ -104,7 +104,7 @@ export class Subflows {
         return Promise.all(ids.map(async id => {
             const child = await this.service.getFlow(id);
             return { flowId: child.id, workflowTypeId: child.workflowTypeId, status: child.status,
-                error: child.error, result: child.result || '' };
+                error: child.error, result: workflowResponseContext(child.result, child.graph, child.instances.at(-1)?.taskId).response };
         }));
     }
     async pauseChildren(flow) {
