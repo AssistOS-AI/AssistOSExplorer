@@ -21,7 +21,7 @@
   <table>
     <thead><tr><th>Published image</th><th>Public base</th><th>RoboTeam additions</th></tr></thead>
     <tbody>
-      <tr><td><code>assistos/roboteam-agent:runtime</code></td><td><code>quay.io/podman/upstream:latest</code>, resolved to one digest per publication</td><td>Node.js, npm, Bubblewrap, nested-container storage configuration, and the <code>roboteam-runtime-v4</code> contract. ALA comes from the workspace repository declared by RoboTeam's <code>link-install</code>; Codex is not baked in.</td></tr>
+      <tr><td><code>assistos/roboteam-agent:runtime</code></td><td><code>quay.io/podman/stable@sha256:f94b291ea3ad28ca5c9362dd6ffb673778aefa157e73b8cea76da7e47a917b1e</code>, the locked multiarchitecture base with Podman 5.8.7</td><td>Node.js, npm, Bubblewrap, nested-container storage configuration, and the <code>roboteam-runtime-v5</code> contract. ALA comes from the workspace repository declared by RoboTeam's <code>link-install</code>; Codex is not baked in.</td></tr>
       <tr><td><code>assistos/roboteam-desktop:runtime</code></td><td>Digest-pinned <code>lscr.io/linuxserver/webtop:ubuntu-xfce</code></td><td>Node/npm, AT-SPI and X11 system support, the desktop MCP launch service, and no computer-use-linux or Supergateway installation.</td></tr>
       <tr><td><code>assistos/roboteam-browser:runtime</code></td><td>Digest-pinned <code>lscr.io/linuxserver/chromium</code></td><td>Node/npm and the service that connects cached Playwright MCP to visible Chromium through CDP. Playwright MCP is not baked in.</td></tr>
     </tbody>

@@ -119,8 +119,8 @@ test('manifest selects runtime-only GUI images and the persistent tool cache', a
 test('install hook verifies the runtime and prepares the persistent tool-cache root', async () => {
     const source = await readFile(join(AGENT_ROOT, 'scripts', 'install.sh'), 'utf8');
 
-    assert.match(source, /\/opt\/roboteam-runtime\/contract-v4/);
-    assert.match(source, /roboteam-runtime-v4/);
+    assert.match(source, /\/opt\/roboteam-runtime\/contract-v5/);
+    assert.match(source, /roboteam-runtime-v5/);
     for (const command of ['podman', 'fuse-overlayfs', 'pasta', 'node', 'npm', 'bwrap']) {
         assert.match(source, new RegExp(`\\b${command}\\b`));
     }
@@ -130,7 +130,8 @@ test('install hook verifies the runtime and prepares the persistent tool-cache r
     for (const requiredPath of ['/opt/roboteam-runtime/storage.conf']) {
         assert.match(source, new RegExp(requiredPath.replaceAll('/', '\\/')));
     }
-    assert.match(source, /podman version 6/);
+    assert.match(source, /if ! podman_version=\$\(podman --version 2>\/dev\/null\) \|\| \[ "\$podman_version" != "podman version 5\.8\.7" \]; then/);
+    assert.match(source, /podman-version:5\.8\.7/);
     assert.doesNotMatch(source, /\b(?:apt|apt-get|curl|wget|pnpm|yarn|git)\b/);
     assert.doesNotMatch(source, /npm\s+(?:install|ci)/);
 });
