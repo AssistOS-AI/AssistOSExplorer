@@ -146,7 +146,7 @@ childEnv.SMOKE_RUN_ID ||= `${Date.now()}-${process.pid}`;
 childEnv.SMOKE_ARTIFACT_DIR = path.resolve(childEnv.SMOKE_ARTIFACT_DIR
   || path.join(smokeRoot, '..', '..', '.ploinky', 'test-artifacts', 'headless-smoke', childEnv.SMOKE_RUN_ID));
 childEnv.SMOKE_PREFLIGHT_ACCOUNT_REQUIREMENTS = JSON.stringify(profile.accounts);
-childEnv.SMOKE_LEDGER_COVERAGE = profile.ledgerCoverage ? 'selected-ledger-identities' : 'separate-screen-profile-no-ledger-acceptance';
+childEnv.SMOKE_LEDGER_COVERAGE = profile.coverage;
 for (const name of Object.keys(childEnv)) {
   if (
     /^PLAYWRIGHT_[A-Z0-9]+_OUTPUT_(?:DIR|FILE|NAME)$/.test(name)

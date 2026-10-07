@@ -90,7 +90,8 @@ test('actual common preflight compares independent manifest, image, workspace an
         box: { imageId: digest }, workspaceSourceMount: { source: baseEnv.SMOKE_WORKSPACE_ROOT },
     } };
     const fsApi = { realpathSync: value => value, readFileSync: file => { assert.equal(file, `${source}/explorer/mcp-config.json`); return '{"tools":[]}'; } };
-    const options = { profile, env: baseEnv, collect: async inputs => { assert.equal(inputs.expectedContainerName, 'fixture-box'); assert.equal(inputs.generationMaxAgeMs, 1800000); return evidence; }, fsApi };
+    const options = { profile, env: baseEnv, baseURL: baseEnv.SMOKE_BASE_URL, boxBaseURL: baseEnv.SMOKE_BOX_BASE_URL,
+        collect: async inputs => { assert.equal(inputs.expectedContainerName, 'fixture-box'); assert.equal(inputs.generationMaxAgeMs, 1800000); return evidence; }, fsApi };
     assert.equal(await collectAcceptancePreflight(options), evidence);
     for (const modified of [ { ...evidence, imageDigest: 'wrong' }, { ...evidence, liveBox: { ...evidence.liveBox, box: { imageId: 'wrong' } } }, { ...evidence, liveBox: { ...evidence.liveBox, workspaceSourceMount: { source: '/foreign' } } } ]) {
         await assert.rejects(collectAcceptancePreflight({ ...options, collect: async () => modified }));
@@ -98,6 +99,35 @@ test('actual common preflight compares independent manifest, image, workspace an
     await assert.rejects(collectAcceptancePreflight({ ...options, collect: async () => { throw new Error('Box outer container generation is not fresh enough for the release gate.'); } }), /not fresh/);
     assert.throws(() => assertInactiveWorkerDescriptor({ tools: [], toolWorkers: {} }), /opt-in absent/);
     assert.throws(() => assertInactiveWorkerDescriptor({ tools: [{ worker: false }] }), /opt-in absent/);
+});
+
+test('common preflight binds local browser origin to the inspected Box before collection', async () => {
+    const profile = validateAcceptanceProfile(args, baseEnv);
+    const evidence = { imageDigest: digest, repositories: { explorer: { repositoryPath: source } }, liveBox: {
+        box: { imageId: digest }, workspaceSourceMount: { source: baseEnv.SMOKE_WORKSPACE_ROOT },
+    } };
+    let collections = 0;
+    const options = { profile, env: baseEnv, baseURL: baseEnv.SMOKE_BASE_URL, boxBaseURL: baseEnv.SMOKE_BOX_BASE_URL,
+        collect: async () => { collections += 1; return evidence; },
+        fsApi: { realpathSync: value => value, readFileSync: () => '{"tools":[]}' },
+    };
+    for (const browserOrigin of ['http://127.0.0.1:18080', 'http://localhost:8080', 'http://[::1]:8080', 'https://other.invalid', 'http://private-user:private-password@127.0.0.1:8080']) {
+        collections = 0;
+        await assert.rejects(collectAcceptancePreflight({ ...options, baseURL: browserOrigin }), error => (
+            /origin|loopback|binding/.test(error.message) && !/private-user|private-password/.test(error.message)
+        ));
+        assert.equal(collections, 0, 'invalid binding must fail before observing any Box');
+    }
+    assert.equal(await collectAcceptancePreflight({ ...options, baseURL: 'http://127.0.0.1:8080/' }), evidence);
+    assert.equal(await collectAcceptancePreflight({ ...options, baseURL: 'http://127.0.0.1:80/', boxBaseURL: 'http://127.0.0.1' }), evidence);
+    await assert.rejects(collectAcceptancePreflight({ ...options, env: { ...baseEnv, SMOKE_QA_ACCEPTANCE: '1', SMOKE_QA_EDGE_IP: '203.0.113.25' }, baseURL: 'https://explorer-qa.axiologic.dev/' }), /binding is unverified/);
+    await assert.rejects(collectAcceptancePreflight({ ...options, env: { ...baseEnv, SMOKE_QA_ACCEPTANCE: '1', SMOKE_QA_EDGE_IP: '203.0.113.25' }, baseURL: 'https://other.invalid' }), /exact/);
+    await assert.rejects(collectAcceptancePreflight({ ...options, env: { ...baseEnv, SMOKE_QA_ACCEPTANCE: '1' }, baseURL: 'https://explorer-qa.axiologic.dev' }), /binding is unverified/);
+    await assert.rejects(collectAcceptancePreflight({ ...options, env: { ...baseEnv, SMOKE_QA_ACCEPTANCE: '1', SMOKE_QA_EDGE_IP: '127.0.0.1' }, baseURL: 'https://explorer-qa.axiologic.dev' }), /public IPv4/);
+    const qa = validateAcceptanceProfile(['specs/80-explorer-qa-acceptance.spec.mjs'], { SMOKE_QA_ACCEPTANCE: '1' });
+    assert.equal(qa.box, false);
+    assert.equal(qa.ledgerCoverage, false);
+    assert.equal(qa.coverage, 'separate-qa-profile-no-local-box-acceptance');
 });
 
 test('postflight detects identity changes and account roles are authenticated separately', () => {

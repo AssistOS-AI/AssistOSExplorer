@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { collectCopilotReleaseEvidence } from './copilot-release-evidence.mjs';
-import { sameLiveBoxGeneration } from './live-box.mjs';
+import { sameLiveBoxGeneration, parseLocalScreenBaseUrl } from './live-box.mjs';
+import { validateQaAcceptanceProfile } from './qa-acceptance-profile.mjs';
 
 export const acceptanceLedger = JSON.parse(fs.readFileSync(new URL('../acceptance-ledger_codex.json', import.meta.url), 'utf8'));
 const enabled = value => /^(1|true|yes|on)$/i.test(String(value || '').trim());
@@ -124,7 +125,10 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
             }
         }
     }
-    return Object.freeze({ ...selection, box, listing, acceptance, accounts, ledgerCoverage: !separateScreen,
+    const separateQa = enabled(env.SMOKE_QA_ACCEPTANCE);
+    return Object.freeze({ ...selection, box, listing, acceptance, accounts, ledgerCoverage: !separateScreen && !separateQa,
+        coverage: separateQa ? 'separate-qa-profile-no-local-box-acceptance'
+            : separateScreen ? 'separate-screen-profile-no-ledger-acceptance' : 'selected-ledger-identities',
         imageAgePolicy: 'common-explicit-pins; common-image-age-disabled; generation<=30m; additional-profile-age-checks-retained',
     });
 }
@@ -139,6 +143,21 @@ export function assertInactiveWorkerDescriptor(descriptor) {
 export async function collectAcceptancePreflight({ profile, env, manifestPath, verifierPath, baseURL, boxBaseURL,
     collect = collectCopilotReleaseEvidence, fsApi = fs } = {}) {
     if (!profile.box || profile.listing) return null;
+    if (enabled(env.SMOKE_QA_ACCEPTANCE)) {
+        validateQaAcceptanceProfile({ enabled: true, headed: false, baseURL, edgeIP: env.SMOKE_QA_EDGE_IP });
+        throw new Error('QA edge-to-Box binding is unverified; common local Box acceptance cannot validate this separate profile.');
+    } else {
+        let application, box;
+        try {
+            application = parseLocalScreenBaseUrl(baseURL);
+            box = parseLocalScreenBaseUrl(boxBaseURL);
+        } catch {
+            throw new Error('Local smoke acceptance requires a valid loopback browser/Box origin binding.');
+        }
+        if (application.baseURL !== box.baseURL) {
+            throw new Error('Local smoke browser origin must equal the inspected Box origin.');
+        }
+    }
     const evidence = await collect({
         manifestPath, verifierPath, baseURL, boxBaseURL,
         verificationMode: env.SMOKE_SOURCE_VERIFICATION || 'release',

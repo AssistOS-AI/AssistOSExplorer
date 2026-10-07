@@ -41,6 +41,16 @@ and `SMOKE_LOCAL_SNAPSHOT_MANIFEST`; its evidence cannot establish release accep
 The selected Ploinky verifier must be available at the established sibling path.
 `SMOKE_ACCEPTANCE=1` also selects these Box acceptance requirements.
 
+Local browser and inspected Box URLs must name the same normalized loopback HTTP
+origin at `127.0.0.1`. Different ports or hosts fail before collection; the runner
+never redirects the selected browser target. A trailing slash or explicit default
+HTTP port may normalize to the same origin. The separately selected QA profile
+retains its fixed QA origin and existing optional edge-IP validator. A configured
+edge IP does not prove that the edge routes to the inspected Box. Common Box
+acceptance for that split-origin profile remains blocked until owner evidence
+establishes the binding. Separate QA artifacts cannot close the 25 local outcomes
+or claim that common preflight proved edge-to-Box identity.
+
 Common preflight independently verifies the source manifest, inspected Box name,
 immutable image and reference, same-path workspace bind and inactive Explorer
 worker descriptor. It repeats the inspection after execution and refuses changed
