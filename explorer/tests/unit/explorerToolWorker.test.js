@@ -21,9 +21,23 @@ function capture() {
     };
 }
 
-async function workspace(t) {
+async function workspace(t, { beforeRemove = async () => {} } = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-worker-adapter-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    t.after(async () => {
+        const failures = [];
+        try {
+            await beforeRemove();
+        } catch (error) {
+            failures.push(error);
+        }
+        try {
+            await fs.rm(root, { recursive: true, force: true });
+        } catch (error) {
+            failures.push(error);
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, 'Explorer adapter fixture cleanup failed.');
+    });
     await fs.writeFile(path.join(root, 'ordinary.txt'), 'raw text\n');
     await fs.writeFile(path.join(root, 'empty.txt'), '');
     return root;
@@ -188,15 +202,21 @@ test('worker refuses a missing or relative shared runtime module path', async ()
 });
 
 test('the real Ploinky pool callback preserves CLI bytes across consecutive users and errors', async (t) => {
-    const root = await workspace(t);
+    let pool;
+    const root = await workspace(t, {
+        beforeRemove: async () => {
+            if (!pool) return;
+            const outcome = await pool.shutdown({ timeoutMs: 5000 });
+            assert.equal(outcome.clean, true, 'Explorer adapter pool shutdown must be clean.');
+        },
+    });
     const ploinkyRoot = process.env.PLOINKY_ROOT || fileURLToPath(new URL('../../../../ploinky/', import.meta.url));
     const { ToolWorkerPool } = await import(pathToFileURL(path.join(ploinkyRoot, 'Agent/server/toolWorkerPool.mjs')).href);
-    const pool = new ToolWorkerPool('explorer-adapter', {
+    pool = new ToolWorkerPool('explorer-adapter', {
         command: workerPath, cwd: root, size: 1,
         env: { ASSISTOS_FS_ROOT: root, TOOL_NAME: 'ambient_wrong' },
         idleTimeoutMs: 600_000, maxCallsPerWorker: 500, callTimeoutMs: 15_000,
     });
-    t.after(() => pool.shutdown({ timeoutMs: 5000 }));
     for (const envelope of [
         { tool: 'read_text_file', input: { path: 'ordinary.txt' } },
         { tool: 'read_text_file', input: { path: 'empty.txt' } },
