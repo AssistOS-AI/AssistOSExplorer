@@ -1,0 +1,1119 @@
+{
+  "schemaVersion": 1,
+  "preparedAt": "2026-10-07T08:11:50.064Z",
+  "source": "/Users/danielsava/.codex/coordination/explorer-performance/implementation_codex/deployment_regression_analysis_codex/full_run_classifications_codex.json",
+  "sourceSha256": "c05845e351e65bbed68bd84632037516abb58a68ee396eb0cb39830bec5e734d",
+  "candidate": {
+    "Ploinky": "69562929d82c1c031866f7e0b7217db59f7bf629",
+    "Explorer": "f971f9d823c22fbab8033cbe2783c06185885d99"
+  },
+  "status": "PLANNED_OUTCOMES_ONLY_NO_EXECUTION",
+  "counts": {
+    "total": 44,
+    "requiredLocalAcceptance": 25,
+    "separateOrBlocked": 19,
+    "originalPassed": 4,
+    "originalFailed": 21,
+    "originalSkipped": 19
+  },
+  "commonControls": {
+    "canonicalRunnerRequired": true,
+    "retries": 0,
+    "workers": 1,
+    "browserErrorsAllowed": false,
+    "SMOKE_GPT_RESEARCHER": "0",
+    "workerOptIn": "absent",
+    "identityComparison": "Compare both discovered identities and terminal outcomes to this ledger. A process exit0 is insufficient.",
+    "boxInputs": [
+      "SMOKE_PLOINKY_BOX_CONTAINER",
+      "SMOKE_EXPECT_BOX_IMAGE_ID",
+      "SMOKE_EXPECT_BOX_IMAGE_REF",
+      "SMOKE_RELEASE_MANIFEST",
+      "SMOKE_BOX_BASE_URL",
+      "SMOKE_WORKSPACE_ROOT"
+    ],
+    "imagePolicy": "Record explicit pinned identity and the applicable age policy per cohort. DPU explicit selection does not itself validate image pins/age; proposed common preflight owns those checks. No silent switch to evade fallback age checks."
+  },
+  "identities": [
+    {
+      "identity": "00-router-auth.spec.mjs::router landing and Explorer shell load through the router",
+      "file": "00-router-auth.spec.mjs",
+      "sourceLine": 6,
+      "title": "router landing and Explorer shell load through the router",
+      "observedStatus": "failed",
+      "cohort": "supporting-00",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/00-router-auth.spec.mjs",
+        "title": "router landing and Explorer shell load through the router",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "00-router-auth.spec.mjs::routed WebChat shell loads for the configured smoke agent",
+      "file": "00-router-auth.spec.mjs",
+      "sourceLine": 12,
+      "title": "routed WebChat shell loads for the configured smoke agent",
+      "observedStatus": "passed",
+      "cohort": "supporting-00",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/00-router-auth.spec.mjs",
+        "title": "routed WebChat shell loads for the configured smoke agent",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "01-webtty-core.spec.mjs::local administrator controls the mounted workspace while an ordinary user is denied",
+      "file": "01-webtty-core.spec.mjs",
+      "sourceLine": 586,
+      "title": "local administrator controls the mounted workspace while an ordinary user is denied",
+      "observedStatus": "failed",
+      "cohort": "fresh-webtty",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/01-webtty-core.spec.mjs",
+        "title": "local administrator controls the mounted workspace while an ordinary user is denied",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_WEBTTY_CORE": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "03-optional-agents.spec.mjs::OnlyOffice, Scribe, and STT start disabled and can be enabled through Marketplace",
+      "file": "03-optional-agents.spec.mjs",
+      "sourceLine": 31,
+      "title": "OnlyOffice, Scribe, and STT start disabled and can be enabled through Marketplace",
+      "observedStatus": "failed",
+      "cohort": "optional-defaults-and-activation",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/03-optional-agents.spec.mjs",
+        "title": "OnlyOffice, Scribe, and STT start disabled and can be enabled through Marketplace",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_OPTIONAL_AGENTS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "04-marketplace-lifecycle.spec.mjs::Configure stays gated while a no-wait agent starts and unlocks after refresh",
+      "file": "04-marketplace-lifecycle.spec.mjs",
+      "sourceLine": 6,
+      "title": "Configure stays gated while a no-wait agent starts and unlocks after refresh",
+      "observedStatus": "failed",
+      "cohort": "supporting-04",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/04-marketplace-lifecycle.spec.mjs",
+        "title": "Configure stays gated while a no-wait agent starts and unlocks after refresh",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest. Installed proxies/searchAgent catalog fixture; this spec uses intercepted lifecycle responses.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "05-copilot-folder-launch.spec.mjs::opens a working Copilot from a newly created folder",
+      "file": "05-copilot-folder-launch.spec.mjs",
+      "sourceLine": 48,
+      "title": "opens a working Copilot from a newly created folder",
+      "observedStatus": "failed",
+      "cohort": "official-release",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/05-copilot-folder-launch.spec.mjs",
+        "title": "opens a working Copilot from a newly created folder",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "06-copilot-codex-delegation.spec.mjs::launches one terminal workflow through Copilot with one matching Codex child",
+      "file": "06-copilot-codex-delegation.spec.mjs",
+      "sourceLine": 25,
+      "title": "launches one terminal workflow through Copilot with one matching Codex child",
+      "observedStatus": "skipped",
+      "cohort": "blocked-credential-integration",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/06-copilot-codex-delegation.spec.mjs",
+        "title": "launches one terminal workflow through Copilot with one matching Codex child",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_CODEX_DELEGATION": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Shared preflight unconditionally blocks until independently verified B+C credential integration; flags do not bypass it.",
+      "disposition": "blocked-B+C-preflight",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "06-copilot-live-skills.spec.mjs::one native conversation consumes local edits, additions, disable, re-enable and deletion",
+      "file": "06-copilot-live-skills.spec.mjs",
+      "sourceLine": 35,
+      "title": "one native conversation consumes local edits, additions, disable, re-enable and deletion",
+      "observedStatus": "skipped",
+      "cohort": "blocked-credential-integration",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/06-copilot-live-skills.spec.mjs",
+        "title": "one native conversation consumes local edits, additions, disable, re-enable and deletion",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_COPILOT_LIVE_SKILLS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Shared preflight unconditionally blocks until independently verified B+C credential integration; flags do not bypass it.",
+      "disposition": "blocked-B+C-preflight",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "07-copilot-codex-native.spec.mjs::one bounded native Codex turn in a run-owned robot with an owner-derived or an owned login",
+      "file": "07-copilot-codex-native.spec.mjs",
+      "sourceLine": 76,
+      "title": "one bounded native Codex turn in a run-owned robot with an owner-derived or an owned login",
+      "observedStatus": "skipped",
+      "cohort": "native-codex-custodian",
+      "runner": "npm run test:copilot-codex",
+      "selection": {
+        "spec": "specs/07-copilot-codex-native.spec.mjs",
+        "title": "one bounded native Codex turn in a run-owned robot with an owner-derived or an owned login",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_COPILOT_CODEX": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated credential-custodian workflow and separately selected owned native fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::file uploads land in the selected working directory and are suggested in sibling sessions",
+      "file": "10-webchat-upload-scope.spec.mjs",
+      "sourceLine": 14,
+      "title": "file uploads land in the selected working directory and are suggested in sibling sessions",
+      "observedStatus": "failed",
+      "cohort": "supporting-10",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/10-webchat-upload-scope.spec.mjs",
+        "title": "file uploads land in the selected working directory and are suggested in sibling sessions",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::folder uploads preserve nested paths in the selected working directory",
+      "file": "10-webchat-upload-scope.spec.mjs",
+      "sourceLine": 50,
+      "title": "folder uploads preserve nested paths in the selected working directory",
+      "observedStatus": "failed",
+      "cohort": "supporting-10",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/10-webchat-upload-scope.spec.mjs",
+        "title": "folder uploads preserve nested paths in the selected working directory",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "15-webassist-guest.spec.mjs::embedded chat and MCP initialize without prior authentication",
+      "file": "15-webassist-guest.spec.mjs",
+      "sourceLine": 5,
+      "title": "embedded chat and MCP initialize without prior authentication",
+      "observedStatus": "passed",
+      "cohort": "supporting-15",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/15-webassist-guest.spec.mjs",
+        "title": "embedded chat and MCP initialize without prior authentication",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "20-webchat-tags.spec.mjs::provider-looking @ tags are not offered as dispatch suggestions",
+      "file": "20-webchat-tags.spec.mjs",
+      "sourceLine": 8,
+      "title": "provider-looking @ tags are not offered as dispatch suggestions",
+      "observedStatus": "passed",
+      "cohort": "supporting-20",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/20-webchat-tags.spec.mjs",
+        "title": "provider-looking @ tags are not offered as dispatch suggestions",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::standalone loader serves the authenticated dashboard and a guest invitation",
+      "file": "30-webmeet-room-chat.spec.mjs",
+      "sourceLine": 45,
+      "title": "standalone loader serves the authenticated dashboard and a guest invitation",
+      "observedStatus": "failed",
+      "cohort": "supporting-30",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/30-webmeet-room-chat.spec.mjs",
+        "title": "standalone loader serves the authenticated dashboard and a guest invitation",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::two Explorer accounts can join one room and exchange chat",
+      "file": "30-webmeet-room-chat.spec.mjs",
+      "sourceLine": 106,
+      "title": "two Explorer accounts can join one room and exchange chat",
+      "observedStatus": "failed",
+      "cohort": "official-release",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/30-webmeet-room-chat.spec.mjs",
+        "title": "two Explorer accounts can join one room and exchange chat",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_WEBMEET_HEADLESS": "1",
+        "SMOKE_WEBMEET_MEDIA": "1",
+        "SMOKE_MEDIA_TIMEOUT_MS": "60000"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::dashboard header exposes audio/video and privacy settings",
+      "file": "31-webmeet-settings.spec.mjs",
+      "sourceLine": 28,
+      "title": "dashboard header exposes audio/video and privacy settings",
+      "observedStatus": "failed",
+      "cohort": "supporting-31",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/31-webmeet-settings.spec.mjs",
+        "title": "dashboard header exposes audio/video and privacy settings",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::settings controls expose inline help on hover and focus",
+      "file": "31-webmeet-settings.spec.mjs",
+      "sourceLine": 69,
+      "title": "settings controls expose inline help on hover and focus",
+      "observedStatus": "failed",
+      "cohort": "supporting-31",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/31-webmeet-settings.spec.mjs",
+        "title": "settings controls expose inline help on hover and focus",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "32-webmeet-network-matrix.spec.mjs::two remote browsers use the required direct or TURN lane",
+      "file": "32-webmeet-network-matrix.spec.mjs",
+      "sourceLine": 53,
+      "title": "two remote browsers use the required direct or TURN lane",
+      "observedStatus": "skipped",
+      "cohort": "external-network-matrix",
+      "runner": "npm run test:webmeet-network-matrix",
+      "selection": {
+        "spec": "specs/32-webmeet-network-matrix.spec.mjs",
+        "title": "two remote browsers use the required direct or TURN lane",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_WEBMEET_NETWORK_MATRIX": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Separate native Linux amd64/x64 and arm64 runs, each direct-udp, turn-udp and turn-tls; two remote browser networks and dedicated network/TURN inputs.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "33-umami-routing.spec.mjs::authenticated dashboard keeps HTML, assets, API, and navigation under its base path",
+      "file": "33-umami-routing.spec.mjs",
+      "sourceLine": 50,
+      "title": "authenticated dashboard keeps HTML, assets, API, and navigation under its base path",
+      "observedStatus": "failed",
+      "cohort": "supporting-33",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/33-umami-routing.spec.mjs",
+        "title": "authenticated dashboard keeps HTML, assets, API, and navigation under its base path",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_UMAMI": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger",
+        "SMOKE_UMAMI_USERNAME",
+        "SMOKE_UMAMI_PASSWORD"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "40-webmeet-tagged-research.spec.mjs::provider-looking @ tags stay ordinary meeting chat",
+      "file": "40-webmeet-tagged-research.spec.mjs",
+      "sourceLine": 12,
+      "title": "provider-looking @ tags stay ordinary meeting chat",
+      "observedStatus": "failed",
+      "cohort": "supporting-40",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/40-webmeet-tagged-research.spec.mjs",
+        "title": "provider-looking @ tags stay ordinary meeting chat",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {},
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "50-onlyoffice-dpu.spec.mjs::Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart",
+      "file": "50-onlyoffice-dpu.spec.mjs",
+      "sourceLine": 247,
+      "title": "Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart",
+      "observedStatus": "failed",
+      "cohort": "official-release",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/50-onlyoffice-dpu.spec.mjs",
+        "title": "Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_ONLYOFFICE": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest. Supported OnlyOffice global activation, readiness and absolute SMOKE_PLOINKY_BIN.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "60-github-git-sync.spec.mjs::Git modal exposes GitHub authentication controls without leaking tokens",
+      "file": "60-github-git-sync.spec.mjs",
+      "sourceLine": 8,
+      "title": "Git modal exposes GitHub authentication controls without leaking tokens",
+      "observedStatus": "failed",
+      "cohort": "supporting-60",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/60-github-git-sync.spec.mjs",
+        "title": "Git modal exposes GitHub authentication controls without leaking tokens",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_GITHUB": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::fresh signed-out Explorer deep link survives login and mounts the exact directory",
+      "file": "61-github-dpu-token-ownership.spec.mjs",
+      "sourceLine": 25,
+      "title": "fresh signed-out Explorer deep link survives login and mounts the exact directory",
+      "observedStatus": "passed",
+      "cohort": "supporting-61",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/61-github-dpu-token-ownership.spec.mjs",
+        "title": "fresh signed-out Explorer deep link survives login and mounts the exact directory",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_GITHUB": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::manual token is stored user-owned, visible in Explorer, and removed on disconnect",
+      "file": "61-github-dpu-token-ownership.spec.mjs",
+      "sourceLine": 56,
+      "title": "manual token is stored user-owned, visible in Explorer, and removed on disconnect",
+      "observedStatus": "failed",
+      "cohort": "supporting-61",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/61-github-dpu-token-ownership.spec.mjs",
+        "title": "manual token is stored user-owned, visible in Explorer, and removed on disconnect",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_GITHUB": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::a foreign agent-owned token record is denied without changing ownership or encrypted material",
+      "file": "61-github-dpu-token-ownership.spec.mjs",
+      "sourceLine": 104,
+      "title": "a foreign agent-owned token record is denied without changing ownership or encrypted material",
+      "observedStatus": "failed",
+      "cohort": "supporting-61",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/61-github-dpu-token-ownership.spec.mjs",
+        "title": "a foreign agent-owned token record is denied without changing ownership or encrypted material",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_GITHUB": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::creates and resolves an AKU knowledge unit via /exec aku-memory",
+      "file": "70-copilot-semantic-routing.spec.mjs",
+      "sourceLine": 68,
+      "title": "creates and resolves an AKU knowledge unit via /exec aku-memory",
+      "observedStatus": "failed",
+      "cohort": "semantic-68",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/70-copilot-semantic-routing.spec.mjs",
+        "title": "creates and resolves an AKU knowledge unit via /exec aku-memory",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_OPEN_INTERPRETER": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language execution prompt to Open Interpreter",
+      "file": "70-copilot-semantic-routing.spec.mjs",
+      "sourceLine": 125,
+      "title": "routes a natural-language execution prompt to Open Interpreter",
+      "observedStatus": "failed",
+      "cohort": "semantic-125",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/70-copilot-semantic-routing.spec.mjs",
+        "title": "routes a natural-language execution prompt to Open Interpreter",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_OPEN_INTERPRETER": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language web search prompt to the web-search launcher",
+      "file": "70-copilot-semantic-routing.spec.mjs",
+      "sourceLine": 153,
+      "title": "routes a natural-language web search prompt to the web-search launcher",
+      "observedStatus": "failed",
+      "cohort": "semantic-153",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/70-copilot-semantic-routing.spec.mjs",
+        "title": "routes a natural-language web search prompt to the web-search launcher",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_OPEN_INTERPRETER": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::treats @web-search token as ordinary chat, not a launcher dispatch",
+      "file": "70-copilot-semantic-routing.spec.mjs",
+      "sourceLine": 187,
+      "title": "treats @web-search token as ordinary chat, not a launcher dispatch",
+      "observedStatus": "failed",
+      "cohort": "semantic-187",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/70-copilot-semantic-routing.spec.mjs",
+        "title": "treats @web-search token as ordinary chat, not a launcher dispatch",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_OPEN_INTERPRETER": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
+      "disposition": "required-local-acceptance",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
+    },
+    {
+      "identity": "80-explorer-qa-acceptance.spec.mjs::Confidential .docx edits in OnlyOffice and saves automatically",
+      "file": "80-explorer-qa-acceptance.spec.mjs",
+      "sourceLine": 315,
+      "title": "Confidential .docx edits in OnlyOffice and saves automatically",
+      "observedStatus": "skipped",
+      "cohort": "qa-acceptance",
+      "runner": "npm run test:qa",
+      "selection": {
+        "spec": "specs/80-explorer-qa-acceptance.spec.mjs",
+        "title": "Confidential .docx edits in OnlyOffice and saves automatically",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_QA_ACCEPTANCE": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Separately selected QA origin/edge/account fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "80-explorer-qa-acceptance.spec.mjs::two generated users join one WebMeet room and both see chat",
+      "file": "80-explorer-qa-acceptance.spec.mjs",
+      "sourceLine": 433,
+      "title": "two generated users join one WebMeet room and both see chat",
+      "observedStatus": "skipped",
+      "cohort": "qa-acceptance",
+      "runner": "npm run test:qa",
+      "selection": {
+        "spec": "specs/80-explorer-qa-acceptance.spec.mjs",
+        "title": "two generated users join one WebMeet room and both see chat",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_QA_ACCEPTANCE": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Separately selected QA origin/edge/account fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "90-hardware-limits-admin.spec.mjs::Hardware limits is an administrator-only tab and Administration stays links-only",
+      "file": "90-hardware-limits-admin.spec.mjs",
+      "sourceLine": 102,
+      "title": "Hardware limits is an administrator-only tab and Administration stays links-only",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-90",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/90-hardware-limits-admin.spec.mjs",
+        "title": "Hardware limits is an administrator-only tab and Administration stays links-only",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "90-hardware-limits-admin.spec.mjs::the panel states the gate, envelope, GPU best-effort help and the accepted authority disclosure",
+      "file": "90-hardware-limits-admin.spec.mjs",
+      "sourceLine": 148,
+      "title": "the panel states the gate, envelope, GPU best-effort help and the accepted authority disclosure",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-90",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/90-hardware-limits-admin.spec.mjs",
+        "title": "the panel states the gate, envelope, GPU best-effort help and the accepted authority disclosure",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "90-hardware-limits-admin.spec.mjs::saving desired limits shows pending, and Apply recreates only the exact instance and reads back the kernel limits",
+      "file": "90-hardware-limits-admin.spec.mjs",
+      "sourceLine": 190,
+      "title": "saving desired limits shows pending, and Apply recreates only the exact instance and reads back the kernel limits",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-90",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/90-hardware-limits-admin.spec.mjs",
+        "title": "saving desired limits shows pending, and Apply recreates only the exact instance and reads back the kernel limits",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "90-hardware-limits-admin.spec.mjs::usage and the Workspace Monitor show the applied limits read-only",
+      "file": "90-hardware-limits-admin.spec.mjs",
+      "sourceLine": 243,
+      "title": "usage and the Workspace Monitor show the applied limits read-only",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-90",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/90-hardware-limits-admin.spec.mjs",
+        "title": "usage and the Workspace Monitor show the applied limits read-only",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "90-hardware-limits-admin.spec.mjs::API probes: boundary values, orphans, malformed input and refused callers leave the policy unchanged",
+      "file": "90-hardware-limits-admin.spec.mjs",
+      "sourceLine": 276,
+      "title": "API probes: boundary values, orphans, malformed input and refused callers leave the policy unchanged",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-90",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/90-hardware-limits-admin.spec.mjs",
+        "title": "API probes: boundary values, orphans, malformed input and refused callers leave the policy unchanged",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "90-hardware-limits-admin.spec.mjs::API probes: parallel setters, parallel Apply and a repeated Apply are serialized and idempotent",
+      "file": "90-hardware-limits-admin.spec.mjs",
+      "sourceLine": 355,
+      "title": "API probes: parallel setters, parallel Apply and a repeated Apply are serialized and idempotent",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-90",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/90-hardware-limits-admin.spec.mjs",
+        "title": "API probes: parallel setters, parallel Apply and a repeated Apply are serialized and idempotent",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "91-local-llm-playground-limits.spec.mjs::the 4 CPU / 25 % RAM / 50 % GPU budget is applied and the model runs with exactly the three MPS variables",
+      "file": "91-local-llm-playground-limits.spec.mjs",
+      "sourceLine": 251,
+      "title": "the 4 CPU / 25 % RAM / 50 % GPU budget is applied and the model runs with exactly the three MPS variables",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-91",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/91-local-llm-playground-limits.spec.mjs",
+        "title": "the 4 CPU / 25 % RAM / 50 % GPU budget is applied and the model runs with exactly the three MPS variables",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Supported GPU/model/MPS fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "91-local-llm-playground-limits.spec.mjs::a Playground response arrives inside measured windows and the budget holds while it generates",
+      "file": "91-local-llm-playground-limits.spec.mjs",
+      "sourceLine": 347,
+      "title": "a Playground response arrives inside measured windows and the budget holds while it generates",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-91",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/91-local-llm-playground-limits.spec.mjs",
+        "title": "a Playground response arrives inside measured windows and the budget holds while it generates",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Supported GPU/model/MPS fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "91-local-llm-playground-limits.spec.mjs::after the model is stopped and 4 % RAM is applied, a Run is refused before launch",
+      "file": "91-local-llm-playground-limits.spec.mjs",
+      "sourceLine": 435,
+      "title": "after the model is stopped and 4 % RAM is applied, a Run is refused before launch",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-91",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/91-local-llm-playground-limits.spec.mjs",
+        "title": "after the model is stopped and 4 % RAM is applied, a Run is refused before launch",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Supported GPU/model/MPS fixture.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "92-hardware-limits-fixture-graph.spec.mjs::alias rows show their exact keys, and an exact-key Apply recreates only that alias",
+      "file": "92-hardware-limits-fixture-graph.spec.mjs",
+      "sourceLine": 117,
+      "title": "alias rows show their exact keys, and an exact-key Apply recreates only that alias",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-92",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/92-hardware-limits-fixture-graph.spec.mjs",
+        "title": "alias rows show their exact keys, and an exact-key Apply recreates only that alias",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Installed exact fixture graph and teardown proof.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "92-hardware-limits-fixture-graph.spec.mjs::refused and blocked instances are separate causal rows with their own fixes",
+      "file": "92-hardware-limits-fixture-graph.spec.mjs",
+      "sourceLine": 153,
+      "title": "refused and blocked instances are separate causal rows with their own fixes",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-92",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/92-hardware-limits-fixture-graph.spec.mjs",
+        "title": "refused and blocked instances are separate causal rows with their own fixes",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Installed exact fixture graph and teardown proof.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "92-hardware-limits-fixture-graph.spec.mjs::only the expected identities change on each Apply",
+      "file": "92-hardware-limits-fixture-graph.spec.mjs",
+      "sourceLine": 198,
+      "title": "only the expected identities change on each Apply",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-92",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/92-hardware-limits-fixture-graph.spec.mjs",
+        "title": "only the expected identities change on each Apply",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Installed exact fixture graph and teardown proof.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    },
+    {
+      "identity": "92-hardware-limits-fixture-graph.spec.mjs::the blocked static fixture answers terminal-unavailable, not an endless startup or reload page",
+      "file": "92-hardware-limits-fixture-graph.spec.mjs",
+      "sourceLine": 258,
+      "title": "the blocked static fixture answers terminal-unavailable, not an endless startup or reload page",
+      "observedStatus": "skipped",
+      "cohort": "dedicated-hardware-92",
+      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "selection": {
+        "spec": "specs/92-hardware-limits-fixture-graph.spec.mjs",
+        "title": "the blocked static fixture answers terminal-unavailable, not an endless startup or reload page",
+        "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
+      },
+      "requiredFlags": {
+        "SMOKE_HARDWARE_LIMITS": "1"
+      },
+      "privateInputNamesOrCategories": [
+        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+      ],
+      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Installed exact fixture graph and teardown proof.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+    }
+  ]
+}

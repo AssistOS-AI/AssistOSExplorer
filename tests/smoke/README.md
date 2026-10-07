@@ -4,8 +4,8 @@ This package contains the maintainable Playwright smoke suite for Explorer, WebC
 
 ## Quick Start
 
-On a fresh deployment, run `npm run test:optional-agents` before any gate that
-requires OnlyOffice. This opt-in gate requires OnlyOffice, WebMeet Scribe, and
+Run `npm run test:optional-agents` in a separate fresh cohort to prove the unchanged
+three-agent default/activation workflow. This opt-in gate requires OnlyOffice, WebMeet Scribe, and
 WebMeet STT to be disabled in both Marketplace and the real runtime snapshot.
 It enables all three through the actual Marketplace UI (OnlyOffice in global
 mode), waits for Running in the UI and independent runtime evidence, and leaves
@@ -14,12 +14,106 @@ already enabled; rerunning it requires another fresh deployment. Each service
 has a ten-minute startup allowance for uncached image pulls. The evidence
 attachment contains only agent identities and lifecycle states.
 
+For the official release cohort, activate OnlyOffice alone through the authenticated
+Marketplace UI. Resolve its unique installed catalog reference, select `global`,
+click Enable, verify the successful POST to `/api/marketplace/agents`, then require
+Running in the UI and the exact enabled/running runtime. Record setup duration.
+This setup does not establish a spec03 pass or change default enablement.
+
+## Box acceptance preflight and outcomes
+
+Use `npm test -- --project=chromium --workers=1 --retries=0` with complete
+`specs/*.spec.mjs` filenames and an escaped distinctive title grep when selecting
+one case. Never use `file:line`. `acceptance-ledger_codex.json` preserves the 44
+original identities, including 25 required local outcomes and 19 separate or blocked
+profiles. The recorded failures and skips remain historical observations. The
+ledger and `--list` discovery authorize no live run.
+Execution without explicit spec filenames is refused before the legacy no-spec
+Copilot envelope can wrap a full suite. `test:quick` and `test:full` are therefore
+not planned acceptance commands; select valid fresh cohorts instead.
+
+Every selected Box profile requires `SMOKE_DEPLOYMENT_MODE=box`,
+`SMOKE_PLOINKY_BOX_CONTAINER`, immutable `SMOKE_EXPECT_BOX_IMAGE_ID`,
+`SMOKE_EXPECT_BOX_IMAGE_REF`, explicit `SMOKE_BASE_URL`, `SMOKE_BOX_BASE_URL`,
+absolute `SMOKE_WORKSPACE_ROOT`, and an absolute `SMOKE_RELEASE_MANIFEST`.
+Explicit local development instead supplies `SMOKE_SOURCE_VERIFICATION=local-snapshot`
+and `SMOKE_LOCAL_SNAPSHOT_MANIFEST`; its evidence cannot establish release acceptance.
+The selected Ploinky verifier must be available at the established sibling path.
+`SMOKE_ACCEPTANCE=1` also selects these Box acceptance requirements.
+
+Common preflight independently verifies the source manifest, inspected Box name,
+immutable image and reference, same-path workspace bind and inactive Explorer
+worker descriptor. It repeats the inspection after execution and refuses changed
+source/Box generations. It records image creation time, explicit pin policy and
+the hard 30-minute generation limit in `profile-preflight_codex.json`. Explicit
+Box acceptance disables the common image-age check; screen/network profiles retain
+their existing additional image-age policies. DPU fallback discovery still requires
+an image younger than four hours. Changing selection to evade that limit is not
+acceptance.
+
+Before lengthy execution, the runner requires the ledger's exact flags and the
+selected account sign-in inputs. Supply `SMOKE_LOGIN_EMAIL` and
+`SMOKE_SIGN_IN_METHOD`, with `SMOKE_ACCOUNT_PASSWORD` for `password`,
+`SMOKE_TOTP_SECRET` for `totp`, or `SMOKE_EMAIL_CODE_COMMAND` for `emailCode`.
+Profiles using two users require the corresponding `SMOKE_SECONDARY_*` inputs.
+Browser setup verifies the configured administrator and a distinct ordinary user
+through the authenticated identity endpoint. It does not print private values.
+Spec04 additionally requires the installed `proxies/searchAgent` catalog fixture;
+its lifecycle interception proves UI gating, not real-agent startup.
+Umami requires both `SMOKE_UMAMI_USERNAME` and `SMOKE_UMAMI_PASSWORD`. OnlyOffice
+requires absolute `SMOKE_PLOINKY_BIN` for targeted restarts. Spec61 generates
+synthetic tokens and needs no real GitHub PAT. Unused optional secrets are not
+required. The official meeting identity requires `SMOKE_WEBMEET_HEADLESS=1`,
+`SMOKE_WEBMEET_MEDIA=1`, and `SMOKE_MEDIA_TIMEOUT_MS=60000`.
+
+The runner checks discovery against the selected ledger identities before execution
+and checks every terminal result afterward. `ledger-discovery_codex.json` and
+`ledger-outcomes_codex.json` must agree exactly with that selection. Each outcome
+must be one pass, expected to pass, on attempt zero. Missing tests, skips, retries,
+flakes, cancellations, expected failures, blocked results and exit zero without
+those outcomes fail acceptance. Artifact paths cannot be overridden or reused.
+Keep `SMOKE_GPT_RESEARCHER=0`, browser errors disallowed and worker opt-in absent.
+`--list` checks source discovery without account/browser/Box execution and is never
+a terminal pass. Required opt-in flags still apply to listing.
+
+The established explicit `SMOKE_WEBMEET_SCREEN=1` spec30 profile remains separate
+headed screen evidence with its existing screen validator, fresh-image checks and
+pre/post generation checks. Its artifacts say
+`separate-screen-profile-no-ledger-acceptance`; that run cannot close the planned
+headless/media spec30 identity. `SMOKE_ACCEPTANCE=1` never permits this exception.
+
+Each official release gate uses a different run ID and artifact directory on one
+exact candidate and one fresh Box generation. Budget readiness, OnlyOffice-only
+setup, bootstrap, Copilot, OnlyOffice, WebMeet, postflight and cleanup from the
+actual Box start time. Measure successful qualification durations and reserve a
+stated margin. If the sequence cannot fit 30 minutes, leave scheduling blocked.
+Give WebTTY its own early fresh cohort and longer supporting cases separately
+identified fresh cohorts. Do not combine official passes from different generations.
+
+WebTTY attaches bounded `webtty-readiness_codex.json` evidence before rethrowing
+the original readiness failure. It distinguishes collector, workspace-binding,
+eligibility and unstable-signature failures, requires three consecutive stable
+samples, and immediately rejects a definitively stale generation. A failed artifact
+write remains visible alongside the primary error. Copilot attaches
+`copilot-terminal_codex.json` with the first visible terminal error and observation
+time, submission times and reply outcome. An error bubble cannot count as an
+assistant reply. Strict browser errors and the feature assertions remain required.
+
+Scoped harness checks run with `node --test lib/acceptance-profile.test.mjs
+lib/readiness-diagnostics.test.mjs lib/playwright-config.test.mjs
+lib/webtty-core-profile.test.mjs lib/copilot-release-evidence.test.mjs`. They use
+fabricated/stubbed runtime evidence and source-only Playwright discovery. Actual
+Box deployment, account sign-in and the 25 live outcomes require a selected
+deployment/E2E task.
+
 From this directory:
 
 ```bash
 npm ci
 npm run install:browsers
-SMOKE_BASE_URL=http://127.0.0.1:8080 npm test
+# Supply the common Box pins/manifest and selected private inputs described above.
+SMOKE_DEPLOYMENT_MODE=box SMOKE_BASE_URL=http://127.0.0.1:8080 \
+npm test -- --project=chromium --workers=1 --retries=0 specs/00-router-auth.spec.mjs
 ```
 
 Run the exact Confidential `.docx` persistence gate with the repository-owned

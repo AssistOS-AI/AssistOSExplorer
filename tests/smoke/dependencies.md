@@ -1,5 +1,11 @@
 # Smoke test dependencies
 
+The common acceptance preflight, ledger reporter and readiness diagnostics add no
+packages. Their scoped checks use Node built-ins and the existing pinned Playwright
+installation for source discovery only. Runtime preflight reuses the source
+verifier, Podman inspection and browser sign-in helpers already required by the
+suite. No dependency is installed during startup.
+
 The composed Copilot live-skills gate and the Codex-authenticated Copilot gate add no packages or global installations; route A of the Codex gate adds none either. It uses Node.js built-ins and the smoke suite's existing dependencies. Node.js is a runtime prerequisite; use the repository-supported Node.js 20+ environment and the Node version in the verified deployed image for runtime observations.
 
 | Dependency | Purpose and resolution | License and maintenance |

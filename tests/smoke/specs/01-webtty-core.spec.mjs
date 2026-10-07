@@ -16,6 +16,7 @@ import { assertDistinctAuthenticatedPrincipals, readAuthenticatedPrincipal, sign
 import { captureRouterRecoveryAuthentication, expectedRouterRecoveryDiagnostics, recoveryConsoleText } from '../lib/webtty-router-recovery.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { diagnosticEventSignature } from '../lib/diagnostic-ledger.mjs';
+import { createReadinessDiagnostics, withFailureArtifact } from '../lib/readiness-diagnostics.mjs';
 import { assertExplorerDirectory, openExplorer } from '../lib/explorer.mjs';
 import { resolvePloinkyExecutable } from '../lib/ploinky-executable.mjs';
 import {
@@ -600,41 +601,26 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(admin.roles).toContain('admin');
 
       let initialRuntime = null;
-      let runtimeReadinessFailure = '';
-      let priorRuntimeSignature = '';
-      let stableRuntimeSamples = 0;
-      await expect.poll(() => {
-        try {
+      const readiness = createReadinessDiagnostics();
+      await withFailureArtifact(() => expect.poll(() => readiness.sample(() => {
           const candidate = collectWebttyRuntimeEvidence({
             baseURL: smokeConfig.baseURL,
             workspaceRoot: fixture.workspaceRoot,
             selectedDirectory: fixture.nestedRoot,
             ...runtimeBinding,
           });
+          initialRuntime = candidate;
+          return candidate;
+      }, candidate => {
           requireAgentEvidence(candidate, 'gitAgent', { eligible: true });
           requireAgentEvidence(candidate, 'liveKitServerAgent', { eligible: false });
-          const signature = JSON.stringify(candidate.agents.map((agent) => ({
-            agentName: agent.agentName,
-            containerId: agent.containerId,
-            instanceId: agent.instanceId,
-            enableGeneration: agent.enableGeneration,
-            projectedTarget: agent.projectedTarget,
-          })));
-          stableRuntimeSamples = signature === priorRuntimeSignature ? stableRuntimeSamples + 1 : 1;
-          priorRuntimeSignature = signature;
-          initialRuntime = candidate;
-          runtimeReadinessFailure = '';
-          return stableRuntimeSamples >= 3;
-        } catch (error) {
-          runtimeReadinessFailure = error?.message || String(error);
-          return false;
-        }
-      }, {
+      }), {
         message: 'the exact fresh gitAgent and isolated liveKitServerAgent runtimes must become ready',
         timeout: smokeConfig.timeouts.relay,
         intervals: [1_000, 2_000, 5_000],
-      }).toBe(true);
-      expect(runtimeReadinessFailure).toBe('');
+      }).toBe(true), body => testInfo.attach('webtty-readiness_codex.json', {
+          body, contentType: 'application/json',
+      }), readiness.evidence);
       const initialGitAgent = requireAgentEvidence(initialRuntime, 'gitAgent', { eligible: true });
       const isolatedLiveKit = requireAgentEvidence(initialRuntime, 'liveKitServerAgent', { eligible: false });
       const readOnlyAgent = initialRuntime.agents.find((agent) => agent.projectedTarget?.access === 'ro') || null;

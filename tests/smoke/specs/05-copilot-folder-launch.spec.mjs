@@ -10,6 +10,8 @@ import {
 import { openExplorer } from '../lib/explorer.mjs';
 import { stopAndAttachRedactedTrace } from '../lib/redacted-trace.mjs';
 import { setComposer, waitForWebchatIdle } from '../lib/webchat.mjs';
+import { createCopilotDiagnostics } from '../lib/copilot-terminal-diagnostics.mjs';
+import { withFailureArtifact } from '../lib/readiness-diagnostics.mjs';
 
 const BOT_MESSAGE = '#chatList > .wa-message.in:not(.wa-typing):not(.wa-task-item) .wa-message-bubble';
 const STARTUP_FAILURE = /\[input error\]|bwrap:|Agent process exited repeatedly|open \/proc\/\d+\/ns/i;
@@ -124,7 +126,9 @@ test.describe('Copilot launch from Explorer', () => {
 
     await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true });
     let traceStarted = true;
+    const terminalDiagnostics = createCopilotDiagnostics();
     try {
+      await withFailureArtifact(async () => {
       copilotPage = await openCopilotForDirectory(page, directoryPath);
       attachBrowserErrorListeners(copilotPage);
 
@@ -132,6 +136,7 @@ test.describe('Copilot launch from Explorer', () => {
         timeout: smokeConfig.timeouts.navigation,
       });
       await expect(copilotPage.locator('#send')).toBeVisible();
+      terminalDiagnostics.observe(await copilotPage.locator(BOT_MESSAGE).allTextContents());
       await expect(copilotPage.locator('#chatList')).not.toContainText(STARTUP_FAILURE);
 
       await waitForWebchatIdle(copilotPage);
@@ -143,6 +148,7 @@ test.describe('Copilot launch from Explorer', () => {
 
       await setComposer(copilotPage, prompt);
       await copilotPage.locator('#send').click();
+      terminalDiagnostics.submitted();
 
       let lastNewMessage = '';
       let stableChecks = 0;
@@ -157,6 +163,7 @@ test.describe('Copilot launch from Explorer', () => {
           throw new Error(`Copilot Router request failed with HTTP ${terminalResponse.status}: ${terminalResponse.url}`);
         }
         const messages = await assistantMessages(copilotPage);
+        terminalDiagnostics.observe(messages.map(message => message.text));
         const created = messages.filter((message, index) => (
           !baselineIds.has(message.id) && index >= baseline.length && message.text
         ));
@@ -180,6 +187,7 @@ test.describe('Copilot launch from Explorer', () => {
         `Copilot should produce a stable ordinary-chat completion containing ${completionToken}`,
       ).toBeGreaterThanOrEqual(3);
       await waitForWebchatIdle(copilotPage);
+      terminalDiagnostics.replied();
 
       const completed = (await assistantMessages(copilotPage)).filter((message, index) => (
         !baselineIds.has(message.id) && index >= baseline.length && message.text
@@ -247,6 +255,10 @@ test.describe('Copilot launch from Explorer', () => {
         }, null, 2)),
         contentType: 'application/json',
       });
+      }, body => testInfo.attach('copilot-terminal_codex.json', {
+        body,
+        contentType: 'application/json',
+      }), terminalDiagnostics.evidence);
     } finally {
       page.context().off('request', captureInputRequest);
       page.context().off('response', captureInputResponse);

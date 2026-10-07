@@ -11,6 +11,36 @@ Explorer runs as the static Ploinky agent and depends on Ploinky for startup orc
 
 ## Core Content
 
+Explorer CLI and its inactive worker adapter must recognize direct execution by
+the canonical real filesystem path of `process.argv[1]`, including absolute and
+relative symlink entrypoints. Importing either module must not read stdin, serve
+requests or produce CLI output. Direct CLI execution preserves its stdin JSON,
+argv fallback, tool envelope and exit-status behavior. This import-safety repair
+does not enable `toolWorkers` or any tool's `worker` descriptor.
+
+Box smoke acceptance must independently compare the selected container, immutable
+image ID/reference, application/Box origins, same-path workspace and verified source
+manifest before and after a cohort. The common explicit-Box profile retains the
+hard 30-minute generation cap, records image creation time and its disabled image-age
+policy, and preserves additional screen/network and DPU fallback age checks.
+Required account inputs/roles and opt-in flags must be verified before lengthy
+execution without exposing private values. Complete spec filenames and title grep
+are the selector contract; file/line suffixes are forbidden. Discovery and terminal
+outcomes must exactly match the selected acceptance-ledger identities, each with one
+expected pass and zero retries, skips, flakes, cancellations or blocked outcomes.
+Exit zero and discovery alone are insufficient. GPT Researcher stays excluded,
+browser errors stay strict and worker opt-in stays absent.
+
+WebTTY readiness evidence must retain bounded last-cause and sampled identity
+information on failure, preserve the primary assertion when artifact writing fails,
+and reject a proved stale generation immediately. Copilot diagnostics must retain
+the first visible terminal error/time with submission/reply outcome and must not
+accept an error bubble as an assistant reply. The official release cohort uses
+OnlyOffice-only authenticated Marketplace activation, while the unchanged
+three-agent activation profile remains a separately required cohort. All three
+official gates must fit one fresh generation with measured setup/execution/cleanup
+durations and a stated margin; infeasible scheduling remains blocked.
+
 Explorer declares a same-origin `routerAccess.capabilityDeniedRedirect` to UserPersisto's authenticated account dashboard. Only denied HTML document GET navigation follows it; API, MCP, SSE, WebSocket, and mutation denials remain errors. The account service's explicitly owned and matching authenticated route retains the inherited identity provider but applies its own capability policy, allowing active restricted accounts to manage their profile without granting Explorer access. Undeclared and guest/public routes retain owner capability checks. The dashboard verifies the Router's signed HTTP invocation against the actual method, internal path, query, and raw body before resolving its current persisted actor. See [DS012](DS012-user-persisto.md) for the account API and enrollment contract.
 
 UserPersisto constructs browser login URLs on the validated callback origin while keeping runtime bridge requests on the private Router address. This preserves the exact public host and port and the initiating browser's host-bound callback proof.

@@ -14,7 +14,7 @@
     "test:onlyoffice-confidential": "SMOKE_ONLYOFFICE=1 node ./scripts/run-playwright.mjs --project=chromium --workers=1 --retries=0 --grep 'Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart' specs/50-onlyoffice-dpu.spec.mjs",
     "test:qa": "SMOKE_QA_ACCEPTANCE=1 node ./scripts/run-playwright.mjs --project=chromium specs/80-explorer-qa-acceptance.spec.mjs",
     "test:umami": "SMOKE_UMAMI=1 node ./scripts/run-playwright.mjs --project=chromium specs/33-umami-routing.spec.mjs",
-    "test:webmeet-headless": "SMOKE_WEBMEET_HEADLESS=1 SMOKE_WEBMEET_MEDIA=1 node ./scripts/run-playwright.mjs --project=chromium specs/30-webmeet-room-chat.spec.mjs specs/31-webmeet-settings.spec.mjs specs/40-webmeet-tagged-research.spec.mjs",
+    "test:webmeet-headless": "SMOKE_WEBMEET_HEADLESS=1 SMOKE_WEBMEET_MEDIA=1 SMOKE_MEDIA_TIMEOUT_MS=60000 node ./scripts/run-playwright.mjs --project=chromium specs/30-webmeet-room-chat.spec.mjs specs/31-webmeet-settings.spec.mjs specs/40-webmeet-tagged-research.spec.mjs",
     "test:webmeet-screen": "SMOKE_WEBMEET_MEDIA=1 SMOKE_WEBMEET_SCREEN=1 node ./scripts/run-playwright.mjs --headed --project=chromium specs/30-webmeet-room-chat.spec.mjs",
     "test:webmeet-network-matrix": "node ./scripts/run-webmeet-network-matrix.mjs",
     "test:quick": "node ./scripts/run-playwright.mjs --grep-invert @external",

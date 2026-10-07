@@ -42,6 +42,7 @@ test('npm headless WebMeet profile selects only the automated WebMeet acceptance
   assert.equal(typeof command, 'string');
   assert.match(command, /\bSMOKE_WEBMEET_HEADLESS=1\b/);
   assert.match(command, /\bSMOKE_WEBMEET_MEDIA=1\b/);
+  assert.match(command, /\bSMOKE_MEDIA_TIMEOUT_MS=60000\b/);
   assert.match(command, /\bspecs\/30-webmeet-room-chat\.spec\.mjs\b/);
   assert.match(command, /\bspecs\/31-webmeet-settings\.spec\.mjs\b/);
   assert.match(command, /\bspecs\/40-webmeet-tagged-research\.spec\.mjs\b/);

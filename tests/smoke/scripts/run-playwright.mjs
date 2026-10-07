@@ -16,10 +16,14 @@ import {
 } from '../lib/copilot-release-evidence.mjs';
 import { validateQaAcceptanceProfile } from '../lib/qa-acceptance-profile.mjs';
 import { validateHeadlessWebMeetProfile } from '../lib/webmeet-headless-profile.mjs';
+import {
+  validateAcceptanceProfile, collectAcceptancePreflight, assertAcceptanceGeneration, assertLedgerResults,
+} from '../lib/acceptance-profile.mjs';
 
 const smokeRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const cliPath = path.join(smokeRoot, 'node_modules', 'playwright', 'cli.js');
 const playwrightArgs = process.argv.slice(2);
+const profile = validateAcceptanceProfile(playwrightArgs);
 const forbiddenOutputOptions = new Set([
   '--config', '-c', '--output', '--reporter',
   '--update-snapshots', '-u', '--update-source-method',
@@ -83,7 +87,7 @@ validateQaAcceptanceProfile({
 const sourceGate = spawnSync(
   process.execPath,
   ['--test', 'lib/retired-source-absence.test.mjs'],
-  { cwd: smokeRoot, env: process.env, stdio: 'inherit' },
+  { cwd: smokeRoot, env: Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'NODE_TEST_CONTEXT')), stdio: 'inherit' },
 );
 if (sourceGate.error) throw sourceGate.error;
 if (sourceGate.status !== 0) {
@@ -138,6 +142,11 @@ function terminate(child) {
 
 let xvfb = null;
 const childEnv = { ...process.env };
+childEnv.SMOKE_RUN_ID ||= `${Date.now()}-${process.pid}`;
+childEnv.SMOKE_ARTIFACT_DIR = path.resolve(childEnv.SMOKE_ARTIFACT_DIR
+  || path.join(smokeRoot, '..', '..', '.ploinky', 'test-artifacts', 'headless-smoke', childEnv.SMOKE_RUN_ID));
+childEnv.SMOKE_PREFLIGHT_ACCOUNT_REQUIREMENTS = JSON.stringify(profile.accounts);
+childEnv.SMOKE_LEDGER_COVERAGE = profile.ledgerCoverage ? 'selected-ledger-identities' : 'separate-screen-profile-no-ledger-acceptance';
 for (const name of Object.keys(childEnv)) {
   if (
     /^PLAYWRIGHT_[A-Z0-9]+_OUTPUT_(?:DIR|FILE|NAME)$/.test(name)
@@ -149,7 +158,22 @@ for (const name of Object.keys(childEnv)) {
 }
 let screenRuntimeEvidence = null;
 let copilotReleaseEvidence = null;
-if (ordinaryCopilotGate) {
+const commonEvidence = await collectAcceptancePreflight({
+  profile, env: process.env, manifestPath: sourceManifestPath, verifierPath: sourceVerifierPath, baseURL, boxBaseURL,
+});
+if (commonEvidence) {
+  fs.mkdirSync(childEnv.SMOKE_ARTIFACT_DIR, { recursive: true });
+  fs.writeFileSync(path.join(childEnv.SMOKE_ARTIFACT_DIR, 'profile-preflight_codex.json'), JSON.stringify({
+    imageAgePolicy: profile.imageAgePolicy,
+    ledgerCoverage: childEnv.SMOKE_LEDGER_COVERAGE,
+    generationMaxAgeMs: commonEvidence.liveBox.generationMaxAgeMs,
+    imageCreatedAt: commonEvidence.liveBox.imageCreatedAt,
+    box: commonEvidence.liveBox.box,
+    workspaceSourceMount: commonEvidence.liveBox.workspaceSourceMount,
+    repositories: commonEvidence.repositories,
+  }, null, 2), { flag: 'wx' });
+}
+if (ordinaryCopilotGate && !profile.listing) {
   copilotReleaseEvidence = await collectCopilotReleaseEvidence({
     manifestPath: sourceManifestPath,
     verifierPath: sourceVerifierPath,
@@ -165,7 +189,17 @@ if (ordinaryCopilotGate) {
   childEnv.SMOKE_COPILOT_RELEASE_EVIDENCE = JSON.stringify(copilotReleaseEvidence);
   console.log(`Copilot source verification: ${verificationMode}${verificationMode === 'local-snapshot' ? ' (development evidence; not release acceptance)' : ''}`);
 }
-if (screenGate) {
+if (profile.ledgerCoverage && profile.cases.length && !profile.listing) {
+  const discovery = spawnSync(process.execPath, [cliPath, 'test', ...playwrightArgs, '--list'], {
+    cwd: smokeRoot, env: { ...childEnv, SMOKE_DISCOVERY_ONLY: '1' }, stdio: 'inherit',
+  });
+  if (discovery.error) throw discovery.error;
+  if (discovery.status !== 0) throw new Error('Smoke ledger discovery failed.');
+  const report = JSON.parse(fs.readFileSync(path.join(childEnv.SMOKE_ARTIFACT_DIR, 'ledger-discovery_codex.json'), 'utf8'));
+  if (report.coverage !== 'selected-ledger-identities') throw new Error('Discovery belongs to a separate profile and cannot close ledger coverage.');
+  assertLedgerResults(profile.cases, report.records);
+}
+if (screenGate && !profile.listing) {
   const baseURL = process.env.SMOKE_BASE_URL || process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:8080';
   screenRuntimeEvidence = collectScreenRuntimeEvidence({
     deployment: String(process.env.SMOKE_DEPLOYMENT_MODE || '').trim(),
@@ -216,6 +250,28 @@ let exitCode = await new Promise((resolve, reject) => {
   });
 });
 terminate(xvfb);
+if (profile.ledgerCoverage && profile.cases.length && !profile.listing) {
+  try {
+    const report = JSON.parse(fs.readFileSync(path.join(childEnv.SMOKE_ARTIFACT_DIR, 'ledger-outcomes_codex.json'), 'utf8'));
+    if (report.coverage !== 'selected-ledger-identities') throw new Error('Terminal outcomes belong to a separate profile and cannot close ledger coverage.');
+    if (report.status !== 'passed') throw new Error('Smoke terminal run did not pass.');
+    assertLedgerResults(profile.cases, report.records, { terminal: true });
+  } catch (error) {
+    console.error(error.message);
+    exitCode = 1;
+  }
+}
+if (commonEvidence) {
+  try {
+    const post = await collectAcceptancePreflight({
+      profile, env: process.env, manifestPath: sourceManifestPath, verifierPath: sourceVerifierPath, baseURL, boxBaseURL,
+    });
+    assertAcceptanceGeneration(commonEvidence, post);
+  } catch {
+    console.error('Common smoke postflight failed; Box/source generation acceptance is refused.');
+    exitCode = 1;
+  }
+}
 if (screenRuntimeEvidence) {
   try {
     const boxEvidence = screenRuntimeEvidence.deployment === 'box'
