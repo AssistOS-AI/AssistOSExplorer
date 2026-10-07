@@ -105,6 +105,8 @@ Explorer must run in `global` mode if it should browse the whole workspace, incl
 <!-- {"achilles-ide-paragraph":{"id":"paragraph-76746b20-b599-4604-91c9-6b005951f0c0","type":"markdown","title":"Paragraph 1"}} -->
 Explorer uses `ASSISTOS_FS_ROOT` to decide what path to expose.
 
+The tool CLI and inactive worker entrypoint compare canonical filesystem paths before starting. Direct Node and shell execution therefore work through Ploinky's staged source links with `NODE_OPTIONS="--preserve-symlinks --preserve-symlinks-main"`. Importing either module leaves stdin untouched and does not start tool handling. The worker adapter remains inactive unless the runtime explicitly selects it; the MCP descriptor retains its per-tool shell commands.
+
 - default local deployment: `ploinky start explorer` provides the workspace root through profile/default configuration
 - custom override: use a workspace variable only when intentionally diverging from the default local deployment
 

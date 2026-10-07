@@ -83,7 +83,7 @@ async function main() {
 
 function isDirectExecution() {
   try {
-    return Boolean(process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url));
+    return Boolean(process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)));
   } catch {
     return false;
   }
