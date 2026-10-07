@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# Re-establish disposable storage after a container restart, before Podman use.
+roboteam-podman-init
+
 # Fresh per launch, shared only by AgentServer callbacks and the HTTP service.
 ROBOTEAM_INTERNAL_TOKEN=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')
 export ROBOTEAM_INTERNAL_TOKEN

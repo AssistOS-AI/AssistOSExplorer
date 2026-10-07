@@ -10,7 +10,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
 
     for (let index = 0; index < argv.length; index++) {
         const key = argv[index];
-        options[key] = ['--resume-session', '--control-stdin'].includes(key) ? true : argv[++index];
+        options[key] = ['--resume-session', '--control-stdin', '--workflow-execution'].includes(key) ? true : argv[++index];
     }
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -46,7 +46,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         if (!task) throw new Error('The task prompt was not received.');
         runtime = await createCliRuntime({ workingDir: options['--cwd'], skillRoots: [],
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
-            execution: { captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
+            execution: { workflowExecution: options['--workflow-execution'] === true, captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
                 model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access',
                 ...(task.systemPrompt ? { systemPrompt: task.systemPrompt } : {}) } }, { reattachExistingTasks: false });
         const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt: task.prompt,

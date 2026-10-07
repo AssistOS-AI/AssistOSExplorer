@@ -19,17 +19,31 @@ function isRecord(value) {
 // unless a model was already chosen. An explicit codingAgent replaces the saved
 // one; models and efforts chosen for any agent are kept. A config ALA would
 // reject is left untouched for ALA to report.
-export async function ensureAgentConfig(home, { codingAgents, codingAgent = null } = {}) {
+export async function ensureAgentConfig(home, { codingAgents, codingAgent = null, model, effort } = {}) {
     const selected = normalizeCodingAgents(codingAgents);
+    if (model !== undefined && (selected.length !== 1 || (model !== null
+        && (typeof model !== 'string' || !model.trim() || model.length > 512 || /[\x00-\x1f]/u.test(model))))) {
+        throw Object.assign(new Error('model must be null or a model ID for one coding agent'), { statusCode: 400 });
+    }
+    if (effort !== undefined && (model === undefined || (effort !== null
+        && (typeof effort !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(effort))))) {
+        throw Object.assign(new Error('effort requires a model selection and must be null or a native effort name'), { statusCode: 400 });
+    }
     const directory = path.join(home, '.ala');
-    const file = path.join(directory, 'config.json');
+    const file = await agentConfigPath(home);
     let current = {};
     try {
         current = JSON.parse(await fs.readFile(file, 'utf8'));
     } catch (error) {
-        if (error.code !== 'ENOENT') return null;
+        if (error.code !== 'ENOENT') {
+            if (model !== undefined) throw new Error('Cannot update an invalid ALA configuration.');
+            return null;
+        }
     }
-    if (!isRecord(current) || Object.keys(current).some(key => !CONFIG_FIELDS.has(key))) return null;
+    if (!isRecord(current) || Object.keys(current).some(key => !CONFIG_FIELDS.has(key))) {
+        if (model !== undefined) throw new Error('Cannot update an invalid ALA configuration.');
+        return null;
+    }
     const models = isRecord(current.models) ? { ...current.models } : {};
     const record = {
         codingAgent: codingAgent || current.codingAgent || selected[0],
@@ -39,6 +53,19 @@ export async function ensureAgentConfig(home, { codingAgents, codingAgent = null
     if (selected.includes('opencode') && !(typeof models.opencode === 'string' && models.opencode.trim())) {
         models.opencode = DEFAULT_OPENCODE_MODEL;
     }
+    if (model !== undefined) {
+        const agent = selected[0];
+        const next = model === null ? (agent === 'opencode' ? DEFAULT_OPENCODE_MODEL : null) : model.trim();
+        if (model === null || models[agent] !== next) delete record.efforts[agent];
+        if (next) models[agent] = next;
+        else delete models[agent];
+    }
+    if (effort !== undefined) {
+        const agent = selected[0];
+        if (effort && !models[agent]) throw Object.assign(new Error('effort requires an explicit model'), { statusCode: 400 });
+        if (effort) record.efforts[agent] = effort;
+        else delete record.efforts[agent];
+    }
     if (JSON.stringify(record) === JSON.stringify(current)) return null;
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     const temporary = path.join(directory, `.config-${process.pid}-${randomUUID()}.tmp`);
@@ -47,4 +74,15 @@ export async function ensureAgentConfig(home, { codingAgents, codingAgent = null
         await fs.rename(temporary, file);
     } finally { await fs.rm(temporary, { force: true }); }
     return record;
+}
+
+export async function agentConfigPath(home) {
+    const directory = path.join(home, '.ala'), file = path.join(directory, 'config.json');
+    for (const [entryPath, kind] of [[home, 'isDirectory'], [directory, 'isDirectory'], [file, 'isFile']]) {
+        try {
+            const entry = await fs.lstat(entryPath);
+            if (entry.isSymbolicLink() || !entry[kind]()) throw new Error('Unsafe ALA model configuration path.');
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    return file;
 }

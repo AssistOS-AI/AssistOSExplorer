@@ -229,3 +229,58 @@ test('serves the skills dialog, shared theme and local font through the authenti
     assert.equal(font.headers.get('content-type'), 'font/woff2');
     assert.equal(Buffer.from(await font.arrayBuffer()).subarray(0, 4).toString(), 'wOF2');
 });
+
+test('robot model settings load lazily, enforce administrator access and save the chosen model', async t => {
+    const calls = [];
+    const fixture = await startFixture({ robotModels: {
+        config: async robot => { calls.push(['config', robot.id]); return { codingAgent: 'opencode', models: { opencode: 'provider/saved' } }; },
+        list: async (robot, agent) => { calls.push(['list', robot.id, agent]); return { agent, models: [{ id: 'provider/model', label: 'Example' }] }; },
+    } });
+    t.after(fixture.close);
+    const robot = await fixture.robotStore.create({ name: 'Model Picker' });
+    const base = `${fixture.baseUrl}/api/robots/${robot.id}`;
+    const headers = { 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('admin', ['admin']) };
+    assert.equal((await fetch(`${base}/models?agent=opencode`)).status, 401);
+    assert.equal((await fetch(`${base}/models?agent=opencode`, { headers: { 'x-ploinky-auth-info': authHeader('user') } })).status, 403);
+    assert.deepEqual(calls, []);
+    const settings = await fetch(`${base}/coding-agents`, { headers });
+    assert.equal(settings.status, 200);
+    assert.equal((await settings.json()).models.opencode, 'provider/saved');
+    assert.deepEqual(calls, [['config', robot.id]]);
+    const models = await fetch(`${base}/models?agent=opencode`, { headers });
+    assert.equal(models.status, 200);
+    assert.equal((await models.json()).models[0].id, 'provider/model');
+    assert.deepEqual(calls.at(-1), ['list', robot.id, 'opencode']);
+    const patch = body => fetch(`${base}/coding-agents`, { method: 'PATCH', headers, body: JSON.stringify(body) });
+    assert.equal((await patch({ codingAgents: ['opencode'], model: 'provider/model' })).status, 200);
+    const config = JSON.parse(await fs.readFile(path.join(fixture.robotStore.robotPath(robot.id), 'home/.ala/config.json')));
+    assert.equal(config.models.opencode, 'provider/model');
+    assert.equal((await patch({ codingAgents: ['opencode'], model: 123 })).status, 400);
+    assert.equal((await patch({ codingAgents: ['opencode', 'pi'], model: 'invalid' })).status, 400);
+    fixture.runtimeManager.hasUnfinishedTasks = () => true;
+    assert.equal((await patch({ codingAgents: ['opencode'], model: null })).status, 409);
+});
+
+
+test('robot default effort is validated and saved with its model', async t => {
+    const fixture = await startFixture({ robotModels: {
+        validateEffort: async (robot, agent, model, effort) => {
+            if (agent !== 'opencode' || model !== 'provider/model' || effort !== 'high') {
+                throw Object.assign(new Error('Unsupported effort'), { statusCode: 400 });
+            }
+        },
+    } });
+    t.after(fixture.close);
+    const robot = await fixture.robotStore.create({ name: 'Effort Picker' });
+    const url = `${fixture.baseUrl}/api/robots/${robot.id}/coding-agents`;
+    const headers = { 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('admin', ['admin']) };
+    const patch = body => fetch(url, { method: 'PATCH', headers, body: JSON.stringify(body) });
+    const body = { codingAgents: ['opencode'], model: 'provider/model', effort: 'high' };
+    assert.equal((await patch(body)).status, 200);
+    const read = async () => JSON.parse(await fs.readFile(path.join(fixture.robotStore.robotPath(robot.id), 'home/.ala/config.json')));
+    assert.equal((await read()).efforts.opencode, 'high');
+    assert.equal((await patch({ ...body, effort: 'invalid' })).status, 400);
+    assert.equal((await read()).efforts.opencode, 'high');
+    assert.equal((await patch({ ...body, effort: null })).status, 200);
+    assert.equal((await read()).efforts.opencode, undefined);
+});

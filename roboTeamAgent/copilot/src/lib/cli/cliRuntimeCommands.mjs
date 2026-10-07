@@ -74,7 +74,7 @@ export async function executeRuntimeCommand({ runtime, connection, input, contex
             persist: (selection) => engine.setModel({ ...selection, sessionId: connection.sessionId }),
             emitRuntimeState: (model, { backend, effort }) => emit?.('runtime', { model, backend, effort }),
         });
-        return { output: `Model selected: ${connection.pinnedModel || 'default'} (${result.backend})${result.effortChange ? ` · effort: ${result.effortChange}` : ''}` };
+        return { output: `Model selected: ${connection.pinnedModel || 'default'} (${result.backend})${connection.pinnedEffort ? ` · effort: ${connection.pinnedEffort}` : ''}` };
     }
     if (result.showModelPicker) {
         const { backend, models, model, effort } = await loadModels();

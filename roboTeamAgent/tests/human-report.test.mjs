@@ -41,10 +41,27 @@ test('workflow payloads work inside reports and alongside a separate report', ()
     const payload = { message: 'Changes verified.', nextEdgeId: 'done', workflows: [{ workflowTypeId: 'default', prompt: 'Check the result.' }] };
     assert.deepEqual(extractJson(report(JSON.stringify(payload))), payload);
     assert.deepEqual(extractJson(report('```json\n' + JSON.stringify(payload) + '\n```')), payload);
-    for (const text of [report('# message\nChanges verified.\n# nextEdgeId\ndone'), report(JSON.stringify(payload)), JSON.stringify(payload) + '\n' + report('Changes verified.')]) {
+    for (const text of [report('# message\nChanges verified.\n# nextEdgeId\ndone'), report(JSON.stringify(payload)), JSON.stringify(payload) + '\n' + report('Changes verified.'),
+        report('Changes verified.') + '\n# nextEdgeId\ndone', report('Changes verified.') + '\n' + JSON.stringify(payload)]) {
         assert.equal(parseRoute(text, graph, 'review').nextEdgeId, 'done');
     }
     assert.throws(() => parseRoute(report('# nextEdgeId\ninvalid'), graph, 'review'));
+});
+
+test('the debug log view appends the complete final response once when it was not streamed', async () => {
+    const { runInNewContext } = await import('node:vm');
+    const source = (await fs.readFile(new URL('../public/log-render.js', import.meta.url), 'utf8'))
+        .replace(/^import .*\n/, '').replace('export function', 'function');
+    const final = report('Verified.') + '\n\n# nextEdgeId\ndone';
+    for (const log of ['Working...', 'Working...\n\n' + final]) {
+        const calls = [];
+        const sandbox = { renderTaskLog: (_container, text, _empty, task) => calls.push({ text, task }) };
+        runInNewContext(source, sandbox);
+        sandbox.renderLog({ scrollHeight: 100, scrollTop: 0, clientHeight: 100 }, log, final);
+        assert.equal(calls[0].text, 'Working...\n\n' + final);
+        const { finalOutputOffset: offset, finalOutputLength: length } = calls[0].task;
+        assert.equal(calls[0].text.slice(offset, offset + length), final);
+    }
 });
 
 test('the report contract opens a session once; resumed turns and queued messages carry only the user text', async () => {

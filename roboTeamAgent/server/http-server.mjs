@@ -1,3 +1,4 @@
+import { RobotModels } from './robot-models.mjs';
 import { conversationSummaries, workflowSummaries } from './impact-summaries.mjs';
 import { requiredHumanReportSkill } from './required-skills.mjs';
 import fs from 'node:fs';
@@ -360,6 +361,7 @@ export function createRoboTeamServer(options) {
     const robotStore = options.robotStore;
     const runtimeManager = options.runtimeManager;
     const roboflow = options.roboflow || null;
+    const robotModels = options.robotModels || new RobotModels({ robotStore, runtimeManager });
     const skillsets = options.skillsets || runtimeManager.skillsets || new RobotSkillsets({ robotStore,
         workspaceRoot: runtimeManager.workspaceRoot, alaCommand: runtimeManager.alaCommand });
     runtimeManager.skillsets = skillsets;
@@ -396,7 +398,7 @@ export function createRoboTeamServer(options) {
             }
             if (pathname === '/InterVariable.woff2' && req.method === 'GET') return serveFile(res, publicDir, 'InterVariable.woff2');
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(res, publicDir, 'styles.css');
-            if (['/workflow-editor.js', '/workflow-board.js', '/workflow-generator.js', '/workflow-editor.css',
+            if (['/workflow-editor.js', '/workflow-board.js', '/workflow-routing.js', '/workflow-generator.js', '/workflow-editor.css',
                 '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js',
                 '/log-render.js', '/webchat-logs.js', '/summary.js', '/conversation-skills.js', '/conversation-skills-model.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
@@ -480,7 +482,27 @@ export function createRoboTeamServer(options) {
                 await roboflow?.refreshCoverage();
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
             }
+            const modelsId = matchRobotPath(pathname, '/models');
+            if (modelsId && req.method === 'GET') {
+                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
+                const robot = await robotStore.get(modelsId);
+                if (!robot) return sendError(res, 404, 'robot not found');
+                const controller = new AbortController();
+                const abort = () => controller.abort(new Error('Model request closed'));
+                const timeout = setTimeout(() => controller.abort(new Error('Model catalog timed out; try again.')), 90000);
+                res.once('close', abort);
+                try {
+                    const result = await robotModels.list(robot, url.searchParams.get('agent'), { signal: controller.signal });
+                    return sendJson(res, 200, { ok: true, ...result });
+                } finally { clearTimeout(timeout); res.removeListener('close', abort); }
+            }
             const codingAgentsId = matchRobotPath(pathname, '/coding-agents');
+            if (codingAgentsId && req.method === 'GET') {
+                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
+                const robot = await robotStore.get(codingAgentsId);
+                if (!robot) return sendError(res, 404, 'robot not found');
+                return sendJson(res, 200, { ok: true, ...await robotModels.config(robot) });
+            }
             if (codingAgentsId && req.method === 'PATCH') {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 if (!await robotStore.get(codingAgentsId)) return sendError(res, 404, 'robot not found');
@@ -489,7 +511,11 @@ export function createRoboTeamServer(options) {
                 }
                 const body = await readJsonBody(req);
                 if (!Object.hasOwn(body, 'codingAgents')) return sendError(res, 400, 'codingAgents is required');
-                const robot = await robotStore.setCodingAgents(codingAgentsId, body.codingAgents);
+                if (body.effort != null) {
+                    if (!Array.isArray(body.codingAgents) || body.codingAgents.length !== 1 || body.model === undefined) return sendError(res, 400, 'effort requires a model and one coding agent');
+                    await robotModels.validateEffort(await robotStore.get(codingAgentsId), body.codingAgents[0], body.model, body.effort);
+                }
+                const robot = await robotStore.setCodingAgents(codingAgentsId, body.codingAgents, { model: body.model, effort: body.effort });
                 await roboflow?.refreshCoverage();
                 return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
             }

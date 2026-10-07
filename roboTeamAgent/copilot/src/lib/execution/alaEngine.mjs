@@ -1,3 +1,5 @@
+import { nativeEnvironment } from './alaEnvironment.mjs';
+import { createTaskFailureChannel } from '../../../../server/task-failure-channel.mjs';
 import { buildNativePrompt, buildTaskPrompt } from '../prompts.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,7 +10,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { resolveAlaInstallation } from './alaInstallation.mjs';
 import { alaSessionsRoot, readAlaSession } from './alaTranscript.mjs';
 import * as workspaceSettings from '../config/achillesSettings.mjs';
-import { acquireExecutionLease, withWorkspaceMutation } from '../storage/workspaceStateLock.mjs';
+import { acquireExecutionLease } from '../storage/workspaceStateLock.mjs';
 import { ACHILLES_PRIVATE_DIRECTORY_NAME, resolveAchillesWorkspaceRoot } from '../storage/privateDataRoot.mjs';
 import { createPloinkyTaskContext } from '../ploinky/ploinkyTaskContext.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
@@ -47,19 +49,6 @@ async function executionHome(env) {
         throw new Error('ALA setup error: ACHILLES_ALA_HOME must be an existing administrator-provisioned dedicated native home.', { cause });
     }
     return home;
-}
-
-// Native engine environment stays filtered; direct SDK scripts receive an explicit task context.
-function nativeEnvironment(env, home) {
-    const result = {};
-    for (const [key, value] of Object.entries(env)) {
-        if (/^(PLOINKY_|SSO_|ACHILLES_MODEL_|ALA_TASK_REPOSITORIES$|ALA_CONFIG_PATH$)|token|secret|password|authorization|cookie|api_?key|credential|private_?key/i.test(key)) continue;
-        result[key] = value;
-    }
-    return { ...result, HOME: home, CODEX_HOME: path.join(home, '.codex'),
-        XDG_CONFIG_HOME: path.join(home, '.config'), XDG_DATA_HOME: path.join(home, '.local/share'),
-        XDG_CACHE_HOME: path.join(home, '.cache'), PI_CODING_AGENT_DIR: path.join(home, '.pi/agent'),
-        CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
 }
 
 // Returns the backend to resume, or false when the conversation has no native
@@ -134,9 +123,15 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         // ALA resumes a conversation on its own agent; otherwise it uses the
         // configured agent, then the first available. An explicit task agent or a
         // conversation bound before its first native turn is passed as --ca.
-        const requestedBackend = execution.backend || (!resumeBackend && session.engine?.backend) || null;
+        const requestedBackend = execution.backend || (!resumeBackend && (session.engine?.backend || session.modelOverride?.backend)) || null;
         const backend = resumeBackend || requestedBackend
             || (isInstalled(native.codingAgent) ? native.codingAgent : agents.find((entry) => entry.available)?.name);
+        if (session.modelOverride) {
+            if (session.modelOverride.backend !== backend) throw new Error('The session model belongs to another coding agent; reset /model or create a new session.');
+            models[backend] = session.modelOverride.model;
+            if (session.modelOverride.effort) efforts[backend] = session.modelOverride.effort;
+            else delete efforts[backend];
+        }
         if (execution.model) {
             if (execution.model !== models[backend]) delete efforts[backend];
             models[backend] = execution.model;
@@ -165,7 +160,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         let finish;
         const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
         active.add(operation);
-        let release, catalogRelease, turn, scriptContext, child, childDone;
+        let release, catalogRelease, turn, scriptContext, child, childDone, failureChannel, forcedFailure;
         const env = { ...process.env };
         const sanitize = createSanitizer(context, env);
         const emit = async (event) => { await onEvent?.(sanitize(event)); };
@@ -199,13 +194,16 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 origin: structuredClone(context.origin || context.webchatOrigin || {}) };
             scriptContext = await createPloinkyTaskContext({ context: captured,
                 env, onTask: (task) => backgroundTasks?.observeScriptTask(task, captured) });
-            const nativePrompt = buildNativePrompt({ prompt, resume: config.resume,
+            let nativePrompt = buildNativePrompt({ prompt, resume: config.resume,
                 selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
             controller.signal.throwIfAborted();
             await sessionStore.bindEngine(sessionId, { home, cwd, backend, robotId: execution.robotId });
-            // ALA reads the coding agent, model and effort from the config in --home.
+            // Snapshot the resolved defaults and session override for this invocation.
+            // The robot home and its shared config are never changed by /model.
+            const invocationConfig = path.join(scriptContext.directory, 'ala-config.json');
+            await api.saveConfig(invocationConfig, { codingAgent: backend, models: config.models, efforts: config.efforts });
             const args = ['--home', home, '--cwd', cwd, '--session-id', sessionId,
-                '--turn-id', turnId, '--control-stdin', '--permissions', permissionMode,
+                '--turn-id', turnId, '--control-stdin', '--permissions', permissionMode, '--config', invocationConfig,
                 '--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
             if (config.requestedBackend) args.push('--ca', config.requestedBackend);
             // The workspace is mounted read-only at its canonical path; the writable
@@ -213,6 +211,20 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (config.workspaceRoot !== cwd) args.push('--folder', config.workspaceRoot);
             args.push('--folder', scriptContext.directory, 'as', 'ploinky-runtime');
             if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) args.push('--folder', env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, 'as', 'roboflow-human-input');
+            const failureSkill = skills.find(skill => skill.name === 'report-task-blocked');
+            if (execution.workflowExecution && failureSkill) {
+                args.push('--folder', failureSkill.skillDir, 'as', 'report-task-blocked');
+                nativePrompt += '\n\nRead /workspace/report-task-blocked/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan.';
+                failureChannel = await createTaskFailureChannel({ request: async ({ message }) => {
+                    if (!forcedFailure) {
+                        forcedFailure = new Error(sanitize(message));
+                        try { await emit({ type: 'task-failed', message: forcedFailure.message }); }
+                        finally { controller.abort(forcedFailure); }
+                    }
+                    return {};
+                } });
+                args.push('--folder', failureChannel.directory, 'as', 'roboteam-task-failure');
+            }
 
             if (config.resume) args.push('--resume-session');
             if (execution.model) args.push('--model', execution.model);
@@ -235,6 +247,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             childDone = consumeChild(child, { config: { ...config, skillExecution: snapshot.revision ? { revision: snapshot.revision, catalogId: snapshot.catalogId } : null }, controller, context: captured, sessionId, turnId,
                 assistantMessageId: turn.assistantMessageId, emit, sanitize });
             const outputText = await childDone;
+            if (failureChannel) {
+                await failureChannel.close();
+                failureChannel = null;
+            }
+            if (forcedFailure) throw forcedFailure;
             if (scriptContext) {
                 const completedContext = scriptContext;
                 scriptContext = null;
@@ -255,9 +272,9 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             return { outputText: finalText, session: completed, turnId, userMessageId: turn.userMessageId,
                 assistantMessageId: turn.assistantMessageId, backend };
         } catch (cause) {
-            const cancelled = controller.signal.aborted || cause?.exitCode === 130;
-            const error = cancelled ? interrupted() : new Error(sanitize(cause?.message || String(cause)), { cause });
-            if (!cancelled && cause?.exitCode !== undefined) error.exitCode = cause.exitCode;
+            const cancelled = !forcedFailure && (controller.signal.aborted || cause?.exitCode === 130);
+            const error = forcedFailure || (cancelled ? interrupted() : new Error(sanitize(cause?.message || String(cause)), { cause }));
+            if (!cancelled && !forcedFailure && cause?.exitCode !== undefined) error.exitCode = cause.exitCode;
             if (turn) {
                 error.session = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, error.message,
                     { status: cancelled ? 'interrupted' : 'failed', durationMs: Math.max(0, Math.round(performance.now() - responseStarted)) });
@@ -270,6 +287,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             interactions?.cancelTurn(turnId);
             try {
                 if (childDone) await childDone.catch(() => {});
+                await failureChannel?.close();
                 if (scriptContext) await scriptContext.close();
             } finally {
                 try { await catalogRelease?.(); } finally { try { await release?.(); } finally { active.delete(operation); finish(); } }
@@ -386,7 +404,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             controller.signal.removeEventListener('abort', stop);
             interactions?.cancelTurn(turnId);
         }
-        if (controller.signal.aborted) throw interrupted();
+        if (controller.signal.aborted) throw controller.signal.reason || interrupted();
         if (protocolError) throw protocolError;
         if (outcome.code === 130) throw interrupted();
         if (outcome.code !== 0) throw Object.assign(new Error(`ALA execution failed (${outcome.code ?? outcome.signal}).${diagnostics.trim() ? `\n${diagnostics.trim()}` : ''}`), { exitCode: outcome.code });
@@ -407,17 +425,12 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         async setModel({ sessionId, backend, model, effort = null } = {}) {
             const config = await configuration(sessionId, { ...process.env });
             if (backend !== config.backend) throw new Error('The conversation backend changed; reload /model.');
-            await withWorkspaceMutation(config.cwd, async () => {
-                const configPath = await modelConfigPath(config.home);
-                const saved = await config.api.loadConfig(configPath);
-                const models = { ...saved.models };
-                const efforts = { ...saved.efforts };
-                if (model === null) delete models[backend];
-                else models[backend] = model;
-                if (model && effort) efforts[backend] = effort;
-                else delete efforts[backend];
-                await config.api.saveConfig(configPath, { ...saved, models, efforts });
+            await sessionStore.updateSession(sessionId, session => {
+                if (model === null) delete session.modelOverride;
+                else session.modelOverride = { backend, model, effort };
             });
+            const updated = await configuration(sessionId, { ...process.env });
+            return { backend: updated.backend, model: updated.models[updated.backend] || null, effort: updated.efforts[updated.backend] || null };
         },
         async listModels({ sessionId, signal } = {}) {
             if (closed) throw new Error('ALA engine is closed.');

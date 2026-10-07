@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { skillCatalogRequest } from '../server/skill-catalog-api.mjs';
 import { installLiveSkills } from '../server/live-skill-install.mjs';
 import { DEFAULT_ROBOT_ID, OTHER_ROBOT_ID, SECOND_IDENTITY, SKILL_IDENTITY, createConversationSkillsFixture } from './helpers/conversation-skills-fixture.mjs';
@@ -175,12 +176,14 @@ test('the next execution installs exactly the skills the page enabled', async t 
     await fs.mkdir(cwd);
     const links = path.join(cwd, '.agents', 'skills');
     // A fake repository client that creates the symbolic links it is asked to publish.
+    const repositories = [{ name: 'DocumentationSkills', source: path.join(f.workspaceRoot, 'DocumentationSkills'), origin: 'workspace' },
+        { name: 'ProjectSkills', source: f.repository, origin: 'workspace' },
+        { name: 'AchillesCLI', source: path.resolve(fileURLToPath(new URL('../..', import.meta.url))), origin: 'workspace' }];
     const client = {
-        listRepositories: async () => [{ name: 'DocumentationSkills', source: path.join(f.workspaceRoot, 'DocumentationSkills'), origin: 'workspace' },
-            { name: 'ProjectSkills', source: f.repository, origin: 'workspace' }],
+        listRepositories: async () => repositories,
         install: async ({ repos }) => {
             await fs.mkdir(links, { recursive: true });
-            for (const entry of repos) await fs.symlink(path.join(f.repository, ...(entry.sourcePath.split(path.sep))), entry.destination).catch(error => { if (error.code !== 'EEXIST') throw error; });
+            for (const entry of repos) await fs.symlink(path.join(repositories.find(repo => repo.name === entry.repoName).source, entry.sourcePath), entry.destination).catch(error => { if (error.code !== 'EEXIST') throw error; });
             return { conflicts: [] };
         },
         remove: async paths => { for (const destination of paths) await fs.rm(destination, { force: true }); return { conflicts: [] }; },
@@ -191,9 +194,24 @@ test('the next execution installs exactly the skills the page enabled', async t 
     const on = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, cwd, client });
     assert.ok(on.entries.some(entry => entry.identity === SKILL_IDENTITY));
     assert.ok((await installed()).includes('probe-skill'));
+    assert.equal((await installed()).includes('report-task-blocked'), false);
+    const workflow = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, cwd, client, workflowExecution: true });
+    const failure = workflow.entries.find(entry => entry.name === 'report-task-blocked');
+    assert.ok(failure?.required && failure.readOnly && failure.executionOnly);
+    await fs.access(path.join(failure.sourcePath, 'scripts/run.mjs'));
+    assert.equal((await installed()).includes('report-task-blocked'), false);
+    assert.equal((await f.read()).skills.some(entry => entry.identity === 'required/report-task-blocked'), false);
     assert.equal((await installed()).includes('second-skill'), false);
+    // Reconcile an owned link left by the earlier globally installed version.
+    const obsolete = path.join(links, 'report-task-blocked');
+    await fs.symlink(failure.sourcePath, obsolete);
+    const stateFile = path.join(cwd, '.agents', '.roboteam-links.json');
+    const installedRecords = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+    installedRecords.push({ repoName: 'AchillesCLI', destination: obsolete, sourcePath: 'roboTeamAgent/copilot/src/skills/report-task-blocked', linkTarget: failure.sourcePath });
+    await fs.writeFile(stateFile, JSON.stringify(installedRecords));
     await f.set({ identity: SKILL_IDENTITY, enabled: false, policyVersion: policyVersion + 1 });
     const off = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, cwd, client });
     assert.equal(off.entries.some(entry => entry.identity === SKILL_IDENTITY), false);
     assert.equal((await installed()).includes('probe-skill'), false);
+    assert.equal((await installed()).includes('report-task-blocked'), false);
 });

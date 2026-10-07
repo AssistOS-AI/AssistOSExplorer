@@ -820,3 +820,45 @@ test('workflow callback channel is scoped to each runtime attempt and removed be
     assert.equal(terminal.length, 2);
     await assert.rejects(fs.stat(children[1].directory), { code: 'ENOENT' });
 });
+
+test('reported task failure never publishes completed even when the wrapper exits zero', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-failure-'));
+    const robot = { id: 'failure-a1b2c3', name: 'Failure' };
+    const workspace = path.join(root, 'workspace'), dataDir = path.join(root, 'data');
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
+    const events = [], launches = [];
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+        execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
+        spawnImpl: (_command, args) => {
+            launches.push(args);
+            const child = new EventEmitter();
+            child.stdout = new PassThrough(); child.stderr = new PassThrough();
+            setImmediate(() => {
+                child.stderr.write('@@ALA_EVENT@@' + JSON.stringify({ type: 'task-failed', message: 'Missing deployment access.' }) + '\n');
+                child.emit('close', 0, null);
+            });
+            return child;
+        } });
+    manager.setTaskObserver(event => events.push(event));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const started = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Deploy', ca: 'codex', workflowRunId: 'flow_test' });
+    for (let i = 0; i < 200 && !events.some(event => event.kind === 'terminal'); i++) await new Promise(resolve => setTimeout(resolve, 5));
+    const terminal = events.filter(event => event.kind === 'terminal');
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0].state, 'failed');
+    assert.equal(terminal[0].forcedFailure, true);
+    assert.equal(terminal[0].error, 'Missing deployment access.');
+    assert.equal(manager.taskStatus(robot.id, started.taskId).state, 'failed');
+    assert.equal(events.some(event => event.state === 'completed' || event.state === 'paused'), false);
+    assert.ok(launches[0].includes('--workflow-execution'));
+    await manager.resumeTask(robot, started.taskId, 'Try again');
+    for (let i = 0; i < 200 && events.filter(event => event.kind === 'terminal').length < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(launches.length, 2);
+    assert.ok(launches[1].includes('--workflow-execution'));
+    assert.ok(launches[1].includes('--resume-session'));
+    manager.startTask(robot, 'simple', { cwd: workspace, task: 'Standalone', ca: 'codex' });
+    for (let i = 0; i < 200 && events.filter(event => event.kind === 'terminal').length < 3; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(launches.length, 3);
+    assert.equal(launches[2].includes('--workflow-execution'), false);
+});

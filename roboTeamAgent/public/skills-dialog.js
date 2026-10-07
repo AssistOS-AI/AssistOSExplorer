@@ -203,6 +203,11 @@ export function codingAgentLabel(names) {
     return names.map(name => CODING_AGENT_LABELS[name] || name).join(', ');
 }
 
+export function filterCodingModels(models, query) {
+    const words = query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
+    return models.filter(model => words.every(word => `${model.id} ${model.label}`.toLocaleLowerCase().includes(word)));
+}
+
 export function openCodingAgentsDialog(robot, { api, onChanged }) {
     const dialog = document.createElement('dialog');
     dialog.className = 'skills-dialog coding-agents-dialog';
@@ -215,43 +220,173 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
                 <label><input type="radio" name="codingAgent" value="pi"> Pi</label>
                 <label><input type="radio" name="codingAgent" value="claude"> Claude Code</label>
             </fieldset>
+            <section class="coding-model-field" aria-label="Default model">
+                <label id="coding-model-label">Default model</label>
+                <button type="button" class="coding-model-trigger button secondary" aria-haspopup="listbox" aria-expanded="false" aria-controls="coding-model-options">Default model</button>
+                <div class="coding-model-picker" hidden>
+                    <button type="button" class="coding-model-back button secondary" hidden>Back to models</button>
+                    <input type="search" class="coding-model-search" placeholder="Search models…" aria-label="Search models" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="coding-model-options" autocomplete="off">
+                    <p class="coding-model-message" role="status" aria-live="polite"></p>
+                    <button type="button" class="coding-model-retry button secondary" hidden>Retry</button>
+                    <div id="coding-model-options" class="coding-model-options" role="listbox" tabindex="0" aria-labelledby="coding-model-label"></div>
+                </div>
+            </section>
             <p class="coding-agent-status"></p>
             <p class="message" role="status" aria-live="polite"></p>
-            <button class="button primary" type="submit">Save</button>
+            <button class="button primary coding-agent-save" type="submit">Save</button>
         </form>`;
     dialog.querySelector('h2').textContent = `Coding agent · ${robot.name}`;
-    const form = dialog.querySelector('form');
-    const close = () => { dialog.close(); dialog.remove(); };
+    const form = dialog.querySelector('form'), message = dialog.querySelector('.message');
+    const trigger = dialog.querySelector('.coding-model-trigger'), picker = dialog.querySelector('.coding-model-picker');
+    const search = dialog.querySelector('.coding-model-search'), list = dialog.querySelector('.coding-model-options');
+    const modelMessage = dialog.querySelector('.coding-model-message'), retry = dialog.querySelector('.coding-model-retry');
+    const save = dialog.querySelector('.coding-agent-save'), back = dialog.querySelector('.coding-model-back');
+    const lifetime = new AbortController();
+    const catalogs = new Map(), drafts = new Map();
+    let saved = {}, savedEfforts = {}, defaults = {}, pendingModel = null, stage = 'models', ready = false, saving = false, request = null, activeIndex = -1;
     const names = robot.codingAgents || ['codex', 'opencode', 'pi', 'claude'];
     const busy = robot.run.state !== 'stopped' || ['queued', 'starting', 'running', 'pausing'].includes(robot.run.task?.state);
-    for (const field of form.elements) {
-        field.disabled = busy;
-        if (field.type === 'radio') field.checked = names.length === 1 && field.value === names[0];
+    const agent = () => form.querySelector('input[name="codingAgent"]:checked')?.value;
+    const selection = () => drafts.has(agent()) ? drafts.get(agent()) : { model: saved[agent()] || null, effort: savedEfforts[agent()] || null };
+    const isDefault = value => !value || value === defaults[agent()];
+    const closePicker = () => {
+        stage = 'models'; pendingModel = null; search.hidden = false; back.hidden = true;
+        list.setAttribute('aria-labelledby', 'coding-model-label'); list.removeAttribute('aria-label');
+        picker.hidden = true; trigger.setAttribute('aria-expanded', 'false'); search.setAttribute('aria-expanded', 'false');
+        search.removeAttribute('aria-activedescendant'); list.removeAttribute('aria-activedescendant'); update();
+    };
+    const close = () => { lifetime.abort(); request?.abort(); dialog.close(); dialog.remove(); };
+    function update() {
+        const { model, effort } = selection();
+        trigger.textContent = `${isDefault(model) ? 'Default model' : model} · ${effort || 'Default effort'}`;
+        trigger.disabled = busy || saving || !ready || !agent();
+        save.disabled = busy || saving || !ready || !agent() || stage === 'efforts';
+        for (const radio of form.querySelectorAll('[name="codingAgent"]')) radio.disabled = busy || saving;
     }
+    function highlight(index) {
+        const options = [...list.children];
+        activeIndex = options.length ? Math.max(0, Math.min(index, options.length - 1)) : -1;
+        options.forEach((option, i) => option.classList.toggle('active', i === activeIndex));
+        if (activeIndex >= 0) {
+            (stage === 'efforts' ? list : search).setAttribute('aria-activedescendant', options[activeIndex].id);
+            options[activeIndex].scrollIntoView({ block: 'nearest' });
+        } else search.removeAttribute('aria-activedescendant');
+    }
+    function renderModels() {
+        if (stage !== 'models') return;
+        list.replaceChildren(); activeIndex = -1; search.removeAttribute('aria-activedescendant');
+        const models = catalogs.get(agent());
+        const rows = [{ id: '', label: 'Default model' }, ...filterCodingModels(models || [], search.value)];
+        if (models) modelMessage.textContent = rows.length === 1 ? (models.length ? 'No matching models.' : 'No models available.') : '';
+        for (const [index, model] of rows.entries()) {
+            const option = document.createElement('button'); option.type = 'button'; option.tabIndex = -1;
+            option.className = 'coding-model-option'; option.id = `coding-model-option-${index}`; option.setAttribute('role', 'option');
+            option.setAttribute('aria-selected', String(model.id ? selection().model === model.id : isDefault(selection().model)));
+            const name = document.createElement('strong'); name.textContent = model.label;
+            option.append(name);
+            if (model.id && model.id !== model.label) { const id = document.createElement('small'); id.textContent = model.id; option.append(id); }
+            option.addEventListener('click', () => chooseModel(model));
+            list.append(option);
+        }
+    }
+    function chooseModel(model) {
+        request?.abort();
+        stage = 'efforts'; pendingModel = model.id || null;
+        const effectiveModel = model.id || defaults[agent()];
+        const entry = catalogs.get(agent())?.find(item => item.id === effectiveModel);
+        const efforts = [...new Set(entry?.efforts || [])];
+        search.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute('aria-activedescendant');
+        retry.hidden = true; back.hidden = false; list.removeAttribute('aria-busy');
+        list.removeAttribute('aria-labelledby'); list.setAttribute('aria-label', `Effort for ${model.label}`);
+        modelMessage.textContent = efforts.length ? `Choose effort for ${model.label}` : `${model.label} uses its default effort.`;
+        list.replaceChildren(); activeIndex = -1;
+        for (const [index, effort] of [null, ...efforts].entries()) {
+            const option = document.createElement('button'); option.type = 'button'; option.tabIndex = -1;
+            option.className = 'coding-model-option'; option.id = `coding-effort-option-${index}`;
+            option.setAttribute('role', 'option');
+            option.setAttribute('aria-selected', String(selection().model === pendingModel ? selection().effort === effort : effort === null));
+            option.textContent = effort || 'Default effort';
+            option.addEventListener('click', () => {
+                drafts.set(agent(), { model: pendingModel, effort }); closePicker(); trigger.focus();
+            });
+            list.append(option);
+        }
+        update(); list.focus(); highlight(0);
+    }
+    back.addEventListener('click', () => {
+        stage = 'models'; pendingModel = null; search.hidden = false; back.hidden = true;
+        list.removeAttribute('aria-label'); list.setAttribute('aria-labelledby', 'coding-model-label');
+        search.setAttribute('aria-expanded', 'true'); update(); void loadModels(); search.focus();
+    });
+    async function loadModels() {
+        const backend = agent();
+        if (catalogs.has(backend)) { retry.hidden = true; list.removeAttribute('aria-busy'); renderModels(); return; }
+        request?.abort();
+        const controller = new AbortController(); request = controller;
+        modelMessage.textContent = 'Loading models…'; retry.hidden = true; list.setAttribute('aria-busy', 'true'); renderModels();
+        try {
+            const result = await api(`api/robots/${robot.id}/models?agent=${encodeURIComponent(backend)}`, { signal: controller.signal });
+            if (controller.signal.aborted || lifetime.signal.aborted || agent() !== backend) return;
+            const entries = (result.models || []).map(model => typeof model === 'string' ? { id: model, label: model }
+                : { id: model.id || model.name || model.key, label: model.label || model.name || model.id || model.key,
+                    efforts: Array.isArray(model.efforts) ? model.efforts.filter(effort => typeof effort === 'string' && /^[a-zA-Z0-9_-]+$/u.test(effort)) : [] });
+            catalogs.set(backend, [...new Map(entries.filter(model => typeof model.id === 'string' && model.id).map(model => [model.id, model])).values()]);
+            renderModels();
+        } catch (error) {
+            if (controller.signal.aborted || lifetime.signal.aborted || agent() !== backend) return;
+            modelMessage.textContent = error.message; retry.hidden = false;
+        } finally { if (request === controller) { request = null; list.removeAttribute('aria-busy'); } }
+    }
+    for (const radio of form.querySelectorAll('[name="codingAgent"]')) {
+        radio.checked = names.length === 1 && radio.value === names[0];
+        radio.addEventListener('change', () => { request?.abort(); closePicker(); search.value = ''; update(); });
+    }
+    trigger.addEventListener('click', () => {
+        if (!picker.hidden) { closePicker(); return; }
+        picker.hidden = false; trigger.setAttribute('aria-expanded', 'true'); search.setAttribute('aria-expanded', 'true');
+        search.value = ''; search.focus(); void loadModels();
+    });
+    search.addEventListener('input', renderModels);
+    picker.addEventListener('keydown', event => {
+        if (event.target !== search && event.target !== list) return;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); highlight(activeIndex + (event.key === 'ArrowDown' ? 1 : -1)); }
+        else if (event.key === 'Enter') { event.preventDefault(); if (activeIndex >= 0) list.children[activeIndex]?.click(); }
+    });
+    dialog.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !picker.hidden) { event.preventDefault(); event.stopPropagation(); closePicker(); trigger.focus(); }
+    });
+    retry.addEventListener('click', () => void loadModels());
     dialog.querySelector('.coding-agent-status').textContent = busy
         ? 'Stop the workstation and tasks before changing the coding agent.'
-        : 'Changes apply to new chats and terminals. Existing conversations keep their backend.';
+        : 'Defaults apply to workflows and chats without a session model override. Existing conversations keep their coding agent.';
     form.addEventListener('submit', async event => {
         event.preventDefault();
-        const selected = new FormData(form).get('codingAgent');
-        if (!selected || busy) return;
-        for (const field of form.elements) field.disabled = true;
-        const message = dialog.querySelector('.message');
-        message.textContent = '';
+        const selected = agent();
+        if (!selected || busy || saving || !ready || stage === 'efforts') return;
+        saving = true; closePicker(); update(); message.textContent = ''; message.className = 'message';
         try {
-            await api(`api/robots/${robot.id}/coding-agents`, { method: 'PATCH', body: { codingAgents: [selected] } });
-            close();
-            await onChanged();
+            const body = { codingAgents: [selected], ...(drafts.has(selected) ? drafts.get(selected) : {}) };
+            await api(`api/robots/${robot.id}/coding-agents`, { method: 'PATCH', body });
+            close(); await onChanged();
         } catch (error) {
-            message.textContent = error.message;
-            message.className = 'message error';
-            for (const field of form.elements) field.disabled = false;
+            if (lifetime.signal.aborted) return;
+            message.textContent = error.message; message.className = 'message error'; saving = false; update();
         }
     });
     dialog.querySelector('.close-dialog').addEventListener('click', close);
     dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
-    dialog.addEventListener('close', () => dialog.remove(), { once: true });
-    document.body.append(dialog);
-    dialog.showModal();
+    dialog.addEventListener('close', () => { lifetime.abort(); request?.abort(); dialog.remove(); }, { once: true });
+    document.body.append(dialog); dialog.showModal(); update();
+    // Only local configuration is read now. The native catalog is fetched when
+    // the user first opens the model selector for a particular agent.
+    void api(`api/robots/${robot.id}/coding-agents`, { signal: lifetime.signal }).then(config => {
+        if (lifetime.signal.aborted) return;
+        saved = config.models || {}; savedEfforts = config.efforts || {}; defaults = config.defaultModels || {}; ready = true;
+        if (!agent() && names.includes(config.codingAgent)) form.querySelector(`[value="${config.codingAgent}"]`).checked = true;
+        update();
+    }).catch(error => {
+        if (lifetime.signal.aborted) return;
+        message.textContent = `Could not load settings: ${error.message}. Close and reopen to retry.`; message.className = 'message error';
+    });
     return dialog;
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createWebchatRuntimeStateEnvelope, clearWebchatRuntimeModel, selectWebchatRuntimeModel } from '../src/lib/webchat/webchatRuntimeState.mjs';
 
-test('model selection and reset are persisted through the robot config before publishing', async () => {
+test('model selection and reset are persisted through the session before publishing', async () => {
     const state = { pinnedModel: null };
     const saved = [];
     const emissions = [];
@@ -40,4 +40,14 @@ test('runtime state publishes effort after persistence and clears it on model re
     assert.equal(emitted[1].effort, null);
     assert.equal(saved[1].effort, null);
     assert.equal(createWebchatRuntimeStateEnvelope('native-model').effort, null);
+});
+
+
+test('reset publishes the inherited model and effort returned by session persistence', async () => {
+    const state = {}, published = [];
+    await selectWebchatRuntimeModel({ backend: 'opencode', model: null, slashState: state,
+        persist: async () => ({ backend: 'opencode', model: 'robot/default', effort: 'low' }),
+        emitRuntimeState: (model, options) => published.push({ model, ...options }) });
+    assert.deepEqual(published, [{ model: 'robot/default', backend: 'opencode', effort: 'low' }]);
+    assert.equal(state.pinnedModel, 'robot/default');
 });

@@ -2,7 +2,7 @@ import { installLiveSkills } from '../../../../server/live-skill-install.mjs';
 import { readSkillTree } from '../../../../server/skill-files.mjs';
 
 // workflowSkills: WebChat conversations also receive list-workflows and launch-workflow.
-export function createRobotSkillCatalog({ context, sessionStore, workingDir, initialSessionId, workflowSkills = false }) {
+export function createRobotSkillCatalog({ context, sessionStore, workingDir, initialSessionId, workflowSkills = false, workflowExecution = false }) {
     const catalogs = new Map();
     async function policyFor(sessionId) {
         const session = sessionStore.loadSession(sessionId);
@@ -24,14 +24,14 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, ini
             const resolved = await policyFor(sessionId);
             let snapshot;
             try { snapshot = resolved.policy.mode === 'pinned' ? await context.skillsets.pinnedInventory(resolved.robot, resolved.policy)
-                : await context.skillsets.inventory(resolved.robot, { ...resolved, cwd: cwd || resolved.cwd, workflowSkills });
+                : await context.skillsets.inventory(resolved.robot, { ...resolved, cwd: cwd || resolved.cwd, workflowSkills, workflowExecution });
             } catch (error) {
                 if (execution) throw error;
                 snapshot = { skills: [], policy: resolved.policy, policyVersion: resolved.policy.policyVersion, diagnostics: [{ state: 'unavailable', message: error.message }] };
             }
             catalogs.set(sessionId, snapshot.skills);
             if (!execution) return snapshot;
-            const captured = await installLiveSkills({ service: context.skillsets, robot: resolved.robot, policyId: resolved.policyId, cwd: cwd || resolved.cwd, workflowSkills });
+            const captured = await installLiveSkills({ service: context.skillsets, robot: resolved.robot, policyId: resolved.policyId, cwd: cwd || resolved.cwd, workflowSkills, workflowExecution });
             const skills = captured.entries.map((entry) => ({ ...entry, enabled: true, type: 'anthropic',
                 skillDir: entry.sourcePath, skillFile: `${entry.sourcePath}/SKILL.md` }));
             const { release, ...record } = captured;

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,6 +18,7 @@ import {
 import { getCurrentSessionId } from '../src/lib/config/achillesSettings.mjs';
 import { SlashCommandHandler } from '../src/repl/SlashCommandHandler.mjs';
 import { resolveAlaCommand } from '../../server/ala-command.mjs';
+import { saveTaskExecution } from '../../server/project-storage.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function loadAla() {
@@ -124,6 +126,39 @@ test('new and resumed sessions update the selected session and list', async (t) 
     await store.resumeSession(first.sessionId);
     assert.equal(getCurrentSessionId(workingDir), first.sessionId);
     await assert.rejects(() => store.resumeSession('../settings'), /invalid_session_id/);
+});
+
+test('session lists exclude workflow tasks using existing task definitions without changing sessions', async (t) => {
+    const workingDir = workspace(t);
+    const store = new ConversationSessionStore({ workingDir });
+    const main = await store.createSession();
+    const standalone = await store.createSession({ select: false });
+    const phase = await store.createSession({ select: false });
+    const before = fs.readFileSync(store.sessionPath(phase.sessionId), 'utf8');
+    const persist = (session, workflowRunId, state) => saveTaskExecution({ workspaceRoot: os.tmpdir() }, {
+        taskId: crypto.randomUUID(), alaSessionId: session.sessionId, robotId: 'default', type: 'simple', state,
+        createdAt: new Date().toISOString(), request: { cwd: workingDir, task: 'Execute task', ...(workflowRunId ? { workflowRunId } : {}) },
+    });
+    persist(standalone, null, 'completed');
+    for (const state of ['running', 'paused', 'completed']) {
+        persist(phase, 'flow_1234567890abcdef12345678', state);
+        const payload = new ConversationSessionStore({ workingDir }).listSessions(main.sessionId);
+        assert.deepEqual(new Set(payload.sessions.map(item => item.sessionId)), new Set([main.sessionId, standalone.sessionId]));
+        assert.equal(payload.current.sessionId, main.sessionId);
+        assert.equal(createSessionListEnvelope(payload).sessions.length, 2);
+    }
+    assert.equal(store.loadSession(phase.sessionId).sessionId, phase.sessionId);
+    assert.equal(fs.readFileSync(store.sessionPath(phase.sessionId), 'utf8'), before);
+});
+
+test('session filtering rejects a symlinked task definition', async (t) => {
+    const workingDir = workspace(t);
+    const store = new ConversationSessionStore({ workingDir });
+    const session = await store.createSession();
+    const directory = path.join(workingDir, '.roboteam', 'tasks', session.sessionId);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.symlinkSync(store.sessionPath(session.sessionId), path.join(directory, 'task.json'));
+    assert.throws(() => store.listSessions(), /must not be a symbolic link/);
 });
 
 test('visible command turns persist for rendering but stay outside model history', async (t) => {

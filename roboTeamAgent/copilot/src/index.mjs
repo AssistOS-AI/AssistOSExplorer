@@ -48,7 +48,7 @@ export async function createCliRuntime(options, { webchat = false, reattachExist
         else initialSession = await sessionStore.createSession({ sessionId: options.sessionId, select: false });
     } else initialSession = await sessionStore.ensureCurrentSession();
     const robotCatalog = robotContext ? createRobotSkillCatalog({ context: robotContext, sessionStore,
-        workingDir, initialSessionId: initialSession.sessionId, workflowSkills: options.execution?.workflowSkills === true, discoverTaskSkills }) : null;
+        workingDir, initialSessionId: initialSession.sessionId, workflowSkills: options.execution?.workflowSkills === true, workflowExecution: options.execution?.workflowExecution === true, discoverTaskSkills }) : null;
     let catalog;
     const refresh = async () => {
         catalog = await createAnthropicSkillCatalog({

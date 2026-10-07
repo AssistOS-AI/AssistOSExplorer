@@ -4,7 +4,7 @@ set -eu
 contract_file="/opt/roboteam-runtime/contract-v6"
 contract_value="roboteam-runtime-v6"
 runtime_initializer="/usr/local/bin/roboteam-podman-init"
-required_commands="podman fuse-overlayfs pasta node npm bwrap"
+required_commands="podman fuse-overlayfs pasta node npm bwrap roboteam-podman-init"
 required_assets="/opt/roboteam-runtime/storage.conf"
 missing=""
 
@@ -35,6 +35,16 @@ for asset_path in $required_assets; do
         missing="$missing $asset_path"
     fi
 done
+
+if ! grep -Eq '^force_mask = "0700"$' /opt/roboteam-runtime/storage.conf 2>/dev/null; then
+    missing="$missing storage-force-mask:0700"
+fi
+if ! grep -Eq '^graphroot = "/var/lib/roboteam-podman/storage"$' /opt/roboteam-runtime/storage.conf 2>/dev/null \
+    || ! grep -Eq '^runroot = "/var/lib/roboteam-podman/run"$' /opt/roboteam-runtime/storage.conf 2>/dev/null \
+    || ! grep -Eq '^imagestore = "/data/podman/images"$' /opt/roboteam-runtime/storage.conf 2>/dev/null \
+    || ! grep -Eq '^transient_store = true$' /opt/roboteam-runtime/storage.conf 2>/dev/null; then
+    missing="$missing storage-layout:split-transient"
+fi
 
 if [ -n "$missing" ]; then
     echo "ERROR: RoboTeam purpose-built runtime contract is incomplete:$missing" >&2

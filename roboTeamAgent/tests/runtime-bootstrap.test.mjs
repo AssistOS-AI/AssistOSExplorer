@@ -39,8 +39,14 @@ async function writeFixture(directory, name, source) {
     return filePath;
 }
 
+async function storageInitFixture(directory) {
+    await writeFixture(directory, 'roboteam-podman-init', '#!/bin/sh\nexit "${STORAGE_INIT_EXIT:-0}"\n');
+    return `${directory}:${process.env.PATH}`;
+}
+
 test('launcher generates a fresh shared token without logging or accepting a configured token', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-token-'));
+    const fixturePath = await storageInitFixture(directory);
     t.after(() => rm(directory, { recursive: true, force: true }));
     const fixture = await writeFixture(directory, 'token.mjs', `
 import { writeFileSync } from 'node:fs';
@@ -56,6 +62,7 @@ setTimeout(() => process.exit(7), 200);
     let previous;
     for (let run = 0; run < 2; run++) {
         const result = await runScript(join(AGENT_ROOT, 'scripts/startAgent.sh'), {
+            PATH: fixturePath,
             ROBOTEAM_INTERNAL_TOKEN: 'a'.repeat(64), TOKEN_CHECK_DIR: directory, TOKEN_FIXTURE: fixture,
             ROBOTEAM_AGENT_SERVER_SCRIPT: agent, ROBOTEAM_SERVICE_MAIN: service, ROBOTEAM_SERVICE_CHECK: check,
         });
@@ -137,12 +144,19 @@ test('install hook verifies the runtime and prepares the persistent tool-cache r
     }
     assert.match(source, /if ! podman_version=\$\(podman --version 2>\/dev\/null\) \|\| \[ "\$podman_version" != "podman version 5\.8\.7" \]; then/);
     assert.match(source, /podman-version:5\.8\.7/);
+    assert.match(source, /force_mask = \"0700\"/);
+    assert.match(source, /\/var\/lib\/roboteam-podman\/storage/);
+    assert.match(source, /\/data\/podman\/images/);
+    assert.match(source, /transient_store = true/);
+    assert.match(source, /podman version 5\.8\.7/);
+    assert.doesNotMatch(source, /podman-major|podman version 6/);
     assert.doesNotMatch(source, /\b(?:apt|apt-get|curl|wget|pnpm|yarn|git)\b/);
     assert.doesNotMatch(source, /npm\s+(?:install|ci)/);
 });
 
 test('AgentServer failure terminates the service and fails the container', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-mcp-'));
+    const fixturePath = await storageInitFixture(directory);
     t.after(() => rm(directory, { recursive: true, force: true }));
     const peerStoppedPath = join(directory, 'service-stopped');
     const agentServer = await writeFixture(directory, 'agent-server.sh', '#!/bin/sh\nsleep 0.2\nexit 7\n');
@@ -157,6 +171,7 @@ setInterval(() => {}, 1000);
     const check = await writeFixture(directory, 'check.mjs', 'process.exit(0);\n');
 
     const result = await runScript(join(AGENT_ROOT, 'scripts', 'startAgent.sh'), {
+        PATH: fixturePath,
         PEER_STOPPED_PATH: peerStoppedPath,
         ROBOTEAM_AGENT_SERVER_SCRIPT: agentServer,
         ROBOTEAM_SERVICE_MAIN: service,
@@ -170,6 +185,7 @@ setInterval(() => {}, 1000);
 
 test('even a clean service exit terminates AgentServer and fails the container', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-service-'));
+    const fixturePath = await storageInitFixture(directory);
     t.after(() => rm(directory, { recursive: true, force: true }));
     const peerStoppedPath = join(directory, 'agent-server-stopped');
     const agentServer = await writeFixture(directory, 'agent-server.sh', `#!/bin/sh
@@ -180,6 +196,7 @@ while :; do sleep 0.05; done
     const check = await writeFixture(directory, 'check.mjs', 'process.exit(0);\n');
 
     const result = await runScript(join(AGENT_ROOT, 'scripts', 'startAgent.sh'), {
+        PATH: fixturePath,
         PEER_STOPPED_PATH: peerStoppedPath,
         ROBOTEAM_AGENT_SERVER_SCRIPT: agentServer,
         ROBOTEAM_SERVICE_MAIN: service,
@@ -189,4 +206,17 @@ while :; do sleep 0.05; done
     assert.equal(result.code, 1, result.stderr);
     assert.match(result.stderr, /service exited; stopping AgentServer/);
     assert.equal(await readFile(peerStoppedPath, 'utf8'), 'agent-server');
+});
+
+test('storage initialization failure stops startup before either service', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-storage-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const fixturePath = await storageInitFixture(directory);
+    const result = await runScript(join(AGENT_ROOT, 'scripts/startAgent.sh'), {
+        PATH: fixturePath, STORAGE_INIT_EXIT: '19',
+        ROBOTEAM_AGENT_SERVER_SCRIPT: '/nonexistent-agent-server',
+        ROBOTEAM_SERVICE_MAIN: '/nonexistent-service',
+    });
+    assert.equal(result.code, 19);
+    assert.equal(result.stdout + result.stderr, '');
 });

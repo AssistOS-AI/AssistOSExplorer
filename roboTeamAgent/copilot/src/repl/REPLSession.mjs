@@ -182,10 +182,10 @@ export class REPLSession {
                 else if (result.searchHistory) searchHistory(this.historyManager, result.searchHistory);
                 else if (result.showModelPicker) text = await this._handleModelPicker(signal);
                 else if (Object.hasOwn(result, 'modelChange')) {
-                    await this.engine.setModel({ sessionId: this.currentConversation.sessionId,
+                    const effective = await this.engine.setModel({ sessionId: this.currentConversation.sessionId,
                         backend: result.backend, model: result.modelChange, effort: result.effortChange });
-                    this.selectedModel = result.modelChange;
-                    text = `Native model (${result.backend}): ${result.modelChange || 'default'}; effort: ${result.effortChange || 'default'}`;
+                    this.selectedModel = effective?.model ?? result.modelChange;
+                    text = `Session model (${result.backend}): ${this.selectedModel || 'default'}; effort: ${effective?.effort || result.effortChange || 'default'}`;
                 } else if (result.showHelpPicker) text = await this._handleHelpPicker(signal);
                 else if (result.showSessionPicker) {
                     const session = await this._handleSessionPicker(signal);
@@ -244,10 +244,10 @@ export class REPLSession {
             if (!choice) return '';
             effort = choice.name === 'default' ? null : choice.name;
         }
-        await this.engine.setModel({ sessionId: this.currentConversation.sessionId,
+        const effective = await this.engine.setModel({ sessionId: this.currentConversation.sessionId,
             backend, model: selected.name === 'default' ? null : selected.name, effort });
-        this.selectedModel = selected.name === 'default' ? null : selected.name;
-        return `Native model (${backend}): ${selected.name}; effort: ${effort || 'default'}`;
+        this.selectedModel = effective?.model ?? (selected.name === 'default' ? null : selected.name);
+        return `Session model (${backend}): ${this.selectedModel || 'default'}; effort: ${effective?.effort || effort || 'default'}`;
     }
 
     async _taskModel(id, model, options) {

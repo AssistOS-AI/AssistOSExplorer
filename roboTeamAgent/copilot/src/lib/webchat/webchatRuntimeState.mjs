@@ -15,10 +15,12 @@ export function emitWebchatRuntimeState(model, { backend = null, effort = null, 
     return envelope;
 }
 
-// The model and effort are saved in the robot's ALA config through persist.
+// Persist changes only this session; resets return the inherited robot default.
 export async function selectWebchatRuntimeModel({ backend, model, effort = null, persist, slashState, emitRuntimeState = emitWebchatRuntimeState }) {
-    await persist({ backend, model, effort });
+    const effective = await persist({ backend, model, effort });
+    if (effective && typeof effective === 'object' && typeof effective.backend === 'string') ({ backend, model, effort } = effective);
     slashState.pinnedModel = model || null;
+    slashState.pinnedEffort = effort || null;
     emitRuntimeState(slashState.pinnedModel, { backend, effort });
     return slashState.pinnedModel;
 }

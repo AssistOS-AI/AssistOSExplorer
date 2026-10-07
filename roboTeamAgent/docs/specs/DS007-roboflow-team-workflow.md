@@ -15,7 +15,7 @@ A workflow has an id, name, description, entryTaskId, tasks, edges and layout. E
 
 The workflow editor keeps the task list in a left sidebar and shows one right-side page at a time. General contains the workflow name and description. Generate contains the generation prompt and action. Graph contains the drawing board. Selecting a task opens its editable details. The + button immediately inserts a new task named New Task at the top of the list with the terminal execution type, selects it, and opens its details; there is no separate add-task form. Sidebar navigation preserves form values. A missing workflow name is reported on Save and opens General so it can be corrected. Every RoboTeam page marks its hero header with `data-embed-header` and its breadcrumb navigation with `data-embed-breadcrumbs`; an embedding host such as the Explorer expanded modal hides the duplicated page header and mirrors the breadcrumbs into its own single header.
 
-Creating a flow type is a two-step flow. The generation step is the dedicated page /flow-types/generate-new: it shows only the caller's description, the Generate, Skip and Cancel actions on one line, and a log box below that streams the running task's log tail. Skip skips generation and opens the manual editor. The page starts generation with POST /api/roboflow/generations, which returns a generation id immediately, then polls GET /api/roboflow/generations/<id> every two seconds for the status and the current task log tail, and cancels with DELETE on the same path. RoboTeam starts the default robot in terminal mode with a caller-supplied system prompt containing the graph contract and current discovered skillset catalog, validates the final JSON and opens the editor page at /flow-types/new with the generated draft. The MCP tool roboflow_generate_workflow keeps its blocking behavior for other callers by running the same generation and waiting for the result. Without a supplied folder, generation uses the managed workspace scratch directory .roboteam/roboflow-generation. Cancel stops the generation task; invalid output leaves the description in place. Concurrent edits require confirmation before replacement. The editor at /flow-types/new and /flow-types?id=<workflowId> keeps only General and Graph; generation appears only in the separate first step. Existing flow types at /flow-types?id=<workflowId> load directly into the editor and have no generation step. Nothing saves automatically.
+Creating a flow type is a two-step flow. The generation step is the dedicated page /flow-types/generate-new: it shows only the caller's description, the Generate, Skip and Cancel actions on one line, and a log box below that streams the running task's log tail. Skip skips generation and opens the manual editor. The page starts generation with POST /api/roboflow/generations, which returns a generation id immediately, then polls GET /api/roboflow/generations/<id> every two seconds for the status and the current task log tail, and cancels with DELETE on the same path. RoboTeam starts the default robot in terminal mode with a caller-supplied system prompt containing the graph contract and current discovered skillset catalog, parses the final Markdown response into a graph object, with JSON accepted as a fallback, validates that graph and opens the editor page at /flow-types/new with the generated draft. The MCP tool roboflow_generate_workflow keeps its blocking behavior for other callers by running the same generation and waiting for the result. Without a supplied folder, generation uses the managed workspace scratch directory .roboteam/roboflow-generation. Cancel stops the generation task; invalid output leaves the description in place. Concurrent edits require confirmation before replacement. The editor at /flow-types/new and /flow-types?id=<workflowId> keeps only General and Graph; generation appears only in the separate first step. Existing flow types at /flow-types?id=<workflowId> load directly into the editor and have no generation step. Nothing saves automatically.
 
 On Graph, nodes can be dragged and have centered ports on their left and right sides. Dragging a port previews an edge; releasing over a port on another node creates an edge directed from the dragged port to the destination port, while releasing elsewhere cancels the preview. A same-node drop does nothing. Clicking an edge selects it; Delete or Backspace removes the selected edge while Graph is open. Start node, Allow sub-flows and Allows human input use native labelled checkboxes in a separate row below Name and Execution type, wrapping on narrow screens. Selecting Start node replaces the previous entry; the current entry cannot be cleared without selecting another task. The entry node is chosen with the Start node check in a task's details and is highlighted in blue; a task with no outgoing edges is highlighted as a terminal node in red. Edges end at the outer edge of the connection point so the arrowhead is fully visible. The editor has no separate entry selector, endpoint selectors, add-connection control, or edge removal list. Save workflow persists the graph and node positions. Optimistic revision checks reject stale saves; this counter does not create historical workflow revisions. The protected Standard development workflow (id `default`) is read-only; its pages can be inspected, while task creation and mutations are disabled.
 
@@ -37,15 +37,11 @@ A run's working folder is the WebChat workspace directory that started it: the W
 
 ### Code Development preset
 
-Startup must also ensure the code-development workflow named Code Development. Because its skill requirements come from DocumentationSkills, which RoboTeam finds through the Ploinky marketplace, the preset is created in the background: startup must not wait for or fail on the marketplace, which may not route to RoboTeam until it is ready (for example during a reinstall). RoboTeam retries every five seconds, logs the first failure once, and stops retrying when the service closes. This read-only preset uses terminal-mode Planning, Execution and Validation tasks with fixed skill requirements from DocumentationSkills. Planning requires gamp-specs and detect-main-behaviors. Execution requires node-coding-style, web-design, gamp-specs, detect-main-behaviors and unslop. Validation requires review-specs and unslop. Normal robot matching applies, and the Execution creator receives its required skill automatically. The editor must allow inspection only, hide deletion controls, and the API must reject edits or deletion even for administrators. The code-development ID is reserved for startup initialization. Existing records must be protected; a missing preset is created at startup. An existing preset with a direct Execution-to-Validation edge must receive the targeted routing update at startup, removing that edge and updating its Execution prompt. Startup must synchronize these phase requirements with the canonical DocumentationSkills source resolved through Ploinky, preparing its default repository when needed. Requirements constrain robot matching and task skill selection; they do not add skills to robot configurations or propagate them to child workflows. Startup also synchronizes the built-in phase prompts with sequential delegation. Existing run snapshots remain unchanged. This preset is an ordinary workflow with fixed per-task modes, so callers must not supply a run-level executionType.
+Startup must also ensure the code-development workflow named Code Development. Because its skill requirements come from DocumentationSkills, which RoboTeam finds through the Ploinky marketplace, the preset is created in the background: startup must not wait for or fail on the marketplace, which may not route to RoboTeam until it is ready (for example during a reinstall). RoboTeam retries every five seconds, logs the first failure once, and stops retrying when the service closes. This read-only preset uses terminal-mode Planning, Validation and Finish tasks with fixed skill requirements from DocumentationSkills. Planning requires gamp-specs and detect-main-behaviors and enables Allows human input for blocking business decisions. Validation requires review-specs and unslop. Finish requires unslop. Normal robot matching applies, and Planning is a creator that receives its required workflow-creator skill automatically. The editor must allow inspection only, hide deletion controls, and the API must reject edits or deletion even for administrators. The code-development ID is reserved for startup initialization. Startup synchronizes the protected definition, including tasks, edges, layout, prompts and canonical skill requirements. Older definitions lose Execution, gain Finish, and move creator capability to Planning. Synchronization increments the revision only when the definition changes and preserves existing run snapshots. Requirements constrain robot matching and task skill selection; they do not change robot configurations or propagate to child workflows. Callers must not supply a run-level executionType.
 
-Planning must inspect the objective and repository and return a detailed plan, acceptance criteria, dependencies, independent work boundaries and testing strategy. Execution must delegate implementation portions through Run workflows, ordering prerequisite work before dependent implementation, tests and documentation. It must give children self-contained prompts with clear scopes. It may perform appropriate tests during implementation. Execution has only the edge to Run workflows; the coordinator continuation leads to Validation. Validation must inspect the assembled working tree, investigate failed child work, check integration against the plan and objective, run appropriate checks, fix scoped defects and report actual outcomes and remaining gaps. Because it contains a creator, Code Development must be excluded from child catalogs.
+Planning must inspect the objective, repository and previous responses, then produce acceptance criteria, dependencies, work boundaries and a testing strategy. It delegates implementation through planning-to-subflows to Run workflows, ordering prerequisite work before dependent implementation, tests and documentation. Child prompts must include scope, plan context, acceptance criteria, file ownership and tests. The creator selects subflows-to-validation as afterWorkflowsEdgeId. On repeated visits, Planning uses Validation findings to delegate remaining work while preserving completed changes.
 
-A per-phase Continue request for a failed or paused phase that never started native execution must dispatch that same phase again with its original workflow context and the supplied continuation prompt. A reserved runtime task ID is not evidence of a recoverable execution. Phases that started native execution must use the saved task continuation. This explicit retry does not change the group Resume policy, which continues only paused work.
-
-The phase log endpoint must return an empty successful response when a valid phase has no output file. Other filesystem failures remain errors. The viewer must fetch each terminal phase attempt once, resume log polling when its attempt or state changes, prevent overlapping requests for the same attempt and state, and back off active-phase retries to a maximum interval of 30 seconds. Workflow state polling remains available to observe external continuation.
-
-Workflow, phase and child error messages must appear in a red outlined box with selectable text and no copy button. Refreshes must preserve unchanged error text and avoid replacing a child list while the user is selecting its text.
+Validation inspects the assembled working tree and child outcomes, checks integration against the plan and objective, and runs appropriate checks. Incomplete requirements, failed checks or defects select validation-to-planning with concrete findings and required follow-up checks. Only a complete, validated implementation selects validation-to-finish. Finish reports delivered behavior, relevant changed files, actual checks and their results, and documented limitations, without implementing further changes. Finish has no outgoing edge. Every preset edge leaves the source right port and enters the destination left port, including Validation returning to Planning. Because it contains a creator, Code Development must be excluded from child catalogs.
 
 ### Dispatch and transitions
 
@@ -74,13 +70,74 @@ With no outgoing edge, completion ends the run. With exactly one outgoing edge, 
 With multiple outgoing edges, the caller supplies a system prompt identifying the current node and full graph and asking for a final response such as:
 
 ```markdown
-#message
+<<human-report>>
 The review passed.
+<<human-report>>
+
 #nextEdgeId
 review-to-publish
 ```
 
-The parser accepts optional message, case-insensitive nextEdgeId, nextEdge or Edge headings, and JSON with the same keys, including a fenced JSON object. An edge choice is required and must identify an outgoing edge of the current node. Missing, conflicting or invalid choices fail the run. An incoming edge never authorizes reverse traversal. Plain final text is valid for automatic transitions and terminal nodes.
+The shared structured-response parser returns an object for routing, child delegation and graph generation. Prompts require a self-contained nextNodePrompt handoff and nextEdgeId for routing; the parser still accepts a missing nextNodePrompt for compatibility, with nextEdge and Edge as routing aliases. JSON objects remain a fallback, including a single fenced JSON object. An edge choice is required and must identify an outgoing edge of the current node. Missing, conflicting or invalid choices fail the run. An incoming edge never authorizes reverse traversal. Automatic transitions and terminal nodes do not require route parsing, but their prompts still request a separate technical # nextNodePrompt after the human report.
+
+### Structured Markdown responses
+
+`server/roboflow/markdown-response.mjs` owns the common schema-driven parser. `result-parser.mjs` defines the decision and generation schemas, handles human-report wrapping and exposes `parseWorkflowResponse(source, { generation })`. It returns ordinary JavaScript objects; callers validate graph semantics, catalog membership and execution permissions separately. `parseRoute` and child planning consume the parsed routing fields. Both browser generation and the blocking generation tool use the generation schema. Tool arguments, transport envelopes, persisted records and code-generated coordinator results keep their JSON contracts.
+
+Headings occupy separate lines. The parser accepts levels one through six, optional whitespace after the hashes, case variations, spaces, hyphens or underscores in field names, optional trailing colons and closing hashes, LF or CRLF and a leading BOM. Header depth does not control scope. For example, `##Workflow`, `# WORKFLOW` and `# workflow` start equivalent child records. IDs remain case-sensitive. Scalar values may be quoted or wrapped in backticks or a code fence. Known scalar properties contain one value, with no extra prose. Matching duplicate fields are accepted; conflicting duplicates fail. Unknown headings outside prose fields, misplaced fields, records missing their identity and unclosed fences fail with a field or line diagnostic. The parser does not split inline text such as `name#prompt`.
+
+The values of nextNodePrompt, description and prompt are multiline prose. Quotes and backslashes require no escaping, internal whitespace is preserved and ordinary Markdown headings remain part of the prose. Reserved field headings outside fences delimit properties. To include a reserved heading literally, wrap the entire prose value in a backtick or tilde code fence longer than any matching fence inside its content. The parser removes only the enclosing fence, retaining its contents and internal code fences. Fenced examples inside a larger prose value remain intact. Whole-response Markdown fences are tolerated, but prompts request a plain-language human report first, followed by direct technical Markdown outside the human-report markers in the same final response. JSON is tried only when there are no recognized Markdown sections; a JSON example inside a Markdown prompt never replaces the surrounding response.
+
+### Generated graph format
+
+After the human report, the generation payload starts with name, description and entryTaskId sections, followed by repeated task sections, then edge sections and optional position sections. Each task or edge section uses its ID as the value; an empty record heading followed by an id section is also accepted. Each task supplies name, executionType, skillsets and prompt. skillsets is an empty section or a newline list of exact catalog IDs, optionally bulleted or numbered. creator and allowsHumanInput accept true or false, without case sensitivity. A managed task uses kind with value run-workflows, an empty skillsets section and no prompt or executionType. Each edge supplies sourceTaskId and targetTaskId, with optional sourcePort and targetPort. Each position uses a task ID and numeric x and y sections, producing layout keyed by task ID. Omitted edge and position blocks produce empty collections; normal graph validation fills default positions. Optional empty tasks, edges and layout collection headings are tolerated. Top-level graph fields precede the records because name and id also belong to individual records.
+
+```markdown
+<<human-report>>
+Prepared a workflow that reviews changes and summarizes the findings.
+<<human-report>>
+
+# name
+Review changes
+# description
+Review the working tree and report findings.
+# entryTaskId
+review
+# task
+review
+# name
+Review
+# executionType
+terminal
+# skillsets
+# allowsHumanInput
+true
+# prompt
+Inspect the changes and report concrete findings.
+# task
+finish
+# name
+Finish
+# executionType
+terminal
+# skillsets
+# prompt
+Summarize the review.
+# edge
+review-to-finish
+# sourceTaskId
+review
+# targetTaskId
+finish
+# position
+review
+# x
+60
+# y
+60
+```
+
+All generated graphs still pass normal graph validation, including unique IDs, valid endpoints, creator/coordinator rules and exact skill catalog membership. Invalid output never saves a workflow. JSON generation responses remain compatible with the existing graph object format.
 
 ### Creators and sequential sub-workflows
 
@@ -88,18 +145,25 @@ An administrator may mark an ordinary task with [Allow sub-flows](../wiki.html#d
 
 The creator must receive the read-only workflow-creator skill for its execution policy, including native continuations. It must also receive the workflow catalog with IDs, names, descriptions and Standard development workflow execution modes. The catalog must exclude every definition containing a creator or managed coordinator. The same restriction must be validated when accepting a plan. The skill is bundled under copilot/src/skills/workflow-creator and is supplied only for creator policies; it is not part of the default copilot skillset. The task editor exposes its descriptor as view-only. Prompt construction remains in copilot/src/lib/prompts.mjs.
 
-A creator must choose an ordinary outgoing edge or delegate the current task to workflows from the catalog. Its final response must identify one outgoing nextEdgeId. When that edge enters Run workflows, the response must be one JSON object containing message, nextEdgeId, afterWorkflowsEdgeId and workflows. afterWorkflowsEdgeId must identify an outgoing edge of Run workflows. The nonempty workflows array must contain at most 100 objects with workflowTypeId and a nonempty prompt. A default child requires executionType; other child definitions determine their modes. Names are display labels; workflowTypeId is the execution identity. Ordinary edge selection does not launch children.
+A creator must choose an ordinary outgoing edge or delegate the current task to workflows from the catalog. Its final response starts with a plain-language report between two human-report markers, followed by technical Markdown outside the markers. The technical portion identifies one outgoing nextEdgeId and includes nextNodePrompt as a self-contained technical handoff. When that edge enters Run workflows, it also provides afterWorkflowsEdgeId and repeated workflow sections. Each workflow section starts a child record with its catalog ID as workflowTypeId, followed by prompt and, only for the default workflow, executionType. The parser produces the existing object with nextNodePrompt, nextEdgeId, afterWorkflowsEdgeId and an ordered workflows array. JSON with that shape remains a fallback. afterWorkflowsEdgeId must identify an outgoing edge of Run workflows. The list must contain 1 to 100 objects with a nonempty prompt of at most 32768 characters. Names are display labels; workflowTypeId is the execution identity. Ordinary edge selection does not launch children.
 
-```json
-{
-  "message": "Review the implementation from two perspectives.",
-  "nextEdgeId": "creator-to-children",
-  "afterWorkflowsEdgeId": "children-to-report",
-  "workflows": [
-    { "workflowTypeId": "security-review", "prompt": "Review security boundaries in this project." },
-    { "workflowTypeId": "usability-review", "prompt": "Review the user experience in this project." }
-  ]
-}
+```markdown
+<<human-report>>
+Review the implementation from two perspectives.
+<<human-report>>
+
+# nextEdgeId
+creator-to-children
+# afterWorkflowsEdgeId
+children-to-report
+# workflow
+security-review
+# prompt
+Review security boundaries in this project.
+# workflow
+usability-review
+# prompt
+Review the user experience in this project.
 ```
 
 RoboFlow must validate the entire plan before starting a child. Acceptance must atomically capture all child graph snapshots, their objectives and execution modes, the parent and creator visit identities, and the selected continuation edge. Each visit to the shared coordinator owns an independent child list. Child creation must commit together with the parent transition, so duplicate terminal events cannot create another batch. Later type edits or deletion must not change accepted child executions.
@@ -142,7 +206,9 @@ HTTP exposes workflow CRUD, skillset discovery, draft validation, generation, ru
 
 ### Phase human reports
 
-Each executed phase exposes a human-report tab whose contents use the shared WebChat Markdown renderer. WebChat has no View Summary button. Summary references belong to the phase instance and execution attempt, so repeated visits remain separate and manual continuation retains earlier summaries. The index stores offsets in existing log and result files in the task instance record; it does not duplicate summary text. Runtime output identifies assistant text separately from tool output and diagnostics. Every final response is enclosed in identical <<human-report>> markers. Workflow JSON and branch headings remain inside those markers. Parsers accept the enclosed payload and also accept an older payload followed by a separate report; the original response remains stored.
+Each executed phase exposes a human-report tab whose contents use the shared WebChat Markdown renderer. WebChat has no View Summary button. Summary references belong to the phase instance and execution attempt, so repeated visits remain separate and manual continuation retains earlier summaries. The index stores offsets in existing log and result files in the task instance record; it does not duplicate summary text. Runtime output identifies assistant text separately from tool output and diagnostics. Each final response contains exactly one plain-language report enclosed in two identical <<human-report>> markers. For every workflow execution task and graph generation, the technical Markdown follows the closing marker in the same final response. Ordinary chat and standalone tasks without a technical output contract return only the marked report. The report contains no control fields, and workflow tasks include a concise, self-contained technical handoff in the nextNodePrompt field. Markers are not repeated in progress messages or formatting explanations. Parsers prefer the payload outside the report and retain compatibility with legacy JSON, payloads inside markers and older payloads followed by a report. The original response remains stored without modification, and the phase log view includes both the report and technical Markdown, appending the final response once when it was not streamed. The human-report endpoint and tab extract only marked report text.
+
+When building previousFinalResponses, RoboFlow sends only the technical payload outside human-report markers as response; no humanReport field is sent. Every workflow execution task, including tasks with zero or one outgoing edge, is instructed to append a concise # nextNodePrompt describing what it executed or decided, relevant artifacts, checks and outcomes, and unresolved work when applicable. This technical handoff must be self-contained because other robots cannot read the human report. The same report exclusion applies to previousSubflowFinalResponse and coordinator child results. Historical report-only outputs contribute empty context; unmarked legacy responses remain usable. Legacy report-wrapped routing payloads can still be parsed for execution but are not forwarded as context. Public flow results, result files and debug logs remain complete originals.
 
 Task cards retain their coverage warning when selected, deselected or rebuilt by the editor. A task with no matching robot keeps its yellow warning border; selecting it also adds a separate selection outline. A new coverage result updates or clears the warning.
 
@@ -151,7 +217,7 @@ User input appears in a separate Markdown block with a green background, includi
 
 ### Human business decisions
 
-An ordinary task may set `allowsHumanInput:true` through **Allows human input** in the task editor. The field is boolean, defaults to false, and is rejected on Run workflows. Saved run snapshots retain their original setting. Opted-in task policies automatically mount the internal, required, read-only `require-human-input` skill, including on continuation. It is absent from the ordinary copilot catalog and does not affect robot matching.
+An ordinary task may set `allowsHumanInput:true` through **Allows human input** in the task editor. The field is boolean, defaults to false, and is rejected on Run workflows. Graph nodes with this setting show a blue person icon beside their execution type and sub-flow label, with an accessible label and tooltip reading "Allows human input". The icon appears in both the editor and run graph. Saved run snapshots retain their original setting. Opted-in task policies automatically mount the internal, required, read-only `require-human-input` skill, including on continuation. It is absent from the ordinary copilot catalog and does not affect robot matching.
 
 The robot uses the skill only for a blocking business decision whose answer is absent from the prompt and available context. Its script accepts one `question` and exactly three distinct nonempty string `options`, limited to 8,000 and 2,000 characters respectively. It posts HTTP to a private Unix socket in the owning RoboTeam process. Each execution gets a random capability and a read-only `roboflow-human-input` folder mount containing that socket and its context file. The callback resolves the flow and task from the server-owned runtime binding; the script supplies no flow identity, Ploinky credential, or user identity. The channel has no TCP listener and closes with the task.
 
@@ -174,3 +240,19 @@ When a selected workflow has a pending human-input request, the details include 
 ### Task list order
 
 The workflow type editor supports dragging task cards before or after another card in the left list. Editable cards show a six-dot grip on the left to indicate that they can be dragged. Alt + Arrow Up / Arrow Down offers keyboard reordering. Read-only workflows cannot be reordered. Saving persists this display order in the graph tasks array without changing the entry task, edges, or node positions. The execution page renders tasks in the order captured in its run graph, grouping repeated visits under their task. Editing the type affects future runs only; existing runs retain their captured order.
+
+### Connector routing
+
+Graph connectors use an orthogonal visibility grid and direction-aware A* search around measured node rectangles. Route cost includes length, bends, crossings and overlap with previously routed connectors. The renderer rounds corners only where they clear nodes. Port directions remain fixed; return edges take a local detour instead of always looping above the entire graph. The board fits the full route bounds, including routes below or left of the nodes. Moving nodes recomputes routes without changing saved ports or node positions. Overlapping nodes can leave no valid corridor; such connections appear dashed until space is available.
+
+## Explicit execution failure
+
+Workflow executions receive the bundled `report-task-blocked` skill as required and read-only, independently of skillsets. The runtime derives the execution flag from the task request workflowRunId, including continuation. WebChat and standalone tasks receive neither the skill nor its callback. No robot preference or persistent skill selection is added. The source is mounted read-only at `/workspace/report-task-blocked` only for the ALA invocation and named explicitly in its prompt; it is never copied into the robot home or linked into the shared project. Existing managed links from older versions are removed by normal installation reconciliation. Its English instructions require a truthful failure when available resources or capabilities cannot fulfill the agreed plan, rather than out-of-scope workarounds. The script accepts only a nonempty `message` of at most 8000 characters explaining the stopping point and cause.
+
+Each enabled execution receives its own private HTTP Unix socket at the native mount `/workspace/roboteam-task-failure`, with a random capability. The callback has no caller-selected task or flow id. It latches an Error with the message, publishes the explicit failure to the task runtime, and interrupts the ALA process group, escalating to SIGKILL after three seconds if necessary. The execution rejects, preserving the error even if the process exits zero or cancellation races with it. The task never passes through completed. Cleanup revokes the callback.
+
+RoboFlow handles the explicit failure terminal event by setting only its matching phase to failed and storing the message in its error field. It does not call the group failure/Stop path, advance an edge, or stop sibling phases. The normal status derivation retains running, paused, failed and completed priority. Late completion cannot overwrite the failed phase. Existing UI error presentation reads the saved message.
+
+Response syntax and field parsing failures use `Error parsing response: "<detail>"`, retaining the field and payload line number when available. This applies to routing, child delegation, graph generation and the legacy JSON fallback; runtime failures retain their own messages.
+
+The technical handoff field is `nextNodePrompt`. The parser accepts the legacy `message` name as an alias in Markdown and JSON, returning only `nextNodePrompt` in the parsed object. Conflicting values supplied through both names are rejected.

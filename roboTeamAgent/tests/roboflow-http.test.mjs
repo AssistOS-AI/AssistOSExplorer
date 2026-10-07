@@ -48,6 +48,29 @@ test('HTTP runs return task instances and project logs; retired execution contro
     assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/launch`, 'user', { member: 'one' })).status, 404);
     assert.equal((await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'default', objective: 'Work' })).status, 400);
 });
+
+test('human-report HTTP view excludes routing fields while debug output retains the entire final response', async t => {
+    const f = await fixture(t);
+    await f.roboflow.createWorkflow({ ...graph,
+        tasks: [graph.tasks[0], { ...graph.tasks[0], id: 'done', name: 'Done' }],
+        edges: [{ id: 'go', sourceTaskId: 'one', targetTaskId: 'done' }, { id: 'retry', sourceTaskId: 'one', targetTaskId: 'one' }] });
+    const flow = await f.roboflow.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    const taskId = f.started[0].request.runtimeTaskId;
+    const report = 'Am verificat interfața și totul funcționează.';
+    const result = `<<human-report>>\n${report}\n<<human-report>>\n\n# nextEdgeId\ngo`;
+    f.roboflow.onRuntimeTaskEvent({ kind: 'progress', taskId, chunk: result, outputKind: 'assistant', outputComplete: true, outputId: 'final' });
+    f.roboflow.onRuntimeTaskEvent({ kind: 'terminal', taskId, state: 'completed', result });
+    while (f.roboflow.chains.size) await Promise.allSettled(f.roboflow.chains.values());
+    const { summaries } = await (await f.request(`/api/summary?flow=${flow.id}&instance=${flow.instances[0].id}`, 'user')).json();
+    assert.deepEqual(summaries, [{ text: report }]);
+    const debug = await (await f.request(`/api/roboflow/flows/${flow.id}/logs/${flow.instances[0].id}`, 'user')).text();
+    assert.ok(debug.includes(result));
+    const { flow: view } = await (await f.request(`/api/roboflow/flows/${flow.id}?logs=none`, 'user')).json();
+    assert.equal(view.instances[0].finalResponse, result);
+    assert.equal(JSON.parse(f.started[1].request.task).previousFinalResponses[0].response, '# nextEdgeId\ngo');
+    assert.ok(!f.started[1].request.task.includes(report));
+    assert.ok(!Object.hasOwn(JSON.parse(f.started[1].request.task).previousFinalResponses[0], 'humanReport'));
+});
 test('HTTP stops a single phase and stops the whole flow with it', async t => {
     const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);
     const { flow } = await (await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example', objective: 'Work' })).json();
