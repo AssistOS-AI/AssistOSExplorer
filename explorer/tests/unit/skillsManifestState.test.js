@@ -118,7 +118,7 @@ async function createAchillesCopilotBasicSkillsRepo(rootDir) {
   return { repoDir, skills };
 }
 
-function createHandlers(workspaceRoot, invalidated = []) {
+function createHandlers(workspaceRoot, invalidated = [], instrumentClient = null) {
   const registry = new Map();
   const repositoryClient = {
     async listRepositories() {
@@ -148,6 +148,7 @@ function createHandlers(workspaceRoot, invalidated = []) {
     async install(input) { return installRepositoryLinks(input, { workspaceRoot, resolveRepository: name => registry.get(name) }); },
     async remove(paths) { return removeRepositoryLinks(paths, { workspaceRoot }); }
   };
+  instrumentClient?.(repositoryClient);
   return createToolHandlers({
     repositoryClient,
     fs,
@@ -504,4 +505,67 @@ export function getSkillRepositoryRecommendations(options) {
   const pruned = syncPloinkyExports({ folder: project, owner: 'manifest', mode: 'symlink', sources: [] });
   assert.deepEqual(pruned.removed, ['alpha-skill']);
   await assert.rejects(fs.lstat(path.join(project, '.agents/skills/alpha-skill')), { code: 'ENOENT' });
+});
+
+test('read_skills_manifest_state lists repositories once per call regardless of entry count', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-list-once-'));
+  try {
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir, { recursive: true });
+    const manifest = [];
+    for (const name of ['repo-one', 'repo-two', 'repo-three']) {
+      const repoDir = path.join(workspaceRoot, name);
+      await writeFile(path.join(repoDir, 'skills', `${name}-skill`, 'SKILL.md'), `---\nname: ${name}-skill\n---\n`);
+      await fs.mkdir(path.join(repoDir, '.git'), { recursive: true });
+      manifest.push({ url: repoDir, name, branch: null, skills: [`${name}-skill`] });
+    }
+    await writeFile(path.join(projectDir, 'ploinky-skills-manifest.json'), JSON.stringify(manifest, null, 2));
+
+    let listCalls = 0;
+    const handlers = createHandlers(workspaceRoot, [], (client) => {
+      const original = client.listRepositories.bind(client);
+      client.listRepositories = async () => { listCalls += 1; return original(); };
+    });
+    const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
+
+    assert.deepEqual(state.repositories.map(repo => [repo.name, repo.cached, repo.cacheError]),
+      [['repo-one', true, ''], ['repo-two', true, ''], ['repo-three', true, '']]);
+    assert.equal(listCalls, 1);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('read_skills_manifest_state reuses the prepareRepository listing for later entries', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-list-prepare-'));
+  try {
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir, { recursive: true });
+    const manifest = [];
+    for (const [name, hasGit] of [['repo-one', true], ['repo-two', false], ['repo-three', true]]) {
+      const repoDir = path.join(workspaceRoot, name);
+      await writeFile(path.join(repoDir, 'skills', `${name}-skill`, 'SKILL.md'), `---\nname: ${name}-skill\n---\n`);
+      if (hasGit) await fs.mkdir(path.join(repoDir, '.git'), { recursive: true });
+      manifest.push({ url: repoDir, name, branch: null, skills: [`${name}-skill`] });
+    }
+    await writeFile(path.join(projectDir, 'ploinky-skills-manifest.json'), JSON.stringify(manifest, null, 2));
+
+    let listCalls = 0;
+    let prepareCalls = 0;
+    const handlers = createHandlers(workspaceRoot, [], (client) => {
+      const list = client.listRepositories.bind(client);
+      const prepare = client.prepareRepository.bind(client);
+      client.listRepositories = async () => { listCalls += 1; return list(); };
+      client.prepareRepository = async (input) => { prepareCalls += 1; return prepare(input); };
+    });
+    const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
+
+    assert.deepEqual(state.repositories.map(repo => [repo.name, repo.cached, repo.cacheError]),
+      [['repo-one', true, ''], ['repo-two', true, ''], ['repo-three', true, '']]);
+    assert.equal(prepareCalls, 1);
+    // One initial listing plus the listing the test client performs inside prepareRepository.
+    assert.equal(listCalls, 2);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
 });

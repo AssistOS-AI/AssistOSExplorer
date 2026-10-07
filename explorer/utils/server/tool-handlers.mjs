@@ -109,7 +109,8 @@ export function createToolHandlers({
   getAllowedDirectories,
   commandMode = false,
   searchTextJobStorePath = '',
-  getInvocationContext = () => ({})
+  getInvocationContext = () => ({}),
+  registerCleanup
 }) {
   const privateData = createExplorerPrivateDataBoundary({ fs, path, workspaceRoot });
   const {
@@ -194,7 +195,9 @@ export function createToolHandlers({
       }
     }
   }
-  setInterval(cleanupSearchTextJobs, 60 * 1000).unref?.();
+  const searchTextCleanupTimer = setInterval(cleanupSearchTextJobs, 60 * 1000);
+  searchTextCleanupTimer.unref?.();
+  registerCleanup?.(() => clearInterval(searchTextCleanupTimer));
 
   function createSearchTextJobId() {
     return `search_job_${++searchTextJobIdSeq}_${Date.now()}`;
@@ -259,8 +262,8 @@ export function createToolHandlers({
     return repositoryClientPromise;
   }
 
-  async function listKnownSkillRepositories() {
-    const repositories = await (await repositoriesClient()).listRepositories();
+  async function listKnownSkillRepositories(knownRepositories = null) {
+    const repositories = knownRepositories || await (await repositoriesClient()).listRepositories();
     return repositories.filter(repo => ['skills', 'mixed'].includes(repo.kind)).map(repo => ({
       ...repo, label: repo.name, url: repo.url || repo.source,
       installed: repo.origin !== 'remote', skillSource: { source: repo.source, origin: repo.origin }
@@ -394,12 +397,17 @@ export function createToolHandlers({
     return Boolean(stat?.isDirectory?.());
   }
 
-  async function ensureSkillRepoCached(entry) {
+  // `repositoryListing` is an optional `{ repositories }` holder shared by callers that
+  // resolve several entries in one call: the repositories are listed once and the holder
+  // is refreshed from each prepareRepository result. Without it, each call lists afresh.
+  async function ensureSkillRepoCached(entry, repositoryListing = null) {
     const client = await repositoriesClient();
-    let repositories = await client.listRepositories();
+    let repositories = repositoryListing?.repositories || await client.listRepositories();
+    if (repositoryListing) repositoryListing.repositories = repositories;
     let repository = repositories.find(repo => repo.name === entry.name || repo.source === entry.url || repo.url === entry.url);
     if (!repository || repository.origin === 'remote') {
       repositories = await client.prepareRepository({ name: entry.name, url: entry.url, branch: entry.branch });
+      if (repositoryListing) repositoryListing.repositories = repositories;
       repository = repositories.find(repo => repo.name === entry.name || repo.url === entry.url);
     }
     if (!repository || repository.origin === 'remote') throw new Error('Repository source is unavailable');
@@ -517,12 +525,13 @@ export function createToolHandlers({
 
   async function buildSkillsManifestState(folder, manifestPath, entries) {
     const repositories = [];
+    const repositoryListing = { repositories: null };
     for (const entry of entries) {
       let repoPath = path.join(reposCacheRoot, entry.name);
       let cacheError = '';
       {
         try {
-          repoPath = await ensureSkillRepoCached(entry);
+          repoPath = await ensureSkillRepoCached(entry, repositoryListing);
         } catch (error) {
           cacheError = error?.message || String(error || 'Could not cache repository.');
         }
@@ -544,7 +553,7 @@ export function createToolHandlers({
       folderPath: folder,
       repositories,
       ...exportState,
-      skillRepositories: await listKnownSkillRepositories().catch(() => [])
+      skillRepositories: await listKnownSkillRepositories(repositoryListing.repositories).catch(() => [])
     };
   }
 

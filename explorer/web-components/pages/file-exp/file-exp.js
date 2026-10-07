@@ -446,6 +446,10 @@ export class FileExp {
         if (this.editorExternalWatchInFlight || !this.isLocalTextEditingActive()) {
             return;
         }
+        // A hidden tab skips the check, like the other pollers; the next visible tick compares against the same baseline.
+        if (typeof document !== 'undefined' && document.hidden) {
+            return;
+        }
         const baselineVersionKey = String(this.state.selectedFileVersionKey || '');
         if (!baselineVersionKey) return;
         this.editorExternalWatchInFlight = true;
@@ -471,8 +475,8 @@ export class FileExp {
         }, EDITOR_EXTERNAL_CHECK_INTERVAL_MS);
     }
 
-    async refreshCurrentFileViewBaseline(pathValue = this.state.selectedPath) {
-        return refreshCurrentFileViewBaselineImpl(this, pathValue);
+    async refreshCurrentFileViewBaseline(pathValue = this.state.selectedPath, infoPromise = null) {
+        return refreshCurrentFileViewBaselineImpl(this, pathValue, infoPromise);
     }
 
     async pollCurrentFileView() {
@@ -866,7 +870,11 @@ export class FileExp {
                 return await globalInflight.get(inflightKey);
             }
             const request = (async () => {
-            const result = await this.tooling.listDirectoryDetailed(normalizedPath);
+            // The listing prefetched during boot answers only a first, uncached load of a path that no mutation
+            // has invalidated since; a refresh (skipCache) or a newer generation always asks the server.
+            const result = await this.tooling.listDirectoryDetailed(normalizedPath, {
+                usePrefetch: !skipCache && cacheGeneration === 0
+            });
             const entries = parseDetailedDirectoryListing(result.text);
             let resolved = entries.map(entry => ({
                 ...entry,
@@ -1001,17 +1009,20 @@ export class FileExp {
         if (filePath && !String(filePath).endsWith('.backlog') && !String(filePath).endsWith('.history')) {
             this.setPreviewState({ backlogTextView: false }, { invalidate: false });
         }
+        // A text file requests its version info together with its content; the baseline reuses that request.
+        let fileInfoPromise = null;
         const opened = await openFileImpl(this, filePath, {
             largeFilePreviewLimitBytes: LARGE_FILE_PREVIEW_LIMIT_BYTES,
             largeFilePreviewLines: LARGE_FILE_PREVIEW_LINES,
-            ...options
+            ...options,
+            onFileInfoRequested: (promise) => { fileInfoPromise = promise; }
         });
         if (!opened) {
             this.stopCurrentFileViewWatch();
             return false;
         }
         if (this.normalizePath(this.state.selectedPath || '') === this.normalizePath(filePath || '')) {
-            await this.refreshCurrentFileViewBaseline(filePath);
+            await this.refreshCurrentFileViewBaseline(filePath, fileInfoPromise);
             this.startCurrentFileViewWatch();
         } else {
             this.stopCurrentFileViewWatch();

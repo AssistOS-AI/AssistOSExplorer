@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+    createDatabaseHandleProvider,
     databasePath,
     normalizeHistoryRequest,
     openDatabase,
@@ -95,4 +96,70 @@ test('SQLite persists and queries per-runtime resource series', async (t) => {
 
     assert.deepEqual(result.series[cpuKey].values, [[start, 42]]);
     assert.deepEqual(result.series[memoryKey].values, [[start, 2_048]]);
+});
+
+function countingProvider(env) {
+    const counts = { opened: 0, closed: 0 };
+    const provider = createDatabaseHandleProvider({
+        env,
+        openDatabaseImpl: (target) => {
+            counts.opened += 1;
+            const database = openDatabase(target);
+            const close = database.close.bind(database);
+            database.close = () => { counts.closed += 1; close(); };
+            return database;
+        },
+    });
+    return { provider, counts };
+}
+
+function history(env, start, key) {
+    return queryHistory({
+        from: new Date(start - 1_000).toISOString(),
+        to: new Date(start + 600_000).toISOString(),
+        maxPoints: 600,
+        series: [key],
+    }, { env }).series[key].values;
+}
+
+test('a database handle provider opens the database once for repeated persists', async (t) => {
+    const env = await temporaryEnvironment(t);
+    const { provider, counts } = countingProvider(env);
+    t.after(() => provider.close());
+    const start = Date.parse('2026-08-11T10:00:00Z');
+    for (let index = 0; index < 3; index += 1) {
+        persistExceededSamples([{ key: 'workspace.cpu', value: 10 + index, threshold: 80 }], start + index * 10_000, {
+            env, now: () => start, databaseProvider: provider,
+        });
+    }
+    assert.equal(counts.opened, 1);
+    assert.equal(counts.closed, 0);
+    assert.deepEqual(history(env, start, 'workspace.cpu').map(([, value]) => value), [10, 11, 12]);
+});
+
+test('a persist error closes and drops the shared handle and the next persist reopens it', async (t) => {
+    const env = await temporaryEnvironment(t);
+    const { provider, counts } = countingProvider(env);
+    t.after(() => provider.close());
+    const start = Date.parse('2026-08-11T10:00:00Z');
+    const options = { env, now: () => start, databaseProvider: provider };
+    persistExceededSamples([{ key: 'workspace.cpu', value: 1, threshold: 80 }], start, options);
+    assert.throws(() => persistExceededSamples([{ key: 'not-a-series', value: 1, threshold: 80 }], start + 10_000, options), /Invalid resource sample/);
+    assert.equal(counts.closed, 1);
+    persistExceededSamples([{ key: 'workspace.cpu', value: 2, threshold: 80 }], start + 20_000, options);
+    assert.equal(counts.opened, 2);
+    assert.deepEqual(history(env, start, 'workspace.cpu').map(([, value]) => value), [1, 2]);
+});
+
+test('a shared handle is reopened when the database file was replaced', async (t) => {
+    const env = await temporaryEnvironment(t);
+    const { provider, counts } = countingProvider(env);
+    t.after(() => provider.close());
+    const start = Date.parse('2026-08-11T10:00:00Z');
+    const options = { env, now: () => start, databaseProvider: provider };
+    persistExceededSamples([{ key: 'workspace.cpu', value: 1, threshold: 80 }], start, options);
+    for (const suffix of ['', '-wal', '-shm']) await fs.rm(`${databasePath(env)}${suffix}`, { force: true });
+    persistExceededSamples([{ key: 'workspace.cpu', value: 2, threshold: 80 }], start + 10_000, options);
+    assert.equal(counts.opened, 2);
+    assert.deepEqual(history(env, start, 'workspace.cpu').map(([, value]) => value), [2]);
 });

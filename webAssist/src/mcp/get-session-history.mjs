@@ -3,7 +3,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AgenticKnowledgeUnits } from 'achillesAgentLib';
+import { AgenticKnowledgeUnits } from 'achillesAgentLib/AgenticKnowledgeUnits';
 import { resolveSiteDataDir } from '../runtime/akuStore.mjs';
 
 function safeParseJson(text) {
