@@ -1,6 +1,21 @@
 import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { signIn } from '../lib/auth.mjs';
+import { createCopilotDiagnostics } from '../lib/copilot-terminal-diagnostics.mjs';
+
+const diagnostics = new WeakMap();
+
+test.beforeEach(async ({ page }) => { diagnostics.set(page, createCopilotDiagnostics()); });
+test.afterEach(async ({ page }, testInfo) => {
+    await testInfo.attach('copilot-terminal_codex.json', {
+        body: Buffer.from(JSON.stringify(diagnostics.get(page)?.evidence || {}, null, 2)),
+        contentType: 'application/json',
+    });
+});
+
+async function observeTerminal(page) {
+    diagnostics.get(page).observe(await page.locator(BOT_MSG).allTextContents());
+}
 
 const BOT_MSG = '#chatList > .wa-message.in:not(.wa-typing):not(.wa-task-item) .wa-message-bubble';
 
@@ -22,6 +37,7 @@ async function openCopilotWebchat(page, account = smokeConfig.primaryUser) {
 async function waitForIntro(page) {
     for (let i = 0; i < 30; i++) {
         await page.waitForTimeout(3_000);
+        await observeTerminal(page);
         const count = await page.locator(BOT_MSG).count();
         const hidden = await typingHidden(page);
         if (count >= 1 && hidden) return count;
@@ -44,10 +60,12 @@ async function sendAndWaitForReply(page, prompt, introCount, timeoutMs) {
         input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await page.locator('#send').click();
+    diagnostics.get(page).submitted();
 
     const polls = Math.ceil(timeoutMs / 3_000);
     for (let i = 0; i < polls; i++) {
         await page.waitForTimeout(3_000);
+        await observeTerminal(page);
         const count = await page.locator(BOT_MSG).count();
         const hidden = await typingHidden(page);
         if (count > introCount && hidden) {
@@ -56,9 +74,11 @@ async function sendAndWaitForReply(page, prompt, introCount, timeoutMs) {
             for (let j = introCount; j < count; j++) {
                 texts.push(await msgs.nth(j).innerText());
             }
+            diagnostics.get(page).replied();
             return texts.join('\n');
         }
     }
+    diagnostics.get(page).timedOut();
     throw new Error(`No copilot reply within ${Math.round(timeoutMs / 1000)}s`);
 }
 

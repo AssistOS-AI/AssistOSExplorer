@@ -38,6 +38,35 @@ SMOKE_BASE_URL=http://127.0.0.1:8080 npm test
 
 The suite records traces, videos, screenshots, browser console events, failed requests, and upload/session evidence outside tracked source. See `tests/smoke/README.md` for flags such as `SMOKE_OPEN_INTERPRETER=1`, `SMOKE_WEBMEET_MEDIA=1`, `SMOKE_ONLYOFFICE=1`, and `SMOKE_GITHUB=1`.
 
+Box acceptance requires explicit complete spec filenames, pinned container/image
+ID/reference, selected application and Box origins, same-path workspace and the
+exact release or local-snapshot source manifest. Common preflight compares those
+inputs with independent inspection before and after execution. It retains the
+30-minute generation limit and records each profile's image-age policy. Use the
+canonical `npm test -- --project=chromium --workers=1 --retries=0` prefix and title
+greps, never file/line suffixes. The runner compares both discovered identities
+and terminal outcomes with `tests/smoke/acceptance-ledger_codex.json`; every selected
+identity must finish as one expected pass on attempt zero. Discovery, exit zero,
+skips and expected failures cannot establish coverage.
+
+Prepare role-correct private sign-in inputs before execution. Umami needs username
+and password, OnlyOffice an absolute selected Ploinky executable, and the official
+WebMeet case two distinct verified users plus the headless/media profile. Spec04
+needs the installed searchAgent catalog fixture. Spec61 uses synthetic tokens.
+Keep GPT Researcher excluded, worker opt-in absent and browser errors strict.
+WebTTY retains the last collector/binding/eligibility/stability cause and rejects
+stale generations immediately. Copilot preserves the first terminal error/time
+and submission/reply outcome; an error bubble is not a reply.
+
+For official release acceptance, enable OnlyOffice alone through authenticated
+Marketplace UI, verify the successful enable POST, Running UI and exact enabled
+runtime, and measure setup time. The unchanged three-agent spec03 activation is
+separately required in its own fresh cohort. Budget all three official gates and
+cleanup from the same Box start with distinct artifact directories and a stated
+margin. If they cannot fit the existing 30-minute window, report scheduling blocked.
+Use separate fresh cohorts for WebTTY and longer supporting cases. See the smoke
+README for exact inputs, selectors, artifacts and outcome rules.
+
 ### Explorer UI Performance Comparison
 
 Use the repository-owned `tests/smoke` UI benchmark when comparing Explorer

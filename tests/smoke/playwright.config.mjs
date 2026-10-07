@@ -1,5 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { smokeConfig } from './lib/config.mjs';
 import { validateQaAcceptanceProfile } from './lib/qa-acceptance-profile.mjs';
@@ -19,6 +20,7 @@ export const playwrightOutputPaths = Object.freeze({
 
 export default defineConfig({
   testDir: './specs',
+  globalSetup: fileURLToPath(new URL('./lib/account-preflight.mjs', import.meta.url)),
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: 0,
@@ -29,6 +31,7 @@ export default defineConfig({
   },
   reporter: [
     ['./lib/redacted-reporter.mjs'],
+    [fileURLToPath(new URL('./lib/acceptance-reporter.mjs', import.meta.url))],
     ['list'],
     ['html', { open: 'never', outputFolder: playwrightOutputPaths.htmlReport }],
     ['json', { outputFile: playwrightOutputPaths.jsonReport }],

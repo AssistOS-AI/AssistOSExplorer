@@ -72,12 +72,13 @@ test('the canonical runner clears inherited Playwright reporter output escapes',
   try {
     const result = spawnSync(
       process.execPath,
-      [runner, 'specs/33-umami-routing.spec.mjs'],
+      [runner, 'specs/33-umami-routing.spec.mjs', '--list'],
       {
         cwd: smokeRoot,
         env: {
           ...process.env,
           SMOKE_ARTIFACT_DIR: artifactRoot,
+          SMOKE_UMAMI: '1',
           PLAYWRIGHT_JSON_OUTPUT_FILE: escapedJson,
           PLAYWRIGHT_HTML_REPORT: escapedHtml,
           PLAYWRIGHT_BLOB_OUTPUT_FILE: escapedBlob,
