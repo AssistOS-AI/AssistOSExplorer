@@ -109,7 +109,8 @@ export function createToolHandlers({
   getAllowedDirectories,
   commandMode = false,
   searchTextJobStorePath = '',
-  getInvocationContext = () => ({})
+  getInvocationContext = () => ({}),
+  registerCleanup
 }) {
   const privateData = createExplorerPrivateDataBoundary({ fs, path, workspaceRoot });
   const {
@@ -194,7 +195,9 @@ export function createToolHandlers({
       }
     }
   }
-  setInterval(cleanupSearchTextJobs, 60 * 1000).unref?.();
+  const searchTextCleanupTimer = setInterval(cleanupSearchTextJobs, 60 * 1000);
+  searchTextCleanupTimer.unref?.();
+  registerCleanup?.(() => clearInterval(searchTextCleanupTimer));
 
   function createSearchTextJobId() {
     return `search_job_${++searchTextJobIdSeq}_${Date.now()}`;

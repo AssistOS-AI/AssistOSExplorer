@@ -247,49 +247,66 @@ export async function createExplorerToolRuntime({
 
   const schemas = createSchemas(z);
   let activeInvocationContext = {};
-  const toolHandlers = createToolHandlers({
-    fs,
-    path,
-    schemas,
-    validatePath,
-    cacheConfig,
-    readFileWithCache,
-    readFileAsBase64Stream,
-    listDirectoryDetailedWithCache,
-    indexDirectory,
-    invalidateCachesForPath,
-    invalidateStructureIndexSubtree,
-    formatSize,
-    getFileStats,
-    applyFileEdits,
-    tailFile,
-    headFile,
-    writeFileContent,
-    copyRecursive,
-    aggregateIdePlugins,
-    workspaceRoot,
-    agentName: String(env.PLOINKY_AGENT_NAME || '').trim() || 'explorer',
-    buildDirectoryTree,
-    directoryTreeCache,
-    buildCacheKey,
-    searchFilesCache,
-    searchTextCache,
-    searchFilesWithinWorkspace,
-    searchTextWithinWorkspace,
-    replaceTextWithinWorkspace,
-    MAX_TEXT_SEARCH_FILE_BYTES: maxTextSearchFileBytes,
-    SEARCH_TEXT_TIMEOUT_MS: searchTextTimeoutMs,
-    REPLACE_TEXT_TIMEOUT_MS: replaceTextTimeoutMs,
-    DEFAULT_DIRECTORY_TREE_MAX_DEPTH: defaultDirectoryTreeMaxDepth,
-    DEFAULT_DIRECTORY_TREE_MAX_NODES: defaultDirectoryTreeMaxNodes,
-    getAllowedDirectories: () => allowedDirectories,
-    commandMode: true,
-    searchTextJobStorePath: path.join(workspaceRoot, '.data', 'explorer', 'search-jobs'),
-    getInvocationContext: () => activeInvocationContext
-  });
+  let disposed = false;
+  const cleanups = [];
+  let toolHandlers;
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    activeInvocationContext = {};
+    toolHandlers = null;
+    for (const cleanup of cleanups.splice(0)) cleanup();
+  }
+  try {
+    toolHandlers = createToolHandlers({
+      fs,
+      path,
+      schemas,
+      validatePath,
+      cacheConfig,
+      readFileWithCache,
+      readFileAsBase64Stream,
+      listDirectoryDetailedWithCache,
+      indexDirectory,
+      invalidateCachesForPath,
+      invalidateStructureIndexSubtree,
+      formatSize,
+      getFileStats,
+      applyFileEdits,
+      tailFile,
+      headFile,
+      writeFileContent,
+      copyRecursive,
+      aggregateIdePlugins,
+      workspaceRoot,
+      agentName: String(env.PLOINKY_AGENT_NAME || '').trim() || 'explorer',
+      buildDirectoryTree,
+      directoryTreeCache,
+      buildCacheKey,
+      searchFilesCache,
+      searchTextCache,
+      searchFilesWithinWorkspace,
+      searchTextWithinWorkspace,
+      replaceTextWithinWorkspace,
+      MAX_TEXT_SEARCH_FILE_BYTES: maxTextSearchFileBytes,
+      SEARCH_TEXT_TIMEOUT_MS: searchTextTimeoutMs,
+      REPLACE_TEXT_TIMEOUT_MS: replaceTextTimeoutMs,
+      DEFAULT_DIRECTORY_TREE_MAX_DEPTH: defaultDirectoryTreeMaxDepth,
+      DEFAULT_DIRECTORY_TREE_MAX_NODES: defaultDirectoryTreeMaxNodes,
+      getAllowedDirectories: () => allowedDirectories,
+      commandMode: true,
+      searchTextJobStorePath: path.join(workspaceRoot, '.data', 'explorer', 'search-jobs'),
+      getInvocationContext: () => activeInvocationContext,
+      registerCleanup: (cleanup) => cleanups.push(cleanup)
+    });
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 
   return {
     async callTool(name, args = {}, context = {}) {
+      if (disposed) throw new Error('Explorer tool runtime is disposed.');
       const fatalState = fatal.getState();
       if (fatalState) {
         throw new Error(`Explorer tool runtime failed during ${fatalState.source}: ${fatalState.error?.message || 'unknown error'}`);
@@ -304,6 +321,7 @@ export async function createExplorerToolRuntime({
         activeInvocationContext = {};
       }
     },
-    errorResponse
+    errorResponse,
+    dispose
   };
 }
