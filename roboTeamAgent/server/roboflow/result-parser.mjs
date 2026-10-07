@@ -1,10 +1,10 @@
-import { withoutSummaryBlocks, withoutSummaryMarkers, summaryRanges } from '../../shared/impact-summary.mjs';
+import { withoutSummaryBlocks, summaryRanges } from '../../shared/impact-summary.mjs';
 import { invalid } from './graph.mjs';
 import { parseJsonObject, parseStructuredResponse } from './markdown-response.mjs';
 
 const decisionSchema = {
     fields: {
-        message: 'text', nextEdgeId: { type: 'scalar', aliases: ['nextEdge', 'Edge'], normalizeJson: true }, afterWorkflowsEdgeId: 'scalar',
+        nextNodePrompt: { type: 'text', aliases: ['message'] }, nextEdgeId: { type: 'scalar', aliases: ['nextEdge', 'Edge'], normalizeJson: true }, afterWorkflowsEdgeId: 'scalar',
     },
     groups: [{ heading: 'workflow', collection: 'workflows', identity: 'workflowTypeId', fields: {
         workflowTypeId: 'scalar', prompt: 'text', executionType: 'scalar',
@@ -32,16 +32,10 @@ function resultSource(source) {
     return withoutSummaryBlocks(text).trim() || summaryRanges(text).map(range => text.slice(range.start, range.end)).join('\n').trim();
 }
 
-// Strip presentation markers only when constructing downstream context, never on disk.
-// Keep the human findings alongside a structured payload so routing does not lose them.
-export function workflowResponseContext(source, graph, taskId) {
-    const text = String(source || '');
-    const node = graph.tasks.find(task => task.id === taskId);
-    const structured = node?.creator || graph.edges.filter(edge => edge.sourceTaskId === taskId).length > 1;
-    if (!structured) return { response: withoutSummaryMarkers(text) };
-    const humanReport = summaryRanges(text).map(range => text.slice(range.start, range.end).trim()).filter(Boolean).join('\n\n');
-    return { response: resultSource(text),
-        ...(withoutSummaryBlocks(text).trim() && humanReport ? { humanReport } : {}) };
+// Reports are user-only, including historical responses with no separate payload.
+// Keep the original response intact on disk for display and debugging.
+export function workflowResponseContext(source) {
+    return { response: withoutSummaryBlocks(String(source || '')).trim() };
 }
 
 export function extractJson(source) {
@@ -57,7 +51,7 @@ export function routeFromResponse(response, graph, taskId) {
     if (typeof id !== 'string' || !id) throw invalid('Branching task must return one unambiguous nextEdgeId');
     const edge = graph.edges.find(entry => entry.id === id && entry.sourceTaskId === taskId);
     if (!edge) throw invalid(`Selected edge is not outgoing from task ${taskId}: ${id}`);
-    return { message: response.message, nextEdgeId: edge.id, edge };
+    return { nextNodePrompt: response.nextNodePrompt, nextEdgeId: edge.id, edge };
 }
 
 export function parseRoute(source, graph, taskId) {

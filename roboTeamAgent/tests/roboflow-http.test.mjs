@@ -68,6 +68,8 @@ test('human-report HTTP view excludes routing fields while debug output retains 
     const { flow: view } = await (await f.request(`/api/roboflow/flows/${flow.id}?logs=none`, 'user')).json();
     assert.equal(view.instances[0].finalResponse, result);
     assert.equal(JSON.parse(f.started[1].request.task).previousFinalResponses[0].response, '# nextEdgeId\ngo');
+    assert.ok(!f.started[1].request.task.includes(report));
+    assert.ok(!Object.hasOwn(JSON.parse(f.started[1].request.task).previousFinalResponses[0], 'humanReport'));
 });
 test('HTTP stops a single phase and stops the whole flow with it', async t => {
     const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);

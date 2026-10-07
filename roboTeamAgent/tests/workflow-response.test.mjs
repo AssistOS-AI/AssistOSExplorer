@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseWorkflowResponse, parseRoute, workflowResponseContext } from '../server/roboflow/result-parser.mjs';
 import { normalizeWorkflow } from '../server/roboflow/graph.mjs';
-import { generationPrompt, creatorPrompt, routingPrompt } from '../copilot/src/lib/prompts.mjs';
+import { generationPrompt, creatorPrompt, routingPrompt, buildWorkflowTaskPrompt } from '../copilot/src/lib/prompts.mjs';
 
 const graph = { edges: [{ id: 'Go', sourceTaskId: 'a', targetTaskId: 'b' }] };
 const report = text => `<<human-report>>\n${text}\n<<human-report>>`;
@@ -24,9 +24,9 @@ test('routing accepts header depth, casing, separators, closing hashes and quote
 
 test('creator Markdown returns ordered objects and preserves multiline prompts without JSON escaping', () => {
     const prompt = 'Inspect "quoted" values and C:\\work.\n\n## Acceptance criteria\n  Keep indentation.\nworkflowName#prompt is text.';
-    const parsed = parseWorkflowResponse(report(`# message\nA plan\n# nextEdgeId\nGo\n# after-workflows-edge-id\nAfter\n##Workflow\ndefault\n# execution_type\nterminal\n# Prompt\n${prompt}\n# WORKFLOW\nreview\n# prompt\nVerify it.`));
+    const parsed = parseWorkflowResponse(report(`# nextNodePrompt\nA plan\n# nextEdgeId\nGo\n# after-workflows-edge-id\nAfter\n##Workflow\ndefault\n# execution_type\nterminal\n# Prompt\n${prompt}\n# WORKFLOW\nreview\n# prompt\nVerify it.`));
     assert.deepEqual(parsed, {
-        message: 'A plan', nextEdgeId: 'Go', afterWorkflowsEdgeId: 'After',
+        nextNodePrompt: 'A plan', nextEdgeId: 'Go', afterWorkflowsEdgeId: 'After',
         workflows: [{ workflowTypeId: 'default', executionType: 'terminal', prompt }, { workflowTypeId: 'review', prompt: 'Verify it.' }],
     });
     assert.deepEqual(parseWorkflowResponse('# workflows\n# workflow\n# workflowTypeId\nreview\n# prompt\nCheck').workflows,
@@ -36,13 +36,13 @@ test('creator Markdown returns ordered objects and preserves multiline prompts w
 test('fenced prose protects all reserved headings, embedded code and human-report examples', () => {
     const literal = '# workflow\nfake\n# nextEdgeId\nwrong\n# prompt\nExample:\n```js\nconst a = "quoted";\n```\n<<human-report>>\n  indented\n<<human-report>>';
     for (const fence of ['````', '~~~~']) {
-        const parsed = parseWorkflowResponse(report(`# message\n${fence}markdown\n# nextEdgeId\nwrong\n${fence}\n# nextEdgeId\nGo\n# workflow\nreview\n# prompt\n${fence}text\n${literal}\n${fence}`));
-        assert.equal(parsed.message, '# nextEdgeId\nwrong');
+        const parsed = parseWorkflowResponse(report(`# nextNodePrompt\n${fence}markdown\n# nextEdgeId\nwrong\n${fence}\n# nextEdgeId\nGo\n# workflow\nreview\n# prompt\n${fence}text\n${literal}\n${fence}`));
+        assert.equal(parsed.nextNodePrompt, '# nextEdgeId\nwrong');
         assert.equal(parsed.nextEdgeId, 'Go');
         assert.deepEqual(parsed.workflows, [{ workflowTypeId: 'review', prompt: literal }]);
     }
-    const mixed = parseWorkflowResponse('# nextEdgeId\nGo\n# message\nExample:\n```markdown\n# nextEdgeId\nwrong\n```\nEnd.');
-    assert.equal(mixed.message, 'Example:\n```markdown\n# nextEdgeId\nwrong\n```\nEnd.');
+    const mixed = parseWorkflowResponse('# nextEdgeId\nGo\n# nextNodePrompt\nExample:\n```markdown\n# nextEdgeId\nwrong\n```\nEnd.');
+    assert.equal(mixed.nextNodePrompt, 'Example:\n```markdown\n# nextEdgeId\nwrong\n```\nEnd.');
 });
 
 test('complete Markdown wrappers and historical report placement remain accepted', () => {
@@ -54,20 +54,26 @@ test('complete Markdown wrappers and historical report placement remain accepted
     }
 });
 
-test('downstream context separates human findings from structured output without losing ordinary answers', () => {
-    const branching = { tasks: [{ id: 'a' }, { id: 'b' }], edges: [...graph.edges, { id: 'Retry', sourceTaskId: 'a', targetTaskId: 'a' }] };
-    const payload = '# nextEdgeId\nGo';
-    for (const source of [report('Verified the changes.') + '\n\n' + payload, payload + '\n\n' + report('Verified the changes.')]) {
-        assert.deepEqual(workflowResponseContext(source, branching, 'a'), { response: payload, humanReport: 'Verified the changes.' });
+test('downstream context excludes reports for every node and historical report-only output', () => {
+    const payload = '# nextNodePrompt\nValidated index.html; no broken links.\n# nextEdgeId\nGo';
+    for (const source of [report('User-only findings.') + '\n\n' + payload, payload + '\n\n' + report('User-only findings.'), payload]) {
+        assert.deepEqual(workflowResponseContext(source), { response: payload });
     }
-    for (const [source, response] of [[payload, payload], [report(payload), payload], [report('{"nextEdgeId":"Go"}'), '{"nextEdgeId":"Go"}']]) {
-        assert.deepEqual(workflowResponseContext(source, branching, 'a'), { response });
+    for (const source of [report('User-only findings.'), report(payload), report('{"nextEdgeId":"Go"}')]) {
+        assert.deepEqual(workflowResponseContext(source), { response: '' });
     }
-    const answer = 'Plain answer with a literal routing example:\n# nextEdgeId\nGo';
-    assert.deepEqual(workflowResponseContext(report(answer), branching, 'b'), { response: answer });
-    assert.deepEqual(workflowResponseContext('Unmarked answer', branching, 'b'), { response: 'Unmarked answer' });
-    const creator = { tasks: [{ id: 'a', creator: true }], edges: graph.edges };
-    assert.deepEqual(workflowResponseContext(report('Delegate.') + '\n' + payload, creator, 'a'), { response: payload, humanReport: 'Delegate.' });
+    assert.deepEqual(workflowResponseContext('Legacy unmarked answer'), { response: 'Legacy unmarked answer' });
+    assert.deepEqual(workflowResponseContext(report('Done.') + '\n# nextNodePrompt\nBuilt index.html.'), { response: '# nextNodePrompt\nBuilt index.html.' });
+});
+
+test('every workflow task requests a self-contained technical handoff outside the user report', () => {
+    const input = JSON.parse(buildWorkflowTaskPrompt({ objective: 'Work', currentTaskId: 'a', graph, previousFinalResponses: [] }));
+    assert.match(input.instruction, /including tasks with zero or one outgoing edge/);
+    assert.match(input.instruction, /Include # nextNodePrompt/);
+    assert.match(input.instruction, /checks and their outcomes/);
+    assert.match(input.instruction, /without the human report/);
+    assert.match(input.instruction, /excluded from this context/);
+    assert.doesNotMatch(input.instruction, /Read both fields/);
 });
 
 test('JSON fallback supports decisions, child plans and graph objects without changing prose', () => {
@@ -76,7 +82,7 @@ test('JSON fallback supports decisions, child plans and graph objects without ch
     for (const source of [JSON.stringify(input), '```JSON\n' + JSON.stringify(input, null, 2) + '\n```', 'Legacy result:\n~~~json\n' + JSON.stringify(input) + '\n~~~']) {
         const parsed = parseWorkflowResponse(report(source));
         assert.equal(parsed.nextEdgeId, 'Go');
-        assert.equal(parsed.message, input.Message);
+        assert.equal(parsed.nextNodePrompt, input.Message);
         assert.deepEqual(parsed.workflows, input.workflows);
     }
     const expected = normalizeWorkflow(parseGraph(draft));
@@ -136,9 +142,9 @@ test('conflicting prompts identify response parsing and retain the payload line 
 });
 
 test('structured Markdown wins over JSON examples inside prose', () => {
-    const parsed = parseWorkflowResponse('# message\nExample:\n```json\n{"nextEdgeId":"wrong"}\n```\n# nextEdgeId\nGo');
+    const parsed = parseWorkflowResponse('# nextNodePrompt\nExample:\n```json\n{"nextEdgeId":"wrong"}\n```\n# nextEdgeId\nGo');
     assert.equal(parsed.nextEdgeId, 'Go');
-    assert.match(parsed.message, /wrong/);
+    assert.match(parsed.nextNodePrompt, /wrong/);
 });
 
 test('generation prompt example is parseable and system instructions request Markdown', () => {
@@ -152,4 +158,16 @@ test('generation prompt example is parseable and system instructions request Mar
         assert.match(text, /human report first/);
         assert.match(text, /after the closing marker/);
     }
+});
+
+test('nextNodePrompt normalizes Markdown and JSON names, including the legacy message alias', () => {
+    for (const key of ['nextNodePrompt', 'NEXT_NODE_PROMPT', 'next-node-prompt', 'message', 'Message']) {
+        for (const source of [`##${key}\nBuilt index.html.\n# nextEdgeId\nGo`, JSON.stringify({ [key]: 'Built index.html.', nextEdgeId: 'Go' })]) {
+            const parsed = parseWorkflowResponse(source);
+            assert.equal(parsed.nextNodePrompt, 'Built index.html.');
+            assert.ok(!Object.hasOwn(parsed, 'message'));
+            assert.equal(parseRoute(source, graph, 'a').nextNodePrompt, 'Built index.html.');
+        }
+    }
+    assert.throws(() => parseWorkflowResponse('# nextNodePrompt\nFirst\n# message\nSecond'), /Conflicting nextNodePrompt/);
 });

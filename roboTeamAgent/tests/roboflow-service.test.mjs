@@ -50,7 +50,7 @@ test('graph validation accepts cycles and rejects broken identity or legacy robo
 });
 
 test('branch parser tolerates aliases and formats but only authorizes outgoing edges', () => {
-    for (const source of ['#nextEdgeId\na-b', '# message\nOK\n# Edge\na-b', '# NEXTEDGE\r\n```\r\na-b\r\n```', '{"nextEdge":"a-b"}', '```json\n{"Edge":"a-b"}\n```']) assert.equal(parseRoute(source, graph(), 'a').nextEdgeId, 'a-b');
+    for (const source of ['#nextEdgeId\na-b', '# nextNodePrompt\nOK\n# Edge\na-b', '# NEXTEDGE\r\n```\r\na-b\r\n```', '{"nextEdge":"a-b"}', '```json\n{"Edge":"a-b"}\n```']) assert.equal(parseRoute(source, graph(), 'a').nextEdgeId, 'a-b');
     for (const source of ['Done', '#Edge\nb-a', '{"Edge":"a-b","nextEdge":"a-c"}', '#Edge\nunknown']) assert.throws(() => parseRoute(source, graph(), 'a'));
 });
 
@@ -59,10 +59,10 @@ test('cycles create distinct tasks, preserve only final response history and bra
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
     assert.match(f.started[0].request.systemPrompt, /Current node: a/);
     f.service.onRuntimeTaskEvent({ kind: 'progress', taskId: f.started[0].taskId, chunk: 'SECRET INTERMEDIATE' });
-    await f.finish(0, '#message\nRevise\n#nextEdgeId\na-b');
+    await f.finish(0, '#nextNodePrompt\nRevise\n#nextEdgeId\na-b');
     assert.equal(f.started[1].request.systemPrompt, '');
     const input = JSON.parse(f.started[1].request.task);
-    assert.equal(input.previousFinalResponses[0].response, '#message\nRevise\n#nextEdgeId\na-b');
+    assert.equal(input.previousFinalResponses[0].response, '#nextNodePrompt\nRevise\n#nextEdgeId\na-b');
     assert.ok(!f.started[1].request.task.includes('SECRET INTERMEDIATE'));
     await f.finish(1, 'Revised');
     assert.notEqual(f.started[2].taskId, f.started[0].taskId);
@@ -76,7 +76,7 @@ test('cycles create distinct tasks, preserve only final response history and bra
     assert.ok(!stored.includes('Revised')); assert.ok(!stored.includes('SECRET INTERMEDIATE'));
 });
 
-test('routing keeps the original response for debugging and passes findings separately to the next task', async t => {
+test('routing keeps the original response for debugging and passes only technical context to the next task', async t => {
     const f = await fixture(t);
     await f.service.createWorkflow(graph());
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
@@ -85,11 +85,12 @@ test('routing keeps the original response for debugging and passes findings sepa
     await f.finish(0, result);
     const input = JSON.parse(f.started[1].request.task);
     assert.equal(input.previousFinalResponses[0].response, payload);
-    assert.equal(input.previousFinalResponses[0].humanReport, 'The input validation needs a fix.');
+    assert.ok(!Object.hasOwn(input.previousFinalResponses[0], 'humanReport'));
+    assert.ok(!f.started[1].request.task.includes('The input validation needs a fix.'));
     assert.equal(await f.service.store.readOutput(flow.id, flow.instances[0].id, 'result'), result);
     assert.equal((await f.service.getFlow(flow.id)).instances[0].finalResponse, result);
-    await f.finish(1, humanReport('Fixed the missing validation.'));
-    assert.equal(JSON.parse(f.started[2].request.task).previousFinalResponses[1].response, 'Fixed the missing validation.');
+    await f.finish(1, humanReport('User-only fix report.') + '\n# nextNodePrompt\nFixed the missing validation.');
+    assert.equal(JSON.parse(f.started[2].request.task).previousFinalResponses[1].response, '# nextNodePrompt\nFixed the missing validation.');
 });
 
 test('zero and one outgoing edge never require route output; repeated completion does not launch twice', async t => {
@@ -233,17 +234,21 @@ test('Markdown child plans run in order, pass prior results and follow the saved
     assert.equal(f.started.length, 2);
     await f.finish(0, response);
     assert.equal(f.started.length, 2);
-    await f.finish(1, humanReport('Implemented "quotes".'));
+    const implementation = humanReport('User-only implementation report.') + '\n# nextNodePrompt\nImplemented "quotes".';
+    await f.finish(1, implementation);
     assert.equal(f.started.length, 3);
-    assert.equal(JSON.parse(f.started[2].request.task).previousSubflowFinalResponse, 'Implemented "quotes".');
-    await f.finish(2, humanReport('Verified'));
+    assert.equal(JSON.parse(f.started[2].request.task).previousSubflowFinalResponse, '# nextNodePrompt\nImplemented "quotes".');
+    await f.finish(2, humanReport('User-only verification report.') + '\n# nextNodePrompt\nVerified');
     assert.equal(f.started.length, 4);
     assert.equal(JSON.parse(f.started[3].request.task).currentTaskId, 'end');
     const previous = JSON.parse(f.started[3].request.task).previousFinalResponses;
     assert.equal(previous[0].response, payload);
-    assert.equal(previous[0].humanReport, 'Implement, then verify the change.');
-    assert.deepEqual(JSON.parse(previous[1].response).map(child => child.result), ['Implemented "quotes".', 'Verified']);
-    assert.equal((await f.service.getFlow(first)).result, humanReport('Implemented "quotes".'));
+    assert.ok(!Object.hasOwn(previous[0], 'humanReport'));
+    assert.ok(!f.started[2].request.task.includes('User-only'));
+    assert.ok(!f.started[3].request.task.includes('User-only'));
+    assert.ok(!f.started[3].request.task.includes('Implement, then verify the change.'));
+    assert.deepEqual(JSON.parse(previous[1].response).map(child => child.result), ['# nextNodePrompt\nImplemented "quotes".', '# nextNodePrompt\nVerified']);
+    assert.equal((await f.service.getFlow(first)).result, implementation);
     await f.finish(3, 'Done');
     assert.equal((await f.service.getFlow(parent.id)).status, 'completed');
 });
@@ -279,7 +284,7 @@ test('a creator can choose an ordinary Markdown route without child fields', asy
     const f = await fixture(t);
     await f.service.createWorkflow({ ...graph(), tasks: [task('a', { creator: true }), task('b'), task('c')] });
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
-    await f.finish(0, '# message\nReady\n##NEXT_EDGE_ID\na-c');
+    await f.finish(0, '# nextNodePrompt\nReady\n##NEXT_EDGE_ID\na-c');
     assert.equal(f.started.length, 2);
     assert.equal(JSON.parse(f.started[1].request.task).currentTaskId, 'c');
     await f.finish(1, 'Done');
