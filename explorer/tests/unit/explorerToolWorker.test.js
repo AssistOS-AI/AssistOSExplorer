@@ -12,6 +12,7 @@ import { serveExplorerToolWorker } from '../../tools/explorer_tool_worker.mjs';
 
 const cliPath = fileURLToPath(new URL('../../tools/explorer_tool.mjs', import.meta.url));
 const workerPath = fileURLToPath(new URL('../../tools/explorer_tool_worker.sh', import.meta.url));
+const productionNodeOptions = '--preserve-symlinks --preserve-symlinks-main';
 
 function capture() {
     const chunks = [];
@@ -22,7 +23,7 @@ function capture() {
 }
 
 async function workspace(t, { beforeRemove = async () => {} } = {}) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-worker-adapter-'));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-worker-adapter-')));
     t.after(async () => {
         const failures = [];
         try {
@@ -43,10 +44,10 @@ async function workspace(t, { beforeRemove = async () => {} } = {}) {
     return root;
 }
 
-function cli(root, input, toolName = '', entrypoint = cliPath) {
-    return spawnSync(process.execPath, [entrypoint], {
+function cli(root, input, toolName = '', entrypoint = cliPath, nodeOptions = '') {
+    return spawnSync(entrypoint.endsWith('.sh') ? '/bin/sh' : process.execPath, [entrypoint], {
         cwd: root,
-        env: { ...process.env, ASSISTOS_FS_ROOT: root, TOOL_NAME: toolName },
+        env: { ...process.env, NODE_OPTIONS: nodeOptions, ASSISTOS_FS_ROOT: root, TOOL_NAME: toolName },
         input: typeof input === 'string' ? input : JSON.stringify(input),
         timeout: 15_000,
     });
@@ -89,18 +90,60 @@ test('CLI preserves error newline, missing and malformed envelopes, and TOOL_NAM
     assert.equal(fallback.stdout.toString(), 'raw text\n');
 });
 
-test('CLI direct execution also works through a staged source symlink', async (t) => {
+async function stagedSources(root) {
+    const source = await fs.realpath(path.dirname(path.dirname(cliPath)));
+    const directory = path.join(root, 'directory-stage');
+    await fs.symlink(source, directory, 'dir');
+    const entries = path.join(root, 'entry-stage');
+    await fs.mkdir(path.join(entries, 'tools'), { recursive: true });
+    // Match stageSourceTreeWithOverrides with an override below tools/: unaffected
+    // top-level directories stay linked, while tools contains per-entry links.
+    for (const name of await fs.readdir(source)) {
+        if (name === 'tools') continue;
+        await fs.symlink(path.join(source, name), path.join(entries, name));
+    }
+    for (const name of await fs.readdir(path.join(source, 'tools'))) {
+        await fs.symlink(path.join(source, 'tools', name), path.join(entries, 'tools', name));
+    }
+    return { real: source, directory, entries };
+}
+
+test('entrypoints preserve exact CLI contracts across real and staged production paths', async (t) => {
     const root = await workspace(t);
-    const alias = path.join(root, 'tool-alias.mjs');
-    await fs.symlink(cliPath, alias);
-    const result = cli(root, { tool: 'read_text_file', input: { path: 'ordinary.txt' } }, '', alias);
-    assert.equal(result.status, 0, result.stderr.toString());
-    assert.equal(result.stdout.toString(), 'raw text\n');
+    const sources = await stagedSources(root);
+    const cases = [
+        [{ tool: 'read_text_file', input: { path: 'ordinary.txt' } }, '', 0, 'raw text\n', ''],
+        [{ tool: 'read_text_file', input: { path: 'empty.txt' } }, '', 0, '__ASSISTOS_EXPLORER_EMPTY_TEXT__', ''],
+        [{ arguments: { path: 'ordinary.txt' } }, 'read_text_file', 0, 'raw text\n', ''],
+        [{}, '', 1, '', 'Explorer tool name is missing.\n'],
+        [{ tool: 'missing_tool' }, '', 1, '', 'Unknown tool: missing_tool\n'],
+    ];
+    const envelope = { tool: 'list_directory_detailed', input: { path: '/' } };
+    const output = capture();
+    await handleExplorerToolCall({ envelope, toolEnv: { ASSISTOS_FS_ROOT: root }, stdout: output.stdout });
+    assert.match(output.bytes().toString(), /ordinary\.txt/);
+    cases.push([envelope, '', 0, output.bytes().toString(), '']);
+    for (const [layout, source] of Object.entries(sources)) {
+        for (const nodeOptions of ['', productionNodeOptions]) {
+            for (const entry of ['explorer_tool.mjs', 'explorer_tool.sh']) {
+                await t.test(`${layout}/${entry} NODE_OPTIONS=${nodeOptions || 'ordinary'}`, () => {
+                    for (const [input, name, status, stdout, stderr] of cases) {
+                        const result = cli(root, input, name, path.join(source, 'tools', entry), nodeOptions);
+                        assert.equal(result.error, undefined);
+                        assert.equal(result.signal, null);
+                        assert.equal(result.status, status, result.stderr.toString());
+                        assert.equal(result.stdout.toString(), stdout);
+                        assert.equal(result.stderr.toString(), stderr);
+                    }
+                });
+            }
+        }
+    }
 });
 
-test('importing CLI and worker modules neither reads open stdin nor starts serving', async (t) => {
-    const script = `await import(${JSON.stringify(pathToFileURL(cliPath).href)}); await import(${JSON.stringify(new URL('../../tools/explorer_tool_worker.mjs', import.meta.url).href)}); process.stdout.write('imported');`;
-    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+async function importWithOpenStdin(t, entrypoint, env) {
+    const script = `await import(${JSON.stringify(pathToFileURL(entrypoint).href)}); if (process.stdin.listenerCount('readable') || process.stdin.listenerCount('data')) { console.error('IMPORT_CONSUMED_STDIN'); process.exit(91); } process.stdout.write('imported');`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     const chunks = [];
     const errors = [];
     child.stdout.on('data', chunk => chunks.push(chunk));
@@ -117,6 +160,59 @@ test('importing CLI and worker modules neither reads open stdin nor starts servi
     assert.equal(code, 0, Buffer.concat(errors).toString());
     assert.equal(Buffer.concat(chunks).toString(), 'imported');
     assert.equal(Buffer.concat(errors).length, 0);
+}
+
+test('importing real and staged entrypoints leaves stdin open and never starts serving', async (t) => {
+    const root = await workspace(t);
+    const sources = await stagedSources(root);
+    const workerModulePath = path.join(root, 'import-worker-fixture.mjs');
+    await fs.writeFile(workerModulePath, "export async function serveToolWorker() { process.stdout.write('WORKER_STARTED'); }\n");
+    for (const [layout, source] of Object.entries(sources)) {
+        for (const nodeOptions of ['', productionNodeOptions]) {
+            for (const entry of ['explorer_tool.mjs', 'explorer_tool_worker.mjs']) {
+                await t.test(`${layout}/${entry} NODE_OPTIONS=${nodeOptions || 'ordinary'}`, async (subtest) => {
+                    await importWithOpenStdin(subtest, path.join(source, 'tools', entry), {
+                        ...process.env, NODE_OPTIONS: nodeOptions, PLOINKY_TOOL_WORKER_MODULE: workerModulePath,
+                    });
+                });
+            }
+        }
+    }
+});
+
+test('worker entrypoint serves a controlled callback through real and staged production paths', async (t) => {
+    const root = await workspace(t);
+    const sources = await stagedSources(root);
+    const workerModulePath = path.join(root, 'callback-worker-fixture.mjs');
+    await fs.writeFile(workerModulePath, `export async function serveToolWorker(callback) {
+        const result = await callback({ envelope: JSON.parse(process.env.FIXTURE_ENVELOPE), toolEnv: {}, stdout: process.stdout, stderr: process.stderr });
+        process.exitCode = result.exitCode;
+    }\n`);
+    for (const [layout, source] of Object.entries(sources)) {
+        for (const nodeOptions of ['', productionNodeOptions]) {
+            for (const entry of ['explorer_tool_worker.mjs', 'explorer_tool_worker.sh']) {
+                await t.test(`${layout}/${entry} NODE_OPTIONS=${nodeOptions || 'ordinary'}`, () => {
+                    for (const [envelope, status, stdout, stderr] of [
+                        [{ tool: 'read_text_file', input: { path: 'ordinary.txt' } }, 0, 'raw text\n', ''],
+                        [{ tool: 'read_text_file', input: { path: 'empty.txt' } }, 0, '__ASSISTOS_EXPLORER_EMPTY_TEXT__', ''],
+                        [{}, 1, '', 'Explorer tool name is missing.\n'],
+                        [{ tool: 'missing_tool' }, 1, '', 'Unknown tool: missing_tool\n'],
+                    ]) {
+                        const entrypoint = path.join(source, 'tools', entry);
+                        const result = spawnSync(entry.endsWith('.sh') ? '/bin/sh' : process.execPath, [entrypoint], {
+                            cwd: root, timeout: 15_000,
+                            env: { ...process.env, NODE_OPTIONS: nodeOptions, TOOL_NAME: '', ASSISTOS_FS_ROOT: root, PLOINKY_TOOL_WORKER_MODULE: workerModulePath, FIXTURE_ENVELOPE: JSON.stringify(envelope) },
+                        });
+                        assert.equal(result.error, undefined);
+                        assert.equal(result.signal, null);
+                        assert.equal(result.status, status, result.stderr.toString());
+                        assert.equal(result.stdout.toString(), stdout);
+                        assert.equal(result.stderr.toString(), stderr);
+                    }
+                });
+            }
+        }
+    }
 });
 
 test('E2/E3: each call gets a fresh runtime, current metadata and explicit tool-name precedence', async (t) => {
