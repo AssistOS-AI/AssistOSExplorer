@@ -119,8 +119,13 @@ test('manifest selects runtime-only GUI images and the persistent tool cache', a
 test('install hook verifies the runtime and prepares the persistent tool-cache root', async () => {
     const source = await readFile(join(AGENT_ROOT, 'scripts', 'install.sh'), 'utf8');
 
-    assert.match(source, /\/opt\/roboteam-runtime\/contract-v5/);
-    assert.match(source, /roboteam-runtime-v5/);
+    assert.match(source, /\/opt\/roboteam-runtime\/contract-v6/);
+    assert.match(source, /roboteam-runtime-v6/);
+    assert.match(source, /runtime_initializer="\/usr\/local\/bin\/roboteam-podman-init"/);
+    assert.match(source, /if \[ ! -x "\$runtime_initializer" \]; then/);
+    assert.match(source, /if ! "\$runtime_initializer"; then/);
+    assert.ok(source.indexOf('if ! "$runtime_initializer"; then') > source.indexOf('if [ -n "$missing" ]; then'));
+    assert.ok(source.indexOf('if ! "$runtime_initializer"; then') < source.indexOf('node "$script_dir/prepare-data.mjs"'));
     for (const command of ['podman', 'fuse-overlayfs', 'pasta', 'node', 'npm', 'bwrap']) {
         assert.match(source, new RegExp(`\\b${command}\\b`));
     }

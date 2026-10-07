@@ -1,11 +1,16 @@
 #!/bin/sh
 set -eu
 
-contract_file="/opt/roboteam-runtime/contract-v5"
-contract_value="roboteam-runtime-v5"
+contract_file="/opt/roboteam-runtime/contract-v6"
+contract_value="roboteam-runtime-v6"
+runtime_initializer="/usr/local/bin/roboteam-podman-init"
 required_commands="podman fuse-overlayfs pasta node npm bwrap"
 required_assets="/opt/roboteam-runtime/storage.conf"
 missing=""
+
+if [ ! -x "$runtime_initializer" ]; then
+    missing="$missing executable:$runtime_initializer"
+fi
 
 if [ ! -f "$contract_file" ] || [ "$(cat "$contract_file" 2>/dev/null || true)" != "$contract_value" ]; then
     missing="$missing $contract_file"
@@ -33,6 +38,11 @@ done
 
 if [ -n "$missing" ]; then
     echo "ERROR: RoboTeam purpose-built runtime contract is incomplete:$missing" >&2
+    exit 1
+fi
+
+if ! "$runtime_initializer"; then
+    echo "ERROR: RoboTeam Podman storage initialization failed" >&2
     exit 1
 fi
 

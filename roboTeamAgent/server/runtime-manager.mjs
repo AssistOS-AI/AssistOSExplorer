@@ -258,6 +258,11 @@ export class RuntimeManager {
     }
 
     async initialize() {
+        await this.execFileImpl('/usr/local/bin/roboteam-podman-init', [], {
+            timeout: 30000,
+            maxBuffer: 8 * 1024 * 1024,
+            env: process.env,
+        });
         await this._podman(['info'], 30000);
         const result = await this._podman(['ps', '-a', '--filter', `label=${MANAGED_LABEL}`, '--format', 'json']).catch(() => ({ stdout: '[]' }));
         for (const record of JSON.parse(result.stdout || '[]')) {

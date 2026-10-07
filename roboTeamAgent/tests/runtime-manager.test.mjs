@@ -23,6 +23,55 @@ const preparedToolCache = {
     }])),
 };
 
+test('runtime initialization awaits the storage initializer before engine checks and managed cleanup', async () => {
+    const calls = [];
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const manager = new RuntimeManager({
+        toolCache: preparedToolCache,
+        execFileImpl: async (command, args, options) => {
+            calls.push({ command, args, options });
+            if (command === '/usr/local/bin/roboteam-podman-init') await pending;
+            return { stdout: args[0] === 'ps' ? '[{"Id":"owned-container"}]' : '', stderr: '' };
+        },
+    });
+    const initialized = manager.initialize();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls.map(call => [call.command, call.args]), [['/usr/local/bin/roboteam-podman-init', []]]);
+    assert.equal(calls[0].options.timeout, 30000);
+    release();
+    await initialized;
+    assert.deepEqual(calls.map(call => [call.command, call.args]), [
+        ['/usr/local/bin/roboteam-podman-init', []],
+        ['/usr/bin/podman', ['info']],
+        ['/usr/bin/podman', ['ps', '-a', '--filter', 'label=io.assistos.roboteam.robot=1', '--format', 'json']],
+        ['/usr/bin/podman', ['rm', '-f', 'owned-container']],
+    ]);
+    calls.length = 0;
+    await manager.initialize();
+    assert.equal(calls[0].command, '/usr/local/bin/roboteam-podman-init');
+});
+
+for (const failure of [
+    Object.assign(new Error('initializer missing'), { code: 'ENOENT' }),
+    Object.assign(new Error('initializer failed'), { code: 1 }),
+    Object.assign(new Error('initializer timed out'), { code: 'ETIMEDOUT', killed: true }),
+]) {
+    test(`runtime initialization rejects ${failure.message} before engine access`, async () => {
+        const calls = [];
+        const manager = new RuntimeManager({
+            toolCache: preparedToolCache,
+            execFileImpl: async (command, args) => {
+                calls.push({ command, args });
+                if (command === '/usr/local/bin/roboteam-podman-init') throw failure;
+                return { stdout: '[]', stderr: '' };
+            },
+        });
+        await assert.rejects(manager.initialize(), error => error === failure);
+        assert.deepEqual(calls, [{ command: '/usr/local/bin/roboteam-podman-init', args: [] }]);
+    });
+}
+
 test('builds browser and desktop containers around the persistent robot directories', () => {
     const plan = buildRobotRunArgs({
         robot: { id: 'research-a1b2c3', name: 'Research' },
