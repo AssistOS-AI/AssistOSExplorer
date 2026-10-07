@@ -187,11 +187,44 @@ test('disposal runs exactly once after call, serialization and asynchronous outp
 test('E4: the adapter is inert and every Explorer tool keeps its spawn contract', async () => {
     const descriptor = JSON.parse(await fs.readFile(new URL('../../mcp-config.json', import.meta.url), 'utf8'));
     assert.equal(descriptor.toolWorkers, undefined);
-    assert.ok(descriptor.tools.length > 0);
+    const baselineToolNames = [
+        'read_file', 'read_text_file', 'read_media_file', 'read_multiple_files',
+        'write_file', 'write_binary_file', 'edit_file', 'create_directory',
+        'delete_file', 'delete_directory', 'list_directory', 'list_directory_with_sizes',
+        'list_directory_detailed', 'directory_tree', 'move_file', 'copy_file',
+        'search_files', 'search_text', 'search_text_status', 'search_text_cancel',
+        'replace_text', 'get_file_info', 'open_markdown_crdt_document',
+        'apply_markdown_crdt_change', 'merge_markdown_crdt_document',
+        'save_markdown_crdt_document', 'sync_markdown_crdt_from_file',
+        'scripta_crdt_ensure_folder', 'scripta_crdt_workspace_list', 'scripta_crdt_create',
+        'scripta_crdt_open', 'scripta_crdt_mutate', 'scripta_crdt_delete',
+        'webmeet_media_commit', 'webmeet_media_get', 'scripta_collaboration_open',
+        'scripta_collaboration_pull', 'scripta_collaboration_apply',
+        'scripta_collaboration_merge_markdown', 'llm_autocomplete', 'collect_ide_plugins',
+        'get_plugin_settings', 'set_plugin_enabled', 'read_skills_manifest_state',
+        'add_skills_manifest_repo', 'set_skills_manifest_skill_enabled',
+        'remove_skills_manifest_repo', 'list_allowed_directories',
+        'get_avatar_settings_agents', 'update_avatar_settings_agent',
+        'set_avatar_settings_agent_visibility',
+    ];
+    assert.deepEqual(descriptor.tools.map(tool => tool.name), baselineToolNames);
     for (const tool of descriptor.tools) {
         assert.equal(tool.worker, undefined, tool.name);
-        assert.equal(tool.command, 'tools/explorer_tool.sh', tool.name);
-        assert.equal(tool.env.TOOL_NAME, tool.name);
+        assert.deepEqual({
+            command: tool.command,
+            cwd: tool.cwd,
+            env: tool.env,
+            args: tool.args,
+            timeoutMs: tool.timeoutMs,
+            async: tool.async,
+        }, {
+            command: tool.name === 'llm_autocomplete' ? 'tools/llm_autocomplete_tool.sh' : 'tools/explorer_tool.sh',
+            cwd: 'workspace',
+            env: { TOOL_NAME: tool.name },
+            args: undefined,
+            timeoutMs: undefined,
+            async: undefined,
+        }, tool.name);
     }
 });
 
