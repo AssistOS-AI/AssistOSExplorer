@@ -1,11 +1,13 @@
 export function createStructureIndex({ fs, path, listDirectoryDetailedWithCache }) {
   const structureIndex = new Map();
 
-  async function indexDirectory(validDirPath) {
+  async function indexDirectory(validDirPath, options) {
     const [dirStats, entries] = await Promise.all([
       fs.stat(validDirPath),
-      listDirectoryDetailedWithCache(validDirPath)
+      listDirectoryDetailedWithCache(validDirPath, options)
     ]);
+    // Partial (budget-limited) listings must not be stored as the directory index.
+    if (entries.truncated) return entries;
     const childDirs = [];
     const childFiles = [];
     for (const entry of entries) {

@@ -56,10 +56,16 @@ export async function describeDirectoryEntry(basePath, entry) {
     linkStats = null;
   }
 
-  try {
-    effectiveStats = await fs.stat(entryPath);
-  } catch {
-    effectiveStats = null;
+  if (linkStats && !linkStats.isSymbolicLink()) {
+    // Ordinary file or directory: lstat already describes it, no second syscall.
+    effectiveStats = linkStats;
+  } else {
+    // Symbolic link (follow it) or failed lstat (preserve the previous stat attempt).
+    try {
+      effectiveStats = await fs.stat(entryPath);
+    } catch {
+      effectiveStats = null;
+    }
   }
 
   const stats = effectiveStats || linkStats;
@@ -121,7 +127,9 @@ export function createCacheHelpers({ readFileContent, config } = {}) {
     return { content, stats };
   };
 
-  const listDirectoryDetailedWithCache = async (validPath) => {
+  // With `limit`, only the first `limit` visible entries are described when the
+  // directory is larger; that partial result is flagged `truncated` and never cached.
+  const listDirectoryDetailedWithCache = async (validPath, { limit } = {}) => {
     const stats = await fs.stat(validPath);
     const cached = dirCache.get(validPath);
     if (isFreshDir(cached, stats, cacheConfig.ttlMs)) {
@@ -130,6 +138,11 @@ export function createCacheHelpers({ readFileContent, config } = {}) {
 
     const entries = await fs.readdir(validPath, { withFileTypes: true });
     const visibleEntries = entries.filter((entry) => !isProtectedSecretName(entry?.name));
+    if (Number.isFinite(limit) && limit >= 0 && visibleEntries.length > limit) {
+      const partial = await Promise.all(visibleEntries.slice(0, limit).map((entry) => describeDirectoryEntry(validPath, entry)));
+      Object.defineProperty(partial, 'truncated', { value: true, enumerable: false });
+      return partial;
+    }
     const detailed = await Promise.all(visibleEntries.map((entry) => describeDirectoryEntry(validPath, entry)));
 
     dirCache.set(validPath, { entries: detailed, mtimeMs: stats.mtimeMs, cachedAt: Date.now() });

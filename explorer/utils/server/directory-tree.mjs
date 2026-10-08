@@ -10,7 +10,8 @@ export async function buildDirectoryTree({
   async function build(currentPath, depth) {
     if (nodes >= maxNodes) return [];
     if (depth > maxDepth) return [];
-    const entries = await indexDirectory(currentPath);
+    // Only the remaining budget can be emitted, so ask for no more metadata than that.
+    const entries = await indexDirectory(currentPath, { limit: maxNodes - nodes });
     const result = [];
     for (const entry of entries) {
       if (nodes >= maxNodes) break;
