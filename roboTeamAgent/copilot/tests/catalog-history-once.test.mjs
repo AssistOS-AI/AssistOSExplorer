@@ -108,3 +108,14 @@ test('direct loader fills only missing completions from a single history read', 
     assert.deepEqual(sub('view'), view);
     assert.deepEqual(sub('pause'), buildTaskCompletions(root, 'pause'));
 });
+
+test('direct loader with a malformed saved current session id still returns a catalog with modelError', async (t) => {
+    const root = makeWorkspace(t);
+    fs.mkdirSync(path.join(root, '.roboteam'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.roboteam/settings.json'), JSON.stringify({ currentSessionId: 'not-a-session-id' }));
+    const result = await loadAutocompleteCatalog({ dir: root, skillCatalog: catalog, engine });
+    assert.equal(result.type, 'achilles-slash-command-catalog');
+    assert.equal(result.modelError, 'invalid_session_id');
+    const resume = result.commands.find((c) => c.name === '/session').subCommands.find((s) => s.name === 'resume');
+    assert.equal(resume.argCompletions.length, COUNT);
+});

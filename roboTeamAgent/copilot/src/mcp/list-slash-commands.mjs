@@ -44,7 +44,7 @@ const TASK_COMPLETION_ACTIONS = ['view', 'continue', 'pause', 'model', 'login'];
 
 export function buildSessionCompletions(dir, store = null) {
     if (!dir) return [];
-    const payload = (store || new ConversationSessionStore({ workingDir: dir })).listSessions();
+    const payload = (store || new ConversationSessionStore({ workingDir: dir })).listSessions(null);
     return payload.sessions.map((session) => ({ value: session.sessionId, label: session.preview || 'New session',
         description: [session.sessionId, session.updatedAt].filter(Boolean).join(' · ') }));
 }
