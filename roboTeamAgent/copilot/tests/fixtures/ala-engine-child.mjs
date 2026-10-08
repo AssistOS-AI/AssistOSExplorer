@@ -26,12 +26,11 @@ const stdinLines = readline.createInterface({ input: process.stdin })[Symbol.asy
 const first = JSON.parse((await stdinLines.next()).value);
 if (first.type !== 'prompt' || typeof first.prompt !== 'string') throw new Error('Missing turn prompt record.');
 const prompt = first.prompt;
-if (!args.includes('--config')) throw new Error('Missing isolated ALA invocation config.');
+if (args.includes('--config')) throw new Error('RoboTeam must use robot home plus CLI overrides, not a generated config.');
 const alaRoot = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())));
-// Like ALA: an explicit --config controls this invocation without changing the home.
-const { loadConfig } = await import(pathToFileURL(path.join(alaRoot, 'src', 'config.mjs')));
-const config = await loadConfig(value('--config'));
-if (value('--config') === path.join(home, '.ala', 'config.json')) throw new Error('Shared robot config used for an invocation.');
+// Like ALA: read the robot home, then apply per-invocation CLI overrides.
+const { loadConfig, applyCodingAgentOverrides } = await import(pathToFileURL(path.join(alaRoot, 'src', 'config.mjs')));
+const config = await loadConfig(path.join(home, '.ala', 'config.json'));
 // Record the conversation through ALA's own session modules, as ALA does.
 const { openSessionState } = await import(pathToFileURL(path.join(alaRoot, 'src', 'session-state.mjs')));
 const { createTranscriptRecorder } = await import(pathToFileURL(path.join(alaRoot, 'src', 'transcript-recorder.mjs')));
@@ -39,6 +38,7 @@ if (!process.env.ALA_SESSIONS) throw new Error('Missing ALA_SESSIONS.');
 const state = await openSessionState({ id, sessionsRoot: process.env.ALA_SESSIONS, resume: args.includes('--resume-session') });
 // Like ALA, a resumed session continues on its own agent when no --ca is given.
 const backend = value('--ca') || (args.includes('--resume-session') && state.record.agent) || config.codingAgent || 'codex';
+Object.assign(config, applyCodingAgentOverrides(config, { agent: backend, model: value('--model'), effort: value('--effort') }));
 const recorder = createTranscriptRecorder(state, value('--turn-id'));
 await recorder.user(first.displayText || first.prompt);
 await state.save({ agent: backend, continuation: state.record.continuation
@@ -87,8 +87,9 @@ if (prompt.includes('FORCED_FAILURE')) {
         } finally { await plugin.dispose(); }
     }
     const output = JSON.stringify({ prompt, skill: args.includes('--skill') ? value('--skill') : null, choice, resumed: args.includes('--resume-session'), config,
-        openCodeModels, folders: args.flatMap((value, index) => value === '--folder' ? [{ source: args[index + 1], alias: args[index + 2] === 'as' ? args[index + 3] : null }] : []),
-        repositories: process.env.ALA_TASK_REPOSITORIES, model: value('--model') || config.models[backend] || null, modelOverride: value('--model') || null, ca: value('--ca') || null,
+        openCodeModels, folders: args.flatMap((value, index) => value === '--folder' ? [{ source: args[index + 1], alias: args[index + 2] === 'as' ? args[index + 3] : null,
+            ...(args[index + 2] === 'at' ? { target: args[index + 3], expose: args[index + 4] === 'expose' } : {}) }] : []),
+        effortOverride: value('--effort') ?? null, repositories: process.env.ALA_TASK_REPOSITORIES, model: value('--model') || config.models[backend] || null, modelOverride: value('--model') || null, ca: value('--ca') || null,
         credential: process.env.PLOINKY_AGENT_SECRET || process.env.SSO_ACCESS_TOKEN || null,
         privatePrompt: !args.some((arg) => arg.includes('PRIVATE_USER_PROMPT')) });
     if (prompt.includes('QUEUED_FOLLOWUP')) {

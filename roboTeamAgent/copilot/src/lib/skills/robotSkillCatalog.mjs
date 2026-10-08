@@ -31,7 +31,7 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, ini
             }
             catalogs.set(sessionId, snapshot.skills);
             if (!execution) return snapshot;
-            const captured = await installLiveSkills({ service: context.skillsets, robot: resolved.robot, policyId: resolved.policyId, cwd: cwd || resolved.cwd, workflowSkills, workflowExecution });
+            const captured = await installLiveSkills({ service: context.skillsets, robot: resolved.robot, policyId: resolved.policyId, sessionId, cwd: cwd || resolved.cwd, workflowSkills, workflowExecution });
             const skills = captured.entries.map((entry) => ({ ...entry, enabled: true, type: 'anthropic',
                 skillDir: entry.sourcePath, skillFile: `${entry.sourcePath}/SKILL.md` }));
             const { release, ...record } = captured;

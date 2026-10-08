@@ -198,17 +198,29 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
             controller.signal.throwIfAborted();
             await sessionStore.bindEngine(sessionId, { home, cwd, backend, robotId: execution.robotId });
-            // Snapshot the resolved defaults and session override for this invocation.
-            // The robot home and its shared config are never changed by /model.
-            const invocationConfig = path.join(scriptContext.directory, 'ala-config.json');
-            await api.saveConfig(invocationConfig, { codingAgent: backend, models: config.models, efforts: config.efforts });
+            // ALA reads defaults from the robot home. Only explicit session or
+            // task overrides are passed as arguments; no derived config is written.
             const args = ['--home', home, '--cwd', cwd, '--session-id', sessionId,
-                '--turn-id', turnId, '--control-stdin', '--permissions', permissionMode, '--config', invocationConfig,
+                '--turn-id', turnId, '--control-stdin', '--permissions', permissionMode,
                 '--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
+            if (config.session.modelOverride || execution.model) {
+                args.push('--model', config.models[backend], '--effort', config.efforts[backend] || 'default');
+            }
             if (config.requestedBackend) args.push('--ca', config.requestedBackend);
             // The workspace is mounted read-only at its canonical path; the writable
             // cwd is the --cwd grant. ALA mounts exactly what it is given.
             if (config.workspaceRoot !== cwd) args.push('--folder', config.workspaceRoot);
+            if (snapshot.skillsDirectory) {
+                for (const mount of snapshot.mounts || []) args.push('--folder', mount.source, 'at', mount.target, 'expose');
+                args.push('--folder', snapshot.skillsDirectory, 'at', path.join(cwd, '.agents', 'skills'), 'expose');
+                const claude = path.join(cwd, '.claude');
+                const claudeStat = await fs.lstat(claude).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+                // Existing .claude -> .agents aliases already see the same overlay.
+                if (!claudeStat?.isSymbolicLink()) args.push('--folder', snapshot.skillsDirectory, 'at', path.join(claude, 'skills'), 'expose');
+                else if (await fs.realpath(claude) !== await fs.realpath(path.join(cwd, '.agents'))) {
+                    throw new Error('Project .claude symlink must point to .agents for session skills.');
+                }
+            }
             args.push('--folder', scriptContext.directory, 'as', 'ploinky-runtime');
             if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) args.push('--folder', env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, 'as', 'roboflow-human-input');
             const failureSkill = skills.find(skill => skill.name === 'report-task-blocked');
@@ -227,7 +239,6 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             }
 
             if (config.resume) args.push('--resume-session');
-            if (execution.model) args.push('--model', execution.model);
             if (execution.mcpServers) args.push('--MCPServers', execution.mcpServers);
 
             const isNode = /\.(?:mjs|cjs|js)$/i.test(api.entryPath);

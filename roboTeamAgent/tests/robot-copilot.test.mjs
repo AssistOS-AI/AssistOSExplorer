@@ -145,7 +145,7 @@ export const createRepositoryClient = () => ({
     const first = await run('First');
     assert.equal(first.output.resumed, false);
     assert.match(first.stderr, /session-ready/);
-    const sessionPath = path.join(workspace, '.roboteam/sessions', `${sessionId}.json`);
+    const sessionPath = path.join(workspace, '.roboteam/sessions', sessionId, 'config.json');
     const firstSession = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
     assert.equal(firstSession.engine.home, await fs.realpath(path.join(dataDir, 'robots', robot.id, 'home')));
     assert.equal(firstSession.cwd, workspace);

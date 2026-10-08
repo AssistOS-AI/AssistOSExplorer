@@ -353,6 +353,7 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .coding-agents label { display: inline-flex; align-items: center; gap: 6px; }
 .coding-agents input[type="radio"] { width: auto; margin: 0; accent-color: var(--accent); }
 .coding-agent-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 16px; }
+.coding-agent-warning { flex-basis: 100%; margin: 0; color: var(--warning); font-size: 0.875rem; }
 .coding-agent-status { flex-basis: 100%; margin: 0; font-size: 0.875rem; }
 .coding-agents-dialog { width: 480px; height: fit-content; }
 .coding-agents-dialog .message { flex-basis: 100%; }

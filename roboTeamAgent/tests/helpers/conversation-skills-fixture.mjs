@@ -75,7 +75,8 @@ export async function createConversationSkillsFixture({ descriptions = {} } = {}
         const record = { version: 2, sessionId, createdAt: now, updatedAt: now, turns: [], cwd: project,
             ...(engine === null ? {} : { engine: { type: 'ala', version: 1, sessionId, home: path.join(dataDir, 'robots', robotId, 'home'),
                 cwd: project, backend: 'codex', robotId, ...engine } }), ...extra };
-        const file = path.join(sessionsDirectory, `${sessionId}.json`);
+        await fs.mkdir(path.join(sessionsDirectory, sessionId), { recursive: true });
+        const file = path.join(sessionsDirectory, sessionId, 'config.json');
         await fs.writeFile(file, JSON.stringify(record));
         return { sessionId, file };
     }

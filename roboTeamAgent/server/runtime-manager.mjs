@@ -17,7 +17,7 @@ import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE
 import { prepareRobotShell } from './robot-shell.mjs';
 import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
-import { robotCodingAgents, codingAgentEnvironment, GUI_CODING_AGENTS } from './coding-agents.mjs';
+import { robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
 
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
@@ -487,20 +487,7 @@ export class RuntimeManager {
             if (requestedAgent !== 'auto' && !selectedAgents.includes(requestedAgent)) {
                 throw new Error(`Coding agent ${requestedAgent} is not enabled for this robot`);
             }
-            let codingAgent = requestedAgent;
-            if (GUI_MODES.has(task.type)) {
-                // Desktop and Browser tasks need a backend ALA can give the MCP
-                // bridge URL to. Resolve an explicit GUI-capable agent so ALA's
-                // own priority never selects Pi for a GUI task.
-                codingAgent = requestedAgent === 'auto'
-                    ? GUI_CODING_AGENTS.find(name => selectedAgents.includes(name)) || ''
-                    : requestedAgent;
-                if (!GUI_CODING_AGENTS.includes(codingAgent)) {
-                    throw new Error(requestedAgent === 'auto'
-                        ? `GUI tasks require a coding agent with MCP support; enable ${GUI_CODING_AGENTS.join(' or ')} for this robot`
-                        : `GUI tasks require a coding agent with MCP support (${GUI_CODING_AGENTS.join(' or ')}); ${requestedAgent} is not supported`);
-                }
-            }
+            const codingAgent = requestedAgent;
             const codingAgentsPromise = this.toolCache.prepareCodingAgents(codingAgent === 'auto' ? selectedAgents : [codingAgent]);
             let mcpAddress = null;
             if (GUI_MODES.has(task.type)) {
@@ -522,7 +509,8 @@ export class RuntimeManager {
             await prepareRobotShell(robotHome);
             await this._saveTask(task);
             if (task.cancelRequested) throw new Error('task was paused');
-            const args = ['--home', robotHome, '--cwd', cwd, '--ca', codingAgent];
+            const args = ['--home', robotHome, '--cwd', cwd];
+            if (codingAgent !== 'auto') args.push('--ca', codingAgent);
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
             if (task.request.workflowRunId) args.push('--workflow-execution');

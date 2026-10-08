@@ -12,7 +12,7 @@ import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRep
 import { robotTerminalDirectory } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
-import { findProjectRecord } from './project-storage.mjs';
+import { findProjectRecord, projectForSessionRecord } from './project-storage.mjs';
 import { matchConversationSkillsPath, readConversationSkills, setConversationSkill } from './conversation-skills-api.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 import { renderAlaTurnLog } from '../copilot/src/lib/webchat/webchatTurnLog.mjs';
@@ -94,7 +94,7 @@ function readWebchatTurnLog(robotStore, workspaceRoot, sessionId, messageId) {
     try { sessionFile = findProjectRecord({ dataDir: robotStore.dataDir, workspaceRoot }, 'session', sessionId); }
     catch { return null; }
     if (!sessionFile) return null;
-    const workingDir = path.dirname(path.dirname(path.dirname(sessionFile)));
+    const workingDir = projectForSessionRecord(sessionFile);
     try {
         const { turn, ala } = new ConversationSessionStore({ workingDir }).turnForMessage(sessionId, messageId);
         if (!ala) return null;

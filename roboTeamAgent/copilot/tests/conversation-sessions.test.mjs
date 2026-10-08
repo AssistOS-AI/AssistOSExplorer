@@ -52,7 +52,7 @@ test('AchillesCLI creates and restores workspace conversation sessions', async (
     assert.equal(restored.messages[0].role, 'user');
     assert.equal(restored.messages[1].text, 'The project is ready.');
     assert.deepEqual(restored.messages[2], { type: 'task', taskId: 'task_1234567890abcdef12345678' });
-    assert.equal(fs.existsSync(path.join(workingDir, '.roboteam', 'sessions', `${created.sessionId}.json`)), true);
+    assert.equal(fs.existsSync(path.join(workingDir, '.roboteam', 'sessions', created.sessionId, 'config.json')), true);
     assert.equal(fs.existsSync(path.join(workingDir, '.data')), false);
     assert.equal(fs.existsSync(path.join(workingDir, '.copilot_history')), false);
 
@@ -418,4 +418,33 @@ test('native continuation stays bound to its robot while project history remains
     await assert.rejects(store.bindEngine(session.sessionId, { home, cwd: workingDir,
         backend: 'codex', robotId: 'second-123456' }), /robot_mismatch/);
     assert.equal(store.loadSession(session.sessionId).engine.robotId, 'first-123456');
+});
+
+test('session storage ignores flat metadata without migrating it', async t => {
+    const workingDir = workspace(t);
+    const store = new ConversationSessionStore({ workingDir });
+    const session = await store.createSession();
+    await store.updateSession(session.sessionId, record => { record.modelOverride = { backend: 'codex', model: 'test-model', effort: null }; });
+    const current = store.sessionPath(session.sessionId);
+    const legacy = path.join(workingDir, '.roboteam/sessions', `${session.sessionId}.json`);
+    const bytes = fs.readFileSync(current, 'utf8');
+    fs.renameSync(current, legacy);
+    fs.rmdirSync(path.dirname(current));
+    const reopened = new ConversationSessionStore({ workingDir });
+    assert.throws(() => reopened.loadSession(session.sessionId), { code: 'ENOENT' });
+    assert.equal(fs.readFileSync(legacy, 'utf8'), bytes);
+    assert.equal(fs.existsSync(current), false);
+    assert.equal(reopened.listSessions().sessions.length, 0);
+});
+
+test('session storage rejects a replaced session directory without following its link', async t => {
+    const workingDir = workspace(t);
+    const store = new ConversationSessionStore({ workingDir });
+    const session = await store.createSession();
+    const directory = path.dirname(store.sessionPath(session.sessionId));
+    const outside = workspace(t);
+    fs.renameSync(directory, path.join(outside, 'saved'));
+    fs.symlinkSync(path.join(outside, 'saved'), directory);
+    assert.throws(() => store.loadSession(session.sessionId), /must not be a symbolic link/);
+    assert.throws(() => store.listSessions(), /must not be a symbolic link/);
 });

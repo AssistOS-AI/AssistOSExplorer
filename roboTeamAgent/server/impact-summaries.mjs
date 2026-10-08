@@ -1,7 +1,7 @@
 import { withLock } from './roboflow/storage.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { findProjectRecord } from './project-storage.mjs';
+import { findProjectRecord, projectForSessionRecord } from './project-storage.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 import { readAlaSession } from '../copilot/src/lib/execution/alaTranscript.mjs';
 import { scanSummaryLines, summaryRanges, validRange } from '../shared/impact-summary.mjs';
@@ -36,7 +36,7 @@ export async function conversationSummaries(robotStore, workspaceRoot, sessionId
     if (!uuid(sessionId)) throw missing();
     const sessionFile = findProjectRecord({ dataDir: robotStore.dataDir, workspaceRoot }, 'session', sessionId);
     if (!sessionFile) throw missing();
-    const cwd = path.dirname(path.dirname(path.dirname(sessionFile)));
+    const cwd = projectForSessionRecord(sessionFile);
     const session = new ConversationSessionStore({ workingDir: cwd }).loadSession(sessionId);
     const alaTurns = new Map((readAlaSession(session.engine?.cwd || session.cwd || cwd, sessionId)?.turns || []).map(turn => [turn.turnId, turn]));
     const summaries = [];

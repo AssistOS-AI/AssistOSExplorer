@@ -3,98 +3,100 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { installLiveSkills } from '../server/live-skill-install.mjs';
-import { installRepositoryLinks, removeRepositoryLinks } from '../../../ploinky/cli/utils/repositoryInstall.mjs';
+import { runProcess } from '../../../AdvancedLanguageAgent/src/coding-agents/process.mjs';
+import { canStartBubblewrap, canMountPrivateProc } from '../../../AdvancedLanguageAgent/src/coding-agents/sandbox.mjs';
 
-test('robot prepares live links through the client, removes deselected links and preserves sources', async t => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-live-install-'));
+async function fixture(t) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-session-skills-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const cwd = path.join(root, 'robot');
-    const source = path.join(root, 'Skills');
-    const skill = path.join(source, 'skills/example');
-    await fs.mkdir(cwd); await fs.mkdir(skill, { recursive: true });
-    await fs.writeFile(path.join(skill, 'SKILL.md'), 'original');
-    const repository = { name: 'Skills', source, origin: 'workspace' };
-    const options = { workspaceRoot: root, resolveRepository: () => repository };
-    let entries = [{ name: 'example', enabled: true, identity: 'Skills/example', sourcePath: skill }];
-    const calls = [];
-    const client = {
-        listRepositories: async () => [repository],
-        install: async input => { calls.push('install'); return installRepositoryLinks(input, options); },
-        remove: async paths => { calls.push('remove'); return removeRepositoryLinks(paths, options); },
-    };
-    const service = { policies: { read: async () => ({ mode: 'live', policyVersion: 1 }) },
-        live: { resolve: async () => ({ entries, diagnostics: [] }) } };
-    const input = { service, robot: { id: 'robot' }, policyId: 'policy', cwd, client };
-    const prepared = await installLiveSkills(input);
-    assert.equal(prepared.live, true);
-    assert.equal(prepared.catalogPath, undefined);
-    await fs.writeFile(path.join(skill, 'SKILL.md'), 'new');
-    assert.equal(await fs.readFile(path.join(cwd, '.agents/skills/example/SKILL.md'), 'utf8'), 'new');
-    await installLiveSkills(input);
-    assert.deepEqual(calls, ['install', 'install']);
-    const replacement = path.join(root, 'WorkspaceSkills', 'skills', 'example');
-    await fs.mkdir(replacement, { recursive: true });
-    await fs.writeFile(path.join(replacement, 'SKILL.md'), 'workspace version');
-    repository.source = path.dirname(path.dirname(replacement));
-    entries[0].sourcePath = replacement;
-    await installLiveSkills(input);
-    assert.equal(await fs.readFile(path.join(cwd, '.agents/skills/example/SKILL.md'), 'utf8'), 'workspace version');
-    entries = [];
-    await installLiveSkills(input);
-    assert.deepEqual(calls, ['install', 'install', 'remove', 'install', 'remove', 'install']);
-    assert.equal(await fs.readFile(path.join(skill, 'SKILL.md'), 'utf8'), 'new');
-    await assert.rejects(fs.lstat(path.join(cwd, '.agents/skills/example')), { code: 'ENOENT' });
+    const cwd = path.join(root, 'project');
+    const local = path.join(cwd, '.agents/skills/local');
+    await fs.mkdir(local, { recursive: true });
+    await fs.writeFile(path.join(local, 'SKILL.md'), 'project skill');
+    const sources = await Promise.all(['first', 'second'].map(async name => {
+        const source = path.join(root, name, 'skills/example');
+        await fs.mkdir(source, { recursive: true });
+        await fs.writeFile(path.join(source, 'SKILL.md'), name);
+        return source;
+    }));
+    const entries = sources.map(sourcePath => [{ name: 'example', sourcePath, enabled: true }]);
+    const client = { listRepositories: async () => [], install: () => { throw new Error('Shared links must not be installed'); } };
+    const input = index => ({ sessionId: randomUUID(), cwd, client, robot: { id: `robot-${index}` }, policyId: `policy-${index}`,
+        service: { workspaceRoot: root, policies: { read: async () => ({ mode: 'live', policyVersion: 1 }) },
+            live: { resolve: async () => ({ entries: entries[index], diagnostics: [] }) } } });
+    return { root, cwd, local, sources, entries, input };
+}
+
+test('concurrent robot sessions publish separate links and preserve the working folder', async t => {
+    const { cwd, local, sources, entries, input } = await fixture(t);
+    const first = input(0), second = input(1);
+    const [a, b] = await Promise.all([installLiveSkills(first), installLiveSkills(second)]);
+    assert.notEqual(a.skillsDirectory, b.skillsDirectory);
+    assert.equal(a.skillsDirectory, path.join(cwd, '.roboteam/sessions', first.sessionId, 'skills'));
+    assert.equal(await fs.readFile(path.join(a.skillsDirectory, 'example/SKILL.md'), 'utf8'), 'first');
+    assert.equal(await fs.readFile(path.join(b.skillsDirectory, 'example/SKILL.md'), 'utf8'), 'second');
+    assert.equal(await fs.readlink(path.join(a.skillsDirectory, 'example')), sources[0]);
+    assert.ok(a.mounts.some(mount => mount.source === local));
+    assert.deepEqual(await fs.readdir(path.join(cwd, '.agents/skills')), ['local']);
+    await assert.rejects(fs.lstat(path.join(cwd, '.agents/.roboteam-links.json')), { code: 'ENOENT' });
+    entries[0] = [];
+    await installLiveSkills(first);
+    assert.deepEqual(await fs.readdir(a.skillsDirectory), ['local']);
+    assert.equal(await fs.readFile(path.join(b.skillsDirectory, 'example/SKILL.md'), 'utf8'), 'second');
+    assert.equal(await fs.readFile(path.join(local, 'SKILL.md'), 'utf8'), 'project skill');
 });
 
-
-test('skills without a Ploinky repository are skipped and reported, not fatal', async t => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-live-orphan-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const cwd = path.join(root, 'robot');
-    const source = path.join(root, 'Skills');
-    const skill = path.join(source, 'skills/installed');
-    const orphan = path.join(root, '.agents/skills/authoring');
-    await fs.mkdir(cwd); await fs.mkdir(skill, { recursive: true }); await fs.mkdir(orphan, { recursive: true });
-    await fs.writeFile(path.join(skill, 'SKILL.md'), 'installed');
-    await fs.writeFile(path.join(orphan, 'SKILL.md'), 'authoring');
-    const repository = { name: 'Skills', source, origin: 'workspace' };
-    const options = { workspaceRoot: root, resolveRepository: () => repository };
-    const client = {
-        listRepositories: async () => [repository],
-        install: async input => installRepositoryLinks(input, options),
-        remove: async paths => removeRepositoryLinks(paths, options),
-    };
-    const service = { policies: { read: async () => ({ mode: 'live', policyVersion: 1 }) },
-        live: { resolve: async () => ({ entries: [
-            { name: 'installed', enabled: true, sourcePath: skill },
-            { name: 'authoring', enabled: true, sourcePath: orphan },
-        ], diagnostics: [] }) } };
-    const prepared = await installLiveSkills({ service, robot: { id: 'robot' }, policyId: 'policy', cwd, client });
-    assert.equal(prepared.live, true);
-    assert.equal(await fs.readFile(path.join(cwd, '.agents/skills/installed/SKILL.md'), 'utf8'), 'installed');
-    await assert.rejects(fs.lstat(path.join(cwd, '.agents/skills/authoring')), { code: 'ENOENT' });
-    assert.ok(prepared.diagnostics.some(entry => /authoring/.test(entry.message)));
+test('robot selection overrides a project name only in its session, including non-repository sources', async t => {
+    const { cwd, input } = await fixture(t);
+    await fs.mkdir(path.join(cwd, '.agents/skills/example'));
+    await fs.writeFile(path.join(cwd, '.agents/skills/example/SKILL.md'), 'project example');
+    const prepared = await installLiveSkills(input(0));
+    assert.equal(await fs.readFile(path.join(prepared.skillsDirectory, 'example/SKILL.md'), 'utf8'), 'first');
+    assert.equal(await fs.readFile(path.join(cwd, '.agents/skills/example/SKILL.md'), 'utf8'), 'project example');
 });
 
-
-test('bundled skills use the repository workspace path rather than the running code alias', async t => {
+test('bundled skills resolve to the workspace checkout', async t => {
     const { copilotSkillsRoot } = await import('../server/copilot-skillset.mjs');
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-builtin-install-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const cwd = path.join(root, 'robot');
+    const { root, input, entries } = await fixture(t);
     const source = path.join(root, 'AchillesCLI');
     const skill = path.join(source, 'roboTeamAgent/copilot/src/skills/bash');
-    await fs.mkdir(cwd); await fs.mkdir(skill, { recursive: true });
+    await fs.mkdir(skill, { recursive: true });
     await fs.writeFile(path.join(skill, 'SKILL.md'), 'current bundled skill');
-    const repository = { name: 'AchillesCLI', source, origin: 'workspace' };
-    const options = { workspaceRoot: root, resolveRepository: () => repository };
-    const client = { listRepositories: async () => [repository],
-        install: async input => installRepositoryLinks(input, options),
-        remove: async paths => removeRepositoryLinks(paths, options) };
-    const service = { policies: { read: async () => ({ mode: 'live', policyVersion: 1 }) },
-        live: { resolve: async () => ({ entries: [{ builtin: true, name: 'bash', enabled: true,
-            sourcePath: path.join(copilotSkillsRoot, 'bash') }], diagnostics: [] }) } };
-    await installLiveSkills({ service, robot: { id: 'default' }, policyId: 'policy', cwd, client });
-    assert.equal(await fs.readFile(path.join(cwd, '.agents/skills/bash/SKILL.md'), 'utf8'), 'current bundled skill');
+    entries[0] = [{ builtin: true, name: 'bash', enabled: true, sourcePath: path.join(copilotSkillsRoot, 'bash') }];
+    const request = input(0);
+    request.client.listRepositories = async () => [{ name: 'AchillesCLI', source, origin: 'workspace' }];
+    const prepared = await installLiveSkills(request);
+    assert.equal(await fs.readFile(path.join(prepared.skillsDirectory, 'bash/SKILL.md'), 'utf8'), 'current bundled skill');
+});
+
+test('two Bubblewrap processes see their own skills while private configuration stays hidden', {
+    skip: canStartBubblewrap() && canMountPrivateProc() ? false : 'Bubblewrap unavailable',
+}, async t => {
+    const { root, cwd, input } = await fixture(t);
+    const snapshots = await Promise.all([installLiveSkills(input(0)), installLiveSkills(input(1))]);
+    await fs.writeFile(path.join(cwd, '.roboteam', 'secret.json'), 'private');
+    const results = await Promise.all(snapshots.map(async snapshot => {
+        const folders = [{ source: root }, ...snapshot.mounts,
+            { source: snapshot.skillsDirectory, target: path.join(cwd, '.agents/skills'), expose: true },
+            { source: snapshot.skillsDirectory, target: path.join(cwd, '.claude/skills'), expose: true }];
+        return runProcess({ binary: process.execPath, cwd, args: ['-e', `
+            const fs = require('node:fs');
+            const read = name => fs.readFileSync('.agents/skills/' + name + '/SKILL.md', 'utf8');
+            let writable = false;
+            try { fs.writeFileSync('.agents/skills/local/SKILL.md', 'changed'); writable = true; } catch {}
+            process.stdout.write(JSON.stringify({ example: read('example'), local: read('local'), writable,
+                claude: fs.readFileSync('.claude/skills/example/SKILL.md', 'utf8'),
+                privateFiles: fs.readdirSync('.roboteam') }));
+        `], sandbox: { backend: 'codex', hostWorkspace: cwd, workspaceTarget: cwd, folders,
+            ignoredPaths: [path.join(cwd, '.roboteam')] } });
+    }));
+    for (const [index, result] of results.entries()) {
+        assert.equal(result.code, 0, result.stderr);
+        assert.deepEqual(JSON.parse(result.stdout), { example: index ? 'second' : 'first',
+            local: 'project skill', claude: index ? 'second' : 'first', writable: false, privateFiles: [] });
+    }
+    assert.deepEqual(await fs.readdir(path.join(cwd, '.agents/skills')), ['local']);
+    assert.equal(await fs.readFile(path.join(cwd, '.roboteam/secret.json'), 'utf8'), 'private');
 });

@@ -231,6 +231,7 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
                     <div id="coding-model-options" class="coding-model-options" role="listbox" tabindex="0" aria-labelledby="coding-model-label"></div>
                 </div>
             </section>
+            <p class="coding-agent-warning" role="status" hidden>Pi is not compatible with Browser and Desktop executions.</p>
             <p class="coding-agent-status"></p>
             <p class="message" role="status" aria-live="polite"></p>
             <button class="button primary coding-agent-save" type="submit">Save</button>
@@ -257,6 +258,7 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
     };
     const close = () => { lifetime.abort(); request?.abort(); dialog.close(); dialog.remove(); };
     function update() {
+        dialog.querySelector('.coding-agent-warning').hidden = agent() !== 'pi';
         const { model, effort } = selection();
         trigger.textContent = `${isDefault(model) ? 'Default model' : model} · ${effort || 'Default effort'}`;
         trigger.disabled = busy || saving || !ready || !agent();

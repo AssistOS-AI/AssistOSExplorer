@@ -99,16 +99,19 @@ export function findProjectRecord(options, kind, id) {
     if (!TASK_ID.test(id)) throw new Error('Invalid project record id');
     if (!['session', 'task'].includes(kind)) throw new Error('Invalid project record kind');
     const matches = projectDirectories(options).flatMap(cwd => {
-        let children = [`sessions/${id}.json`];
+        let children = [`sessions/${id}/config.json`];
         if (kind === 'task') {
             const root = assertSafeAchillesPrivatePath(cwd, 'tasks', { ...projectOptions(options), type: 'directory' });
             const tasks = fs.existsSync(root) ? fs.readdirSync(root).filter(name => TASK_ID.test(name)) : [];
             children = tasks.map(taskId => `tasks/${taskId}/executions/${id}.json`);
         }
-        const found = children.map(child => assertSafeAchillesPrivatePath(cwd, child,
+        return children.map(child => assertSafeAchillesPrivatePath(cwd, child,
             { ...projectOptions(options), type: 'file' })).filter(file => fs.existsSync(file));
-        return found;
     });
     if (matches.length > 1) throw new Error('Project record exists in multiple folders; resolve the duplicate before continuing');
     return matches[0] || null;
+}
+
+export function projectForSessionRecord(file) {
+    return path.dirname(path.dirname(path.dirname(path.dirname(file))));
 }

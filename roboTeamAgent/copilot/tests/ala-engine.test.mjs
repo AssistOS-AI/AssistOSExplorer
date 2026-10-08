@@ -39,7 +39,7 @@ function deferred() {
     return { promise, resolve };
 }
 
-async function harness(t, interactions = {}, { workspaceAtRoot = false, execution = {}, webchatLogsBase = '' } = {}) {
+async function harness(t, interactions = {}, { workspaceAtRoot = false, execution = {}, webchatLogsBase = '', skillSnapshot = {} } = {}) {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-engine-'));
     const oldRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = workspaceAtRoot ? workingDir : path.dirname(workingDir);
@@ -56,10 +56,11 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false, executio
     const configFile = path.join(home, '.ala', 'config.json');
     const setModels = (models) => alaConfig.saveConfig(configFile, { codingAgent: 'codex', models, efforts: {} });
     await setModels({ codex: 'native-first' });
-    const catalog = { async refresh() { return { skills: records.map((record) => ({ ...record })),
+    const catalog = { async refresh() { return { ...skillSnapshot, skills: records.map((record) => ({ ...record })),
         taskRepositories: records.filter((record) => record.enabled).map((record) => record.skillDir) }; } };
     const installation = {
-        entryPath: childEntry, loadConfig: alaConfig.loadConfig, saveConfig: alaConfig.saveConfig,
+        entryPath: childEntry, loadConfig: alaConfig.loadConfig,
+        saveConfig() { throw new Error('Execution must not write an ALA config'); },
         async discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; },
     };
     const engine = createAlaEngine({ workingDir, sessionStore: store, skillCatalog: catalog, installation,
@@ -230,6 +231,8 @@ test('model and effort persist only in session metadata and survive continuation
     const reloaded = new ConversationSessionStore({ workingDir: h.workingDir });
     assert.deepEqual(reloaded.loadSession(h.sessionId).modelOverride, metadata.modelOverride);
     const output = JSON.parse(first.outputText);
+    assert.equal(output.modelOverride, 'native-new');
+    assert.equal(output.effortOverride, 'high');
     assert.equal(output.config.models.codex, 'native-new');
     assert.equal(output.config.efforts.codex, 'high');
     const next = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Second' })).outputText);
@@ -240,6 +243,8 @@ test('model and effort persist only in session metadata and survive continuation
     assert.equal(reset.config.models.codex, 'native-first');
     assert.equal(h.store.loadSession(h.sessionId).modelOverride, undefined);
     assert.equal(reset.config.efforts.codex, undefined);
+    assert.equal(reset.modelOverride, null);
+    assert.equal(reset.effortOverride, null);
 });
 
 
@@ -321,6 +326,8 @@ test('concurrent sessions keep independent model and effort choices while defaul
         h.engine.executeTurn({ sessionId, prompt: 'Inspect' }).then(result => JSON.parse(result.outputText))));
     assert.deepEqual(results.map(result => [result.config.models.codex, result.config.efforts.codex]),
         [['robot-model', undefined], ['other-model', 'high'], ['robot-model', 'low']]);
+    assert.deepEqual(results.map(result => [result.modelOverride, result.effortOverride]),
+        [['robot-model', 'default'], ['other-model', 'high'], [null, null]]);
     assert.deepEqual(await api.loadConfig(h.configFile), { codingAgent: 'codex', models: { codex: 'robot-model' }, efforts: { codex: 'low' } });
     await h.setModels({ codex: 'new-default' });
     assert.equal((await h.engine.getModel({ sessionId: inherited.sessionId })).model, 'new-default');
@@ -355,4 +362,36 @@ test('ordinary chat cannot use forced failure even if a stale catalog contains t
     assert.equal(output.folders.some(folder => folder.alias === 'roboteam-task-failure'), false);
     assert.equal(output.folders.some(folder => folder.alias === 'report-task-blocked'), false);
     assert.equal(output.prompt.includes('/workspace/report-task-blocked'), false);
+});
+
+test('first and resumed turns export only session skills while preserving the private mask and Claude alias', async t => {
+    const snapshot = {};
+    const h = await harness(t, {}, { skillSnapshot: snapshot });
+    snapshot.skillsDirectory = path.join(h.workingDir, '.roboteam/sessions', h.sessionId, 'skills');
+    await fs.mkdir(snapshot.skillsDirectory);
+    await fs.mkdir(path.join(h.workingDir, '.agents/skills'), { recursive: true });
+    await fs.symlink('.agents', path.join(h.workingDir, '.claude'));
+    const target = path.join(h.workingDir, '.agents/skills');
+    for (const resumed of [false, true]) {
+        const response = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'SESSION_SKILLS' })).outputText);
+        assert.equal(response.resumed, resumed);
+        assert.ok(response.folders.some(folder => folder.source === snapshot.skillsDirectory && folder.target === target && folder.expose));
+        assert.equal(response.folders.some(folder => folder.target === path.join(h.workingDir, '.claude/skills')), false);
+    }
+    await assert.rejects(fs.stat(path.join(path.dirname(snapshot.skillsDirectory), 'ala-config.json')), { code: 'ENOENT' });
+});
+
+test('workflow execution reads current model and effort from robot home without argument overrides', async t => {
+    const h = await harness(t, {}, { execution: { workflowExecution: true } });
+    const api = await loadAlaConfigModule();
+    for (const [model, effort] of [['workflow-first', 'low'], ['workflow-next', 'high']]) {
+        await api.saveConfig(h.configFile, { codingAgent: 'codex', models: { codex: model }, efforts: { codex: effort } });
+        const output = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Run workflow phase' })).outputText);
+        assert.equal(output.config.models.codex, model);
+        assert.equal(output.config.efforts.codex, effort);
+        assert.equal(output.modelOverride, null);
+        assert.equal(output.effortOverride, null);
+        assert.equal(output.resumed, model === 'workflow-next');
+    }
+    await assert.rejects(fs.stat(path.join(path.dirname(h.store.sessionPath(h.sessionId)), 'ala-config.json')), { code: 'ENOENT' });
 });

@@ -328,9 +328,9 @@ export class LiveSkillCatalog {
             for (const cwd of projectDirectories({ dataDir: this.service.robotStore.dataDir, workspaceRoot: this.service.workspaceRoot })) {
                 const sessions = path.join(cwd, '.roboteam', 'sessions');
                 for (const file of await fs.readdir(sessions).catch((error) => { if (error.code === 'ENOENT') return []; throw error; })) {
-                    if (!/^[a-f0-9-]{36}\.json$/.test(file)) continue;
+                    if (!/^[a-f0-9-]{36}$/.test(file)) continue;
                     let session;
-                    try { session = JSON.parse(await fs.readFile(path.join(sessions, file), 'utf8')); } catch { return; }
+                    try { session = JSON.parse(await fs.readFile(path.join(sessions, file, 'config.json'), 'utf8')); } catch { return; }
                     for (const value of [session.skillExecution, session.previousSkillExecution, session.skillSelection, session.legacySkillSelection]) if (value?.catalogId) protectedIds.add(value.catalogId);
                 }
             }

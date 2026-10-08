@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { sessionConfigPath, sessionDirectory } from './sessionPaths.mjs';
 import { withoutSummaryMarkers } from '../../../../shared/impact-summary.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,7 +18,7 @@ import { withWorkspaceMutation } from './workspaceStateLock.mjs';
 // A RoboTeam conversation has two files with the same session id:
 //  - .roboteam/.ala/sessions/<id>.jsonl, written and read only by ALA, holds
 //    the user messages, intermediate coding-agent output and final answers;
-//  - .roboteam/sessions/<id>.json, owned here, holds everything else: turn
+//  - .roboteam/sessions/<id>/config.json, owned here, holds everything else: turn
 //    identities, attachments, references, slash-command turns, task cards,
 //    skill policy and the engine binding.
 // loadSession() combines them into the message list the UI renders.
@@ -27,11 +28,6 @@ const TASK_ID_RE = /^task_[0-9a-f]{24}$/;
 const METADATA_VERSION = 2;
 const STATUSES = ['pending', 'completed', 'failed', 'interrupted'];
 const METADATA_FIELDS = ['skillPolicyRef', 'legacySkillSelection', 'skillSelection', 'skillExecution', 'previousSkillExecution', 'modelOverride'];
-
-function isInside(root, candidate) {
-    const relative = path.relative(root, candidate);
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
 
 function assertRegularFileOrMissing(filePath) {
     try {
@@ -245,12 +241,7 @@ export class ConversationSessionStore {
     sessionPath(sessionId) {
         const normalized = assertSessionId(sessionId);
         this.#validateDirectory();
-        const filePath = path.join(this.sessionsDirectory, `${normalized}.json`);
-        if (!isInside(this.sessionsDirectory, filePath)) throw new Error('invalid_session_id');
-        return assertSafeAchillesPrivatePath(this.workingDir, `sessions/${normalized}.json`, {
-            label: 'RoboTeam session file',
-            type: 'file',
-        });
+        return sessionConfigPath(this.workingDir, normalized);
     }
 
     #readMetadata(sessionId) {
@@ -262,6 +253,7 @@ export class ConversationSessionStore {
 
     #writeMetadata(metadata) {
         const normalized = normalizeMetadata(metadata, metadata.sessionId);
+        sessionDirectory(this.workingDir, normalized.sessionId);
         atomicWriteJson(this.sessionPath(normalized.sessionId), normalized);
         return normalized;
     }
@@ -357,8 +349,7 @@ export class ConversationSessionStore {
             entries = [];
         }
         for (const entry of entries) {
-            if (!entry.name.endsWith('.json')) continue;
-            const sessionId = entry.name.slice(0, -5);
+            const sessionId = entry.name;
             if (!SESSION_ID_RE.test(sessionId)) continue;
             try {
                 if (this.#isWorkflowSession(sessionId)) continue;

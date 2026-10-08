@@ -95,10 +95,10 @@ test('malformed ids are rejected before any lookup and well-formed unknown ids a
 test('a conversation present in two registered folders is a 409, not a server failure', async t => {
     const f = await setup(t);
     const second = path.join(f.workspaceRoot, 'second');
-    await fs.mkdir(path.join(second, '.roboteam', 'sessions'), { recursive: true });
+    await fs.mkdir(path.join(second, '.roboteam', 'sessions', f.sessionId), { recursive: true });
     const { registerProject } = await import('../server/project-storage.mjs');
     registerProject({ dataDir: f.dataDir, workspaceRoot: f.workspaceRoot }, second);
-    await fs.copyFile(path.join(f.project, '.roboteam', 'sessions', `${f.sessionId}.json`), path.join(second, '.roboteam', 'sessions', `${f.sessionId}.json`));
+    await fs.copyFile(path.join(f.project, '.roboteam', 'sessions', f.sessionId, 'config.json'), path.join(second, '.roboteam', 'sessions', f.sessionId, 'config.json'));
     await assert.rejects(f.read(), { statusCode: 409, message: /multiple folders/ });
     await assert.rejects(f.set({ identity: SKILL_IDENTITY, enabled: true, policyVersion: 1 }), { statusCode: 409, message: /multiple folders/ });
 });
@@ -174,7 +174,7 @@ test('the next execution installs exactly the skills the page enabled', async t 
     const robot = await f.robotStore.get(DEFAULT_ROBOT_ID);
     const cwd = path.join(f.project, 'run');
     await fs.mkdir(cwd);
-    const links = path.join(cwd, '.agents', 'skills');
+    const links = path.join(cwd, '.roboteam', 'sessions', f.sessionId, 'skills');
     // A fake repository client that creates the symbolic links it is asked to publish.
     const repositories = [{ name: 'DocumentationSkills', source: path.join(f.workspaceRoot, 'DocumentationSkills'), origin: 'workspace' },
         { name: 'ProjectSkills', source: f.repository, origin: 'workspace' },
@@ -191,11 +191,11 @@ test('the next execution installs exactly the skills the page enabled', async t 
     const installed = async () => (await fs.readdir(links).catch(() => [])).sort();
     const { policyVersion } = await f.read();
     await f.set({ identity: SKILL_IDENTITY, enabled: true, policyVersion });
-    const on = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, cwd, client });
+    const on = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, sessionId: f.sessionId, cwd, client });
     assert.ok(on.entries.some(entry => entry.identity === SKILL_IDENTITY));
     assert.ok((await installed()).includes('probe-skill'));
     assert.equal((await installed()).includes('report-task-blocked'), false);
-    const workflow = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, cwd, client, workflowExecution: true });
+    const workflow = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, sessionId: f.sessionId, cwd, client, workflowExecution: true });
     const failure = workflow.entries.find(entry => entry.name === 'report-task-blocked');
     assert.ok(failure?.required && failure.readOnly && failure.executionOnly);
     await fs.access(path.join(failure.sourcePath, 'scripts/run.mjs'));
@@ -203,14 +203,15 @@ test('the next execution installs exactly the skills the page enabled', async t 
     assert.equal((await f.read()).skills.some(entry => entry.identity === 'required/report-task-blocked'), false);
     assert.equal((await installed()).includes('second-skill'), false);
     // Reconcile an owned link left by the earlier globally installed version.
-    const obsolete = path.join(links, 'report-task-blocked');
+    const obsolete = path.join(cwd, '.agents/skills/report-task-blocked');
+    await fs.mkdir(path.dirname(obsolete), { recursive: true });
     await fs.symlink(failure.sourcePath, obsolete);
     const stateFile = path.join(cwd, '.agents', '.roboteam-links.json');
-    const installedRecords = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+    const installedRecords = [];
     installedRecords.push({ repoName: 'AchillesCLI', destination: obsolete, sourcePath: 'roboTeamAgent/copilot/src/skills/report-task-blocked', linkTarget: failure.sourcePath });
     await fs.writeFile(stateFile, JSON.stringify(installedRecords));
     await f.set({ identity: SKILL_IDENTITY, enabled: false, policyVersion: policyVersion + 1 });
-    const off = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, cwd, client });
+    const off = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, sessionId: f.sessionId, cwd, client });
     assert.equal(off.entries.some(entry => entry.identity === SKILL_IDENTITY), false);
     assert.equal((await installed()).includes('probe-skill'), false);
     assert.equal((await installed()).includes('report-task-blocked'), false);

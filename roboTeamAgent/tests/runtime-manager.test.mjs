@@ -257,7 +257,7 @@ test('places the selected OpenCode and Pi caches on the ALA path', async (t) => 
     assert.ok(invocations[1].options.env.PATH.startsWith('/cache/pi/bin:'));
 });
 
-test('runs OpenCode GUI tasks with the MCP bridge and rejects Pi for GUI work', async (t) => {
+test('preserves explicit GUI agents and leaves automatic selection to the robot home', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-gui-agent-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, 'data');
@@ -300,17 +300,21 @@ test('runs OpenCode GUI tasks with the MCP bridge and rejects Pi for GUI work', 
     assert.equal(invocations[0].env.OPENCODE_BIN, '/cache/opencode/bin/opencode');
 
     const piRobot = { id: 'gui-pi-a1b2c3', name: 'Pi GUI', codingAgents: ['pi'] };
-    const rejected = manager._newTask(piRobot, 'browser', { cwd: workspace, task: 'Browse.', ca: 'pi' });
-    await manager._runTask(piRobot, rejected);
-    assert.equal(rejected.state, 'failed');
-    assert.match(rejected.error, /GUI tasks require a coding agent with MCP support/u);
-    assert.equal(invocations.length, 1);
+    const inherited = manager._newTask(piRobot, 'browser', { cwd: workspace, task: 'Browse.', ca: 'auto' });
+    await manager._runTask(piRobot, inherited);
+    assert.equal(inherited.state, 'completed', inherited.error);
+    assert.equal(invocations.length, 2);
+    assert.equal(invocations[1].args.includes('--ca'), false);
+    assert.equal(invocations[1].env.PI_BIN, '/cache/pi/bin/pi');
+    assert.equal(invocations[1].args[invocations[1].args.indexOf('--MCPServers') + 1], `browser=http://127.0.0.1:${port}/mcp`);
 
     const autoRobot = { id: 'gui-auto-a1b2c3', name: 'Auto GUI', codingAgents: ['codex', 'opencode'] };
     const auto = manager._newTask(autoRobot, 'desktop', { cwd: workspace, task: 'Auto.', ca: 'auto' });
     await manager._runTask(autoRobot, auto);
     assert.equal(auto.state, 'completed', auto.error);
-    assert.equal(invocations[1].args[invocations[1].args.indexOf('--ca') + 1], 'codex');
+    assert.equal(invocations[2].args.includes('--ca'), false);
+    assert.equal(invocations[2].args.includes('--model'), false);
+    assert.equal(invocations[2].args.includes('--effort'), false);
 });
 
 test('extracts visible coding-agent messages from the ALA event stream', () => {
@@ -346,7 +350,7 @@ test('automatic MCP tasks expose only the robot selection and cannot prepare a d
     assert.equal(task.state, 'completed', task.error);
     assert.equal(invocations.length, 1);
     const { args, env } = invocations[0];
-    assert.equal(args[args.indexOf('--ca') + 1], 'auto');
+    assert.equal(args.includes('--ca'), false);
     assert.equal(env.OPENCODE_BIN, '/cache/opencode/bin/opencode');
     assert.equal(env.CODEX_BIN, undefined);
     assert.equal(env.PI_BIN, undefined);
