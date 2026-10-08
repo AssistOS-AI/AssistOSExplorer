@@ -56,9 +56,19 @@ export async function waitForAgentRuntimeAvailability(config = {}) {
     const readRuntime = config.readRuntime || readMarketplaceAgent;
     const wait = config.wait || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
     let lastError = null;
+    // A runtime entry the caller just read may serve as the first read only; later iterations re-read.
+    let initialRuntime = config.initialRuntime || null;
 
     while (!config.cancelled?.()) {
-        const runtime = config.agentRef ? await readRuntime(config.agentRef) : null;
+        let runtime = null;
+        if (config.agentRef) {
+            if (initialRuntime) {
+                runtime = initialRuntime;
+                initialRuntime = null;
+            } else {
+                runtime = await readRuntime(config.agentRef);
+            }
+        }
         const runtimeStatus = String(runtime?.status || '').toLowerCase();
         if (runtime?.active === false) {
             const modeHint = config.enableMode ? ` using ${config.enableMode} mode` : '';

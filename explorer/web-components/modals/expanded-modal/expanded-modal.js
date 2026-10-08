@@ -364,10 +364,10 @@ export class ExpandedModal {
         this.setState("Loading…");
         const agentRef = this.attr("agent-ref");
         if (agentRef) {
-            await this.ensureAgentRuntime(agentRef, signal);
+            const runtime = await this.ensureAgentRuntime(agentRef, signal);
             if (runId !== this.runId || !this.element.isConnected) return;
             if (AGENT_REF_PATTERN.test(agentRef)) {
-                const ready = await this.waitForAgent(agentRef, runId, signal);
+                const ready = await this.waitForAgent(agentRef, runId, signal, runtime);
                 if (!ready || runId !== this.runId || !this.element.isConnected) return;
             }
         }
@@ -388,7 +388,7 @@ export class ExpandedModal {
         });
     }
 
-    async waitForAgent(agentRef, runId, signal) {
+    async waitForAgent(agentRef, runId, signal, initialRuntime = null) {
         const fetchImpl = (url, options) => fetch(url, { ...options, signal });
         const label = this.attr("title") || "Panel";
         this.setState("Loading…");
@@ -397,15 +397,18 @@ export class ExpandedModal {
                 agentRef,
                 label,
                 cancelled: () => signal.aborted || runId !== this.runId,
+                initialRuntime: initialRuntime?.running === true ? initialRuntime : null,
                 readRuntime: ref => readMarketplaceAgent(ref, { signal }),
                 wait: ms => this.waitForNextProbe(ms),
                 operation: async () => {
                     signal.throwIfAborted();
                     await probeAgentRuntimeRouteStability(agentRef, { fetchImpl, wait: ms => this.waitForNextProbe(ms) });
                     signal.throwIfAborted();
-                    await probeAgentRuntimeTarget(new URL(this.frameUrl(), window.location.origin), fetchImpl);
+                    await Promise.all([
+                        probeAgentRuntimeTarget(new URL(this.frameUrl(), window.location.origin), fetchImpl),
+                        probeAgentRuntimeMcp(agentRef, assistosSDK)
+                    ]);
                     signal.throwIfAborted();
-                    await probeAgentRuntimeMcp(agentRef, assistosSDK);
                     return null;
                 }
             });
@@ -515,9 +518,10 @@ export class ExpandedModal {
 
     async ensureAgentRuntime(agentRef, signal) {
         try {
-            await ensureMarketplaceAgentRunning(agentRef, { signal });
+            return await ensureMarketplaceAgentRunning(agentRef, { signal });
         } catch (error) {
             if (!signal.aborted) console.error(`[expanded-modal] Failed to start ${agentRef}:`, error);
+            return null;
         }
     }
 

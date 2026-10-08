@@ -151,3 +151,94 @@ test('a late component registration cannot mount after close', async () => {
     registered(); await loading;
     assert.equal(mounts, 0);
 });
+
+const loaderModule = await import('../../shared/ui/agent-runtime-loader/agent-runtime-loader.js');
+
+function waitHarness({ marketplaceEntry, runtimeReads, order, target, mcp }) {
+    const p = presenter({
+        URL,
+        window: { innerWidth: 1200, innerHeight: 800, location: { origin: 'http://localhost:8080' } },
+        assistosSDK: {},
+        probeAgentRuntimeRouteStability: async () => { order.push('stability'); },
+        probeAgentRuntimeTarget: target,
+        probeAgentRuntimeMcp: mcp,
+        readMarketplaceAgent: async () => { runtimeReads.count += 1; return { active: true, running: true }; },
+        ensureMarketplaceAgentRunning: async () => marketplaceEntry,
+        waitForAgentRuntimeAvailability: loaderModule.waitForAgentRuntimeAvailability
+    });
+    p.attr = () => 'Panel';
+    p.setState = () => {};
+    p.frameUrl = () => '/webmeet/';
+    p.waitForNextProbe = async () => {};
+    return p;
+}
+
+test('a running marketplace entry is the first runtime read, so open performs one marketplace read', async () => {
+    const runtimeReads = { count: 0 };
+    const order = [];
+    const p = waitHarness({
+        marketplaceEntry: { ref: 'AchillesIDE/webmeetAgent', running: true },
+        runtimeReads, order,
+        target: async () => { order.push('target'); },
+        mcp: async () => { order.push('mcp'); }
+    });
+    const controller = new AbortController();
+    const entry = await p.ensureAgentRuntime('AchillesIDE/webmeetAgent', controller.signal);
+    assert.equal(entry.running, true);
+    assert.equal(await p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, controller.signal, entry), true);
+    assert.equal(runtimeReads.count, 0);
+    assert.equal(order[0], 'stability');
+});
+
+test('a starting marketplace entry still triggers a runtime re-read', async () => {
+    const runtimeReads = { count: 0 };
+    const p = waitHarness({
+        marketplaceEntry: { ref: 'AchillesIDE/webmeetAgent', running: false },
+        runtimeReads, order: [],
+        target: async () => {}, mcp: async () => {}
+    });
+    const controller = new AbortController();
+    const entry = await p.ensureAgentRuntime('AchillesIDE/webmeetAgent', controller.signal);
+    assert.equal(await p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, controller.signal, entry), true);
+    assert.equal(runtimeReads.count, 1);
+});
+
+test('target and MCP probes overlap after the stability probe', async () => {
+    const order = [];
+    let releaseTarget;
+    const p = waitHarness({
+        marketplaceEntry: null, runtimeReads: { count: 0 }, order,
+        target: () => new Promise(resolve => { order.push('target-start'); releaseTarget = resolve; }),
+        mcp: async () => { order.push('mcp-start'); }
+    });
+    const controller = new AbortController();
+    const waiting = p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, controller.signal, { running: true });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(order, ['stability', 'target-start', 'mcp-start'], 'MCP starts while the target probe is still pending');
+    releaseTarget();
+    assert.equal(await waiting, true);
+});
+
+test('a failing concurrent probe maps to the unavailable state and an abort suppresses it', async () => {
+    const states = [];
+    const p = waitHarness({
+        marketplaceEntry: null, runtimeReads: { count: 0 }, order: [],
+        target: async () => { throw Object.assign(new Error('Target rejected'), { status: 403 }); },
+        mcp: async () => new Promise(() => {})
+    });
+    p.setState = message => states.push(message);
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+        const controller = new AbortController();
+        assert.equal(await p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, controller.signal, { running: true }), false);
+        assert.deepEqual(states.slice(-1), ['Target rejected']);
+        states.length = 0;
+        const aborted = new AbortController();
+        aborted.abort();
+        await p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, aborted.signal, { running: true });
+        assert.equal(states.includes('Target rejected'), false);
+    } finally {
+        console.error = originalError;
+    }
+});

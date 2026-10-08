@@ -140,3 +140,35 @@ test('disabled presenter shows Marketplace guidance and allows an explicit retry
     presenter.retry();
     assert.equal(runs, 1);
 });
+
+test('an initial running runtime entry serves as the only first read and later iterations re-read', async () => {
+    let reads = 0;
+    let attempts = 0;
+    const result = await waitForAgentRuntimeAvailability({
+        agentRef: 'AchillesIDE/webmeetAgent',
+        initialRuntime: { active: true, running: true, status: 'running' },
+        readRuntime: async () => { reads += 1; return { active: true, running: true, status: 'running' }; },
+        wait: async () => {},
+        operation: async () => {
+            attempts += 1;
+            if (attempts === 1) throw Object.assign(new Error('still starting'), { status: 503 });
+            return 'ready';
+        }
+    });
+    assert.equal(result, 'ready');
+    assert.equal(attempts, 2);
+    assert.equal(reads, 1, 'only the second iteration reads the runtime');
+});
+
+test('an initial runtime entry that is not running is still followed by a re-read', async () => {
+    let reads = 0;
+    const result = await waitForAgentRuntimeAvailability({
+        agentRef: 'AchillesIDE/webmeetAgent',
+        initialRuntime: { active: true, running: false, status: 'starting' },
+        readRuntime: async () => { reads += 1; return { active: true, running: true, status: 'running' }; },
+        wait: async () => {},
+        operation: async () => 'ready'
+    });
+    assert.equal(result, 'ready');
+    assert.equal(reads, 1);
+});
