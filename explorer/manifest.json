@@ -64,6 +64,10 @@
                 {
                     "name": "AXIFACE_REPO_PATH",
                     "required": false
+                },
+                {
+                    "name": "PLOINKY_TOOL_WORKERS",
+                    "value": "0"
                 }
             ],
             "preinstall": "scripts/hooks/preinstall.sh"

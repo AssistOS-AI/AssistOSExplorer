@@ -317,6 +317,12 @@ async function readDescriptor() {
     return JSON.parse(await fs.readFile(new URL('../../mcp-config.json', import.meta.url), 'utf8'));
 }
 
+test('the shipped manifest keeps the explorer warm pool off until identity checks stop slowing bursts', async () => {
+    const manifest = JSON.parse(await fs.readFile(new URL('../../manifest.json', import.meta.url), 'utf8'));
+    const entries = manifest.profiles.default.env.filter(entry => entry?.name === 'PLOINKY_TOOL_WORKERS');
+    assert.deepEqual(entries, [{ name: 'PLOINKY_TOOL_WORKERS', value: '0' }]);
+});
+
 test('E4: exactly the approved tools opt in to the explorer warm pool and the rest keep their spawn contract', async () => {
     const descriptor = await readDescriptor();
     assert.deepEqual(descriptor.toolWorkers, {
