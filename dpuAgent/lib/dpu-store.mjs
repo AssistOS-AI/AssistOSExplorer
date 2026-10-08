@@ -680,7 +680,9 @@ async function serializeSecret(state, permissionsManifest, secret, actor, option
   const aclVisible = canWrite;
   let value = null;
   if (includeValue && canRead) {
-    const secretsMap = await readSecretsMap();
+    const secretsMap = typeof options.getSecretsMap === 'function'
+      ? await options.getSecretsMap()
+      : await readSecretsMap();
     value = Object.prototype.hasOwnProperty.call(secretsMap, secret.key)
       ? secretsMap[secret.key]
       : null;
@@ -1028,12 +1030,18 @@ export async function listSecrets(authInfo = null) {
       metadata: {}
     }, async () => {
       const secrets = [];
+      // Request-local: the map is read and decrypted at most once per list call.
+      let secretsMapPromise = null;
+      const getSecretsMap = () => {
+        secretsMapPromise ??= readSecretsMap();
+        return secretsMapPromise;
+      };
       for (const secret of Object.values(state.secrets)) {
         const role = getSecretRole(secret, actor, permissionsManifest);
         if (!role || !secretRoleAllows(role, 'access')) {
           continue;
         }
-        secrets.push(await serializeSecret(state, permissionsManifest, secret, actor));
+        secrets.push(await serializeSecret(state, permissionsManifest, secret, actor, { getSecretsMap }));
       }
       secrets.sort((a, b) => a.key.localeCompare(b.key));
       return { ok: true, secrets };
