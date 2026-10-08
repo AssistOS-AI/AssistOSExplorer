@@ -448,21 +448,40 @@ const timed = async operation => { const started = performance.now(); await oper
 test('B-T1: invocation tokens and identities never reach another call, the output or the pool log', async (t) => {
     const root = await workspace(t);
     const { pool, logs } = await realPool(t, root, { size: 1 });
-    const call = (id, roles, token) => pool.call({
-        toolName: 'ignored', toolEnv: {},
-        payload: { tool: 'get_avatar_settings_agents', metadata: { invocation: { token, actor: { id, roles } } } },
+    // Mirrors the context AgentServer builds: the verified grant plus the raw token and the request headers.
+    const metadataFor = (id, roles, token, caller) => ({
+        invocation: { actor: { id, roles }, ...(caller ? { caller: { id: caller } } : {}) },
+        invocationToken: token,
+        requestInfo: { headers: { 'x-ploinky-invocation': token, authorization: `Bearer ${token}` } },
     });
-    const secrets = ['TOKEN-ALPHA-7f3a9c', 'TOKEN-BRAVO-51d2e8', 'TOKEN-CHARLIE-0b6e44'];
-    const first = await call('user:alpha', ['admin'], secrets[0]);
-    const second = await call('user:bravo', [], secrets[1]);
-    const third = await pool.call({ toolName: 'ignored', toolEnv: {}, payload: { tool: 'get_avatar_settings_agents' } });
-    const fourth = await call('user:charlie', ['admin'], secrets[2]);
+    const call = (tool, metadata, input) => pool.call({ toolName: 'ignored', toolEnv: {}, payload: { tool, input, metadata } });
+    const avatars = metadata => call('get_avatar_settings_agents', metadata, {});
+    const secrets = ['TOKEN-ALPHA-7f3a9c', 'TOKEN-BRAVO-51d2e8', 'TOKEN-CHARLIE-0b6e44', 'TOKEN-DELTA-92c1aa'];
+    const results = [];
+    const first = await avatars(metadataFor('user:alpha', ['admin'], secrets[0]));
+    const noMetadata = await avatars(undefined);
+    const second = await avatars(metadataFor('user:bravo', [], secrets[1]));
+    const third = await avatars(metadataFor('user:charlie', ['admin'], secrets[2]));
+    const afterEmpty = await call('get_avatar_settings_agents', {}, {});
+    results.push(first, noMetadata, second, third, afterEmpty);
     assert.equal(JSON.parse(first.stdout).canManageAgents, true);
-    assert.equal(JSON.parse(second.stdout).canManageAgents, false, 'a later non-admin must not inherit the previous admin');
-    assert.equal(JSON.parse(third.stdout).canManageAgents, false, 'a call without metadata must not inherit any identity');
-    assert.equal(JSON.parse(fourth.stdout).canManageAgents, true);
+    assert.equal(JSON.parse(noMetadata.stdout).canManageAgents, false, 'a call without metadata must not inherit the previous admin');
+    assert.equal(JSON.parse(second.stdout).canManageAgents, false);
+    assert.equal(JSON.parse(third.stdout).canManageAgents, true);
+    assert.equal(JSON.parse(afterEmpty.stdout).canManageAgents, false, 'empty metadata must not inherit the previous admin');
+
+    // SCRIPTA caller gate: an allowed caller does not leave the permission behind for the next call.
+    const scriptaAllowed = await call('scripta_crdt_workspace_list', metadataFor('user:alpha', ['admin'], secrets[3], 'agent:AchillesIDE/webmeetAgent'), {});
+    assert.doesNotMatch(scriptaAllowed.stderr, /restricted to webmeetAgent/, scriptaAllowed.stderr);
+    for (const metadata of [undefined, {}, metadataFor('user:alpha', ['admin'], secrets[3], 'agent:AchillesIDE/otherAgent')]) {
+        const denied = await call('scripta_crdt_workspace_list', metadata, {});
+        assert.equal(denied.code, 1);
+        assert.match(denied.stderr, /SCRIPTA CRDT tools are restricted to webmeetAgent/);
+        results.push(denied);
+    }
+    results.push(scriptaAllowed);
     assert.equal(pool.stats().spawned, 1, 'every call used the same warm worker');
-    const everything = [first, second, third, fourth].map(r => r.stdout + r.stderr).join('\n') + logs.join('\n');
+    const everything = results.map(r => r.stdout + r.stderr).join('\n') + logs.join('\n');
     for (const secret of secrets) assert.equal(everything.includes(secret), false, `${secret} must not appear in outputs or pool logs`);
     for (const actor of ['user:alpha', 'user:bravo', 'user:charlie']) assert.equal(everything.includes(actor), false, actor);
 });

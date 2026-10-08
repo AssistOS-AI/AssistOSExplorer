@@ -32,6 +32,10 @@ const STORE_LOCK_RETRY_MS = 20;
 const MAX_SCRIPTA_UNDO_STEPS = 5;
 const TRANSACTION_STALE_MS = 5 * 60_000;
 const PROCESS_INSTANCE_ID = crypto.randomUUID();
+// Tokens of document locks currently held by a live operation in this process. A lock file that names this
+// process but carries a token outside this set was leaked (for example by a failed release in a warm tool
+// worker, where the pid stays alive) and is stale.
+const HELD_LOCK_TOKENS = new Set();
 const PROCESS_STARTED_AT_MS = Date.now() - Math.max(0, Number(process.uptime?.() || 0) * 1_000);
 
 function isMarkdownPath(filePath, pathApi) {
@@ -432,6 +436,7 @@ export function createMarkdownCrdtStore({
     if (!Number.isInteger(pid) || pid <= 0) return false;
     if (pid === process.pid) {
       if (owner?.instanceId && owner.instanceId !== PROCESS_INSTANCE_ID) return false;
+      if (owner?.instanceId && !HELD_LOCK_TOKENS.has(String(owner?.token || ''))) return false;
       const acquiredAt = Date.parse(owner?.acquiredAt || '');
       if (!owner?.instanceId && Number.isFinite(acquiredAt) && acquiredAt < PROCESS_STARTED_AT_MS - 1_000) {
         return false;
@@ -495,6 +500,16 @@ export function createMarkdownCrdtStore({
     );
     const startedAt = Date.now();
     const token = crypto.randomUUID();
+    HELD_LOCK_TOKENS.add(token);
+    try {
+      return await acquireDocumentLockWithToken(lockPath, token, startedAt);
+    } catch (error) {
+      HELD_LOCK_TOKENS.delete(token);
+      throw error;
+    }
+  }
+
+  async function acquireDocumentLockWithToken(lockPath, token, startedAt) {
     while (true) {
       try {
         const handle = await fs.open(lockPath, 'wx');
@@ -528,6 +543,14 @@ export function createMarkdownCrdtStore({
 
   async function releaseDocumentLock(lock) {
     if (!lock?.token) return;
+    try {
+      await releaseDocumentLockFile(lock);
+    } finally {
+      HELD_LOCK_TOKENS.delete(lock.token);
+    }
+  }
+
+  async function releaseDocumentLockFile(lock) {
     try {
       const current = await readDocumentLock(lock.lockPath);
       if (current.owner?.token !== lock.token) return;

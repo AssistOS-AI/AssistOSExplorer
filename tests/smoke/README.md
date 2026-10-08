@@ -82,7 +82,7 @@ and checks every terminal result afterward. `ledger-discovery_codex.json` and
 must be one pass, expected to pass, on attempt zero. Missing tests, skips, retries,
 flakes, cancellations, expected failures, blocked results and exit zero without
 those outcomes fail acceptance. Artifact paths cannot be overridden or reused.
-Keep `SMOKE_GPT_RESEARCHER=0`, browser errors disallowed and worker opt-in absent.
+Keep `SMOKE_GPT_RESEARCHER=0`, browser errors disallowed. The explorer tool-worker pool is active (see DS002); the preflight no longer requires the opt-in to be absent.
 `--list` checks source discovery without account/browser/Box execution and is never
 a terminal pass. Required opt-in flags still apply to listing.
 

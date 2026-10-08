@@ -53,7 +53,7 @@ Prepare role-correct private sign-in inputs before execution. Umami needs userna
 and password, OnlyOffice an absolute selected Ploinky executable, and the official
 WebMeet case two distinct verified users plus the headless/media profile. Spec04
 needs the installed searchAgent catalog fixture. Spec61 uses synthetic tokens.
-Keep GPT Researcher excluded, worker opt-in absent and browser errors strict.
+Keep GPT Researcher excluded and browser errors strict. The explorer tool-worker pool is active (see DS002); the preflight no longer requires the opt-in to be absent.
 WebTTY retains the last collector/binding/eligibility/stability cause and rejects
 stale generations immediately. Copilot preserves the first terminal error/time
 and submission/reply outcome; an error bubble is not a reply.
