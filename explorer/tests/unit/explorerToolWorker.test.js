@@ -471,10 +471,10 @@ test('B-T1: invocation tokens and identities never reach another call, the outpu
     assert.equal(JSON.parse(afterEmpty.stdout).canManageAgents, false, 'empty metadata must not inherit the previous admin');
 
     // SCRIPTA caller gate: an allowed caller does not leave the permission behind for the next call.
-    const scriptaAllowed = await call('scripta_crdt_workspace_list', metadataFor('user:alpha', ['admin'], secrets[3], 'agent:AchillesIDE/webmeetAgent'), {});
-    assert.doesNotMatch(scriptaAllowed.stderr, /restricted to webmeetAgent/, scriptaAllowed.stderr);
+    const scriptaAllowed = await call('scripta_crdt_workspace_list', metadataFor('user:alpha', ['admin'], secrets[3], 'agent:AchillesIDE/webmeetAgent'), { defaultFolder: '/' });
+    assert.equal(scriptaAllowed.code, 0, scriptaAllowed.stderr);
     for (const metadata of [undefined, {}, metadataFor('user:alpha', ['admin'], secrets[3], 'agent:AchillesIDE/otherAgent')]) {
-        const denied = await call('scripta_crdt_workspace_list', metadata, {});
+        const denied = await call('scripta_crdt_workspace_list', metadata, { defaultFolder: '/' });
         assert.equal(denied.code, 1);
         assert.match(denied.stderr, /SCRIPTA CRDT tools are restricted to webmeetAgent/);
         results.push(denied);

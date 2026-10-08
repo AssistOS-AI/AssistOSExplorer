@@ -12,7 +12,7 @@ async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'crdt-lock-recovery-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     await fs.writeFile(path.join(root, 'doc.md'), '# Doc\n');
-    const makeStore = (failLockRm) => {
+    const makeStore = (failLockRm, { onDocumentRead } = {}) => {
         let failed = false;
         const wrapped = new Proxy(fs, {
             get(target, key) {
@@ -23,6 +23,12 @@ async function fixture(t) {
                             throw Object.assign(new Error('EIO simulated'), { code: 'EIO' });
                         }
                         return target.rm(file, options);
+                    };
+                }
+                if (key === 'readFile' && onDocumentRead) {
+                    return async (file, ...rest) => {
+                        if (String(file) === path.join(root, 'doc.md')) await onDocumentRead();
+                        return target.readFile(file, ...rest);
                     };
                 }
                 const value = target[key];
@@ -50,13 +56,33 @@ test('a lock leaked by a failed release in the same live process is recovered im
 });
 
 test('a lock held by a concurrent operation in the same process still excludes others', async (t) => {
-    const { makeStore } = await fixture(t);
-    const first = makeStore(false);
-    const second = makeStore(false);
-    const order = [];
-    await Promise.all([
-        first.open('doc.md').then(() => order.push('first')),
-        second.open('doc.md').then(() => order.push('second')),
-    ]);
-    assert.deepEqual(order.sort(), ['first', 'second']);
+    const { root, makeStore } = await fixture(t);
+    const markEntered = {};
+    // The proxy reports when a store reads the document and can stall that read inside the critical section.
+    const gatedStore = (name, gate) => makeStore(false, {
+        onDocumentRead: async () => {
+            markEntered[name]?.();
+            if (gate) await gate;
+        },
+    });
+    let openGate;
+    const gate = new Promise((resolve) => { openGate = resolve; });
+    const entered = { first: false, second: false };
+    const firstEntered = new Promise((resolve) => { markEntered.first = () => { entered.first = true; resolve(); }; });
+    markEntered.second = () => { entered.second = true; };
+    const first = gatedStore('first', gate).open('doc.md');
+    await firstEntered;
+    const lockDirectory = path.join(root, '.data', 'explorer', 'automerge', 'documents', '.locks');
+    const readToken = async () => {
+        const [name] = await fs.readdir(lockDirectory);
+        return JSON.parse(await fs.readFile(path.join(lockDirectory, name), 'utf8')).token;
+    };
+    const firstToken = await readToken();
+    const second = gatedStore('second').open('doc.md');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(entered.second, false, 'the second store must not enter its critical section while the first holds the lock');
+    assert.equal(await readToken(), firstToken, 'the lock file still carries the first holder token');
+    openGate();
+    await Promise.all([first, second]);
+    assert.equal(entered.second, true);
 });
