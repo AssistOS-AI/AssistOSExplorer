@@ -19,32 +19,68 @@ async function pathExists(filePath) {
     }
 }
 
+const EVENT_READ_CONCURRENCY = 16;
+const EVENT_FILE_NAME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z-(.+)\.event$/;
+
+async function readEventFile(eventsDir, name) {
+    try {
+        return (await fs.readFile(path.join(eventsDir, name), 'utf8')).trim();
+    } catch (_) {
+        return null;
+    }
+}
+
+async function readEventFiles(eventsDir, names) {
+    const results = new Array(names.length);
+    let next = 0;
+    const worker = async () => {
+        while (next < names.length) {
+            const index = next;
+            next += 1;
+            results[index] = await readEventFile(eventsDir, names[index]);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(EVENT_READ_CONCURRENCY, names.length) }, worker));
+    return results;
+}
+
+// Writers name files `${createdAt}-${eventId}.event` with ':' replaced by '-',
+// so the sorted name carries both the order and the event ID. Names that do not
+// follow that shape are resolved by reading and parsing the file.
+async function findCursorPosition(eventsDir, names, afterEventId) {
+    const key = afterEventId.replaceAll(':', '-');
+    for (let index = 0; index < names.length; index += 1) {
+        const match = EVENT_FILE_NAME_PATTERN.exec(names[index]);
+        if (match) {
+            if (match[1] === key) return index;
+            continue;
+        }
+        const encoded = await readEventFile(eventsDir, names[index]);
+        if (!encoded) continue;
+        try {
+            if (getWebMeetEventId(encoded) === afterEventId) return index;
+        } catch (_) {
+            // A file that cannot be parsed never matches the cursor.
+        }
+    }
+    return -1;
+}
+
 async function listEventLog(eventsDir, afterId = '') {
     if (!(await pathExists(eventsDir))) return [];
     const afterEventId = String(afterId || '').trim();
-    let foundAfter = !afterEventId;
-    const names = await fs.readdir(eventsDir);
-    const events = await Promise.all(names
+    const names = (await fs.readdir(eventsDir))
         .filter((name) => name.endsWith('.event'))
-        .sort()
-        .map(async (name) => {
-            try {
-                return (await fs.readFile(path.join(eventsDir, name), 'utf8')).trim();
-            } catch (_) {
-                return null;
-            }
-        }));
+        .sort();
+    let start = 0;
+    if (afterEventId) {
+        const position = await findCursorPosition(eventsDir, names, afterEventId);
+        if (position < 0) return [];
+        start = position + 1;
+    }
+    const events = await readEventFiles(eventsDir, names.slice(start));
     return events
         .filter(Boolean)
-        .filter((event) => {
-            const eventId = getWebMeetEventId(event);
-            if (!afterEventId) return true;
-            if (foundAfter) return true;
-            if (eventId === afterEventId) {
-                foundAfter = true;
-            }
-            return false;
-        })
         .filter((event) => getWebMeetEventId(event) !== afterEventId);
 }
 
