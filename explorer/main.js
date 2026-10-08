@@ -34,6 +34,7 @@ import {
     parseAgentRuntimeWaitRoute,
     probeAgentRuntimeMcp,
     probeAgentRuntimeRouteStability,
+    probeAgentRuntimeTargetAndMcp,
     probeAgentRuntimeTarget
 } from './shared/ui/agent-runtime-loader/agent-runtime-wait-route.js';
 
@@ -79,10 +80,10 @@ async function waitForInitialAgentRuntime(route) {
                 timeoutMs: Number.POSITIVE_INFINITY,
                 operation: async () => {
                     await probeAgentRuntimeRouteStability(route.agentRef);
-                    await Promise.all([
-                        probeAgentRuntimeTarget(route.targetUrl),
-                        probeAgentRuntimeMcp(route.agentRef, assistosSDK)
-                    ]);
+                    await probeAgentRuntimeTargetAndMcp(
+                        () => probeAgentRuntimeTarget(route.targetUrl),
+                        () => probeAgentRuntimeMcp(route.agentRef, assistosSDK)
+                    );
                     return route.targetUrl;
                 }
             });
@@ -343,13 +344,16 @@ async function start() {
     };
 
     const installRuntimeComponentGuards = () => {
+        const presentersWithoutDependencies = new Set();
         const ensureComponentRegistered = async (componentName, options = {}) => {
             const normalizedName = typeof componentName === 'string' ? componentName.trim() : '';
             if (!normalizedName) {
                 return null;
             }
+            const skipDependencies = options?.includeDependencies === false;
             const hostComponent = webSkel.configs?.components?.find((component) => component.name === normalizedName);
-            if (hostComponent) {
+            // A presenter registered without its dependencies must still accept a later full registration.
+            if (hostComponent && (skipDependencies || !presentersWithoutDependencies.has(normalizedName))) {
                 return null;
             }
             const context = await loadRuntimeContext();
@@ -359,7 +363,10 @@ async function start() {
                 error.code = 'ADMIN_REQUIRED';
                 throw error;
             }
-            return runtimePluginLoader.ensureComponentRegistered(normalizedName, context.plugins, options);
+            const registered = await runtimePluginLoader.ensureComponentRegistered(normalizedName, context.plugins, options);
+            if (skipDependencies) presentersWithoutDependencies.add(normalizedName);
+            else presentersWithoutDependencies.delete(normalizedName);
+            return registered;
         };
 
         webSkel.ensureComponentRegistered = ensureComponentRegistered;

@@ -8,6 +8,7 @@ import {
     probeAgentRuntimeMcp,
     probeAgentRuntimeRouteStability,
     probeAgentRuntimeTarget,
+    probeAgentRuntimeTargetAndMcp,
     resolveAgentRuntimeTarget
 } from '../../shared/ui/agent-runtime-loader/agent-runtime-wait-route.js';
 
@@ -213,4 +214,13 @@ test('runtime generation probe does not treat accepted startup or login HTML as 
             origin: ORIGIN, wait: async () => {}, fetchImpl: async () => response,
         }), error => error.code === 'agent_not_ready');
     }
+});
+
+test('concurrent target and MCP probes prefer a permanent error over a transient one', async () => {
+    const transient = Object.assign(new Error('target warming up'), { status: 503 });
+    const permanent = Object.assign(new Error('forbidden'), { status: 403 });
+    await assert.rejects(() => probeAgentRuntimeTargetAndMcp(async () => { throw transient; }, async () => { throw permanent; }), permanent);
+    await assert.rejects(() => probeAgentRuntimeTargetAndMcp(async () => { throw transient; }, async () => { throw new Error('mcp'); }), transient);
+    await assert.rejects(() => probeAgentRuntimeTargetAndMcp(async () => 'ok', async () => { throw permanent; }), permanent);
+    assert.equal(await probeAgentRuntimeTargetAndMcp(async () => 'target', async () => 'mcp'), 'target');
 });

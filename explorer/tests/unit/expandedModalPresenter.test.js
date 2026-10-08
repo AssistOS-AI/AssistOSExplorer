@@ -153,6 +153,7 @@ test('a late component registration cannot mount after close', async () => {
 });
 
 const loaderModule = await import('../../shared/ui/agent-runtime-loader/agent-runtime-loader.js');
+const wait = await import('../../shared/ui/agent-runtime-loader/agent-runtime-wait-route.js');
 
 function waitHarness({ marketplaceEntry, runtimeReads, order, target, mcp }) {
     const p = presenter({
@@ -162,6 +163,7 @@ function waitHarness({ marketplaceEntry, runtimeReads, order, target, mcp }) {
         probeAgentRuntimeRouteStability: async () => { order.push('stability'); },
         probeAgentRuntimeTarget: target,
         probeAgentRuntimeMcp: mcp,
+        probeAgentRuntimeTargetAndMcp: wait.probeAgentRuntimeTargetAndMcp,
         readMarketplaceAgent: async () => { runtimeReads.count += 1; return { active: true, running: true }; },
         ensureMarketplaceAgentRunning: async () => marketplaceEntry,
         waitForAgentRuntimeAvailability: loaderModule.waitForAgentRuntimeAvailability
@@ -219,12 +221,12 @@ test('target and MCP probes overlap after the stability probe', async () => {
     assert.equal(await waiting, true);
 });
 
-test('a failing concurrent probe maps to the unavailable state and an abort suppresses it', async () => {
+test('a failing concurrent probe (permanent error wins) maps to the unavailable state and an abort suppresses it', async () => {
     const states = [];
     const p = waitHarness({
         marketplaceEntry: null, runtimeReads: { count: 0 }, order: [],
         target: async () => { throw Object.assign(new Error('Target rejected'), { status: 403 }); },
-        mcp: async () => new Promise(() => {})
+        mcp: async () => { throw Object.assign(new Error('MCP warming up'), { status: 503 }); }
     });
     p.setState = message => states.push(message);
     const originalError = console.error;

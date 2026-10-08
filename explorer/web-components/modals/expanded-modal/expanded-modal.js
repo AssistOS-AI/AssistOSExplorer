@@ -3,6 +3,7 @@ import assistosSDK from "../../../services/assistosSDK.js";
 import {
     probeAgentRuntimeMcp,
     probeAgentRuntimeRouteStability,
+    probeAgentRuntimeTargetAndMcp,
     probeAgentRuntimeTarget
 } from "../../../shared/ui/agent-runtime-loader/agent-runtime-wait-route.js";
 import { waitForAgentRuntimeAvailability, readMarketplaceAgent } from "../../../shared/ui/agent-runtime-loader/agent-runtime-loader.js";
@@ -404,10 +405,10 @@ export class ExpandedModal {
                     signal.throwIfAborted();
                     await probeAgentRuntimeRouteStability(agentRef, { fetchImpl, wait: ms => this.waitForNextProbe(ms) });
                     signal.throwIfAborted();
-                    await Promise.all([
-                        probeAgentRuntimeTarget(new URL(this.frameUrl(), window.location.origin), fetchImpl),
-                        probeAgentRuntimeMcp(agentRef, assistosSDK)
-                    ]);
+                    await probeAgentRuntimeTargetAndMcp(
+                        () => probeAgentRuntimeTarget(new URL(this.frameUrl(), window.location.origin), fetchImpl),
+                        () => probeAgentRuntimeMcp(agentRef, assistosSDK)
+                    );
                     signal.throwIfAborted();
                     return null;
                 }

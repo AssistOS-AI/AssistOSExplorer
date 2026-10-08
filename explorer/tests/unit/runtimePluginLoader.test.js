@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createComponentRegistry } from '../../services/runtime/componentRegistry.js';
 import { createRuntimePluginLoader } from '../../services/runtime/runtimePluginLoader.js';
+import { toolbarComponentRegistrationOptions } from '../../web-components/pages/file-exp/file-exp-application-plugins.js';
 
 test('runtime plugin discovery retries a transient Router generation change', async () => {
     let attempts = 0;
@@ -357,11 +358,49 @@ test('the default and room-entry style calls still register every dependency', a
     assert.ok(loaded.some((meta) => meta.componentName === 'webmeet-dashboard'));
 });
 
-test('only the toolbar-modal lazy path skips dependencies and room entry stays on the full path', () => {
-    const host = fs.readFileSync(path.join(explorerRoot, 'web-components', 'pages', 'file-exp', 'file-exp-application-plugins.js'), 'utf8');
-    assert.match(host, /ensureRuntimeComponent\(plugin\.component, plugin\.toolbarModal \? \{ includeDependencies: false \} : undefined\)/);
-    assert.equal((host.match(/includeDependencies: false/g) || []).length, 1);
-    assert.match(host, /pendingPlugins\.map\(\(\{ plugin \}\) => ensureRuntimeComponent\(plugin\.component\)\)/);
-    const main = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
-    assert.match(main, /runtimePluginLoader\.ensureComponentRegistered\(pageName, context\.plugins\)/);
+const repoRoot = path.resolve(explorerRoot, '..');
+const readPluginConfig = (agent, plugin) => ({
+    ...JSON.parse(fs.readFileSync(path.join(repoRoot, agent, 'IDE-plugins', plugin, 'config.json'), 'utf8')),
+    agent
+});
+const toolbarPlugins = (config) => ({ application: { 'file-exp:toolbar': [config] } });
+
+test('toolbar registration options skip dependencies for iframe-mode modals only', () => {
+    assert.deepEqual(toolbarComponentRegistrationOptions({ toolbarModal: { mode: 'iframe' } }), { includeDependencies: false });
+    assert.equal(toolbarComponentRegistrationOptions({ toolbarModal: { mode: 'component', component: 'git-panel' } }), undefined);
+    assert.equal(toolbarComponentRegistrationOptions({}), undefined);
+    assert.equal(toolbarComponentRegistrationOptions(readPluginConfig('gitAgent', 'git-tool-button')), undefined);
+    assert.deepEqual(toolbarComponentRegistrationOptions(readPluginConfig('webmeetAgent', 'webmeet-tool-button')), { includeDependencies: false });
+});
+
+test('the real Git config registers all nested panel dependencies in component mode', async () => {
+    const config = readPluginConfig('gitAgent', 'git-tool-button');
+    const loaded = [];
+    const loader = webmeetLoader(loaded);
+    await loader.ensureComponentRegistered('git-tool-button', toolbarPlugins(config), toolbarComponentRegistrationOptions(config));
+    const names = loaded.map((meta) => meta.componentName);
+    for (const needed of ['git-panel', 'git-commit-body', 'git-repo-tree', 'git-diff-viewer', 'git-commit-actions', 'git-status-bar',
+        'git-credentials-prompt', 'git-conflict-banner', 'git-pull-blocked-panel', 'git-conflict-helper']) {
+        assert.ok(names.includes(needed), `${needed} is registered`);
+    }
+    // The modal then registers git-panel itself; that stays a no-op for already loaded dependencies.
+    await loader.ensureComponentRegistered('git-panel', toolbarPlugins(config));
+    assert.ok(new Set(loaded.map((meta) => meta.componentName)).size >= 10);
+});
+
+test('the real WebMeet config registers only its presenter for the iframe-mode modal', async () => {
+    const config = readPluginConfig('webmeetAgent', 'webmeet-tool-button');
+    assert.ok(config.dependencies.length > 1, 'WebMeet declares dependencies that the iframe loads itself');
+    const loaded = [];
+    await webmeetLoader(loaded).ensureComponentRegistered('webmeet-tool-button', toolbarPlugins(config), toolbarComponentRegistrationOptions(config));
+    assert.deepEqual(loaded.map((meta) => meta.componentName), ['webmeet-tool-button']);
+});
+
+test('a presenter registered without dependencies can later register them', async () => {
+    const loaded = [];
+    const loader = webmeetLoader(loaded);
+    await loader.ensureComponentRegistered('webmeet-tool-button', webmeetPlugins, { includeDependencies: false });
+    await loader.ensureComponentRegistered('webmeet-tool-button', webmeetPlugins);
+    assert.deepEqual([...new Set(loaded.map((meta) => meta.componentName))].sort(),
+        ['webmeet-dashboard', 'webmeet-room', 'webmeet-tool-button']);
 });

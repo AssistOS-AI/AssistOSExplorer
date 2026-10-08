@@ -120,6 +120,12 @@ function mergeUniquePlugins(...pluginLists) {
     return plugins;
 }
 
+// An iframe-mode toolbar modal renders in its own iframe, which loads its dependencies itself. Component-mode
+// modals (Git, Marketplace, Help) mount their component in this page and need the full dependency set.
+export function toolbarComponentRegistrationOptions(plugin) {
+    return plugin?.toolbarModal?.mode === 'iframe' ? { includeDependencies: false } : undefined;
+}
+
 async function ensureRuntimeComponent(componentName, options) {
     const ensureComponentRegistered = window.assistOS?.webSkel?.ensureComponentRegistered || window.UI?.ensureComponentRegistered;
     if (typeof ensureComponentRegistered === 'function') {
@@ -530,8 +536,7 @@ async function loadToolbarPluginOnDemand(fileExp, trigger) {
         loadPromise = (async () => {
             const currentPath = fileExp.normalizePath(fileExp.state.path || '/');
             const [, currentFsPath, workspaceFsRoot] = await Promise.all([
-                // A toolbar modal renders in its own iframe, which loads its dependencies itself.
-                ensureRuntimeComponent(plugin.component, plugin.toolbarModal ? { includeDependencies: false } : undefined),
+                ensureRuntimeComponent(plugin.component, toolbarComponentRegistrationOptions(plugin)),
                 resolveExplorerPathToFilesystemPath(currentPath),
                 resolveExplorerPathToFilesystemPath('/')
             ]);

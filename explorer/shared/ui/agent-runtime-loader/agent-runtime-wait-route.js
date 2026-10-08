@@ -153,3 +153,15 @@ export async function probeAgentRuntimeRouteStability(agentRef, {
     }
     return secondGeneration;
 }
+
+const PERMANENT_PROBE_STATUSES = new Set([400, 401, 403, 422]);
+
+// Runs the target and MCP probes together. When both fail, a permanent error (400/401/403/422) wins over
+// a transient one so the waiting loop does not retry an unrecoverable condition; otherwise the first probe's
+// error is reported.
+export async function probeAgentRuntimeTargetAndMcp(probeTarget, probeMcp) {
+    const results = await Promise.allSettled([probeTarget(), probeMcp()]);
+    const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+    if (!failures.length) return results[0].value;
+    throw failures.find((error) => PERMANENT_PROBE_STATUSES.has(Number(error?.status || error?.statusCode || 0))) || failures[0];
+}
