@@ -203,6 +203,8 @@
 <p>Closing a loading panel cancels its startup requests, polling, timers and pending mount. Late shared imports or already submitted server operations cannot resume the closed panel.</p>
 <p>Toolbar clicks immediately disable the selected button and show a small spinner while the shared modal opens. Repeated clicks are blocked during this interval; loading then continues inside the panel.</p>
 <p>Modal cleanup is owned directly by the presenter. Close stops HTTP probes and timers; ordinary asynchronous component loading checks whether the modal is closed before continuing. Hosted components clean up in afterUnload.</p>
+<p>While waiting for an agent-backed panel, the modal reads the Marketplace agent catalog once per open: the entry returned when the agent is ensured running is reused as the first runtime read, and only later polls or a not-running entry read again. After the route-stability probe, the target and MCP probes run concurrently.</p>
+<p>A toolbar plugin that declares <code>toolbarModal</code> renders in its own iframe, so its first-click load registers only the presenter component in the Explorer page and does not preload the plugin's dependency components. Non-modal plugins and the room-entry route still load dependencies in the parent.</p>
 <p>Once the modal appears, the toolbar button returns to normal. Any remaining presenter initialization happens without a second toolbar spinner; content loading is shown inside the modal.</p>
 </main>
 
