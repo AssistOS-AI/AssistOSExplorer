@@ -588,6 +588,37 @@ function chartTheme() {
 }
 
 // ---- Main App ----
+// ---- Lazy per-tab initialisation ----
+// All tab components are mounted at once (x-show hides them), and Alpine
+// calls each component's init() automatically on mount. A component created
+// with a page id, e.g. logsPage('logs'), skips its initial fetch until that
+// page is the active one (decided from location.hash, the same source the
+// app shell uses). Components created without a page id load eagerly.
+const DASHBOARD_DEFAULT_PAGE = 'providers';
+const DASHBOARD_PAGE_IDS = [
+    'providers', 'models', 'tiers', 'keys', 'logs', 'errors', 'activity',
+    'costs', 'blacklist', 'middlewares', 'export',
+];
+
+function activeDashboardPage() {
+    const hash = String(window.location?.hash || '').slice(1);
+    return DASHBOARD_PAGE_IDS.includes(hash) ? hash : DASHBOARD_DEFAULT_PAGE;
+}
+
+// Returns true when init() should run its fetches. With `once`, a lazy
+// component loads a single time and later page-change events are ignored;
+// without it (tabs that refresh on every navigation) each call reloads.
+function shouldRunLazyInit(component, { once = false } = {}) {
+    const lazyPage = component._lazyPage;
+    if (!lazyPage) return true;
+    if (activeDashboardPage() !== lazyPage) return false;
+    if (once) {
+        if (component._lazyLoaded) return false;
+        component._lazyLoaded = true;
+    }
+    return true;
+}
+
 function app() {
     return {
         page: 'providers',
@@ -751,8 +782,10 @@ function app() {
 const PROVIDER_TREE_EXPANDED_STORAGE_KEY =
     'soulGateway.providers.tree.expanded';
 
-function providersPage() {
+function providersPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         providers: [],
         templates: {},
         providerFilter: '',
@@ -898,6 +931,7 @@ function providersPage() {
         },
 
         async init() {
+            if (!shouldRunLazyInit(this)) return;
             const [providers, templates] = await Promise.all([
                 api.get('/management/providers'),
                 api.get('/management/providers/templates'),
@@ -1482,8 +1516,10 @@ function timeRangeToParams(range, customFrom, customTo) {
 }
 
 // ---- Logs Page ----
-function logsPage() {
+function logsPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         keys: [],
         selectedKey: null,
         selectedLogs: [],
@@ -1519,6 +1555,7 @@ function logsPage() {
         _seenLiveLogIds: new Set(),
 
         async init() {
+            if (!shouldRunLazyInit(this, { once: true })) return;
             await this.loadKeys();
             if (this.keys.length > 0) {
                 await this.selectKey(this.keys[0], { force: true });
@@ -1780,8 +1817,10 @@ function logsPage() {
 }
 
 // ---- Costs Page ----
-function costsPage() {
+function costsPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         // Time filtering
         timeRange: 'month',
         customFrom: '',
@@ -1813,6 +1852,7 @@ function costsPage() {
         },
 
         async init() {
+            if (!shouldRunLazyInit(this, { once: true })) return;
             this.availableKeys = unwrapArray(await api.get('/management/keys'));
             await this.load();
         },
@@ -1964,8 +2004,10 @@ function costsPage() {
 }
 
 // ---- Activity Page (Per-Key) ----
-function activityPage() {
+function activityPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         keyData: [],
         keyLogsLimit: 50,
         timeRange: 'month',
@@ -1973,6 +2015,7 @@ function activityPage() {
         customTo: '',
 
         async init() {
+            if (!shouldRunLazyInit(this, { once: true })) return;
             await this.loadActivity();
         },
 
@@ -2083,8 +2126,10 @@ function activityPage() {
 }
 
 // ---- Errors Page ----
-function errorsPage() {
+function errorsPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         summary: {},
         breakdown: [],
         errorModels: [],
@@ -2103,6 +2148,7 @@ function errorsPage() {
         customTo: '',
 
         async init() {
+            if (!shouldRunLazyInit(this, { once: true })) return;
             await this.loadErrors();
         },
 
@@ -2251,8 +2297,10 @@ function errorsPage() {
 // ---- Models Page ----
 const MODEL_TREE_EXPANDED_STORAGE_KEY = 'soulGateway.models.tree.expanded';
 
-function modelsPage() {
+function modelsPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         models: [],
         providers: [],
         predefinedTags: [],
@@ -2299,6 +2347,7 @@ function modelsPage() {
         createName: '',
 
         async init() {
+            if (!shouldRunLazyInit(this)) return;
             const [models, providers, predefinedTags] = await Promise.all([
                 api.get('/management/models'),
                 api.get('/management/models/providers'),
@@ -2608,8 +2657,10 @@ function modelsPage() {
 }
 
 // ---- Tiers Page ----
-function tiersPage() {
+function tiersPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         tiers: [],
         models: [],
         showTierModal: false,
@@ -2628,6 +2679,7 @@ function tiersPage() {
         },
 
         async init() {
+            if (!shouldRunLazyInit(this)) return;
             await this.reload();
         },
 
@@ -2818,8 +2870,10 @@ function tiersPage() {
 }
 
 // ---- Keys Page ----
-function keysPage() {
+function keysPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         keys: [],
         currentUser: null,
         currentOwner: '',
@@ -2848,6 +2902,7 @@ function keysPage() {
         createKeyError: '',
 
         async init() {
+            if (!shouldRunLazyInit(this)) return;
             await this.loadCurrentUser();
             const raw = unwrapArray(await api.get('/management/keys'));
             this.keys = raw.map((k) => ({
@@ -3052,14 +3107,17 @@ function keysPage() {
 }
 
 // ---- Blacklist Page ----
-function blacklistPage() {
+function blacklistPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         rules: [],
         showRuleEditor: false,
         editing: null,
         form: { pattern: '', match_type: 'substring', description: '' },
 
         async init() {
+            if (!shouldRunLazyInit(this)) return;
             this.rules = unwrapArray(
                 await api.get('/management/blacklist/rules')
             );
@@ -3119,8 +3177,10 @@ function blacklistPage() {
 }
 
 // ---- Middlewares Page ----
-function middlewaresPage() {
+function middlewaresPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         middlewares: [],
         models: [],
         selectedMw: null,
@@ -3131,6 +3191,7 @@ function middlewaresPage() {
         settingsError: '',
 
         async init() {
+            if (!shouldRunLazyInit(this)) return;
             const [middlewares, models] = await Promise.all([
                 api.get('/management/middlewares'),
                 api.get('/management/models'),
@@ -3253,8 +3314,10 @@ function middlewaresPage() {
         },
     };
 }
-function exportPage() {
+function exportPage(lazyPage = null) {
     return {
+        _lazyPage: lazyPage,
+        _lazyLoaded: false,
         format: 'opencode',
         formats: ['opencode', 'claude-code', 'codex'],
         models: [],
@@ -3271,6 +3334,7 @@ function exportPage() {
         gatewayUrl: '',
 
         async init() {
+            if (!shouldRunLazyInit(this, { once: true })) return;
             const [models, keys] = await Promise.all([
                 api.get('/management/models'),
                 api.get('/management/keys'),

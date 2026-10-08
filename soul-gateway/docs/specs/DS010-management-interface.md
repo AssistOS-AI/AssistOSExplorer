@@ -47,4 +47,6 @@ The management interface must consume the management API and must not embed a se
 
 The embedded dashboard reuses Explorer's shared UI assets and theme (light or dark) and must not keep a second theme store or a dashboard-local theme toggle. <code>/management/*</code> remains the single management API contract.
 
+The dashboard mounts every tab component once, relies on Alpine to call each component's <code>init()</code> exactly once, and defers a tab's initial data requests until that tab is the active page (selected by the location hash, defaulting to Providers). Tabs that refresh on navigation re-run <code>init()</code> on each <code>page-change</code> to their page; the remaining tabs load once on first visit.
+
 The toolbar declares its shared iframe modal in `toolbarModal`. Explorer opens the shell immediately and handles agent startup and readiness inside it; the toolbar must not wait for a settings inventory lookup before showing the panel.

@@ -23,7 +23,7 @@
         <script type="module" src="./js/theme.mjs"></script>
     </head>
     <body class="min-h-screen bg-base-200">
-        <div x-data="app()" x-init="init()">
+        <div x-data="app()">
             <div>
                     <!-- Navbar -->
                     <div class="navbar bg-base-100 shadow-lg">
@@ -86,7 +86,7 @@
                     <div class="w-full p-2 soul-gateway-content">
                         <!-- Logs Page -->
                         <div x-show="page === 'logs'" x-cloak>
-                            <div x-data="logsPage()" x-init="init()">
+                            <div x-data="logsPage('logs')" @page-change.window="$event.detail === 'logs' && init()">
                                 <div class="flex flex-col lg:flex-row gap-4 min-h-0 lg:h-[calc(100vh-10rem)]">
                                     <!-- Keys Panel -->
                                     <div
@@ -706,7 +706,7 @@
 
                         <!-- Activity Page (Per-Key) -->
                         <div x-show="page === 'activity'" x-cloak>
-                            <div x-data="activityPage()" x-init="init()">
+                            <div x-data="activityPage('activity')" @page-change.window="$event.detail === 'activity' && init()">
                                 <div
                                     class="flex justify-between items-center mb-4"
                                 >
@@ -1343,8 +1343,7 @@
                             x-effect="if (page === 'costs') $dispatch('costs-visible')"
                         >
                             <div
-                                x-data="costsPage()"
-                                x-init="init()"
+                                x-data="costsPage('costs')" @page-change.window="$event.detail === 'costs' && init()"
                                 @costs-visible.window="$nextTick(() => renderChart())"
                                 @sg-theme-change.window="$nextTick(() => renderChart())"
                             >
@@ -1585,7 +1584,7 @@
 
                         <!-- Errors Page -->
                         <div x-show="page === 'errors'" x-cloak>
-                            <div x-data="errorsPage()" x-init="init()" @sg-theme-change.window="showChart && openChart()">
+                            <div x-data="errorsPage('errors')" @page-change.window="$event.detail === 'errors' && init()" @sg-theme-change.window="showChart && openChart()">
                                 <!-- Summary Stats -->
                                 <div class="stats shadow mb-4 w-full">
                                     <div class="stat">
@@ -2112,8 +2111,7 @@
                         <!-- Providers Page -->
                         <div x-show="page === 'providers'" x-cloak>
                             <div
-                                x-data="providersPage()"
-                                x-init="init()"
+                                x-data="providersPage('providers')"
                                 @page-change.window="$event.detail === 'providers' && init()"
                             >
                                 <div
@@ -3400,8 +3398,7 @@
                         <!-- Models Page -->
                         <div x-show="page === 'models'" x-cloak>
                             <div
-                                x-data="modelsPage()"
-                                x-init="init()"
+                                x-data="modelsPage('models')"
                                 @page-change.window="$event.detail === 'models' && init()"
                                 @provider-models-synced.window="init()"
                             >
@@ -4065,8 +4062,7 @@
                         <!-- Tiers Page -->
                         <div x-show="page === 'tiers'" x-cloak>
                             <div
-                                x-data="tiersPage()"
-                                x-init="init()"
+                                x-data="tiersPage('tiers')"
                                 @page-change.window="$event.detail === 'tiers' && init()"
                             >
                                 <div
@@ -4403,8 +4399,7 @@
                         <!-- Keys Management Page -->
                         <div x-show="page === 'keys'" x-cloak>
                             <div
-                                x-data="keysPage()"
-                                x-init="init()"
+                                x-data="keysPage('keys')"
                                 @page-change.window="$event.detail === 'keys' && init()"
                             >
                                 <div
@@ -4787,8 +4782,7 @@
                         <!-- Blacklist Management Page -->
                         <div x-show="page === 'blacklist'" x-cloak>
                             <div
-                                x-data="blacklistPage()"
-                                x-init="init()"
+                                x-data="blacklistPage('blacklist')"
                                 @page-change.window="$event.detail === 'blacklist' && init()"
                             >
                                 <div
@@ -4932,8 +4926,7 @@
                         <!-- Middlewares Page -->
                         <div x-show="page === 'middlewares'" x-cloak>
                             <div
-                                x-data="middlewaresPage()"
-                                x-init="init()"
+                                x-data="middlewaresPage('middlewares')"
                                 @page-change.window="$event.detail === 'middlewares' && init()"
                             >
                                 <div
@@ -5223,7 +5216,7 @@
 
                         <!-- Export Page -->
                         <div x-show="page === 'export'" x-cloak>
-                            <div x-data="exportPage()" x-init="init()">
+                            <div x-data="exportPage('export')" @page-change.window="$event.detail === 'export' && init()">
                                 <div
                                     class="flex justify-between items-center mb-4"
                                 >
