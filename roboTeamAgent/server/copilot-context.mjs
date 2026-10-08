@@ -10,7 +10,7 @@ import { DATA_DIR } from './constants.mjs';
 import { CODING_AGENT_NAMES, robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
 
 // One CLI process owns one robot context; browser input cannot change its home.
-export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, holdUsage = false,
+export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, usePreparedTools = false, holdUsage = false,
     dataDir = DATA_DIR, alaCommand, toolCache } = {}) {
     const workspaceRoot = requireWorkspaceRoot();
     const store = new RobotStore({ dataDir });
@@ -41,7 +41,9 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
             const cache = toolCache || new ToolCache({ dataDir: store.dataDir,
                 log: () => {} });
             const codingAgents = robotCodingAgents(robot);
-            const tools = await cache.prepareShellTools();
+            // Listing-only callers reuse the generation the service already prepared;
+            // it is re-validated here on every call, else we prepare as before.
+            const tools = (usePreparedTools && await cache.peekShellTools()) || await cache.prepareShellTools();
             const selected = Object.fromEntries(codingAgents.map(name => [name, tools.agents[name]]));
             const environment = codingAgentEnvironment(selected, process.env, cache.root);
             for (const name of CODING_AGENT_NAMES) delete process.env[`${name.toUpperCase()}_BIN`];

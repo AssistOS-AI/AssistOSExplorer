@@ -9,7 +9,7 @@ try {
     for await (const chunk of process.stdin) raw += chunk;
     const payload = JSON.parse(raw || '{}');
     const input = payload.input || payload.arguments || payload.params?.arguments || {};
-    const context = await prepareCopilotContext(input.robot || 'default', { prepareTools: !process.argv.includes('--skills') && !process.argv.includes('--set-skill') });
+    const context = await prepareCopilotContext(input.robot || 'default', { prepareTools: !process.argv.includes('--skills') && !process.argv.includes('--set-skill'), usePreparedTools: true });
     const sets = publicSkillsets(context.robot);
     const inventory = await skillCatalogRequest({ skillsets: context.skillsets, robot: context.robot, input,
         mutate: process.argv.includes('--set-skill') });

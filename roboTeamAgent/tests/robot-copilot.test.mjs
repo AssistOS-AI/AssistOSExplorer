@@ -10,6 +10,7 @@ import { RobotStore } from '../server/robot-store.mjs';
 import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
 import { ToolCache } from '../server/tool-cache.mjs';
+import { robotCodingAgents } from '../server/coding-agents.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 import { alaTranscript, alaSessionsRoot } from '../copilot/src/lib/execution/alaTranscript.mjs';
 
@@ -172,4 +173,56 @@ export const createRepositoryClient = () => ({
     assert.deepEqual(firstSession.skillExecution.entries.map((entry) => entry.name), ['human-report']);
     assert.deepEqual(continued.skillExecution.entries, firstSession.skillExecution.entries);
     await assert.rejects(fs.stat(path.join(workspace, '.data/achilles-cli')), /ENOENT/);
+});
+
+test('catalog listing reuses a valid prepared shell generation without npm lookups and falls back otherwise', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-prepared-tools-'));
+    const keys = ['ROBOTEAM_DATA_DIR', 'ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID',
+        'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND',
+        'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH'];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    t.after(async () => {
+        for (const key of keys) {
+            if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+        }
+        await fs.rm(root, { recursive: true, force: true });
+    });
+    process.env.ROBOTEAM_DATA_DIR = root;
+    await new RobotStore({ dataDir: root }).ensureDefaultRobot();
+    const cacheRoot = path.join(root, 'tool-cache');
+    const generation = path.join(cacheRoot, 'shell-generations', 'g1');
+    const real = path.join(cacheRoot, 'codex', 'generations', 'x', 'bin');
+    await fs.mkdir(path.join(generation, 'bin'), { recursive: true });
+    await fs.mkdir(path.join(cacheRoot, 'shell-selections'), { recursive: true });
+    await fs.mkdir(real, { recursive: true });
+    for (const name of ['codex', 'opencode', 'pi', 'claude']) {
+        await fs.writeFile(path.join(real, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+        await fs.symlink(path.relative(path.join(generation, 'bin'), path.join(real, name)), path.join(generation, 'bin', name));
+    }
+    await fs.symlink('../shell-generations/g1', path.join(cacheRoot, 'shell-selections', 'shell'));
+
+    const calls = [];
+    const make = () => new ToolCache({ root: cacheRoot, log: () => {}, versionPins: {},
+        execFileImpl: async (command, args) => { calls.push([command, ...args]); return { stdout: '"9.9.9"' }; } });
+    delete process.env.ROBOTEAM_COPILOT_ROOT;
+
+    await prepareCopilotContext('default', { dataDir: root, usePreparedTools: true, toolCache: make() });
+    assert.deepEqual(calls, []);
+    const selection = path.join(cacheRoot, 'shell-selections', 'shell', 'bin');
+    const selected = robotCodingAgents(await new RobotStore({ dataDir: root }).getByName('default'));
+    assert.ok(selected.length > 0);
+    for (const name of selected) assert.equal(process.env[`${name.toUpperCase()}_BIN`], path.join(selection, name));
+    assert.ok(process.env.PATH.split(path.delimiter).includes(selection));
+
+    // Validation runs on every call: a broken executable invalidates the generation.
+    await fs.rm(path.join(real, 'pi'));
+    assert.equal(await make().peekShellTools(), null);
+    await assert.rejects(prepareCopilotContext('default', { dataDir: root, usePreparedTools: true, toolCache: make() }));
+    assert.ok(calls.some((call) => call.includes('view')), 'npm lookup runs when no valid generation exists');
+
+    // Callers that do not opt in keep the existing preparation path.
+    calls.length = 0;
+    await fs.writeFile(path.join(real, 'pi'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await assert.rejects(prepareCopilotContext('default', { dataDir: root, toolCache: make() }));
+    assert.ok(calls.some((call) => call.includes('view')));
 });

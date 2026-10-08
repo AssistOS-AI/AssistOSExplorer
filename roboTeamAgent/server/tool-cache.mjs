@@ -167,6 +167,35 @@ export class ToolCache {
         });
     }
 
+    // Read-only, network-free view of the shell generation a long-lived service
+    // already prepared. Validated from disk on every call (no freshness window);
+    // returns null unless every coding-agent executable resolves inside the cache
+    // and any operator pin matches the recorded version. Never installs or upgrades.
+    async peekShellTools() {
+        try {
+            const selection = path.join(this.root, 'shell-selections', 'shell');
+            const directory = await fs.realpath(selection);
+            const realRoot = await fs.realpath(this.root);
+            if (!directory.startsWith(realRoot + path.sep)) return null;
+            const binPath = path.join(selection, 'bin');
+            const agents = {};
+            for (const [name, definition] of Object.entries(CODING_AGENT_PACKAGES)) {
+                const executable = path.join(binPath, definition.executable);
+                if (!(await isExecutable(executable))) return null;
+                if (!(await fs.realpath(executable)).startsWith(realRoot + path.sep)) return null;
+                const pin = this.versionPins[name];
+                if (pin !== undefined) {
+                    const descriptor = JSON.parse(await fs.readFile(path.join(this.root, name, 'current.json'), 'utf8'));
+                    if (descriptor?.schema !== CACHE_SCHEMA || descriptor.versions?.[name] !== pin) return null;
+                }
+                agents[name] = { path: directory, binPath, versions: {} };
+            }
+            return { root: this.root, path: directory, binPath, agents, prepared: true };
+        } catch {
+            return null;
+        }
+    }
+
     prepareCodingAgent(name) {
         if (!Object.hasOwn(CODING_AGENT_PACKAGES, name)) throw new Error(`unsupported coding agent: ${name}`);
         return this._once(name, () => this._prepareCodingAgent(name));
