@@ -710,8 +710,8 @@ export function formatWorkspaceTaskDetail(workingDir, taskId) {
     return output.join('\n');
 }
 
-export function buildTaskCompletions(workingDir, action = 'view') {
-    const tasks = readWorkspaceTasks(workingDir).filter((task) => {
+export function buildTaskCompletions(workingDir, action = 'view', snapshot = null) {
+    const tasks = (snapshot || readWorkspaceTasks(workingDir)).filter((task) => {
         if (action === 'pause') return task.status === 'ongoing';
         if (action === 'continue' || action === 'model' || action === 'login') {
             return TERMINAL_STATUSES.has(task.status) && Boolean(task.continuation?.handle);

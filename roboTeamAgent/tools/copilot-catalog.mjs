@@ -2,7 +2,7 @@ import path from 'node:path';
 import { skillCatalogRequest } from '../server/skill-catalog-api.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
 import { publicSkillsets, publicRepositories } from '../server/robot-skillsets.mjs';
-import { loadAutocompleteCatalog, buildSessionCompletions, buildTaskActionCompletions } from '../copilot/src/mcp/list-slash-commands.mjs';
+import { loadAutocompleteCatalog, buildSessionCompletions, buildTaskActionCompletionMap } from '../copilot/src/mcp/list-slash-commands.mjs';
 
 try {
     let raw = '';
@@ -20,8 +20,7 @@ try {
             sessionId: input.sessionId, freshSession: true, signal: AbortSignal.timeout(20000),
             execution: { robotId: context.robot.id },
             sessionCompletions: buildSessionCompletions(workingDir),
-            taskCompletions: Object.fromEntries(['view', 'continue', 'pause', 'model', 'login'].map((action) =>
-                [action, buildTaskActionCompletions(workingDir, action)])) });
+            taskCompletions: buildTaskActionCompletionMap(workingDir) });
     if (result.commands) {
         const skills = result.commands.find((command) => command.name === '/skills');
         if (skills) Object.assign(skills, { usage: '/skills [list | use <sources or qualified skills> | pin | live]',
