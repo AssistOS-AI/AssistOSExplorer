@@ -221,12 +221,12 @@ test('target and MCP probes overlap after the stability probe', async () => {
     assert.equal(await waiting, true);
 });
 
-test('a failing concurrent probe (permanent error wins) maps to the unavailable state and an abort suppresses it', async () => {
+test('a failing concurrent probe fails fast despite a hung sibling and maps to the unavailable state and an abort suppresses it', async () => {
     const states = [];
     const p = waitHarness({
         marketplaceEntry: null, runtimeReads: { count: 0 }, order: [],
         target: async () => { throw Object.assign(new Error('Target rejected'), { status: 403 }); },
-        mcp: async () => { throw Object.assign(new Error('MCP warming up'), { status: 503 }); }
+        mcp: async () => new Promise(() => {})
     });
     p.setState = message => states.push(message);
     const originalError = console.error;

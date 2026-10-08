@@ -216,11 +216,10 @@ test('runtime generation probe does not treat accepted startup or login HTML as 
     }
 });
 
-test('concurrent target and MCP probes prefer a permanent error over a transient one', async () => {
-    const transient = Object.assign(new Error('target warming up'), { status: 503 });
+test('concurrent target and MCP probes reject on the first failure without waiting for a hung sibling', async () => {
     const permanent = Object.assign(new Error('forbidden'), { status: 403 });
-    await assert.rejects(() => probeAgentRuntimeTargetAndMcp(async () => { throw transient; }, async () => { throw permanent; }), permanent);
-    await assert.rejects(() => probeAgentRuntimeTargetAndMcp(async () => { throw transient; }, async () => { throw new Error('mcp'); }), transient);
-    await assert.rejects(() => probeAgentRuntimeTargetAndMcp(async () => 'ok', async () => { throw permanent; }), permanent);
+    const hang = () => new Promise(() => {});
+    await assert.rejects(() => probeAgentRuntimeTargetAndMcp(async () => { throw permanent; }, hang), permanent);
+    await assert.rejects(() => probeAgentRuntimeTargetAndMcp(hang, async () => { throw permanent; }), permanent);
     assert.equal(await probeAgentRuntimeTargetAndMcp(async () => 'target', async () => 'mcp'), 'target');
 });

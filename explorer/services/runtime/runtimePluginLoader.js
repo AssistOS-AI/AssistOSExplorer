@@ -193,8 +193,8 @@ export function createRuntimePluginLoader({
         }
 
         const dependencyKeys = new Set();
-        // Toolbar-modal plugins render inside an iframe that loads its own components, so the
-        // parent registers only the presenter (includeDependencies: false).
+        // Iframe-mode toolbar modals render inside an iframe that loads its own components, so the
+        // parent registers only the presenter (includeDependencies: false). Component-mode modals keep dependencies.
         if (!meta.isDependency && options?.includeDependencies !== false) {
             forEachRuntimePluginEntry(plugins, (plugin) => {
                 if (
