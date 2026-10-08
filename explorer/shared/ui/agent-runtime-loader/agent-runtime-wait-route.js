@@ -134,24 +134,45 @@ async function readAgentRouteGeneration(agentRef, { fetchImpl, origin }) {
         error.code = 'agent_not_ready';
         throw error;
     }
-    return payload.generation;
+    // Optional activation fields (newer Routers). Malformed values are treated as absent, which selects the
+    // full forward check.
+    const validActivation = typeof payload.activation === 'string' && ACTIVATION_TOKEN_PATTERN.test(payload.activation)
+        && Number.isSafeInteger(payload.activeForMs) && payload.activeForMs >= 0;
+    return {
+        generation: payload.generation,
+        activation: validActivation ? payload.activation : null,
+        activeForMs: validActivation ? payload.activeForMs : null,
+        mutation: typeof payload.mutation === 'string' ? payload.mutation : null
+    };
 }
 
+const ACTIVATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,64}\.[1-9][0-9]{0,15}$/;
+
+// Two modes. Skip mode (no settle wait) applies only when the first read reports a valid activation that is
+// at least `settleMs` old and the Router positively reports no routing mutation in progress (`idle`); the
+// second read must then show the same activation, still `idle`. Every other case, including an older Router
+// that sends none of these fields, waits `settleMs` between the reads and requires an unchanged generation
+// and activation (forward mode).
 export async function probeAgentRuntimeRouteStability(agentRef, {
     fetchImpl = fetch,
     origin = window.location.origin,
     settleMs = 2500,
     wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs))
 } = {}) {
-    const firstGeneration = await readAgentRouteGeneration(agentRef, { fetchImpl, origin });
-    await wait(Math.max(0, Number(settleMs) || 0));
-    const secondGeneration = await readAgentRouteGeneration(agentRef, { fetchImpl, origin });
-    if (firstGeneration !== secondGeneration) {
+    const settle = Math.max(0, Number(settleMs) || 0);
+    const first = await readAgentRouteGeneration(agentRef, { fetchImpl, origin });
+    const skip = first.activation !== null && first.mutation === 'idle' && first.activeForMs >= settle;
+    if (!skip && settle > 0) await wait(settle);
+    const second = await readAgentRouteGeneration(agentRef, { fetchImpl, origin });
+    const changed = second.generation !== first.generation
+        || second.activation !== first.activation
+        || (skip && second.mutation !== 'idle');
+    if (changed) {
         const error = new Error('The agent routes are still being updated.');
         error.code = 'agent_not_ready';
         throw error;
     }
-    return secondGeneration;
+    return second.generation;
 }
 
 // Runs the target and MCP probes together with fail-fast semantics: the first rejection wins and a sibling
