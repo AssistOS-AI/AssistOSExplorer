@@ -1,13 +1,21 @@
 import { api, endpoint, routeKey } from './roboflow-api.js';
 import { openSkillsDialog, codingAgentLabel, openCodingAgentsDialog } from './skills-dialog.js';
 import { openRobotTerminal } from './terminal.js';
+import { initDashboardTabs } from './dashboard-tabs.js';
+import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
+import { initPageNavigation, restoreNavigationFocus } from './page-navigation.js';
 
 const robotsList = document.querySelector('#robotsList');
 const robotTemplate = document.querySelector('#robotTemplate');
 const robotCount = document.querySelector('#robotCount');
 const createForm = document.querySelector('#createForm');
 const formMessage = document.querySelector('#formMessage');
+const createFormMessage = document.querySelector('#createFormMessage');
+const createRobotButton = document.querySelector('#createRobotButton');
+let canCreateRobots = false;
+let creatingRobot = false;
 const workflowsList = document.querySelector('#workflowsList');
+const workflowTemplate = document.querySelector('#workflowTemplate');
 const workflowCount = document.querySelector('#workflowCount');
 const workflowListMessage = document.querySelector('#workflowListMessage');
 const addWorkflowButton = document.querySelector('#addWorkflowButton');
@@ -15,47 +23,61 @@ const logPollers = new Set();
 
 const warningText = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
 
+const navigation = initPageNavigation({
+    fallbackUrl: endpoint('?tab=workflow-types'),
+    captureView: () => ({
+        tabId: document.querySelector('[role="tab"][aria-selected="true"]')?.id,
+        scrollX: window.scrollX, scrollY: window.scrollY,
+        focusKey: document.activeElement?.dataset.navigationKey,
+        keyboardFocus: Boolean(document.activeElement?.matches(':focus-visible') && !document.activeElement.classList.contains('pointer-restored-focus')),
+        robotName: createForm.querySelector('input[name="name"]').value,
+    }),
+});
+const initialView = navigation.view;
+initDashboardTabs({ initialTabId: initialView?.tabId || (new URL(location.href).searchParams.get('tab') === 'workflow-types' ? 'workflowTypesTab' : undefined),
+    onChange: () => closeOpenMenus() });
+navigation.bindLink(addWorkflowButton);
+navigation.bindLink(document.querySelector('#flowsHistoryButton'));
+
+function restoreDashboardView(view) {
+    if (!view) return;
+    if (typeof view.robotName === 'string') createForm.querySelector('input[name="name"]').value = view.robotName;
+    requestAnimationFrame(() => {
+        const focus = Array.from(document.querySelectorAll('[data-navigation-key]')).find(element => element.dataset.navigationKey === view.focusKey);
+        restoreNavigationFocus(focus, view.keyboardFocus);
+        window.scrollTo(view.scrollX || 0, view.scrollY || 0);
+    });
+}
+const createDialog = initCreateRobotDialog({
+    dialog: document.querySelector('#createRobotDialog'),
+    trigger: createRobotButton,
+    closeButton: document.querySelector('#createRobotClose'),
+    cancelButton: document.querySelector('#createRobotCancel'),
+    onOpen() {
+        closeOpenMenus();
+        createFormMessage.textContent = '';
+    },
+});
+
 function closeOpenMenus(except) {
-    for (const menu of document.querySelectorAll('.robot-open')) {
+    for (const menu of document.querySelectorAll('.robot-open, .robot-manage')) {
         if (menu === except) continue;
-        menu.querySelector('.open-toggle').setAttribute('aria-expanded', 'false');
-        menu.querySelector('.open-options').hidden = true;
+        menu.querySelector('[data-robot-menu-toggle]').setAttribute('aria-expanded', 'false');
+        menu.querySelector('[data-robot-menu-options]').hidden = true;
     }
 }
 
-document.addEventListener('click', event => closeOpenMenus(event.target.closest('.robot-open')));
+document.addEventListener('click', event => closeOpenMenus(event.target.closest('.robot-open, .robot-manage')));
 document.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
-    const toggle = document.querySelector('.open-toggle[aria-expanded="true"]');
+    const toggle = document.querySelector('[data-robot-menu-toggle][aria-expanded="true"]');
     if (toggle) { closeOpenMenus(); toggle.focus(); }
 });
 
 function prepareOpenMenu(card, robot) {
-    const menu = card.querySelector('.robot-open');
-    const toggle = menu.querySelector('.open-toggle');
-    const options = menu.querySelector('.open-options');
-    options.id = `open-options-${robot.id}`;
-    toggle.setAttribute('aria-controls', options.id);
-    toggle.addEventListener('click', () => {
-        const opening = options.hidden;
-        closeOpenMenus();
-        options.hidden = !opening;
-        toggle.setAttribute('aria-expanded', String(opening));
-    });
-    toggle.addEventListener('keydown', event => {
-        if (event.key !== 'ArrowDown') return;
-        event.preventDefault();
-        closeOpenMenus();
-        options.hidden = false;
-        toggle.setAttribute('aria-expanded', 'true');
-        options.querySelector('button:not([hidden]):not(:disabled)')?.focus();
-    });
-    options.addEventListener('click', event => {
-        if (event.target.closest('button')) { closeOpenMenus(); toggle.focus(); }
-    });
-    menu.addEventListener('focusout', event => {
-        if (!menu.contains(event.relatedTarget)) closeOpenMenus();
-    });
+    initRobotMenu({ menu: card.querySelector('.robot-open'), id: `open-options-${robot.id}`, closeMenus: closeOpenMenus });
+    initRobotMenu({ menu: card.querySelector('.robot-manage'), id: `manage-options-${robot.id}`,
+        label: `More actions for ${robot.name}`, closeMenus: closeOpenMenus });
 }
 
 function initials(name) {
@@ -132,7 +154,7 @@ function renderRobots(robots, canAdmin = false) {
     if (!robots.length) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.innerHTML = '<h3>No robots yet</h3><p>Create the first persistent robot above.</p>';
+        empty.innerHTML = '<h3>No robots yet</h3><p>Use Create robot to add your first persistent robot.</p>';
         robotsList.append(empty);
         return;
     }
@@ -154,6 +176,7 @@ function renderRobots(robots, canAdmin = false) {
         card.querySelector('.manage-skills').addEventListener('click', () => openSkillsDialog(robot, { api, onChanged: loadRobots, canAdmin }));
         const deleteButton = card.querySelector('.delete-robot');
         deleteButton.hidden = !canAdmin;
+        card.querySelector('.robot-danger-actions').hidden = !canAdmin;
         deleteButton.disabled = robot.run.state !== 'stopped'
             || ['queued', 'starting', 'running', 'pausing'].includes(robot.run.task?.state);
         deleteButton.title = 'Stop the container and all unfinished tasks before deleting this robot.';
@@ -174,8 +197,12 @@ function renderRobots(robots, canAdmin = false) {
         codingButton.hidden = !canAdmin;
         codingButton.addEventListener('click', () => openCodingAgentsDialog(robot, { api, onChanged: loadRobots }));
         const state = card.querySelector('.run-state');
-        state.textContent = robot.run.mode ? `${robot.run.state} · ${robot.run.mode}` : robot.run.state;
+        state.textContent = robot.run.state;
+        state.title = robot.run.mode ? `${robot.run.state} · ${robot.run.mode}` : robot.run.state;
         state.classList.add(`state-${robot.run.state}`);
+        const mode = card.querySelector('.robot-mode');
+        mode.textContent = robot.run.mode || '';
+        mode.hidden = !robot.run.mode;
         const running = robot.run.state !== 'stopped';
         const ready = robot.run.state === 'running' && robot.run.sessionUrl;
         const browserButton = card.querySelector('.open-browser');
@@ -209,8 +236,11 @@ function renderRobots(robots, canAdmin = false) {
         });
         const logsButton = card.querySelector('.view-logs');
         const logsPanel = card.querySelector('.robot-logs');
+        const logSection = card.querySelector('.robot-log-section');
+        const hideLogsButton = card.querySelector('.hide-logs');
         logsPanel.id = `robot-logs-${robot.id}`;
         logsButton.setAttribute('aria-controls', logsPanel.id);
+        logsButton.setAttribute('aria-label', `Show logs for ${robot.name}`);
         let logPoller = null;
         let logRequestActive = false;
         const stopLogPolling = () => {
@@ -219,6 +249,18 @@ function renderRobots(robots, canAdmin = false) {
             logPollers.delete(logPoller);
             logPoller = null;
         };
+        const hideLogs = () => {
+            stopLogPolling();
+            logsPanel.hidden = true;
+            logSection.hidden = true;
+            logsButton.setAttribute('aria-expanded', 'false');
+            logsButton.setAttribute('aria-label', `Show logs for ${robot.name}`);
+            logsButton.title = 'Show logs';
+        };
+        hideLogsButton.addEventListener('click', () => {
+            hideLogs();
+            logsButton.focus();
+        });
         const refreshContainerLogs = async () => {
             if (logsPanel.hidden || logRequestActive) return;
             logRequestActive = true;
@@ -245,16 +287,16 @@ function renderRobots(robots, canAdmin = false) {
         };
         logsButton.addEventListener('click', async () => {
             if (!logsPanel.hidden) {
-                stopLogPolling();
-                logsPanel.hidden = true;
-                logsButton.setAttribute('aria-expanded', 'false');
-                logsButton.classList.remove('is-active');
+                hideLogs();
+                logsButton.focus();
                 return;
             }
             logsPanel.textContent = 'Loading container logs…';
             logsPanel.hidden = false;
+            logSection.hidden = false;
             logsButton.setAttribute('aria-expanded', 'true');
-            logsButton.classList.add('is-active');
+            logsButton.setAttribute('aria-label', `Hide logs for ${robot.name}`);
+            logsButton.title = 'Hide logs';
             await refreshContainerLogs();
             if (!logsPanel.hidden && logPoller === null) {
                 logPoller = setInterval(refreshContainerLogs, 1000);
@@ -266,39 +308,48 @@ function renderRobots(robots, canAdmin = false) {
 }
 
 function renderWorkflows(workflows, canAdmin) {
-    workflowCount.textContent = `${workflows.length} workflows`;
+    workflowCount.textContent = `${workflows.length} ${workflows.length === 1 ? 'workflow' : 'workflows'}`;
     workflowsList.replaceChildren();
+    if (!workflows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.innerHTML = '<h3>No workflow types yet</h3><p>Workflow types will appear here once created.</p>';
+        workflowsList.append(empty);
+        return;
+    }
     for (const workflow of workflows) {
-        const card = document.createElement('article');
-        card.className = 'workflow-card';
-        const title = document.createElement('h3');
-        title.textContent = workflow.name;
-        const description = document.createElement('p');
+        const card = workflowTemplate.content.firstElementChild.cloneNode(true);
+        const builtIn = workflow.readOnly || workflow.id === 'default' || workflow.kind === 'default';
+        card.querySelector('.avatar').textContent = initials(workflow.name);
+        card.querySelector('h3').textContent = workflow.name;
+        card.querySelector('.robot-id').textContent = workflow.id;
+        card.querySelector('.workflow-kind').textContent = builtIn ? 'Built-in' : 'Custom';
+        const description = card.querySelector('.workflow-description');
         description.textContent = workflow.description;
-        card.append(title, description);
+        description.hidden = !workflow.description;
         if (workflow.coverage?.warning) {
-            const warning = document.createElement('span');
-            warning.className = 'workflow-warning';
-            warning.textContent = '⚠';
+            const warning = card.querySelector('.workflow-coverage-warning');
+            warning.hidden = false;
+            warning.textContent = '⚠ Missing matching robots';
             warning.title = warningText;
             warning.setAttribute('aria-label', warningText);
-            card.append(warning);
         }
-        const counts = document.createElement('p');
-        counts.textContent = `${workflow.tasks.length} tasks · ${workflow.edges.length} connections`;
-        card.append(counts);
-        const link = document.createElement('a');
-        link.className = 'button';
+        const counts = card.querySelector('.workflow-counts');
+        counts.textContent = `${workflow.tasks.length} ${workflow.tasks.length === 1 ? 'task' : 'tasks'} · ${workflow.edges.length} ${workflow.edges.length === 1 ? 'connection' : 'connections'}`;
+        const link = card.querySelector('.workflow-open');
         link.href = endpoint(`flow-types?id=${encodeURIComponent(workflow.id)}`);
-        link.textContent = canAdmin && !workflow.readOnly && workflow.kind !== 'default' ? 'Edit workflow' : 'View workflow';
-        const actions = document.createElement('div');
-        actions.className = 'workflow-actions';
-        actions.append(link);
+        const action = canAdmin && !workflow.readOnly && workflow.kind !== 'default' ? 'Edit workflow' : 'View workflow';
+        link.setAttribute('aria-label', `${action} ${workflow.name}`);
+        link.title = 'View workflow';
+        link.dataset.navigationKey = `workflow:${workflow.id}`;
+        navigation.bindLink(link);
         if (canAdmin && !workflow.readOnly && workflow.id !== 'default' && workflow.kind !== 'default') {
-            const remove = document.createElement('button');
-            remove.type = 'button';
-            remove.className = 'button danger';
-            remove.textContent = 'Delete';
+            card.classList.add('workflow-card-manageable');
+            const menu = card.querySelector('.robot-manage');
+            menu.hidden = false;
+            initRobotMenu({ menu, id: `workflow-options-${workflow.id}`,
+                label: `More actions for workflow ${workflow.name}`, closeMenus: closeOpenMenus });
+            const remove = card.querySelector('.delete-workflow');
             remove.setAttribute('aria-label', `Delete workflow type ${workflow.name}`);
             remove.addEventListener('click', async () => {
                 if (remove.disabled || !confirm(`Delete workflow type "${workflow.name}"? Existing runs and their history will be kept.`)) return;
@@ -312,12 +363,10 @@ function renderWorkflows(workflows, canAdmin) {
                     workflowListMessage.textContent = error.message;
                 } finally {
                     remove.disabled = false;
-                    remove.textContent = 'Delete';
+                    remove.textContent = 'Delete workflow';
                 }
             });
-            actions.append(remove);
         }
-        card.append(actions);
         workflowsList.append(card);
     }
 }
@@ -336,30 +385,56 @@ async function loadWorkflows(canAdmin) {
 async function loadRobots() {
     try {
         const result = await api('api/robots');
+        canCreateRobots = result.canAdmin === true;
+        updateCreateControls();
         renderRobots(result.robots || [], result.canAdmin === true);
-        for (const field of createForm.elements) field.disabled = result.canAdmin !== true;
         await loadWorkflows(result.canAdmin === true);
     } catch (error) {
         robotsList.textContent = `Robots unavailable: ${error.message}`;
     }
 }
 
+function updateCreateControls() {
+    const disabled = !canCreateRobots || creatingRobot;
+    createRobotButton.disabled = disabled;
+    createForm.querySelector('input[name="name"]').disabled = disabled;
+    const submit = createForm.querySelector('button[type="submit"]');
+    submit.disabled = disabled;
+    submit.textContent = creatingRobot ? 'Creating…' : 'Create robot';
+}
+
 createForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const submit = createForm.querySelector('button[type="submit"]');
-    submit.disabled = true;
+    if (creatingRobot || !canCreateRobots) return;
     const data = new FormData(createForm);
+    creatingRobot = true;
+    createDialog.setBusy(true);
+    updateCreateControls();
+    let created = false;
+    createFormMessage.textContent = '';
     try {
         await api('api/robots', { method: 'POST', body: { name: data.get('name') } });
+        created = true;
         createForm.reset();
         formMessage.textContent = 'Robot created.';
         formMessage.className = 'message success';
         await loadRobots();
     } catch (error) {
-        showError(error);
+        createFormMessage.textContent = error.message;
+        createFormMessage.className = 'message error';
     } finally {
-        submit.disabled = false;
+        creatingRobot = false;
+        createDialog.setBusy(false);
+        updateCreateControls();
+        if (created) createDialog.complete();
+        else createForm.querySelector('input[name="name"]').focus();
     }
 });
 
 await loadRobots();
+restoreDashboardView(initialView);
+window.addEventListener('pageshow', async event => {
+    if (!event.persisted) return;
+    await loadRobots();
+    restoreDashboardView(navigation.view);
+});

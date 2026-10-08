@@ -1,6 +1,9 @@
 import { renderLog } from './log-render.js';
 import { generateGraph } from './workflow-generator.js';
 import { endpoint } from './roboflow-api.js';
+import { initPageNavigation } from './page-navigation.js';
+
+const navigation = initPageNavigation({ fallbackUrl: endpoint('?tab=workflow-types') });
 
 const description = document.querySelector('#generationDescription');
 const generateButton = document.querySelector('#generateButton');
@@ -23,7 +26,7 @@ function setLog(text) {
 }
 
 function goToEditor() {
-    location.assign(endpoint('flow-types/new'));
+    navigation.navigate(endpoint('flow-types/new'));
 }
 
 async function generate() {

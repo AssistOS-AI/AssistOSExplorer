@@ -12,7 +12,7 @@ function leaveEditor() {
     location.assign(appUrl(''));
 }
 
-export function createWorkflowEditor({ api }) {
+export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const form = document.querySelector('#workflowForm');
     const taskList = document.querySelector('#taskList');
     const taskPanel = document.querySelector('#taskEditorPanel');
@@ -410,13 +410,14 @@ export function createWorkflowEditor({ api }) {
         form.elements.name.value = graph.name; form.elements.description.value = graph.description;
         for (const control of form.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
         for (const control of document.querySelectorAll('.workflow-page-button')) control.disabled = false;
+        document.querySelector('#workflowCancelButton').disabled = false;
         addTaskButton.disabled = readonly();
         const createButton = document.querySelector('#workflowCreateButton');
         if (createButton) createButton.hidden = readonly();
         render(); showPage('settings');
         try { const result = await api('api/roboflow/skillsets'); catalog = result.skillsets; render(); if (result.diagnostics.length) message.textContent = result.diagnostics.map(item => item.message).join('\n'); } catch (error) { showError(error); }
     }
-    document.querySelector('#workflowCancelButton').onclick = leaveEditor;
+    document.querySelector('#workflowCancelButton').onclick = onClose;
     form.elements.name.oninput = event => { graph.name = event.target.value; changed(); };
     form.elements.description.oninput = event => { graph.description = event.target.value; changed(); };
     for (const control of document.querySelectorAll('.workflow-page-button')) control.onclick = () => showPage(control.dataset.page);
@@ -437,7 +438,7 @@ export function createWorkflowEditor({ api }) {
             taskPanel.querySelector(!invalidTask.name?.trim() ? 'input' : 'textarea')?.focus();
             return;
         }
-        try { await api(graph.id ? `api/roboflow/workflows/${graph.id}` : 'api/roboflow/workflows', { method: graph.id ? 'PUT' : 'POST', body: graph }); leaveEditor(); }
+        try { await api(graph.id ? `api/roboflow/workflows/${graph.id}` : 'api/roboflow/workflows', { method: graph.id ? 'PUT' : 'POST', body: graph }); onClose(); }
         catch (error) { showError(error); }
     };
     return { open };

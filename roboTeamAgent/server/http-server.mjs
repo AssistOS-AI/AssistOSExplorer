@@ -401,6 +401,9 @@ export function createRoboTeamServer(options) {
             if (['/workflow-editor.js', '/workflow-board.js', '/workflow-routing.js', '/workflow-generator.js', '/workflow-editor.css',
                 '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js',
                 '/log-render.js', '/webchat-logs.js', '/summary.js', '/conversation-skills.js', '/conversation-skills-model.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
+            if (pathname === '/dashboard-tabs.js' && req.method === 'GET') return serveFile(res, publicDir, 'dashboard-tabs.js');
+            if (pathname === '/robot-controls.js' && req.method === 'GET') return serveFile(res, publicDir, 'robot-controls.js');
+            if (pathname === '/page-navigation.js' && req.method === 'GET') return serveFile(res, publicDir, 'page-navigation.js');
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
             if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(res, publicDir, 'skills-dialog.js');
             if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(res, publicDir, 'terminal.js');

@@ -1,11 +1,14 @@
-import { api } from './roboflow-api.js';
+import { api, endpoint } from './roboflow-api.js';
 import { createWorkflowEditor } from './workflow-editor.js';
+import { initPageNavigation } from './page-navigation.js';
 
 const leaf = document.querySelector('#breadcrumbLeaf');
 const generateLink = document.querySelector('#breadcrumbGenerate');
 const generateSep = document.querySelector('#breadcrumbGenerateSep');
 const message = document.querySelector('#workflowMessage');
-const editor = createWorkflowEditor({ api });
+const navigation = initPageNavigation({ fallbackUrl: endpoint('?tab=workflow-types') });
+navigation.bindLink(generateLink);
+const editor = createWorkflowEditor({ api, onClose: navigation.returnToOrigin });
 
 try {
     const [{ canAdmin }, { workflows }] = await Promise.all([api('api/robots'), api('api/roboflow/workflows')]);
