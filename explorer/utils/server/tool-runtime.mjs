@@ -132,13 +132,18 @@ export async function createExplorerToolRuntime({
     const content = await readFileContent(validPath);
     return { content, stats };
   };
-  let listDirectoryDetailedWithCache = async (validPath) => {
+  let listDirectoryDetailedWithCache = async (validPath, { limit } = {}) => {
     const entries = await fs.readdir(validPath, { withFileTypes: true });
     const visibleEntries = entries.filter((entry) => !isProtectedSecretName(entry?.name));
+    if (Number.isFinite(limit) && limit >= 0 && visibleEntries.length > limit) {
+      const partial = await Promise.all(visibleEntries.slice(0, limit).map((entry) => describeDirectoryEntry(validPath, entry)));
+      Object.defineProperty(partial, 'truncated', { value: true, enumerable: false });
+      return partial;
+    }
     return Promise.all(visibleEntries.map((entry) => describeDirectoryEntry(validPath, entry)));
   };
   let invalidateCachesForPath = () => {};
-  let indexDirectory = async (validDirPath) => listDirectoryDetailedWithCache(validDirPath);
+  let indexDirectory = async (validDirPath, options) => listDirectoryDetailedWithCache(validDirPath, options);
   let structureIndex = new Map();
   let invalidateStructureIndexForPathAndParents = () => {};
   let invalidateStructureIndexSubtree = () => {};
