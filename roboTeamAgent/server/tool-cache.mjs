@@ -183,11 +183,19 @@ export class ToolCache {
                 const executable = path.join(binPath, definition.executable);
                 if (!(await isExecutable(executable))) return null;
                 if (!(await fs.realpath(executable)).startsWith(realRoot + path.sep)) return null;
+                // The selection is relinked only by prepareShellTools, while current.json is
+                // also advanced per agent elsewhere; require both to name the same binary,
+                // and check descriptor, stamp and pin exactly as _fallback does.
+                const bundleRoot = path.join(this.root, name);
+                const descriptor = JSON.parse(await fs.readFile(path.join(bundleRoot, 'current.json'), 'utf8'));
+                if (descriptor?.schema !== CACHE_SCHEMA || descriptor.name !== name || !/^[0-9a-f]{64}$/u.test(descriptor.generation || '')) return null;
+                const generation = path.join(bundleRoot, 'generations', descriptor.generation);
+                const stamp = JSON.parse(await fs.readFile(path.join(generation, 'stamp.json'), 'utf8'));
+                if (stamp?.schema !== CACHE_SCHEMA || stamp.name !== name || stamp.generation !== descriptor.generation) return null;
                 const pin = this.versionPins[name];
-                if (pin !== undefined) {
-                    const descriptor = JSON.parse(await fs.readFile(path.join(this.root, name, 'current.json'), 'utf8'));
-                    if (descriptor?.schema !== CACHE_SCHEMA || descriptor.versions?.[name] !== pin) return null;
-                }
+                if (pin !== undefined && (descriptor.versions?.[name] !== pin || stamp.versions?.[name] !== pin)) return null;
+                const current = path.join(generation, 'bin', definition.executable);
+                if (!(await isExecutable(current)) || await fs.realpath(current) !== await fs.realpath(executable)) return null;
                 agents[name] = { path: directory, binPath, versions: {} };
             }
             return { root: this.root, path: directory, binPath, agents, prepared: true };

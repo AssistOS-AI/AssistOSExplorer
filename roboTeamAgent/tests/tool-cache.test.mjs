@@ -11,6 +11,28 @@ async function writeExecutable(filePath) {
     await fs.chmod(filePath, 0o755);
 }
 
+// Builds what a service leaves on disk: per-agent generations with current.json and
+// stamp.json, plus the shell selection whose bin symlinks point at those generations.
+async function writePreparedShell(cacheRoot, versions = { codex: '1.0.0', opencode: '1.0.0', pi: '1.0.0', claude: '1.0.0' }, tag = 'a') {
+    const schema = toolCacheInternals.CACHE_SCHEMA;
+    const generation = path.join(cacheRoot, 'shell-generations', `g-${tag}`);
+    await fs.mkdir(path.join(generation, 'bin'), { recursive: true });
+    await fs.mkdir(path.join(cacheRoot, 'shell-selections'), { recursive: true });
+    for (const [name, definition] of Object.entries(toolCacheInternals.CODING_AGENT_PACKAGES)) {
+        const id = (tag + name).padEnd(64, '0').replace(/[^0-9a-f]/g, 'f');
+        const directory = path.join(cacheRoot, name, 'generations', id);
+        const binary = path.join(directory, 'bin', definition.executable);
+        await writeExecutable(binary);
+        const stamp = { schema, name, generation: id, versions: { [name]: versions[name] } };
+        await fs.writeFile(path.join(directory, 'stamp.json'), JSON.stringify(stamp));
+        await fs.writeFile(path.join(cacheRoot, name, 'current.json'), JSON.stringify(stamp));
+        await fs.symlink(path.relative(path.join(generation, 'bin'), binary), path.join(generation, 'bin', name));
+    }
+    const selection = path.join(cacheRoot, 'shell-selections', 'shell');
+    await fs.rm(selection, { force: true });
+    await fs.symlink(path.relative(path.dirname(selection), generation), selection);
+}
+
 test('startup warms every tool and concurrent requests reuse the same installations', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-startup-cache-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -437,4 +459,33 @@ test('idempotency: repeated warm-ups and shell selections from separate instance
     for (const cache of caches) { await cache.prepareShellTools(['codex']); await cache.prepareShellTools(['codex']); }
     assert.equal(installs(exec.calls).filter(call => call.at(-1).startsWith(`${CODEX}@`)).length, 1);
     assert.deepEqual(await fs.readdir(path.join(root, 'codex', 'generations')), [generationOf(PIN)]);
+});
+
+test('peekShellTools reuses a consistent prepared shell and rejects pin or selection mismatches without network', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-peek-cache-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const make = (versionPins = {}) => new ToolCache({ root, log: () => {}, versionPins,
+        execFileImpl: async (...call) => { calls.push(call); return { stdout: '"9.9.9"' }; } });
+    await writePreparedShell(root);
+    assert.ok(await make().peekShellTools());
+    assert.ok(await make({ codex: '1.0.0' }).peekShellTools(), 'matching pin reuses');
+    assert.equal(await make({ codex: '2.0.0' }).peekShellTools(), null, 'pin mismatch');
+
+    // current.json advanced (e.g. by prepareCodingAgents([agent])) without relinking the selection.
+    const stale = JSON.parse(await fs.readFile(path.join(root, 'pi', 'current.json'), 'utf8'));
+    const newer = 'b'.repeat(64);
+    const newerDir = path.join(root, 'pi', 'generations', newer);
+    await writeExecutable(path.join(newerDir, 'bin', 'pi'));
+    const stamp = { ...stale, generation: newer, versions: { pi: '2.0.0' } };
+    await fs.writeFile(path.join(newerDir, 'stamp.json'), JSON.stringify(stamp));
+    await fs.writeFile(path.join(root, 'pi', 'current.json'), JSON.stringify(stamp));
+    assert.equal(await make().peekShellTools(), null, 'current.json ahead of a stale selection');
+    assert.equal(await make({ pi: '2.0.0' }).peekShellTools(), null, 'pinned version not what the selection resolves to');
+
+    await writePreparedShell(root, { codex: '1.0.0', opencode: '1.0.0', pi: '2.0.0', claude: '1.0.0' }, 'c');
+    assert.ok(await make({ pi: '2.0.0' }).peekShellTools(), 'relinked selection is consistent again');
+    await fs.rm(path.join(root, 'codex', 'current.json'));
+    assert.equal(await make().peekShellTools(), null, 'missing descriptor');
+    assert.deepEqual(calls, []);
 });

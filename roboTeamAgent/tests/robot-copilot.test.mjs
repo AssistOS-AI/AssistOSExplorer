@@ -191,13 +191,19 @@ test('catalog listing reuses a valid prepared shell generation without npm looku
     await new RobotStore({ dataDir: root }).ensureDefaultRobot();
     const cacheRoot = path.join(root, 'tool-cache');
     const generation = path.join(cacheRoot, 'shell-generations', 'g1');
-    const real = path.join(cacheRoot, 'codex', 'generations', 'x', 'bin');
+    let piBin;
     await fs.mkdir(path.join(generation, 'bin'), { recursive: true });
     await fs.mkdir(path.join(cacheRoot, 'shell-selections'), { recursive: true });
-    await fs.mkdir(real, { recursive: true });
     for (const name of ['codex', 'opencode', 'pi', 'claude']) {
-        await fs.writeFile(path.join(real, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-        await fs.symlink(path.relative(path.join(generation, 'bin'), path.join(real, name)), path.join(generation, 'bin', name));
+        const id = name[0].repeat(64).replace(/[^0-9a-f]/g, 'e');
+        const bin = path.join(cacheRoot, name, 'generations', id, 'bin');
+        await fs.mkdir(bin, { recursive: true });
+        await fs.writeFile(path.join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+        const stamp = JSON.stringify({ schema: 'roboteam-tool-cache-v1', name, generation: id, versions: { [name]: '1.0.0' } });
+        await fs.writeFile(path.join(cacheRoot, name, 'generations', id, 'stamp.json'), stamp);
+        await fs.writeFile(path.join(cacheRoot, name, 'current.json'), stamp);
+        await fs.symlink(path.relative(path.join(generation, 'bin'), path.join(bin, name)), path.join(generation, 'bin', name));
+        if (name === 'pi') piBin = path.join(bin, name);
     }
     await fs.symlink('../shell-generations/g1', path.join(cacheRoot, 'shell-selections', 'shell'));
 
@@ -215,14 +221,14 @@ test('catalog listing reuses a valid prepared shell generation without npm looku
     assert.ok(process.env.PATH.split(path.delimiter).includes(selection));
 
     // Validation runs on every call: a broken executable invalidates the generation.
-    await fs.rm(path.join(real, 'pi'));
+    await fs.rm(piBin);
     assert.equal(await make().peekShellTools(), null);
     await assert.rejects(prepareCopilotContext('default', { dataDir: root, usePreparedTools: true, toolCache: make() }));
     assert.ok(calls.some((call) => call.includes('view')), 'npm lookup runs when no valid generation exists');
 
     // Callers that do not opt in keep the existing preparation path.
     calls.length = 0;
-    await fs.writeFile(path.join(real, 'pi'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    await assert.rejects(prepareCopilotContext('default', { dataDir: root, toolCache: make() }));
+    await fs.writeFile(piBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await prepareCopilotContext('default', { dataDir: root, toolCache: make() });
     assert.ok(calls.some((call) => call.includes('view')));
 });
