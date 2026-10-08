@@ -68,7 +68,7 @@ function searchResultFallback(toolResults = []) {
 }
 
 function failureCategory(error) {
-  if (error?.code === 'empty_planner_response') return 'empty_planner_response';
+  if (['empty_planner_response', 'principal_required', 'principal_mismatch'].includes(error?.code)) return error.code;
   return 'research_request_failed';
 }
 
@@ -84,6 +84,9 @@ export async function createDpuResearchAgent({
   const mainAgent = new MainAgent({ startDir: codeRoot, ...mainAgentOptions });
   let activeAuthInfo = null;
   let activeToolResults = [];
+  // One DPU process serves one verified user. The first verified principal
+  // pins the process; any other principal is refused before planning.
+  let pinnedPrincipalId = '';
   const baseBuildTools = typeof mainAgent._buildToolsForSession === 'function'
     ? mainAgent._buildToolsForSession.bind(mainAgent)
     : () => ({});
@@ -111,7 +114,7 @@ export async function createDpuResearchAgent({
     } = {}) {
       const request = String(message || '').trim();
       if (!request) throw new Error('A research request is required.');
-      activeAuthInfo = await verifyInvocation({
+      const verifiedAuthInfo = await verifyInvocation({
         invocationToken,
         message: request,
         attachments,
@@ -120,6 +123,11 @@ export async function createDpuResearchAgent({
         sourceTabId,
         sourcePageInstanceId
       });
+      const principalId = String(verifiedAuthInfo?.principalId || '').trim();
+      if (!principalId) throw new DpuAgentResponseError('principal_required');
+      if (!pinnedPrincipalId) pinnedPrincipalId = principalId;
+      if (principalId !== pinnedPrincipalId) throw new DpuAgentResponseError('principal_mismatch');
+      activeAuthInfo = verifiedAuthInfo;
       activeToolResults = [];
       const prompt = [
         'User research request:', request,
