@@ -280,32 +280,52 @@ test('disposal runs exactly once after call, serialization and asynchronous outp
     }
 });
 
-test('E4: the adapter is inert and every Explorer tool keeps its spawn contract', async () => {
-    const descriptor = JSON.parse(await fs.readFile(new URL('../../mcp-config.json', import.meta.url), 'utf8'));
-    assert.equal(descriptor.toolWorkers, undefined);
-    const baselineToolNames = [
-        'read_file', 'read_text_file', 'read_media_file', 'read_multiple_files',
-        'write_file', 'write_binary_file', 'edit_file', 'create_directory',
-        'delete_file', 'delete_directory', 'list_directory', 'list_directory_with_sizes',
-        'list_directory_detailed', 'directory_tree', 'move_file', 'copy_file',
-        'search_files', 'search_text', 'search_text_status', 'search_text_cancel',
-        'replace_text', 'get_file_info', 'open_markdown_crdt_document',
-        'apply_markdown_crdt_change', 'merge_markdown_crdt_document',
-        'save_markdown_crdt_document', 'sync_markdown_crdt_from_file',
-        'scripta_crdt_ensure_folder', 'scripta_crdt_workspace_list', 'scripta_crdt_create',
-        'scripta_crdt_open', 'scripta_crdt_mutate', 'scripta_crdt_delete',
-        'webmeet_media_commit', 'webmeet_media_get', 'scripta_collaboration_open',
-        'scripta_collaboration_pull', 'scripta_collaboration_apply',
-        'scripta_collaboration_merge_markdown', 'llm_autocomplete', 'collect_ide_plugins',
-        'get_plugin_settings', 'set_plugin_enabled', 'read_skills_manifest_state',
-        'add_skills_manifest_repo', 'set_skills_manifest_skill_enabled',
-        'remove_skills_manifest_repo', 'list_allowed_directories',
-        'get_avatar_settings_agents', 'update_avatar_settings_agent',
-        'set_avatar_settings_agent_visibility',
-    ];
+const baselineToolNames = [
+    'read_file', 'read_text_file', 'read_media_file', 'read_multiple_files',
+    'write_file', 'write_binary_file', 'edit_file', 'create_directory',
+    'delete_file', 'delete_directory', 'list_directory', 'list_directory_with_sizes',
+    'list_directory_detailed', 'directory_tree', 'move_file', 'copy_file',
+    'search_files', 'search_text', 'search_text_status', 'search_text_cancel',
+    'replace_text', 'get_file_info', 'open_markdown_crdt_document',
+    'apply_markdown_crdt_change', 'merge_markdown_crdt_document',
+    'save_markdown_crdt_document', 'sync_markdown_crdt_from_file',
+    'scripta_crdt_ensure_folder', 'scripta_crdt_workspace_list', 'scripta_crdt_create',
+    'scripta_crdt_open', 'scripta_crdt_mutate', 'scripta_crdt_delete',
+    'webmeet_media_commit', 'webmeet_media_get', 'scripta_collaboration_open',
+    'scripta_collaboration_pull', 'scripta_collaboration_apply',
+    'scripta_collaboration_merge_markdown', 'llm_autocomplete', 'collect_ide_plugins',
+    'get_plugin_settings', 'set_plugin_enabled', 'read_skills_manifest_state',
+    'add_skills_manifest_repo', 'set_skills_manifest_skill_enabled',
+    'remove_skills_manifest_repo', 'list_allowed_directories',
+    'get_avatar_settings_agents', 'update_avatar_settings_agent',
+    'set_avatar_settings_agent_visibility',
+];
+
+// Tools that stay in spawn mode, with the reason each one is excluded from the warm pool.
+const spawnOnlyTools = {
+    search_text: 'runs for up to 30 s and would hold a pool lane',
+    replace_text: 'runs for up to 45 s and would hold a pool lane',
+    update_avatar_settings_agent: 'imports code from AXIFACE_REPO_PATH, outside the code-identity roots',
+    llm_autocomplete: 'uses its own command, tools/llm_autocomplete_tool.sh',
+    add_skills_manifest_repo: 'calls the Router repository client (install/listRepositories, 30 s timeouts)',
+    set_skills_manifest_skill_enabled: 'calls the Router repository client (install/listRepositories, 30 s timeouts)',
+    remove_skills_manifest_repo: 'calls the Router repository client (remove/install, 30 s timeouts)',
+    read_skills_manifest_state: 'caches repositories through the Router repository client (listRepositories/prepareRepository)',
+};
+
+async function readDescriptor() {
+    return JSON.parse(await fs.readFile(new URL('../../mcp-config.json', import.meta.url), 'utf8'));
+}
+
+test('E4: exactly the approved tools opt in to the explorer warm pool and the rest keep their spawn contract', async () => {
+    const descriptor = await readDescriptor();
+    assert.deepEqual(descriptor.toolWorkers, {
+        explorer: { command: 'tools/explorer_tool_worker.sh', cwd: 'workspace', size: 3 },
+    });
     assert.deepEqual(descriptor.tools.map(tool => tool.name), baselineToolNames);
     for (const tool of descriptor.tools) {
-        assert.equal(tool.worker, undefined, tool.name);
+        const excluded = Object.hasOwn(spawnOnlyTools, tool.name);
+        assert.equal(tool.worker, excluded ? undefined : 'explorer', tool.name);
         assert.deepEqual({
             command: tool.command,
             cwd: tool.cwd,
@@ -321,7 +341,25 @@ test('E4: the adapter is inert and every Explorer tool keeps its spawn contract'
             timeoutMs: undefined,
             async: undefined,
         }, tool.name);
+        // resolveToolWorkerPool requires the tool cwd to equal the pool cwd.
+        if (!excluded) assert.equal(tool.cwd, descriptor.toolWorkers.explorer.cwd, tool.name);
     }
+});
+
+test('B-T4: the worker set and the documented spawn-only set are pinned exactly', async () => {
+    const descriptor = await readDescriptor();
+    const workers = descriptor.tools.filter(tool => tool.worker === 'explorer').map(tool => tool.name);
+    const spawnOnly = descriptor.tools.filter(tool => tool.worker === undefined).map(tool => tool.name).sort();
+    assert.equal(workers.length, 43);
+    assert.deepEqual(spawnOnly, Object.keys(spawnOnlyTools).sort());
+    assert.deepEqual(spawnOnly, [
+        'add_skills_manifest_repo', 'llm_autocomplete', 'read_skills_manifest_state', 'remove_skills_manifest_repo',
+        'replace_text', 'search_text', 'set_skills_manifest_skill_enabled', 'update_avatar_settings_agent',
+    ]);
+    assert.equal(workers.length + spawnOnly.length, 51);
+    // The worker script must be tracked executable for the pool to launch it.
+    const mode = (await fs.stat(workerPath)).mode & 0o111;
+    assert.notEqual(mode, 0, 'tools/explorer_tool_worker.sh must be executable');
 });
 
 test('worker refuses a missing or relative shared runtime module path', async () => {
@@ -369,4 +407,173 @@ test('the real Ploinky pool callback preserves CLI bytes across consecutive user
     assert.equal(fallback.code, 0, fallback.stderr);
     assert.equal(fallback.stdout, 'raw text\n');
     assert.equal(pool.stats().spawned, 1, 'all calls must use the same warm worker');
+});
+
+async function realPool(t, root, options = {}) {
+    const ploinkyRoot = process.env.PLOINKY_ROOT || fileURLToPath(new URL('../../../../ploinky/', import.meta.url));
+    const { ToolWorkerPool } = await import(pathToFileURL(path.join(ploinkyRoot, 'Agent/server/toolWorkerPool.mjs')).href);
+    const logs = [];
+    const pool = new ToolWorkerPool('explorer', {
+        command: workerPath, cwd: root, size: 3,
+        env: { ASSISTOS_FS_ROOT: root },
+        idleTimeoutMs: 600_000, maxCallsPerWorker: 500, callTimeoutMs: 15_000,
+        log: line => logs.push(line),
+        ...options,
+    });
+    t.after(async () => {
+        const outcome = await pool.shutdown({ timeoutMs: 5000 });
+        assert.equal(outcome.clean, true, 'Explorer pool shutdown must be clean.');
+    });
+    return { pool, logs };
+}
+
+function spawnCall(root, envelope, entrypoint = path.join(path.dirname(workerPath), 'explorer_tool.sh')) {
+    return new Promise((resolve, reject) => {
+        const child = spawn('/bin/sh', [entrypoint], {
+            cwd: root, env: { ...process.env, ASSISTOS_FS_ROOT: root, TOOL_NAME: '' }, stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        const out = [];
+        const err = [];
+        child.stdout.on('data', chunk => out.push(chunk));
+        child.stderr.on('data', chunk => err.push(chunk));
+        child.on('error', reject);
+        child.on('close', code => resolve({ code, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() }));
+        child.stdin.end(JSON.stringify(envelope));
+    });
+}
+
+const percentile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.ceil(values.length * fraction) - 1)];
+const timed = async operation => { const started = performance.now(); await operation(); return performance.now() - started; };
+
+test('B-T1: invocation tokens and identities never reach another call, the output or the pool log', async (t) => {
+    const root = await workspace(t);
+    const { pool, logs } = await realPool(t, root, { size: 1 });
+    const call = (id, roles, token) => pool.call({
+        toolName: 'ignored', toolEnv: {},
+        payload: { tool: 'get_avatar_settings_agents', metadata: { invocation: { token, actor: { id, roles } } } },
+    });
+    const secrets = ['TOKEN-ALPHA-7f3a9c', 'TOKEN-BRAVO-51d2e8', 'TOKEN-CHARLIE-0b6e44'];
+    const first = await call('user:alpha', ['admin'], secrets[0]);
+    const second = await call('user:bravo', [], secrets[1]);
+    const third = await pool.call({ toolName: 'ignored', toolEnv: {}, payload: { tool: 'get_avatar_settings_agents' } });
+    const fourth = await call('user:charlie', ['admin'], secrets[2]);
+    assert.equal(JSON.parse(first.stdout).canManageAgents, true);
+    assert.equal(JSON.parse(second.stdout).canManageAgents, false, 'a later non-admin must not inherit the previous admin');
+    assert.equal(JSON.parse(third.stdout).canManageAgents, false, 'a call without metadata must not inherit any identity');
+    assert.equal(JSON.parse(fourth.stdout).canManageAgents, true);
+    assert.equal(pool.stats().spawned, 1, 'every call used the same warm worker');
+    const everything = [first, second, third, fourth].map(r => r.stdout + r.stderr).join('\n') + logs.join('\n');
+    for (const secret of secrets) assert.equal(everything.includes(secret), false, `${secret} must not appear in outputs or pool logs`);
+    for (const actor of ['user:alpha', 'user:bravo', 'user:charlie']) assert.equal(everything.includes(actor), false, actor);
+});
+
+test('B-T2: a failed call leaves the warm worker able to serve the next call with spawn-identical bytes', async (t) => {
+    const root = await workspace(t);
+    const { pool } = await realPool(t, root, { size: 1 });
+    const sequence = [
+        { tool: 'read_text_file', input: { path: 'ordinary.txt' } },
+        { tool: 'read_text_file', input: { path: 'does-not-exist.txt' } },
+        { tool: 'missing_tool' },
+        { tool: 'read_text_file', input: { path: 'ordinary.txt', head: 'not-a-number' } },
+        {},
+        { tool: 'read_text_file', input: { path: 'ordinary.txt' } },
+    ];
+    for (const envelope of sequence) {
+        const expected = await spawnCall(root, envelope);
+        const actual = await pool.call({ toolName: 'ignored', toolEnv: {}, payload: envelope });
+        assert.equal(actual.code, expected.code, JSON.stringify(envelope));
+        assert.equal(actual.stdout, expected.stdout, JSON.stringify(envelope));
+        assert.equal(actual.stderr, expected.stderr, JSON.stringify(envelope));
+    }
+    assert.equal(pool.stats().spawned, 1, 'failures did not force a new worker');
+});
+
+test('B-T3: an external write is visible to the next call on the same worker', async (t) => {
+    const root = await workspace(t);
+    const { pool } = await realPool(t, root, { size: 1 });
+    const read = async () => (await pool.call({ toolName: 'ignored', toolEnv: {}, payload: { tool: 'read_text_file', input: { path: 'ordinary.txt' } } })).stdout;
+    const list = async () => (await pool.call({ toolName: 'ignored', toolEnv: {}, payload: { tool: 'list_directory_detailed', input: { path: '/' } } })).stdout;
+    assert.equal(await read(), 'raw text\n');
+    assert.doesNotMatch(await list(), /external\.txt/);
+    await fs.writeFile(path.join(root, 'ordinary.txt'), 'changed outside the worker\n');
+    await fs.writeFile(path.join(root, 'external.txt'), 'new\n');
+    assert.equal(await read(), 'changed outside the worker\n');
+    assert.match(await list(), /external\.txt/);
+    await fs.rm(path.join(root, 'external.txt'));
+    assert.doesNotMatch(await list(), /external\.txt/);
+    assert.equal(pool.stats().spawned, 1);
+});
+
+test('AC-B7: warm worker tools/call latency beats spawn mode on the same fixture (N=20)', async (t) => {
+    const root = await workspace(t);
+    const { pool } = await realPool(t, root, { size: 1 });
+    const envelope = { tool: 'list_directory_detailed', input: { path: '/' } };
+    const viaPool = () => pool.call({ toolName: 'ignored', toolEnv: {}, payload: envelope });
+    const expected = await spawnCall(root, envelope);
+    assert.equal((await viaPool()).stdout, expected.stdout, 'the worker is warmed by this parity call');
+    const spawnTimes = [];
+    const workerTimes = [];
+    for (let index = 0; index < 20; index += 1) {
+        spawnTimes.push(await timed(() => spawnCall(root, envelope)));
+        workerTimes.push(await timed(viaPool));
+    }
+    const spawnP50 = percentile(spawnTimes, 0.5);
+    const workerP50 = percentile(workerTimes, 0.5);
+    const line = `AC-B7 N=20 list_directory_detailed: worker p50=${workerP50.toFixed(1)}ms spawn p50=${spawnP50.toFixed(1)}ms`;
+    t.diagnostic(line);
+    console.log(line);
+    assert.ok(workerP50 < spawnP50, line);
+    assert.equal(pool.stats().spawned, 1);
+});
+
+test('B-T5: a burst with a slow network-bound-style call is no slower than spawn mode and the slow call does not block fast ones', async (t) => {
+    const root = await workspace(t);
+    const slowMs = 1200;
+    const script = path.join(root, 'burst_worker.mjs');
+    const explorerTool = pathToFileURL(path.join(path.dirname(workerPath), 'explorer_tool.mjs')).href;
+    await fs.writeFile(script, `
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { handleExplorerToolCall } from ${JSON.stringify(explorerTool)};
+const { serveToolWorker } = await import(pathToFileURL(process.env.PLOINKY_TOOL_WORKER_MODULE).href);
+await serveToolWorker(async ({ envelope, toolEnv, stdout, stderr }) => {
+    try {
+        if (envelope.tool === 'slow_network_fixture') {
+            await new Promise(resolve => setTimeout(resolve, ${slowMs}));
+            stdout.write('slow done');
+        } else {
+            await handleExplorerToolCall({ envelope, toolEnv, stdout });
+        }
+        return { exitCode: 0 };
+    } catch (error) {
+        stderr.write(String(error?.message || error) + '\\n');
+        return { exitCode: 1 };
+    }
+});
+`);
+    const { pool } = await realPool(t, root, { command: process.execPath, args: [script], size: 3 });
+    const fast = { tool: 'list_directory_detailed', input: { path: '/' } };
+    const viaPool = envelope => pool.call({ toolName: 'ignored', toolEnv: {}, payload: envelope });
+    await Promise.all([viaPool(fast), viaPool(fast), viaPool(fast)]); // warm every lane
+    const burst = async (run, withSlow) => {
+        const started = performance.now();
+        const latencies = [];
+        const calls = [];
+        if (withSlow) calls.push(run({ tool: 'slow_network_fixture' }));
+        for (let index = 0; index < 12; index += 1) {
+            calls.push(run(fast).then(result => { latencies.push(performance.now() - started); return result; }));
+        }
+        const results = await Promise.all(calls);
+        return { latencies, results };
+    };
+    const workerBurst = await burst(viaPool, true);
+    const spawnBurst = await burst(envelope => spawnCall(root, envelope), false);
+    for (const result of workerBurst.results.slice(1)) assert.equal(result.code, 0, result.stderr);
+    const workerP90 = percentile(workerBurst.latencies, 0.9);
+    const spawnP90 = percentile(spawnBurst.latencies, 0.9);
+    const line = `B-T5 burst of 12: worker p90=${workerP90.toFixed(1)}ms (with one ${slowMs}ms slow lane) spawn p90=${spawnP90.toFixed(1)}ms`;
+    t.diagnostic(line);
+    console.log(line);
+    assert.ok(workerP90 <= spawnP90, line);
+    assert.ok(Math.max(...workerBurst.latencies) < slowMs, 'fast calls finished while the slow call still held its lane');
 });

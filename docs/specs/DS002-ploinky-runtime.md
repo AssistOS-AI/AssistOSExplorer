@@ -11,12 +11,12 @@ Explorer runs as the static Ploinky agent and depends on Ploinky for startup orc
 
 ## Core Content
 
-Explorer CLI and its inactive worker adapter must recognize direct execution by
+Explorer CLI and its worker adapter must recognize direct execution by
 the canonical real filesystem path of `process.argv[1]`, including absolute and
 relative symlink entrypoints. Importing either module must not read stdin, serve
 requests or produce CLI output. Direct CLI execution preserves its stdin JSON,
 argv fallback, tool envelope and exit-status behavior. This import-safety repair
-does not enable `toolWorkers` or any tool's `worker` descriptor.
+does not itself change `toolWorkers` or any tool's `worker` descriptor; the active declaration is described below.
 
 Box smoke acceptance must independently compare the selected container, immutable
 image ID/reference, application/Box origins, same-path workspace and verified source
@@ -29,7 +29,7 @@ are the selector contract; file/line suffixes are forbidden. Discovery and termi
 outcomes must exactly match the selected acceptance-ledger identities, each with one
 expected pass and zero retries, skips, flakes, cancellations or blocked outcomes.
 Exit zero and discovery alone are insufficient. GPT Researcher stays excluded,
-browser errors stay strict and worker opt-in stays absent.
+browser errors stay strict.
 
 WebTTY readiness evidence must retain bounded last-cause and sampled identity
 information on failure, preserve the primary assertion when artifact writing fails,
@@ -79,7 +79,19 @@ The Explorer CLI and prepared tool-worker adapter share `handleExplorerToolCall`
 
 Every call creates a fresh Explorer runtime and owns its invocation context. The handler must dispose that runtime in `finally` after output completes or fails. Disposal is idempotent, clears the registered search cleanup interval, retires invocation context and cleanup references, and is not a callable MCP tool. The filesystem dependency has module-level allowed roots, so each fresh runtime must reset them and one worker must execute only one call at a time. Command-mode search continues to await completion; existing operation-owned CRDT heartbeat cleanup remains unchanged.
 
-The adapter uses the Ploinky-supplied `serveToolWorker` callback and bootstrap/socket protocol. It must not implement a second transport. The MCP configuration retains the existing spawn commands and declares no worker opt-in. Actual Box compatibility, worker performance acceptance, and the complete per-agent module-state and external-source identity audit are required before activation. Partial dependency observations do not clear that audit, including `AXIFACE_REPO_PATH` and other external source identities.
+The adapter uses the Ploinky-supplied `serveToolWorker` callback and bootstrap/socket protocol. It must not implement a second transport. `explorer/mcp-config.json` declares `toolWorkers.explorer` (`command` `tools/explorer_tool_worker.sh`, `cwd` the literal `workspace`, `size` 3, default limits) and `"worker": "explorer"` on 43 tools. Every tool keeps its spawn `command`, so the spawn path is the fallback. These eight tools stay in spawn mode:
+
+| Tool | Reason |
+| --- | --- |
+| `search_text` | Runs for up to 30 s and would hold a pool lane |
+| `replace_text` | Runs for up to 45 s |
+| `update_avatar_settings_agent` | Imports code from `AXIFACE_REPO_PATH`, which is outside the code-identity roots |
+| `llm_autocomplete` | Uses its own command, `tools/llm_autocomplete_tool.sh` |
+| `add_skills_manifest_repo`, `set_skills_manifest_skill_enabled`, `remove_skills_manifest_repo`, `read_skills_manifest_state` | Call the Router repository client (`listRepositories`, `prepareRepository`, `install`, `remove`) with timeouts of up to 30 s |
+
+`collect_ide_plugins` stays in the pool: its only external process is a local `git config` read with a 2 s timeout, and it makes no network or Router call.
+
+Module-state and environment audit: the runtime is created and disposed per call, the invocation context is set and cleared in `finally`, the tokens exist only in the call frame and are never logged by the pool, caches are scoped to the per-call runtime, filesystem roots are reset per runtime and one call runs at a time, children are awaited, a `process.env` write recycles the worker, and `process.env` reads are limited to container-fixed values (`FS_CACHE_TTL_MS`, `PLOINKY_AGENT_NAME`/`AGENT_NAME`). The only external-source reader, `AXIFACE_REPO_PATH`, is excluded. Accepted differences from spawn mode: a 300 s per-call limit (spawn has none when unset), a 256 MiB frame cap, and code-identity recycling when tool sources change. Tests pin the declaration, the worker and spawn-only sets, token and identity isolation, error isolation, cache freshness after external writes, and bursts and latency against spawn mode (`explorer/tests/unit/explorerToolWorker.test.js`). Rollback: set `PLOINKY_TOOL_WORKERS=0` to force spawn mode, or revert the `toolWorkers` declaration and the `worker` fields. The Box smoke preflight no longer requires the opt-in to be absent.
 
 Every active top-level agent manifest must declare workspace-backed writable data volumes below `.data/`. Explorer's preinstall hook selects global mode and the exact `PLOINKY_WORKSPACE_ROOT` as its project path. Ploinky mounts that root at the same absolute path in the Box and global Explorer runtime, including `.ploinky/repos`; Explorer declares no additional fixed workspace alias. Managed `persistentStorage` declarations must use a safe one-segment key and an absolute container path. Repository validation must positively classify every writable volume and persistent-storage declaration; merely rejecting one retired prefix is insufficient. Explorer private writers must resolve their paths through the shared `.data/explorer` boundary, reject symbolic-link components or files, and canonically revalidate that boundary before reading or writing avatar overrides, plugin settings, search jobs, or CRDT state.
 

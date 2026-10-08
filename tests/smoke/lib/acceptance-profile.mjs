@@ -133,13 +133,6 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
     });
 }
 
-export function assertInactiveWorkerDescriptor(descriptor) {
-    if (Object.hasOwn(descriptor, 'toolWorkers') || !Array.isArray(descriptor.tools)
-        || descriptor.tools.some(tool => Object.hasOwn(tool, 'worker'))) {
-        throw new Error('Smoke acceptance requires Explorer tool-worker opt-in absent from the verified descriptor.');
-    }
-}
-
 export async function collectAcceptancePreflight({ profile, env, manifestPath, verifierPath, baseURL, boxBaseURL,
     collect = collectCopilotReleaseEvidence, fsApi = fs } = {}) {
     if (!profile.box || profile.listing) return null;
@@ -174,7 +167,6 @@ export async function collectAcceptancePreflight({ profile, env, manifestPath, v
     }
     const explorer = evidence?.repositories?.explorer?.repositoryPath;
     if (!path.isAbsolute(String(explorer || ''))) throw new Error('Smoke preflight requires the verified Explorer source path.');
-    assertInactiveWorkerDescriptor(JSON.parse(fsApi.readFileSync(path.join(explorer, 'explorer', 'mcp-config.json'), 'utf8')));
     return evidence;
 }
 

@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import {
     acceptanceLedger, selectAcceptanceCases, validateAcceptanceProfile, assertLedgerResults,
-    collectAcceptancePreflight, assertAcceptanceGeneration, assertInactiveWorkerDescriptor,
+    collectAcceptancePreflight, assertAcceptanceGeneration,
 } from './acceptance-profile.mjs';
 import { assertAccountRoles, assertSearchAgentFixture } from './account-preflight.mjs';
 import AcceptanceReporter from './acceptance-reporter.mjs';
@@ -89,7 +89,7 @@ test('actual common preflight compares independent manifest, image, workspace an
     const evidence = { imageDigest: digest, repositories: { explorer: { repositoryPath: source } }, liveBox: {
         box: { imageId: digest }, workspaceSourceMount: { source: baseEnv.SMOKE_WORKSPACE_ROOT },
     } };
-    const fsApi = { realpathSync: value => value, readFileSync: file => { assert.equal(file, `${source}/explorer/mcp-config.json`); return '{"tools":[]}'; } };
+    const fsApi = { realpathSync: value => value, readFileSync: () => assert.fail('Preflight must not read the Explorer tool descriptor.') };
     const options = { profile, env: baseEnv, baseURL: baseEnv.SMOKE_BASE_URL, boxBaseURL: baseEnv.SMOKE_BOX_BASE_URL,
         collect: async inputs => { assert.equal(inputs.expectedContainerName, 'fixture-box'); assert.equal(inputs.generationMaxAgeMs, 1800000); return evidence; }, fsApi };
     assert.equal(await collectAcceptancePreflight(options), evidence);
@@ -97,8 +97,6 @@ test('actual common preflight compares independent manifest, image, workspace an
         await assert.rejects(collectAcceptancePreflight({ ...options, collect: async () => modified }));
     }
     await assert.rejects(collectAcceptancePreflight({ ...options, collect: async () => { throw new Error('Box outer container generation is not fresh enough for the release gate.'); } }), /not fresh/);
-    assert.throws(() => assertInactiveWorkerDescriptor({ tools: [], toolWorkers: {} }), /opt-in absent/);
-    assert.throws(() => assertInactiveWorkerDescriptor({ tools: [{ worker: false }] }), /opt-in absent/);
 });
 
 test('common preflight binds local browser origin to the inspected Box before collection', async () => {
