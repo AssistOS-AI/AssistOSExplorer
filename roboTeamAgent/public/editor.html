@@ -31,13 +31,15 @@
 <body class="editor-page">
   <header class="hero" data-embed-header>
     <nav class="breadcrumbs" aria-label="Breadcrumb" data-embed-breadcrumbs>
-      <a href="./">RoboTeam</a>
+      <a href="./" data-return-control>RoboTeam</a>
       <span id="breadcrumbGenerateSep" class="breadcrumb-sep" aria-hidden="true" hidden>/</span>
       <a id="breadcrumbGenerate" href="flow-types/generate-new" hidden>generate</a>
       <span class="breadcrumb-sep" aria-hidden="true">/</span>
       <span id="breadcrumbLeaf" aria-current="page">new</span>
     </nav>
   </header>
+
+  <nav class="page-navigation" aria-label="Return navigation"><a class="page-return" href="./?tab=workflow-types" data-return-control>← Back to Workflow types</a></nav>
 
   <form id="workflowForm" class="workflow-builder">
     <div class="builder-body">

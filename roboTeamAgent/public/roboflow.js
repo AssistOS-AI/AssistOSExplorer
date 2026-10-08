@@ -1,5 +1,8 @@
 import { drawBoard } from './workflow-board.js';
 import { renderLog } from './log-render.js';
+import { initPageNavigation } from './page-navigation.js';
+
+initPageNavigation({ fallbackUrl: new URL('?tab=workflow-types', document.baseURI).href });
 
 const element = (tag, text) => { const node = document.createElement(tag); node.textContent = text; return node; };
 const api = path => new URL(path, document.baseURI).toString();

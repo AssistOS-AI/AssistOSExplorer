@@ -31,7 +31,7 @@ test('the main page renders the RoboTeam breadcrumb and page links', async t => 
     const html = await response.text();
     assert.match(html, /class="breadcrumbs"[\s\S]*aria-current="page"[^>]*>RoboTeam</);
     assert.match(html, /id="flowsHistoryButton"[^>]*href="flows"/);
-    assert.match(html, /id="addWorkflowButton"[^>]*href="flow-types\/generate-new"[^>]*>Create</);
+    assert.match(html, /id="addWorkflowButton"[^>]*href="flow-types\/generate-new"[^>]*>[\s\S]*Create workflow</);
     assert.equal(html.includes('id="workflowDialog"'), false);
     assert.equal(html.includes('id="flowsHistoryDialog"'), false);
 });
@@ -85,7 +85,7 @@ test('the flow type generation step is a separate page', async t => {
 
 test('page modules are served as javascript', async t => {
     const request = await fixture(t);
-    for (const asset of ['/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow-api.js', '/app.js']) {
+    for (const asset of ['/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow-api.js', '/app.js', '/dashboard-tabs.js', '/robot-controls.js', '/page-navigation.js']) {
         const response = await request(asset);
         assert.equal(response.status, 200, asset);
         assert.match(response.headers.get('content-type') || '', /javascript/, asset);

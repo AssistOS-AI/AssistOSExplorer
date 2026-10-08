@@ -1,4 +1,10 @@
 import { api, endpoint } from './roboflow-api.js';
+import { initPageNavigation } from './page-navigation.js';
+
+const navigation = initPageNavigation({
+    fallbackUrl: endpoint('?tab=workflow-types'),
+    captureView: () => ({ scrollX: window.scrollX, scrollY: window.scrollY }),
+});
 
 const list = document.querySelector('#flowsList');
 const message = document.querySelector('#flowsMessage');
@@ -13,6 +19,7 @@ function flowItem(flow) {
     const item = document.createElement('a');
     item.className = 'flow-item';
     item.href = endpoint(`flows?flowId=${encodeURIComponent(flow.id)}`);
+    navigation.bindLink(item);
     const head = document.createElement('div');
     head.className = 'flow-item-head';
     const name = document.createElement('strong');
@@ -34,6 +41,7 @@ try {
     document.querySelector('#flowCount').textContent = String(flows.length);
     message.textContent = flows.length ? '' : 'No flow executions yet.';
     list.replaceChildren(...flows.map(flowItem));
+    if (navigation.view) requestAnimationFrame(() => window.scrollTo(navigation.view.scrollX || 0, navigation.view.scrollY || 0));
 } catch (error) {
     message.textContent = error.message;
     message.classList.add('is-error');

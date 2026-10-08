@@ -1,101 +1,201 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RoboTeam</title>
-  <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="workflow-editor.css">
-  <script>
-    (() => {
-      const keys = ['assistosExplorerTheme', 'webchat_theme'];
-      const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
-      const syncTheme = () => {
-        let preference;
-        try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
-        catch { /* Browser settings may disable storage. */ }
-        const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
-        const root = document.documentElement;
-        root.classList.toggle('theme-dark', dark);
-        root.classList.toggle('theme-light', !dark);
-        root.setAttribute('theme', dark ? 'dark' : 'light');
-      };
-      syncTheme();
-      browserTheme.addEventListener('change', syncTheme);
-      window.addEventListener('storage', event => {
-        if (event.key === null || keys.includes(event.key)) syncTheme();
-      });
-      window.addEventListener('focus', syncTheme);
-      window.addEventListener('pageshow', syncTheme);
-    })();
-  </script>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RoboTeam</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="workflow-editor.css">
+    <script>
+        (() => {
+            const keys = ['assistosExplorerTheme', 'webchat_theme'];
+            const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+            const syncTheme = () => {
+                let preference;
+                try {
+                    preference = keys.map(key => localStorage.getItem(key)).find(Boolean);
+                } catch { /* Browser settings may disable storage. */
+                }
+                const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+                const root = document.documentElement;
+                root.classList.toggle('theme-dark', dark);
+                root.classList.toggle('theme-light', !dark);
+                root.setAttribute('theme', dark ? 'dark' : 'light');
+            };
+            syncTheme();
+            browserTheme.addEventListener('change', syncTheme);
+            window.addEventListener('storage', event => {
+                if (event.key === null || keys.includes(event.key)) syncTheme();
+            });
+            window.addEventListener('focus', syncTheme);
+            window.addEventListener('pageshow', syncTheme);
+        })();
+    </script>
 </head>
 <body>
-  <main class="shell">
+<main class="shell">
     <header class="hero" data-embed-header>
-      <nav class="breadcrumbs" aria-label="Breadcrumb" data-embed-breadcrumbs>
-        <span aria-current="page">RoboTeam</span>
-      </nav>
+        <nav class="breadcrumbs" aria-label="Breadcrumb" data-embed-breadcrumbs>
+            <span aria-current="page">RoboTeam</span>
+        </nav>
     </header>
 
-    <section class="panel" aria-labelledby="create-title">
-      <div class="section-heading"><h2 id="create-title">Create a robot</h2></div>
-      <form id="createForm" class="robot-form">
-        <label><span>Name</span><input name="name" maxlength="80" required placeholder="Research analyst"></label>
-        <button class="button primary" type="submit">Create robot</button>
-      </form>
-      <p id="formMessage" class="message" role="status"></p>
-    </section>
+    <div class="dashboard-tabs" role="tablist" aria-label="RoboTeam sections" data-dashboard-tabs>
+        <button class="dashboard-tab" id="robotsTab" type="button" role="tab" aria-selected="true"
+                aria-controls="robotsPanel" tabindex="0">Robots
+        </button>
+        <button class="dashboard-tab" id="workflowTypesTab" type="button" role="tab" aria-selected="false"
+                aria-controls="workflowTypesPanel" tabindex="-1">Workflow types
+        </button>
+        <button class="dashboard-tab" id="kronJobsTab" type="button" role="tab" aria-selected="false"
+                aria-controls="kronJobsPanel" tabindex="-1">Kron jobs
+        </button>
+    </div>
 
-    <section class="robots" aria-labelledby="robots-title">
-      <div class="section-heading"><h2 id="robots-title">Robots</h2><span id="robotCount" class="count">0 robots</span></div>
-      <div id="robotsList" class="robot-list" aria-live="polite"></div>
-    </section>
+    <div id="robotsPanel" role="tabpanel" aria-labelledby="robotsTab" tabindex="0">
+        <section class="robots" aria-labelledby="robots-title">
+            <div class="section-heading robots-heading">
+                <div class="heading-main"><h2 id="robots-title">Robots</h2>
+                    <h3 id="robotCount" class="robot-count">0 robots</h3></div>
+                <button id="createRobotButton" class="button primary" type="button" aria-haspopup="dialog"
+                        aria-controls="createRobotDialog" disabled><span
+                        aria-hidden="true">+</span><span>Create robot</span></button>
+            </div>
+            <p id="formMessage" class="message" role="status"></p>
+            <div id="robotsList" class="robot-list" aria-live="polite"></div>
+        </section>
 
-    <section class="panel" aria-labelledby="workflows-title">
-      <div class="section-heading">
-        <div class="heading-main"><h2 id="workflows-title">Workflow types</h2><span id="workflowCount" class="count">0 workflows</span></div>
-        <div class="heading-actions">
-          <a id="flowsHistoryButton" class="button secondary" href="flows">Flows history</a>
-          <a id="addWorkflowButton" class="button primary" href="flow-types/generate-new">Create</a>
-        </div>
-      </div>
-      <p class="lede">Describe a workflow to generate its task graph, then refine tasks and connections. RoboFlow selects matching robots when each task runs.</p>
-      <p id="workflowListMessage" class="message" role="status"></p>
-      <div id="workflowsList" class="workflow-list" aria-live="polite"></div>
-    </section>
-  </main>
+        <dialog id="createRobotDialog" class="create-robot-dialog" aria-labelledby="create-title">
+            <div class="create-robot-heading">
+                <h2 id="create-title">Create robot</h2>
+                <button id="createRobotClose" class="button icon-button" type="button"
+                        aria-label="Close create robot dialog" title="Close">×
+                </button>
+            </div>
+            <form id="createForm" class="robot-form">
+                <label><span>Name</span><input name="name" maxlength="80" required placeholder="Research analyst"
+                                               autofocus></label>
+                <p id="createFormMessage" class="message" role="status"></p>
+                <div class="create-robot-actions">
+                    <button id="createRobotCancel" class="button secondary" type="button">Cancel</button>
+                    <button class="button primary" type="submit">Create robot</button>
+                </div>
+            </form>
+        </dialog>
+    </div>
 
-  <template id="robotTemplate">
+    <div id="workflowTypesPanel" role="tabpanel" aria-labelledby="workflowTypesTab" tabindex="0" hidden>
+        <section class="workflow-types" aria-labelledby="workflows-title">
+            <div class="section-heading">
+                <div class="heading-main"><h2 id="workflows-title">Workflow types</h2><span id="workflowCount"
+                                                                                            class="robot-count">0 workflows</span>
+                    <a id="flowsHistoryButton" class="workflow-history" href="flows"
+                       data-navigation-key="flows-history">Flows history</a></div>
+                <div class="heading-actions">
+                    <a id="addWorkflowButton" class="button primary" href="flow-types/generate-new"
+                       data-navigation-key="create-workflow"><span class="button-plus" aria-hidden="true">+</span>Create
+                        workflow</a>
+                </div>
+            </div>
+            <p class="lede">Describe a workflow to generate its task graph, then refine tasks and connections. RoboFlow
+                selects matching robots when each task runs.</p>
+            <p id="workflowListMessage" class="message" role="status"></p>
+            <div id="workflowsList" class="workflow-list" aria-live="polite"></div>
+        </section>
+    </div>
+
+    <div id="kronJobsPanel" role="tabpanel" aria-labelledby="kronJobsTab" tabindex="0" hidden>
+        <section class="panel empty-state" aria-labelledby="kron-jobs-title">
+            <h2 id="kron-jobs-title">Kron jobs</h2>
+            <p>Functionality will be defined later.</p>
+        </section>
+    </div>
+</main>
+
+<template id="robotTemplate">
     <article class="robot-card">
-      <div class="robot-main">
-        <div class="avatar" aria-hidden="true"></div>
-        <div><div class="robot-title-row"><h3></h3><span class="run-state"></span></div><p class="robot-id"></p><p class="active-coding-agent"></p></div>
-      </div>
-      <div class="robot-actions">
-        <div class="robot-open">
-          <button class="button primary open-toggle" type="button" aria-expanded="false">Open <span aria-hidden="true">▾</span></button>
-          <div class="open-options" hidden>
-            <button class="button open-browser" type="button">Browser</button>
-            <button class="button open-desktop" type="button">Desktop</button>
-            <button class="button open-terminal" type="button" hidden>Terminal</button>
-            <button class="button open-chat" type="button">Copilot</button>
-          </div>
+        <div class="robot-main">
+            <div class="robot-identity">
+                <div class="avatar" aria-hidden="true"></div>
+                <span class="run-state"></span>
+            </div>
+            <div class="robot-info">
+                <div class="robot-title-row"><h3></h3>: <span class="robot-id"></span></div>
+                <div class="robot-meta">
+                    <p class="active-coding-agent"></p>
+                    <span class="robot-mode" hidden></span>
+                    <button class="view-logs" type="button" aria-expanded="false" title="Show logs">Logs</button>
+                </div>
+            </div>
         </div>
-        <button class="button danger stop-workstation" type="button" hidden></button>
-        <button class="button secondary manage-skills" type="button">Manage skills</button>
-        <button class="button secondary configure-coding-agent" type="button" hidden>Coding agent</button>
-        <button class="button danger delete-robot" type="button" hidden>Delete robot</button>
-      </div>
-      <p class="robot-session" hidden><span></span><a class="session-url" target="_blank" rel="noopener noreferrer"></a></p>
-      <div class="robot-log-controls">
-        <button class="button secondary view-logs" type="button" aria-expanded="false">Logs</button>
-      </div>
-      <pre class="robot-logs" hidden></pre>
+        <div class="robot-actions">
+            <div class="robot-open">
+                <button class="button primary open-toggle" type="button" aria-expanded="false" data-robot-menu-toggle>
+                    Open <span aria-hidden="true">▾</span></button>
+                <div class="open-options" data-robot-menu-options hidden>
+                    <button class="button open-browser" type="button">Browser</button>
+                    <button class="button open-desktop" type="button">Desktop</button>
+                    <button class="button open-terminal" type="button" hidden>Terminal</button>
+                    <button class="button open-chat" type="button">Copilot</button>
+                </div>
+            </div>
+            <button class="button danger stop-workstation" type="button" hidden></button>
+            <div class="robot-manage">
+                <button class="button secondary icon-button manage-toggle" type="button" aria-expanded="false"
+                        aria-label="More robot actions" title="More actions" data-robot-menu-toggle><span
+                        aria-hidden="true">⋮</span></button>
+                <div class="manage-options" data-robot-menu-options hidden>
+                    <button class="button secondary manage-skills" type="button">Manage skills</button>
+                    <button class="button secondary configure-coding-agent" type="button" hidden>Coding agent</button>
+                    <div class="robot-danger-actions" hidden>
+                        <button class="button danger delete-robot" type="button" hidden>Delete robot</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <p class="robot-session" hidden><span></span><a class="session-url" target="_blank"
+                                                        rel="noopener noreferrer"></a></p>
+        <div class="robot-log-section" hidden>
+            <div class="robot-log-heading"><span>Container logs</span>
+                <button class="button icon-button hide-logs" type="button" aria-label="Close container logs"
+                        title="Close logs">×
+                </button>
+            </div>
+            <pre class="robot-logs" hidden></pre>
+        </div>
     </article>
-  </template>
+</template>
 
-  <script src="config.js"></script>
-  <script type="module" src="app.js"></script>
+<template id="workflowTemplate">
+    <article class="robot-card workflow-card">
+        <a class="workflow-open" title="View workflow">
+            <div class="robot-main">
+                <div class="robot-identity">
+                    <div class="avatar" aria-hidden="true"></div>
+                    <span class="workflow-kind"></span>
+                </div>
+                <div class="robot-info">
+                    <div class="robot-title-row"><h3></h3><span class="robot-id"></span></div>
+                    <p class="workflow-description"></p>
+                    <div class="robot-meta">
+                        <span class="workflow-counts"></span>
+                        <span class="workflow-coverage-warning" hidden></span>
+                    </div>
+                </div>
+            </div>
+        </a>
+        <div class="robot-manage" hidden>
+            <button class="button secondary icon-button manage-toggle" type="button" aria-expanded="false"
+                    aria-label="More workflow actions" title="More actions" data-robot-menu-toggle><span
+                    aria-hidden="true">⋮</span></button>
+            <div class="manage-options" data-robot-menu-options hidden>
+                <button class="button danger delete-workflow" type="button">Delete workflow</button>
+            </div>
+        </div>
+    </article>
+</template>
+
+<script src="config.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
