@@ -284,3 +284,50 @@ test('robot default effort is validated and saved with its model', async t => {
     assert.equal((await patch({ ...body, effort: null })).status, 200);
     assert.equal((await read()).efforts.opencode, undefined);
 });
+
+test('static assets revalidate with ETag and 304 while pages, config and JSON stay no-store', async t => {
+    const publicDir = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-public-test-'));
+    await fs.writeFile(path.join(publicDir, 'index.html'), '<html><head></head><body></body></html>');
+    await fs.writeFile(path.join(publicDir, 'app.js'), 'export const v = 1;\n');
+    const fixture = await startFixture({ publicDir });
+    t.after(async () => { await fixture.close(); await fs.rm(publicDir, { recursive: true, force: true }); });
+    const auth = { 'x-ploinky-auth-info': authHeader('user') };
+    const url = `${fixture.baseUrl}/app.js`;
+
+    const first = await fetch(url, { headers: auth });
+    assert.equal(first.status, 200);
+    assert.equal(first.headers.get('cache-control'), 'private, no-cache');
+    assert.equal(first.headers.get('x-content-type-options'), 'nosniff');
+    assert.ok(first.headers.get('last-modified'));
+    const etag = first.headers.get('etag');
+    assert.match(etag, /^W\/"/);
+    assert.equal(await first.text(), 'export const v = 1;\n');
+
+    const cached = await fetch(url, { headers: { ...auth, 'if-none-match': etag } });
+    assert.equal(cached.status, 304);
+    assert.equal(await cached.text(), '');
+    assert.equal(cached.headers.get('etag'), etag);
+    const since = await fetch(url, { headers: { ...auth, 'if-modified-since': first.headers.get('last-modified') } });
+    assert.equal(since.status, 304);
+    const staleTag = await fetch(url, { headers: { ...auth, 'if-none-match': '"other"', 'if-modified-since': first.headers.get('last-modified') } });
+    assert.equal(staleTag.status, 200);
+    await staleTag.arrayBuffer();
+
+    await fs.writeFile(path.join(publicDir, 'app.js'), 'export const v = 22;\n');
+    const changed = await fetch(url, { headers: { ...auth, 'if-none-match': etag } });
+    assert.equal(changed.status, 200);
+    assert.notEqual(changed.headers.get('etag'), etag);
+    assert.equal(await changed.text(), 'export const v = 22;\n');
+
+    const anonymous = await fetch(url, { headers: { 'if-none-match': etag } });
+    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.headers.get('etag'), null);
+    await anonymous.arrayBuffer();
+
+    for (const route of ['/', '/config.js', '/api/robots']) {
+        const response = await fetch(`${fixture.baseUrl}${route}`, { headers: auth });
+        assert.equal(response.headers.get('cache-control'), 'no-store', route);
+        assert.equal(response.headers.get('etag'), null, route);
+        await response.arrayBuffer();
+    }
+});

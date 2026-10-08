@@ -66,7 +66,19 @@ async function readJsonBody(req) {
     return parsed;
 }
 
-async function serveFile(res, root, relativePath) {
+// Static assets are revalidated on every request (no-cache + validators), never
+// served from a freshness window. Callers invoke this only after authorization.
+function notModified(req, etag, mtime) {
+    const header = req.headers['if-none-match'];
+    if (header !== undefined) {
+        const strip = (tag) => tag.trim().replace(/^W\//, '');
+        return String(header).split(',').some((tag) => tag.trim() === '*' || strip(tag) === strip(etag));
+    }
+    const since = Date.parse(req.headers['if-modified-since'] || '');
+    return Number.isFinite(since) && Math.floor(mtime.getTime() / 1000) * 1000 <= since;
+}
+
+async function serveFile(req, res, root, relativePath) {
     const rootPath = path.resolve(root);
     const candidate = path.resolve(rootPath, relativePath);
     if (candidate !== rootPath && !candidate.startsWith(`${rootPath}${path.sep}`)) return sendError(res, 404, 'not found');
@@ -77,11 +89,21 @@ async function serveFile(res, root, relativePath) {
         return sendError(res, 404, 'not found');
     }
     if (!stats.isFile()) return sendError(res, 404, 'not found');
+    const etag = `W/"${stats.size.toString(16)}-${Math.trunc(stats.mtimeMs).toString(16)}-${stats.ino.toString(16)}"`;
+    const headers = {
+        'cache-control': 'private, no-cache',
+        etag,
+        'last-modified': stats.mtime.toUTCString(),
+        'x-content-type-options': 'nosniff',
+    };
+    if (notModified(req, etag, stats.mtime)) {
+        res.writeHead(304, headers);
+        return res.end();
+    }
     res.writeHead(200, {
+        ...headers,
         'content-type': CONTENT_TYPES[path.extname(candidate)] || 'application/octet-stream',
         'content-length': stats.size,
-        'cache-control': 'no-store',
-        'x-content-type-options': 'nosniff',
     });
     fs.createReadStream(candidate).pipe(res);
 }
@@ -396,14 +418,14 @@ export function createRoboTeamServer(options) {
                 res.end(`globalThis.ROBOTEAM_CONFIG=${JSON.stringify({ publicBasePath, routeKey })};\n`);
                 return;
             }
-            if (pathname === '/InterVariable.woff2' && req.method === 'GET') return serveFile(res, publicDir, 'InterVariable.woff2');
-            if (pathname === '/styles.css' && req.method === 'GET') return serveFile(res, publicDir, 'styles.css');
+            if (pathname === '/InterVariable.woff2' && req.method === 'GET') return serveFile(req, res, publicDir, 'InterVariable.woff2');
+            if (pathname === '/styles.css' && req.method === 'GET') return serveFile(req, res, publicDir, 'styles.css');
             if (['/workflow-editor.js', '/workflow-board.js', '/workflow-routing.js', '/workflow-generator.js', '/workflow-editor.css',
                 '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js',
-                '/log-render.js', '/webchat-logs.js', '/summary.js', '/conversation-skills.js', '/conversation-skills-model.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
-            if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
-            if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(res, publicDir, 'skills-dialog.js');
-            if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(res, publicDir, 'terminal.js');
+                '/log-render.js', '/webchat-logs.js', '/summary.js', '/conversation-skills.js', '/conversation-skills-model.js'].includes(pathname) && req.method === 'GET') return serveFile(req, res, publicDir, pathname.slice(1));
+            if (pathname === '/app.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'app.js');
+            if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'skills-dialog.js');
+            if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'terminal.js');
 
             if (pathname === '/summary' && req.method === 'GET') return servePage(res, publicDir, 'summary.html', publicBasePath);
             if (pathname === '/api/summary' && req.method === 'GET') {
