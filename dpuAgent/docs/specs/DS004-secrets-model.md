@@ -57,7 +57,7 @@ Secret ACL entries are principal-based. The same secret may therefore grant role
 
 `putSecret()` resolves the authenticated actor, normalizes the key, creates or updates secret metadata, writes the encrypted value through `upsertSecretsFileValue()`, and returns the actor-filtered serialized secret.
 
-`listSecrets()` and `getSecretByKey()` resolve the actor first and only expose secret entries whose role allows `access`. Plaintext value materialization only happens when the role allows `read`.
+`listSecrets()` and `getSecretByKey()` resolve the actor first and only expose secret entries whose role allows `access`. Plaintext value materialization only happens when the role allows `read`. `listSecrets()` reads and decrypts the secrets map at most once per call (lazily, on the first readable entry) inside the locked operation and shares that request-local map across entries; nothing is cached across requests.
 
 `deleteSecret()` removes:
 

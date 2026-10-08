@@ -1135,3 +1135,45 @@ test('existing confidential comments without a line remain readable as general c
   assert.equal(ownerView.object.commentCount, 1);
   assert.equal(ownerView.object.comments[0].message, 'Older general comment.');
 });
+
+test('secret list reads and decrypts the secrets map once and keeps ACL redaction', async () => {
+  const { listSecrets } = await import(`${storeUrl.href}${moduleSuffix}`);
+  const fsp = (await import('node:fs/promises')).default;
+  const listerAuth = { user: { email: 'lister@example.com' } };
+  const count = 10;
+  for (let i = 0; i < count; i += 1) {
+    await putSecret(authInfo, { key: `LIST_ONCE_${i}`, value: `value-${i}` });
+    await grantSecret(authInfo, {
+      key: `LIST_ONCE_${i}`,
+      principal: 'lister@example.com',
+      role: i === 0 ? 'access' : 'read'
+    });
+  }
+  await putSecret(authInfo, { key: 'LIST_ONCE_HIDDEN', value: 'hidden-value' });
+
+  const secretsPath = getSecretsPath();
+  const originalReadFile = fsp.readFile;
+  let reads = 0;
+  fsp.readFile = async (file, ...rest) => {
+    if (String(file) === secretsPath) {
+      reads += 1;
+    }
+    return originalReadFile.call(fsp, file, ...rest);
+  };
+  let listed;
+  try {
+    listed = await listSecrets(listerAuth);
+  } finally {
+    fsp.readFile = originalReadFile;
+  }
+  const mine = listed.secrets.filter((entry) => entry.key.startsWith('LIST_ONCE_'));
+  assert.equal(mine.length, count);
+  assert.equal(mine.some((entry) => entry.key === 'LIST_ONCE_HIDDEN'), false);
+  assert.equal(reads, 1);
+  const redacted = mine.find((entry) => entry.key === 'LIST_ONCE_0');
+  assert.equal(redacted.value, null);
+  assert.equal(redacted.valueMasked, true);
+  const readable = mine.find((entry) => entry.key === 'LIST_ONCE_3');
+  assert.equal(readable.value, 'value-3');
+  assert.equal(readable.valueVisible, true);
+});
