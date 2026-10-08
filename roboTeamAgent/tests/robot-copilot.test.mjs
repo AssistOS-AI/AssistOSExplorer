@@ -214,11 +214,26 @@ test('catalog listing reuses a valid prepared shell generation without npm looku
 
     await prepareCopilotContext('default', { dataDir: root, usePreparedTools: true, toolCache: make() });
     assert.deepEqual(calls, []);
-    const selection = path.join(cacheRoot, 'shell-selections', 'shell', 'bin');
     const selected = robotCodingAgents(await new RobotStore({ dataDir: root }).getByName('default'));
     assert.ok(selected.length > 0);
-    for (const name of selected) assert.equal(process.env[`${name.toUpperCase()}_BIN`], path.join(selection, name));
-    assert.ok(process.env.PATH.split(path.delimiter).includes(selection));
+    const generationBin = (name) => path.join(cacheRoot, name, 'generations', name[0].repeat(64).replace(/[^0-9a-f]/g, 'e'), 'bin');
+    for (const name of selected) assert.equal(process.env[`${name.toUpperCase()}_BIN`], path.join(generationBin(name), name));
+    // Only the robot's selected agents are visible; the aggregate selection bin is not on PATH.
+    const entries = process.env.PATH.split(path.delimiter);
+    assert.ok(!entries.includes(path.join(cacheRoot, 'shell-selections', 'shell', 'bin')));
+    for (const name of ['codex', 'opencode', 'pi', 'claude']) {
+        assert.equal(entries.includes(generationBin(name)), selected.includes(name), name);
+    }
+
+    // A single-agent robot must not see the other agents through the prepared path.
+    await new RobotStore({ dataDir: root }).create({ name: 'solo', codingAgents: ['opencode'] });
+    for (const name of ['codex', 'opencode', 'pi', 'claude']) delete process.env[`${name.toUpperCase()}_BIN`];
+    process.env.PATH = previous.PATH;
+    await prepareCopilotContext('solo', { dataDir: root, usePreparedTools: true, toolCache: make() });
+    const solo = process.env.PATH.split(path.delimiter);
+    for (const name of ['codex', 'opencode', 'pi', 'claude']) assert.equal(solo.includes(generationBin(name)), name === 'opencode', name);
+    assert.equal(process.env.CODEX_BIN, undefined);
+    assert.ok(!solo.includes(path.join(cacheRoot, 'shell-selections', 'shell', 'bin')));
 
     // Validation runs on every call: a broken executable invalidates the generation.
     await fs.rm(piBin);

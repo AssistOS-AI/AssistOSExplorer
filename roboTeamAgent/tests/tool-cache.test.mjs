@@ -468,7 +468,14 @@ test('peekShellTools reuses a consistent prepared shell and rejects pin or selec
     const make = (versionPins = {}) => new ToolCache({ root, log: () => {}, versionPins,
         execFileImpl: async (...call) => { calls.push(call); return { stdout: '"9.9.9"' }; } });
     await writePreparedShell(root);
-    assert.ok(await make().peekShellTools());
+    const peeked = await make().peekShellTools();
+    assert.ok(peeked);
+    for (const [name, agent] of Object.entries(peeked.agents)) {
+        const id = (`a${name}`).padEnd(64, '0').replace(/[^0-9a-f]/g, 'f');
+        const directory = path.join(root, name, 'generations', id);
+        assert.deepEqual(agent, { path: directory, binPath: path.join(directory, 'bin'), versions: { [name]: '1.0.0' } }, name);
+    }
+    assert.equal(peeked.binPath, path.join(root, 'shell-selections', 'shell', 'bin'));
     assert.ok(await make({ codex: '1.0.0' }).peekShellTools(), 'matching pin reuses');
     assert.equal(await make({ codex: '2.0.0' }).peekShellTools(), null, 'pin mismatch');
 

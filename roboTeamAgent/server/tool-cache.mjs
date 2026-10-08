@@ -196,7 +196,8 @@ export class ToolCache {
                 if (pin !== undefined && (descriptor.versions?.[name] !== pin || stamp.versions?.[name] !== pin)) return null;
                 const current = path.join(generation, 'bin', definition.executable);
                 if (!(await isExecutable(current)) || await fs.realpath(current) !== await fs.realpath(executable)) return null;
-                agents[name] = { path: directory, binPath, versions: {} };
+                // Same per-agent shape as _prepare/_fallback: the agent's own generation, not the aggregate view.
+                agents[name] = { path: generation, binPath: path.join(generation, 'bin'), versions: stamp.versions || descriptor.versions || {} };
             }
             return { root: this.root, path: directory, binPath, agents, prepared: true };
         } catch {
