@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createComponentRegistry } from '../../services/runtime/componentRegistry.js';
 import { createRuntimePluginLoader } from '../../services/runtime/runtimePluginLoader.js';
@@ -300,4 +303,65 @@ test('component registry identifies the agent for transient component failures',
     } finally {
         globalThis.fetch = previousFetch;
     }
+});
+
+const explorerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function webmeetLoader(loaded) {
+    return createRuntimePluginLoader({
+        agentId: 'explorer',
+        runtimePluginTool: 'collect_ide_plugins',
+        assistosSDK: { async fetchRuntimePlugins() { return {}; } },
+        componentRegistry: {
+            async loadComponent(meta) { loaded.push(meta); return meta; },
+            getCachedComponent(meta) {
+                return loaded.find((entry) => entry.agent === meta.agent && entry.componentName === meta.componentName);
+            }
+        }
+    });
+}
+
+const webmeetPlugins = {
+    application: {
+        'file-exp:toolbar': [{
+            id: 'webmeet',
+            agent: 'webmeetAgent',
+            component: 'webmeet-tool-button',
+            presenter: 'WebmeetToolButton',
+            componentBaseUrl: '/webmeetAgent/IDE-plugins/webmeet-tool-button/webmeet-tool-button',
+            toolbarModal: { mode: 'iframe' },
+            dependencies: [
+                { component: 'webmeet-dashboard', presenter: 'WebmeetDashboard', baseUrl: '/webmeetAgent/IDE-plugins/webmeet-dashboard/webmeet-dashboard' },
+                { component: 'webmeet-room', presenter: 'WebmeetRoom', baseUrl: '/webmeetAgent/IDE-plugins/webmeet-room/webmeet-room' }
+            ]
+        }]
+    }
+};
+
+test('includeDependencies:false registers only the presenter component', async () => {
+    const loaded = [];
+    await webmeetLoader(loaded).ensureComponentRegistered('webmeet-tool-button', webmeetPlugins, { includeDependencies: false });
+    assert.deepEqual(loaded.map((meta) => meta.componentName), ['webmeet-tool-button']);
+});
+
+test('the default and room-entry style calls still register every dependency', async () => {
+    for (const args of [[webmeetPlugins], [webmeetPlugins, {}], [webmeetPlugins, { includeDependencies: true }]]) {
+        const loaded = [];
+        await webmeetLoader(loaded).ensureComponentRegistered('webmeet-tool-button', ...args);
+        assert.deepEqual(loaded.map((meta) => meta.componentName).sort(),
+            ['webmeet-dashboard', 'webmeet-room', 'webmeet-tool-button']);
+    }
+    // Mounting the dashboard directly (room entry) is a dependency request and registers independently.
+    const loaded = [];
+    await webmeetLoader(loaded).ensureComponentRegistered('webmeet-dashboard', webmeetPlugins);
+    assert.ok(loaded.some((meta) => meta.componentName === 'webmeet-dashboard'));
+});
+
+test('only the toolbar-modal lazy path skips dependencies and room entry stays on the full path', () => {
+    const host = fs.readFileSync(path.join(explorerRoot, 'web-components', 'pages', 'file-exp', 'file-exp-application-plugins.js'), 'utf8');
+    assert.match(host, /ensureRuntimeComponent\(plugin\.component, plugin\.toolbarModal \? \{ includeDependencies: false \} : undefined\)/);
+    assert.equal((host.match(/includeDependencies: false/g) || []).length, 1);
+    assert.match(host, /pendingPlugins\.map\(\(\{ plugin \}\) => ensureRuntimeComponent\(plugin\.component\)\)/);
+    const main = fs.readFileSync(path.join(explorerRoot, 'main.js'), 'utf8');
+    assert.match(main, /runtimePluginLoader\.ensureComponentRegistered\(pageName, context\.plugins\)/);
 });

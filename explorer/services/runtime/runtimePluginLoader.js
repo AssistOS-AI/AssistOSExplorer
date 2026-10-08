@@ -179,7 +179,7 @@ export function createRuntimePluginLoader({
         return loaded;
     };
 
-    const ensureComponentRegistered = async (componentName, runtimePlugins) => {
+    const ensureComponentRegistered = async (componentName, runtimePlugins, options = {}) => {
         if (!isNonEmptyString(componentName)) {
             return null;
         }
@@ -193,7 +193,9 @@ export function createRuntimePluginLoader({
         }
 
         const dependencyKeys = new Set();
-        if (!meta.isDependency) {
+        // Toolbar-modal plugins render inside an iframe that loads its own components, so the
+        // parent registers only the presenter (includeDependencies: false).
+        if (!meta.isDependency && options?.includeDependencies !== false) {
             forEachRuntimePluginEntry(plugins, (plugin) => {
                 if (
                     plugin?.component !== requestedComponentName

@@ -120,10 +120,10 @@ function mergeUniquePlugins(...pluginLists) {
     return plugins;
 }
 
-async function ensureRuntimeComponent(componentName) {
+async function ensureRuntimeComponent(componentName, options) {
     const ensureComponentRegistered = window.assistOS?.webSkel?.ensureComponentRegistered || window.UI?.ensureComponentRegistered;
     if (typeof ensureComponentRegistered === 'function') {
-        await ensureComponentRegistered(componentName);
+        await ensureComponentRegistered(componentName, options);
     }
 }
 
@@ -530,7 +530,8 @@ async function loadToolbarPluginOnDemand(fileExp, trigger) {
         loadPromise = (async () => {
             const currentPath = fileExp.normalizePath(fileExp.state.path || '/');
             const [, currentFsPath, workspaceFsRoot] = await Promise.all([
-                ensureRuntimeComponent(plugin.component),
+                // A toolbar modal renders in its own iframe, which loads its dependencies itself.
+                ensureRuntimeComponent(plugin.component, plugin.toolbarModal ? { includeDependencies: false } : undefined),
                 resolveExplorerPathToFilesystemPath(currentPath),
                 resolveExplorerPathToFilesystemPath('/')
             ]);
