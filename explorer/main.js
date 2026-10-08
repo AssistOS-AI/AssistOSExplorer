@@ -341,7 +341,7 @@ async function start() {
     };
 
     const installRuntimeComponentGuards = () => {
-        const ensureComponentRegistered = async (componentName) => {
+        const ensureComponentRegistered = async (componentName, options = {}) => {
             const normalizedName = typeof componentName === 'string' ? componentName.trim() : '';
             if (!normalizedName) {
                 return null;
@@ -357,7 +357,7 @@ async function start() {
                 error.code = 'ADMIN_REQUIRED';
                 throw error;
             }
-            return runtimePluginLoader.ensureComponentRegistered(normalizedName, context.plugins);
+            return runtimePluginLoader.ensureComponentRegistered(normalizedName, context.plugins, options);
         };
 
         webSkel.ensureComponentRegistered = ensureComponentRegistered;
