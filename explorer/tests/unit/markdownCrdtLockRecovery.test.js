@@ -86,3 +86,15 @@ test('a lock held by a concurrent operation in the same process still excludes o
     await Promise.all([first, second]);
     assert.equal(entered.second, true);
 });
+
+const FLAG = Symbol.for('assistos.explorer.unconfirmedLockRelease');
+
+test('an unconfirmed release raises the recycle flag and a confirmed release does not', async (t) => {
+    const { makeStore } = await fixture(t);
+    globalThis[FLAG] = false;
+    await makeStore(false).open('doc.md');
+    assert.equal(globalThis[FLAG] === true, false, 'a confirmed release leaves the flag unset');
+    await makeStore(true).open('doc.md');
+    assert.equal(globalThis[FLAG], true, 'a failed lock-file removal raises the flag');
+    globalThis[FLAG] = false;
+});

@@ -36,6 +36,10 @@ const PROCESS_INSTANCE_ID = crypto.randomUUID();
 // process but carries a token outside this set was leaked (for example by a failed release in a warm tool
 // worker, where the pid stays alive) and is stale.
 const HELD_LOCK_TOKENS = new Set();
+// Set when a lock release could not be confirmed (the lock file may remain). A warm tool worker keeps its
+// pid alive, so other workers would see a live owner; the worker adapter reads this process-wide flag and
+// asks the pool to recycle the worker after the call. A Symbol.for key keeps it independent of module identity.
+export const UNCONFIRMED_LOCK_RELEASE_KEY = Symbol.for('assistos.explorer.unconfirmedLockRelease');
 const PROCESS_STARTED_AT_MS = Date.now() - Math.max(0, Number(process.uptime?.() || 0) * 1_000);
 
 function isMarkdownPath(filePath, pathApi) {
@@ -553,10 +557,17 @@ export function createMarkdownCrdtStore({
   async function releaseDocumentLockFile(lock) {
     try {
       const current = await readDocumentLock(lock.lockPath);
+      if (!current.exists) return;
+      if (current.owner === null) {
+        // The lock file exists but could not be read, so its release cannot be confirmed.
+        globalThis[UNCONFIRMED_LOCK_RELEASE_KEY] = true;
+        return;
+      }
       if (current.owner?.token !== lock.token) return;
       await fs.rm(lock.lockPath, { force: true });
     } catch {
-      // A later call can recover a stale lock if this process is interrupted.
+      // A later call can recover a stale lock if this process is interrupted, and a warm worker is recycled.
+      globalThis[UNCONFIRMED_LOCK_RELEASE_KEY] = true;
     }
   }
 

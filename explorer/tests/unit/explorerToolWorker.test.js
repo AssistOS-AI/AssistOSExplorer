@@ -596,3 +596,58 @@ await serveToolWorker(async ({ envelope, toolEnv, stdout, stderr }) => {
     assert.ok(workerP90 <= spawnP90, line);
     assert.ok(Math.max(...workerBurst.latencies) < slowMs, 'fast calls finished while the slow call still held its lane');
 });
+
+test('a lock release that cannot be confirmed recycles its worker so another live worker recovers immediately', async (t) => {
+    const root = await workspace(t);
+    const adapter = pathToFileURL(path.join(path.dirname(workerPath), 'explorer_tool_worker.mjs')).href;
+    const script = path.join(root, 'faulty_worker.mjs');
+    const faultFile = path.join(root, 'fault-pid.txt');
+    // Only the worker whose pid is in fault-pid.txt fails its first lock-file removal (EIO); everything else
+    // is the real adapter handler. The fixtures report the worker pid and keep a worker busy.
+    await fs.writeFile(script, `
+import fsp from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const realRm = fsp.rm.bind(fsp);
+let failed = false;
+fsp.rm = async (file, options) => {
+    if (!failed && String(file).includes('/.locks/')) {
+        let target = '';
+        try { target = readFileSync(${JSON.stringify(faultFile)}, 'utf8').trim(); } catch {}
+        if (target === String(process.pid)) { failed = true; throw Object.assign(new Error('EIO simulated'), { code: 'EIO' }); }
+    }
+    return realRm(file, options);
+};
+const { createExplorerWorkerHandler } = await import(${JSON.stringify(adapter)});
+const real = createExplorerWorkerHandler();
+const { serveToolWorker } = await import(pathToFileURL(process.env.PLOINKY_TOOL_WORKER_MODULE).href);
+await serveToolWorker(async (call) => {
+    if (call.envelope.tool === 'pid_fixture' || call.envelope.tool === 'hold_fixture') {
+        if (call.envelope.tool === 'hold_fixture') await new Promise(resolve => setTimeout(resolve, 900));
+        call.stdout.write(String(process.pid));
+        return { exitCode: 0 };
+    }
+    return real(call);
+});
+`);
+    await fs.writeFile(path.join(root, 'doc.md'), '# Doc\n');
+    const { pool, logs } = await realPool(t, root, { command: process.execPath, args: [script], size: 2 });
+    const callTool = (tool, input) => pool.call({ toolName: 'ignored', toolEnv: {}, payload: { tool, input } });
+    // Two concurrent holds cannot share a worker, so both workers are spawned and warm afterwards.
+    const warm = await Promise.all([callTool('hold_fixture'), callTool('hold_fixture')]);
+    assert.equal(new Set(warm.map(result => result.stdout)).size, 2, 'two distinct warm workers');
+    // Worker A is held busy, so the next two calls run on worker B, the one that will leak its lock.
+    const holding = callTool('hold_fixture');
+    const leaker = await callTool('pid_fixture');
+    await fs.writeFile(faultFile, leaker.stdout);
+    const opened = await callTool('open_markdown_crdt_document', { path: 'doc.md' });
+    assert.equal(opened.code, 0, opened.stderr);
+    const holder = await holding;
+    assert.notEqual(holder.stdout, leaker.stdout, 'the contender will run on the other worker');
+    const started = Date.now();
+    const contender = await callTool('sync_markdown_crdt_from_file', { path: 'doc.md' });
+    const elapsed = Date.now() - started;
+    assert.equal(contender.code, 0, contender.stderr);
+    assert.ok(elapsed < 3000, `the contender waited ${elapsed} ms for a lock owned by a live worker\n${logs.join('\n')}`);
+    assert.ok(pool.stats().recycled >= 1, 'the worker with the unconfirmed release was recycled');
+});
