@@ -11,7 +11,7 @@ import { discoverTaskSkills } from '../../../server/skill-descriptor.mjs';
 import { createAlaEngine } from '../lib/execution/alaEngine.mjs';
 import * as settings from '../lib/config/achillesSettings.mjs';
 import { ConversationSessionStore } from '../lib/storage/conversationSessionStore.mjs';
-import { buildTaskCompletions } from '../lib/tasks/workspaceTasks.mjs';
+import { buildTaskCompletions, readWorkspaceTasks } from '../lib/tasks/workspaceTasks.mjs';
 
 const permissionCompletions = [
     { value: 'ask-for-approval', label: 'ask-for-approval', description: 'Forward the native backend approval choices' },
@@ -40,15 +40,25 @@ export async function buildSkillCompletions(dir, options = {}) {
     })).sort((left, right) => left.label.localeCompare(right.label));
 }
 
-export function buildSessionCompletions(dir) {
+const TASK_COMPLETION_ACTIONS = ['view', 'continue', 'pause', 'model', 'login'];
+
+export function buildSessionCompletions(dir, store = null) {
     if (!dir) return [];
-    const payload = new ConversationSessionStore({ workingDir: dir }).listSessions();
+    const payload = (store || new ConversationSessionStore({ workingDir: dir })).listSessions(null);
     return payload.sessions.map((session) => ({ value: session.sessionId, label: session.preview || 'New session',
         description: [session.sessionId, session.updatedAt].filter(Boolean).join(' · ') }));
 }
 
-export function buildTaskActionCompletions(dir, action) {
-    return dir ? buildTaskCompletions(dir, action) : [];
+export function buildTaskActionCompletions(dir, action, snapshot = null) {
+    return dir ? buildTaskCompletions(dir, action, snapshot) : [];
+}
+
+// Request-local: reads task history once for every action that the caller did not already supply.
+export function buildTaskActionCompletionMap(dir, supplied = {}) {
+    const missing = TASK_COMPLETION_ACTIONS.filter((action) => !supplied?.[action]);
+    const snapshot = dir && missing.length ? readWorkspaceTasks(dir) : null;
+    return Object.fromEntries(TASK_COMPLETION_ACTIONS.map((action) =>
+        [action, supplied?.[action] || buildTaskActionCompletions(dir, action, snapshot)]));
 }
 
 export async function toAutocompleteCatalog(options = {}) {
@@ -102,9 +112,8 @@ export async function loadAutocompleteCatalog(options = {}) {
         if (!options.engine) await engine.close();
     }
     const result = await toAutocompleteCatalog({ ...options, dir: workingDir, skillCatalog, modelSubCommands,
-        sessionCompletions: buildSessionCompletions(workingDir),
-        taskCompletions: Object.fromEntries(['view', 'continue', 'pause', 'model', 'login'].map((action) =>
-            [action, buildTaskActionCompletions(workingDir, action)])),
+        sessionCompletions: options.sessionCompletions || buildSessionCompletions(workingDir, storedSessions),
+        taskCompletions: { ...options.taskCompletions, ...buildTaskActionCompletionMap(workingDir, options.taskCompletions) },
     });
     return modelError ? { ...result, modelError } : result;
 }
