@@ -61,8 +61,15 @@
         "WORKSPACE_ROOT"
       ]
     }
+  },
+  "cli": "node /code/src/index.mjs",
+  "webchat": {
+    "auth": "static",
+    "forwardEnvelope": true,
+    "runtimeScope": "principal"
   }
 }</code></pre>
+                    <p>The <code>webchat</code> block makes DPU Research WebChat use the workspace's Explorer SSO session and Explorer's <code>explorer.access</code> capability (<code>"auth": "static"</code>), forward the signed router envelope (<code>"forwardEnvelope": true</code>), and give every authenticated user a separate WebChat runtime (<code>"runtimeScope": "principal"</code>). The router signs the runtime scope into each WebChat request, and the agent rejects requests without it, so DPU WebChat fails closed on a router that cannot keep users apart. Each user may hold three DPU WebChat runtimes; the oldest idle one is replaced when a fourth opens, and a fourth is refused when none is idle.</p>
                 </section>
 
                 <section>

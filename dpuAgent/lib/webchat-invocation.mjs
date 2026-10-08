@@ -48,7 +48,10 @@ export async function verifyWebchatInvocation({
     text: String(message || ''),
     attachments: Array.isArray(attachments) ? attachments : [],
     references: Array.isArray(references) ? references : [],
-    presentation: { visible: presentation?.visible !== false }
+    presentation: { visible: presentation?.visible !== false },
+    // DPU WebChat requires a per-user router runtime. A router that does not
+    // sign this field (one without principal-scoped runtimes) fails here.
+    runtimeScope: 'principal'
   };
   const rch = runtime.computeRchTool({
     method: 'POST',

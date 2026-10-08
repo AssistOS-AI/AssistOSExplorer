@@ -10,5 +10,5 @@
 | [DS005-runtime-and-mcp](specsLoader.html?spec=DS005-runtime-and-mcp.md) | Defines the dpuAgent contract covered by DS005-runtime-and-mcp. |
 | [DS006-secrets-product-model](specsLoader.html?spec=DS006-secrets-product-model.md) | Defines the dpuAgent contract covered by DS006-secrets-product-model. |
 | [DS007-audit-model](specsLoader.html?spec=DS007-audit-model.md) | Defines the dpuAgent contract covered by DS007-audit-model. |
-| [DS008-runtime-invariants](specsLoader.html?spec=DS008-runtime-invariants.md) | Defines the dpuAgent contract covered by DS008-runtime-invariants. |
+| [DS008-runtime-invariants](specsLoader.html?spec=DS008-runtime-invariants.md) | Defines the Ploinky runtime invariants for dpuAgent, including WebChat SSO through Explorer and per-user WebChat runtimes. |
 | [DS009-research-data-and-secure-processing](specsLoader.html?spec=DS009-research-data-and-secure-processing.md) | Defines the dpuAgent contract covered by DS009-research-data-and-secure-processing. |

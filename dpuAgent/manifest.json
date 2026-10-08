@@ -24,7 +24,9 @@
   },
   "cli": "node /code/src/index.mjs",
   "webchat": {
-    "forwardEnvelope": true
+    "auth": "static",
+    "forwardEnvelope": true,
+    "runtimeScope": "principal"
   },
   "ideSettings": [
     {
