@@ -70,7 +70,8 @@ test.describe('webAssist guest access', () => {
     expect(initResult.body.result?.serverInfo?.name || '').toContain('webAssist');
 
     const cookies = await context.cookies();
-    expect(cookies.some((cookie) => cookie.name === 'ploinky_guest')).toBe(true);
+    // Guest cookies are per guest route; this is the webAssist route's cookie.
+    expect(cookies.some((cookie) => cookie.name === 'ploinky_guest_ncGyyzpdIxmPjORN_wQfqv' && cookie.value)).toBe(true);
     await waitForMcpIdle();
   });
 });

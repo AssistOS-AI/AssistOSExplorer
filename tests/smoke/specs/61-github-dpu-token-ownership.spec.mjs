@@ -23,9 +23,10 @@ test.describe('GitHub token DPU ownership @external', () => {
   test.skip(!smokeConfig.flags.github, 'Set SMOKE_GITHUB=1 to run GitHub DPU token ownership checks.');
 
   test('fresh signed-out Explorer deep link survives login and mounts the exact directory', async ({ page }) => {
-    const authCookieNames = new Set(['ploinky_jwt', 'ploinky_sso', 'ploinky_guest']);
+    // Guest cookies are per guest route (ploinky_guest_<hash>); match the whole family.
+    const isAuthCookie = (name) => ['ploinky_jwt', 'ploinky_sso'].includes(name) || name.startsWith('ploinky_guest');
     const initialAuthCookies = (await page.context().cookies(smokeConfig.baseURL))
-      .filter((cookie) => authCookieNames.has(cookie.name));
+      .filter((cookie) => isAuthCookie(cookie.name));
     expect(initialAuthCookies).toEqual([]);
 
     const navigations = [];
