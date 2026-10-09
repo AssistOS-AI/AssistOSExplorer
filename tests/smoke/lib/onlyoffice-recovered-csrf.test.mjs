@@ -763,8 +763,9 @@ test('real Chromium: a retry aborted by a reload is not recovered by identical r
     const snapshot = diagnostics.snapshot();
     assert.equal(snapshot.consoleErrors.length, 1);
     assert.deepEqual(snapshot.acknowledgedRecoveredCsrf, []);
-    assert.equal(snapshot.rejectedForbiddenMutations.length, 1);
-    assert.match(snapshot.rejectedForbiddenMutations[0].reason, /^(?:retry-failed|navigation-during-recovery)$/);
+    // Chromium reports the reload-cancelled fetch as requestfailed (net::ERR_ABORTED).
+    assert.deepEqual(snapshot.rejectedForbiddenMutations.map((entry) => entry.reason), ['retry-failed']);
+    assert(snapshot.mutationProofTraffic.some((entry) => entry.kind === 'mutation-failed'));
     assert.throws(() => diagnostics.assertNoErrors(), /zero console or page errors/);
   } finally {
     await browser.close();
