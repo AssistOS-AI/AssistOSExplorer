@@ -105,6 +105,59 @@ expanded-modal .expanded-modal-breadcrumbs [aria-current="page"] {
     overflow-wrap: anywhere;
 }
 
+expanded-modal .expanded-modal-breadcrumbs [aria-current="page"]:has(input[data-embed-field]) {
+    min-width: 0;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+expanded-modal .expanded-modal-breadcrumbs input[data-embed-field] {
+    width: var(--field-length, 22ch);
+    max-width: 100%;
+    min-width: 0;
+    field-sizing: content;
+    padding: 6px 32px 6px 10px;
+    border: 1px solid var(--border-strong, #cbd5e1);
+    border-radius: 6px;
+    background: var(--surface-soft, var(--surface));
+    color: inherit;
+    font: inherit;
+    box-shadow: none;
+    cursor: text;
+    user-select: text;
+}
+
+expanded-modal .expanded-modal-breadcrumbs input[data-embed-field]:hover:not(:disabled):not([readonly]) {
+    border-color: var(--accent, #60a5fa);
+}
+
+expanded-modal .expanded-modal-breadcrumbs input[data-embed-field]:focus {
+    border-color: var(--accent, #60a5fa);
+    outline: none;
+}
+
+expanded-modal .expanded-modal-breadcrumbs input[data-embed-field]:is(:disabled, [readonly]) {
+    padding: 6px 10px;
+    border-color: transparent;
+    background: transparent;
+    opacity: 1;
+    cursor: default;
+}
+
+expanded-modal .expanded-modal-breadcrumbs [data-embed-edit-icon] {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-soft, #9fa2a8);
+    pointer-events: none;
+}
+
+expanded-modal .expanded-modal-breadcrumbs [aria-current="page"]:has(input:is(:disabled, [readonly])) [data-embed-edit-icon] {
+    display: none;
+}
+
 expanded-modal .expanded-modal-breadcrumbs .breadcrumb-sep {
     color: var(--text-soft, #9fa2a8);
 }

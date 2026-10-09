@@ -77,6 +77,16 @@ test('an embedded page header folds its breadcrumbs into the modal header', asyn
     assert.match(presenter, /new MutationObserver/);
     assert.match(presenter, /contentWindow\.location\.href/);
     assert.match(presenter, /contentDocument\?\.baseURI/);
+    assert.match(presenter, /link\.hasAttribute\("data-return-control"\)/);
+    assert.match(presenter, /original\?\.hasAttribute\("data-return-control"\)/);
+    assert.match(presenter, /original\.click\(\);[\s\S]*return;/);
+    assert.match(presenter, /event\.ctrlKey \|\| event\.metaKey \|\| event\.shiftKey \|\| event\.altKey/);
+    assert.match(presenter, /relayBreadcrumbFieldEvent/);
+    assert.match(presenter, /hasFocusedBreadcrumbField\(this\.breadcrumbsNode\)/);
+    assert.match(css, /input\[data-embed-field\]/);
+    assert.match(css, /\[data-embed-edit-icon\]/);
+    assert.match(css, /border: 1px solid var\(--border-strong, #cbd5e1\);/);
+    assert.match(css, /:has\(input:is\(:disabled, \[readonly\]\)\) \[data-embed-edit-icon\]/);
     assert.match(css, /\.expanded-modal-breadcrumbs/);
 });
 
