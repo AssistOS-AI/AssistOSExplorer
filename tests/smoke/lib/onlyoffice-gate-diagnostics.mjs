@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { createMutationTrafficRecorder, evaluateRecoveredCsrfRefreshes } from './onlyoffice-recovered-csrf.mjs';
 import { findTraceCredentialResidue, redactTraceText, stopAndAttachRedactedTrace } from './redacted-trace.mjs';
 import { findSecretLeaks } from './security.mjs';
 
@@ -47,8 +48,14 @@ export function createOnlyOfficeGateDiagnostics(context, { now = () => performan
   let phase = 'initialization';
   let contextClosed = false;
   const record = (event) => events.push({ phase, elapsedMs: Math.round(now() - startedAt), ...event });
+  const mutationTraffic = createMutationTrafficRecorder({
+    phase: () => phase,
+    elapsed: () => Math.round(now() - startedAt),
+  });
   // Context events cover the first navigation, every iframe, and any new page.
   // Lifecycle disruption is evidence, never a reason to filter browser errors.
+  // The single exception is a console error that a fully evidenced recovered
+  // browser_csrf_invalid refresh accounts for (see onlyoffice-recovered-csrf.mjs).
   context.on('console', (message) => record({
     kind: 'console',
     type: message.type(),
@@ -61,13 +68,18 @@ export function createOnlyOfficeGateDiagnostics(context, { now = () => performan
     text: webError.error().stack || webError.error().message,
     url: safeUrl(webError.page()?.url()),
   }));
-  context.on('requestfailed', (request) => record({
-    kind: 'requestfailed',
-    url: safeUrl(request.url()),
-    method: request.method(),
-    failure: request.failure()?.errorText || '',
-  }));
+  context.on('request', (request) => mutationTraffic.onRequest(request));
+  context.on('requestfailed', (request) => {
+    mutationTraffic.onRequestFailed(request);
+    record({
+      kind: 'requestfailed',
+      url: safeUrl(request.url()),
+      method: request.method(),
+      failure: request.failure()?.errorText || '',
+    });
+  });
   context.on('response', (response) => {
+    mutationTraffic.onResponse(response);
     if (response.status() >= 400) record({
       kind: 'response',
       url: safeUrl(response.url()),
@@ -81,6 +93,12 @@ export function createOnlyOfficeGateDiagnostics(context, { now = () => performan
   });
 
   function snapshot() {
+    const consoleErrors = events.filter((event) => event.kind === 'console' && event.type === 'error');
+    const recovered = evaluateRecoveredCsrfRefreshes({
+      traffic: mutationTraffic.traffic,
+      consoleErrors,
+      forbiddenResponses: events.filter((event) => event.kind === 'response' && event.status === 403),
+    });
     return JSON.parse(safeJson({
       contextClosed,
       phaseTimings: [...phaseTimings, {
@@ -88,8 +106,14 @@ export function createOnlyOfficeGateDiagnostics(context, { now = () => performan
         startedAfterMs: Math.round(phaseStartedAt - startedAt),
         elapsedMs: Math.round(now() - phaseStartedAt),
       }],
-      ignoredBrowserErrors: 0,
-      consoleErrors: events.filter((event) => event.kind === 'console' && event.type === 'error'),
+      // Raw console errors stay listed; only the unacknowledged ones fail the gate.
+      ignoredBrowserErrors: recovered.acknowledged.length,
+      consoleErrors,
+      acknowledgedRecoveredCsrf: recovered.acknowledged,
+      rejectedForbiddenMutations: recovered.rejected,
+      unacknowledgedConsoleErrors: recovered.unacknowledgedConsoleErrors,
+      // The in-memory proof digests only correlate requests; they are never saved.
+      mutationProofTraffic: mutationTraffic.traffic.map(({ proofRef, ...entry }) => entry),
       pageErrors: events.filter((event) => event.kind === 'pageerror'),
       events,
     }));
@@ -107,10 +131,12 @@ export function createOnlyOfficeGateDiagnostics(context, { now = () => performan
       phaseStartedAt = changedAt;
     },
     snapshot,
+    // Completes in-flight response-body captures; call before the context closes.
+    settle: () => mutationTraffic.settle(),
     assertNoErrors() {
       const evidence = snapshot();
       assert.deepEqual(
-        [...evidence.consoleErrors, ...evidence.pageErrors],
+        [...evidence.unacknowledgedConsoleErrors, ...evidence.pageErrors],
         [],
         'OnlyOffice requires zero console or page errors, including targeted restart and cleanup.',
       );
@@ -160,6 +186,7 @@ export async function finalizeOnlyOfficeGate({
     failureCollector.add('OnlyOffice redacted trace', new Error('Tracing did not start.'));
   }
   diagnostics.setPhase('context-close');
+  await failureCollector.required('OnlyOffice mutation evidence capture', () => diagnostics.settle());
   await failureCollector.required('OnlyOffice browser context close', () => context.close());
   await failureCollector.required('OnlyOffice browser diagnostics', () => diagnostics.attach(testInfo));
   await failureCollector.required('OnlyOffice zero browser errors', () => diagnostics.assertNoErrors());

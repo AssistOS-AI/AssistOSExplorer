@@ -826,6 +826,9 @@ On headed Linux without `DISPLAY`, the npm runner starts a deterministic 1920×1
   distinct edit without clicking save. It proves DPU state is still unchanged,
   invokes the targeted restart without another authentication request, proves
   drain produced another callback acknowledgement, and reopens both markers.
+  The gate requires zero console and page errors for the whole run, including
+  both targeted restarts and the cleanup, with exactly one bounded exception
+  described under "OnlyOffice recovered browser CSRF refresh" below.
 - `SMOKE_GITHUB=1` enables GitHub plugin authentication checks.
 - `SMOKE_HARDWARE_LIMITS=1` enables the hardware-limits executors: spec 90
   (administrator panel and API probes, 6 tests), spec 92 (owned fixture graph,
@@ -864,6 +867,64 @@ SMOKE_WORKSPACE_ROOT='<fresh-workspace>' \
 SMOKE_TEST_TIMEOUT_MS=240000 \
 npm test -- --project=chromium specs/50-onlyoffice-dpu.spec.mjs
 ```
+
+### OnlyOffice recovered browser CSRF refresh
+
+A targeted OnlyOffice restart changes the workspace-wide edge generation, and
+the browser mutation proof (`GET /auth/token?mutationRoute=<route>`, bound to
+that generation) is only valid for the generation it was minted in. The first
+MCP mutation after a restart therefore answers `403 {"error":"browser_csrf_invalid"}`;
+the page's MCP client (`Agent/client/MCPBrowserClient.js` `sendMutationRequest`)
+refreshes its proof once and retries the identical POST, which succeeds.
+Chromium still logs the rejected attempt as `Failed to load resource: the server
+responded with a status of 403 (Forbidden)`. This is existing, self-healing
+router behaviour, observed in the `reopen` and `cleanup-document-deletion`
+phases, and it is not a functional failure.
+
+`lib/onlyoffice-recovered-csrf.mjs` acknowledges that console error, and only
+that console error, when every condition holds for the operation (same page, URL,
+method and request body hash):
+
+1. a `POST /<route>/mcp` answered 403 with the response body exactly
+   `{"error":"browser_csrf_invalid"}`;
+2. the proof presented by that request was observed in an earlier 200
+   `/auth/token` response for the same route, and the refresh that followed
+   (`GET /auth/token?mutationRoute=<route>`, 200, matching `routeKey` and origin)
+   reports a different `generation`;
+3. there was exactly one such 403 for the operation, followed by the refresh and
+   then a 2xx retry that presented the refreshed proof, with no other 403 for
+   that operation immediately before or after. The retry is the immediate
+   same-operation successor: a failed or aborted attempt is that successor and
+   ends the recovery;
+4. the 403, the refresh and the retry belong to the same page, frame and
+   document epoch. The epoch advances on every document navigation request of
+   that frame, and is stamped when each request starts, so a reload (or a
+   navigation of the page's main frame) between the 403 and the retry never
+   counts as recovery, and a new document's identical request with the same
+   refreshed proof cannot stand in for the aborted retry. A failed or aborted
+   same-route `/auth/token` request between them also rejects the recovery;
+5. the console error is the single exact-text 403 console event whose location is
+   that URL, between 100 ms before the 403 response and the retry response, and
+   no other recovery claims it. For that URL the number of exact-text console
+   errors must also equal the number of 403 responses seen at it, so a recovery
+   whose own console error is missing can never account for another event.
+
+Everything else still fails the gate: repeated 403s, any other 403 body, an
+unchanged generation, a missing or failed refresh, a missing or non-2xx retry,
+an unobserved rejected proof, a recovery that crosses a document navigation or
+frame, a per-URL console/403 count mismatch, a console error on another URL or with other
+text, and every page error. Proof values, request bodies and response bodies are
+never stored, and neither is any digest of a proof; only statuses, generation
+identifiers, a short request-body hash, JSON-RPC method and id, and timings.
+
+`onlyoffice-browser-diagnostics.json` keeps the raw `consoleErrors` and adds
+`acknowledgedRecoveredCsrf` (phase, URL, rejected and refreshed generation,
+statuses, timings, console event), `rejectedForbiddenMutations` (the reason each
+other 403 was not acknowledged), `unacknowledgedConsoleErrors` (what fails the
+gate), `mutationProofTraffic`, and `ignoredBrowserErrors` set to the number of
+acknowledged errors. `lib/onlyoffice-recovered-csrf.test.mjs` covers the
+accepted sequence, each violation, a replay of the live diagnostics shapes, and a
+real Chromium check.
 
 These opt-in gates skip only while their flag is off. Once a flag is `1`,
 missing credentials, topology, services, browser behavior, or sanitation
