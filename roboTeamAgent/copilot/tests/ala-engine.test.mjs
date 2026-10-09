@@ -401,6 +401,9 @@ test('workflow execution reads current model and effort from robot home without 
 
 test('a lease release failure inside executeTurn is logged as an error record, not swallowed silently', { timeout: 15000, skip: existsSync('/proc/self/stat') ? false : 'workspace locks require Linux /proc' }, async (t) => {
     const lines = [];
+    const oldMode = process.env.ROBOTEAM_COPILOT_DIAGNOSTICS;
+    process.env.ROBOTEAM_COPILOT_DIAGNOSTICS = 'stderr';
+    t.after(() => { if (oldMode === undefined) delete process.env.ROBOTEAM_COPILOT_DIAGNOSTICS; else process.env.ROBOTEAM_COPILOT_DIAGNOSTICS = oldMode; });
     const originalWrite = process.stderr.write;
     process.stderr.write = (chunk) => { lines.push(String(chunk)); return true; };
     t.after(() => { process.stderr.write = originalWrite; });

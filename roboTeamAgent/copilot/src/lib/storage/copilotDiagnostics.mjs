@@ -4,8 +4,8 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { assertSafeAchillesPrivatePath, ensureSafeAchillesPrivateDirectory } from './privateDataRoot.mjs';
 
-// Best-effort JSONL diagnostics for the copilot runtime. Every record goes to stderr and to
-// <workingDir>/.roboteam/logs/copilot-diagnostics.jsonl (mode 0600). Logging never throws and
+// Best-effort JSONL diagnostics for the copilot runtime. Every record is appended to
+// <workingDir>/.roboteam/logs/copilot-diagnostics.jsonl (mode 0600); ROBOTEAM_COPILOT_DIAGNOSTICS=stderr also mirrors it to stderr and =0 disables it. Logging never throws and
 // never changes the caller's behaviour. Callers pass safe fields only: no tokens, cookies,
 // message text or file contents.
 export const COPILOT_DIAGNOSTICS_RELATIVE_PATH = path.join('logs', 'copilot-diagnostics.jsonl');
@@ -66,7 +66,10 @@ export function logDiagnostic(workingDir, event, fields = {}) {
         let line;
         try { line = `${JSON.stringify(record)}\n`; }
         catch { line = `${JSON.stringify({ ts: record.ts, pid: record.pid, mono: record.mono, event: record.event, unserializable: true })}\n`; }
-        try { process.stderr.write(line); } catch { /* best effort */ }
+        // The router forwards a WebChat process's stderr into the chat, so stderr is opt-in.
+        if (process.env.ROBOTEAM_COPILOT_DIAGNOSTICS === 'stderr') {
+            try { process.stderr.write(line); } catch { /* best effort */ }
+        }
         if (typeof workingDir === 'string' && workingDir) appendLine(workingDir, line);
         return record;
     } catch {

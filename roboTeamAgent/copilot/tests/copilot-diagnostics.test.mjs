@@ -17,8 +17,11 @@ function workspace(t) {
     return dir;
 }
 
-function quietStderr(t) {
+function quietStderr(t, mirror = true) {
     const lines = [];
+    const oldMode = process.env.ROBOTEAM_COPILOT_DIAGNOSTICS;
+    if (mirror) process.env.ROBOTEAM_COPILOT_DIAGNOSTICS = 'stderr';
+    t.after(() => { if (oldMode === undefined) delete process.env.ROBOTEAM_COPILOT_DIAGNOSTICS; else process.env.ROBOTEAM_COPILOT_DIAGNOSTICS = oldMode; });
     const original = process.stderr.write;
     process.stderr.write = (chunk) => { lines.push(String(chunk)); return true; };
     t.after(() => { process.stderr.write = original; });
@@ -44,6 +47,18 @@ test('records go to stderr and a private 0600 JSONL file with the fixed fields',
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     assert.equal(stderr.length, 2);
     assert.equal(JSON.parse(stderr[0]).event, 'unit.event');
+});
+
+test('stderr is untouched by default and the file is still written', (t) => {
+    const dir = workspace(t);
+    const stderr = quietStderr(t, false);
+    delete process.env.ROBOTEAM_COPILOT_DIAGNOSTICS;
+    logDiagnostic(dir, 'unit.quiet');
+    assert.equal(stderr.length, 0);
+    assert.equal(fs.readFileSync(path.join(dir, '.roboteam', 'logs', 'copilot-diagnostics.jsonl'), 'utf8').includes('unit.quiet'), true);
+    process.env.ROBOTEAM_COPILOT_DIAGNOSTICS = '0';
+    assert.equal(logDiagnostic(dir, 'unit.off'), null);
+    assert.equal(stderr.length, 0);
 });
 
 test('logging never throws when the directory is unwritable or the path is unsafe', (t) => {
