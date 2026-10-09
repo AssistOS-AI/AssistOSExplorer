@@ -45,7 +45,7 @@ inputs with independent inspection before and after execution. It retains the
 30-minute generation limit and records each profile's image-age policy. Use the
 canonical `npm test -- --project=chromium --workers=1 --retries=0` prefix and title
 greps, never file/line suffixes. The runner compares both discovered identities
-and terminal outcomes with `tests/smoke/acceptance-ledger_codex.json`; every selected
+and terminal outcomes with `tests/smoke/acceptance-ledger.json`; every selected
 identity must finish as one expected pass on attempt zero. Discovery, exit zero,
 skips and expected failures cannot establish coverage.
 

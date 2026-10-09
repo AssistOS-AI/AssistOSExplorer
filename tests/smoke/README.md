@@ -24,7 +24,7 @@ This setup does not establish a spec03 pass or change default enablement.
 
 Use `npm test -- --project=chromium --workers=1 --retries=0` with complete
 `specs/*.spec.mjs` filenames and an escaped distinctive title grep when selecting
-one case. Never use `file:line`. `acceptance-ledger_codex.json` preserves the 44
+one case. Never use `file:line`. `acceptance-ledger.json` preserves the 44
 original identities, including 25 required local outcomes and 19 separate or blocked
 profiles. The recorded failures and skips remain historical observations. The
 ledger and `--list` discovery authorize no live run.
@@ -575,7 +575,7 @@ agent was actually started or stopped.
 Opt-in checks:
 
 - `SMOKE_OPEN_INTERPRETER=1` runs Copilot semantic routing and AKU memory checks that require configured external provider runtime.
-- `SMOKE_CODEX_DELEGATION=1` selects the current C4 workflow delegation spec. Copilot starts one run-owned terminal workflow through `launch-workflow`; exactly one canonical matching Codex-only worker must produce the requested file, helper receipt and completed native child proof. The front backend is recorded separately through `SMOKE_C4_FRONT_BACKEND` and its configuration remains unchanged. Enabled live execution is refused until the reviewed phase6 runner and independently verified B+C setup exist. See [workflow delegation](./copilot-workflow-delegation_codex.md).
+- `SMOKE_CODEX_DELEGATION=1` selects the current C4 workflow delegation spec. Copilot starts one run-owned terminal workflow through `launch-workflow`; exactly one canonical matching Codex-only worker must produce the requested file, helper receipt and completed native child proof. The front backend is recorded separately through `SMOKE_C4_FRONT_BACKEND` and its configuration remains unchanged. Enabled live execution is refused until the reviewed phase6 runner and independently verified B+C setup exist. See [workflow delegation](./copilot-workflow-delegation.md).
 - The ordinary Copilot folder-launch spec requires `SMOKE_RELEASE_MANIFEST` and
   binds that immutable 421 release bundle to the running outer Box before and
   after Playwright. For public QA, keep `SMOKE_BASE_URL` on the real public
