@@ -138,13 +138,15 @@ export async function consumeAuthCode({ providerState, code }) {
     }));
 }
 
-// The Router revalidates provider sessions on its validation interval. A session
-// minted before a credential replacement or revocation carries an older
-// generation and is refused, which bounds revocation by that interval.
+// Each Router admission revalidates against one coherent persisted description.
+// Credential changes invalidate earlier generations; roles can change without
+// ending the login. Reentrant callers already holding the scope remain valid.
 export async function getSsoUser(userId, { generation } = {}) {
-    const described = await describeUser(userId);
-    if (generation !== undefined && (!Number.isSafeInteger(generation) || generation !== authGenerationOf(described.user))) {
-        throw ssoError('session_revoked', 'Session revoked', 401);
-    }
-    return described;
+    return withPersistenceScope(async () => {
+        const described = await describeUser(userId);
+        if (generation !== undefined && (!Number.isSafeInteger(generation) || generation !== authGenerationOf(described.user))) {
+            throw ssoError('session_revoked', 'Session revoked', 401);
+        }
+        return described;
+    });
 }
