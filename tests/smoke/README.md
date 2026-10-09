@@ -893,14 +893,26 @@ method and request body hash):
    reports a different `generation`;
 3. there was exactly one such 403 for the operation, followed by the refresh and
    then a 2xx retry that presented the refreshed proof, with no other 403 for
-   that operation immediately before or after;
-4. the console error is the single exact-text 403 console event whose location is
+   that operation immediately before or after. The retry is the immediate
+   same-operation successor: a failed or aborted attempt is that successor and
+   ends the recovery;
+4. the 403, the refresh and the retry belong to the same page, frame and
+   document epoch. The epoch advances on every document navigation request of
+   that frame, and is stamped when each request starts, so a reload (or a
+   navigation of the page's main frame) between the 403 and the retry never
+   counts as recovery, and a new document's identical request with the same
+   refreshed proof cannot stand in for the aborted retry. A failed or aborted
+   same-route `/auth/token` request between them also rejects the recovery;
+5. the console error is the single exact-text 403 console event whose location is
    that URL, between 100 ms before the 403 response and the retry response, and
-   no other recovery claims it.
+   no other recovery claims it. For that URL the number of exact-text console
+   errors must also equal the number of 403 responses seen at it, so a recovery
+   whose own console error is missing can never account for another event.
 
 Everything else still fails the gate: repeated 403s, any other 403 body, an
 unchanged generation, a missing or failed refresh, a missing or non-2xx retry,
-an unobserved rejected proof, a console error on another URL or with other
+an unobserved rejected proof, a recovery that crosses a document navigation or
+frame, a per-URL console/403 count mismatch, a console error on another URL or with other
 text, and every page error. Proof values, request bodies and response bodies are
 never stored, and neither is any digest of a proof; only statuses, generation
 identifiers, a short request-body hash, JSON-RPC method and id, and timings.

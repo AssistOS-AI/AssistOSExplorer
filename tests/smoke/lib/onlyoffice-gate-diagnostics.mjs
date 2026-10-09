@@ -68,12 +68,16 @@ export function createOnlyOfficeGateDiagnostics(context, { now = () => performan
     text: webError.error().stack || webError.error().message,
     url: safeUrl(webError.page()?.url()),
   }));
-  context.on('requestfailed', (request) => record({
-    kind: 'requestfailed',
-    url: safeUrl(request.url()),
-    method: request.method(),
-    failure: request.failure()?.errorText || '',
-  }));
+  context.on('request', (request) => mutationTraffic.onRequest(request));
+  context.on('requestfailed', (request) => {
+    mutationTraffic.onRequestFailed(request);
+    record({
+      kind: 'requestfailed',
+      url: safeUrl(request.url()),
+      method: request.method(),
+      failure: request.failure()?.errorText || '',
+    });
+  });
   context.on('response', (response) => {
     mutationTraffic.onResponse(response);
     if (response.status() >= 400) record({
@@ -90,7 +94,11 @@ export function createOnlyOfficeGateDiagnostics(context, { now = () => performan
 
   function snapshot() {
     const consoleErrors = events.filter((event) => event.kind === 'console' && event.type === 'error');
-    const recovered = evaluateRecoveredCsrfRefreshes({ traffic: mutationTraffic.traffic, consoleErrors });
+    const recovered = evaluateRecoveredCsrfRefreshes({
+      traffic: mutationTraffic.traffic,
+      consoleErrors,
+      forbiddenResponses: events.filter((event) => event.kind === 'response' && event.status === 403),
+    });
     return JSON.parse(safeJson({
       contextClosed,
       phaseTimings: [...phaseTimings, {
