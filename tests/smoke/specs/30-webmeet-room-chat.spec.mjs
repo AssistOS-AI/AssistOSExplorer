@@ -114,7 +114,8 @@ test.describe('WebMeet rooms', () => {
       expect([joinedUrl.pathname, joinedUrl.searchParams.get('roomId')], 'the guest stays on the public room URL')
         .toEqual(['/webmeetAgent/roomLoader.html', publicRoomId]);
       const guestCookies = describeGuestCookies(await guestContext.cookies());
-      expect(guestCookies.hasGuestSession, `the router must give the guest a guest session (cookies: ${guestCookies.names.join(', ')})`).toBe(true);
+      expect(guestCookies.hasGuestSession, `the router must give the guest the WebMeet route guest cookie (cookies: ${guestCookies.names.join(', ')})`).toBe(true);
+      expect(guestCookies.legacyGuestCookieWithValue, 'the legacy ploinky_guest cookie must never carry a value').toBe(false);
       expect(guestCookies.signedInCookies, 'the guest must hold no signed-in session').toEqual([]);
 
       await expectGuestVisibleToOwner(page, guestPage, guestDisplayName);

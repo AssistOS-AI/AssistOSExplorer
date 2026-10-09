@@ -35,10 +35,19 @@ test('guest admission or guest chat tools are flagged, the room lookup is not', 
 });
 
 test('guest cookies must show a guest session and no signed-in session', () => {
-    assert.deepEqual(describeGuestCookies([{ name: 'ploinky_guest' }, { name: 'ploinky_browser_csrf' }]),
-        { names: ['ploinky_browser_csrf', 'ploinky_guest'], hasGuestSession: true, signedInCookies: [] });
+    const webmeet = { name: 'ploinky_guest_iw2P_FBNZBzQ_b5bTDMOLe', value: 'v' };
+    assert.deepEqual(describeGuestCookies([webmeet, { name: 'ploinky_browser_csrf', value: 'c' }]), {
+        names: ['ploinky_browser_csrf', 'ploinky_guest_iw2P_FBNZBzQ_b5bTDMOLe'],
+        hasGuestSession: true, legacyGuestCookieWithValue: false, signedInCookies: [],
+    });
     assert.equal(describeGuestCookies([]).hasGuestSession, false);
-    assert.deepEqual(describeGuestCookies([{ name: 'ploinky_guest' }, { name: 'ploinky_jwt' }, { name: 'ploinky_sso' }]).signedInCookies,
+    // The legacy name, another route's cookie, or an empty value is not the WebMeet guest session.
+    assert.equal(describeGuestCookies([{ name: 'ploinky_guest', value: 'v' }]).hasGuestSession, false);
+    assert.equal(describeGuestCookies([{ name: 'ploinky_guest_ncGyyzpdIxmPjORN_wQfqv', value: 'v' }]).hasGuestSession, false);
+    assert.equal(describeGuestCookies([{ name: webmeet.name, value: '' }]).hasGuestSession, false);
+    assert.equal(describeGuestCookies([webmeet, { name: 'ploinky_guest', value: 'v' }]).legacyGuestCookieWithValue, true);
+    assert.equal(describeGuestCookies([webmeet, { name: 'ploinky_guest', value: '' }]).legacyGuestCookieWithValue, false);
+    assert.deepEqual(describeGuestCookies([webmeet, { name: 'ploinky_jwt', value: 'j' }, { name: 'ploinky_sso', value: 's' }]).signedInCookies,
         ['ploinky_jwt', 'ploinky_sso']);
 });
 

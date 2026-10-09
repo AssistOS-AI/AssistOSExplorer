@@ -10,7 +10,11 @@ export const GUEST_ADMISSION_TOOLS = Object.freeze([
   'webmeet_chat_send_guest',
 ]);
 export const SIGNED_IN_COOKIE_NAMES = Object.freeze(['ploinky_jwt', 'ploinky_sso']);
-export const GUEST_COOKIE_NAME = 'ploinky_guest';
+// Per-policy guest cookies: `ploinky_guest_` plus a hash of the route key. The
+// WebMeet route cookie is pinned literally, on purpose not derived from product code.
+export const WEBMEET_GUEST_COOKIE_NAME = 'ploinky_guest_iw2P_FBNZBzQ_b5bTDMOLe';
+// The retired single guest cookie must never be written with a value.
+export const LEGACY_GUEST_COOKIE_NAME = 'ploinky_guest';
 
 // The room link the WebMeet UI publishes: `<origin>/<agent>/roomLoader.html?roomId=<id>`.
 export function publicRoomLoaderUrl(baseURL, roomId, agentName = WEBMEET_AGENT_NAME) {
@@ -40,12 +44,15 @@ export function forbiddenGuestAdmissionTools(toolNames) {
   return toolNames.filter((name) => GUEST_ADMISSION_TOOLS.includes(name));
 }
 
-// Cookie names must show a router-created guest session and no signed-in session.
+// Cookies must show the router-created WebMeet guest session, no legacy guest
+// cookie with a value, and no signed-in session.
 export function describeGuestCookies(cookies) {
   const names = [...new Set(cookies.map((cookie) => String(cookie.name || '')))].sort();
+  const hasValue = (name) => cookies.some((cookie) => cookie.name === name && String(cookie.value || '') !== '');
   return {
     names,
-    hasGuestSession: names.includes(GUEST_COOKIE_NAME),
+    hasGuestSession: hasValue(WEBMEET_GUEST_COOKIE_NAME),
+    legacyGuestCookieWithValue: hasValue(LEGACY_GUEST_COOKIE_NAME),
     signedInCookies: names.filter((name) => SIGNED_IN_COOKIE_NAMES.includes(name)),
   };
 }
