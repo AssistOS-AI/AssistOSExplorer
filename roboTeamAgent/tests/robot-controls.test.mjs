@@ -43,10 +43,10 @@ test('creation dialog respects the disabled trigger, opens once and restores foc
     assert.equal(state.trigger.focused, true);
 });
 
-test('Logs toggle has link styling without a button background in hover or expanded states', async () => {
+test('Logs link has understated styling without a button background on hover', async () => {
     const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
     const base = css.match(/\.view-logs \{([^}]+)\}/)?.[1];
-    const active = css.match(/\.view-logs:hover, \.view-logs\[aria-expanded="true"\] \{([^}]+)\}/)?.[1];
+    const active = css.match(/\.view-logs:hover \{([^}]+)\}/)?.[1];
     assert.match(base, /background: transparent;/);
     assert.match(base, /border: 0;/);
     assert.match(base, /text-decoration: underline;/);
@@ -155,8 +155,9 @@ test('compact robot markup keeps Open and Stop outside grouped administration an
     assert.match(main, /class="robot-meta"[\s\S]*class="view-logs"/);
     assert.match(source, /state\.textContent = robot\.run\.state;/);
     assert.match(source, /mode\.textContent = robot\.run\.mode \|\| '';/);
-    assert.match(source, /logsButton\.setAttribute\('aria-label', `Hide logs for \$\{robot\.name\}`\)/);
-    assert.match(source, /hideLogs\(\);\s*logsButton\.focus\(\)/);
+    assert.match(html, /<a class="view-logs" target="_blank" rel="noopener noreferrer"/);
+    assert.match(source, /logsLink\.setAttribute\('aria-label', `Open logs for \$\{robot\.name\} \(new tab\)`\)/);
+    assert.doesNotMatch(html, /robot-log-section|hide-logs|class="robot-logs"/);
     assert.match(source, /if \(creatingRobot \|\| !canCreateRobots\) return/);
     assert.match(source, /const data = new FormData\(createForm\);[\s\S]*updateCreateControls\(\);/);
     assert.match(source, /robot-danger-actions'\)\.hidden = !canAdmin/);

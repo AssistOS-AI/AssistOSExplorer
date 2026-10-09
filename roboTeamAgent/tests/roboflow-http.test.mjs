@@ -110,6 +110,24 @@ test('HTTP async generation starts, streams logs and cancels', async t => {
     assert.equal((await f.request(`/api/roboflow/generations/${id}`, 'user')).status, 404);
 });
 
+test('HTTP description revision retains admin checks and exposes a non-regeneration decision', async t => {
+    const f = await fixture(t);
+    const body = { workflow: graph, previousDescription: 'Write a report', description: 'Write a repport' };
+    assert.equal((await f.request('/api/roboflow/generations', 'user', body)).status, 403);
+    const started = await f.request('/api/roboflow/generations', 'admin', body);
+    assert.equal(started.status, 202);
+    const { id } = await started.json();
+    while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
+    f.roboflow.onRuntimeTaskEvent({ kind: 'terminal', taskId: f.started[0].request.runtimeTaskId,
+        state: 'completed', result: '# regenerate\nfalse\n# reason\nTypo only' });
+    while (f.roboflow.generationTasks.get(id).status === 'running') await new Promise(resolve => setImmediate(resolve));
+    const result = await (await f.request(`/api/roboflow/generations/${id}`, 'admin')).json();
+    assert.equal(result.regenerate, false); assert.equal(result.graph, null); assert.equal(result.reason, 'Typo only');
+    assert.equal(await f.roboflow.registry.get('example'), null);
+    const asset = await f.request('/workflow-description-revision.js');
+    assert.equal(asset.status, 200); assert.match(await asset.text(), /createDescriptionRevision/);
+});
+
 test('human-input answer route requires authentication and resumes with a validated choice', async t => {
     const f = await fixture(t);
     await f.request('/api/roboflow/workflows', 'admin', { ...graph, tasks: [{ ...graph.tasks[0], allowsHumanInput: true }] });

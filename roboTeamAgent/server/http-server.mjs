@@ -398,9 +398,9 @@ export function createRoboTeamServer(options) {
             }
             if (pathname === '/InterVariable.woff2' && req.method === 'GET') return serveFile(res, publicDir, 'InterVariable.woff2');
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(res, publicDir, 'styles.css');
-            if (['/workflow-editor.js', '/workflow-board.js', '/workflow-routing.js', '/workflow-generator.js', '/workflow-editor.css',
+            if (['/workflow-editor.js', '/workflow-board.js', '/workflow-routing.js', '/workflow-generator.js', '/workflow-description-revision.js', '/workflow-editor.css',
                 '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js',
-                '/log-render.js', '/webchat-logs.js', '/summary.js', '/conversation-skills.js', '/conversation-skills-model.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
+                '/log-render.js', '/webchat-logs.js', '/robot-logs.js', '/robot-log-viewer.js', '/summary.js', '/conversation-skills.js', '/conversation-skills-model.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
             if (pathname === '/dashboard-tabs.js' && req.method === 'GET') return serveFile(res, publicDir, 'dashboard-tabs.js');
             if (pathname === '/robot-controls.js' && req.method === 'GET') return serveFile(res, publicDir, 'robot-controls.js');
             if (pathname === '/page-navigation.js' && req.method === 'GET') return serveFile(res, publicDir, 'page-navigation.js');
@@ -619,6 +619,12 @@ export function createRoboTeamServer(options) {
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const run = await runtimeManager.stop(robot.id);
                 return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run) });
+            }
+            const logsPageId = pathname.match(new RegExp(`^/robots/(${ROBOT_ID})/logs$`))?.[1];
+            if (logsPageId && req.method === 'GET') {
+                const robot = await robotStore.get(logsPageId);
+                if (!robot) return sendError(res, 404, 'robot not found');
+                return servePage(res, publicDir, 'robot-logs.html', publicBasePath);
             }
             const logsId = matchRobotPath(pathname, '/logs');
             if (logsId && req.method === 'GET') {

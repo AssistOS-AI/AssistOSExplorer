@@ -74,11 +74,11 @@ test('dashboard tabs support wrapped arrows, Home, End and listener cleanup', ()
     state.tabs.forEach(tab => assert.equal(tab.listeners.size, 0));
 });
 
-test('dashboard markup groups existing controls into exactly three linked tabs and reserves Kron jobs', async () => {
+test('dashboard markup groups existing controls into exactly three linked tabs and reserves Cron jobs', async () => {
     const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
     assert.equal((html.match(/role="tab"/g) || []).length, 3);
     assert.equal((html.match(/role="tabpanel"/g) || []).length, 3);
-    for (const [tab, panel, label] of [['robotsTab', 'robotsPanel', 'Robots'], ['workflowTypesTab', 'workflowTypesPanel', 'Workflow types'], ['kronJobsTab', 'kronJobsPanel', 'Kron jobs']]) {
+    for (const [tab, panel, label] of [['robotsTab', 'robotsPanel', 'Robots'], ['workflowTypesTab', 'workflowTypesPanel', 'Workflow types'], ['kronJobsTab', 'kronJobsPanel', 'Cron jobs']]) {
         assert.match(html, new RegExp(`id="${tab}"[^>]*aria-controls="${panel}"[^>]*>\\s*${label}\\s*</button>`));
         assert.match(html, new RegExp(`id="${panel}"[^>]*aria-labelledby="${tab}"`));
     }

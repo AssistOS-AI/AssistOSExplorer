@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { resolveAlaInstallation } from './alaInstallation.mjs';
+import { alaSkillMountArguments } from './alaSkillMounts.mjs';
 import { alaSessionsRoot, readAlaSession } from './alaTranscript.mjs';
 import * as workspaceSettings from '../config/achillesSettings.mjs';
 import { acquireExecutionLease } from '../storage/workspaceStateLock.mjs';
@@ -211,15 +212,15 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             // cwd is the --cwd grant. ALA mounts exactly what it is given.
             if (config.workspaceRoot !== cwd) args.push('--folder', config.workspaceRoot);
             if (snapshot.skillsDirectory) {
-                for (const mount of snapshot.mounts || []) args.push('--folder', mount.source, 'at', mount.target, 'expose');
-                args.push('--folder', snapshot.skillsDirectory, 'at', path.join(cwd, '.agents', 'skills'), 'expose');
                 const claude = path.join(cwd, '.claude');
                 const claudeStat = await fs.lstat(claude).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
                 // Existing .claude -> .agents aliases already see the same overlay.
-                if (!claudeStat?.isSymbolicLink()) args.push('--folder', snapshot.skillsDirectory, 'at', path.join(claude, 'skills'), 'expose');
-                else if (await fs.realpath(claude) !== await fs.realpath(path.join(cwd, '.agents'))) {
+                if (claudeStat?.isSymbolicLink()
+                    && await fs.realpath(claude) !== await fs.realpath(path.join(cwd, '.agents'))) {
                     throw new Error('Project .claude symlink must point to .agents for session skills.');
                 }
+                args.push(...alaSkillMountArguments({ snapshot, workspaceRoot: config.workspaceRoot, cwd,
+                    includeClaude: !claudeStat?.isSymbolicLink() }));
             }
             args.push('--folder', scriptContext.directory, 'as', 'ploinky-runtime');
             if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) args.push('--folder', env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, 'as', 'roboflow-human-input');

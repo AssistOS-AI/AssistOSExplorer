@@ -514,6 +514,61 @@ test('cancelling an async generation stops its runtime task', async t => {
     assert.equal(f.service.cancelGeneration(id), null);
 });
 
+test('description revision keeps typos unchanged and semantic changes return a validated unsaved graph', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow({ ...graph(), description: 'Write a report' });
+    const stored = await f.service.registry.get('example');
+    for (const regenerate of [false, true]) {
+        const index = f.started.length;
+        const description = regenerate ? 'Do not write a report; collect sources only' : 'Write a repport';
+        const { id } = await f.service.startGeneration({ workflow: stored, previousDescription: stored.description, description });
+        while (f.started.length === index) await new Promise(resolve => setImmediate(resolve));
+        const input = JSON.parse(f.started[index].request.task);
+        assert.equal(input.previousDescription, 'Write a report'); assert.equal(input.description, description);
+        assert.deepEqual(input.workflow.tasks, stored.tasks);
+        assert.match(f.started[index].request.systemPrompt, /do not judge by edit distance/i);
+        await f.finish(index, regenerate ? JSON.stringify({ ...graph(), id: 'invented', name: 'Invented name', regenerate: true, reason: 'Changed deliverable' })
+            : '# regenerate\nfalse\n# reason\nSpelling correction only');
+        while (f.service.generationTasks.get(id).status === 'running') await new Promise(resolve => setImmediate(resolve));
+        const result = f.service.generationInfo(id);
+        assert.equal(result.status, 'completed'); assert.equal(result.regenerate, regenerate);
+        if (regenerate) {
+            assert.equal(result.graph.id, 'example'); assert.equal(result.graph.name, stored.name);
+            assert.equal(result.graph.description, description);
+        } else assert.equal(result.graph, null);
+        assert.deepEqual(await f.service.registry.get('example'), stored);
+    }
+});
+
+test('description revision rejects ambiguity, invalid graphs and unknown skills without updating storage', async t => {
+    const f = await fixture(t);
+    for (const output of [JSON.stringify(graph()), '# regenerate\nyes\n# reason\nMaybe',
+        JSON.stringify({ regenerate: true, reason: 'Changed' }),
+        JSON.stringify({ ...graph(), regenerate: true, reason: 'Changed', tasks: [task('a', { skillsets: ['unknown'] })], edges: [] })]) {
+        const index = f.started.length;
+        const { id } = await f.service.startGeneration({ workflow: graph(), previousDescription: 'Write', description: 'Read' });
+        while (f.started.length === index) await new Promise(resolve => setImmediate(resolve));
+        await f.finish(index, output);
+        while (f.service.generationTasks.get(id).status === 'running') await new Promise(resolve => setImmediate(resolve));
+        assert.equal(f.service.generationInfo(id).status, 'failed');
+        assert.equal(await f.service.registry.get('example'), null);
+    }
+    for (const workflow of [{ ...graph(), readOnly: true }, { ...graph(), id: 'code-development' }, { ...graph(), id: 'default' }]) {
+        await assert.rejects(f.service.startGeneration({ workflow, previousDescription: 'Write', description: 'Read' }), /Read-only/);
+    }
+});
+
+test('cancelling a description review releases the pending runtime completion and ignores later output', async t => {
+    const f = await fixture(t);
+    const { id } = await f.service.startGeneration({ workflow: graph(), previousDescription: 'Write', description: 'Read' });
+    while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
+    f.service.cancelGeneration(id);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.service.generations.size, 0);
+    await f.finish(0, JSON.stringify({ ...graph(), regenerate: true, reason: 'Late' }));
+    assert.equal(f.service.generationInfo(id), null); assert.equal(await f.service.registry.get('example'), null);
+});
+
 test('human input commits before routing and concurrent answers resume the same visit once', async t => {
     const f = await fixture(t);
     await f.service.createWorkflow({ ...graph(), tasks: [task('a', { allowsHumanInput: true }), task('b')], edges: [edge('a', 'b')] });

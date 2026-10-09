@@ -1,7 +1,36 @@
-import { drawBoard } from './workflow-board.js';
+import { drawBoard, workflowNodeRole } from './workflow-board.js';
+import { reviseGraph } from './workflow-generator.js';
+import { createDescriptionRevision } from './workflow-description-revision.js';
 const warningText = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
 const node = (tag, text, className) => { const element = document.createElement(tag); if (text) element.textContent = text; if (className) element.className = className; return element; };
 const button = (text, action) => { const element = node('button', text, 'button'); element.type = 'button'; element.onclick = action; return element; };
+
+const taskIcons = {
+    browser: { label: 'Browser', path: 'M3 4h18v16H3z M3 8h18 M6 6h.01 M9 6h.01' },
+    terminal: { label: 'Terminal', path: 'M3 4h18v16H3z M7 9l3 3-3 3 M13 15h4' },
+    desktop: { label: 'Desktop', path: 'M3 3h18v13H3z M12 16v5 M7 21h10' },
+    automatic: { label: 'Automatic execution: terminal, desktop or browser', path: 'M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z' },
+    coordinator: { label: 'RoboFlow coordinator', path: 'M8 3h8v5H8z M3 16h6v5H3z M15 16h6v5h-6z M12 8v4 M6 16v-4h12v4' },
+    creator: { label: 'Allows sub-flows', path: 'M6 3v18 M6 8h7a5 5 0 0 1 5 5v5 M15 15l3 3 3-3' }
+};
+
+export function taskSidebarPresentation(task, graph) {
+    const role = workflowNodeRole(task, graph);
+    const roleLabel = { start: 'Start node', end: 'End node', intermediate: 'Intermediate node', 'start-end': 'Start / End node' }[role];
+    const mode = task.kind === 'run-workflows' ? 'coordinator' : (['browser', 'terminal', 'desktop'].includes(task.executionType) ? task.executionType : 'automatic');
+    const icons = [taskIcons[mode]];
+    if (task.creator && task.kind !== 'run-workflows') icons.push(taskIcons.creator);
+    return { role, roleLabel, icons };
+}
+
+function taskIcon({ label, path }, className = 'task-type-icon') {
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [name, value] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', role: 'img', 'aria-label': label, focusable: 'false', class: className })) icon.setAttribute(name, value);
+    const title = document.createElementNS(icon.namespaceURI, 'title'); title.textContent = label;
+    const shape = document.createElementNS(icon.namespaceURI, 'path'); shape.setAttribute('d', path);
+    icon.append(title, shape);
+    return icon;
+}
 
 function appUrl(relative = '') {
     const basePath = globalThis.ROBOTEAM_CONFIG?.publicBasePath || './';
@@ -19,25 +48,57 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const board = document.querySelector('#workflowBoard');
     const message = document.querySelector('#workflowMessage');
     const addTaskButton = document.querySelector('#addTaskButton');
-    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0;
+    const nameControl = form.elements.name;
+    const taskPage = document.querySelector('#taskPage');
+    const workflowContent = document.querySelector('#workflowContent');
+    const review = document.querySelector('#descriptionReview');
+    const reviewText = document.querySelector('#descriptionReviewText');
+    const reviewRetry = document.querySelector('#descriptionReviewRetry');
+    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, version = 0, coverageRequest = 0, nameBeforeEditing = '';
     let warningTaskIds = new Set();
     let draggedTaskId = null;
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
     const readonly = () => !canAdmin || graph?.readOnly === true || graph?.kind === 'default';
     const changed = () => { version++; };
-    function showError(error) { message.textContent = error.message; }
-    function showPage(page) {
-        const previousPage = currentPage;
-        currentPage = page;
-        for (const panel of document.querySelectorAll('[data-workflow-page]')) panel.hidden = panel.dataset.workflowPage !== page;
-        for (const control of document.querySelectorAll('.workflow-page-button')) {
-            const active = control.dataset.page === page;
-            control.setAttribute('aria-pressed', String(active));
-            if (active) control.setAttribute('aria-current', 'page'); else control.removeAttribute('aria-current');
+    const descriptionRevision = createDescriptionRevision({
+        getGraph: () => graph,
+        generate: (snapshot, previous, description, options) => reviseGraph(snapshot, previous, description, { ...options, request: api }),
+        apply: revised => {
+            for (const key of ['tasks', 'edges', 'entryTaskId', 'layout']) graph[key] = structuredClone(revised[key]);
+            selectedEdgeId = null;
+            changed(); render();
+        },
+        onState: (state, reason = '') => {
+            review.hidden = state === 'idle';
+            review.dataset.state = state;
+            reviewRetry.hidden = state !== 'failed';
+            reviewText.textContent = ({ edited: 'Description changed — leave the field to check the workflow.',
+                checking: 'Checking requirements and updating the graph if needed…',
+                regenerated: 'Graph updated. Review the changes, then Save workflow.',
+                unchanged: 'No workflow change needed. The graph is unchanged.' }[state] || reason);
+            if (['regenerated', 'unchanged'].includes(state) && reason) reviewText.textContent += ` ${reason}`;
+            form.setAttribute('aria-busy', String(state === 'checking'));
         }
-        if (page === 'graph' && previousPage !== 'graph') renderBoard();
+    });
+    reviewRetry.onclick = () => { if (!readonly()) void descriptionRevision.check(); };
+    function showError(error) { message.textContent = error.message; }
+    function showTaskEditor(show) {
+        taskPage.hidden = !show;
+        workflowContent.classList.toggle('has-task-details', show);
     }
-    function select(id) { selected = id; renderList(); renderTaskEditor(); showPage('task'); }
+    function select(id) {
+        const hadSelectedEdge = Boolean(selectedEdgeId);
+        selected = id; selectedEdgeId = null;
+        renderList(); renderTaskEditor(); showTaskEditor(true);
+        if (hadSelectedEdge) renderBoard();
+    }
+    function updateWorkflowName(value) {
+        graph.name = value.slice(0, 120);
+        nameControl.value = graph.name;
+        nameControl.removeAttribute('aria-invalid');
+        nameControl.style.setProperty('--field-length', `${Math.max(18, graph.name.length + 2)}ch`);
+        changed();
+    }
     function layoutFor(index) { return { x: 40 + index % 4 * 240, y: 40 + Math.floor(index / 4) * 150 }; }
     function showCoverageMessage(result) {
         message.replaceChildren();
@@ -64,7 +125,10 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             showCoverageMessage(result);
             warningTaskIds = new Set(result.coverage.tasks.filter(task => !task.matchingRobotIds.length).map(task => task.taskId));
             for (const item of taskList.querySelectorAll('[data-task-id]')) {
-                item.classList.toggle('coverage-warning', warningTaskIds.has(item.dataset.taskId));
+                const warning = warningTaskIds.has(item.dataset.taskId);
+                item.classList.toggle('coverage-warning', warning);
+                if (warning) item.setAttribute('aria-describedby', item.querySelector('.task-coverage-icon').id);
+                else item.removeAttribute('aria-describedby');
             }
         } catch (error) { if (request === coverageRequest) showError(error); }
     }
@@ -89,7 +153,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         }
         graph.edges.push({ id: `edge-${crypto.randomUUID()}`, sourceTaskId: source.taskId, targetTaskId: target.taskId, sourcePort: source.side, targetPort: target.side }); changed(); render();
     }
-    function renderBoard() { drawBoard(board, graph, { readOnly: readonly(), onSelect: id => { selected = id; renderList(); renderTaskEditor(); }, selectedEdgeId, onSelectEdge: id => { selectedEdgeId = id; renderBoard(); }, onChange: event => { if (event.connect) connect(event.connect); else changed(); } }); }
+    function renderBoard() { drawBoard(board, graph, { readOnly: readonly(), onSelect: select, selectedEdgeId, onSelectEdge: id => { selectedEdgeId = id; renderBoard(); }, onChange: event => { if (event.connect) connect(event.connect); else changed(); } }); }
     function field(label, element) { const wrapper = node('label', null, 'field'); wrapper.append(node('span', label), element); return wrapper; }
     function fieldBlock(label, element) { const wrapper = node('div', null, 'field'); wrapper.append(node('span', label), element); return wrapper; }
     let openSkillDialog = null;
@@ -224,23 +288,29 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     }
     function renderList() {
         taskList.replaceChildren();
-        for (const task of graph.tasks) {
+        for (const [index, task] of graph.tasks.entries()) {
             const row = node('li', null, 'task-list-row');
             const item = node('button', null, 'task-list-item');
             item.type = 'button';
             item.dataset.taskId = task.id;
-            if (!readonly()) {
-                const grip = node('span', null, 'task-drag-grip');
-                grip.setAttribute('aria-hidden', 'true');
-                for (let dot = 0; dot < 6; dot++) grip.append(node('i'));
-                item.append(grip);
-            }
+            const presentation = taskSidebarPresentation(task, graph);
+            item.dataset.nodeRole = presentation.role;
+            const order = node('span', String(index + 1), 'task-order');
+            order.setAttribute('aria-hidden', 'true');
+            const icons = node('span', null, 'task-type-icons');
+            icons.append(...presentation.icons.map(icon => taskIcon(icon)));
+            const warning = taskIcon({ label: warningText, path: 'M12 3L2 21h20z M12 9v5 M12 17h.01' }, 'task-coverage-icon');
+            warning.id = `task-sidebar-warning-${task.id}`;
             if (task.id === selected) item.classList.add('selected');
-            if (warningTaskIds.has(task.id)) item.classList.add('coverage-warning');
-            item.append(node('strong', task.name || 'Untitled task'), node('span', task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Sub-flows · ' : ''}${task.executionType || 'terminal / desktop / browser'}`));
+            item.setAttribute('aria-pressed', String(task.id === selected));
+            if (warningTaskIds.has(task.id)) { item.classList.add('coverage-warning'); item.setAttribute('aria-describedby', warning.id); }
+            const name = task.name || 'Untitled task';
+            const description = `${index + 1}. ${name} · ${presentation.roleLabel} · ${presentation.icons.map(icon => icon.label).join(' · ')}`;
+            item.setAttribute('aria-label', description);
+            item.append(order, icons, node('strong', name), warning);
             item.onclick = () => select(task.id);
             item.draggable = !readonly();
-            if (!readonly()) item.title = 'Drag to reorder, or use Alt + Arrow Up / Arrow Down';
+            item.title = `${description}${readonly() ? '' : ' · Drag to reorder, or use Alt + Arrow Up / Arrow Down'}`;
             item.ondragstart = event => {
                 if (readonly()) { event.preventDefault(); return; }
                 draggedTaskId = task.id;
@@ -303,7 +373,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         const name = node('input'); name.value = task.name || ''; name.maxLength = 120;
         name.oninput = () => {
             task.name = name.value; changed();
-            const listItem = taskList.querySelector(`[data-task-id="${CSS.escape(task.id)}"] strong`); if (listItem) listItem.textContent = task.name;
+            renderList();
             renderBoard();
         };
         const prompt = node('textarea'); prompt.value = task.prompt || '';
@@ -313,7 +383,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         mode.value = task.executionType || 'terminal / desktop / browser';
         mode.onchange = () => {
             task.executionType = mode.value; changed();
-            const listItem = taskList.querySelector(`[data-task-id="${CSS.escape(task.id)}"] span`); if (listItem) listItem.textContent = mode.value;
+            renderList();
             renderBoard();
         };
         const basics = node('div', null, 'task-editor-row');
@@ -375,7 +445,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             syncCoordinator();
             if (graph.entryTaskId === task.id) graph.entryTaskId = graph.tasks[0]?.id || '';
             if (selected === task.id) selected = graph.tasks[0]?.id || null;
-            changed(); render(); showPage(graph.tasks.length ? 'graph' : 'settings');
+            changed(); showTaskEditor(false); render();
         });
         deleteTask.classList.add('task-delete');
         card.append(fieldBlock('Skills', skillsetPicker(task.skillsets)), deleteTask);
@@ -391,12 +461,13 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         selected = id;
         changed();
         render();
-        showPage('task');
+        showTaskEditor(true);
         taskPanel.querySelector('input')?.focus();
     }
     function render() {
         if (!graph.tasks.some(task => task.id === selected)) selected = graph.entryTaskId || graph.tasks[0]?.id || null;
         if (!graph.edges.some(edge => edge.id === selectedEdgeId)) selectedEdgeId = null;
+        if (!selected) showTaskEditor(false);
         renderList();
         renderTaskEditor();
         renderBoard();
@@ -406,30 +477,52 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         canAdmin = admin;
         warningTaskIds = new Set((value?.coverage?.tasks || []).filter(task => !task.matchingRobotIds.length).map(task => task.taskId));
         graph = value ? structuredClone(value) : blank(); delete graph.coverage; delete graph.diagnostics;
-        version++; coverageRequest++; message.textContent = ''; selected = graph.entryTaskId || graph.tasks[0]?.id || null; currentPage = 'settings';
-        form.elements.name.value = graph.name; form.elements.description.value = graph.description;
+        version++; coverageRequest++; message.textContent = ''; selected = graph.entryTaskId || graph.tasks[0]?.id || null;
+        updateWorkflowName(graph.name || ''); nameBeforeEditing = graph.name;
+        form.elements.description.value = graph.description;
+        descriptionRevision.reset(graph.description);
+        document.querySelector('#descriptionReviewHint').hidden = readonly();
         for (const control of form.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
-        for (const control of document.querySelectorAll('.workflow-page-button')) control.disabled = false;
+        nameControl.disabled = readonly();
+        nameControl.title = readonly() ? 'Workflow name · Read only' : 'Rename workflow · Enter to finish · Escape to cancel';
         document.querySelector('#workflowCancelButton').disabled = false;
+        document.querySelector('#closeTaskEditor').disabled = false;
         addTaskButton.disabled = readonly();
         const createButton = document.querySelector('#workflowCreateButton');
         if (createButton) createButton.hidden = readonly();
-        render(); showPage('settings');
+        showTaskEditor(false); render();
         try { const result = await api('api/roboflow/skillsets'); catalog = result.skillsets; render(); if (result.diagnostics.length) message.textContent = result.diagnostics.map(item => item.message).join('\n'); } catch (error) { showError(error); }
     }
-    document.querySelector('#workflowCancelButton').onclick = onClose;
-    form.elements.name.oninput = event => { graph.name = event.target.value; changed(); };
-    form.elements.description.oninput = event => { graph.description = event.target.value; changed(); };
-    for (const control of document.querySelectorAll('.workflow-page-button')) control.onclick = () => showPage(control.dataset.page);
+    document.querySelector('#workflowCancelButton').onclick = async () => { await descriptionRevision.dispose(); onClose(); };
+    window.addEventListener('pagehide', () => descriptionRevision.dispose());
+    nameControl.addEventListener('focusin', () => { nameBeforeEditing = graph.name; });
+    nameControl.addEventListener('input', event => { if (!readonly()) updateWorkflowName(event.target.value); });
+    nameControl.addEventListener('focusout', () => { if (!readonly()) updateWorkflowName(nameControl.value.trim()); });
+    nameControl.addEventListener('keydown', event => {
+        if (readonly() || !['Enter', 'Escape'].includes(event.key) || event.isComposing) return;
+        event.preventDefault(); event.stopPropagation();
+        if (event.key === 'Escape') updateWorkflowName(nameBeforeEditing);
+        nameControl.blur();
+    });
+    form.elements.description.oninput = event => {
+        if (readonly()) return;
+        graph.description = event.target.value; changed(); descriptionRevision.edited();
+    };
+    form.elements.description.addEventListener('focusout', () => { if (!readonly()) void descriptionRevision.check(); });
+    document.querySelector('#closeTaskEditor').onclick = () => { showTaskEditor(false); taskList.querySelector(`[data-task-id="${CSS.escape(selected)}"]`)?.focus(); };
     addTaskButton.onclick = () => addTask();
+    const help = document.querySelector('.workflow-help');
+    help.addEventListener('keydown', event => { if (event.key === 'Escape' && help.open) { event.preventDefault(); event.stopPropagation(); help.open = false; help.querySelector('summary').focus(); } });
     document.addEventListener('keydown', event => {
-        if (readonly() || currentPage !== 'graph' || !selectedEdgeId || !['Delete', 'Backspace'].includes(event.key)) return;
+        if (readonly() || !selectedEdgeId || !['Delete', 'Backspace'].includes(event.key)) return;
         if (event.target instanceof Element && event.target.matches('input,textarea,select,[contenteditable="true"]')) return;
         event.preventDefault(); graph.edges = graph.edges.filter(edge => edge.id !== selectedEdgeId); selectedEdgeId = null; changed(); render();
     });
+    let saving = false;
     form.onsubmit = async event => {
         event.preventDefault(); if (readonly()) return;
-        if (!graph.name.trim()) { showPage('settings'); message.textContent = 'Enter a workflow name before saving.'; form.elements.name.focus(); return; }
+        if (saving) return;
+        if (!graph.name.trim()) { message.textContent = 'Enter a workflow name before saving.'; nameControl.setAttribute('aria-invalid', 'true'); nameControl.focus(); return; }
         if (!graph.tasks.length) { message.textContent = 'Add at least one task before saving.'; addTaskButton.focus(); return; }
         const invalidTask = graph.tasks.find(task => !task.name?.trim() || !task.prompt?.trim());
         if (invalidTask) {
@@ -438,8 +531,18 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             taskPanel.querySelector(!invalidTask.name?.trim() ? 'input' : 'textarea')?.focus();
             return;
         }
-        try { await api(graph.id ? `api/roboflow/workflows/${graph.id}` : 'api/roboflow/workflows', { method: graph.id ? 'PUT' : 'POST', body: graph }); onClose(); }
-        catch (error) { showError(error); }
+        saving = true;
+        try {
+            const beforeReview = JSON.stringify({ tasks: graph.tasks, edges: graph.edges, entryTaskId: graph.entryTaskId, layout: graph.layout });
+            if (!await descriptionRevision.check()) return;
+            if (beforeReview !== JSON.stringify({ tasks: graph.tasks, edges: graph.edges, entryTaskId: graph.entryTaskId, layout: graph.layout })) {
+                reviewText.textContent = 'Graph updated. Review the changes, then choose Save workflow again.';
+                return;
+            }
+            await api(graph.id ? `api/roboflow/workflows/${graph.id}` : 'api/roboflow/workflows', { method: graph.id ? 'PUT' : 'POST', body: graph });
+            descriptionRevision.dispose(); onClose();
+        } catch (error) { showError(error); }
+        finally { saving = false; }
     };
     return { open };
 }

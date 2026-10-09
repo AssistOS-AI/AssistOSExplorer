@@ -133,16 +133,17 @@ test('return controls use tracked history and cross-origin forward navigation is
     assert.throws(() => navigation.navigate('https://other.test/'), /same origin/);
 });
 
-test('all destination pages keep a return control outside the embeddable header and read-only Close stays enabled', async () => {
+test('destination pages use one breadcrumb return control without a separate navigation row and read-only Close stays enabled', async () => {
     for (const file of ['editor.html', 'generate.html', 'flows.html', 'roboflow.html']) {
         const html = await readFile(new URL(`../public/${file}`, import.meta.url), 'utf8');
-        const headerEnd = html.indexOf('</header>');
-        assert.ok(html.indexOf('class="page-navigation"') > headerEnd, file);
-        assert.match(html.slice(headerEnd), /data-return-control[\s\S]*Back to Workflow types/);
+        const header = html.slice(html.indexOf('<header'), html.indexOf('</header>'));
+        assert.match(header, /<a href="\.\/\?tab=workflow-types" data-return-control title="Back to Workflow types">RoboTeam<\/a>/, file);
+        assert.equal((html.match(/data-return-control/g) || []).length, 1, file);
+        assert.doesNotMatch(html, /class="page-navigation"|class="page-return"/, file);
     }
     const editor = await readFile(new URL('../public/workflow-editor.js', import.meta.url), 'utf8');
     assert.match(editor, /querySelector\('#workflowCancelButton'\)\.disabled = false/);
-    assert.match(editor, /querySelector\('#workflowCancelButton'\)\.onclick = onClose/);
+    assert.match(editor, /querySelector\('#workflowCancelButton'\)\.onclick = async \(\) => \{ await descriptionRevision\.dispose\(\); onClose\(\); \}/);
     const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
     assert.match(app, /restoreDashboardView\(initialView\)/);
     assert.match(app, /if \(!event\.persisted\) return;[\s\S]*await loadRobots\(\);[\s\S]*restoreDashboardView\(navigation\.view\)/);
