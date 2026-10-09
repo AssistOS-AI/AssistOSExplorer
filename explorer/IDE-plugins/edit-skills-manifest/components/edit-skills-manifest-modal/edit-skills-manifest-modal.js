@@ -54,33 +54,6 @@ function normalizeState(raw = {}) {
     };
 }
 
-function normalizeManifestEntry(entry = {}) {
-    if (typeof entry === 'string') {
-        const url = String(entry || '').trim();
-        return {
-            url,
-            name: deriveRepoNameFromUrl(url),
-            branch: null,
-            cached: false,
-            repoPath: '',
-            skills: [],
-            availableSkills: [],
-            cacheError: ''
-        };
-    }
-    const skills = Array.isArray(entry.skills) ? entry.skills.map((skill) => String(skill || '').trim()).filter(Boolean) : [];
-    return {
-        url: String(entry.url || '').trim(),
-        name: String(entry.name || '').trim() || deriveRepoNameFromUrl(entry.url || ''),
-        branch: entry.branch || null,
-        cached: false,
-        repoPath: '',
-        skills,
-        availableSkills: skills,
-        cacheError: ''
-    };
-}
-
 function mergeSkillRepositories(nextState, previousState) {
     if (nextState.skillRepositories.length) return nextState;
     return {
@@ -151,29 +124,12 @@ export class EditSkillsManifestModal {
         return parseToolResult(payload);
     }
 
-    async loadStateFromManifestFile() {
-        const manifestPath = this.manifestPath || buildSkillsManifestPath(this.folderPath);
-        const text = await callExplorerTool('read_text_file', { path: manifestPath }, { withLoader: false });
-        const parsed = JSON.parse(text || '[]');
-        const entries = Array.isArray(parsed) ? parsed : [];
-        const repositories = entries.map(normalizeManifestEntry).filter((repo) => repo.url || repo.name);
-        return {
-            manifestPath,
-            folderPath: this.folderPath,
-            repositories,
-            installedSkills: [],
-            diagnostics: [{ reason: 'Only manifest selections are available; installed output has not been verified.' }],
-            skillRepositories: []
-        };
-    }
-
+    // The structured tool is the only state source. Its response is already
+    // projected for the caller; a failure is reported and never replaced by a
+    // raw manifest read, which would redisplay stored repository URLs.
     async readCurrentState() {
-        try {
-            const raw = await this.callJsonTool('read_skills_manifest_state', { folderPath: this.folderPath });
-            return normalizeState(raw);
-        } catch (error) {
-            return normalizeState(await this.loadStateFromManifestFile());
-        }
+        const raw = await this.callJsonTool('read_skills_manifest_state', { folderPath: this.folderPath });
+        return normalizeState(raw);
     }
 
     async refreshStateAfterMutation() {
@@ -205,17 +161,7 @@ export class EditSkillsManifestModal {
             this.manifestPath = this.state.manifestPath || this.manifestPath;
             this.showExportStatus(null, '');
         } catch (error) {
-            try {
-                const raw = await this.loadStateFromManifestFile();
-                this.state = mergeSkillRepositories(normalizeState(raw), this.state);
-                if (!this.state.skillRepositories.length) {
-                    this.state.skillRepositories = await this.loadMarketplaceSkillRepositories();
-                }
-                this.manifestPath = this.state.manifestPath || this.manifestPath;
-                this.setStatus('Loaded manifest directly. Repository cache details are unavailable until the skills manifest tools reload.', 'info');
-            } catch (fallbackError) {
-                this.setStatus(fallbackError?.message || error?.message || 'Could not read skills manifest.', 'error');
-            }
+            this.setStatus(error?.message || 'Could not read skills manifest.', 'error');
         } finally {
             this.setBusy(false);
             this.render();
@@ -239,7 +185,9 @@ export class EditSkillsManifestModal {
                 const kind = String(repo?.kind || '').trim().toLowerCase();
                 return kind === 'skills' || kind === 'mixed';
             })
-            .filter((repo) => String(repo?.url || '').trim())
+            // Repositories are selected by name; a blank (redacted or local)
+            // display URL must not hide a known repository.
+            .filter((repo) => /^[A-Za-z0-9_.-]+$/.test(String(repo?.name || '').trim()))
             .map((repo) => ({
                 name: String(repo.name || ''),
                 label: String(repo.description || repo.name || ''),
@@ -340,8 +288,11 @@ export class EditSkillsManifestModal {
 
     async addRepository(preset = null) {
         if (this.busy) return;
-        const url = String(preset?.url || this.urlInput?.value || '').trim();
-        const name = String(preset?.name || '').trim() || deriveRepoNameFromUrl(url);
+        // A known repository is submitted by its name, which the server resolves
+        // to its internal source; display URLs are never clone inputs.
+        const presetName = String(preset?.name || '').trim();
+        const url = preset ? presetName : String(this.urlInput?.value || '').trim();
+        const name = presetName || deriveRepoNameFromUrl(url);
         const branch = String(preset?.branch || '').trim();
         if (!url) {
             this.setStatus('Repository URL or known repo name is required.', 'error');
@@ -378,8 +329,8 @@ export class EditSkillsManifestModal {
         const index = Number.parseInt(String(indexValue), 10);
         const preset = this.state.skillRepositories?.[index];
         if (!preset) return;
-        if (this.urlInput) this.urlInput.value = preset.url;
-        if (this.nameInput) this.nameInput.value = preset.name || deriveRepoNameFromUrl(preset.url);
+        if (this.urlInput) this.urlInput.value = preset.name || '';
+        if (this.nameInput) this.nameInput.value = preset.name || '';
         if (this.branchInput) this.branchInput.value = preset.branch || '';
         await this.addRepository(preset);
     }

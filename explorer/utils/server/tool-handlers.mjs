@@ -10,6 +10,12 @@ import { createMarkdownCrdtStore } from './markdown-crdt/markdown-crdt-store.mjs
 import { createScriptaCrdtService } from './markdown-crdt/scripta-crdt-service.mjs';
 import { createWebMeetMediaStore } from './webmeet-media-store.mjs';
 import { createExplorerPrivateDataBoundary } from './private-data-boundary.mjs';
+import {
+  invocationIsAdministrator,
+  projectSkillsManifestResult,
+  restrictedSkillsManifestError,
+  skillsManifestError
+} from './skills-manifest-projection.mjs';
 
 function parseArgs(schema, args, name) {
   const parsed = schema.safeParse(args);
@@ -281,7 +287,7 @@ export function createToolHandlers({
   function normalizeRepoName(value) {
     const name = String(value || '').trim();
     if (!name || !/^[a-zA-Z0-9_.-]+$/.test(name)) {
-      throw new Error('Invalid repository name.');
+      throw skillsManifestError('Invalid repository name.');
     }
     return name;
   }
@@ -289,7 +295,7 @@ export function createToolHandlers({
   function normalizeSkillName(value) {
     const name = String(value || '').trim();
     if (!name || !/^[a-zA-Z0-9_.-]+$/.test(name)) {
-      throw new Error('Invalid skill name.');
+      throw skillsManifestError('Invalid skill name.');
     }
     return name;
   }
@@ -311,12 +317,15 @@ export function createToolHandlers({
 
   async function resolveSkillRepoInput(input, explicitName = '') {
     const value = String(input || '').trim();
-    if (!value) throw new Error('Repository URL or name is required.');
+    if (!value) throw skillsManifestError('Repository URL or name is required.');
     if (!looksLikeRepoUrl(value)) {
       const skillRepos = await listKnownSkillRepositories();
       const known = skillRepos.find((repo) => repo.name === value || repo.name.toLowerCase() === value.toLowerCase() || repo.url === value || repo.skillSource?.source === value);
       if (!known) {
-        throw new Error(`Unknown skill repository '${value}'. Use a git URL or a known repository name.`);
+        throw skillsManifestError(`Unknown skill repository '${value}'. Use a git URL or a known repository name.`,
+          /^[a-zA-Z0-9_.-]+$/.test(value)
+            ? `Unknown skill repository '${value}'. Use a git URL or a known repository name.`
+            : 'Unknown skill repository. Use a git URL or a known repository name.');
       }
       return {
         url: known.url,
@@ -335,7 +344,7 @@ export function createToolHandlers({
     const folder = await validatePath(folderPath);
     const stat = await fs.stat(folder);
     if (!stat.isDirectory()) {
-      throw new Error('Skills manifest target must be a directory.');
+      throw skillsManifestError('Skills manifest target must be a directory.');
     }
     return {
       folder,
@@ -345,16 +354,16 @@ export function createToolHandlers({
 
   function normalizeSkillsManifestEntry(entry, index, manifestPath) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      throw new Error(`Invalid skills manifest '${manifestPath}': entry at index ${index} must be an object.`);
+      throw skillsManifestError(`Invalid skills manifest '${manifestPath}': entry at index ${index} must be an object.`, `Invalid skills manifest: entry at index ${index} must be an object.`);
     }
     const url = String(entry.url || '').trim();
     if (!url) {
-      throw new Error(`Invalid skills manifest '${manifestPath}': entry at index ${index} is missing url.`);
+      throw skillsManifestError(`Invalid skills manifest '${manifestPath}': entry at index ${index} is missing url.`, `Invalid skills manifest: entry at index ${index} is missing url.`);
     }
     const name = normalizeRepoName(entry.name || deriveRepoNameFromUrl(url));
     const branch = normalizeBranch(entry.branch);
     if (!Array.isArray(entry.skills)) {
-      throw new Error(`Invalid skills manifest '${manifestPath}': entry at index ${index} is missing skills array.`);
+      throw skillsManifestError(`Invalid skills manifest '${manifestPath}': entry at index ${index} is missing skills array.`, `Invalid skills manifest: entry at index ${index} is missing skills array.`);
     }
     const skills = Array.from(new Set(entry.skills.map(normalizeSkillName)));
     return { url, name, branch, skills };
@@ -372,10 +381,10 @@ export function createToolHandlers({
     try {
       parsed = JSON.parse(raw || '[]');
     } catch (error) {
-      throw new Error(`Invalid JSON in skills manifest '${manifestPath}': ${error?.message || error}`);
+      throw skillsManifestError(`Invalid JSON in skills manifest '${manifestPath}': ${error?.message || error}`, 'Invalid JSON in skills manifest.');
     }
     if (!Array.isArray(parsed)) {
-      throw new Error(`Invalid skills manifest '${manifestPath}': expected an array of repository objects.`);
+      throw skillsManifestError(`Invalid skills manifest '${manifestPath}': expected an array of repository objects.`, 'Invalid skills manifest: expected an array of repository objects.');
     }
     return parsed.map((entry, index) => normalizeSkillsManifestEntry(entry, index, manifestPath));
   }
@@ -410,7 +419,7 @@ export function createToolHandlers({
       if (repositoryListing) repositoryListing.repositories = repositories;
       repository = repositories.find(repo => repo.name === entry.name || repo.url === entry.url);
     }
-    if (!repository || repository.origin === 'remote') throw new Error('Repository source is unavailable');
+    if (!repository || repository.origin === 'remote') throw skillsManifestError('Repository source is unavailable');
     resolvedRepositoryNames.set(entry.name, repository.name);
     resolvedRepositorySources.set(entry.name, repository.source);
     return repository.source;
@@ -447,7 +456,7 @@ export function createToolHandlers({
     for (const entry of entries) {
       await ensureSkillRepoCached(entry);
       for (const name of entry.skills) {
-        if (wanted.has(name) && wanted.get(name) !== entry.name) throw new Error(`Duplicate selected skill: ${name}`);
+        if (wanted.has(name) && wanted.get(name) !== entry.name) throw skillsManifestError(`Duplicate selected skill: ${name}`);
         wanted.set(name, entry.name);
       }
     }
@@ -1229,11 +1238,53 @@ export function createToolHandlers({
     });
   }
 
+  // Canonical contained workspace-relative reference for a physical path, or ''.
+  async function skillsWorkspaceRefResolver() {
+    const roots = [path.resolve(workspaceRoot)];
+    const canonicalRoot = await fs.realpath(workspaceRoot).catch(() => null);
+    if (canonicalRoot && !roots.includes(canonicalRoot)) roots.push(canonicalRoot);
+    return (value) => {
+      if (typeof value !== 'string' || !path.isAbsolute(value)) return '';
+      for (const root of roots) {
+        const relative = path.relative(root, path.resolve(value));
+        if (relative === '') return '/';
+        const segments = relative.split(path.sep);
+        if (!path.isAbsolute(relative) && !segments.includes('..')) return `/${segments.join('/')}`;
+      }
+      return '';
+    };
+  }
+
+  // One projection and safe-error boundary for the four skills-manifest tools.
+  // The caller's privilege is decided from the original verified invocation
+  // before any asynchronous work; internal records, URLs and paths stay
+  // unchanged for repository, filesystem, install and symlink logic.
+  function skillsManifestTool(handler) {
+    return async (args) => {
+      let context = null;
+      try { context = getInvocationContext?.(); } catch (_) { context = null; }
+      const administrator = invocationIsAdministrator(context);
+      let result;
+      try {
+        result = await handler(args);
+      } catch (error) {
+        if (administrator) throw error;
+        throw restrictedSkillsManifestError(error);
+      }
+      if (administrator) return jsonResponse(result);
+      try {
+        return jsonResponse(projectSkillsManifestResult(result, { toWorkspaceRef: await skillsWorkspaceRefResolver() }));
+      } catch (_) {
+        throw restrictedSkillsManifestError(null);
+      }
+    };
+  }
+
   async function handleReadSkillsManifestState(args) {
     const data = parseArgs(ReadSkillsManifestStateArgsSchema, args, 'read_skills_manifest_state');
     const { folder, manifestPath } = await skillsManifestPathForFolder(data.folderPath);
     const entries = await readSkillsManifestEntries(manifestPath);
-    return jsonResponse(await buildSkillsManifestState(folder, manifestPath, entries));
+    return buildSkillsManifestState(folder, manifestPath, entries);
   }
 
   async function handleAddSkillsManifestRepo(args) {
@@ -1247,12 +1298,12 @@ export function createToolHandlers({
     const repoPath = await ensureSkillRepoCached(repoEntry);
     const availableSkills = await listRepoSkillNames(repoPath);
     if (!availableSkills.length) {
-      return jsonResponse({
+      return {
         ok: true,
         added: false,
         cached: true,
         message: `Repository '${name}' was cached but was not added to the skills manifest because no Anthropic skills were found. Expected at least one skills/*/SKILL.md file.`
-      });
+      };
     }
 
     const entries = await readSkillsManifestEntries(manifestPath);
@@ -1264,39 +1315,39 @@ export function createToolHandlers({
       : entries.map((entry, index) => index === existingIndex ? nextEntry : entry);
     const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
     await writeSkillsManifestEntries(manifestPath, nextEntries);
-    return jsonResponse({
+    return {
       ...await buildSkillsManifestState(folder, manifestPath, nextEntries),
       exportResult,
       ok: true,
       added: true,
       cached: true,
       message: `${name} added.`
-    });
+    };
   }
 
   async function handleSetSkillsManifestSkillEnabled(args) {
     const data = parseArgs(SetSkillsManifestSkillEnabledArgsSchema, args, 'set_skills_manifest_skill_enabled');
     const { folder, manifestPath } = await skillsManifestPathForFolder(data.folderPath);
     const repoName = normalizeRepoName(data.repoName);
-    if (typeof data.enabled !== 'boolean') throw new Error('enabled must be a boolean');
+    if (typeof data.enabled !== 'boolean') throw skillsManifestError('enabled must be a boolean');
     const entries = await readSkillsManifestEntries(manifestPath);
     const index = entries.findIndex((entry) => entry.name === repoName);
     if (index === -1) {
-      throw new Error(`Repository '${repoName}' is not in the skills manifest.`);
+      throw skillsManifestError(`Repository '${repoName}' is not in the skills manifest.`);
     }
     const repoPath = await ensureSkillRepoCached(entries[index]);
     const availableSkills = await listRepoSkillNames(repoPath);
     const definitions = await readRepoSkillsets(repoPath, availableSkills);
     let members;
     if (definitions.length) {
-      if (data.skill !== undefined) throw new Error('Use skillset controls for this repository.');
+      if (data.skill !== undefined) throw skillsManifestError('Use skillset controls for this repository.');
       const set = definitions.find(set => set.name === data.skillset);
-      if (!set) throw new Error('Unknown skillset.');
+      if (!set) throw skillsManifestError('Unknown skillset.');
       members = set.skills;
     } else {
-      if (data.skillset !== undefined) throw new Error('This repository has no skillsets.');
+      if (data.skillset !== undefined) throw skillsManifestError('This repository has no skillsets.');
       const skill = normalizeSkillName(data.skill);
-      if (!availableSkills.includes(skill)) throw new Error(`Skill '${skill}' is not available in repository '${repoName}'.`);
+      if (!availableSkills.includes(skill)) throw skillsManifestError(`Skill '${skill}' is not available in repository '${repoName}'.`);
       members = [skill];
     }
     const current = new Set(entries[index].skills || []);
@@ -1309,7 +1360,7 @@ export function createToolHandlers({
       : entry);
     const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
     await writeSkillsManifestEntries(manifestPath, nextEntries);
-    return jsonResponse({ ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult });
+    return { ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult };
   }
 
   async function handleRemoveSkillsManifestRepo(args) {
@@ -1319,11 +1370,11 @@ export function createToolHandlers({
     const entries = await readSkillsManifestEntries(manifestPath);
     const nextEntries = entries.filter((entry) => entry.name !== repoName);
     if (nextEntries.length === entries.length) {
-      throw new Error(`Repository '${repoName}' is not in the skills manifest.`);
+      throw skillsManifestError(`Repository '${repoName}' is not in the skills manifest.`);
     }
     const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
     await writeSkillsManifestEntries(manifestPath, nextEntries);
-    return jsonResponse({ ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult });
+    return { ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult };
   }
 
   function getInvocationIdentity() {
@@ -1425,10 +1476,10 @@ export function createToolHandlers({
     collect_ide_plugins: handleCollectIdePlugins,
     get_plugin_settings: handleGetPluginSettings,
     set_plugin_enabled: handleSetPluginEnabled,
-    read_skills_manifest_state: handleReadSkillsManifestState,
-    add_skills_manifest_repo: handleAddSkillsManifestRepo,
-    set_skills_manifest_skill_enabled: handleSetSkillsManifestSkillEnabled,
-    remove_skills_manifest_repo: handleRemoveSkillsManifestRepo,
+    read_skills_manifest_state: skillsManifestTool(handleReadSkillsManifestState),
+    add_skills_manifest_repo: skillsManifestTool(handleAddSkillsManifestRepo),
+    set_skills_manifest_skill_enabled: skillsManifestTool(handleSetSkillsManifestSkillEnabled),
+    remove_skills_manifest_repo: skillsManifestTool(handleRemoveSkillsManifestRepo),
     get_avatar_settings_agents: handleGetAvatarSettingsAgents,
     update_avatar_settings_agent: handleUpdateAvatarSettingsAgent,
     set_avatar_settings_agent_visibility: handleSetAvatarSettingsAgentVisibility,
