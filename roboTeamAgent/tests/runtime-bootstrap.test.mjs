@@ -115,7 +115,10 @@ test('manifest stores RoboTeam state in the workspace private data tree', async 
 test('manifest selects runtime-only GUI images and the persistent tool cache', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
     const constants = await import('../server/constants.mjs');
-    assert.equal(manifest.profiles.default.env, undefined);
+    // The only environment the manifest declares is the optional exact coding-agent version pins.
+    assert.deepEqual(manifest.profiles.default.env, [
+        'ROBOTEAM_CODEX_VERSION', 'ROBOTEAM_OPENCODE_VERSION', 'ROBOTEAM_PI_VERSION', 'ROBOTEAM_CLAUDE_VERSION',
+    ]);
 
     assert.equal(constants.DESKTOP_IMAGE, 'docker.io/assistos/roboteam-desktop:runtime');
     assert.equal(constants.BROWSER_IMAGE, 'docker.io/assistos/roboteam-browser:runtime');

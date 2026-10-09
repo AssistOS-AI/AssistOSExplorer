@@ -40,16 +40,18 @@ test('project lookup rejects ambiguous copied sessions and substituted files', a
     const f = await fixture(t);
     const id = randomUUID();
     registerProject(f.options, f.project);
-    const sessions = path.join(f.project, '.roboteam/sessions');
-    await fs.mkdir(sessions);
-    const file = path.join(sessions, `${id}.json`);
+    // A saved session is the config.json inside its own .roboteam/sessions/<sessionId> directory.
+    const sessionDirectory = path.join(f.project, '.roboteam/sessions', id);
+    await fs.mkdir(sessionDirectory, { recursive: true });
+    const file = path.join(sessionDirectory, 'config.json');
     await fs.writeFile(file, JSON.stringify({ sessionId: id }));
     assert.equal(findProjectRecord(f.options, 'session', id), file);
     const second = path.join(f.root, 'second');
     await fs.mkdir(second);
     registerProject(f.options, second);
-    await fs.mkdir(path.join(second, '.roboteam/sessions'));
-    const duplicate = path.join(second, '.roboteam/sessions', `${id}.json`);
+    const duplicateDirectory = path.join(second, '.roboteam/sessions', id);
+    await fs.mkdir(duplicateDirectory, { recursive: true });
+    const duplicate = path.join(duplicateDirectory, 'config.json');
     await fs.copyFile(file, duplicate);
     assert.throws(() => findProjectRecord(f.options, 'session', id), /multiple folders/);
     await fs.unlink(duplicate);

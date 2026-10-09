@@ -15,6 +15,9 @@ async function startFixture(options = {}) {
     const dataDir = path.join(root, 'private');
     const workspaceRoot = path.join(root, 'workspace');
     await fs.mkdir(workspaceRoot);
+    // The server builds its skillsets service from the configured Ploinky workspace.
+    const previousWorkspaceRoot = process.env.PLOINKY_WORKSPACE_ROOT;
+    process.env.PLOINKY_WORKSPACE_ROOT = workspaceRoot;
     const robotStore = new RobotStore({ dataDir });
     await robotStore.initialize();
     const runs = new Map();
@@ -42,6 +45,8 @@ async function startFixture(options = {}) {
         baseUrl: `http://127.0.0.1:${server.address().port}`,
         close: async () => {
             await new Promise((resolve) => server.close(resolve));
+            if (previousWorkspaceRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT;
+            else process.env.PLOINKY_WORKSPACE_ROOT = previousWorkspaceRoot;
             await fs.rm(root, { recursive: true, force: true });
         },
     };
@@ -143,6 +148,13 @@ test('task starts validate allowed policy intent and ignore caller-supplied snap
     const fixture = await startFixture();
     t.after(fixture.close);
     const robot = await fixture.robotStore.create({ name: 'Catalog Task' });
+    // Starting a task also resolves the required human-report skill from the workspace DocumentationSkills repository.
+    const documentation = path.join(fixture.workspaceRoot, 'DocumentationSkills');
+    await fs.mkdir(path.join(documentation, 'skills/human-report'), { recursive: true });
+    await fs.writeFile(path.join(documentation, 'skills/human-report/SKILL.md'), '---\nname: human-report\ndescription: Final report\n---\nReport instructions\n');
+    fixture.runtimeManager.skillsets.repositoriesClient = {
+        listRepositories: async () => [{ name: 'DocumentationSkills', source: documentation, origin: 'workspace' }],
+    };
     const requests = [];
     fixture.runtimeManager.startTask = (_robot, type, request) => {
         requests.push({ type, request });

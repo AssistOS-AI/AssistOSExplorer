@@ -18,7 +18,7 @@ test('copilot cache preparation is silent but preparation failures remain visibl
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-cache-output-'));
     const keys = ['ROBOTEAM_DATA_DIR', 'ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID',
         'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND',
-        'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH'];
+        'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH', 'PLOINKY_WORKSPACE_ROOT'];
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
     t.after(async () => {
         for (const key of keys) {
@@ -27,6 +27,7 @@ test('copilot cache preparation is silent but preparation failures remain visibl
         await fs.rm(root, { recursive: true, force: true });
     });
     process.env.ROBOTEAM_DATA_DIR = root;
+    process.env.PLOINKY_WORKSPACE_ROOT = root;
     await new RobotStore({ dataDir: root }).ensureDefaultRobot();
     const output = [];
     for (const method of ['log', 'warn', 'error']) t.mock.method(console, method, (...args) => output.push(args));
@@ -179,7 +180,7 @@ test('catalog listing reuses a valid prepared shell generation without npm looku
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-prepared-tools-'));
     const keys = ['ROBOTEAM_DATA_DIR', 'ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID',
         'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND',
-        'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH'];
+        'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH', 'PLOINKY_WORKSPACE_ROOT'];
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
     t.after(async () => {
         for (const key of keys) {
@@ -188,6 +189,7 @@ test('catalog listing reuses a valid prepared shell generation without npm looku
         await fs.rm(root, { recursive: true, force: true });
     });
     process.env.ROBOTEAM_DATA_DIR = root;
+    process.env.PLOINKY_WORKSPACE_ROOT = root;
     await new RobotStore({ dataDir: root }).ensureDefaultRobot();
     const cacheRoot = path.join(root, 'tool-cache');
     const generation = path.join(cacheRoot, 'shell-generations', 'g1');

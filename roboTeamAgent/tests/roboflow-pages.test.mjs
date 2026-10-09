@@ -31,7 +31,7 @@ test('the main page renders the RoboTeam breadcrumb and page links', async t => 
     const html = await response.text();
     assert.match(html, /class="breadcrumbs"[\s\S]*aria-current="page"[^>]*>RoboTeam</);
     assert.match(html, /id="flowsHistoryButton"[^>]*href="flows"/);
-    assert.match(html, /id="addWorkflowButton"[^>]*href="flow-types\/generate-new"[^>]*>[\s\S]*Create workflow</);
+    assert.match(html, /id="addWorkflowButton"[^>]*href="flow-types\/generate-new"[^>]*>[\s\S]*Create\s+workflow</);
     assert.equal(html.includes('id="workflowDialog"'), false);
     assert.equal(html.includes('id="flowsHistoryDialog"'), false);
 });
