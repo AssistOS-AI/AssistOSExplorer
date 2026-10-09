@@ -345,6 +345,51 @@ test('live collection carries an explicit wildcard expectation through discovery
   }
 });
 
+test('live collection accepts the canonical localhost origin only against the 127.0.0.1 Router publication', () => {
+  const prior = process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS;
+  delete process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS;
+  try {
+    const collect = (inspection, options) => {
+      const image = imageInspect();
+      image[0].Created = STARTED_AT;
+      const command = (_executable, args) => {
+        if (args[0] === 'container' && args[1] === 'ls') return CONTAINER_ID;
+        if (args[0] === 'container' && args[1] === 'inspect') return inspection;
+        if (args[0] === 'image' && args[1] === 'inspect') return image;
+        throw new Error('Unexpected inspection command');
+      };
+      return collectLiveBoxEvidence({ nowMs: Date.parse(STARTED_AT) + 1000, command, ...options });
+    };
+    const loopback = containerInspect();
+    const viaLocalhost = collect(loopback, { baseURL: 'http://localhost:18080' });
+    assert.equal(viaLocalhost.box.baseURL, 'http://localhost:18080');
+    assert.equal(viaLocalhost.box.selectedRouterHostPort, '18080');
+    assert.equal(viaLocalhost.box.normalizedPortBindings['8080/tcp'][0].HostIp, '127.0.0.1');
+    assert.equal(collect(loopback, { baseURL: 'http://127.0.0.1:18080' }).box.baseURL, 'http://127.0.0.1:18080');
+    for (const baseURL of ['http://localhost:18081', 'https://localhost:18080', 'http://localhost:18080/path',
+      'http://user:secret@localhost:18080', 'http://0.0.0.0:18080', 'http://[::1]:18080', 'http://remote.example:18080']) {
+      assert.throws(() => collect(loopback, { baseURL }), /found 0|Local Box acceptance/, baseURL);
+    }
+    for (const address of ['0.0.0.0', '192.168.1.50']) {
+      const published = containerInspect();
+      published[0].Config.Labels[ROUTER_BIND_ADDRESS_LABEL] = address;
+      published[0].HostConfig.PortBindings['8080/tcp'][0].HostIp = address;
+      assert.throws(() => collect(published, { baseURL: 'http://localhost:18080', expectedRouterBindAddress: address }),
+        /localhost Box origin requires the Router published on 127\.0\.0\.1/);
+      assert.throws(() => collect(published, { baseURL: 'http://localhost:18080' }), /found 0/);
+      assert.equal(collect(published, { baseURL: 'http://127.0.0.1:18080', expectedRouterBindAddress: address }).box.semanticLabels.routerBindAddress, address);
+    }
+    process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS = '0.0.0.0';
+    const wildcard = containerInspect();
+    wildcard[0].Config.Labels[ROUTER_BIND_ADDRESS_LABEL] = '0.0.0.0';
+    wildcard[0].HostConfig.PortBindings['8080/tcp'][0].HostIp = '0.0.0.0';
+    assert.throws(() => collect(wildcard, { baseURL: 'http://localhost:18080' }), /localhost Box origin requires/);
+  } finally {
+    if (prior === undefined) delete process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS;
+    else process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS = prior;
+  }
+});
+
 const GPU_GRANT = '9'.repeat(64);
 const GPU_GRANT_DIRECTORY = `/home/operator/.ploinky-box/gpu-grants/${CONTAINER}/${GPU_GRANT}`;
 

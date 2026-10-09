@@ -6,6 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  assertOriginBindAddress,
+  parseLocalBoxBaseUrl,
   parseLocalScreenBaseUrl,
   sameLiveBoxGeneration,
   selectLocalScreenContainer,
@@ -103,6 +105,59 @@ test('live Box URL and container discovery require the exact loopback boundary',
   assert.throws(() => selectLocalScreenContainer([
     container({ ...exactBindings(), '8081/tcp': [{ HostIp: '127.0.0.1', HostPort: '8081' }] }),
   ], '8080'), /found 0/);
+});
+
+test('local Box acceptance accepts the canonical localhost origin and the 127.0.0.1 origin exactly', () => {
+  assert.deepEqual({ ...parseLocalBoxBaseUrl('http://localhost:8080') }, {
+    baseURL: 'http://localhost:8080', hostname: 'localhost', port: '8080', publicationAddress: '127.0.0.1',
+  });
+  assert.deepEqual({ ...parseLocalBoxBaseUrl('http://127.0.0.1:18080/') }, {
+    baseURL: 'http://127.0.0.1:18080', hostname: '127.0.0.1', port: '18080', publicationAddress: '127.0.0.1',
+  });
+  assert.equal(parseLocalBoxBaseUrl('http://localhost').baseURL, 'http://localhost:80');
+  for (const value of [
+    '', undefined, 'https://localhost:8080', 'https://127.0.0.1:8080', 'http://0.0.0.0:8080', 'http://[::1]:8080',
+    'http://localhost.:8080', 'http://LOCALHOST:8080', 'http://sub.localhost:8080', 'http://remote.example:8080',
+    'http://127.1:8080', 'http://2130706433:8080', 'http://user@localhost:8080', 'http://user:pass@127.0.0.1:8080',
+    'http://localhost:8080/path', 'http://localhost:8080//', 'http://localhost:8080?x=1', 'http://localhost:8080#x',
+    'http://localhost:0', 'http://localhost:65536', 'http://localhost:08080', 'http://localhost:', ' http://localhost:8080',
+  ]) {
+    assert.throws(() => parseLocalBoxBaseUrl(value), /Local Box acceptance/, String(value));
+  }
+  // The WebMeet screen parser keeps its 127.0.0.1-only contract.
+  assert.throws(() => parseLocalScreenBaseUrl('http://localhost:8080'), /requires SMOKE_BASE_URL/);
+});
+
+test('a localhost origin is matched only against the 127.0.0.1 Router publication', () => {
+  const localhost = parseLocalBoxBaseUrl('http://localhost:8080');
+  assert.equal(assertOriginBindAddress(localhost, '127.0.0.1'), localhost);
+  assert.equal(assertOriginBindAddress(localhost, undefined, {}), localhost);
+  for (const address of ['0.0.0.0', '192.168.1.50']) {
+    assert.throws(() => assertOriginBindAddress(localhost, address), /localhost Box origin requires the Router published on 127\.0\.0\.1/);
+  }
+  assert.throws(() => assertOriginBindAddress(localhost, undefined, { SMOKE_BOX_ROUTER_BIND_ADDRESS: '0.0.0.0' }), /localhost Box origin requires/);
+  assert.throws(() => assertOriginBindAddress(localhost, 'not-an-address'), /canonical IPv4/);
+  const loopbackIp = parseLocalBoxBaseUrl('http://127.0.0.1:8080');
+  assert.equal(assertOriginBindAddress(loopbackIp, '0.0.0.0'), loopbackIp);
+});
+
+test('live Box evidence binds the exact browser-facing origin and rejects a mismatched or wildcard-bound localhost Box', () => {
+  const localhostEvidence = evidence();
+  localhostEvidence.box.baseURL = 'http://localhost:8080';
+  const validated = validateLiveBoxEvidence(localhostEvidence, { baseURL: 'http://localhost:8080', nowMs: NOW });
+  assert.equal(validated.box.baseURL, 'http://localhost:8080');
+  assert.equal(validated.box.normalizedPortBindings['8080/tcp'][0].HostIp, '127.0.0.1');
+  assert.throws(() => validateLiveBoxEvidence(localhostEvidence, { baseURL: 'http://127.0.0.1:8080', nowMs: NOW }), /base URL mismatch/);
+  assert.throws(() => validateLiveBoxEvidence(evidence(), { baseURL: 'http://localhost:8080', nowMs: NOW }), /base URL mismatch/);
+  assert.throws(() => validateLiveBoxEvidence(localhostEvidence, { baseURL: 'http://localhost:8081', nowMs: NOW }), /base URL mismatch/);
+  for (const address of ['0.0.0.0', '192.168.1.50']) {
+    assert.throws(() => validateLiveBoxEvidence(localhostEvidence, {
+      baseURL: 'http://localhost:8080', nowMs: NOW, expectedRouterBindAddress: address,
+    }), /localhost Box origin requires/);
+  }
+  for (const baseURL of ['https://localhost:8080', 'http://localhost:8080/path', 'http://user@localhost:8080', 'http://0.0.0.0:8080']) {
+    assert.throws(() => validateLiveBoxEvidence(localhostEvidence, { baseURL, nowMs: NOW }), /Local Box acceptance/);
+  }
 });
 
 test('live Box discovery isolates coexisting Boxes by their selected Router and labeled media ports', () => {

@@ -289,6 +289,40 @@ export function parseLocalScreenBaseUrl(baseURL) {
   return Object.freeze({ baseURL: `http://127.0.0.1:${port}`, port });
 }
 
+const LOCAL_BOX_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(?::([0-9]+))?\/?$/;
+
+// Local Box acceptance. Ploinky restarts a login that starts on another loopback origin on the
+// provider's canonical origin (http://localhost:<port> by default), so the gate must accept that
+// origin as well as 127.0.0.1. The Router is always published on the IPv4 loopback address, so a
+// localhost origin is matched against the 127.0.0.1 publication and rejects any other bind address.
+export function parseLocalBoxBaseUrl(baseURL) {
+  const match = LOCAL_BOX_ORIGIN.exec(String(baseURL ?? ''));
+  if (!match) {
+    throw new Error('Local Box acceptance requires an exact http://localhost:<selectedRouterHostPort> or http://127.0.0.1:<selectedRouterHostPort> origin.');
+  }
+  const port = match[2] ?? '80';
+  if (!/^[1-9][0-9]*$/.test(port) || Number(port) > 65_535) {
+    throw new Error('Local Box acceptance loopback origin has an invalid port.');
+  }
+  return Object.freeze({
+    baseURL: `http://${match[1]}:${port}`,
+    hostname: match[1],
+    port,
+    publicationAddress: DEFAULT_ROUTER_BIND_ADDRESS,
+  });
+}
+
+export function assertOriginBindAddress(local, expectedRouterBindAddress, env = process.env) {
+  if (local?.hostname !== 'localhost') return local;
+  const bindAddress = expectedRouterBindAddress === undefined
+    ? readExpectedRouterBindAddress(env)
+    : validateRouterBindAddress(expectedRouterBindAddress);
+  if (bindAddress !== local.publicationAddress) {
+    throw new Error(`A localhost Box origin requires the Router published on ${local.publicationAddress}; the expected Router bind address is ${bindAddress}.`);
+  }
+  return local;
+}
+
 function exactScreenBindings(port, mediaPort, expectedRouterBindAddress) {
   return normalizeOuterPortBindings({
     '8080/tcp': [{ HostIp: expectedRouterBindAddress, HostPort: port }],
@@ -332,7 +366,7 @@ export function validateLiveBoxEvidence(input, {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('Live Box evidence must be an object.');
   }
-  const local = parseLocalScreenBaseUrl(baseURL);
+  const local = assertOriginBindAddress(parseLocalBoxBaseUrl(baseURL), expectedRouterBindAddress);
   const box = validateBoxEvidence(input.box, {
     expectedContainerName: input.box?.containerName,
     expectedImageId: input.box?.imageId,
@@ -380,7 +414,7 @@ export function collectLiveBoxEvidence({
   command = defaultCommand,
   realpathSync = fs.realpathSync,
 } = {}) {
-  const local = parseLocalScreenBaseUrl(baseURL);
+  const local = assertOriginBindAddress(parseLocalBoxBaseUrl(baseURL), expectedRouterBindAddress);
   const ids = String(command('podman', [
     'container', 'ls', '--filter', 'status=running', '--quiet', '--no-trunc',
   ]) || '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean);

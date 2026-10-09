@@ -48,7 +48,29 @@ test('WebTTY browser localhost and Box IPv4 origins select the same exact loopba
     assert.throws(() => resolveWebttyBoxEndpoint({
         baseURL: 'http://localhost:8080', boxBaseURL: 'http://127.0.0.1:18080',
     }), /same loopback Router host port/);
-    assert.throws(() => resolveWebttyBoxEndpoint({ baseURL: 'http://localhost:8080' }), /SMOKE_BOX_BASE_URL/);
+    assert.throws(() => resolveWebttyBoxEndpoint({ baseURL: 'http://127.0.0.1:8080', boxBaseURL: 'https://localhost:8080' }), /SMOKE_BOX_BASE_URL/);
+});
+
+test('WebTTY accepts the canonical localhost Box origin only on the 127.0.0.1 Router publication', () => {
+    assert.deepEqual(resolveWebttyBoxEndpoint({ baseURL: 'http://localhost:8080' }), { baseURL: 'http://localhost:8080', port: '8080' });
+    assert.deepEqual(resolveWebttyBoxEndpoint({
+        baseURL: 'http://localhost:8080', boxBaseURL: 'http://localhost:8080/',
+    }), { baseURL: 'http://localhost:8080', port: '8080' });
+    assert.throws(() => resolveWebttyBoxEndpoint({
+        baseURL: 'http://localhost:8080', boxBaseURL: 'http://localhost:18080',
+    }), /same loopback Router host port/);
+    for (const value of ['https://localhost:8080', 'http://localhost.:8080', 'http://LOCALHOST:8080', 'http://user@localhost:8080',
+        'http://localhost:8080/path', 'http://localhost:8080?x=1', 'http://localhost:0', 'http://localhost:65536', 'http://[::1]:8080']) {
+        assert.throws(() => resolveWebttyBoxEndpoint({ baseURL: 'http://localhost:8080', boxBaseURL: value }), /WebTTY/);
+    }
+    const saved = process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS;
+    process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS = '0.0.0.0';
+    try {
+        assert.throws(() => resolveWebttyBoxEndpoint({ baseURL: 'http://localhost:8080' }), /SMOKE_BOX_BASE_URL/);
+        assert.deepEqual(resolveWebttyBoxEndpoint({ baseURL: 'http://127.0.0.1:8080' }), { baseURL: 'http://127.0.0.1:8080', port: '8080' });
+    } finally {
+        if (saved === undefined) delete process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS; else process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS = saved;
+    }
 });
 
 test('WebTTY endpoint binding rejects remote, ambiguous, credential-bearing, and non-origin URLs', () => {

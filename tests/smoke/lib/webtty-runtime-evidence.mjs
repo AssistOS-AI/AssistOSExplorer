@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { collectLiveBoxEvidence, parseLocalScreenBaseUrl } from './live-box.mjs';
+import { assertOriginBindAddress, collectLiveBoxEvidence, parseLocalBoxBaseUrl } from './live-box.mjs';
 import { assertBoxWorkspacePath } from './box-workspace.mjs';
 
 const CONTAINER_ID = /^[a-f0-9]{64}$/;
@@ -325,21 +325,22 @@ export function resolveWebttyBoxEndpoint({ baseURL, boxBaseURL = baseURL } = {})
     if (!new RegExp('^http://(?:localhost|127\\.0\\.0\\.1)' + portSuffix).test(browserValue)) {
         throw new Error('WebTTY requires an exact credential-free loopback HTTP SMOKE_BASE_URL origin.');
     }
-    if (!new RegExp('^http://127\\.0\\.0\\.1' + portSuffix).test(boxValue)) {
-        throw new Error('WebTTY requires SMOKE_BOX_BASE_URL=http://127.0.0.1:<selectedRouterHostPort>.');
-    }
     let browser;
     let endpoint;
     try {
         browser = new URL(browserValue);
-        endpoint = parseLocalScreenBaseUrl(boxValue);
     } catch (error) {
         throw new Error('WebTTY browser and Box URLs must have valid loopback HTTP ports.', { cause: error });
+    }
+    try {
+        endpoint = assertOriginBindAddress(parseLocalBoxBaseUrl(boxValue));
+    } catch (error) {
+        throw new Error('WebTTY requires SMOKE_BOX_BASE_URL=http://localhost:<selectedRouterHostPort> or http://127.0.0.1:<selectedRouterHostPort>.', { cause: error });
     }
     if ((browser.port || '80') !== endpoint.port) {
         throw new Error('WebTTY browser and Box URLs must select the same loopback Router host port.');
     }
-    return endpoint;
+    return Object.freeze({ baseURL: endpoint.baseURL, port: endpoint.port });
 }
 
 export function collectWebttyRuntimeEvidence({

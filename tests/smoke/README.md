@@ -42,9 +42,25 @@ The selected Ploinky verifier must be available at the established sibling path.
 `SMOKE_ACCEPTANCE=1` also selects these Box acceptance requirements.
 
 Local browser and inspected Box URLs must name the same normalized loopback HTTP
-origin at `127.0.0.1`. Different ports or hosts fail before collection; the runner
-never redirects the selected browser target. A trailing slash or explicit default
-HTTP port may normalize to the same origin. The separately selected QA profile
+origin, either `http://localhost:<port>` or `http://127.0.0.1:<port>`. Different
+ports, hosts or spellings (for example `localhost` against `127.0.0.1`) fail before
+collection; the runner never redirects the selected browser target. A trailing
+slash or explicit default HTTP port may normalize to the same origin. The Router
+is always published on the IPv4 loopback address, so a `localhost` origin is matched
+against the exact `127.0.0.1:<port>` publication and is rejected when
+`SMOKE_BOX_ROUTER_BIND_ADDRESS` selects a wildcard or host address.
+
+A default local Explorer deployment makes UserPersisto's built-in local Google
+sign-in available, and Ploinky restarts any login that starts on another loopback
+origin on the provider's canonical origin
+(`http://127.0.0.1:8080/auth/login` answers `303` to `http://localhost:8080/auth/login`).
+While local Google sign-in is available, the canonical browser origin is
+`http://localhost:8080`, so set both `SMOKE_BASE_URL` and `SMOKE_BOX_BASE_URL` to
+`http://localhost:8080`. The sign-in helper still fails when authentication leaves
+the configured `SMOKE_BASE_URL` origin, so `http://127.0.0.1:8080` only works for a
+deployment whose provider does not canonicalize the loopback origin. The separate
+`SMOKE_WEBMEET_SCREEN=1` profile keeps its exact `http://127.0.0.1:<port>`
+requirement. The separately selected QA profile
 retains its fixed QA origin and existing optional edge-IP validator. A configured
 edge IP does not prove that the edge routes to the inspected Box. Common Box
 acceptance for that split-origin profile remains blocked until owner evidence
@@ -122,7 +138,8 @@ From this directory:
 npm ci
 npm run install:browsers
 # Supply the common Box pins/manifest and selected private inputs described above.
-SMOKE_DEPLOYMENT_MODE=box SMOKE_BASE_URL=http://127.0.0.1:8080 \
+# Default local deployment (local Google sign-in available): the canonical origin is localhost.
+SMOKE_DEPLOYMENT_MODE=box SMOKE_BASE_URL=http://localhost:8080 SMOKE_BOX_BASE_URL=http://localhost:8080 \
 npm test -- --project=chromium --workers=1 --retries=0 specs/00-router-auth.spec.mjs
 ```
 
@@ -132,10 +149,10 @@ distinctive test title without a start anchor because Playwright prepends the
 project and spec filename to its internal grep title:
 
 ```bash
-SMOKE_BASE_URL=http://127.0.0.1:8080 \
+SMOKE_BASE_URL=http://localhost:8080 \
 SMOKE_WORKSPACE_ROOT=/path/to/explorer-workspace \
 SMOKE_DEPLOYMENT_MODE=box \
-SMOKE_BOX_BASE_URL=http://127.0.0.1:8080 \
+SMOKE_BOX_BASE_URL=http://localhost:8080 \
 SMOKE_PLOINKY_BOX_CONTAINER=<exact-box-container> \
 SMOKE_PLOINKY_BIN=/absolute/path/to/candidate/ploinky/bin/ploinky \
 npm run test:onlyoffice-confidential
@@ -631,9 +648,10 @@ assigned host IPv4 address for a specific binding. The default remains
 `127.0.0.1`. Shared Box evidence and OnlyOffice DPU discovery require that exact
 address in both the Router publication and the Box binding label; they never
 infer the expectation from the running container. Additional mappings and the
-private Router port remain forbidden. Keep `SMOKE_BOX_BASE_URL` on loopback;
-use the wildcard publication when testing LAN login and loopback WebMeet media
-on the same Box. The separate screen-share and external-network gates retain
+private Router port remain forbidden. Keep `SMOKE_BOX_BASE_URL` on
+`http://127.0.0.1:<port>` for such a binding (a `localhost` origin requires the
+default `127.0.0.1` publication); use the wildcard publication when testing LAN
+login and loopback WebMeet media on the same Box. The separate screen-share and external-network gates retain
 their existing loopback-publication requirements.
 
 When the Box has GPU wiring (an installed agent declares

@@ -74,3 +74,26 @@ test('DPU Box evidence requires a separate exact loopback authority', () => {
     { baseURL: 'http://127.0.0.1:8097', port: '8097' },
   );
 });
+
+test('DPU Box evidence accepts the canonical localhost authority only for the 127.0.0.1 Router publication', () => {
+  assert.deepEqual(
+    resolveDpuBoxEndpoint({ deploymentMode: 'box', boxBaseURL: 'http://localhost:8080', expectedRouterBindAddress: '127.0.0.1' }),
+    { baseURL: 'http://localhost:8080', port: '8080' },
+  );
+  for (const address of ['0.0.0.0', '192.168.1.50']) {
+    assert.throws(
+      () => resolveDpuBoxEndpoint({ deploymentMode: 'box', boxBaseURL: 'http://localhost:8080', expectedRouterBindAddress: address }),
+      /localhost Box origin requires/,
+    );
+  }
+  assert.deepEqual(
+    resolveDpuBoxEndpoint({ deploymentMode: 'box', boxBaseURL: 'http://127.0.0.1:8080', expectedRouterBindAddress: '0.0.0.0' }),
+    { baseURL: 'http://127.0.0.1:8080', port: '8080' },
+  );
+  for (const boxBaseURL of ['https://localhost:8080', 'http://localhost:8080/path', 'http://user@localhost:8080', 'http://0.0.0.0:8080', 'http://[::1]:8080']) {
+    assert.throws(
+      () => resolveDpuBoxEndpoint({ deploymentMode: 'box', boxBaseURL, expectedRouterBindAddress: '127.0.0.1' }),
+      /SMOKE_BOX_BASE_URL must be an exact credential-free/,
+    );
+  }
+});

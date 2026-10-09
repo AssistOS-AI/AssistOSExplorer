@@ -99,6 +99,49 @@ test('actual common preflight compares independent manifest, image, workspace an
     await assert.rejects(collectAcceptancePreflight({ ...options, collect: async () => { throw new Error('Box outer container generation is not fresh enough for the release gate.'); } }), /not fresh/);
 });
 
+test('common preflight accepts the provider canonical localhost origin and still binds browser to Box exactly', async () => {
+    const localhostEnv = { ...baseEnv, SMOKE_BASE_URL: 'http://localhost:8080', SMOKE_BOX_BASE_URL: 'http://localhost:8080' };
+    const profile = validateAcceptanceProfile(args, localhostEnv);
+    const evidence = { imageDigest: digest, repositories: { explorer: { repositoryPath: source } }, liveBox: {
+        box: { imageId: digest }, workspaceSourceMount: { source: baseEnv.SMOKE_WORKSPACE_ROOT },
+    } };
+    const collected = [];
+    const options = { profile, env: localhostEnv, baseURL: 'http://localhost:8080', boxBaseURL: 'http://localhost:8080',
+        collect: async inputs => { collected.push(inputs); return evidence; },
+        fsApi: { realpathSync: value => value, readFileSync: () => '{"tools":[]}' },
+    };
+    assert.equal(await collectAcceptancePreflight(options), evidence);
+    assert.equal(collected[0].baseURL, 'http://localhost:8080');
+    assert.equal(collected[0].boxBaseURL, 'http://localhost:8080');
+    assert.equal(await collectAcceptancePreflight({ ...options, baseURL: 'http://localhost:8080/', boxBaseURL: 'http://localhost:8080/' }), evidence);
+    assert.equal(await collectAcceptancePreflight({ ...options, baseURL: 'http://localhost', boxBaseURL: 'http://localhost:80' }), evidence);
+    collected.length = 0;
+    const rejections = [
+        ['http://localhost:8080', 'http://127.0.0.1:8080', /same|equal|binding/],
+        ['http://127.0.0.1:8080', 'http://localhost:8080', /same|equal|binding/],
+        ['http://localhost:8080', 'http://localhost:18080', /same|equal|binding/],
+        ['https://localhost:8080', 'https://localhost:8080', /binding/],
+        ['http://localhost:8080', 'https://localhost:8080', /binding/],
+        ['http://0.0.0.0:8080', 'http://0.0.0.0:8080', /binding/],
+        ['http://[::1]:8080', 'http://[::1]:8080', /binding/],
+        ['http://remote.example:8080', 'http://remote.example:8080', /binding/],
+        ['http://localhost:8080/path', 'http://localhost:8080/path', /binding/],
+        ['http://localhost:8080?x=1', 'http://localhost:8080?x=1', /binding/],
+        ['http://private-user:private-password@localhost:8080', 'http://private-user:private-password@localhost:8080', /binding/],
+        ['http://localhost:8080', '', /binding/],
+        ['http://localhost:0', 'http://localhost:0', /binding/],
+    ];
+    for (const [browserOrigin, boxOrigin, expected] of rejections) {
+        await assert.rejects(collectAcceptancePreflight({ ...options, baseURL: browserOrigin, boxBaseURL: boxOrigin }), error => (
+            expected.test(error.message) && !/private-user|private-password/.test(error.message)
+        ), `${browserOrigin} vs ${boxOrigin}`);
+    }
+    for (const address of ['0.0.0.0', '192.168.1.50']) {
+        await assert.rejects(collectAcceptancePreflight({ ...options, env: { ...localhostEnv, SMOKE_BOX_ROUTER_BIND_ADDRESS: address } }), /localhost Box origin requires|not assigned to a network interface/);
+    }
+    assert.equal(collected.length, 0, 'an invalid binding must fail before observing any Box');
+});
+
 test('common preflight binds local browser origin to the inspected Box before collection', async () => {
     const profile = validateAcceptanceProfile(args, baseEnv);
     const evidence = { imageDigest: digest, repositories: { explorer: { repositoryPath: source } }, liveBox: {

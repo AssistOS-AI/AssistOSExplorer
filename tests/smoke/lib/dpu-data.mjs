@@ -5,7 +5,8 @@ import { spawnSync } from 'node:child_process';
 import { smokeConfig } from './config.mjs';
 import {
   collectLiveBoxEvidence,
-  parseLocalScreenBaseUrl,
+  assertOriginBindAddress,
+  parseLocalBoxBaseUrl,
   selectLocalScreenContainer,
 } from './live-box.mjs';
 import { readExpectedRouterBindAddress } from './router-bind-address.mjs';
@@ -28,6 +29,7 @@ function isBoxDeployment() {
 export function resolveDpuBoxEndpoint({
   deploymentMode = String(process.env.SMOKE_DEPLOYMENT_MODE || '').trim(),
   boxBaseURL = process.env.SMOKE_BOX_BASE_URL,
+  expectedRouterBindAddress,
 } = {}) {
   if (deploymentMode !== 'box') {
     throw new Error('DPU Box evidence is available only with SMOKE_DEPLOYMENT_MODE=box.');
@@ -36,14 +38,17 @@ export function resolveDpuBoxEndpoint({
   if (!value) {
     throw new Error('SMOKE_DEPLOYMENT_MODE=box requires an explicit loopback SMOKE_BOX_BASE_URL.');
   }
+  let endpoint;
   try {
-    return parseLocalScreenBaseUrl(value);
+    endpoint = parseLocalBoxBaseUrl(value);
   } catch (error) {
     throw new Error(
-      'SMOKE_BOX_BASE_URL must be an exact credential-free http://127.0.0.1:<port> URL.',
+      'SMOKE_BOX_BASE_URL must be an exact credential-free http://127.0.0.1:<port> or http://localhost:<port> URL.',
       { cause: error },
     );
   }
+  assertOriginBindAddress(endpoint, expectedRouterBindAddress);
+  return Object.freeze({ baseURL: endpoint.baseURL, port: endpoint.port });
 }
 
 function safeRelativePath(segments) {

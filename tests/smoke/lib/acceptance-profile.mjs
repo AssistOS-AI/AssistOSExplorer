@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { collectCopilotReleaseEvidence } from './copilot-release-evidence.mjs';
-import { sameLiveBoxGeneration, parseLocalScreenBaseUrl } from './live-box.mjs';
+import { sameLiveBoxGeneration, parseLocalBoxBaseUrl, assertOriginBindAddress } from './live-box.mjs';
 import { validateQaAcceptanceProfile } from './qa-acceptance-profile.mjs';
 
 export const acceptanceLedger = JSON.parse(fs.readFileSync(new URL('../acceptance-ledger_codex.json', import.meta.url), 'utf8'));
@@ -142,11 +142,12 @@ export async function collectAcceptancePreflight({ profile, env, manifestPath, v
     } else {
         let application, box;
         try {
-            application = parseLocalScreenBaseUrl(baseURL);
-            box = parseLocalScreenBaseUrl(boxBaseURL);
+            application = parseLocalBoxBaseUrl(baseURL);
+            box = parseLocalBoxBaseUrl(boxBaseURL);
         } catch {
             throw new Error('Local smoke acceptance requires a valid loopback browser/Box origin binding.');
         }
+        assertOriginBindAddress(application, undefined, env);
         if (application.baseURL !== box.baseURL) {
             throw new Error('Local smoke browser origin must equal the inspected Box origin.');
         }
