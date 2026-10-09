@@ -35,13 +35,15 @@ export function resolvePloinkyRoot() {
 }
 
 /**
- * An Agent runtime tree from before Ploinky required `routerOrigins` in every
- * edge topology (Ploinky 704cff55). Its `edgeTopology.mjs` is the verbatim
- * earlier reader (tests/fixtures/legacy-agent-runtime): it accepts a topology
- * without the field, which is how such a runtime reports no Router-origin
- * capability. It has no `runtimeRouterOrigins.mjs`. The rest of the tree (the
- * origin-list parser and the request-signing libraries the agent still needs)
- * is unchanged between the two generations and comes from the live Ploinky
+ * An Agent runtime tree without the Router-origin capability, as shipped
+ * before Ploinky eb00e0b1 added it. Its `edgeTopology.mjs` is the verbatim
+ * 704cff55~1 reader (tests/fixtures/legacy-agent-runtime), which accepts a
+ * topology without `routerOrigins`, and the tree has no
+ * `runtimeRouterOrigins.mjs` helper, exactly like a pre-eb00e0b1 runtime. This
+ * is deliberately not the full 704cff55~1 tree: that generation already ships
+ * the helper, so a present but unusable advisory list there is invalid rather
+ * than legacy. The rest of the tree (the origin-list parser and the
+ * request-signing libraries the agent still needs) comes from the live Ploinky
  * checkout.
  */
 export function createLegacyAgentRuntime(directory, ploinkyRoot = resolvePloinkyRoot()) {
