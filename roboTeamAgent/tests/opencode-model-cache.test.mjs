@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createOpenCodeModelCache } from '../server/opencode-model-cache.mjs';
+import { MODELS_FRESH_WINDOW_MS, createOpenCodeModelCache, openCodeVersionOf } from '../server/opencode-model-cache.mjs';
 
 const GATEWAY_CATALOG = { data: [{ id: 'axl/fast', name: 'Fast' }, { id: 'axl/deep', name: 'Deep' }] };
 const LISTING = [{ id: 'opencode/big-pickle', label: 'Big Pickle', efforts: [] },
@@ -14,15 +14,22 @@ async function write(file, content) {
     await fs.writeFile(file, content);
 }
 
+// An executable laid out like the npm platform package: <package>/bin/opencode beside <package>/package.json.
+async function installBinary(directory, version = '1.18.35') {
+    const binary = path.join(directory, 'node_modules', 'opencode-test', 'bin', 'opencode');
+    await write(binary, '#!/bin/sh\necho 1.18.35\n');
+    await write(path.join(directory, 'node_modules', 'opencode-test', 'package.json'), JSON.stringify({ name: 'opencode-test', version }));
+    return binary;
+}
+
 async function fixture(t, { gateway = GATEWAY_CATALOG } = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-model-cache-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     const cwd = path.join(root, 'workspace', 'project');
     const ala = path.join(root, 'ala');
-    const binary = path.join(root, 'tools', 'opencode');
     await Promise.all([fs.mkdir(path.join(home, '.config', 'opencode'), { recursive: true }), fs.mkdir(cwd, { recursive: true })]);
-    await write(binary, '#!/bin/sh\necho 1.18.35\n');
+    const binary = await installBinary(path.join(root, 'tools'));
     await write(path.join(ala, 'package.json'), '{"name":"advanced-language-agent","version":"1.0.0"}');
     await write(path.join(ala, 'src', 'coding-agents', 'opencode.mjs'), 'export const a = 1;\n');
     await write(path.join(ala, 'src', 'coding-agents', 'opencode-server.mjs'), 'export const b = 1;\n');
@@ -56,9 +63,7 @@ test('an unchanged robot reuses its stored list and a stored list is returned fo
 const MUTATIONS = {
     'OpenCode executable content': f => write(f.binary, '#!/bin/sh\necho 1.18.36 with a different size\n'),
     'OpenCode executable path': async f => {
-        const other = path.join(f.root, 'tools2', 'opencode');
-        await write(other, '#!/bin/sh\necho 1.18.35\n');
-        f.binary = other;
+        f.binary = await installBinary(path.join(f.root, 'tools2'));
     },
     'ALA launcher code': f => write(path.join(f.ala, 'src', 'coding-agents', 'opencode-server.mjs'), 'export const b = 2;\n'),
     'ALA launcher file added': f => write(path.join(f.ala, 'src', 'coding-agents', 'service.mjs'), 'export {};\n'),
@@ -172,4 +177,93 @@ test('no OpenCode agent means no key', async (t) => {
     const f = await fixture(t);
     assert.equal(await f.cache.probe(f.config({ agents: [{ name: 'codex', binary: f.binary, available: true }] })), null);
     assert.equal(await f.cache.probe(f.config({ agents: [{ name: 'opencode', binary: f.binary, available: false }] })), null);
+});
+
+const MODELS_FILE = f => path.join(f.home, '.cache', 'opencode', 'models.json');
+const age = (file, ms) => fs.utimes(file, new Date(Date.now() - ms), new Date(Date.now() - ms));
+const WINDOW = MODELS_FRESH_WINDOW_MS['1.18.35'];
+
+test('a list is served only while OpenCode itself would not refetch its models.json', async (t) => {
+    const f = await fixture(t);
+    const first = await f.cache.probe(f.config());
+    await f.cache.store(first, LISTING);
+    await age(MODELS_FILE(f), WINDOW - 30_000);
+    assert.deepEqual((await f.cache.probe(f.config())).models, LISTING, 'inside the window: OpenCode would not refresh either');
+    // The key is unchanged by age (mtime is not content), yet an aged file must miss.
+    await age(MODELS_FILE(f), WINDOW + 1000);
+    const aged = await f.cache.probe(f.config());
+    assert.equal(aged.key, first.key);
+    assert.equal(aged.models, null);
+    assert.equal(aged.fresh, false);
+    // The listing OpenCode runs then refreshes the file; nothing is remembered under the stale key.
+    assert.equal(await f.cache.store(aged, LISTING), false);
+    await write(MODELS_FILE(f), '{"opencode":{"models":{"refreshed":{}}}}');
+    const refreshed = await f.cache.probe(f.config());
+    assert.notEqual(refreshed.key, first.key);
+    assert.equal(refreshed.models, null);
+    assert.equal(await f.cache.store(refreshed, LISTING), true);
+    assert.deepEqual((await f.cache.probe(f.config())).models, LISTING);
+});
+
+test('a refresh that leaves the content unchanged only restarts the fresh window', async (t) => {
+    const f = await fixture(t);
+    const first = await f.cache.probe(f.config());
+    await f.cache.store(first, LISTING);
+    await age(MODELS_FILE(f), WINDOW + 60_000);
+    assert.equal((await f.cache.probe(f.config())).models, null);
+    await fs.utimes(MODELS_FILE(f), new Date(), new Date());
+    assert.deepEqual((await f.cache.probe(f.config())).models, LISTING);
+});
+
+test('the freshness boundary is OpenCode\'s strict less-than', async (t) => {
+    const f = await fixture(t);
+    const first = await f.cache.probe(f.config());
+    await f.cache.store(first, LISTING);
+    await age(MODELS_FILE(f), WINDOW + 5);
+    assert.equal((await f.cache.probe(f.config())).models, null, 'exactly at or past the window is stale');
+});
+
+test('a missing models.json, a custom models URL and an unpinned OpenCode version never hit', async (t) => {
+    const f = await fixture(t);
+    const first = await f.cache.probe(f.config());
+    await f.cache.store(first, LISTING);
+    await fs.rm(MODELS_FILE(f));
+    const absent = await f.cache.probe(f.config());
+    assert.equal(absent.models, null);
+    assert.equal(absent.fresh, false);
+    await write(MODELS_FILE(f), '{"opencode":{"models":{}}}');
+    assert.deepEqual((await f.cache.probe(f.config())).models, LISTING);
+    assert.equal(await f.cache.probe(f.config({ env: { HOME: f.home, PATH: '/bin', OPENCODE_MODELS_URL: 'https://models.invalid' } })), null);
+    const unpinned = await installBinary(path.join(f.root, 'future'), '99.0.0');
+    assert.equal(await f.cache.probe(f.config({ agents: [{ name: 'opencode', binary: unpinned, available: true }] })), null);
+    const unknown = path.join(f.root, 'plain', 'opencode');
+    await write(unknown, '#!/bin/sh\n');
+    assert.equal(await openCodeVersionOf(unknown), null);
+    assert.equal(await f.cache.probe(f.config({ agents: [{ name: 'opencode', binary: unknown, available: true }] })), null);
+});
+
+// The pinned window is only as good as the binary it was read from. With an OpenCode executable
+// (OPENCODE_BIN, e.g. the tool cache's) this asserts the predicate is still the pinned one.
+const OPENCODE_BIN = process.env.OPENCODE_BIN;
+test('the pinned freshness window matches the OpenCode binary', { skip: OPENCODE_BIN ? false : 'OPENCODE_BIN is not set' }, async () => {
+    const version = await openCodeVersionOf(OPENCODE_BIN);
+    assert.ok(MODELS_FRESH_WINDOW_MS[version], `no window is pinned for OpenCode ${version}`);
+    const binary = await fs.readFile(await fs.realpath(OPENCODE_BIN));
+    const around = (needle, before, after) => {
+        const index = binary.indexOf(needle);
+        assert.notEqual(index, -1, `${needle} is not in the binary`);
+        return binary.subarray(Math.max(0, index - before), index + after).toString('latin1');
+    };
+    const definition = around('`models-dev:${', 200, 700);
+    // c=me.minutes(5),l=`models-dev:${a}`,d=n.fnUntraced(function*(){let w=yield*o.stat(a)...;
+    // let T=...getTime();return Date.now()-T<me.toMillis(c)})
+    const minutes = definition.match(/(\w+)=\w+\.minutes\((\d+)\),\w+=`models-dev:/);
+    assert.ok(minutes, 'window definition');
+    assert.equal(Number(minutes[2]) * 60_000, MODELS_FRESH_WINDOW_MS[version]);
+    assert.match(definition, new RegExp(`return Date\\.now\\(\\)-\\w+<\\w+\\.toMillis\\(${minutes[1]}\\)\\}\\)`), 'strict less-than against the window');
+    assert.match(definition, /\.stat\((\w+)\)\.pipe\(\w+\.catch\(\(\)=>\w+\.succeed\(void 0\)\)\);if\(!\w+\)return!1;let \w+=\w+\.getOrElse\(\w+\.mtime/, 'mtime of the cache file; absent is stale');
+    const cachePath = around('"https://models.opencode.ai"?"models.json"', 120, 60);
+    assert.match(cachePath, /\.Path\.cache,/, 'the checked file is models.json in the cache directory');
+    const refresh = around('"ModelsDev.refresh")', 0, 220);
+    assert.match(refresh, /function\*\((\w+)=!1\)\{if\(!\1&&\(yield\*\w+\(\)\)\)return;/, 'refresh skips only while fresh');
 });

@@ -30,9 +30,11 @@ async function harness(t, { backend = 'opencode', listing = async () => MODELS, 
     const workingDir = path.join(root, 'workspace');
     const home = path.join(root, 'home');
     const ala = path.join(root, 'ala');
-    const binary = path.join(root, 'bin', 'opencode');
+    const binary = path.join(root, 'tools', 'node_modules', 'opencode-test', 'bin', 'opencode');
     await Promise.all([fs.mkdir(workingDir, { recursive: true }), fs.mkdir(path.join(home, '.config', 'opencode'), { recursive: true })]);
     await write(binary, '#!/bin/sh\n');
+    await write(path.join(root, 'tools', 'node_modules', 'opencode-test', 'package.json'), '{"name":"opencode-test","version":"1.18.35"}');
+    await write(path.join(home, '.cache', 'opencode', 'models.json'), '{"opencode":{"models":{}}}');
     await write(path.join(ala, 'package.json'), '{"name":"advanced-language-agent"}');
     await write(path.join(ala, 'src', 'coding-agents', 'opencode.mjs'), 'export {};\n');
     const saved = { home: process.env.ACHILLES_ALA_HOME, root: process.env.PLOINKY_WORKSPACE_ROOT };

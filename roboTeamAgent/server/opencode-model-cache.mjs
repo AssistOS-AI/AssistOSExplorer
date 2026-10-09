@@ -19,6 +19,17 @@ import { openCodeGatewayModels } from './soul-gateway-models.mjs';
 //
 // Anything that cannot be read as a bounded input (unreadable, too large) bypasses the cache,
 // so the cache can only ever be skipped, never wrong because an input was not visible.
+//
+// Never staler than OpenCode without the cache. OpenCode starts a refresh of its models.dev file
+// at launch and skips it only while the file is fresh (ModelsDev.refresh, read from the 1.18.35
+// binary):
+//     d = stat(<cache>/models.json); return Date.now() - mtime < minutes(5)   // fresh: no fetch
+//     refresh(): if (fresh()) return; fetch models.opencode.ai/api.json and rewrite the file
+// A stored list is therefore served only while that same predicate holds, with the window pinned
+// per OpenCode version below. Once the file is older, the call is a miss: the real listing runs,
+// OpenCode refreshes the file, and its changed content changes the key. A version without a
+// pinned window, a custom OPENCODE_MODELS_URL (OpenCode then names the file by a hash of the URL)
+// and an absent file all bypass or miss, so the cache is never the reason a list is older.
 const SCHEMA = 'roboteam-opencode-models-v1';
 const FILE_LIMIT = 8 * 1024 * 1024;
 const MODELS_FILE_LIMIT = 64 * 1024 * 1024;
@@ -26,6 +37,9 @@ const TREE_FILE_LIMIT = 400;
 const TREE_DEPTH_LIMIT = 6;
 const ANCESTOR_LIMIT = 64;
 const CACHE_FILE_LIMIT = 4 * 1024 * 1024;
+// Window in which OpenCode treats its models.json as fresh and does not refetch it, per OpenCode
+// version. The test next to this module asserts it against the OpenCode binary.
+export const MODELS_FRESH_WINDOW_MS = Object.freeze({ '1.18.35': 5 * 60 * 1000 });
 const GATEWAY_PROVIDER = 'soul-gateway';
 const GATEWAY_TIMEOUT_MS = 5000;
 const MANAGED_CONFIG_DIRECTORIES = ['/etc/opencode', '/Library/Application Support/opencode'];
@@ -103,6 +117,26 @@ async function executable(binary) {
     return [resolved, metadata.size, metadata.mtimeMs];
 }
 
+// The npm platform package that holds the executable (opencode-linux-arm64/bin/opencode) names its version.
+export async function openCodeVersionOf(binary) {
+    let directory = path.dirname(await fs.realpath(binary));
+    for (let depth = 0; depth < 4; depth++, directory = path.dirname(directory)) {
+        try {
+            const metadata = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+            if (typeof metadata.name === 'string' && metadata.name.startsWith('opencode-') && typeof metadata.version === 'string') return metadata.version;
+        } catch (error) {
+            if (error.code !== 'ENOENT') return null;
+        }
+    }
+    return null;
+}
+
+// OpenCode's own predicate: fresh while Date.now() - mtime is below the window. Absent means stale.
+async function modelsFileFresh(file, windowMs, now) {
+    const metadata = await fs.stat(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    return Boolean(metadata) && now - metadata.mtime.getTime() < windowMs;
+}
+
 async function gatewayModels(connect, env, signal) {
     const connection = await connect(env);
     if (!connection) return null;
@@ -136,6 +170,11 @@ export function createOpenCodeModelCache({ directory, connect = soulGatewayConne
             const home = config.home;
             const env = { ...process.env, ...config.env };
             const openCode = path.join(home, '.config', 'opencode');
+            // OpenCode names the file by a hash of a custom URL; its freshness cannot be judged here.
+            if (env.OPENCODE_MODELS_URL) return null;
+            const windowMs = MODELS_FRESH_WINDOW_MS[await openCodeVersionOf(record.binary)];
+            if (!windowMs) return null;
+            const modelsFile = path.join(home, '.cache', 'opencode', 'models.json');
             const [binary, launcher, gateway, configuration, dotOpenCode, auth, models, project, custom, managed] = await Promise.all([
                 executable(record.binary),
                 launcherCode(config.api.packageRoot),
@@ -143,7 +182,7 @@ export function createOpenCodeModelCache({ directory, connect = soulGatewayConne
                 hashTree(openCode),
                 hashTree(path.join(home, '.opencode')),
                 hashFile(path.join(home, '.local', 'share', 'opencode', 'auth.json')),
-                hashFile(env.OPENCODE_MODELS_PATH || path.join(home, '.cache', 'opencode', 'models.json'), MODELS_FILE_LIMIT),
+                hashFile(env.OPENCODE_MODELS_PATH || modelsFile, MODELS_FILE_LIMIT),
                 projectConfiguration(config.cwd),
                 Promise.all([env.OPENCODE_CONFIG ? hashFile(env.OPENCODE_CONFIG) : null,
                     env.OPENCODE_CONFIG_DIR ? hashTree(env.OPENCODE_CONFIG_DIR) : null]),
@@ -152,12 +191,16 @@ export function createOpenCodeModelCache({ directory, connect = soulGatewayConne
             ]);
             const key = sha256(JSON.stringify([SCHEMA, binary, launcher, Object.entries(env).sort(), gateway,
                 configuration, dotOpenCode, auth, models, project, custom, managed, config.cwd, home]));
-            return { key, models: await read(key), gateway };
+            // Judged after the key is built, immediately before use, with OpenCode's own clock reading.
+            const fresh = await modelsFileFresh(modelsFile, windowMs, Date.now());
+            return { key, models: fresh ? await read(key) : null, gateway, fresh };
         },
         // Stores a list only when it is complete for the gateway read when the key was
         // derived: every gateway model must appear, so a plugin that failed to load is never remembered.
         async store(probe, models) {
-            if (!probe?.key || !validList(models)) return false;
+            // A list produced while the models file is stale is not remembered: OpenCode refreshes
+            // that file, which changes the key, and the next listing is stored under the new one.
+            if (!probe?.key || !probe.fresh || !validList(models)) return false;
             const present = new Set(models.map(model => model.id));
             if (probe.gateway && Object.keys(probe.gateway).some(id => !present.has(`${GATEWAY_PROVIDER}/${id}`))) return false;
             await fs.mkdir(directory, { recursive: true, mode: 0o700 });
