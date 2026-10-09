@@ -51,7 +51,6 @@ const WORKFLOWS = [
       "'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'",
       "'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'",
       "'proxies|https://github.com/AssistOS-AI/proxies.git'",
-      "'container-image-builds|https://github.com/AssistOS-AI/container-image-builds.git'",
       "CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'",
       "CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'",
       "CLOUDFLARE_TUNNEL_SECRET_HANDLE: 'publication/explorer-qa-tunnel'",
@@ -200,6 +199,17 @@ for (const workflow of WORKFLOWS) {
     assert.equal(source.match(/^          REMOTE$/gm)?.length, 1, 'expected one closed remote deployment heredoc');
   });
 }
+
+test('Explorer QA deploy, destroy and runtime verifier do not manage container-image-builds as a graph repository', () => {
+    for (const file of [
+        '.github/workflows/deploy-explorer-qa.yml',
+        '.github/workflows/destroy-explorer-qa.yml',
+        '.github/scripts/verify-explorer-qa-runtime.mjs',
+    ]) {
+        const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+        assert.doesNotMatch(source, /container-image-builds/, `${file} must not pin or require container-image-builds`);
+    }
+});
 
 test('Explorer workflows omit retired stack repositories outside the explicit LiveKit migration', () => {
     const retiredRepositories = ['basic', ['webmeet', 'Infra'].join('')];

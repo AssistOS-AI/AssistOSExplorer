@@ -38,3 +38,13 @@ test('Explorer manifest contains no removed publication contract', async () => {
     assert.equal(Object.hasOwn(manifest, ['open', 'Ports'].join('')), false);
     assert.doesNotMatch(serialized, /(?:base-agent-additional-server\/webtty|\b7681\b)/);
 });
+
+test('Explorer graph does not declare or enable the container-image-builds repository', async () => {
+    const manifest = await readManifest();
+
+    assert.equal(Object.hasOwn(manifest.repos || {}, 'container-image-builds'), false);
+    assert.equal(JSON.stringify(manifest.repos || {}).includes('container-image-builds'), false);
+    assert.equal(manifest.enable.some((entry) => (
+        String(entry?.agent || entry).split(/\s+/)[0].startsWith('container-image-builds/')
+    )), false);
+});

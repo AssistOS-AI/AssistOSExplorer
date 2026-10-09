@@ -450,7 +450,6 @@ jobs:
             'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'
             'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'
             'proxies|https://github.com/AssistOS-AI/proxies.git'
-            'container-image-builds|https://github.com/AssistOS-AI/container-image-builds.git'
           )
           BRANCH_ARGS=(
             --branch-fallback fail
