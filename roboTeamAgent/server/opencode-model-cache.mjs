@@ -30,7 +30,21 @@ import { openCodeGatewayModels } from './soul-gateway-models.mjs';
 // OpenCode refreshes the file, and its changed content changes the key. A version without a
 // pinned window, a custom OPENCODE_MODELS_URL (OpenCode then names the file by a hash of the URL)
 // and an absent file all bypass or miss, so the cache is never the reason a list is older.
+//
+// Remote or account-scoped state bypasses the cache. OpenCode merges a remote configuration for a
+// "wellknown" auth entry and for an active Console account or organisation on every launch, and an
+// OAuth login can change what a provider lists; none of that is visible as a local file. Only type
+// fields are inspected (never values), and anything other than a plain API-key entry bypasses.
+//
+// Location. The record lives in server-only storage that is never mounted into a robot or GUI
+// container (<data>/server-state/model-catalog/<robot>/), not under robots/<id>, which a GUI
+// container mounts read-write. Every directory segment is checked with lstat (a real directory
+// owned by the server) before it is read, written or removed, and the record is written by an
+// exclusive create plus rename, so a link is never followed.
 const SCHEMA = 'roboteam-opencode-models-v1';
+const CACHE_SEGMENTS = ['server-state', 'model-catalog'];
+const CACHE_FILE_NAME = 'model-listing.json';
+const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
 const FILE_LIMIT = 8 * 1024 * 1024;
 const MODELS_FILE_LIMIT = 64 * 1024 * 1024;
 const TREE_FILE_LIMIT = 400;
@@ -145,21 +159,102 @@ async function gatewayModels(connect, env, signal) {
     return openCodeGatewayModels(catalog);
 }
 
+// Types of auth.json entries are the only thing read from it here. Only 'api' (a key OpenCode
+// sends to a provider whose models come from the models.dev file) keeps the cache usable.
+async function authIsLocalOnly(file) {
+    let text;
+    try {
+        const metadata = await fs.stat(file);
+        if (!metadata.isFile() || metadata.size > FILE_LIMIT) return false;
+        text = await fs.readFile(file, 'utf8');
+    } catch (error) {
+        if (['ENOENT', 'ENOTDIR'].includes(error.code)) return true;
+        return false;
+    }
+    try {
+        const entries = JSON.parse(text);
+        return Boolean(entries) && typeof entries === 'object' && !Array.isArray(entries)
+            && Object.values(entries).every(entry => entry && typeof entry === 'object' && entry.type === 'api');
+    } catch { return false; }
+}
+
+async function loadSqlite() {
+    const emit = process.emitWarning;
+    process.emitWarning = () => {};
+    try { return await import('node:sqlite'); } finally { process.emitWarning = emit; }
+}
+
+// An OpenCode Console login keeps its active account and organisation in OpenCode's database; the
+// organisation's remote configuration is merged into every launch. A database that exists but
+// cannot be inspected counts as account state.
+async function consoleAccountActive(file) {
+    try { await fs.access(file); } catch (error) {
+        if (['ENOENT', 'ENOTDIR'].includes(error.code)) return false;
+        return true;
+    }
+    try {
+        const { DatabaseSync } = await loadSqlite();
+        const database = new DatabaseSync(file, { readOnly: true });
+        try {
+            const tables = new Set(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(row => row.name));
+            if (tables.has('account_state') && database.prepare(
+                'SELECT 1 FROM account_state WHERE active_account_id IS NOT NULL OR active_org_id IS NOT NULL LIMIT 1').get()) return true;
+            if (tables.has('control_account') && database.prepare('SELECT 1 FROM control_account WHERE active = 1 LIMIT 1').get()) return true;
+            return false;
+        } finally { database.close(); }
+    } catch { return true; }
+}
+
+async function remoteScoped(home, env) {
+    if (env.OPENCODE_CONSOLE_TOKEN) return true;
+    const data = path.join(home, '.local', 'share', 'opencode');
+    if (!await authIsLocalOnly(path.join(data, 'auth.json'))) return true;
+    const database = env.OPENCODE_DB === ':memory:' ? null
+        : env.OPENCODE_DB ? path.resolve(data, env.OPENCODE_DB) : path.join(data, 'opencode.db');
+    return database ? consoleAccountActive(database) : false;
+}
+
 const validList = models => Array.isArray(models) && models.length > 0 && models.length < 20000
     && models.every(model => typeof model?.id === 'string' && model.id);
 
-export function createOpenCodeModelCache({ directory, connect = soulGatewayConnection } = {}) {
-    if (!directory) throw new TypeError('The OpenCode model cache needs a directory.');
-    const file = path.join(directory, 'opencode.json');
+export function createOpenCodeModelCache({ root, robotId, connect = soulGatewayConnection, uid = process.getuid?.() } = {}) {
+    if (!root || !ROBOT_ID.test(String(robotId))) throw new TypeError('The OpenCode model cache needs a data root and a robot id.');
+    const directory = path.join(root, ...CACHE_SEGMENTS, robotId);
+    const file = path.join(directory, CACHE_FILE_NAME);
+    // Every segment below the data root must be a real directory owned by the server.
+    async function checkDirectory({ create = false } = {}) {
+        if (create) await fs.mkdir(root, { recursive: true, mode: 0o700 });
+        let current = root;
+        for (const segment of [...CACHE_SEGMENTS, robotId]) {
+            current = path.join(current, segment);
+            let metadata = await fs.lstat(current).catch(error => { if (error.code !== 'ENOENT') throw error; });
+            if (!metadata) {
+                if (!create) return false;
+                await fs.mkdir(current, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+                metadata = await fs.lstat(current);
+            }
+            if (metadata.isSymbolicLink() || !metadata.isDirectory() || (uid !== undefined && metadata.uid !== uid)) {
+                throw new Error('Unsafe OpenCode model cache directory.');
+            }
+        }
+        return true;
+    }
     async function read(key) {
         let handle;
         try {
+            if (!await checkDirectory()) return null;
             handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
             const metadata = await handle.stat();
             if (!metadata.isFile() || metadata.size > CACHE_FILE_LIMIT) return null;
             const record = JSON.parse(await handle.readFile('utf8'));
             return record?.schema === SCHEMA && record.key === key && validList(record.models) ? record.models : null;
         } catch { return null; } finally { await handle?.close(); }
+    }
+    // After a stale-file miss no earlier record may survive: OpenCode refreshes models.json and may
+    // rewrite identical content, which would bring the old key (and an older list) back.
+    async function invalidate() {
+        if (!await checkDirectory()) return;
+        await fs.unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
     }
     return {
         // Returns null when the key cannot be derived (the caller lists models as before), else
@@ -172,6 +267,7 @@ export function createOpenCodeModelCache({ directory, connect = soulGatewayConne
             const openCode = path.join(home, '.config', 'opencode');
             // OpenCode names the file by a hash of a custom URL; its freshness cannot be judged here.
             if (env.OPENCODE_MODELS_URL) return null;
+            if (await remoteScoped(home, env)) return null;
             const windowMs = MODELS_FRESH_WINDOW_MS[await openCodeVersionOf(record.binary)];
             if (!windowMs) return null;
             const modelsFile = path.join(home, '.cache', 'opencode', 'models.json');
@@ -193,7 +289,11 @@ export function createOpenCodeModelCache({ directory, connect = soulGatewayConne
                 configuration, dotOpenCode, auth, models, project, custom, managed, config.cwd, home]));
             // Judged after the key is built, immediately before use, with OpenCode's own clock reading.
             const fresh = await modelsFileFresh(modelsFile, windowMs, Date.now());
-            return { key, models: fresh ? await read(key) : null, gateway, fresh };
+            if (!fresh) {
+                await invalidate();
+                return { key, models: null, gateway, fresh };
+            }
+            return { key, models: await read(key), gateway, fresh };
         },
         // Stores a list only when it is complete for the gateway read when the key was
         // derived: every gateway model must appear, so a plugin that failed to load is never remembered.
@@ -203,7 +303,7 @@ export function createOpenCodeModelCache({ directory, connect = soulGatewayConne
             if (!probe?.key || !probe.fresh || !validList(models)) return false;
             const present = new Set(models.map(model => model.id));
             if (probe.gateway && Object.keys(probe.gateway).some(id => !present.has(`${GATEWAY_PROVIDER}/${id}`))) return false;
-            await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+            await checkDirectory({ create: true });
             const temporary = `${file}.${randomUUID()}.tmp`;
             try {
                 await fs.writeFile(temporary, JSON.stringify({ schema: SCHEMA, key: probe.key, models }), { flag: 'wx', mode: 0o600 });

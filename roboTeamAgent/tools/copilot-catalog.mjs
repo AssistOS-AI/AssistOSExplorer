@@ -20,7 +20,7 @@ try {
         : await loadAutocompleteCatalog({ dir: workingDir, skillCatalog: catalog,
             sessionId: input.sessionId, freshSession: true, signal: AbortSignal.timeout(20000),
             execution: { robotId: context.robot.id },
-            modelCache: createOpenCodeModelCache({ directory: path.join(context.store.robotPath(context.robot.id), 'runtime', 'model-catalog') }),
+            modelCache: createOpenCodeModelCache({ root: context.store.dataDir, robotId: context.robot.id }),
             sessionCompletions: buildSessionCompletions(workingDir),
             taskCompletions: buildTaskActionCompletionMap(workingDir) });
     if (result.commands) {

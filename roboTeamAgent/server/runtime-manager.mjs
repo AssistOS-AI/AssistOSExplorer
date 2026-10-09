@@ -232,6 +232,7 @@ export class RuntimeManager {
         this.deletedRobots = new Set();
         this.skillsets = options.skillsets || null;
         this.soulGateway = options.soulGateway || createSoulGatewayService();
+        this.seedChain = new Map();
         // Optional observational hook used by RoboFlow. It never changes task
         // storage or semantics; it only forwards progress and lifecycle events.
         this.taskObserver = typeof options.taskObserver === 'function' ? options.taskObserver : null;
@@ -247,16 +248,41 @@ export class RuntimeManager {
         catch (error) { console.error('[roboTeamAgent] task observer failed:', error?.message || error); }
     }
 
-    // `prepare` lets the caller wait for the shared plugin template (one npm install per
-    // OpenCode version, coalesced across robots); without it only a ready template is used.
-    // Either way a missing template leaves OpenCode to install its own dependency as before.
-    async prepareOpenCode(robotId, { prepare = false } = {}) {
+    // Shell and Soul Gateway socket preparation, then (unless `seed` is false) the plugin seed.
+    // `prepare` lets the caller wait for the shared plugin template (one npm install per OpenCode
+    // version, coalesced across robots); without it only a ready template is used. Either way a
+    // missing template leaves OpenCode to install its own dependency as before.
+    async prepareOpenCode(robotId, { prepare = false, seed = true } = {}) {
         if (!/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) throw new Error('Invalid robot ID.');
         const home = path.join(this.dataDir, 'robots', robotId, 'home');
         await prepareRobotShell(home);
-        const seeded = await seedOpenCodePlugin(home, await this.openCodePluginTemplate({ prepare }));
-        if (seeded.status === 'failed') console.warn(`[roboTeamAgent] OpenCode plugin seeding failed for ${robotId}: ${seeded.error}`);
+        if (seed) await this.seedOpenCode(robotId, { prepare });
         await this.soulGateway.prepare(home);
+    }
+
+    // One seed per home at a time: a background seed and a task start on the same robot do not
+    // copy the template twice, the second finds the home current.
+    seedOpenCode(robotId, { prepare = false } = {}) {
+        const home = path.join(this.dataDir, 'robots', robotId, 'home');
+        const run = async () => {
+            if (this.deletedRobots.has(robotId)) return { status: 'unavailable' };
+            const seeded = await seedOpenCodePlugin(home, await this.openCodePluginTemplate({ prepare }));
+            if (seeded.status === 'failed') console.warn(`[roboTeamAgent] OpenCode plugin seeding failed for ${robotId}: ${seeded.error}`);
+            return seeded;
+        };
+        const previous = this.seedChain.get(robotId) || Promise.resolve();
+        const current = previous.catch(() => {}).then(run);
+        this.seedChain.set(robotId, current);
+        return current.finally(() => { if (this.seedChain.get(robotId) === current) this.seedChain.delete(robotId); });
+    }
+
+    // Robot creation answers first; the copy (seconds) finishes in the background, and a task that
+    // starts sooner waits for it through the same chain.
+    seedOpenCodeInBackground(robot) {
+        if (!robotCodingAgents(robot).includes('opencode')) return;
+        this.seedOpenCode(robot.id, { prepare: true }).catch(error => {
+            console.warn(`[roboTeamAgent] OpenCode seeding failed for ${robot.id}: ${error?.message || error}`);
+        });
     }
 
     async openCodePluginTemplate({ prepare = false } = {}) {
@@ -817,6 +843,10 @@ export class RuntimeManager {
         try { await remove(); }
         catch (error) { this.deletedRobots.delete(robotId); throw error; }
         await this.soulGateway.remove(path.join(this.dataDir, 'robots', robotId, 'home'));
+        // Server-only model-list cache for this robot (never inside the robot's mounted folder).
+        if (/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) {
+            await fs.rm(path.join(this.dataDir, 'server-state', 'model-catalog', robotId), { recursive: true, force: true }).catch(() => {});
+        }
         this.manualControl.delete(robotId);
         this.taskQueues.delete(robotId);
         this.latestTask.delete(robotId);

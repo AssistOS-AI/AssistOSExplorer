@@ -66,7 +66,7 @@ async function harness(t, { backend = 'opencode', listing = async () => MODELS, 
     };
     const store = new ConversationSessionStore({ workingDir });
     const session = await store.createSession();
-    const cache = createOpenCodeModelCache({ directory: path.join(root, 'runtime', 'model-catalog'),
+    const cache = createOpenCodeModelCache({ root: path.join(root, 'data'), robotId: 'robot-a1b2c3',
         connect: connect || (async () => ({ request: async () => GATEWAY })) });
     const engine = createAlaEngine({ workingDir, sessionStore: store, skillCatalog: { getSkills: () => [] }, installation,
         settings: { readAchillesSettings: () => ({}) }, modelCache: cache });
@@ -125,7 +125,7 @@ test('only OpenCode is cached; other backends list on every call', { skip }, asy
     await h.engine.listModels({ sessionId: h.sessionId });
     await h.engine.listModels({ sessionId: h.sessionId });
     assert.equal(h.starts.services, 2);
-    await assert.rejects(fs.access(path.join(h.root, 'runtime', 'model-catalog', 'opencode.json')));
+    await assert.rejects(fs.access(path.join(h.root, 'data', 'server-state', 'model-catalog', 'robot-a1b2c3', 'model-listing.json')));
 });
 
 test('the catalog is not blocked by OpenCode on a hit and keeps its ceiling on a miss', { skip }, async (t) => {

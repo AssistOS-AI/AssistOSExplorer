@@ -5,6 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { MODELS_FRESH_WINDOW_MS, createOpenCodeModelCache, openCodeVersionOf } from '../server/opencode-model-cache.mjs';
 
+const CACHE_DIR = f => path.join(f.root, 'data', 'server-state', 'model-catalog', 'robot-a1b2c3');
+const CACHE_FILE = f => path.join(CACHE_DIR(f), 'model-listing.json');
 const GATEWAY_CATALOG = { data: [{ id: 'axl/fast', name: 'Fast' }, { id: 'axl/deep', name: 'Deep' }] };
 const LISTING = [{ id: 'opencode/big-pickle', label: 'Big Pickle', efforts: [] },
     { id: 'soul-gateway/axl/fast', label: 'Fast', efforts: [] }, { id: 'soul-gateway/axl/deep', label: 'Deep', efforts: ['high'] }];
@@ -36,7 +38,7 @@ async function fixture(t, { gateway = GATEWAY_CATALOG } = {}) {
     await write(path.join(home, '.config', 'opencode', 'plugins', 'soul-gateway.js'), 'export const SoulGateway = 1;\n');
     await write(path.join(home, '.cache', 'opencode', 'models.json'), '{"opencode":{"models":{}}}');
     const state = { gateway, requests: 0 };
-    const cache = createOpenCodeModelCache({ directory: path.join(root, 'runtime', 'model-catalog'),
+    const cache = createOpenCodeModelCache({ root: path.join(root, 'data'), robotId: 'robot-a1b2c3',
         connect: async () => state.gateway === null ? null : { request: async (operation) => {
             assert.equal(operation, 'models');
             state.requests++;
@@ -143,7 +145,7 @@ test('a damaged, foreign or linked cache file is a miss, never an error or a fol
     const f = await fixture(t);
     const probe = await f.cache.probe(f.config());
     await f.cache.store(probe, LISTING);
-    const file = path.join(f.root, 'runtime', 'model-catalog', 'opencode.json');
+    const file = CACHE_FILE(f);
     const good = await fs.readFile(file, 'utf8');
     for (const bad of ['', '{', 'null', JSON.stringify({ ...JSON.parse(good), schema: 'other' }),
         JSON.stringify({ ...JSON.parse(good), key: 'f'.repeat(64) }), JSON.stringify({ ...JSON.parse(good), models: [{ nope: 1 }] }),
@@ -165,7 +167,7 @@ test('inputs that cannot be read as bounded inputs bypass the cache instead of b
     await fs.chmod(path.join(f.home, '.cache', 'opencode', 'models.json'), 0o600);
     // A gateway that cannot answer: the caller lists models as before.
     f.state.gateway = null;
-    const failing = createOpenCodeModelCache({ directory: path.join(f.root, 'c'), connect: async () => { throw new Error('router down'); } });
+    const failing = createOpenCodeModelCache({ root: path.join(f.root, 'c'), robotId: 'robot-a1b2c3', connect: async () => { throw new Error('router down'); } });
     await assert.rejects(failing.probe(f.config()), /router down/);
     // Too many configuration entries cannot be keyed.
     await fs.mkdir(path.join(f.cwd, '.opencode'), { recursive: true });
@@ -205,13 +207,17 @@ test('a list is served only while OpenCode itself would not refetch its models.j
     assert.deepEqual((await f.cache.probe(f.config())).models, LISTING);
 });
 
-test('a refresh that leaves the content unchanged only restarts the fresh window', async (t) => {
+test('a refresh that leaves the content unchanged keeps the key but not the old list', async (t) => {
     const f = await fixture(t);
     const first = await f.cache.probe(f.config());
     await f.cache.store(first, LISTING);
     await age(MODELS_FILE(f), WINDOW + 60_000);
     assert.equal((await f.cache.probe(f.config())).models, null);
     await fs.utimes(MODELS_FILE(f), new Date(), new Date());
+    const again = await f.cache.probe(f.config());
+    assert.equal(again.key, first.key);
+    assert.equal(again.models, null, 'the stale-miss removed the earlier record');
+    await f.cache.store(again, LISTING);
     assert.deepEqual((await f.cache.probe(f.config())).models, LISTING);
 });
 
@@ -232,6 +238,9 @@ test('a missing models.json, a custom models URL and an unpinned OpenCode versio
     assert.equal(absent.models, null);
     assert.equal(absent.fresh, false);
     await write(MODELS_FILE(f), '{"opencode":{"models":{}}}');
+    const restored = await f.cache.probe(f.config());
+    assert.equal(restored.models, null, 'the record did not survive the missing file');
+    await f.cache.store(restored, LISTING);
     assert.deepEqual((await f.cache.probe(f.config())).models, LISTING);
     assert.equal(await f.cache.probe(f.config({ env: { HOME: f.home, PATH: '/bin', OPENCODE_MODELS_URL: 'https://models.invalid' } })), null);
     const unpinned = await installBinary(path.join(f.root, 'future'), '99.0.0');
@@ -266,4 +275,161 @@ test('the pinned freshness window matches the OpenCode binary', { skip: OPENCODE
     assert.match(cachePath, /\.Path\.cache,/, 'the checked file is models.json in the cache directory');
     const refresh = around('"ModelsDev.refresh")', 0, 220);
     assert.match(refresh, /function\*\((\w+)=!1\)\{if\(!\1&&\(yield\*\w+\(\)\)\)return;/, 'refresh skips only while fresh');
+});
+
+// B1: the record must live where no robot or GUI container can reach, and a link is never followed.
+test('the record is server-only storage outside robots/, under a name that is not an OpenCode config name', async (t) => {
+    const f = await fixture(t);
+    const probe = await f.cache.probe(f.config());
+    await f.cache.store(probe, LISTING);
+    assert.ok((await fs.stat(CACHE_FILE(f))).isFile());
+    assert.equal(path.basename(CACHE_FILE(f)), 'model-listing.json');
+    assert.equal(path.relative(path.join(f.root, 'data', 'robots'), CACHE_FILE(f)).split(path.sep)[0], '..', 'outside robots/');
+    assert.equal((await fs.stat(CACHE_DIR(f))).mode & 0o777, 0o700);
+    assert.equal((await fs.stat(CACHE_FILE(f))).mode & 0o777, 0o600);
+    assert.throws(() => createOpenCodeModelCache({ root: f.root, robotId: '../robots/other' }), TypeError);
+});
+
+for (const segment of ['server-state', 'model-catalog', 'robot-a1b2c3']) {
+    test(`a link at ${segment} cannot redirect the cache write, read or removal`, async (t) => {
+        const f = await fixture(t);
+        const victim = path.join(f.root, 'data', 'robots', 'other-d4e5f6', 'home', '.config', 'opencode');
+        await write(path.join(victim, 'opencode.json'), '{"victim":true}');
+        const before = await fs.readdir(victim);
+        const parts = ['server-state', 'model-catalog', 'robot-a1b2c3'];
+        const at = path.join(f.root, 'data', ...parts.slice(0, parts.indexOf(segment) + 1));
+        await fs.mkdir(path.dirname(at), { recursive: true });
+        await fs.symlink(victim, at);
+        const probe = { key: 'k'.repeat(64), fresh: true, gateway: null };
+        await assert.rejects(f.cache.store(probe, LISTING), /Unsafe OpenCode model cache directory/);
+        assert.deepEqual(await fs.readdir(victim), before);
+        assert.equal(await fs.readFile(path.join(victim, 'opencode.json'), 'utf8'), '{"victim":true}');
+        // A probe neither reads through the link nor removes anything in it.
+        await age(MODELS_FILE(f), WINDOW + 1000);
+        await assert.rejects(f.cache.probe(f.config()), /Unsafe OpenCode model cache directory/);
+        assert.deepEqual(await fs.readdir(victim), before);
+        assert.equal((await fs.lstat(at)).isSymbolicLink(), true);
+    });
+}
+
+test('a directory the server does not own is refused', async (t) => {
+    const f = await fixture(t);
+    const foreign = createOpenCodeModelCache({ root: path.join(f.root, 'data'), robotId: 'robot-a1b2c3', uid: (process.getuid?.() ?? 0) + 1,
+        connect: async () => null });
+    await assert.rejects(foreign.store({ key: 'k'.repeat(64), fresh: true, gateway: null }, LISTING), /Unsafe OpenCode model cache directory/);
+});
+
+test('a planted link at the record itself is replaced, never written through', async (t) => {
+    const f = await fixture(t);
+    const target = path.join(f.root, 'victim.json');
+    await fs.writeFile(target, 'untouched');
+    await fs.mkdir(CACHE_DIR(f), { recursive: true });
+    await fs.symlink(target, CACHE_FILE(f));
+    const probe = await f.cache.probe(f.config());
+    assert.equal(probe.models, null);
+    assert.equal(await f.cache.store(probe, LISTING), true);
+    assert.equal(await fs.readFile(target, 'utf8'), 'untouched');
+    assert.equal((await fs.lstat(CACHE_FILE(f))).isSymbolicLink(), false);
+});
+
+// B2: remote and account-scoped state is not in the key, so its presence bypasses the cache.
+const AUTH = f => path.join(f.home, '.local', 'share', 'opencode', 'auth.json');
+for (const [name, body] of Object.entries({
+    wellknown: { 'https://config.invalid': { type: 'wellknown', key: 'K', token: 'T' } },
+    oauth: { openai: { type: 'oauth', refresh: 'r', access: 'a', expires: 1 } },
+    'a mix with one api entry': { a: { type: 'api', key: 'k' }, 'https://x.invalid': { type: 'wellknown', key: 'K', token: 'T' } },
+    'an unknown type': { a: { type: 'sso' } },
+    'a non-object entry': { a: 'k' },
+})) {
+    test(`auth.json with ${name} bypasses the cache`, async (t) => {
+        const f = await fixture(t);
+        await write(AUTH(f), JSON.stringify(body));
+        assert.equal(await f.cache.probe(f.config()), null);
+    });
+}
+
+test('auth.json that is invalid, an array or oversized bypasses; plain API keys and no auth.json do not', async (t) => {
+    const f = await fixture(t);
+    for (const text of ['{', '[]', 'null', '"x"']) {
+        await write(AUTH(f), text);
+        assert.equal(await f.cache.probe(f.config()), null, text);
+    }
+    await write(AUTH(f), JSON.stringify({ openai: { type: 'api', key: 'k' } }));
+    assert.ok(await f.cache.probe(f.config()));
+    await fs.rm(AUTH(f));
+    assert.ok(await f.cache.probe(f.config()));
+});
+
+test('the persisted record never contains auth values or types', async (t) => {
+    const f = await fixture(t);
+    await write(AUTH(f), JSON.stringify({ openai: { type: 'api', key: 'SECRET-KEY-VALUE' } }));
+    const probe = await f.cache.probe(f.config());
+    await f.cache.store(probe, LISTING);
+    const text = await fs.readFile(CACHE_FILE(f), 'utf8');
+    assert.ok(!text.includes('SECRET-KEY-VALUE') && !text.includes('"api"') && !text.includes('openai'));
+});
+
+test('a Console token in the environment bypasses the cache', async (t) => {
+    const f = await fixture(t);
+    assert.equal(await f.cache.probe(f.config({ env: { HOME: f.home, OPENCODE_CONSOLE_TOKEN: 'x' } })), null);
+});
+
+let sqlite;
+try { sqlite = await import('node:sqlite'); } catch { sqlite = null; }
+const DB = f => path.join(f.home, '.local', 'share', 'opencode', 'opencode.db');
+function createDatabase(file, statements) {
+    const database = new sqlite.DatabaseSync(file);
+    for (const statement of statements) database.exec(statement);
+    database.close();
+}
+const ACCOUNT_TABLES = ['CREATE TABLE account_state (id integer PRIMARY KEY, active_account_id text, active_org_id text)',
+    'CREATE TABLE control_account (email text, url text, active integer NOT NULL)'];
+
+test('an active OpenCode Console account or organisation bypasses the cache', { skip: !sqlite && 'node:sqlite is unavailable' }, async (t) => {
+    const f = await fixture(t);
+    await fs.mkdir(path.dirname(DB(f)), { recursive: true });
+    createDatabase(DB(f), [...ACCOUNT_TABLES, 'INSERT INTO account_state VALUES (1, NULL, NULL)']);
+    assert.ok(await f.cache.probe(f.config()), 'an account table with no active account is fine');
+    for (const statement of ["UPDATE account_state SET active_account_id = 'acct'", "UPDATE account_state SET active_account_id = NULL, active_org_id = 'org'"]) {
+        createDatabase(DB(f), [statement]);
+        assert.equal(await f.cache.probe(f.config()), null, statement);
+        createDatabase(DB(f), ['UPDATE account_state SET active_account_id = NULL, active_org_id = NULL']);
+    }
+    createDatabase(DB(f), ["INSERT INTO control_account VALUES ('a@b', 'https://x', 1)"]);
+    assert.equal(await f.cache.probe(f.config()), null, 'an active control account');
+});
+
+test('a database that exists but cannot be inspected bypasses the cache', { skip: !sqlite && 'node:sqlite is unavailable' }, async (t) => {
+    const f = await fixture(t);
+    await write(DB(f), 'this is not an sqlite database');
+    assert.equal(await f.cache.probe(f.config()), null);
+});
+
+// B2: an older record can never come back after a stale-file miss.
+test('a stale-file miss removes the stored record, so unchanged refreshed content cannot resurrect it', async (t) => {
+    const f = await fixture(t);
+    const first = await f.cache.probe(f.config());
+    await f.cache.store(first, LISTING);
+    assert.ok((await fs.stat(CACHE_FILE(f))).isFile());
+    await age(MODELS_FILE(f), WINDOW + 1000);
+    const stale = await f.cache.probe(f.config());
+    assert.equal(stale.models, null);
+    await assert.rejects(fs.access(CACHE_FILE(f)), 'the record is gone before OpenCode lists');
+    // OpenCode refreshes its file and rewrites identical content: the key is the old one again.
+    await fs.utimes(MODELS_FILE(f), new Date(), new Date());
+    const after = await f.cache.probe(f.config());
+    assert.equal(after.key, first.key);
+    assert.equal(after.models, null, 'the pre-staleness list does not return');
+    // A listing taken now is the one remembered.
+    const newer = [...LISTING, { id: 'opencode/newer', label: 'Newer', efforts: [] }];
+    assert.equal(await f.cache.store(after, newer), true);
+    assert.deepEqual((await f.cache.probe(f.config())).models, newer);
+});
+
+test('a missing models.json also removes the stored record', async (t) => {
+    const f = await fixture(t);
+    await f.cache.store(await f.cache.probe(f.config()), LISTING);
+    await fs.rm(MODELS_FILE(f));
+    await f.cache.probe(f.config());
+    await assert.rejects(fs.access(CACHE_FILE(f)));
 });

@@ -343,3 +343,79 @@ test('the catalog process seeds the robot home from a ready template and never r
     assert.equal(await installedVersion(config), '1.18.36', 'a version change reseeds the home');
     assert.deepEqual(calls, []);
 });
+
+async function readyRuntime(t, robots) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-async-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const cache = new ToolCache({ root: path.join(root, 'cache'), execFileImpl: fakeNpm(calls), log: () => {}, versionPins: {} });
+    const shell = { agents: { opencode: { versions: { opencode: '1.18.35' } } } };
+    cache.peekShellTools = async () => shell;
+    cache.prepareCodingAgents = async () => shell.agents;
+    await cache.prepareOpenCodePlugin('1.18.35');
+    for (const robot of robots) await fs.mkdir(path.join(root, 'robots', robot.id, 'home'), { recursive: true });
+    const manager = new RuntimeManager({ dataDir: root, toolCache: cache, workspaceRoot: root,
+        soulGateway: { prepare: async () => {}, remove: async () => {}, close: async () => {} } });
+    const configOf = id => path.join(root, 'robots', id, 'home', '.config', 'opencode');
+    return { root, manager, configOf, calls };
+}
+
+test('startup preparation skips the seed; the seed runs after the service is listening', async (t) => {
+    const robot = { id: 'early-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    await fs.access(path.join(configOf(robot.id), 'plugins', 'soul-gateway.js'));
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), true, 'nothing was copied before listen');
+    await manager.warmOpenCodePlugins([robot]);
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), false);
+});
+
+test('robot creation schedules the copy instead of blocking on it, and a task that starts sooner shares it', async (t) => {
+    const robot = { id: 'fresh-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    const returned = manager.seedOpenCodeInBackground(robot);
+    assert.equal(returned, undefined, 'nothing to wait for');
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), true, 'the response would not have waited for the copy');
+    // A first task on the same robot: waits on the same chain; exactly one of the two copies.
+    const task = await manager.seedOpenCode(robot.id, { prepare: true });
+    assert.equal(task.status, 'current');
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), false);
+    const both = await Promise.all([manager.seedOpenCode(robot.id, { prepare: true }), manager.seedOpenCode(robot.id, { prepare: true })]);
+    assert.deepEqual(both.map(result => result.status), ['current', 'current']);
+});
+
+test('concurrent seeds of one robot copy once', async (t) => {
+    const robot = { id: 'once-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    const results = await Promise.all([manager.seedOpenCode(robot.id), manager.seedOpenCode(robot.id), manager.seedOpenCode(robot.id)]);
+    assert.deepEqual(results.map(result => result.status).sort(), ['current', 'current', 'seeded']);
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), false);
+});
+
+test('robots whose coding agents exclude OpenCode are not seeded (OpenCode installs for itself there)', async (t) => {
+    const robot = { id: 'other-a1b2c3', codingAgents: ['codex'] };
+    const { manager, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    manager.seedOpenCodeInBackground(robot);
+    await manager.warmOpenCodePlugins([robot]);
+    await assert.rejects(fs.access(path.join(configOf(robot.id), 'node_modules')));
+});
+
+test('deleting a robot removes its server-side model-list cache', async (t) => {
+    const robot = { id: 'gone-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, root } = await readyRuntime(t, [robot]);
+    const cache = path.join(root, 'server-state', 'model-catalog', robot.id);
+    const kept = path.join(root, 'server-state', 'model-catalog', 'kept-a1b2c3');
+    await write(path.join(cache, 'model-listing.json'), '{}');
+    await write(path.join(kept, 'model-listing.json'), '{}');
+    await manager.deleteRobot(robot.id, async () => {});
+    await assert.rejects(fs.access(cache));
+    await fs.access(path.join(kept, 'model-listing.json'));
+});
+
+async function write(file, content) {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, content);
+}
