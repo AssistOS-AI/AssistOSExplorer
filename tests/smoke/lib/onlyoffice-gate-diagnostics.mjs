@@ -104,7 +104,8 @@ export function createOnlyOfficeGateDiagnostics(context, { now = () => performan
       acknowledgedRecoveredCsrf: recovered.acknowledged,
       rejectedForbiddenMutations: recovered.rejected,
       unacknowledgedConsoleErrors: recovered.unacknowledgedConsoleErrors,
-      mutationProofTraffic: mutationTraffic.traffic,
+      // The in-memory proof digests only correlate requests; they are never saved.
+      mutationProofTraffic: mutationTraffic.traffic.map(({ proofRef, ...entry }) => entry),
       pageErrors: events.filter((event) => event.kind === 'pageerror'),
       events,
     }));

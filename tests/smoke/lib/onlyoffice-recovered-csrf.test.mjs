@@ -380,6 +380,8 @@ test('the live OnlyOffice diagnostics shapes pass the zero-error assertion with 
   const serialized = JSON.stringify(evidence);
   assert.equal(serialized.includes('synthetic-proof'), false, 'no proof value may reach the evidence');
   assert.equal(serialized.includes('dpu_confidential_list'), false, 'no request body may reach the evidence');
+  assert.equal(serialized.includes('proofRef'), false, 'not even a proof digest is saved');
+  assert(evidence.mutationProofTraffic.length >= 5);
 });
 
 test('the same live diagnostics shapes still fail with one extra console error', async () => {

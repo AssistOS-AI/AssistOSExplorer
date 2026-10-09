@@ -902,8 +902,8 @@ Everything else still fails the gate: repeated 403s, any other 403 body, an
 unchanged generation, a missing or failed refresh, a missing or non-2xx retry,
 an unobserved rejected proof, a console error on another URL or with other
 text, and every page error. Proof values, request bodies and response bodies are
-never stored; only statuses, generation identifiers, short digests, JSON-RPC
-method and id, and timings.
+never stored, and neither is any digest of a proof; only statuses, generation
+identifiers, a short request-body hash, JSON-RPC method and id, and timings.
 
 `onlyoffice-browser-diagnostics.json` keeps the raw `consoleErrors` and adds
 `acknowledgedRecoveredCsrf` (phase, URL, rejected and refreshed generation,
