@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -31,6 +31,26 @@ export function resolvePloinkyRoot() {
     if (!root) {
         throw new Error('Managed Router origin tests require PLOINKY_ROOT pointing to a Ploinky checkout with runtime Router origins.');
     }
+    return root;
+}
+
+/**
+ * An Agent runtime tree without the Router-origin capability, as shipped
+ * before Ploinky eb00e0b1 added it. Its `edgeTopology.mjs` is the verbatim
+ * 704cff55~1 reader (tests/fixtures/legacy-agent-runtime), which accepts a
+ * topology without `routerOrigins`, and the tree has no
+ * `runtimeRouterOrigins.mjs` helper, exactly like a pre-eb00e0b1 runtime. This
+ * is deliberately not the full 704cff55~1 tree: that generation already ships
+ * the helper, so a present but unusable advisory list there is invalid rather
+ * than legacy. The rest of the tree (the origin-list parser and the
+ * request-signing libraries the agent still needs) comes from the live Ploinky
+ * checkout.
+ */
+export function createLegacyAgentRuntime(directory, ploinkyRoot = resolvePloinkyRoot()) {
+    const root = mkdtempSync(join(directory, 'legacy-agent-runtime-'));
+    cpSync(join(ploinkyRoot, 'Agent/lib'), join(root, 'lib'), { recursive: true });
+    rmSync(join(root, 'lib/runtimeRouterOrigins.mjs'), { force: true });
+    copyFileSync(fileURLToPath(new URL('../fixtures/legacy-agent-runtime/lib/edgeTopology.mjs', import.meta.url)), join(root, 'lib/edgeTopology.mjs'));
     return root;
 }
 

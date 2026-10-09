@@ -1,11 +1,12 @@
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
     applyAgentEnvironment,
+    createLegacyAgentRuntime,
     isolatePloinkyWorkspace,
     resolvePloinkyRoot,
     useManagedRuntime,
@@ -163,12 +164,9 @@ test('opting out or running standalone never reads or imports managed runtime me
 });
 
 test('an older runtime without the capability keeps manual-only behavior without inferring support', async (t) => {
-    // An older runtime tree has the generic topology reader but no Router-origin helper.
-    const oldRuntime = join(workspace, 'old-agent-runtime');
-    mkdirSync(join(oldRuntime, 'lib'), { recursive: true });
-    for (const file of ['edgeTopology.mjs', 'routerOrigins.mjs']) {
-        copyFileSync(join(ploinkyRoot, 'Agent/lib', file), join(oldRuntime, 'lib', file));
-    }
+    // An older runtime tree has the earlier generic topology reader, which accepts a topology without
+    // routerOrigins, and no Router-origin helper.
+    const oldRuntime = createLegacyAgentRuntime(workspace, ploinkyRoot);
     const legacy = await useManagedRuntime(t, { workspace, omitRouterOrigins: true, agentRuntimeRoot: oldRuntime });
     await rejectsWithCode(policy.assertRedirectUriAllowed(`${PGX}/auth/callback`), 'redirect_origin_not_allowed', 403);
     assert.equal((await managed.describeManagedRouterOrigins()).status, 'unsupported');
@@ -178,6 +176,16 @@ test('an older runtime without the capability keeps manual-only behavior without
     writeTopology(legacy.topologyFile, { routerOrigins: [PGX] });
     await rejectsWithCode(policy.assertRedirectUriAllowed(`${PGX}/auth/callback`), 'auth_origin_topology_invalid', 503);
     assert.equal(legacy.listener.state.requests.length, 0);
+});
+
+test('the current runtime treats a topology without routerOrigins as invalid and never as an older runtime', async (t) => {
+    const current = await useManagedRuntime(t, { workspace, omitRouterOrigins: true });
+    await rejectsWithCode(policy.assertRedirectUriAllowed(`${PGX}/auth/callback`), 'auth_origin_topology_invalid', 503);
+    await rejectsWithCode(policy.assertBrowserOriginAllowed(PGX), 'auth_origin_topology_invalid', 503);
+    assert.equal((await managed.describeManagedRouterOrigins()).status, 'invalid');
+    assert.equal(current.listener.state.requests.length, 0);
+    // Loopback stays a manual match and needs no topology read.
+    assert.equal(await policy.assertRedirectUriAllowed('http://127.0.0.1:8080/auth/callback'), 'http://127.0.0.1:8080/auth/callback');
 });
 
 test('missing, malformed, unreachable, or rejected metadata never expands trust', async (t) => {

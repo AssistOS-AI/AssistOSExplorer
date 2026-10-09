@@ -2089,9 +2089,35 @@ test("WebMeet guest links use Explorer roomId entry without the public proxy", a
         'utf8'
     );
 
-    assert.match(explorerSource, /new URLSearchParams\(window\.location\.search \|\| ''\)\.get\('roomId'\)/);
-    assert.match(explorerSource, /pageName = 'webmeet-dashboard'/);
-    assert.match(explorerSource, /url = 'webmeet-dashboard'/);
+    // main.js derives the room entry from the roomId search parameter, accepts only a well-formed room id,
+    // and hands the entry to the boot route resolver (which owns the webmeet-dashboard decision).
+    assert.match(explorerSource, /new URLSearchParams\(window\.location\.search \|\| ''\)/);
+    assert.match(explorerSource, /params\.get\('roomId'\)/);
+    assert.match(explorerSource, /const ROOM_ID_PATTERN = \/\^room_\[0-9a-fA-F-\]\{36\}\$\//);
+    assert.match(explorerSource, /ROOM_ID_PATTERN\.test\(roomId\)/);
+    assert.match(explorerSource, /const roomEntry = getRoomEntryFromUrl\(\);/);
+    assert.match(explorerSource, /resolveBootRoute\(\{[^}]*roomEntry,/);
+    assert.match(explorerSource, /from '\.\/services\/runtime\/initial-application-route\.js'/);
+
+    // The resolver is exercised behaviorally: a room entry boots the WebMeet dashboard, no entry does not.
+    const { pathToFileURL } = await import('node:url');
+    const { resolveBootRoute } = await import(
+        pathToFileURL(path.resolve(
+            import.meta.dirname,
+            '../../../explorer/services/runtime/initial-application-route.js'
+        )).href
+    );
+    const roomRoute = resolveBootRoute({
+        roomEntry: { roomId: 'room_123e4567-e89b-12d3-a456-426614174000' }
+    });
+    assert.equal(roomRoute.pageName, 'webmeet-dashboard');
+    assert.equal(roomRoute.url, 'webmeet-dashboard');
+    assert.equal(roomRoute.preserveHash, false);
+
+    const noRoomRoute = resolveBootRoute({ roomEntry: null });
+    assert.notEqual(noRoomRoute.pageName, 'webmeet-dashboard');
+    assert.equal(noRoomRoute.pageName, 'file-exp');
+
     assert.doesNotMatch(explorerSource, /history\.replaceState\(window\.history\.state, '', `\/explorer\/index\.html/);
     assert.doesNotMatch(explorerSource, new RegExp(`guest${'Token'}`));
     assert.doesNotMatch(explorerSource, new RegExp(`guest${'-plugins'}`));
