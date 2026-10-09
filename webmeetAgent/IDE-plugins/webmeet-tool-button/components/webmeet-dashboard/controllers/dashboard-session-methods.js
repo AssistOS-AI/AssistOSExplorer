@@ -53,6 +53,7 @@ export const dashboardSessionMethods = {
                 return;
             }
             await this.loadMeetings();
+            if (this.webMeetRoom?.disposed) return;
             this.startWorkspaceEvents();
             if (initialRoomId) {
                 await this.joinRoomFromExplorerHash(initialRoomId);
@@ -65,11 +66,13 @@ export const dashboardSessionMethods = {
             }
             this.renderAll();
         } catch (error) {
+            if (this.webMeetRoom?.disposed) return;
             this.setError(error instanceof Error ? error.message : String(error));
         }
     },
 
     async joinRoomFromExplorerHash(roomId) {
+        if (this.webMeetRoom.disposed) return;
         const targetRoomId = String(roomId || '').trim();
         if (!targetRoomId) {
             return;
@@ -80,6 +83,7 @@ export const dashboardSessionMethods = {
                 roomId: targetRoomId,
                 includeParticipants: false
             }).catch(() => null);
+            if (this.webMeetRoom.disposed) return;
             const meeting = details?.meeting || details?.room || null;
             if (!meeting) {
                 this.state.selectedMeetingId = this.state.meetings[0]?.id || '';
@@ -98,11 +102,14 @@ export const dashboardSessionMethods = {
             ];
         }
         await this.loadMeetingDetails({ expectedMeetingId: targetRoomId });
+        if (this.webMeetRoom.disposed) return;
         this.renderAll();
         await this.selectAndJoinMeeting({ dataset: { id: targetRoomId } });
     },
 
-    async bootstrapGuestRoomEntry(roomEntry = {}) {
+    async bootstrapGuestRoomEntry(roomEntry = {}, transition = null) {
+        if (!transition) return this.webMeetRoom.runTransition((context) => this.bootstrapGuestRoomEntry(roomEntry, context));
+        if (!transition.isCurrent()) return;
         const roomId = String(roomEntry.roomId || '').trim();
         const displayName = String(roomEntry.displayName || '').trim();
         if (!roomId) {
@@ -127,11 +134,19 @@ export const dashboardSessionMethods = {
             displayName,
             participantId
         });
+        if (!transition.isCurrent()) {
+            await runWebMeetTool('webmeet_room_leave', { roomId, participantId: session?.participantIdentity || participantId }).catch(() => {});
+            return;
+        }
         const detailsToolName = globalThis.__WEBMEET_GUEST_ENTRY__ ? 'webmeet_room_public_get' : 'webmeet_room_get';
         const details = await runWebMeetTool(detailsToolName, {
             roomId,
             includeParticipants: true
         }).catch(() => ({}));
+        if (!transition.isCurrent()) {
+            await runWebMeetTool('webmeet_room_leave', { roomId, participantId: session?.participantIdentity || participantId }).catch(() => {});
+            return;
+        }
         const meeting = session?.meeting || details?.meeting || details?.room || { id: roomId, roomId, title: roomId, name: roomId };
         const normalizedMeeting = {
             ...meeting,
@@ -153,30 +168,37 @@ export const dashboardSessionMethods = {
         };
         this.renderAll();
 
-        this.state.session = {
+        this.webMeetRoom.installSession({
             ...session,
             meeting: session?.meeting || normalizedMeeting,
             guest: Boolean(session?.participant?.guest)
-        };
+        }, transition);
         syncBrowserRoomUrl(roomId, { replace: true });
         writeWebMeetResume({ open: true, roomId });
         await this.loadParticipantsForMeetings();
+        if (!transition.isCurrent()) return;
         await this.loadMeetingDetails({ expectedMeetingId: normalizedMeeting.id });
+        if (!transition.isCurrent()) return;
         this.setConnectingRoomTransition(normalizedMeeting.title || 'room', { render: false });
         this.renderAll();
         try {
             this.state.skipConnectedAvatarRepublishOnce = true;
-            await this.connectRoom();
-            await this.restorePersistedMediaState?.();
+            await this.connectRoom(transition);
+            if (!transition.isCurrent()) return;
+            await this.restorePersistedMediaState?.(transition);
+            if (!transition.isCurrent()) return;
             try {
                 await this.publishCurrentParticipantAvatar({ force: true });
             } catch (error) {
+                if (!transition.isCurrent()) return;
                 const message = error instanceof Error ? error.message : String(error || 'Avatar publish failed.');
                 this.setError(`WebMeet could not publish the avatar: ${message}`);
             }
         } finally {
-            this.clearRoomTransitionMessage({ render: false });
-            this.renderMeetingSummary();
+            if (transition.isCurrent()) {
+                this.clearRoomTransitionMessage({ render: false });
+                this.renderMeetingSummary();
+            }
         }
     },
 
@@ -227,7 +249,8 @@ export const dashboardSessionMethods = {
         this.renderAll();
     },
 
-    async showGuestRoomEntry(roomId, meeting = null) {
+    async showGuestRoomEntry(roomId, meeting = null, transition = null) {
+        if (this.webMeetRoom.disposed) return;
         const targetRoomId = String(roomId || '').trim();
         const title = String(meeting?.title || meeting?.name || 'Public room').trim() || 'Public room';
         this.state.meetings = [{
@@ -252,13 +275,15 @@ export const dashboardSessionMethods = {
             displayName: this.state.guestEntry.displayName,
             status: this.state.guestEntry.status
         }, true);
+        if (this.webMeetRoom.disposed || (transition && !transition.isCurrent())) return;
         const displayName = String(result?.displayName || '').trim();
         if (!displayName) {
             return;
         }
         try {
-            await this.bootstrapGuestRoomEntry({ roomId: targetRoomId, displayName });
+            await this.bootstrapGuestRoomEntry({ roomId: targetRoomId, displayName }, transition);
         } catch (error) {
+            if (this.webMeetRoom.disposed || (transition && !transition.isCurrent())) return;
             const message = error instanceof Error ? error.message : String(error || 'Failed to join room.');
             this.state.guestEntry = {
                 active: false,
@@ -341,7 +366,9 @@ export const dashboardSessionMethods = {
         }
     },
 
-    async selectAndJoinMeeting(element) {
+    async selectAndJoinMeeting(element, transition = null) {
+        if (!transition) return this.webMeetRoom.runTransition((context) => this.selectAndJoinMeeting(element, context));
+        if (!transition.isCurrent()) return;
         const nextMeetingId = String(element?.dataset?.id || '').trim();
         if (!nextMeetingId) return;
         if (this.state.joiningMeetingId) return;
@@ -353,7 +380,7 @@ export const dashboardSessionMethods = {
             return;
         }
         if (globalThis.__WEBMEET_GUEST_ENTRY__ && String(nextMeeting?.roomType || '').trim() === 'guest') {
-            await this.showGuestRoomEntry(nextMeetingId, nextMeeting);
+            await this.showGuestRoomEntry(nextMeetingId, nextMeeting, transition);
             return;
         }
         const currentMeetingId = String(this.state.session?.meeting?.id || '').trim();
@@ -364,7 +391,7 @@ export const dashboardSessionMethods = {
             try {
                 await this.loadMeetingDetails({ expectedMeetingId: nextMeetingId });
             } finally {
-                this.renderAll();
+                if (transition.isCurrent()) this.renderAll();
             }
             return;
         }
@@ -379,7 +406,8 @@ export const dashboardSessionMethods = {
                 return;
             }
             this.setDisconnectingRoomTransition(currentMeeting?.title || 'room');
-            await this.unjoinCurrentSession({ preserveDisplayName: true, manageTransition: false });
+            await this.unjoinCurrentSession({ preserveDisplayName: true, manageTransition: false, transition });
+            if (!transition.isCurrent()) return;
         }
 
         this.state.selectedMeetingId = nextMeetingId;
@@ -388,15 +416,18 @@ export const dashboardSessionMethods = {
         this.renderMeetingList();
         try {
             await this.loadMeetingDetails({ expectedMeetingId: nextMeetingId });
+            if (!transition.isCurrent()) return;
             this.renderAll();
             if (!this.selectedMeeting) {
                 this.clearRoomTransitionMessage();
                 return;
             }
             const defaultName = String(this.state.session?.participant?.displayName || '').trim();
-            await this.joinMeeting({ displayNameOverride: defaultName });
+            await this.joinMeeting({ displayNameOverride: defaultName, transition });
+            if (!transition.isCurrent()) return;
             this.setMobilePanel('room');
         } catch (error) {
+            if (!transition.isCurrent()) return;
             const message = String(error?.message || error || '').trim();
             if (message.includes('Unsupported state or unable to authenticate data')) {
                 this.setError('Room data cannot be decrypted with the current WebMeet key. Restore the previous Ploinky master key or recreate the room.');
@@ -404,6 +435,7 @@ export const dashboardSessionMethods = {
                 this.setError(message || 'Failed to join room.');
             }
         } finally {
+            if (!transition.isCurrent()) return;
             if (this.state.joiningMeetingId === nextMeetingId) {
                 this.state.joiningMeetingId = '';
                 this.renderMeetingList();

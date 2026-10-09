@@ -12,6 +12,7 @@ function randomEventId() {
 }
 
 export const WEBMEET_EVENT_TYPES = Object.freeze({
+    WORKSPACE_ROOMS_INVALIDATED: 'workspace.rooms.invalidated',
     MEETING_CREATED: 'meeting.created',
     MEETING_RENAMED: 'meeting.renamed',
     MEETING_ARCHIVED: 'meeting.archived',
@@ -39,6 +40,11 @@ export const WEBMEET_EVENT_TYPES = Object.freeze({
 });
 
 const EVENT_DEFINITIONS = Object.freeze({
+    [WEBMEET_EVENT_TYPES.WORKSPACE_ROOMS_INVALIDATED]: {
+        persistent: false,
+        workspacePersistent: false,
+        required: ['workspaceId']
+    },
     [WEBMEET_EVENT_TYPES.MEETING_CREATED]: {
         persistent: true,
         workspacePersistent: true,

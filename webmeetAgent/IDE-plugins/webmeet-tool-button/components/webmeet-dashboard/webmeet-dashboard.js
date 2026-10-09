@@ -289,11 +289,12 @@ export class WebmeetDashboard {
             initialState: {},
             getSession: () => this.state.session,
             setSession: (session) => {
+                if (this.webMeetRoom?.disposed) return;
                 this.state.session = session;
             },
             isGuestSession: () => this.isGuestSession(),
             getSelectedWorkspaceId: () => WEBMEET_ROOMS_CATEGORY_ID,
-            connectLiveKit: () => this.connectRoom(),
+            connectLiveKit: (transition) => this.connectRoom(transition),
             disconnectLiveKit: (options) => this.disconnectRoom(options),
             runTool: runWebMeetTool,
             getRoom: () => this.room,
@@ -756,6 +757,10 @@ export class WebmeetDashboard {
     }
 
     afterUnload() {
+        this.webMeetRoom.dispose();
+        this.clearRoomConnectionTimers();
+        this.meetingListLoadSeq = (this.meetingListLoadSeq || 0) + 1;
+        this.meetingDetailsLoadSeq = (this.meetingDetailsLoadSeq || 0) + 1;
         if (globalThis.__onExpandedModalClose) {
             try { delete globalThis.__onExpandedModalClose; } catch (_) { globalThis.__onExpandedModalClose = null; }
         }
@@ -793,10 +798,10 @@ export class WebmeetDashboard {
         window.removeEventListener('focus', this.handleAudioRecoveryResume);
         this.presenceController.teardown();
         if (this.state.session?.participantIdentity) {
-            void this.unjoinCurrentSession({ preserveDisplayName: false });
+            void this.unjoinCurrentSession({ preserveDisplayName: false, unload: true }).catch(() => {});
             return;
         }
-        void this.disconnectRoom();
+        void this.unjoinCurrentSession({ preserveDisplayName: false, unload: true }).catch(() => {});
     }
 
     get selectedMeeting() {

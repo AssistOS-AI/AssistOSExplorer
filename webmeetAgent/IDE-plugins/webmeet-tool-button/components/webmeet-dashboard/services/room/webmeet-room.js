@@ -55,8 +55,8 @@ function resolveLiveKitAdapter(options = {}) {
         return options.livekit;
     }
     return {
-        async connect() {
-            return options.connectLiveKit();
+        async connect(transition) {
+            return options.connectLiveKit(transition);
         },
         async disconnect(params) {
             return options.disconnectLiveKit(params);
@@ -99,6 +99,14 @@ export class WebMeetRoom extends EventTarget {
         this.presenceHeartbeatInFlight = false;
         this.lastWorkspaceEventId = '';
         this.workspacePollInitialized = false;
+        this.workspacePollGeneration = 0;
+        this.workspacePollId = '';
+        this.workspaceInvalidationVersion = 0;
+        this.workspaceReconciledVersion = 0;
+        this.disposed = false;
+        this.sessionGeneration = 0;
+        this.transitionTail = Promise.resolve();
+        this.cleanupTask = null;
         this.avatarProjectionSequence = Date.now() * 1000;
         this.pendingAvatarRuntimeState = null;
         this.hasPendingAvatarRuntimeState = false;
@@ -107,7 +115,80 @@ export class WebMeetRoom extends EventTarget {
     }
 
     dispatchRoomEvent(type, detail = {}) {
+        if (this.disposed) return;
         this.dispatchEvent(new CustomEvent(type, { detail }));
+    }
+
+    captureSession() {
+        const session = this.getSession();
+        return {
+            meetingId: String(session?.meeting?.id || ''),
+            participantId: String(session?.participantIdentity || ''),
+            api: this.getApi(),
+            room: this.getRoom(),
+            generation: this.sessionGeneration,
+            guest: this.isGuestSession(),
+            displayName: String(session?.participant?.displayName || ''),
+        };
+    }
+
+    isSessionCurrent(capture) {
+        const session = this.getSession();
+        return !this.disposed && capture?.generation === this.sessionGeneration
+            && capture.meetingId === String(session?.meeting?.id || '')
+            && capture.participantId === String(session?.participantIdentity || '');
+    }
+
+    runTransition(operation, transition = null, { cleanup = false, allowDisposed = false } = {}) {
+        if (transition?.owner === this) {
+            const task = Promise.resolve().then(() => operation(transition));
+            if (cleanup && !this.cleanupTask) this.trackCleanup(task);
+            return task;
+        }
+        if (cleanup && this.cleanupTask) return this.cleanupTask;
+        const task = this.transitionTail.then(async () => {
+            if (this.disposed && !allowDisposed && !cleanup) return;
+            const captured = this.captureSession();
+            const context = {
+                owner: this,
+                captured,
+                current: captured,
+                isCurrent: () => this.isSessionCurrent(context.current),
+            };
+            return operation(context);
+        });
+        this.transitionTail = task.catch(() => {});
+        if (cleanup) this.trackCleanup(task);
+        return task;
+    }
+
+    trackCleanup(task) {
+        this.cleanupTask = task;
+        void task.finally(() => {
+            if (this.cleanupTask === task) this.cleanupTask = null;
+        }).catch(() => {});
+    }
+
+    installSession(session, transition = null, { replacement = true } = {}) {
+        if (this.disposed || (transition && !transition.isCurrent())) return false;
+        if (replacement) this.sessionGeneration += 1;
+        this.setSession(session);
+        this.syncStateFromCurrentSession();
+        if (transition) transition.current = this.captureSession();
+        return true;
+    }
+
+    dispose() {
+        this.disposed = true;
+        this.stopWorkspaceEvents();
+        this.stopPresenceHeartbeat();
+        this.workspaceReconciledVersion = this.workspaceInvalidationVersion;
+    }
+
+    requestWorkspaceRevalidation() {
+        if (this.disposed) return;
+        this.workspaceInvalidationVersion += 1;
+        this.dispatchRoomEvent(ROOM_EVENT_TYPES.WORKSPACE_INVALIDATED, { source: 'authenticated-workspace' });
     }
 
     syncStateFromCurrentSession() {
@@ -156,6 +237,9 @@ export class WebMeetRoom extends EventTarget {
     }
 
     assertIncomingEventAllowed(source, parsed, meta = {}) {
+        if (parsed.type === WEBMEET_EVENT_TYPES.WORKSPACE_ROOMS_INVALIDATED && source !== 'authenticated-workspace') {
+            throw new Error('Rejected workspace invalidation from an untrusted source.');
+        }
         if (String(source || '').trim() !== 'livekit') {
             return true;
         }
@@ -214,11 +298,19 @@ export class WebMeetRoom extends EventTarget {
 
     startWorkspaceEvents() {
         this.stopWorkspaceEvents();
+        if (this.disposed) return;
         const workspaceId = String(this.getSelectedWorkspaceId() || '').trim();
+        const generation = this.workspacePollGeneration;
+        if (this.workspacePollId !== workspaceId) {
+            this.lastWorkspaceEventId = '';
+            this.workspacePollId = workspaceId;
+        }
         this.workspacePollInitialized = false;
+        const current = () => !this.disposed && generation === this.workspacePollGeneration
+            && !this.isGuestSession() && workspaceId === String(this.getSelectedWorkspaceId() || '').trim();
         const poll = async () => {
             try {
-                if (this.isGuestSession()) {
+                if (!current()) {
                     return;
                 }
                 const selectedWorkspaceId = String(this.getSelectedWorkspaceId() || '').trim();
@@ -229,21 +321,29 @@ export class WebMeetRoom extends EventTarget {
                     roomId: workspaceId,
                     afterId: this.lastWorkspaceEventId
                 });
-                const events = Array.isArray(payload?.events) ? payload.events : [];
-                if (!this.workspacePollInitialized) {
+                if (!current()) return;
+                if (!Array.isArray(payload?.events)) throw new Error('Invalid workspace events response.');
+                const events = payload.events;
+                // Parse the complete response before applying any lifecycle hints.
+                const decoded = events.map((event) => this.eventCodec.parse(event));
+                if (!this.workspacePollInitialized || payload.cursorReset === true) {
                     this.workspacePollInitialized = true;
-                    if (events.length) {
-                        const parsed = this.eventCodec.parse(events[events.length - 1]);
-                        this.lastWorkspaceEventId = parsed.id || this.lastWorkspaceEventId;
-                    }
+                    this.requestWorkspaceRevalidation();
                 } else {
                     for (const encodedEvent of events) {
                         const parsed = this.handleIncomingEvent('authenticated-workspace', encodedEvent);
-                        this.lastWorkspaceEventId = parsed?.id || this.lastWorkspaceEventId;
+                        if (parsed.type === WEBMEET_EVENT_TYPES.WORKSPACE_ROOMS_INVALIDATED) this.workspaceInvalidationVersion += 1;
                     }
                 }
+                this.lastWorkspaceEventId = typeof payload.nextCursor === 'string'
+                    ? payload.nextCursor : (decoded.at(-1)?.id || this.lastWorkspaceEventId);
+            } catch (_) {
+                // Transport/codec failures retain pending reconciliation and cursor.
             } finally {
-                if (!this.isGuestSession()) {
+                if (current()) {
+                    if (this.workspaceInvalidationVersion > this.workspaceReconciledVersion) {
+                        this.dispatchRoomEvent(ROOM_EVENT_TYPES.WORKSPACE_INVALIDATED, { source: 'authenticated-workspace' });
+                    }
                     this.workspaceEventsPollTimer = window.setTimeout(poll, 5000);
                 }
             }
@@ -252,6 +352,7 @@ export class WebMeetRoom extends EventTarget {
     }
 
     stopWorkspaceEvents() {
+        this.workspacePollGeneration += 1;
         if (!this.workspaceEventsPollTimer) {
             return;
         }
@@ -259,9 +360,17 @@ export class WebMeetRoom extends EventTarget {
         this.workspaceEventsPollTimer = null;
     }
 
-    async join(payload = {}) {
-        const session = await this.getApi().joinMeeting(payload);
-        this.setSession(session);
+    async join(payload = {}, transition = null) {
+        if (!transition) return this.runTransition((context) => this.join(payload, context));
+        if (!transition.isCurrent()) return;
+        const api = this.getApi();
+        const session = await api.joinMeeting(payload);
+        if (!this.installSession(session, transition)) {
+            if (session?.meeting?.id && session?.participantIdentity) {
+                await api.leaveMeeting({ meetingId: session.meeting.id, participantId: session.participantIdentity }).catch(() => {});
+            }
+            return;
+        }
         this.stateModel.hydrateFromSession(session, this.isGuestSession());
         const snapshot = this.stateModel.getSnapshot();
         this.dispatchRoomEvent(ROOM_EVENT_TYPES.JOINED, {
@@ -275,13 +384,18 @@ export class WebMeetRoom extends EventTarget {
         return session;
     }
 
-    async connectLiveKit() {
-        await this.livekit.connect();
+    async connectLiveKit(transition = null) {
+        if (!transition) return this.runTransition((context) => this.connectLiveKit(context));
+        if (!transition.isCurrent()) return;
+        await this.livekit.connect(transition);
+        if (!transition.isCurrent()) return;
         this.stateModel.setLiveKitState('connected');
         this.startPresenceHeartbeat();
     }
 
-    async refreshJoinMaterial() {
+    async refreshJoinMaterial(transition = null) {
+        if (!transition) return this.runTransition((context) => this.refreshJoinMaterial(context));
+        if (!transition.isCurrent()) return;
         const state = this.getState();
         const currentSession = state.session || this.getSession();
         const meetingId = requireString(
@@ -304,14 +418,16 @@ export class WebMeetRoom extends EventTarget {
             displayName
         });
         const nextSession = { ...currentSession, ...refreshed };
-        this.setSession(nextSession);
+        if (!this.installSession(nextSession, transition, { replacement: false })) return;
         this.stateModel.hydrateFromSession(nextSession, this.isGuestSession());
         return nextSession;
     }
 
     async disconnectLiveKit(options = {}) {
+        if (!options.transition) return this.runTransition((transition) => this.disconnectLiveKit({ ...options, transition }));
         this.stopPresenceHeartbeat();
         await this.livekit.disconnect(options);
+        if (!options.transition.isCurrent()) return;
         this.stateModel.setLiveKitState('disconnected');
     }
 
@@ -320,16 +436,17 @@ export class WebMeetRoom extends EventTarget {
         this.stateModel.setLiveKitState('disconnected');
     }
 
-    async leaveCurrentSession() {
-        const state = this.getState();
-        return this.getApi().leaveMeeting({
-            meetingId: requireString(state.meetingId, 'meetingId'),
-            participantId: requireString(state.participantId, 'participantId')
+    async leaveCurrentSession(captured = this.captureSession()) {
+        return captured.api.leaveMeeting({
+            meetingId: requireString(captured.meetingId, 'meetingId'),
+            participantId: requireString(captured.participantId, 'participantId')
         });
     }
 
     startPresenceHeartbeat() {
         this.stopPresenceHeartbeat();
+        if (this.disposed) return;
+        const captured = this.captureSession();
         const schedule = () => {
             this.presenceHeartbeatTimer = globalThis.setTimeout(async () => {
                 try {
@@ -338,7 +455,7 @@ export class WebMeetRoom extends EventTarget {
                     // The command path reconciles against LiveKit as a fallback;
                     // a transient heartbeat failure must not stop future beats.
                 } finally {
-                    if (this.stateModel.getSnapshot().livekitState === 'connected') schedule();
+                    if (this.isSessionCurrent(captured) && this.stateModel.getSnapshot().livekitState === 'connected') schedule();
                 }
             }, PRESENCE_HEARTBEAT_INTERVAL_MS);
         };
@@ -363,10 +480,13 @@ export class WebMeetRoom extends EventTarget {
     }
 
     async leave(options = {}) {
+        if (!options.transition) return this.runTransition((transition) => this.leave({ ...options, transition }), null, { cleanup: true });
+        const { transition } = options;
         await this.disconnectLiveKit(options);
-        await this.leaveCurrentSession();
+        await this.leaveCurrentSession(transition.captured);
+        if (!transition.isCurrent()) return;
         const previous = this.getState();
-        this.setSession(null);
+        this.installSession(null, transition, { replacement: false });
         this.stateModel.clear();
         this.dispatchRoomEvent(ROOM_EVENT_TYPES.LEFT, {
             source: 'room-lifecycle',
@@ -400,8 +520,7 @@ export class WebMeetRoom extends EventTarget {
     }
 
     async destroy() {
-        this.stopPresenceHeartbeat();
-        this.stopWorkspaceEvents();
+        this.dispose();
         this.stateModel.clear();
     }
 

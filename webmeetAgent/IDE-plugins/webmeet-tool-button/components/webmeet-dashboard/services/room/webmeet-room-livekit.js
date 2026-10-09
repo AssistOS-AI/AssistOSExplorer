@@ -66,15 +66,29 @@ export class WebMeetRoomLiveKit {
         return this.room;
     }
 
+    captureDisconnect(room = this.room) {
+        return { room, restore: room === this.room ? this.restoreRtcPeerConnection : null };
+    }
+
+    releaseOwner({ room, restore }) {
+        if (this.restoreRtcPeerConnection === restore) {
+            restore?.();
+            this.restoreRtcPeerConnection = null;
+        }
+        if (this.room === room) this.room = null;
+    }
+
     async connect(session, hooks = {}) {
         if (!session?.participantToken || !session?.livekitUrl) {
             throw new Error('Join payload missing media token');
         }
         const livekit = await this.ensureLiveKitClient();
+        if (hooks.isCurrent && !hooks.isCurrent()) return;
         const { Room, RoomEvent, Track } = livekit;
 
         this.restoreRtcPeerConnection?.();
         this.restoreRtcPeerConnection = this.installRtcPeerConnectionOverride(session);
+        const restore = this.restoreRtcPeerConnection;
         const audioCaptureDefaults = this.getAudioCaptureDefaults();
         const rtcConfig = this.buildRtcConfigForSession(session);
 
@@ -87,6 +101,14 @@ export class WebMeetRoomLiveKit {
             stopLocalTrackOnUnpublish: true
         });
         this.room = room;
+        const suppliedHooks = hooks;
+        hooks = { ...suppliedHooks };
+        for (const [name, callback] of Object.entries(suppliedHooks)) {
+            if (!name.startsWith('on') || name === 'onDisconnected' || typeof callback !== 'function') continue;
+            hooks[name] = (...args) => {
+                if (this.room === room && (!suppliedHooks.isCurrent || suppliedHooks.isCurrent())) return callback(...args);
+            };
+        }
         hooks.onRoomCreated?.({ room, livekit, Track, RoomEvent });
 
         room
@@ -127,10 +149,9 @@ export class WebMeetRoomLiveKit {
                 hooks.onParticipantAttributesChanged?.(changedAttributes, participant, { room, livekit, Track, RoomEvent });
             })
             .on(RoomEvent.Disconnected, () => {
-                this.restoreRtcPeerConnection?.();
-                this.restoreRtcPeerConnection = null;
-                this.room = null;
-                hooks.onDisconnected?.({ livekit, Track, RoomEvent });
+                const owned = this.room === room;
+                this.releaseOwner({ room, restore });
+                if (owned && (!hooks.isCurrent || hooks.isCurrent())) hooks.onDisconnected?.({ room, livekit, Track, RoomEvent });
             });
         if (RoomEvent.ConnectionQualityChanged) {
             room.on(RoomEvent.ConnectionQualityChanged, (quality, participant) => {
@@ -192,6 +213,10 @@ export class WebMeetRoomLiveKit {
                 session.participantToken,
                 connectOptions
             );
+            if ((hooks.isCurrent && !hooks.isCurrent()) || this.room !== room) {
+                await this.disconnect({ room, restore });
+                return;
+            }
             logMediaDiagnostic('room-connect-complete', {
                 localIdentity: room.localParticipant?.identity || '',
                 remoteParticipantCount: Number(room.remoteParticipants?.size || 0),
@@ -200,7 +225,7 @@ export class WebMeetRoomLiveKit {
             hooks.onConnected?.({ room, livekit, Track, RoomEvent });
             return { room, livekit, Track, RoomEvent };
         } catch (error) {
-            hooks.onConnectError?.(error, { room, livekit, Track, RoomEvent });
+            if (!hooks.isCurrent || hooks.isCurrent()) hooks.onConnectError?.(error, { room, livekit, Track, RoomEvent });
             logMediaDiagnostic('room-connect-error', {
                 errorName: String(error?.name || ''),
                 errorMessage: String(error?.message || '').slice(0, 200),
@@ -211,28 +236,20 @@ export class WebMeetRoomLiveKit {
             } catch (_) {
                 // ignore disconnect after failed connect
             }
-            this.restoreRtcPeerConnection?.();
-            this.restoreRtcPeerConnection = null;
-            if (this.room === room) {
-                this.room = null;
-            }
+            this.releaseOwner({ room, restore });
             throw error;
         }
     }
 
-    async disconnect() {
-        const room = this.room;
+    async disconnect(captured = this.captureDisconnect()) {
+        const { room } = captured;
         if (!room) return;
         try {
             await room.disconnect();
         } catch (_) {
             // ignore disconnect failures
         }
-        this.restoreRtcPeerConnection?.();
-        this.restoreRtcPeerConnection = null;
-        if (this.room === room) {
-            this.room = null;
-        }
+        this.releaseOwner(captured);
     }
 
     teardown() {

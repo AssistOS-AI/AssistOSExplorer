@@ -66,22 +66,26 @@ async function findCursorPosition(eventsDir, names, afterEventId) {
     return -1;
 }
 
+// Returns `{ events, cursorFound }`. `cursorFound` is true when no cursor was
+// requested or when the cursor was located; an unknown cursor yields no events
+// and `cursorFound: false` without reading any event file.
 async function listEventLog(eventsDir, afterId = '') {
-    if (!(await pathExists(eventsDir))) return [];
     const afterEventId = String(afterId || '').trim();
+    if (!(await pathExists(eventsDir))) return { events: [], cursorFound: !afterEventId };
     const names = (await fs.readdir(eventsDir))
         .filter((name) => name.endsWith('.event'))
         .sort();
     let start = 0;
     if (afterEventId) {
         const position = await findCursorPosition(eventsDir, names, afterEventId);
-        if (position < 0) return [];
+        if (position < 0) return { events: [], cursorFound: false };
         start = position + 1;
     }
     const events = await readEventFiles(eventsDir, names.slice(start));
-    return events
+    const selected = events
         .filter(Boolean)
         .filter((event) => getWebMeetEventId(event) !== afterEventId);
+    return { events: selected, cursorFound: true };
 }
 
 function createRoomEvent(roomId, type, data = {}) {
@@ -129,11 +133,31 @@ export async function recordWorkspaceEvent(context, workspaceId, type, data = {}
 export async function listRoomEvents(context, roomId, { afterId = '' } = {}) {
     const targetRoomId = String(roomId || '').trim();
     if (!targetRoomId) return [];
-    return await listEventLog(path.join(context.eventsDir, targetRoomId), afterId);
+    return (await listEventLog(path.join(context.eventsDir, targetRoomId), afterId)).events;
+}
+
+const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+export function isValidWorkspaceEventId(workspaceId) {
+    return typeof workspaceId === 'string' && WORKSPACE_ID_PATTERN.test(workspaceId);
 }
 
 export async function listWorkspaceEvents(context, workspaceId, { afterId = '' } = {}) {
+    return (await readWorkspaceEventSlice(context, workspaceId, { afterId })).events;
+}
+
+export async function readWorkspaceEventSlice(context, workspaceId, { afterId = '' } = {}) {
     const targetWorkspaceId = String(workspaceId || '').trim();
-    if (!targetWorkspaceId) return [];
-    return await listEventLog(path.join(context.eventsDir, 'workspaces', targetWorkspaceId), afterId);
+    if (!targetWorkspaceId) return { events: [], cursorFound: !afterId };
+    // Only plain workspace ids are accepted, and the resolved directory must
+    // stay inside the workspace event root; nothing may reach a room's log.
+    if (!isValidWorkspaceEventId(targetWorkspaceId)) {
+        throw new Error('Invalid WebMeet workspace id.');
+    }
+    const workspacesRoot = path.resolve(context.eventsDir, 'workspaces');
+    const eventsDir = path.resolve(workspacesRoot, targetWorkspaceId);
+    if (path.dirname(eventsDir) !== workspacesRoot) {
+        throw new Error('Invalid WebMeet workspace id.');
+    }
+    return await listEventLog(eventsDir, afterId);
 }

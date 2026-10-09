@@ -12,6 +12,17 @@ import {
 import { isAudioPublication } from '../services/microphone-publication.js';
 
 export const roomSessionMethods = {
+    clearRoomConnectionTimers(room = null) {
+        const owner = this.roomConnectionOwner;
+        if (owner && (!room || owner.room === room)) owner.active = false;
+        for (const [timer, timerOwner] of this.roomConnectionTimers || []) {
+            if (room && timerOwner.room !== room) continue;
+            timerOwner.active = false;
+            window.clearTimeout(timer);
+            this.roomConnectionTimers.delete(timer);
+        }
+    },
+
     installJoinMaterialRefreshListeners() {
         if (this.joinMaterialNetworkRefreshHandler) return;
         this.joinMaterialNetworkRefreshHandler = () => {
@@ -34,6 +45,7 @@ export const roomSessionMethods = {
     scheduleJoinMaterialRefresh() {
         window.clearTimeout(this.joinMaterialRefreshTimer);
         this.joinMaterialRefreshTimer = null;
+        if (this.webMeetRoom?.disposed) return;
         const iceServers = Array.isArray(this.state.session?.rtcConfig?.iceServers)
             ? this.state.session.rtcConfig.iceServers
             : [];
@@ -52,16 +64,24 @@ export const roomSessionMethods = {
         }, remainingMs - refreshLeadMs);
     },
 
-    async refreshJoinMaterialAndReconnect(reason = 'credential-refresh') {
+    async refreshJoinMaterialAndReconnect(reason = 'credential-refresh', transition = null) {
+        if (!transition && this.webMeetRoom.runTransition) return this.webMeetRoom.runTransition((context) => this.refreshJoinMaterialAndReconnect(reason, context));
+        const current = () => !this.webMeetRoom?.disposed && (!transition || transition.isCurrent());
+        if (!current()) return;
         if (this.joinMaterialRefreshInFlight || !this.state.session?.participantIdentity) return;
         this.joinMaterialRefreshInFlight = true;
         const mediaToRestore = { ...this.state.media };
         try {
-            await this.webMeetRoom.refreshJoinMaterial();
-            await this.disconnectRoom({ stopMediaFirst: false });
-            await this.connectRoom();
+            await this.webMeetRoom.refreshJoinMaterial(transition);
+            if (!current()) return;
+            await this.disconnectRoom({ stopMediaFirst: false, ...(transition ? { transition } : {}) });
+            if (!current()) return;
+            await this.connectRoom(transition);
+            if (!current()) return;
             if (mediaToRestore.microphone && !this.state.media.microphone) await this.toggleMicrophone();
+            if (!current()) return;
             if (mediaToRestore.camera && !this.state.media.camera) await this.toggleCamera();
+            if (!current()) return;
             if (mediaToRestore.screen) {
                 this.state.roomState = 'Connected. Screen sharing stopped during media credential refresh; use Share screen to resume.';
                 this.setError(this.state.roomState);
@@ -69,27 +89,47 @@ export const roomSessionMethods = {
             }
             logMediaDiagnostic('join-material-recreated', { reason });
         } catch (error) {
+            if (!current()) return;
             window.clearTimeout(this.joinMaterialRefreshTimer);
             this.joinMaterialRefreshTimer = null;
-            await this.disconnectRoom().catch(() => {});
+            await this.disconnectRoom({ transition }).catch(() => {});
+            if (!current()) return;
             const message = error instanceof Error ? error.message : String(error);
             this.state.roomState = `Media credentials could not be refreshed: ${message}`;
             this.setError(this.state.roomState);
             this.renderMeetingSummary();
         } finally {
-            this.joinMaterialRefreshInFlight = false;
+            if (current()) this.joinMaterialRefreshInFlight = false;
         }
     },
 
-    async connectRoom() {
+    async connectRoom(transition = null) {
+        if (!transition) return this.webMeetRoom.runTransition((context) => this.connectRoom(context));
+        if (!transition.isCurrent()) return;
         if (!this.state.session?.participantToken || !this.state.session?.livekitUrl) {
             this.state.roomState = 'Join payload missing media token';
             this.renderMeetingSummary();
             return;
         }
-        await this.disconnectRoom();
+        await this.disconnectRoom({ transition });
+        if (!transition.isCurrent()) return;
         await this.chatComponent?.prepareRoboMicrophonePermission?.();
+        if (!transition.isCurrent()) return;
         this.state.activeSpeakerIds = new Set();
+
+        const connectionOwner = { room: null, active: true };
+        const isConnectionCurrent = () => connectionOwner.active && transition.isCurrent()
+            && connectionOwner.room !== null && this.room === connectionOwner.room
+            && this.roomLiveKit.getRoom() === connectionOwner.room;
+        const scheduleConnectionTimer = (callback, delay) => {
+            if (!isConnectionCurrent()) return;
+            this.roomConnectionTimers ??= new Map();
+            const timer = window.setTimeout(() => {
+                this.roomConnectionTimers.delete(timer);
+                if (isConnectionCurrent()) callback();
+            }, delay);
+            this.roomConnectionTimers.set(timer, connectionOwner);
+        };
 
         const remoteVideoRecoveryCounts = new WeakMap();
 
@@ -111,7 +151,7 @@ export const roomSessionMethods = {
             if (!publication || !mediaElement || !isVideoTrack) return;
 
             for (const delay of [1500, 3500, 7000]) {
-                window.setTimeout(() => {
+                scheduleConnectionTimer(() => {
                     if (!this.room) return;
                     if (!mediaElement.isConnected) return;
                     const isReady = isRemoteVideoElementReady(mediaElement);
@@ -315,10 +355,10 @@ export const roomSessionMethods = {
             });
             removePublication(publication, Track, participant);
             setPublicationSubscribed(publication, false, participant, `${reason}:refresh-off`);
-            window.setTimeout(() => {
+            scheduleConnectionTimer(() => {
                 if (!this.room) return;
                 setPublicationSubscribed(publication, true, participant, `${reason}:refresh-on`);
-                window.setTimeout(() => {
+                scheduleConnectionTimer(() => {
                     if (!this.room || !publication.track) return;
                     renderPublication(participant, publication, publication.track, Track);
                 }, 900);
@@ -355,7 +395,7 @@ export const roomSessionMethods = {
             }
 
             if (publication.isSubscribed && !publication.track) {
-                window.setTimeout(() => {
+                scheduleConnectionTimer(() => {
                     if (publication.track) {
                         setPublicationSubscribed(publication, true, participant, `${reason}:ensure-on`);
                         return;
@@ -384,12 +424,12 @@ export const roomSessionMethods = {
 
         const scheduleRemoteSubscriptionSweep = (TrackRef = null, reason = 'scheduled-sweep') => {
             for (const delay of [250, 1000, 2500, 5000]) {
-                window.setTimeout(() => subscribeRemotePublications(TrackRef, `${reason}:${delay}`), delay);
+                scheduleConnectionTimer(() => subscribeRemotePublications(TrackRef, `${reason}:${delay}`), delay);
             }
         };
 
         const collectAudioWebRtcDiagnostics = async () => {
-            if (!isMediaDiagnosticsEnabled() || !this.room) return;
+            if (!isConnectionCurrent() || !isMediaDiagnosticsEnabled()) return;
             const publications = [
                 ...(this.room.localParticipant?.trackPublications?.values?.() || []),
                 ...[...(this.room.remoteParticipants?.values?.() || [])]
@@ -401,6 +441,7 @@ export const roomSessionMethods = {
                 if (typeof track?.getRTCStatsReport !== 'function') continue;
                 try {
                     const report = await track.getRTCStatsReport();
+                    if (!isConnectionCurrent()) return;
                     reports.push(...(report?.values?.() || report || []));
                 } catch (_) {
                     // A track may disappear while diagnostics are being collected.
@@ -415,6 +456,8 @@ export const roomSessionMethods = {
         await this.roomLiveKit.connect(this.state.session, {
             onRoomCreated: ({ room }) => {
                 this.room = room;
+                connectionOwner.room = room;
+                this.roomConnectionOwner = connectionOwner;
             },
             onConnecting: () => {
                 this.state.roomState = 'Connecting';
@@ -622,7 +665,10 @@ export const roomSessionMethods = {
                 this.state.audioHealth = this.state.audioNetworkUnstable ? 'Network unstable' : 'Good';
                 this.updateAudioHealthIndicator?.();
             },
-            onDisconnected: () => {
+            isCurrent: () => transition.isCurrent(),
+            onDisconnected: ({ room }) => {
+                if (!transition.isCurrent() || this.room !== room) return;
+                this.clearRoomConnectionTimers(room);
                 if (this.expectedLiveKitDisconnect) {
                     this.resetRoomUiState({ forceRenderAll: true, applyVideoFullscreenMode: false });
                     return;
@@ -631,6 +677,7 @@ export const roomSessionMethods = {
                 void this.handleExternalRoomDisconnect();
             },
             onConnected: ({ room, Track }) => {
+                if (!transition.isCurrent() || this.room !== room) return;
                 this.state.roomState = 'Connected';
                 this.installJoinMaterialRefreshListeners();
                 this.scheduleJoinMaterialRefresh();
@@ -658,6 +705,8 @@ export const roomSessionMethods = {
                 this.renderMeetingSummary();
             },
             onConnectError: (error) => {
+                this.clearRoomConnectionTimers(connectionOwner.room);
+                if (!transition.isCurrent()) return;
                 this.state.roomState = error instanceof Error ? error.message : String(error);
                 this.renderMeetingSummary();
             }
@@ -677,9 +726,13 @@ export const roomSessionMethods = {
     },
 
     async handleExternalRoomDisconnect() {
+        const captured = this.webMeetRoom?.captureSession?.();
+        const current = () => !this.webMeetRoom?.disposed && (!captured || this.webMeetRoom.isSessionCurrent(captured));
+        if (!current()) return;
         this.resetRoomUiState({ forceRenderAll: false, applyVideoFullscreenMode: false });
         if (!this.isGuestSession()) {
             await this.loadMeetings();
+            if (!current()) return;
             this.startWorkspaceEvents();
         }
         this.renderAll();
@@ -782,10 +835,12 @@ export const roomSessionMethods = {
         }
     },
 
-    async stopRoomMediaBeforeDisconnect(room = this.roomLiveKit.getRoom()) {
-        this.muteRoomPlaybackElements();
+    async stopRoomMediaBeforeDisconnect(room = this.roomLiveKit.getRoom(), transition = null) {
+        const current = () => !this.webMeetRoom?.disposed && (!transition || transition.isCurrent());
+        if (current()) this.muteRoomPlaybackElements();
         this.unsubscribeRemotePublications(room);
-        await this.mediaController.stopAllLocalMedia(room);
+        await this.mediaController.stopAllLocalMedia(room, { isCurrent: current });
+        if (!current()) return;
         this.state.mediaDeafened = true;
         this.state.mediaDeafenRestoreMicrophone = false;
         this.state.media = { microphone: false, camera: false, screen: false };
@@ -794,19 +849,25 @@ export const roomSessionMethods = {
     },
 
     async disconnectRoom(options = {}) {
+        if (!options.transition) return this.webMeetRoom.runTransition((transition) => this.disconnectRoom({ ...options, transition }));
+        const { transition } = options;
+        const current = () => transition.isCurrent();
         window.clearTimeout(this.joinMaterialRefreshTimer);
         this.joinMaterialRefreshTimer = null;
-        const room = this.roomLiveKit.getRoom();
+        const room = Object.hasOwn(options, 'room') ? options.room : this.roomLiveKit.getRoom();
         if (!room) return;
+        this.clearRoomConnectionTimers(room);
+        const captured = this.roomLiveKit.captureDisconnect(room);
         if (options.stopMediaFirst !== false) {
-            await this.stopRoomMediaBeforeDisconnect(room);
+            await this.stopRoomMediaBeforeDisconnect(room, transition);
         }
-        this.expectedLiveKitDisconnect = true;
+        if (current()) this.expectedLiveKitDisconnect = true;
         try {
-            await this.roomLiveKit.disconnect();
+            await this.roomLiveKit.disconnect(captured);
         } finally {
-            this.expectedLiveKitDisconnect = false;
+            if (current()) this.expectedLiveKitDisconnect = false;
         }
+        if (!current()) return;
         this.resetRoomUiState({ forceRenderAll: true, applyVideoFullscreenMode: true });
     },
 

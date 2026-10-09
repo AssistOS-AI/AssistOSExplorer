@@ -59,7 +59,7 @@ test('room connection prepares push-to-talk microphone permission before LiveKit
 
     assert.match(connectRoom, /await this\.chatComponent\?\.prepareRoboMicrophonePermission\?\.\(\)/);
     assert.ok(
-        connectRoom.indexOf('await this.disconnectRoom()')
+        connectRoom.indexOf('await this.disconnectRoom({ transition })')
             < connectRoom.indexOf('prepareRoboMicrophonePermission'),
         'the previous room microphone must be released before requesting permission for the new room'
     );
@@ -78,7 +78,7 @@ test('workspace event polling is outside the active LiveKit room lifecycle', asy
 
     assert.match(joinMeeting, /this\.stopWorkspaceEvents\(\)/);
     assert.ok(
-        joinMeeting.indexOf('this.stopWorkspaceEvents()') < joinMeeting.indexOf('await this.webMeetRoom.join(payload)'),
+        joinMeeting.indexOf('this.stopWorkspaceEvents()') < joinMeeting.indexOf('await this.webMeetRoom.join(payload, transition)'),
         'workspace polling must stop before joining the active LiveKit room'
     );
     assert.match(unjoinCurrentSession, /this\.startWorkspaceEvents\(\)/);
@@ -92,8 +92,8 @@ test('workspace event polling is outside the active LiveKit room lifecycle', asy
 test('external LiveKit disconnect refreshes authenticated room list before rendering', async () => {
     const roomSessionMethods = await readModalFile('controllers/room-session-methods.js');
     const disconnectedHandler = roomSessionMethods.slice(
-        roomSessionMethods.indexOf('onDisconnected: () =>'),
-        roomSessionMethods.indexOf('\n            onConnected:', roomSessionMethods.indexOf('onDisconnected: () =>'))
+        roomSessionMethods.indexOf('onDisconnected: ({ room }) =>'),
+        roomSessionMethods.indexOf('\n            onConnected:', roomSessionMethods.indexOf('onDisconnected: ({ room }) =>'))
     );
     const externalDisconnect = roomSessionMethods.slice(
         roomSessionMethods.indexOf('async handleExternalRoomDisconnect'),

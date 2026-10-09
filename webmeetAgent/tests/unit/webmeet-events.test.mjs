@@ -38,6 +38,8 @@ test('WebMeet event definitions expose persistence by event type', () => {
     assert.equal(isWorkspacePersistentWebMeetEvent(WEBMEET_EVENT_TYPES.PARTICIPANT_JOINED), true);
     assert.equal(isPersistentWebMeetEvent(WEBMEET_EVENT_TYPES.CHAT_REALTIME), false);
     assert.equal(isPersistentWebMeetEvent(WEBMEET_EVENT_TYPES.PARTICIPANT_AVATAR_PROJECTED), false);
+    assert.equal(isPersistentWebMeetEvent(WEBMEET_EVENT_TYPES.WORKSPACE_ROOMS_INVALIDATED), false);
+    assert.equal(isWorkspacePersistentWebMeetEvent(WEBMEET_EVENT_TYPES.WORKSPACE_ROOMS_INVALIDATED), false);
     assert.equal(Object.hasOwn(WEBMEET_EVENT_TYPES, 'PARTICIPANT_AVATAR_UPDATED'), false);
 });
 

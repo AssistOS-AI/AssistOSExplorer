@@ -184,6 +184,9 @@ export const meetingActionMethods = {
     },
 
     async joinMeeting(options = {}) {
+        if (!options.transition) return this.webMeetRoom.runTransition((transition) => this.joinMeeting({ ...options, transition }));
+        const { transition } = options;
+        if (!transition.isCurrent()) return;
         const meeting = this.selectedMeeting;
         if (!meeting) {
             this.setError('Select a meeting first.');
@@ -199,30 +202,36 @@ export const meetingActionMethods = {
         this.stopWorkspaceEvents();
         try {
             try {
-                await this.webMeetRoom.join(payload);
+                await this.webMeetRoom.join(payload, transition);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 if (!displayName && /missing required argument "displayName"/i.test(message)) {
                     const guestDisplayName = await requestGuestDisplayName();
+                    if (!transition.isCurrent()) return;
                     await this.webMeetRoom.join({
                         ...payload,
                         displayName: guestDisplayName
-                    });
+                    }, transition);
                 } else {
                     throw error;
                 }
             }
+            if (!transition.isCurrent()) return;
             syncBrowserRoomUrl(meeting.id);
             writeWebMeetResume({ open: true, roomId: meeting.id });
             await this.primeCurrentParticipantAvatarProjection({ force: true });
+            if (!transition.isCurrent()) return;
             this.state.skipConnectedAvatarRepublishOnce = true;
-            await this.webMeetRoom.connectLiveKit();
+            await this.webMeetRoom.connectLiveKit(transition);
+            if (!transition.isCurrent()) return;
             if (!this.isGuestSession()) {
                 this.startWorkspaceEvents();
             }
-            await this.restorePersistedMediaState();
+            await this.restorePersistedMediaState(transition);
+            if (!transition.isCurrent()) return;
             try {
                 const details = await this.webMeetRoom.refreshState();
+                if (!transition.isCurrent()) return;
                 if (Array.isArray(details?.agents)) {
                     this.state.agents = details.agents;
                 }
@@ -233,6 +242,7 @@ export const meetingActionMethods = {
             try {
                 await this.publishCurrentParticipantAvatar({ force: true });
             } catch (error) {
+                if (!transition.isCurrent()) return;
                 const stillJoined = String(this.state.session?.meeting?.id || '').trim() === String(meeting.id || '').trim()
                     && Boolean(String(this.state.session?.participantIdentity || '').trim());
                 if (stillJoined) {
@@ -241,6 +251,7 @@ export const meetingActionMethods = {
                 }
             }
         } catch (error) {
+            if (!transition.isCurrent()) return;
             const message = error instanceof Error ? error.message : String(error);
             this.state.roomState = message;
             this.setError(message);
@@ -249,17 +260,21 @@ export const meetingActionMethods = {
             }
             return;
         } finally {
-            this.clearRoomTransitionMessage({ render: false });
-            this.renderMeetingSummary();
+            if (transition.isCurrent()) {
+                this.clearRoomTransitionMessage({ render: false });
+                this.renderMeetingSummary();
+            }
         }
     },
 
-    async restorePersistedMediaState() {
+    async restorePersistedMediaState(transition = null) {
+        if (transition && !transition.isCurrent()) return;
         const resume = readWebMeetResume();
         if (!resume) return;
         if (resume.media.microphone && !this.state.media.microphone) {
             await this.runMediaToggleWithLoading('microphone', () => this.mediaController.toggleMicrophone()).catch(() => {});
         }
+        if (transition && !transition.isCurrent()) return;
         if (resume.media.camera && !this.state.media.camera) {
             await this.runMediaToggleWithLoading('camera', () => this.mediaController.toggleCamera()).catch(() => {});
         }
@@ -651,7 +666,14 @@ export const meetingActionMethods = {
         };
     },
 
-    async leaveMeeting() {
+    async leaveMeeting(options = {}) {
+        if (!options.transition) return this.webMeetRoom.runTransition((transition) => this.leaveMeeting({ ...options, transition }), null, { cleanup: true });
+        const { transition } = options;
+        if (!transition.isCurrent()) {
+            if (this.webMeetRoom.disposed) return this.unjoinCurrentSession({ transition, unload: true });
+            return;
+        }
+        if (options.expectedSession && !this.webMeetRoom.isSessionCurrent(options.expectedSession)) return;
         if (this.state.leavingMeeting) return;
         const wasGuestSession = this.isGuestSession();
         const currentMeetingTitle = this.getMeetingTitleById(
@@ -663,56 +685,55 @@ export const meetingActionMethods = {
         this.setDisconnectingRoomTransition(currentMeetingTitle, { render: false });
         this.renderAll();
         try {
-            await this.unjoinCurrentSession({ preserveDisplayName: false, manageTransition: false });
+            await this.unjoinCurrentSession({ preserveDisplayName: false, manageTransition: false, transition });
+            if (!transition.isCurrent()) return;
             // An explicit leave must not rejoin the room after a refresh, but WebMeet stays open.
             writeWebMeetResume({ roomId: '', media: { microphone: false, camera: false } });
             if (wasGuestSession && typeof this.hostContext?.onGuestExit === 'function') {
                 this.hostContext.onGuestExit();
             }
         } finally {
-            this.state.leavingMeeting = false;
-            this.clearRoomTransitionMessage({ render: false });
-            this.renderAll();
+            if (transition.isCurrent()) {
+                this.state.leavingMeeting = false;
+                this.clearRoomTransitionMessage({ render: false });
+                this.renderAll();
+            }
         }
     },
 
     async handleExpandedModalUserClose() {
-        // Close is an explicit leave. It stops local media and disconnects before the frame is
-        // removed. The server-side leave is best-effort and never blocks closing; the presence
-        // keepalive also reports the leave during frame teardown.
+        // Explorer awaits this hook before removing the frame. End its lifetime
+        // synchronously; backend availability must not keep the frame open.
+        writeWebMeetResume({ open: false, roomId: '', media: { microphone: false, camera: false } });
+        const room = this.roomLiveKit.getRoom();
+        this.webMeetRoom.dispose();
+        this.stopWorkspaceEvents();
+        this.clearRoomConnectionTimers();
+        this.uninstallJoinMaterialRefreshListeners?.();
+        window.clearInterval(this.audioWebRtcStatsTimer);
+        this.audioWebRtcStatsTimer = null;
         try {
-            writeWebMeetResume({ roomId: '', media: { microphone: false, camera: false } });
+            this.mediaController.hardStopMicrophoneTracks();
+            this.mediaController.hardStopAllLocalPublishedTracks(room);
         } catch (_) {
-            // Resume cleanup is best-effort while the panel is torn down.
+            // The captured asynchronous cleanup still releases remaining media.
         }
-        const meetingId = String(this.state.session?.meeting?.id || this.selectedMeetingId || '').trim();
-        const participantId = String(this.state.session?.participantIdentity || '').trim();
-        try {
-            this.mediaController?.hardStopMicrophoneTracks?.();
-            this.mediaController?.hardStopAllLocalPublishedTracks?.();
-            await this.webMeetRoom?.disconnectLiveKit?.();
-        } catch (_) {
-            // Continue clearing local state even when LiveKit teardown reports an error.
-        }
-        try {
-            void this.webMeetRoom?.leaveCurrentSession?.();
-        } catch (_) {
-            // The server reconciles membership from the LiveKit disconnect.
-        }
-        if (meetingId && participantId) {
-            this.removeParticipantFromMeetingList(meetingId, participantId);
-        }
-        this.state.session = null;
-        this.state.media = { microphone: false, camera: false, screen: false };
+        void this.unjoinCurrentSession({ preserveDisplayName: false, unload: true }).catch(() => {});
     },
 
     async unjoinCurrentSession(options = {}) {
+        if (!options.cleanupOwned) return this.webMeetRoom.runTransition(
+            (transition) => this.unjoinCurrentSession({ ...options, transition, cleanupOwned: true }), options.transition,
+            { cleanup: true, allowDisposed: options.unload === true }
+        );
+        const { transition } = options;
+        const captured = transition.captured;
         const preserveDisplayName = Boolean(options.preserveDisplayName);
-        const manageTransition = options.manageTransition !== false;
-        const previousMeetingId = String(this.state.session?.meeting?.id || this.state.selectedMeetingId || '').trim();
-        const previousParticipantId = String(this.state.session?.participantIdentity || '').trim();
-        const preservedName = String(this.state.session?.participant?.displayName || '').trim();
-        const wasGuestSession = this.isGuestSession();
+        const manageTransition = options.manageTransition !== false && transition.isCurrent();
+        const previousMeetingId = captured.meetingId;
+        const previousParticipantId = captured.participantId;
+        const preservedName = captured.displayName;
+        const wasGuestSession = captured.guest;
         if (manageTransition) {
             this.setDisconnectingRoomTransition(
                 this.getMeetingTitleById(previousMeetingId, this.selectedMeeting?.title || 'room'),
@@ -720,20 +741,22 @@ export const meetingActionMethods = {
             );
             this.renderMeetingSummary();
         }
-        await this.webMeetRoom.disconnectLiveKit();
+        await this.webMeetRoom.disconnectLiveKit({ transition, room: captured.room }).catch(() => {});
 
         if (previousMeetingId && previousParticipantId) {
             try {
-                await this.webMeetRoom.leaveCurrentSession();
+                await this.webMeetRoom.leaveCurrentSession(captured);
             } catch (error) {
                 // Ignore leave failures during unload or room switching.
             }
         }
 
+        if (!transition.isCurrent()) return;
         this.removeParticipantFromMeetingList(previousMeetingId, previousParticipantId);
-        this.state.session = preserveDisplayName && preservedName ? { participant: { displayName: preservedName } } : null;
+        this.webMeetRoom.installSession(preserveDisplayName && preservedName ? { participant: { displayName: preservedName } } : null, transition, { replacement: false });
         if (!wasGuestSession) {
             await this.loadMeetings();
+            if (!transition.isCurrent()) return;
             this.startWorkspaceEvents();
         }
         if (manageTransition) {

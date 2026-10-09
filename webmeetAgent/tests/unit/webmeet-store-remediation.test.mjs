@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 import { withGuestParticipantOwner } from './participant-owner-fixture.mjs';
+import { PRINCIPALS, directUserAuth } from './verified-grant-fixture.mjs';
 
 const MASTER_KEY = crypto.randomBytes(32).toString('base64');
 const ADMIN_AUTH = { id: 'local:admin', username: 'admin', roles: ['admin'] };
@@ -578,7 +579,8 @@ describe('filesystem lock mechanics', () => {
         };
 
         const result = await archiveMeeting(liveContext, meeting.id, ADMIN_AUTH);
-        const archived = (await listMeetings(context, '', ADMIN_AUTH))
+        // Archived rooms are listed only for a verified administrator.
+        const archived = (await listMeetings(context, '', await directUserAuth(PRINCIPALS.admin)))
             .find((entry) => entry.id === meeting.id);
 
         assert.equal(result.ok, true);

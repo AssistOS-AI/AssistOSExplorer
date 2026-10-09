@@ -5,9 +5,11 @@ import {
     assertAdminAuthInfo,
     assertAuthenticatedAuthInfo,
     canViewMeetingRecord,
+    canListMeetingRecord,
     isAdminAuthInfo,
     isGuestAuthInfo,
     isMeetingRecordOpen,
+    isVerifiedListingEntitled,
     normalizeAuthInfo
 } from './store/accessPolicy.mjs';
 import {
@@ -34,6 +36,7 @@ import {
     listRoomEvents as listMeetingEventsImpl,
     listWorkspaceEvents as listWorkspaceEventsImpl
 } from './store/eventLogs.mjs';
+import { listWorkspaceEventsForViewer as listWorkspaceEventsForViewerImpl } from './services/workspaceEvents.mjs';
 import {
     cleanupRoomPresence as cleanupMeetingPresenceImpl,
     getRoomDetails as getMeetingImpl,
@@ -252,6 +255,10 @@ export async function listWorkspaceEvents(context, workspaceId, { afterId = '' }
     return await listWorkspaceEventsImpl(context, workspaceId, { afterId });
 }
 
+export async function listWorkspaceEventsForViewer(context, workspaceId, options = {}, authInfo = null) {
+    return await listWorkspaceEventsForViewerImpl(context, workspaceId, options, authInfo);
+}
+
 export async function getRoomBlackboard(context, { roomId, boardId = '', participantId = '', authInfo = null } = {}) {
     await repairScriptaBlackboardProjectionImpl(context, { roomId, participantId, authInfo });
     return await getRoomBlackboardImpl(context, { roomId, boardId, participantId, authInfo });
@@ -430,8 +437,14 @@ export async function listMeetings(context, _workspaceId = '', authInfo = null) 
     if (isGuestAuthInfo(authInfo)) {
         throw new Error('Access denied: sign in to view WebMeet rooms.');
     }
+    // An authenticated user without verified listing access sees no rooms.
+    if (!isVerifiedListingEntitled(authInfo)) {
+        return [];
+    }
     const records = await listRoomRecords(context);
-    return records.filter((entry) => entry && canViewMeetingRecord(entry, authInfo)).map(buildMeetingView);
+    return records
+        .filter((entry) => canListMeetingRecord(entry, authInfo))
+        .map(buildMeetingView);
 }
 
 export async function updateMeetingTitle(context, { meetingId, title, authInfo = null }) {

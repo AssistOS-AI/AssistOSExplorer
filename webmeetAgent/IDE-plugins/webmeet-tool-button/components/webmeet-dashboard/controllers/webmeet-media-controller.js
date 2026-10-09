@@ -570,7 +570,7 @@ export class WebmeetMediaController {
         }
     }
 
-    async stopAllLocalMedia(room = this.getRoom()) {
+    async stopAllLocalMedia(room = this.getRoom(), { isCurrent = () => true } = {}) {
         this.hardStopMicrophoneTracks();
         await this.stopProcessedMicrophoneCapture();
         await this.clearBackgroundEffect();
@@ -593,7 +593,7 @@ export class WebmeetMediaController {
         }
         this.hardStopAllLocalPublishedTracks(room);
         const localId = String(room?.localParticipant?.identity || '').trim();
-        this.onMediaStateChange({ microphone: false, camera: false, screen: false }, localId);
+        if (isCurrent()) this.onMediaStateChange({ microphone: false, camera: false, screen: false }, localId);
     }
 
     async waitForMicrophoneHardStopped(timeoutMs = 1500) {

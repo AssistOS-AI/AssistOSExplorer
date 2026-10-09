@@ -35,8 +35,8 @@ test('refreshing restores WebMeet and re-enters the active room with media state
     assert.match(meetingActionSource, /handleExpandedModalUserClose\(\)/);
     assert.match(meetingActionSource, /writeWebMeetResume\(\{ roomId: '', media: \{ microphone: false, camera: false \} \}\)/);
     assert.match(meetingActionSource, /disconnectLiveKit/);
-    assert.match(meetingActionSource, /async restorePersistedMediaState\(\)/);
-    assert.match(meetingActionSource, /await this\.restorePersistedMediaState\(\)/);
+    assert.match(meetingActionSource, /async restorePersistedMediaState\(transition = null\)/);
+    assert.match(meetingActionSource, /await this\.restorePersistedMediaState\(transition\)/);
     assert.match(meetingActionSource, /writeWebMeetResume\(\{ open: true, roomId: meeting\.id \}\)/);
 
     const unjoinBody = meetingActionSource.slice(

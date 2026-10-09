@@ -27,7 +27,6 @@ import {
     finalizeMeetingNotesSession,
     heartbeatMeetingPresence,
     heartbeatMeetingNotesSession,
-    isAdminAuthInfo,
     joinGuestMeeting,
     joinMeeting,
     leaveMeeting,
@@ -44,7 +43,7 @@ import {
     listMeetingChat,
     listMeetingEvents,
     listMeetings,
-    listWorkspaceEvents,
+    listWorkspaceEventsForViewer,
     removeMeetingParticipant,
     removeRoomResource,
     startMeetingNotesSession,
@@ -58,7 +57,12 @@ import {
     updateMeetingTitle
 } from '../lib/webmeetStore.mjs';
 import { withVerifiedGuestParticipantOwner } from '../lib/services/roomParticipants.mjs';
-import { hasWebmeetRoomScope } from '../lib/store/accessPolicy.mjs';
+import {
+    hasWebmeetRoomScope,
+    isVerifiedAdminAuthInfo,
+    isVerifiedListingEntitled
+} from '../lib/store/accessPolicy.mjs';
+import { isValidWorkspaceEventId } from '../lib/store/eventLogs.mjs';
 import { executeBlackboardEvent } from '../lib/blackboard/event-service.mjs';
 import { generateScriptaContent } from '../lib/scripta/content-generator.mjs';
 
@@ -263,7 +267,7 @@ export async function dispatch(toolName, args, context, authInfo) {
     case 'webmeet_room_list':
         return {
             rooms: await listMeetings(context, '', authInfo),
-            canManageRooms: isAdminAuthInfo(authInfo)
+            canManageRooms: isVerifiedAdminAuthInfo(authInfo)
         };
     case 'webmeet_room_create':
         return await createMeeting(context, {
@@ -382,14 +386,17 @@ export async function dispatch(toolName, args, context, authInfo) {
                     })
                 };
             }
-            if (!isAdminAuthInfo(authInfo)) {
-                await listMeetings(context, '', authInfo);
+            // The workspace feed carries room ids and titles, so it uses the
+            // same verified listing entitlement as webmeet_room_list.
+            if (!isVerifiedListingEntitled(authInfo)) {
+                throw new Error('Access denied: Explorer access is required.');
             }
-            return {
-                events: await listWorkspaceEvents(context, targetId, {
-                    afterId: String(args?.afterId || '').trim()
-                })
-            };
+            if (targetId !== 'rooms' && !isValidWorkspaceEventId(targetId)) {
+                throw new Error('Invalid WebMeet workspace id.');
+            }
+            return await listWorkspaceEventsForViewer(context, targetId, {
+                afterId: String(args?.afterId || '').trim()
+            }, authInfo);
         }
     case 'webmeet_participant_avatar_update':
         {
