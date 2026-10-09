@@ -90,10 +90,13 @@ async function withRegistryMutation(directory, operation) {
                         throw new Error('robot registry lock recovery requires reconciliation', { cause: recoveryError });
                     }
                     try {
+                        // The per-acquisition token proves which record was claimed. Inode and
+                        // device identity are not compared: virtiofs guests (macOS hosts) can
+                        // report another inode for a hard link or for an unchanged file.
                         const current = await readRegistryOwner(lock);
                         const claimed = await readRegistryOwner(claim);
-                        if (current.owner.token !== previous.owner.token || current.stat.ino !== claimed.stat.ino
-                            || current.stat.dev !== claimed.stat.dev) throw new Error('robot registry lock owner changed');
+                        if (current.owner.token !== previous.owner.token
+                            || claimed.owner.token !== previous.owner.token) throw new Error('robot registry lock owner changed');
                         await fs.unlink(lock);
                     } finally {
                         await fs.unlink(claim);
