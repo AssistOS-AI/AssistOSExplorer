@@ -419,3 +419,61 @@ async function write(file, content) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, content);
 }
+
+// N1-R: deleting a robot while its background seed is copying. fs.cp is slowed so the copy is
+// certainly in flight when the delete starts.
+function slowCopy(t) {
+    const real = fs.cp;
+    let started;
+    const copying = new Promise(resolve => { started = resolve; });
+    t.mock.method(fs, 'cp', async (...args) => {
+        started();
+        await new Promise(resolve => setTimeout(resolve, 150));
+        return real.apply(fs, args);
+    });
+    return copying;
+}
+
+async function deleteWith(manager, root, robotId) {
+    return manager.deleteRobot(robotId, () => fs.rm(path.join(root, 'robots', robotId), { recursive: true }));
+}
+
+test('deleting a robot waits for an in-flight seed, which aborts without leaving anything', async (t) => {
+    const robot = { id: 'racing-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, root, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    const copying = slowCopy(t);
+    const seeding = manager.seedOpenCode(robot.id, { prepare: true });
+    await copying;
+    await deleteWith(manager, root, robot.id);
+    assert.equal((await seeding).status, 'aborted');
+    await assert.rejects(fs.access(path.join(root, 'robots', robot.id)), { code: 'ENOENT' }, 'no robot folder remains');
+    assert.equal(manager.seedChain.size, 0);
+    assert.deepEqual((await manager.seedOpenCode(robot.id)).status, 'unavailable', 'a later seed does nothing');
+    await assert.rejects(fs.access(configOf(robot.id)), { code: 'ENOENT' });
+});
+
+test('deleting a robot during the startup warm-up and during robot creation also succeeds', async (t) => {
+    for (const start of [(manager, robot) => manager.warmOpenCodePlugins([robot]), (manager, robot) => manager.seedOpenCodeInBackground(robot)]) {
+        const robot = { id: `late-${Math.random().toString(16).slice(2, 8)}`, codingAgents: ['opencode'] };
+        const { manager, root } = await readyRuntime(t, [robot]);
+        await manager.prepareOpenCode(robot.id, { seed: false });
+        const copying = slowCopy(t);
+        const running = start(manager, robot);
+        await copying;
+        await deleteWith(manager, root, robot.id);
+        await running;
+        await assert.rejects(fs.access(path.join(root, 'robots', robot.id)), { code: 'ENOENT' });
+        t.mock.restoreAll();
+    }
+});
+
+test('a seed aborts before moving anything into a home when the robot is being deleted', async (t) => {
+    const { home, config, template } = await fixture(t);
+    assert.deepEqual(await seedOpenCodePlugin(home, template, { isCancelled: () => true }), { status: 'aborted' });
+    assert.deepEqual(await fs.readdir(config), []);
+    let checks = 0;
+    const result = await seedOpenCodePlugin(home, template, { isCancelled: () => ++checks > 1 });
+    assert.equal(result.status, 'aborted', 'the check also runs after the copy, before the renames');
+    assert.deepEqual(await fs.readdir(config), [], 'staging was removed');
+});

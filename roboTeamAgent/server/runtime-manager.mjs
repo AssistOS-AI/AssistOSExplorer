@@ -255,25 +255,39 @@ export class RuntimeManager {
     async prepareOpenCode(robotId, { prepare = false, seed = true } = {}) {
         if (!/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) throw new Error('Invalid robot ID.');
         const home = path.join(this.dataDir, 'robots', robotId, 'home');
-        await prepareRobotShell(home);
-        if (seed) await this.seedOpenCode(robotId, { prepare });
-        await this.soulGateway.prepare(home);
+        // The template wait (possibly an npm install) stays outside the per-robot lock so that a
+        // delete never waits for it.
+        const template = seed ? await this.openCodePluginTemplate({ prepare }) : null;
+        await this._withRobotFiles(robotId, async () => {
+            if (this.deletedRobots.has(robotId)) throw new Error('robot was deleted');
+            await prepareRobotShell(home);
+            if (seed) await this._copySeed(robotId, home, template);
+        });
+        if (!this.deletedRobots.has(robotId)) await this.soulGateway.prepare(home);
     }
 
-    // One seed per home at a time: a background seed and a task start on the same robot do not
-    // copy the template twice, the second finds the home current.
-    seedOpenCode(robotId, { prepare = false } = {}) {
-        const home = path.join(this.dataDir, 'robots', robotId, 'home');
-        const run = async () => {
-            if (this.deletedRobots.has(robotId)) return { status: 'unavailable' };
-            const seeded = await seedOpenCodePlugin(home, await this.openCodePluginTemplate({ prepare }));
-            if (seeded.status === 'failed') console.warn(`[roboTeamAgent] OpenCode plugin seeding failed for ${robotId}: ${seeded.error}`);
-            return seeded;
-        };
+    // One writer per robot home at a time, and deleteRobot waits for it: a seed or shell
+    // preparation never overlaps the removal of the robot's folder.
+    _withRobotFiles(robotId, operation) {
         const previous = this.seedChain.get(robotId) || Promise.resolve();
-        const current = previous.catch(() => {}).then(run);
+        const current = previous.catch(() => {}).then(operation);
         this.seedChain.set(robotId, current);
         return current.finally(() => { if (this.seedChain.get(robotId) === current) this.seedChain.delete(robotId); });
+    }
+
+    async _copySeed(robotId, home, template) {
+        const seeded = await seedOpenCodePlugin(home, template, { isCancelled: () => this.deletedRobots.has(robotId) });
+        if (seeded.status === 'failed') console.warn(`[roboTeamAgent] OpenCode plugin seeding failed for ${robotId}: ${seeded.error}`);
+        return seeded;
+    }
+
+    // A background seed and a task start on the same robot do not copy the template twice: the
+    // second finds the home current.
+    async seedOpenCode(robotId, { prepare = false } = {}) {
+        const home = path.join(this.dataDir, 'robots', robotId, 'home');
+        const template = await this.openCodePluginTemplate({ prepare });
+        return this._withRobotFiles(robotId, async () => this.deletedRobots.has(robotId)
+            ? { status: 'unavailable' } : this._copySeed(robotId, home, template));
     }
 
     // Robot creation answers first; the copy (seconds) finishes in the background, and a task that
@@ -840,6 +854,9 @@ export class RuntimeManager {
         if (this.pending.has(robotId) || this.sessions.has(robotId) || this.activeTasks.has(robotId)
             || this.hasUnfinishedTasks(robotId)) throw new Error('stop the robot and its queued tasks before deleting it');
         this.deletedRobots.add(robotId);
+        // A seed or shell preparation in flight finishes (or aborts) before the folder is removed;
+        // anything queued afterwards sees deletedRobots and does nothing.
+        await this.seedChain.get(robotId)?.catch(() => {});
         try { await remove(); }
         catch (error) { this.deletedRobots.delete(robotId); throw error; }
         await this.soulGateway.remove(path.join(this.dataDir, 'robots', robotId, 'home'));

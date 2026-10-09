@@ -69,14 +69,16 @@ export async function openCodePluginState(directory, version) {
 //   customized  - the home declares other dependencies or holds a node_modules without a
 //                 managed manifest; left alone for OpenCode to maintain
 //   unsafe      - a link or special file sits where the seed would read or write; left alone
+//   aborted     - isCancelled() became true (the robot is being deleted) before anything was moved
+//                 into the home; the staging directory is removed and nothing is left behind
 //   failed      - the copy did not complete; nothing is left half-installed and OpenCode
 //                 installs for itself, as it did before seeding existed
-export async function seedOpenCodePlugin(home, template) {
-    try { return await seedHome(home, template); }
+export async function seedOpenCodePlugin(home, template, { isCancelled = () => false } = {}) {
+    try { return await seedHome(home, template, isCancelled); }
     catch (error) { return { status: 'failed', error: error?.message || String(error) }; }
 }
 
-async function seedHome(home, template) {
+async function seedHome(home, template, isCancelled) {
     if (!template?.path || !template.version) return { status: 'unavailable' };
     const directory = path.join(home, '.config', 'opencode');
     const root = await fs.lstat(directory);
@@ -92,6 +94,7 @@ async function seedHome(home, template) {
         if (state.current) return { status: 'current' };
         const hasManifest = Boolean(state.manifest.value);
         if (hasManifest ? !state.managed : state.manifest.invalid || modules === 'directory') return { status: 'customized' };
+        if (isCancelled()) return { status: 'aborted' };
         const stale = `${directory}/.roboteam-stale-${randomUUID()}`;
         const staging = `${directory}/.roboteam-seed-${randomUUID()}`;
         try {
@@ -103,6 +106,8 @@ async function seedHome(home, template) {
                 await fs.copyFile(path.join(template.path, name), path.join(staging, name), constants.COPYFILE_EXCL);
                 await fs.chmod(path.join(staging, name), 0o600);
             }
+            // The last point before the home changes: a robot being deleted gets nothing more written.
+            if (isCancelled()) return { status: 'aborted' };
             // The manifest and lock first; node_modules last, because its presence is what
             // makes OpenCode skip the installation.
             for (const name of ['package-lock.json', 'package.json']) {

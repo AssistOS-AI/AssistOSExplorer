@@ -64,7 +64,8 @@ const sha256 = value => createHash('sha256').update(value).digest('hex');
 async function hashFile(file, limit = FILE_LIMIT) {
     let handle;
     try {
-        handle = await fs.open(file, constants.O_RDONLY);
+        // O_NONBLOCK: a FIFO planted by a robot must not block the open; it is reported as special.
+        handle = await fs.open(file, constants.O_RDONLY | constants.O_NONBLOCK);
         const metadata = await handle.stat();
         if (metadata.isDirectory()) return 'directory';
         if (!metadata.isFile()) return 'special';
@@ -164,7 +165,8 @@ async function gatewayModels(connect, env, signal) {
 async function authIsLocalOnly(file) {
     let text;
     try {
-        const metadata = await fs.stat(file);
+        // A robot controls this path: only a regular file is ever opened (a FIFO would block the read).
+        const metadata = await fs.lstat(file);
         if (!metadata.isFile() || metadata.size > FILE_LIMIT) return false;
         text = await fs.readFile(file, 'utf8');
     } catch (error) {
@@ -188,7 +190,16 @@ async function loadSqlite() {
 // organisation's remote configuration is merged into every launch. A database that exists but
 // cannot be inspected counts as account state.
 async function consoleAccountActive(file) {
-    try { await fs.access(file); } catch (error) {
+    try {
+        // Only a regular file is opened: a FIFO or device at this path must bypass, not block.
+        const metadata = await fs.lstat(file);
+        if (!metadata.isFile()) return true;
+        // SQLite also opens its write-ahead and journal siblings.
+        for (const suffix of ['-wal', '-shm', '-journal']) {
+            const sibling = await fs.lstat(file + suffix).catch(error => { if (error.code !== 'ENOENT') throw error; });
+            if (sibling && !sibling.isFile()) return true;
+        }
+    } catch (error) {
         if (['ENOENT', 'ENOTDIR'].includes(error.code)) return false;
         return true;
     }
@@ -200,6 +211,8 @@ async function consoleAccountActive(file) {
             if (tables.has('account_state') && database.prepare(
                 'SELECT 1 FROM account_state WHERE active_account_id IS NOT NULL OR active_org_id IS NOT NULL LIMIT 1').get()) return true;
             if (tables.has('control_account') && database.prepare('SELECT 1 FROM control_account WHERE active = 1 LIMIT 1').get()) return true;
+            // 1.18.x credential table (connector, method, OAuth or key): any row is remote or account scoped.
+            if (tables.has('credential') && database.prepare('SELECT 1 FROM credential LIMIT 1').get()) return true;
             return false;
         } finally { database.close(); }
     } catch { return true; }

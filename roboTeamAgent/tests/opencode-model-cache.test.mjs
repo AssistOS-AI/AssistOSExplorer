@@ -433,3 +433,50 @@ test('a missing models.json also removes the stored record', async (t) => {
     await f.cache.probe(f.config());
     await assert.rejects(fs.access(CACHE_FILE(f)));
 });
+
+test('any row in the 1.18 credential table bypasses the cache; an empty table does not', { skip: !sqlite && 'node:sqlite is unavailable' }, async (t) => {
+    const f = await fixture(t);
+    await fs.mkdir(path.dirname(DB(f)), { recursive: true });
+    createDatabase(DB(f), [...ACCOUNT_TABLES, 'CREATE TABLE credential (connector_id text, method_id text, kind text, data text)']);
+    assert.ok(await f.cache.probe(f.config()));
+    createDatabase(DB(f), ["INSERT INTO credential VALUES ('openai', 'oauth', 'oauth', 'x')"]);
+    assert.equal(await f.cache.probe(f.config()), null);
+    // Only presence is checked: the persisted record carries nothing from the table.
+    createDatabase(DB(f), ['DELETE FROM credential']);
+    const probe = await f.cache.probe(f.config());
+    await f.cache.store(probe, LISTING);
+    assert.ok(!(await fs.readFile(CACHE_FILE(f), 'utf8')).includes('openai'));
+});
+
+const mkfifo = async file => {
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('mkfifo', [file]);
+};
+
+test('a FIFO where opencode.db, a sibling or auth.json belongs bypasses the cache without opening it', async (t) => {
+    const f = await fixture(t);
+    await fs.mkdir(path.dirname(DB(f)), { recursive: true });
+    for (const target of [DB(f), AUTH(f)]) {
+        await mkfifo(target);
+        const started = performance.now();
+        assert.equal(await f.cache.probe(f.config()), null, target);
+        assert.ok(performance.now() - started < 2000, 'did not block on the FIFO');
+        await fs.rm(target);
+    }
+    if (sqlite) {
+        createDatabase(DB(f), ACCOUNT_TABLES);
+        await mkfifo(`${DB(f)}-wal`);
+        assert.equal(await f.cache.probe(f.config()), null, 'a special WAL sibling');
+        await fs.rm(`${DB(f)}-wal`);
+        assert.ok(await f.cache.probe(f.config()));
+    }
+});
+
+test('a FIFO among keyed inputs does not block the key either', async (t) => {
+    const f = await fixture(t);
+    await mkfifo(path.join(f.cwd, 'opencode.json'));
+    const started = performance.now();
+    const probe = await f.cache.probe(f.config());
+    assert.ok(probe.key);
+    assert.ok(performance.now() - started < 2000);
+});
