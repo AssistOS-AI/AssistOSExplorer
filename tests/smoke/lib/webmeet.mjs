@@ -96,7 +96,7 @@ export async function readRoomShareLink(page, title) {
   const linkText = dialog.locator('[data-role="roomLinkText"]');
   await expect(linkText).toHaveText(/\S/);
   const link = String(await linkText.textContent() || '').trim();
-  await dialog.locator('button.close[aria-label="Close"]').click();
+  await dialog.locator('webmeet-room-settings-modal button.close[aria-label="Close"]').click();
   await expect(dialog).toBeHidden();
   return link;
 }

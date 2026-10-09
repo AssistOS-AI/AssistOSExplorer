@@ -134,7 +134,7 @@ test.describe('WebMeet rooms', () => {
         response.request().method() === 'POST'
         && new URL(response.url()).pathname === '/webmeetAgent/mcp'
         && mcpToolNamesFromPostData(response.request().postData()).includes('webmeet_room_public_get')
-      ));
+      ), { timeout: smokeConfig.timeouts.navigation });
       publicGetResponse.catch(() => {});
       await openStandaloneWebMeet(deniedPage, { url: teamRoomUrl });
       const denial = deniedPage.locator('.webmeet-access-denied[role="alert"]');
