@@ -118,7 +118,11 @@ async function createAchillesCopilotBasicSkillsRepo(rootDir) {
   return { repoDir, skills };
 }
 
-function createHandlers(workspaceRoot, invalidated = [], instrumentClient = null) {
+// A verified administrator invocation sees internal repository paths and URLs;
+// restricted projections are covered by skillsManifestProjection.test.js.
+const ADMIN_INVOCATION = { invocation: { sub: 'user:ops-1', actor: { kind: 'user', id: 'user:ops-1', roles: ['admin'] } } };
+
+function createHandlers(workspaceRoot, invalidated = [], instrumentClient = null, invocationContext = {}) {
   const registry = new Map();
   const repositoryClient = {
     async listRepositories() {
@@ -189,7 +193,8 @@ function createHandlers(workspaceRoot, invalidated = [], instrumentClient = null
     REPLACE_TEXT_TIMEOUT_MS: 1000,
     DEFAULT_DIRECTORY_TREE_MAX_DEPTH: 4,
     DEFAULT_DIRECTORY_TREE_MAX_NODES: 100,
-    getAllowedDirectories: () => [workspaceRoot]
+    getAllowedDirectories: () => [workspaceRoot],
+    getInvocationContext: () => invocationContext
   });
 }
 
@@ -431,7 +436,7 @@ test('skillset controls batch symlink exports, prefer workspace sources and pres
     const projectDir = path.join(workspaceRoot, 'project');
     await fs.mkdir(projectDir);
     const invalidated = [];
-    const handlers = createHandlers(workspaceRoot, invalidated);
+    const handlers = createHandlers(workspaceRoot, invalidated, null, ADMIN_INVOCATION);
     const add = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: path.basename(repoDir) }));
     assert.equal(add.repositories[0].repoPath, repoDir);
     const alpha = path.join(projectDir, '.agents/skills/alpha-skill');
@@ -493,7 +498,7 @@ export function getSkillRepositoryRecommendations(options) {
   await writeFile(path.join(workspaceRoot, '.ploinky/repos', name, 'skills/alpha-skill/SKILL.md'), 'STALE CACHE');
   const project = path.join(workspaceRoot, 'project');
   await fs.mkdir(project);
-  const handlers = createHandlers(workspaceRoot);
+  const handlers = createHandlers(workspaceRoot, [], null, ADMIN_INVOCATION);
   const initial = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: project }));
   assert.equal(initial.skillRepositories[0].url, local);
   assert.deepEqual(initial.skillRepositories[0].warnings, ['skills/incomplete: missing SKILL.md']);
