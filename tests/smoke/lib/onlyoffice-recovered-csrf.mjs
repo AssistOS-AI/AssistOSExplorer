@@ -70,6 +70,7 @@ export function createMutationTrafficRecorder({ phase, elapsed }) {
   const stamps = new WeakMap();
   let nextPageId = 1;
   let nextFrameId = 1;
+  let nextRequestId = 1;
   let nextSeq = 1;
 
   function pageIdOf(page) {
@@ -97,9 +98,12 @@ export function createMutationTrafficRecorder({ phase, elapsed }) {
   function stampOf(request) {
     if (!stamps.has(request)) {
       const state = frameStateOf(request);
+      // requestId ties a response to a later requestfailed of the same request
+      // (a body that aborts after its headers arrived).
+      const requestId = nextRequestId++;
       stamps.set(request, state
-        ? { pageId: state.pageId, frameId: state.id, epoch: state.epoch }
-        : { pageId: 0, frameId: 0, epoch: 0 });
+        ? { requestId, pageId: state.pageId, frameId: state.id, epoch: state.epoch }
+        : { requestId, pageId: 0, frameId: 0, epoch: 0 });
     }
     return stamps.get(request);
   }
@@ -233,6 +237,13 @@ function exactConsoleCandidates(consoleErrors, url) {
     && event.location?.url === url);
 }
 
+// A response can be followed by a requestfailed for the very same request when
+// its body transfer aborts after the headers arrived.
+function failedLater(entries, entry) {
+  return Boolean(entry.requestId) && entries.some((other) => other.requestId === entry.requestId && other.seq > entry.seq
+    && (other.kind === 'mutation-failed' || other.kind === 'proof-failed'));
+}
+
 function judge(forbidden, { mutations, proofs, navigations, consoleErrors, forbiddenResponses }) {
   if (forbidden.captureError) return { reason: 'capture-failed' };
   if (forbidden.csrfInvalidBody === null) return { reason: 'forbidden-body-unreadable' };
@@ -251,6 +262,7 @@ function judge(forbidden, { mutations, proofs, navigations, consoleErrors, forbi
   if (before?.status === 403) return { reason: 'repeated-403' };
   if (!retry) return { reason: 'retry-missing' };
   if (retry.kind === 'mutation-failed') return { reason: 'retry-failed' };
+  if (failedLater(mutations, retry)) return { reason: 'retry-failed' };
   if (retry.status === 403) return { reason: 'repeated-403' };
   if (!isSuccess(retry.status)) return { reason: 'retry-not-2xx' };
   if (retry.captureError || !retry.proofRef) return { reason: 'capture-failed' };
@@ -259,6 +271,12 @@ function judge(forbidden, { mutations, proofs, navigations, consoleErrors, forbi
   const between = (entry) => entry.seq > forbidden.seq && entry.seq < retry.seq;
   if (navigations.some((entry) => between(entry) && entry.pageId === forbidden.pageId
     && (entry.isMain || entry.frameId === forbidden.frameId))) return { reason: 'navigation-during-recovery' };
+  const refresh = proofs.find((entry) => entry.seq > forbidden.seq && entry.pageId === forbidden.pageId
+    && entry.mutationRoute === route);
+  // The chosen refresh itself failing is a failed refresh, not a stray failed proof.
+  if (refresh && between(refresh) && (refresh.status !== 200 || failedLater(proofs, refresh))) {
+    return { reason: 'refresh-failed' };
+  }
   if (proofs.some((entry) => between(entry) && entry.kind === 'proof-failed' && entry.mutationRoute === route)) {
     return { reason: 'proof-request-failed-during-recovery' };
   }
@@ -270,10 +288,8 @@ function judge(forbidden, { mutations, proofs, navigations, consoleErrors, forbi
     && entry.routeKey === route && entry.proofRef === forbidden.proofRef && entry.generation).at(-1);
   if (!rejected) return { reason: 'rejected-proof-generation-unobserved' };
 
-  const refresh = proofs.find((entry) => entry.seq > forbidden.seq && entry.pageId === forbidden.pageId
-    && entry.mutationRoute === route);
   if (!refresh || refresh.seq > retry.seq) return { reason: 'refresh-missing' };
-  if (refresh.status !== 200) return { reason: 'refresh-failed' };
+  if (refresh.status !== 200 || failedLater(proofs, refresh)) return { reason: 'refresh-failed' };
   if (!sameDocument(refresh)) return { reason: 'refresh-in-different-document' };
   if (refresh.captureError || refresh.routeKey !== route || !refresh.generation || !refresh.proofRef
     || refresh.origin !== originOf(forbidden.url)) return { reason: 'refresh-unreadable-or-mismatched' };

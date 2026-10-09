@@ -308,7 +308,8 @@ test('failed or aborted attempts and navigations between the 403 and the recover
     ['retry-failed', (e) => { e.traffic[3] = failedMutation({ elapsedMs: 1103 }); }],
     ['navigation-during-recovery', (e) => { e.traffic.splice(2, 0, navigation({ elapsedMs: 1010 })); }],
     ['navigation-during-recovery', (e) => { e.traffic.splice(2, 0, navigation({ elapsedMs: 1010, isMain: false, frameId: 1, epoch: 2 })); }],
-    ['proof-request-failed-during-recovery', (e) => { e.traffic.splice(2, 0, failedProof({ elapsedMs: 1010, mutationRoute: 'dpuAgent' })); }],
+    ['proof-request-failed-during-recovery', (e) => { e.traffic.splice(3, 0, failedProof({ elapsedMs: 1050, mutationRoute: 'dpuAgent' })); }],
+    ['refresh-failed', (e) => { e.traffic.splice(2, 0, failedProof({ elapsedMs: 1010, mutationRoute: 'dpuAgent' })); }],
     ['retry-in-different-document', (e) => { e.traffic[3].epoch = 2; }],
     ['retry-in-different-document', (e) => { e.traffic[3].frameId = 2; }],
     ['refresh-in-different-document', (e) => { e.traffic[2].epoch = 2; }],
@@ -389,6 +390,11 @@ function fakeBrowser() {
         json: async () => JSON.parse(text),
         request: () => request,
       });
+      return request;
+    },
+    // The body of an already answered request aborts after its headers.
+    failBody(request) {
+      context.emit('requestfailed', request);
     },
     abort(spec) {
       const request = requestOf(spec);
@@ -402,13 +408,13 @@ function fakeBrowser() {
       context.emit('console', { type: () => 'error', text: () => text, location: () => ({ url, lineNumber: 0, columnNumber: 0 }) });
     },
     post(generation, status, { frame = main } = {}) {
-      browser.exchange(
+      return browser.exchange(
         { method: 'POST', url: URL_DPU, postData: RPC_BODY, headers: { [CSRF]: proofValue(generation) }, frame },
         { status, body: status === 403 ? { error: 'browser_csrf_invalid' } : { jsonrpc: '2.0', id: '15', result: {} } },
       );
     },
     proof(generation, { frame = main } = {}) {
-      browser.exchange({ url: PROOF_URL, frame }, { body: proofBody(generation) });
+      return browser.exchange({ url: PROOF_URL, frame }, { body: proofBody(generation) });
     },
   };
   return browser;
@@ -553,6 +559,43 @@ test('a refresh aborted by a reload is not replaced by the new document proof fe
   browser.at(1110);
   browser.post(NEW_GENERATION, 200);
   await assertNotAcknowledged(browser, 'navigation-during-recovery');
+});
+
+test('a 2xx retry whose body transfer later fails is not a recovery', async () => {
+  const browser = fakeBrowser();
+  rejectedThenReload(browser);
+  browser.at(1020);
+  browser.proof(NEW_GENERATION);
+  browser.at(1103);
+  const retry = browser.post(NEW_GENERATION, 200);
+  browser.at(1110);
+  browser.failBody(retry);
+  await assertNotAcknowledged(browser, 'retry-failed');
+});
+
+test('a 2xx refresh whose body transfer later fails is not a recovery', async () => {
+  const browser = fakeBrowser();
+  rejectedThenReload(browser);
+  browser.at(1020);
+  const refresh = browser.proof(NEW_GENERATION);
+  browser.at(1030);
+  browser.failBody(refresh);
+  browser.at(1103);
+  browser.post(NEW_GENERATION, 200);
+  await assertNotAcknowledged(browser, 'refresh-failed');
+});
+
+test('a failure of an unrelated request, or of the forbidden one, does not undo a recovery', async () => {
+  const browser = fakeBrowser();
+  rejectedThenReload(browser);
+  browser.at(1020);
+  browser.proof(NEW_GENERATION);
+  browser.at(1103);
+  browser.post(NEW_GENERATION, 200);
+  browser.abort({ method: 'POST', url: `${ORIGIN}/explorer/mcp`, postData: '{"jsonrpc":"2.0","method":"notifications/initialized"}' });
+  await browser.diagnostics.settle();
+  assert.equal(browser.diagnostics.snapshot().acknowledgedRecoveredCsrf.length, 1);
+  assert.doesNotThrow(() => browser.diagnostics.assertNoErrors());
 });
 
 test('a document that starts before the 403 response cannot recover for it', async () => {
