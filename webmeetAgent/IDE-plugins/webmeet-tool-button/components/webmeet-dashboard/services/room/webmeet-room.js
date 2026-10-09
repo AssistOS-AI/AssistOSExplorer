@@ -99,6 +99,7 @@ export class WebMeetRoom extends EventTarget {
         this.presenceHeartbeatInFlight = false;
         this.lastWorkspaceEventId = '';
         this.workspacePollInitialized = false;
+        this.workspacePollResyncPending = false;
         this.workspacePollGeneration = 0;
         this.workspacePollId = '';
         this.workspaceInvalidationVersion = 0;
@@ -306,6 +307,7 @@ export class WebMeetRoom extends EventTarget {
             this.workspacePollId = workspaceId;
         }
         this.workspacePollInitialized = false;
+        this.workspacePollResyncPending = false;
         const current = () => !this.disposed && generation === this.workspacePollGeneration
             && !this.isGuestSession() && workspaceId === String(this.getSelectedWorkspaceId() || '').trim();
         const poll = async () => {
@@ -326,17 +328,23 @@ export class WebMeetRoom extends EventTarget {
                 const events = payload.events;
                 // Parse the complete response before applying any lifecycle hints.
                 const decoded = events.map((event) => this.eventCodec.parse(event));
+                const nextCursor = typeof payload.nextCursor === 'string'
+                    ? payload.nextCursor : (decoded.at(-1)?.id || this.lastWorkspaceEventId);
                 if (!this.workspacePollInitialized || payload.cursorReset === true) {
                     this.workspacePollInitialized = true;
+                    // A reset with a blank cursor makes the next response the full history;
+                    // adopt its cursor like the initial synchronization instead of replaying it.
+                    this.workspacePollResyncPending = payload.cursorReset === true && !nextCursor;
                     this.requestWorkspaceRevalidation();
+                } else if (this.workspacePollResyncPending) {
+                    this.workspacePollResyncPending = false;
                 } else {
                     for (const encodedEvent of events) {
                         const parsed = this.handleIncomingEvent('authenticated-workspace', encodedEvent);
                         if (parsed.type === WEBMEET_EVENT_TYPES.WORKSPACE_ROOMS_INVALIDATED) this.workspaceInvalidationVersion += 1;
                     }
                 }
-                this.lastWorkspaceEventId = typeof payload.nextCursor === 'string'
-                    ? payload.nextCursor : (decoded.at(-1)?.id || this.lastWorkspaceEventId);
+                this.lastWorkspaceEventId = nextCursor;
             } catch (_) {
                 // Transport/codec failures retain pending reconciliation and cursor.
             } finally {
