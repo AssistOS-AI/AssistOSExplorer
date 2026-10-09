@@ -4,6 +4,7 @@ import { smokeConfig } from './config.mjs';
 import { requirePublicIpv4 } from './network.mjs';
 import { screenRuntimeEvidenceProvesUdpMux } from './screen-runtime-evidence.mjs';
 import { findSecretLeaks } from './security.mjs';
+import { evaluateGuestPresence } from './webmeet-public-room.mjs';
 
 function webMeetDashboardPath() {
   const params = new URLSearchParams({
@@ -43,13 +44,20 @@ export async function openWebMeet(page, account = smokeConfig.primaryUser, optio
   return principal;
 }
 
-export async function openStandaloneWebMeet(page, { roomId = '' } = {}) {
-  const path = new URL('/webmeetAgent/roomLoader.html', smokeConfig.baseURL);
-  if (roomId) path.searchParams.set('roomId', roomId);
-  const response = await page.goto(`${path.pathname}${path.search}`, { waitUntil: 'domcontentloaded' });
+export async function openStandaloneWebMeet(page, { roomId = '', url = '' } = {}) {
+  // `url` is a complete room link exactly as it was shared; it is opened verbatim.
+  const target = url || (() => {
+    const path = new URL('/webmeetAgent/roomLoader.html', smokeConfig.baseURL);
+    if (roomId) path.searchParams.set('roomId', roomId);
+    return `${path.pathname}${path.search}`;
+  })();
+  const response = await page.goto(target, { waitUntil: 'domcontentloaded' });
   expect(response, 'standalone WebMeet navigation must produce a document response').not.toBeNull();
   expect(response.status(), 'standalone WebMeet document must be served by WebMeet').toBe(200);
   expect(new URL(page.url()).pathname).toBe('/webmeetAgent/roomLoader.html');
+  if (url) {
+    expect(page.url(), 'the shared room link must be served without a redirect (for example to sign-in)').toBe(url);
+  }
   await expect(page.locator('body')).not.toContainText(/^Not Found$/);
   return response;
 }
@@ -62,8 +70,8 @@ export async function expectAuthenticatedStandaloneWebMeet(page) {
   await expect(page.locator('#webmeetCreateRoomButton')).toBeVisible();
 }
 
-export async function joinStandaloneGuestRoom(page, { roomId, displayName }) {
-  await openStandaloneWebMeet(page, { roomId });
+export async function joinStandaloneGuestRoom(page, { roomId, displayName, url = '' }) {
+  await openStandaloneWebMeet(page, { roomId, url });
   await expect(page.locator('#webmeetGuestEntryName')).toBeVisible({
     timeout: smokeConfig.timeouts.navigation,
   });
@@ -72,6 +80,56 @@ export async function joinStandaloneGuestRoom(page, { roomId, displayName }) {
   await expect(page.locator('#webmeetChatInput')).toBeVisible({
     timeout: smokeConfig.timeouts.media,
   });
+}
+
+// Reads the room link from the admin "Room settings" dialog, which shows the
+// exact text its Copy button copies.
+export async function readRoomShareLink(page, title) {
+  const item = page
+    .locator('#webmeetMeetingList .webmeet-list-item')
+    .filter({ has: page.getByText(title, { exact: true }) });
+  await expect(item).toHaveCount(1);
+  await item.first().hover();
+  await item.first().getByRole('button', { name: 'Room settings' }).click();
+  const dialog = page.locator('dialog:has(webmeet-room-settings-modal)').last();
+  await expect(dialog).toBeVisible();
+  const linkText = dialog.locator('[data-role="roomLinkText"]');
+  await expect(linkText).toHaveText(/\S/);
+  const link = String(await linkText.textContent() || '').trim();
+  await dialog.locator('button.close[aria-label="Close"]').click();
+  await expect(dialog).toBeHidden();
+  return link;
+}
+
+async function participantCardRows(page) {
+  return page.evaluate(() => Array.from(document.querySelectorAll('webmeet-participant-card[data-participant-id]'))
+    .map((element) => ({
+      identity: String(element.dataset.participantId || '').trim(),
+      local: String(element.dataset.local || element.getAttribute('data-is-local') || '') === 'true',
+      name: String(element.querySelector('[data-role="name"]')?.textContent || '').trim(),
+    }))
+    .filter((row) => row.identity));
+}
+
+// The owner's participant cards must show the guest under the guest's display
+// name and under the same identity the guest's own page reports as local.
+export async function expectGuestVisibleToOwner(ownerPage, guestPage, guestDisplayName) {
+  await expect.poll(async () => {
+    const [ownerRows, guestRows] = await Promise.all([participantCardRows(ownerPage), participantCardRows(guestPage)]);
+    return evaluateGuestPresence(ownerRows, guestRows, guestDisplayName);
+  }, {
+    message: `the owner's participant list must show '${guestDisplayName}' and the guest must see the owner`,
+    timeout: smokeConfig.timeouts.media,
+  }).toMatchObject({ ok: true });
+}
+
+// A chat entry whose text is `message`, with the server-attributed author name.
+export async function expectChatEntry(page, message, { author = '' } = {}) {
+  const entry = page.locator('#webmeetChatList .webmeet-feed-item', { hasText: message });
+  await expect(entry).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });
+  if (author) {
+    await expect(entry.locator('[data-role="chat-author"]')).toHaveText(author);
+  }
 }
 
 export async function createRoom(page, title, { roomType = 'team' } = {}) {

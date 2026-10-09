@@ -92,6 +92,36 @@ synthetic tokens and needs no real GitHub PAT. Unused optional secrets are not
 required. The official meeting identity requires `SMOKE_WEBMEET_HEADLESS=1`,
 `SMOKE_WEBMEET_MEDIA=1`, and `SMOKE_MEDIA_TIMEOUT_MS=60000`.
 
+The official release cohort has a second WebMeet gate, the public-room gate, which
+proves that anyone with the URL of a public room can join that room. It is
+`specs/30-webmeet-room-chat.spec.mjs` with the title grep
+`standalone loader serves the authenticated dashboard and a guest invitation`:
+
+```bash
+npm test -- --project=chromium --workers=1 --retries=0 \
+  specs/30-webmeet-room-chat.spec.mjs \
+  --grep 'standalone loader serves the authenticated dashboard and a guest invitation'
+```
+
+Like every official-release identity it needs the Box and image pins, but it needs
+only the primary administrator sign-in inputs (no secondary account) and no
+`SMOKE_WEBMEET_*` flag or media. The administrator creates a public room and a team
+room and reads each room link from the Room settings dialog; each must equal
+`<origin>/webmeetAgent/roomLoader.html?roomId=<room id>`. The administrator joins
+the public room. A second browser context that starts with no cookies or storage
+and never signs in opens the exact public link, enters a unique display name, and
+must hold a router guest session and no signed-in session. The administrator's
+participant list must show that name under the guest's own participant identity,
+the guest's message must appear in the administrator's chat attributed to that
+name, and the administrator's message must appear in the guest's chat. A third
+cookie-less context opening the team room's own link must see the "Authentication
+required" page with its exact "not available as a public room" message and a
+sign-in link, WebMeet must answer `webmeet_room_public_get` with `Public room not
+found.`, the visitor must send no guest admission or guest chat call, and neither
+the name field nor the chat input may appear. Browser errors stay strict in all
+three contexts with no allowance for a 401/403 response. Both rooms are deleted
+afterwards.
+
 The runner checks discovery against the selected ledger identities before execution
 and checks every terminal result afterward. `ledger-discovery_codex.json` and
 `ledger-outcomes_codex.json` must agree exactly with that selection. Each outcome
@@ -110,7 +140,7 @@ headless/media spec30 identity. `SMOKE_ACCEPTANCE=1` never permits this exceptio
 
 Each official release gate uses a different run ID and artifact directory on one
 exact candidate and one fresh Box generation. Budget readiness, OnlyOffice-only
-setup, bootstrap, Copilot, OnlyOffice, WebMeet, postflight and cleanup from the
+setup, bootstrap, Copilot, OnlyOffice, both WebMeet gates, postflight and cleanup from the
 actual Box start time. Measure successful qualification durations and reserve a
 stated margin. If the sequence cannot fit 30 minutes, leave scheduling blocked.
 Give WebTTY its own early fresh cohort and longer supporting cases separately

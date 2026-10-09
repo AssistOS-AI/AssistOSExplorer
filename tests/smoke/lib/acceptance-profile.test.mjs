@@ -70,6 +70,55 @@ test('explicit headed screen profile retains its gate but cannot close the plann
     assert.equal(headless.ledgerCoverage, true);
 });
 
+const publicRoomTitle = 'standalone loader serves the authenticated dashboard and a guest invitation';
+const publicRoomArgs = ['--project=chromium', '--workers=1', '--retries=0', 'specs/30-webmeet-room-chat.spec.mjs', '--grep', publicRoomTitle];
+
+test('public-room WebMeet gate is a required official-release identity that needs only the primary account', () => {
+    const entry = acceptanceLedger.identities.find(value => value.title === publicRoomTitle);
+    assert.equal(entry.cohort, 'official-release');
+    assert.equal(entry.disposition, 'required-local-acceptance');
+    assert.deepEqual(entry.requiredFlags, {});
+    const env = { ...baseEnv };
+    for (const name of Object.keys(env)) if (name.startsWith('SMOKE_SECONDARY_')) delete env[name];
+    delete env.SMOKE_WEBTTY_CORE;
+    const profile = validateAcceptanceProfile(publicRoomArgs, env);
+    assert.deepEqual(profile.cases.map(value => value.identity), [entry.identity]);
+    assert.equal(profile.box, true);
+    assert.equal(profile.ledgerCoverage, true);
+    assert.deepEqual({ ...profile.accounts }, { enabled: true, secondary: false, primaryAdmin: true, searchAgentFixture: false });
+    for (const name of ['SMOKE_LOGIN_EMAIL', 'SMOKE_ACCOUNT_PASSWORD', 'SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_RELEASE_MANIFEST']) {
+        const missing = { ...env }; delete missing[name];
+        assert.throws(() => validateAcceptanceProfile(publicRoomArgs, missing), error => error.message.includes(name));
+    }
+    assert.throws(() => validateAcceptanceProfile([...publicRoomArgs, '--headed'], env), /headless/);
+    assert.throws(() => validateAcceptanceProfile(publicRoomArgs, { ...env, SMOKE_ALLOW_BROWSER_ERRORS: '1' }), /browser errors/);
+    const twoAccounts = validateAcceptanceProfile(['specs/30-webmeet-room-chat.spec.mjs', '--grep', 'two Explorer accounts can join one room and exchange chat'],
+        { ...baseEnv, SMOKE_WEBMEET_HEADLESS: '1', SMOKE_WEBMEET_MEDIA: '1', SMOKE_MEDIA_TIMEOUT_MS: '60000' });
+    assert.equal(twoAccounts.cases.length, 1);
+    assert.equal(twoAccounts.accounts.secondary, true);
+});
+
+test('public-room gate source keeps its positive proof and its team-room negative control', () => {
+    const specSource = fs.readFileSync(new URL('../specs/30-webmeet-room-chat.spec.mjs', import.meta.url), 'utf8');
+    const start = specSource.indexOf(`test('${publicRoomTitle}'`);
+    const end = specSource.indexOf("test('two Explorer accounts", start);
+    assert.ok(start >= 0 && end > start);
+    const body = specSource.slice(start, end);
+    for (const required of [
+        "roomType: 'guest'", "createRoom(page, teamTitle, { roomType: 'team' })",
+        'readRoomShareLink(page, publicTitle)', 'storageState()', "{ cookies: [], origins: [] }",
+        'joinStandaloneGuestRoom(guestPage, { url: publicRoomUrl', 'expectGuestVisibleToOwner(page, guestPage',
+        'sendWebMeetChat(guestPage, guestMessage)', 'expectChatEntry(page, guestMessage, { author: guestDisplayName })',
+        'sendWebMeetChat(page, ownerMessage)', 'expectChatEntry(guestPage, ownerMessage)',
+        'openStandaloneWebMeet(deniedPage, { url: teamRoomUrl })', 'PUBLIC_ROOM_DENIED_MESSAGE',
+        "toContain('Public room not found.')", "locator('#webmeetChatInput')).toHaveCount(0)",
+        'forbiddenGuestAdmissionTools(deniedToolCalls)', 'deniedDiagnostics.actionableEvents()',
+        'deleteRoomIfPresent(page, publicTitle)', 'deleteRoomIfPresent(page, teamTitle)',
+    ]) assert.ok(body.includes(required), `gate source lost: ${required}`);
+    assert.doesNotMatch(body, /signIn\(|trySignIn|openWebMeet\(guestPage|openWebMeet\(deniedPage/);
+    assert.doesNotMatch(body, /allowBrowserErrors|SMOKE_ALLOW_BROWSER_ERRORS|acknowledgeExact/);
+});
+
 test('discovery and terminal pass matching refuses every false-pass outcome', () => {
     const cases = acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance');
     assert.doesNotThrow(() => assertLedgerResults(cases, cases.map(record), { terminal: true }));

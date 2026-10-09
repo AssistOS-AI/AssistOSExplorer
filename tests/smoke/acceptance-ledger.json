@@ -347,10 +347,10 @@
     {
       "identity": "30-webmeet-room-chat.spec.mjs::standalone loader serves the authenticated dashboard and a guest invitation",
       "file": "30-webmeet-room-chat.spec.mjs",
-      "sourceLine": 45,
+      "sourceLine": 56,
       "title": "standalone loader serves the authenticated dashboard and a guest invitation",
       "observedStatus": "failed",
-      "cohort": "supporting-30",
+      "cohort": "official-release",
       "runner": "npm test -- --project=chromium --workers=1 --retries=0",
       "selection": {
         "spec": "specs/30-webmeet-room-chat.spec.mjs",
@@ -370,7 +370,7 @@
     {
       "identity": "30-webmeet-room-chat.spec.mjs::two Explorer accounts can join one room and exchange chat",
       "file": "30-webmeet-room-chat.spec.mjs",
-      "sourceLine": 106,
+      "sourceLine": 202,
       "title": "two Explorer accounts can join one room and exchange chat",
       "observedStatus": "failed",
       "cohort": "official-release",

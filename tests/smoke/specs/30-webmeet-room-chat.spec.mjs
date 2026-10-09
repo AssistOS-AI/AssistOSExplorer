@@ -21,6 +21,8 @@ import {
   deleteRoomIfPresent,
   enableMedia,
   expectAuthenticatedStandaloneWebMeet,
+  expectChatEntry,
+  expectGuestVisibleToOwner,
   expectBidirectionalAudioVideoRtp,
   expectWebMeetMediaState,
   expectWebMeetReady,
@@ -30,10 +32,19 @@ import {
   exerciseScreenShareDirection,
   joinStandaloneGuestRoom,
   joinRoom,
+  openStandaloneWebMeet,
   openWebMeet,
+  readRoomShareLink,
   sendWebMeetChat,
   trySignInToWebMeet,
 } from '../lib/webmeet.mjs';
+import {
+  PUBLIC_ROOM_DENIED_MESSAGE,
+  describeGuestCookies,
+  forbiddenGuestAdmissionTools,
+  mcpToolNamesFromPostData,
+  publicRoomLoaderUrl,
+} from '../lib/webmeet-public-room.mjs';
 
 function expectNoUnfilteredBrowserErrors(diagnostics, label) {
   expect(diagnostics.events.filter((event) => (
@@ -43,8 +54,14 @@ function expectNoUnfilteredBrowserErrors(diagnostics, label) {
 
 test.describe('WebMeet rooms', () => {
   test('standalone loader serves the authenticated dashboard and a guest invitation', async ({ page, browser }, testInfo) => {
-    const roomTitle = `e2e-public-room-${smokeConfig.runId}`;
+    // Public-room release gate: anyone holding the URL of a public room can join
+    // it and chat with its owner, and the URL of a team room is refused.
+    test.setTimeout(Math.max(smokeConfig.timeouts.test, 300_000));
+    const publicTitle = `e2e-public-room-${smokeConfig.runId}`;
+    const teamTitle = `e2e-team-room-${smokeConfig.runId}`;
     const guestDisplayName = `e2e-guest-${smokeConfig.runId}`;
+    const ownerMessage = `public-chat-from-owner-${smokeConfig.runId}`;
+    const guestMessage = `public-chat-from-guest-${smokeConfig.runId}`;
     const ownerDiagnostics = attachPageDiagnostics(page, testInfo, 'webmeet-standalone-owner');
     const guestContext = await browser.newContext({
       baseURL: smokeConfig.baseURL,
@@ -52,24 +69,94 @@ test.describe('WebMeet rooms', () => {
     });
     const guestPage = await guestContext.newPage();
     const guestDiagnostics = attachPageDiagnostics(guestPage, testInfo, 'webmeet-standalone-guest');
-    let roomCreated = false;
+    const deniedContext = await browser.newContext({
+      baseURL: smokeConfig.baseURL,
+      ignoreHTTPSErrors: true,
+    });
+    const deniedPage = await deniedContext.newPage();
+    const deniedDiagnostics = attachPageDiagnostics(deniedPage, testInfo, 'webmeet-standalone-denied');
+    let publicRoomCreated = false;
+    let teamRoomCreated = false;
     let primaryError = null;
     const failureCollector = createReleaseGateFailureCollector();
 
     try {
       await openWebMeet(page);
-      await deleteRoomIfPresent(page, roomTitle);
-      const roomId = await createRoom(page, roomTitle, { roomType: 'guest' });
-      roomCreated = true;
+      await deleteRoomIfPresent(page, publicTitle);
+      await deleteRoomIfPresent(page, teamTitle);
+      publicRoomCreated = true;
+      const publicRoomId = await createRoom(page, publicTitle, { roomType: 'guest' });
+      teamRoomCreated = true;
+      const teamRoomId = await createRoom(page, teamTitle, { roomType: 'team' });
+      expect(teamRoomId, 'the public and team rooms must be distinct rooms').not.toBe(publicRoomId);
+
+      // The links are taken from the WebMeet UI, exactly as the owner would copy them.
+      const publicRoomUrl = await readRoomShareLink(page, publicTitle);
+      const teamRoomUrl = await readRoomShareLink(page, teamTitle);
+      expect(publicRoomUrl, 'the UI share link of the public room').toBe(publicRoomLoaderUrl(smokeConfig.baseURL, publicRoomId));
+      expect(teamRoomUrl, 'the UI share link of the team room').toBe(publicRoomLoaderUrl(smokeConfig.baseURL, teamRoomId));
+
       await expectAuthenticatedStandaloneWebMeet(page);
-      await joinStandaloneGuestRoom(guestPage, {
-        roomId,
-        displayName: guestDisplayName,
+      await openWebMeet(page);
+      await joinRoom(page, publicTitle);
+
+      // Positive proof: a guest context with no cookies, storage or sign-in
+      // opens only the public URL, gives a name, and exchanges chat both ways.
+      expect(await guestContext.storageState(), 'the guest context must start with no cookies or storage').toEqual({ cookies: [], origins: [] });
+      const guestNavigations = [];
+      guestPage.on('framenavigated', (frame) => {
+        if (frame === guestPage.mainFrame()) guestNavigations.push(frame.url());
       });
+      await joinStandaloneGuestRoom(guestPage, { url: publicRoomUrl, displayName: guestDisplayName });
+      expect(guestNavigations.filter((url) => new URL(url).pathname.startsWith('/auth/')),
+        'the guest must never be sent to or through sign-in').toEqual([]);
+      const joinedUrl = new URL(guestPage.url());
+      expect([joinedUrl.pathname, joinedUrl.searchParams.get('roomId')], 'the guest stays on the public room URL')
+        .toEqual(['/webmeetAgent/roomLoader.html', publicRoomId]);
+      const guestCookies = describeGuestCookies(await guestContext.cookies());
+      expect(guestCookies.hasGuestSession, `the router must give the guest a guest session (cookies: ${guestCookies.names.join(', ')})`).toBe(true);
+      expect(guestCookies.signedInCookies, 'the guest must hold no signed-in session').toEqual([]);
+
+      await expectGuestVisibleToOwner(page, guestPage, guestDisplayName);
+
+      await sendWebMeetChat(guestPage, guestMessage);
+      await expectChatEntry(page, guestMessage, { author: guestDisplayName });
+      await sendWebMeetChat(page, ownerMessage);
+      await expectChatEntry(guestPage, ownerMessage);
+
+      // Negative control: the same kind of link for a team room is refused.
+      expect(await deniedContext.storageState(), 'the denied-visitor context must start with no cookies or storage').toEqual({ cookies: [], origins: [] });
+      const deniedToolCalls = [];
+      deniedPage.on('request', (request) => {
+        if (request.method() === 'POST') deniedToolCalls.push(...mcpToolNamesFromPostData(request.postData()));
+      });
+      const publicGetResponse = deniedPage.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && new URL(response.url()).pathname === '/webmeetAgent/mcp'
+        && mcpToolNamesFromPostData(response.request().postData()).includes('webmeet_room_public_get')
+      ));
+      publicGetResponse.catch(() => {});
+      await openStandaloneWebMeet(deniedPage, { url: teamRoomUrl });
+      const denial = deniedPage.locator('.webmeet-access-denied[role="alert"]');
+      await expect(denial).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
+      await expect(denial.locator('h1')).toHaveText('Authentication required');
+      await expect(denial.locator('p')).toHaveText(PUBLIC_ROOM_DENIED_MESSAGE);
+      await expect(denial.locator('a.webmeet-login-link')).toHaveAttribute(
+        'href',
+        `/auth/login?${new URLSearchParams({ returnTo: `/webmeetAgent/roomLoader.html?roomId=${teamRoomId}` })}`,
+      );
+      expect(await (await publicGetResponse).text(), 'WebMeet itself must report that the room is not public').toContain('Public room not found.');
+      await expect(deniedPage.locator('#webmeetGuestEntryName')).toHaveCount(0);
+      await expect(deniedPage.locator('#webmeetChatInput')).toHaveCount(0);
+      await expect(deniedPage.locator('div.webmeet-dashboard')).toHaveCount(0);
+      expect(deniedToolCalls, 'the refused visitor must have asked WebMeet about the room').toContain('webmeet_room_public_get');
+      expect(forbiddenGuestAdmissionTools(deniedToolCalls), 'the refused visitor must never be admitted or post').toEqual([]);
+      expect(describeGuestCookies(await deniedContext.cookies()).signedInCookies, 'the refused visitor must hold no signed-in session').toEqual([]);
 
       if (smokeConfig.flags.failOnBrowserErrors) {
         expect(ownerDiagnostics.actionableEvents(), 'standalone owner browser errors').toEqual([]);
         expect(guestDiagnostics.actionableEvents(), 'standalone guest browser errors').toEqual([]);
+        expect(deniedDiagnostics.actionableEvents(), 'refused team-room visitor browser errors').toEqual([]);
       }
     } catch (error) {
       primaryError = error;
@@ -86,18 +173,27 @@ test.describe('WebMeet rooms', () => {
             fullPage: true,
           })
         )),
+        failureCollector.required('standalone refused visitor failure screenshot', () => (
+          deniedPage.screenshot({
+            path: testInfo.outputPath('webmeet-standalone-denied-failure.png'),
+            fullPage: true,
+          })
+        )),
       ]);
     } finally {
-      if (roomCreated && !page.isClosed()) {
+      if ((publicRoomCreated || teamRoomCreated) && !page.isClosed()) {
         await failureCollector.required('standalone run-scoped room deletion', async () => {
           await openWebMeet(page);
-          await deleteRoomIfPresent(page, roomTitle);
+          await deleteRoomIfPresent(page, publicTitle);
+          await deleteRoomIfPresent(page, teamTitle);
         });
       }
       await Promise.all([
         failureCollector.required('standalone owner diagnostics', () => ownerDiagnostics.flush()),
         failureCollector.required('standalone guest diagnostics', () => guestDiagnostics.flush()),
+        failureCollector.required('standalone refused visitor diagnostics', () => deniedDiagnostics.flush()),
         failureCollector.required('standalone guest context close', () => guestContext.close()),
+        failureCollector.required('standalone refused visitor context close', () => deniedContext.close()),
       ]);
     }
     failureCollector.throwIfAny({ primaryError, label: 'standalone WebMeet gate' });
