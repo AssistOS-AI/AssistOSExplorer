@@ -598,8 +598,9 @@ export async function appendGuestMeetingChat(context, { meetingId, participantId
 }
 
 export async function attachMeetingAgent(context, { meetingId, agentType, mode, authInfo = null }) {
-    await cleanupMeetingPresence(context, meetingId);
+    // Authorize before the presence cleanup: that cleanup rewrites the room record.
     assertAdminAuthInfo(authInfo);
+    await cleanupMeetingPresence(context, meetingId);
     if (String(agentType || '').trim() !== ROBO_TEAM_AGENT_TYPE || String(mode || '').trim() !== ROBO_TEAM_MODE) {
         throw new Error(`Unsupported Ploinky room agent "${agentType}:${mode}".`);
     }
@@ -670,8 +671,9 @@ export async function listMeetingAgents(context, meetingId, authInfo = null) {
 }
 
 export async function detachMeetingAgent(context, { meetingId, agentId, authInfo = null }) {
-    await cleanupMeetingPresence(context, meetingId);
+    // Authorize before the presence cleanup: that cleanup rewrites the room record.
     assertAdminAuthInfo(authInfo);
+    await cleanupMeetingPresence(context, meetingId);
     const targetAgentId = String(agentId || '').trim();
     if (!targetAgentId) {
         throw new Error('Missing agentId.');

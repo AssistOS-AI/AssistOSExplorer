@@ -5,8 +5,8 @@ Reads approved site information, target profiles, owner contact rules, and visit
 
 ## Input Format
 - `promptText` contains a JSON object with:
-  - `siteId` (string, required)
-  - `sessionId` (string, required)
+  - `siteId` and `sessionId` are not needed: the runtime supplies the active site and session through its trusted context, and any values in the payload are ignored.
+  - `message` (string, optional) — search text for site context
 
 ## Output Format
 - Plain text context snapshot.

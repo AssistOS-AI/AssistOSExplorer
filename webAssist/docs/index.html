@@ -103,6 +103,7 @@
                 <li>Conversation history is loaded when the widget first opens on a new tab</li>
             </ul>
             <p>Each session is stored in the site AKU under <code>$WEBASSIST_DATA_ROOT/sites/&lt;siteId&gt;/.aku/</code>. Ploinky supplies that required root as <code>{{STORAGE_CONTAINER_PATH}}/data</code>, backed in the host sandbox by <code>.data/webAssist/data</code>. WebAssist requires the managed storage parent to pre-exist as a non-symlink directory, creates only the application-owned <code>data</code> child, canonically revalidates it, and does not fall back to or migrate the retired workspace-level directory.</p>
+            <p>Each chat session belongs to the verified visitor or user that created it. The first chat writes an owner record under <code>sites/&lt;siteId&gt;/session-owners/&lt;sessionId&gt;.json</code> (schema 2: caller kind and id, the SHA-256 digest of a session secret, and a creation time) and returns that secret once. A later chat or history request continues the session only for the same verified caller or for a caller that presents the secret, so a visitor whose guest identity changed keeps the conversation. Anyone else who names the session starts a new one, and history requests from them return an empty, non-existent session. Admins may read any history. Sessions created before ownership existed have no owner record and are readable only by admins. Site-wide knowledge search never includes another visitor's session profile or lead.</p>
             <p>Site listing and session history work before the first chat: an absent <code>data</code> child produces an empty result without a write. Standalone event and session writers initialize that child themselves, but still reject an unprovisioned site AKU. Every entrypoint validates the managed parent and rejects symbolic links rather than treating them as missing data.</p>
             <ul>
                 <li><code>&lt;sessionId&gt;-profile.md</code> — profile details and contact information</li>
@@ -111,13 +112,14 @@
             <p>The profile file is updated by the <code>webassist-session</code> skill when the agent persists profiling data. The history file is appended automatically by the runtime after each turn, independent of the skill. At runtime, the orchestrator receives a bounded snapshot of the latest 10 persisted user/agent messages to improve short-term continuity.</p>
 
             <h2 id="mcp-contract">MCP Contract</h2>
-            <p>webAssist exposes three MCP tools via the <code>/webAssist/mcp</code> endpoint:</p>
+            <p>webAssist exposes four MCP tools via the <code>/webAssist/mcp</code> endpoint:</p>
             <ul>
-                <li><code>web_cli_chat</code> — Executes a conversational turn. Inputs: <code>siteId</code>, <code>message</code>, optional <code>sessionId</code>, and optional <code>json</code>.</li>
-                <li><code>web_cli_history</code> — Returns chat history for a session. Inputs: <code>siteId</code> and <code>sessionId</code>.</li>
+                <li><code>web_cli_chat</code> — Executes a conversational turn. Inputs: <code>siteId</code>, <code>message</code>, optional <code>sessionId</code>, optional <code>sessionSecret</code>, and optional <code>json</code>.</li>
+                <li><code>web_cli_history</code> — Returns chat history for a session to its owner, a caller with its secret, or an admin. Inputs: <code>siteId</code>, <code>sessionId</code>, and optional <code>sessionSecret</code>.</li>
+                <li><code>list-sites</code> — Lists site IDs for admins and users with Explorer access. Returns <code>sites</code> and <code>count</code>; other callers are denied.</li>
                 <li><code>register-events</code> — Appends a site-scoped event to the append-only events log. Inputs: <code>siteId</code>, <code>visitorId</code>, <code>eventType</code>, and optional fields.</li>
             </ul>
-            <p>Chat responses include <code>siteId</code>, the assistant's text response, and the session ID for persistence.</p>
+            <p>Chat responses include <code>siteId</code>, the assistant's text response, and the effective session ID for persistence. The response that creates a new session also includes <code>sessionSecret</code>; the embedded chat stores it beside the session ID and sends both with later chat and history calls. The secret is never logged, persisted in plaintext, or included in errors.</p>
 
             <h2 id="skills">Skills</h2>
             <p>webAssist uses the <code>webassist-*</code> skill set to handle visitor interactions. Visitor turn orchestration is driven directly by the system prompt through the MainAgent instance.</p>

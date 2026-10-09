@@ -9,15 +9,15 @@ function parseInput(promptText) {
     }
 }
 
+// The site and session come only from the trusted runtime context; any
+// `siteId`/`sessionId` the model writes into the payload is ignored.
 export async function action({ promptText, context }) {
-    const { siteId, sessionId, message } = parseInput(promptText);
-    if (!siteId || !sessionId) {
-        throw new Error('webassist-site-context requires siteId and sessionId.');
-    }
-
+    const { message } = parseInput(promptText);
     const siteDataDir = context?.siteDataDir || '';
-    if (!siteDataDir) {
-        throw new Error('webassist-site-context requires context.siteDataDir.');
+    const siteId = context?.siteId || '';
+    const sessionId = context?.sessionId || '';
+    if (!siteDataDir || !siteId || !sessionId) {
+        throw new Error('webassist-site-context requires context.siteDataDir, context.siteId and context.sessionId.');
     }
 
     const akuContext = await loadAkuContext({

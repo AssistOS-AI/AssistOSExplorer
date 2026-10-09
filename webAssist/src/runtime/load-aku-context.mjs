@@ -142,6 +142,25 @@ function getLeadKuId(sessionId) {
     return `${LEAD_KU_PREFIX}${sessionId}`;
 }
 
+// Session-profile and lead records belong to one visitor each. Site-wide
+// search must never surface another visitor's records, so they are dropped
+// before any KU state is loaded, before the prompt is built and before the
+// debug capture. Only the caller's own session and lead records remain.
+function isVisitorScopedRecord(result) {
+    const kuId = String(result?.ku_id || '');
+    const kuType = String(result?.ku_type || '').toLowerCase();
+    return kuId.startsWith(SESSION_KU_PREFIX)
+        || kuId.startsWith(LEAD_KU_PREFIX)
+        || kuType === 'session-profile'
+        || kuType === 'lead';
+}
+
+function filterForeignVisitorRecords(results, sessionId) {
+    const own = new Set([getSessionKuId(sessionId), getLeadKuId(sessionId)]);
+    return (Array.isArray(results) ? results : [])
+        .filter((result) => !isVisitorScopedRecord(result) || own.has(String(result?.ku_id || '')));
+}
+
 /**
  * Build a manual context pack from search results, including full state for KUs.
  * This avoids the redundancy filtering in buildScopedContextPack that treats
@@ -392,9 +411,10 @@ export async function loadAkuContext({
     // Use direct search instead of buildScopedContextPack to avoid redundancy filtering
     // that treats KUs and their events as redundant
     const searchResult = await aku.search(query, searchOptions);
+    const searchResults = filterForeignVisitorRecords(searchResult.results, sessionId);
     
     // Manually build context pack with KUs and their state
-    const akuContext = await buildManualContextPack(aku, searchResult.results, {
+    const akuContext = await buildManualContextPack(aku, searchResults, {
         budgetChars: contextBudgetChars,
         includeState: true,
     });
@@ -457,7 +477,7 @@ export async function loadAkuContext({
             akuRootDir,
             query,
             searchOptions,
-            rawResults: Array.isArray(searchResult.results) ? searchResult.results.map((result) => ({
+            rawResults: searchResults.map((result) => ({
                 search_id: result.search_id,
                 record_type: result.record_type,
                 ku_id: result.ku_id,
@@ -469,8 +489,8 @@ export async function loadAkuContext({
                 path: result.path,
                 tags: result.tags,
                 keywords: result.keywords,
-            })) : [],
-            rawResultCount: Array.isArray(searchResult.results) ? searchResult.results.length : 0,
+            })),
+            rawResultCount: searchResults.length,
             profileCatalog: profileCatalog.map((profile) => ({
                 kuId: profile.kuId,
                 name: profile.name,

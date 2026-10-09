@@ -48,7 +48,10 @@ test('webAssist manifest keeps the embedded chat reachable as a guest surface', 
     }
 });
 
-test('webAssist MCP tools remain callable by guest-authenticated sessions', async () => {
+// Every tool stays listed and router-callable for guest sessions (no admin tag).
+// `list-sites` is still restricted: its handler denies callers without admin or
+// `explorer.access` (see session-ownership.mcp.test.mjs).
+test('webAssist MCP tools remain listed for guest-authenticated sessions with handler-enforced authorization', async () => {
     const config = await readAgentJson('mcp-config.json');
     const tools = Array.isArray(config.tools) ? config.tools : [];
     assert.ok(tools.length > 0, 'mcp-config.json must declare tools');
@@ -56,7 +59,7 @@ test('webAssist MCP tools remain callable by guest-authenticated sessions', asyn
     const requiredTools = new Set(['web_cli_chat', 'web_cli_history', 'register-events', 'list-sites']);
     const toolNames = new Set(tools.map((tool) => tool?.name).filter(Boolean));
     for (const toolName of requiredTools) {
-        assert.ok(toolNames.has(toolName), `${toolName} must remain available for the embedded guest flow`);
+        assert.ok(toolNames.has(toolName), `${toolName} must remain listed; list-sites authorization is enforced by its handler`);
     }
 
     for (const tool of tools) {

@@ -7,6 +7,7 @@ import { VISITOR_FLOW_SYSTEM_PROMPT } from './prompts/visitor-flow-system-prompt
 import { loadAkuContext } from './runtime/load-aku-context.mjs';
 import { appendSessionTurn } from './runtime/update-session.mjs';
 import { initializeWebAssistDataRoot, resolveSiteDataDir } from './runtime/akuStore.mjs';
+import { resolveChatSession } from './runtime/sessionAccess.mjs';
 
 function getCodeRoot() {
     return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -112,32 +113,43 @@ export async function createWebAssistAgent({
             source: 'node_modules',
         },
         mainAgent,
-        async handleMessage({ siteId, sessionId, message, mode = 'soul_gateway/web-assist' }) {
+        // `access` is the verified caller (or LOCAL_OPERATOR_ACCESS for the CLI).
+        // The session is resolved before any context load; `sessionSecret` is
+        // consumed only by resolveChatSession and never reaches the prompt,
+        // the execution context, debug output or AKU state.
+        async handleMessage({ siteId, sessionId = '', sessionSecret = '', message, access, mode = 'soul_gateway/web-assist' }) {
             if (!siteId) {
                 throw new Error('webAssist.handleMessage requires a siteId.');
-            }
-            if (!sessionId) {
-                throw new Error('webAssist.handleMessage requires a sessionId.');
             }
             if (!message) {
                 throw new Error('webAssist.handleMessage requires a message.');
             }
+            if (!access) {
+                throw new Error('webAssist.handleMessage requires a verified caller access.');
+            }
 
             const siteDataDir = resolveSiteDataDir(siteId);
+            const session = await resolveChatSession({
+                siteId,
+                requestedSessionId: sessionId,
+                sessionSecret,
+                access,
+            });
+            const effectiveSessionId = session.sessionId;
             const loadedContext = await loadAkuContext({
                 siteId,
-                sessionId,
+                sessionId: effectiveSessionId,
                 message,
             });
             const runtimePrompt = buildRuntimePrompt({
                 siteId,
-                sessionId,
+                sessionId: effectiveSessionId,
                 message,
                 loadedContext,
             });
             await writeDebugText('runtime-prompt', {
                 siteId,
-                sessionId,
+                sessionId: effectiveSessionId,
                 text: runtimePrompt,
             });
 
@@ -145,8 +157,11 @@ export async function createWebAssistAgent({
                 model: mode,
                 systemPrompt: VISITOR_FLOW_SYSTEM_PROMPT,
                 reasoningEffort: "low",
+                // Trusted values for skills; they ignore model-supplied ids.
                 context: {
                     siteDataDir,
+                    siteId,
+                    sessionId: effectiveSessionId,
                 },
             });
 
@@ -157,7 +172,7 @@ export async function createWebAssistAgent({
 
             await appendSessionTurn({
                 siteId,
-                sessionId,
+                sessionId: effectiveSessionId,
                 userMessage: message,
                 agentResponse: response,
             });
@@ -165,7 +180,8 @@ export async function createWebAssistAgent({
             return {
                 response,
                 siteId,
-                sessionId,
+                sessionId: effectiveSessionId,
+                ...(session.sessionSecret ? { sessionSecret: session.sessionSecret } : {}),
             };
         },
     };

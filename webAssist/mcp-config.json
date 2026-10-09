@@ -34,6 +34,11 @@
                     "description": "Optional session id to reuse",
                     "optional": true
                 },
+                "sessionSecret": {
+                    "type": "string",
+                    "description": "Optional session secret returned when the session was created; continues that session for a different visitor identity",
+                    "optional": true
+                },
                 "json": {
                     "type": "boolean",
                     "description": "Return JSON output from webAssist",
@@ -57,6 +62,11 @@
                     "type": "string",
                     "description": "Session id used to load saved chat history",
                     "optional": false
+                },
+                "sessionSecret": {
+                    "type": "string",
+                    "description": "Optional session secret returned when the session was created",
+                    "optional": true
                 }
             }
         },
