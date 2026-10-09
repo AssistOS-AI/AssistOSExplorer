@@ -78,3 +78,23 @@ export async function authorizeRobotListing(req, url, { internalToken = '', env 
     if (!decision.entitled) return deny(403, 'Explorer access is required to list robots');
     return { ok: true, canAdmin: decision.admin };
 }
+
+// Whether this exact request is proven to come from a verified non-guest
+// administrator. Used only to widen outward projections; any missing helper,
+// key, header, verification failure or internal caller yields false. Each
+// signed request is verified once, so callers must not combine this with
+// authorizeRobotListing on the same request.
+export async function verifiedAdminRequest(req, url, { internalToken = '', env = process.env, body = Buffer.alloc(0) } = {}) {
+    try {
+        if (requestActor(req, internalToken)?.internal) return false;
+        if (typeof req.headers['x-ploinky-auth-info'] !== 'string') return false;
+        const verifier = await loadRouteVerifier(env);
+        if (!verifier || !verifier.readAgentSecret(env) || !verifier.expectedAudienceForSelf(env)) return false;
+        const verified = verifier.verifyHttpRouteAuthInfoFromHeaders(req.headers, {
+            env, method: req.method, path: url.pathname, query: url.search, body,
+        });
+        return Boolean(verified?.ok && listingDecision(verified.payload).admin);
+    } catch {
+        return false;
+    }
+}

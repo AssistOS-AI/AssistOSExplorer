@@ -8,7 +8,8 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
-import { authorizeRobotListing } from './listing-access.mjs';
+import { authorizeRobotListing, verifiedAdminRequest } from './listing-access.mjs';
+import { projectRobotView } from './robot-projection.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
 import { robotTerminalDirectory } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
@@ -21,6 +22,7 @@ import { renderAlaTurnLog } from '../copilot/src/lib/webchat/webchatTurnLog.mjs'
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
 const BODY_LIMIT = 64 * 1024;
+const RAW_BODY = Symbol('roboteam.rawBody');
 const ROBOT_ID = '[a-z0-9][a-z0-9-]{2,63}';
 
 const CONTENT_TYPES = Object.freeze({
@@ -60,7 +62,9 @@ async function readJsonBody(req) {
         if (size > BODY_LIMIT) throw new Error('request body is too large');
         chunks.push(chunk);
     }
-    const raw = Buffer.concat(chunks).toString('utf8');
+    // The exact bytes are kept so the signed request can be verified later.
+    req[RAW_BODY] = Buffer.concat(chunks);
+    const raw = req[RAW_BODY].toString('utf8');
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON object body is required');
@@ -187,8 +191,10 @@ function proxySessionWebSocket(req, socket, head, port, publicBasePath) {
     socket.once('close', () => upstream.destroy());
 }
 
-function publicRobot(robot, run) {
-    return {
+// view: { privileged, workspaceRoot }. Without proven verified-admin context
+// every caller receives the restricted projection.
+function publicRobot(robot, run, view = {}) {
+    return projectRobotView({
         id: robot.id,
         name: robot.name,
         codingAgents: robotCodingAgents(robot),
@@ -198,7 +204,7 @@ function publicRobot(robot, run) {
         createdAt: robot.createdAt,
         updatedAt: robot.updatedAt,
         run,
-    };
+    }, view);
 }
 
 function matchRobotPath(pathname, suffix) {
@@ -372,6 +378,11 @@ export function createRoboTeamServer(options) {
     const publicDir = path.resolve(options.publicDir || DEFAULT_PUBLIC_DIR);
     const mcpPort = Number(options.mcpPort) || 7000;
 
+    const robotView = async (req, url) => ({
+        privileged: await verifiedAdminRequest(req, url, { internalToken, body: req[RAW_BODY] || Buffer.alloc(0) }),
+        workspaceRoot: runtimeManager.workspaceRoot,
+    });
+
     const server = http.createServer(async (req, res) => {
         try {
             const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -386,7 +397,7 @@ export function createRoboTeamServer(options) {
                 const listing = await authorizeRobotListing(req, url, { internalToken });
                 if (!listing.ok) return sendError(res, listing.status, listing.error);
                 const robots = await robotStore.list();
-                return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: robots.map((robot) => publicRobot(robot, runtimeManager.status(robot.id))) });
+                return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: robots.map((robot) => publicRobot(robot, runtimeManager.status(robot.id), { privileged: listing.canAdmin, workspaceRoot: runtimeManager.workspaceRoot })) });
             }
             const actor = requestActor(req, internalToken);
             if (!actor) return sendError(res, 401, 'authenticated Ploinky user is required');
@@ -488,7 +499,7 @@ export function createRoboTeamServer(options) {
                 const robot = await robotStore.create({ name: body.name, codingAgents: body.codingAgents });
                 await runtimeManager.prepareOpenCode?.(robot.id);
                 await roboflow?.refreshCoverage();
-                return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
+                return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), await robotView(req, url)) });
             }
             const modelsId = matchRobotPath(pathname, '/models');
             if (modelsId && req.method === 'GET') {
@@ -525,7 +536,7 @@ export function createRoboTeamServer(options) {
                 }
                 const robot = await robotStore.setCodingAgents(codingAgentsId, body.codingAgents, { model: body.model, effort: body.effort });
                 await roboflow?.refreshCoverage();
-                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), await robotView(req, url)) });
             }
             const skillsetsId = matchRobotPath(pathname, '/skillsets');
             if (skillsetsId && ['POST', 'DELETE', 'PATCH'].includes(req.method)) {
@@ -610,20 +621,20 @@ export function createRoboTeamServer(options) {
             if (runId && req.method === 'GET') {
                 const robot = await robotStore.get(runId);
                 if (!robot) return sendError(res, 404, 'robot not found');
-                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), await robotView(req, url)) });
             }
             if (runId && req.method === 'POST') {
                 const robot = await robotStore.get(runId);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const body = await readJsonBody(req);
                 const run = await runtimeManager.start(robot, body.mode);
-                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run) });
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run, await robotView(req, url)) });
             }
             if (runId && req.method === 'DELETE') {
                 const robot = await robotStore.get(runId);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const run = await runtimeManager.stop(robot.id);
-                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run) });
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run, await robotView(req, url)) });
             }
             const logsId = matchRobotPath(pathname, '/logs');
             if (logsId && req.method === 'GET') {
