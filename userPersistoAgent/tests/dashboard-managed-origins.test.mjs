@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { createRouterSigner } from './helpers/router-fixture.mjs';
-import { isolatePloinkyWorkspace, useManagedRuntime } from './helpers/managedRouterRuntime.mjs';
+import { createLegacyAgentRuntime, isolatePloinkyWorkspace, useManagedRuntime } from './helpers/managedRouterRuntime.mjs';
 
 const ORIGIN = 'https://account.example.test';
 const PREFIX = '/service/dashboard';
@@ -174,7 +174,14 @@ test('administrators can tell disabled, standalone, unsupported, unavailable, an
     assert.match(await statusFor(), /must be true or false/);
     delete process.env.USERPERSISTO_TRUST_ROUTER_ORIGINS;
 
-    const legacy = await useManagedRuntime(t, { workspace, omitRouterOrigins: true });
+    // The current runtime rejects a topology without Router origins: invalid, never "unsupported".
+    const absent = await useManagedRuntime(t, { workspace, omitRouterOrigins: true });
+    assert.match(await statusFor(), /metadata is invalid/);
+    assert.equal(absent.listener.state.requests.length, 0);
+    assert.equal(panel.managedOriginsEl.textContent, '');
+
+    // An older runtime reader accepts that topology and reports no Router-origin capability.
+    const legacy = await useManagedRuntime(t, { workspace, omitRouterOrigins: true, agentRuntimeRoot: createLegacyAgentRuntime(workspace) });
     assert.match(await statusFor(), /does not publish Router addresses/);
     assert.equal(legacy.listener.state.requests.length, 0);
     assert.equal(panel.managedOriginsEl.textContent, '');
