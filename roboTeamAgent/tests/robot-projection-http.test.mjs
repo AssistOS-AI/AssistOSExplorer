@@ -49,6 +49,8 @@ async function startFixture() {
     const workspaceRoot = path.join(root, 'workspace');
     await fs.mkdir(path.join(workspaceRoot, 'project', 'sub'), { recursive: true });
     const robots = new Map();
+    const workflows = new Map();
+    const mutations = { createRobot: 0, codingAgents: 0, createWorkflow: 0 };
     const makeRobot = (id, name) => ({
         id, name, codingAgents: ['opencode'], createdAt: '2026-10-09T00:00:00.000Z', updatedAt: '2026-10-09T00:00:00.000Z',
         skillsets: Object.entries(SOURCES).map(([key, source]) => ({ name: `repo-${key}`, source: source.raw, skills: [{ name: 'alpha', description: 'Alpha skill' }], definitions: [] })),
@@ -58,8 +60,12 @@ async function startFixture() {
         list: async () => [...robots.values()],
         get: async (id) => robots.get(id) || null,
         getByName: async (name) => [...robots.values()].find((robot) => robot.name === name) || null,
-        create: async ({ name }) => { const robot = makeRobot('created-robot-d4e5f6', name); robots.set(robot.id, robot); return robot; },
-        setCodingAgents: async (id, codingAgents) => { robots.get(id).codingAgents = codingAgents; return robots.get(id); },
+        create: async ({ name }) => { mutations.createRobot++; const robot = makeRobot('created-robot-d4e5f6', name); robots.set(robot.id, robot); return robot; },
+        setCodingAgents: async (id, codingAgents) => { mutations.codingAgents++; robots.get(id).codingAgents = codingAgents; return robots.get(id); },
+    };
+    const roboflow = {
+        refreshCoverage: async () => {},
+        createWorkflow: async (workflow) => { mutations.createWorkflow++; workflows.set(workflow.id, workflow); return workflow; },
     };
     const activeCwd = path.join(workspaceRoot, 'project', 'sub');
     const runtimeManager = {
@@ -70,14 +76,14 @@ async function startFixture() {
         activePort: () => null,
         hasUnfinishedTasks: () => false,
     };
-    const server = createRoboTeamServer({ robotStore, runtimeManager, skillsets: {}, internalToken: 'projection-token', publicBasePath: '/rt/', mcpPort: 65534 });
+    const server = createRoboTeamServer({ robotStore, runtimeManager, roboflow, skillsets: {}, internalToken: 'projection-token', publicBasePath: '/rt/', mcpPort: 65534 });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
     const previous = Object.fromEntries(['PLOINKY_AGENT_RUNTIME_ROOT', 'PLOINKY_AGENT_ID', 'PLOINKY_AGENT_SECRET'].map((key) => [key, process.env[key]]));
     Object.assign(process.env, { PLOINKY_AGENT_RUNTIME_ROOT: path.join(PLOINKY_ROOT, 'Agent'), PLOINKY_AGENT_ID: AGENT_ID, PLOINKY_AGENT_SECRET: deriveAgentRequestSecret(AGENT_ID) });
     const snapshot = structuredClone([...robots.values()]);
     return {
-        robots, snapshot, workspaceRoot, activeCwd,
+        robots, workflows, mutations, snapshot, workspaceRoot, activeCwd,
         async call(method, pathname, { headers = {}, body } = {}) {
             const response = await fetch(`${baseUrl}${pathname}`, { method, headers: { ...headers, ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, body });
             const json = await response.json();
@@ -147,15 +153,19 @@ test('create, coding-agent update and run responses use the same projection', as
         const admin = await fixture.call(method, pathname, { body, headers: signed(PRINCIPALS.admin, method, pathname, body || '') });
         assert.equal(admin.status, status, `${label} admin`);
         assertPrivileged(admin.json[field], rawCwd, `${label} admin`);
-        // The legacy unsigned-role gate still admits these callers to the
-        // mutation, but none of them may receive privileged metadata.
         for (const [name, headers] of [
+            ['ordinary member', signed(PRINCIPALS.member, method, pathname, body || '')],
             ['named non-admin', signed(PRINCIPALS.namedAdmin, method, pathname, body || '')],
             ['admin+guest', signed(PRINCIPALS.adminGuest, method, pathname, body || '')],
             ['unsigned admin header', { 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'owner-1', username: 'owner', roles: ['admin'] } }) }],
             ['tampered body', signed(PRINCIPALS.admin, method, pathname, body === undefined ? '{}' : `${body} `)],
         ]) {
             const response = await fixture.call(method, pathname, { body, headers });
+            if (['ordinary member', 'named non-admin', 'admin+guest'].includes(name) && ['/api/robots', `/api/robots/${robotId}/coding-agents`].includes(pathname)) {
+                assert.equal(response.status, 403, `${label} ${name}`);
+                assert.equal('robot' in response.json, false, `${label} ${name}: no robot payload`);
+                continue;
+            }
             assert.equal(response.status, status, `${label} ${name}`);
             assertRestricted(response.json[field], restrictedCwd, `${label} ${name}`);
         }
@@ -163,6 +173,79 @@ test('create, coding-agent update and run responses use the same projection', as
     const created = fixture.robots.get('created-robot-d4e5f6');
     assert.equal(created.skillsets[0].source, SOURCES.physical.raw, 'stored sources stay raw');
     assert.equal(created.skillsets[1].source, SOURCES.credential.raw, 'stored credential URLs stay raw');
+});
+
+const ADMIN_MUTATIONS = [
+    ['POST', '/api/robots', { name: 'Created Robot' }, 201],
+    ['PATCH', '/api/robots/first-robot-a1b2c3/coding-agents', { codingAgents: ['codex'] }, 200],
+    ['POST', '/api/roboflow/workflows', { id: 'workflow-1', name: 'Workflow' }, 201],
+];
+
+function internalHeaders(id, roles) {
+    return { 'x-roboteam-internal-token': 'projection-token', 'x-roboteam-user-id': id, 'x-roboteam-user-roles': JSON.stringify(roles) };
+}
+
+test('administrator mutations reject name aliases, guest roles and unprivileged internal actors without side effects', async (t) => {
+    const browserActors = {
+        namedAdmin: PRINCIPALS.namedAdmin,
+        nameFallback: { ...PRINCIPALS.member, username: '', name: 'admin' },
+        normalizedName: { ...PRINCIPALS.member, username: ' AdMiN ' },
+        normalizedNameFallback: { ...PRINCIPALS.member, username: '', name: ' AdMiN ' },
+        localIdWithoutRoles: { id: 'local:admin', username: 'local', roles: [] },
+        adminGuest: PRINCIPALS.adminGuest,
+        normalizedAdminGuest: { ...PRINCIPALS.admin, roles: [' AdMiN ', ' GuEsT '] },
+    };
+    const callers = [
+        ...Object.entries(browserActors).map(([name, actor]) => [name, (method, pathname, body) => signed(actor, method, pathname, body)]),
+        ['forwarded nonadmin', () => internalHeaders('local:admin', ['user'])],
+        ['forwarded admin+guest', () => internalHeaders('owner', [' ADMIN ', ' GUEST '])],
+        ['internal agent only', () => ({ 'x-roboteam-internal-token': 'projection-token' })],
+    ];
+    for (const [name, headersFor] of callers) {
+        await t.test(name, async (t) => {
+            const fixture = await startFixture();
+            t.after(fixture.close);
+            for (const [method, pathname, input] of ADMIN_MUTATIONS) {
+                const body = JSON.stringify(input);
+                const headers = headersFor(method, pathname, body);
+                if (name.includes('Fallback')) {
+                    assert.equal(JSON.parse(headers['x-ploinky-auth-info']).user.username.trim().toLowerCase(), 'admin', 'real Router minter uses the name fallback');
+                }
+                const response = await fixture.call(method, pathname, { body, headers });
+                assert.equal(response.status, 403, `${name}: ${method} ${pathname}`);
+                assert.equal(response.json.error, 'administrator role is required');
+                assert.equal('robot' in response.json, false);
+                assert.deepEqual(fixture.mutations, { createRobot: 0, codingAgents: 0, createWorkflow: 0 });
+                assert.deepEqual([...fixture.robots.values()], fixture.snapshot);
+                assert.equal(fixture.workflows.size, 0);
+            }
+        });
+    }
+});
+
+test('differently named administrators, local CLI roles and forwarded administrators retain mutation authority', async (t) => {
+    const callers = [
+        ['differently named admin', (method, pathname, body) => signed(PRINCIPALS.admin, method, pathname, body)],
+        ['normalized admin role', (method, pathname, body) => signed({ ...PRINCIPALS.admin, roles: [' UsEr ', ' AdMiN '] }, method, pathname, body)],
+        // Ploinky cli/commands/client.js supplies these local session roles.
+        ['local CLI', (method, pathname, body) => signed({ id: 'local:admin', username: 'admin', name: 'Local CLI', email: '', roles: ['user', 'admin'] }, method, pathname, body)],
+        ['forwarded admin', () => internalHeaders('another-admin', ['user', ' ADMIN '])],
+    ];
+    for (const [name, headersFor] of callers) {
+        await t.test(name, async (t) => {
+            const fixture = await startFixture();
+            t.after(fixture.close);
+            for (const [method, pathname, input, status] of ADMIN_MUTATIONS) {
+                const body = JSON.stringify(input);
+                const response = await fixture.call(method, pathname, { body, headers: headersFor(method, pathname, body) });
+                assert.equal(response.status, status, `${name}: ${method} ${pathname}`);
+            }
+            assert.deepEqual(fixture.mutations, { createRobot: 1, codingAgents: 1, createWorkflow: 1 });
+            assert.equal(fixture.robots.get('created-robot-d4e5f6').name, 'Created Robot');
+            assert.deepEqual(fixture.robots.get('first-robot-a1b2c3').codingAgents, ['codex']);
+            assert.deepEqual(fixture.workflows.get('workflow-1'), ADMIN_MUTATIONS[2][2]);
+        });
+    }
 });
 
 test('missing verifier configuration falls back to the restricted projection', async (t) => {

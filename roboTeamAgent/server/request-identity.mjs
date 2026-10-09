@@ -50,10 +50,8 @@ export function requestActor(req, internalToken) {
 }
 
 export function isAdminActor(actor) {
-    const roles = Array.isArray(actor?.roles) ? actor.roles : [];
-    return roles.some((role) => String(role || '').trim().toLowerCase() === 'admin')
-        || String(actor?.username || '').trim().toLowerCase() === 'admin'
-        || String(actor?.id || '').trim().toLowerCase() === 'local:admin';
+    const roles = Array.isArray(actor?.roles) ? actor.roles.map((role) => String(role || '').trim().toLowerCase()) : [];
+    return roles.includes('admin') && !roles.includes('guest');
 }
 
 function cryptoSafeEqual(left, right) {
