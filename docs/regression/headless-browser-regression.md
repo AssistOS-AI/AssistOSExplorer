@@ -45,13 +45,14 @@ inputs with independent inspection before and after execution. It retains the
 30-minute generation limit and records each profile's image-age policy. Use the
 canonical `npm test -- --project=chromium --workers=1 --retries=0` prefix and title
 greps, never file/line suffixes. The runner compares both discovered identities
-and terminal outcomes with `tests/smoke/acceptance-ledger_codex.json`; every selected
+and terminal outcomes with `tests/smoke/acceptance-ledger.json`; every selected
 identity must finish as one expected pass on attempt zero. Discovery, exit zero,
 skips and expected failures cannot establish coverage.
 
 Prepare role-correct private sign-in inputs before execution. Umami needs username
 and password, OnlyOffice an absolute selected Ploinky executable, and the official
-WebMeet case two distinct verified users plus the headless/media profile. Spec04
+WebMeet case two distinct verified users plus the headless/media profile. The
+public-room WebMeet case needs only the primary account and no WebMeet flags. Spec04
 needs the installed searchAgent catalog fixture. Spec61 uses synthetic tokens.
 Keep GPT Researcher excluded and browser errors strict. The explorer tool-worker pool is active (see DS002); the preflight no longer requires the opt-in to be absent.
 WebTTY retains the last collector/binding/eligibility/stability cause and rejects
@@ -61,7 +62,7 @@ and submission/reply outcome; an error bubble is not a reply.
 For official release acceptance, enable OnlyOffice alone through authenticated
 Marketplace UI, verify the successful enable POST, Running UI and exact enabled
 runtime, and measure setup time. The unchanged three-agent spec03 activation is
-separately required in its own fresh cohort. Budget all three official gates and
+separately required in its own fresh cohort. Budget all four official gates and
 cleanup from the same Box start with distinct artifact directories and a stated
 margin. If they cannot fit the existing 30-minute window, report scheduling blocked.
 Use separate fresh cohorts for WebTTY and longer supporting cases. See the smoke

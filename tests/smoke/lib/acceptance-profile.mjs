@@ -4,7 +4,7 @@ import { collectCopilotReleaseEvidence } from './copilot-release-evidence.mjs';
 import { sameLiveBoxGeneration, parseLocalBoxBaseUrl, assertOriginBindAddress } from './live-box.mjs';
 import { validateQaAcceptanceProfile } from './qa-acceptance-profile.mjs';
 
-export const acceptanceLedger = JSON.parse(fs.readFileSync(new URL('../acceptance-ledger_codex.json', import.meta.url), 'utf8'));
+export const acceptanceLedger = JSON.parse(fs.readFileSync(new URL('../acceptance-ledger.json', import.meta.url), 'utf8'));
 const enabled = value => /^(1|true|yes|on)$/i.test(String(value || '').trim());
 
 function optionValue(args, name) {

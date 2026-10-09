@@ -37,8 +37,10 @@ and reject a proved stale generation immediately. Copilot diagnostics must retai
 the first visible terminal error/time with submission/reply outcome and must not
 accept an error bubble as an assistant reply. The official release cohort uses
 OnlyOffice-only authenticated Marketplace activation, while the unchanged
-three-agent activation profile remains a separately required cohort. All three
-official gates must fit one fresh generation with measured setup/execution/cleanup
+three-agent activation profile remains a separately required cohort. The official
+WebMeet coverage is the two-account media gate and the public-room gate (a
+cookie-less guest joins a public room from its UI-published URL and chats with
+the owner; the team-room URL is refused). All four official gates must fit one fresh generation with measured setup/execution/cleanup
 durations and a stated margin; infeasible scheduling remains blocked.
 
 Explorer declares a same-origin `routerAccess.capabilityDeniedRedirect` to UserPersisto's authenticated account dashboard. Only denied HTML document GET navigation follows it; API, MCP, SSE, WebSocket, and mutation denials remain errors. The account service's explicitly owned and matching authenticated route retains the inherited identity provider but applies its own capability policy, allowing active restricted accounts to manage their profile without granting Explorer access. Undeclared and guest/public routes retain owner capability checks. The dashboard verifies the Router's signed HTTP invocation against the actual method, internal path, query, and raw body before resolving its current persisted actor. See [DS012](DS012-user-persisto.md) for the account API and enrollment contract.
