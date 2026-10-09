@@ -338,6 +338,8 @@ export class WebMeetRoom extends EventTarget {
                     this.requestWorkspaceRevalidation();
                 } else if (this.workspacePollResyncPending) {
                     this.workspacePollResyncPending = false;
+                    // Like a first poll: revalidate from the response whose cursor is adopted.
+                    this.requestWorkspaceRevalidation();
                 } else {
                     for (const encodedEvent of events) {
                         const parsed = this.handleIncomingEvent('authenticated-workspace', encodedEvent);

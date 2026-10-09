@@ -37,7 +37,10 @@ test('workspace poll after cursorReset adopts the blank-cursor history without r
         return parsed;
     };
     let revalidations = 0;
-    room.requestWorkspaceRevalidation = () => { revalidations += 1; };
+    let directory = 'before-reset';
+    const directoryReads = [];
+    // Models the debounced directory read: it observes the directory as of the request.
+    room.requestWorkspaceRevalidation = () => { revalidations += 1; directoryReads.push(directory); };
     const fire = async () => {
         const [id, timer] = [...timers].find(([, entry]) => entry.delay === 0 || entry.delay === 5000);
         timers.delete(id);
@@ -61,7 +64,10 @@ test('workspace poll after cursorReset adopts the blank-cursor history without r
     await fire();
     assert.equal(revalidations, 1, 'reset itself requests revalidation');
     assert.equal(room.lastWorkspaceEventId, '');
+    directory = 'changed-between-reset-and-adoption';
     await fire();
+    assert.equal(revalidations, 2, 'adopted response revalidates like a first poll');
+    assert.deepEqual(directoryReads, ['before-reset', 'changed-between-reset-and-adoption']);
     assert.deepEqual(dispatched, [], 'historical events must not be dispatched after a reset');
     assert.equal(room.lastWorkspaceEventId, historyIds[1]);
     await fire();
