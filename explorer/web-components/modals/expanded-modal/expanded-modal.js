@@ -1,5 +1,6 @@
 import { ensureMarketplaceAgentRunning } from "../../../services/infrastructure/marketplaceAgentRuntime.js";
 import assistosSDK from "../../../services/assistosSDK.js";
+import { relayBreadcrumbFieldEvent, hasFocusedBreadcrumbField } from "./breadcrumbFields.js";
 import {
     probeAgentRuntimeMcp,
     probeAgentRuntimeRouteStability,
@@ -56,6 +57,7 @@ export class ExpandedModal {
         this.titleNode = this.element.querySelector("#expandedModalTitle");
         this.breadcrumbsNode = this.element.querySelector("#expandedModalBreadcrumbs");
         this.breadcrumbsNode?.addEventListener("click", this.handleBreadcrumbClick);
+        for (const type of ["input", "focusin", "focusout", "keydown"]) this.breadcrumbsNode?.addEventListener(type, this.handleBreadcrumbFieldEvent);
         this.mode = this.attr("mode") || (this.attr("component") ? "component" : "iframe");
         const reloadButton = this.element.querySelector("#expandedModalReload");
         if (reloadButton) reloadButton.hidden = this.mode !== "iframe";
@@ -69,8 +71,18 @@ export class ExpandedModal {
     // never the host document.
     handleBreadcrumbClick = (event) => {
         const link = event.target?.closest?.("a");
-        if (!link || !this.frame) return;
+        if (!link || !this.frame || event.defaultPrevented || event.button !== 0
+            || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
         event.preventDefault();
+        if (link.hasAttribute("data-return-control") && this.sourceBreadcrumbs) {
+            const index = [...this.breadcrumbsNode.querySelectorAll("a")].indexOf(link);
+            const original = this.sourceBreadcrumbs.querySelectorAll("a")[index];
+            if (original?.hasAttribute("data-return-control")) {
+                // Let the embedded page restore its own history entry and view state.
+                original.click();
+                return;
+            }
+        }
         // Prefer the source link's resolved href captured while folding; fall back
         // to resolving against the embedded document's base.
         let href = link.getAttribute("data-href") || "";
@@ -84,9 +96,16 @@ export class ExpandedModal {
         if (href) this.frame.src = href;
     };
 
+    handleBreadcrumbFieldEvent = (event) => {
+        if (!relayBreadcrumbFieldEvent(event, this.sourceBreadcrumbs)) return;
+        if (event.type === "focusout") queueMicrotask(() => this.renderBreadcrumbs?.());
+    };
+
     stopHeaderObserver() {
         this.headerObserver?.disconnect();
         this.headerObserver = null;
+        this.sourceBreadcrumbs = null;
+        this.renderBreadcrumbs = null;
     }
 
     showModalTitle() {
@@ -115,8 +134,10 @@ export class ExpandedModal {
         }
         hero.style.display = "none";
         this.stopHeaderObserver();
+        this.sourceBreadcrumbs = source;
         const render = () => {
             if (!this.breadcrumbsNode || !this.titleNode || !source.isConnected) return;
+            if (hasFocusedBreadcrumbField(this.breadcrumbsNode)) return;
             this.breadcrumbsNode.replaceChildren(...[...source.childNodes].map((node) => node.cloneNode(true)));
             const sourceLinks = [...source.querySelectorAll("a")];
             const cloneLinks = [...this.breadcrumbsNode.querySelectorAll("a")];
@@ -126,11 +147,13 @@ export class ExpandedModal {
             });
             this.breadcrumbsNode.hidden = false;
             this.titleNode.hidden = true;
+            this.breadcrumbsNode.querySelector('input[data-embed-field][aria-invalid="true"]')?.focus();
         };
+        this.renderBreadcrumbs = render;
         render();
         if (typeof MutationObserver === "function") {
             this.headerObserver = new MutationObserver(render);
-            this.headerObserver.observe(source, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden", "href"] });
+            this.headerObserver.observe(source, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden", "href", "disabled", "readonly", "style", "aria-invalid"] });
         }
     }
 

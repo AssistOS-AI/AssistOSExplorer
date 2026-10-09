@@ -37,7 +37,13 @@ The shared expanded dialog must derive its accessible name from its visible titl
 
 An embedded iframe page can fold its own header into the shell: it marks the header with `data-embed-header` and its breadcrumb navigation with `data-embed-breadcrumbs`, and the shell hides that page header and mirrors the breadcrumbs into the modal header, replacing the title. Breadcrumb links navigate the embedded frame, dynamic breadcrumb leaves stay in sync, and `Open in new tab` opens the frame's current URL. Pages without the markers keep the plain modal title.
 
+For a mirrored breadcrumb link marked `data-return-control`, a normal same-frame activation clicks the matching source link instead of assigning the frame URL. The embedded page owns the return action and can restore its original history entry and view state. Modified or non-primary clicks keep native link behavior. Other breadcrumb links retain frame URL navigation.
+
+A same-origin page may mark a text input in its breadcrumbs with a unique `data-embed-field` key. The shell relays input, focus and keyboard events from that mirrored field to the matching source field, respecting the source's disabled/read-only state and maximum length. The embedded page alone owns draft state, validation and saving. Fields being edited are not replaced by breadcrumb mutation updates, so typing retains focus and caret position; leaving the field refreshes the mirror. Enter and Escape consumed by the source field must not submit or close the host dialog. Unmarked fields and non-text inputs do not participate.
+
 An unavailable plugin component or dependent agent must produce a visible, recoverable interface error without preventing unrelated Explorer functionality from loading.
+
+Mirrored editable breadcrumb fields use a persistent subtle border and contrasting surface to advertise editing. An embedded page can provide a decorative pencil marked `data-embed-edit-icon` alongside its field; the shell positions it inside the field without intercepting pointer events. Disabled and read-only fields hide the decoration and retain a plain text-like presentation without editing affordances.
 
 Runtime content that unauthenticated guests can reach must reference assets only through the publicly served routes (`/shared/*` and `/web-components/components/*`) or through the plugin's own public path. Explorer's `/assets/*` tree is not public, so guest-facing components and iframes must not depend on it; shared guest assets live under `shared/`.
 
