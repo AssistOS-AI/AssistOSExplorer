@@ -138,3 +138,81 @@ test('repository rows are labelled by name when no path or display URL is availa
     modal.renderList();
     assert.match(modal.listEl.innerHTML, /data-repo-toggle="local-skills">local-skills<\/summary>/);
 });
+
+// Modal-to-handler regressions: a recommendation is submitted by name and the
+// server must resolve an exact registered name (including one ending in .git)
+// to its configured URL before any URL heuristic.
+const { createToolHandlers } = await import('../../utils/server/tool-handlers.mjs');
+const CONFIGURED_URL = 'https://example.test/real-skills.git';
+
+async function modalAgainstHandlers(t, { name, origin, typedUrl = '' }) {
+    const os = await import('node:os');
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'skills-modal-name-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const source = path.join(root, 'cached', name);
+    await fs.mkdir(path.join(root, 'project', '.agents'), { recursive: true });
+    await fs.mkdir(path.join(source, 'skills', 'alpha-skill'), { recursive: true });
+    await fs.writeFile(path.join(source, 'skills', 'alpha-skill', 'SKILL.md'), '---\nname: alpha-skill\n---\n');
+    const registered = { name, url: CONFIGURED_URL, source: origin === 'remote' ? CONFIGURED_URL : source, origin, kind: 'skills', branch: 'main' };
+    const calls = { prepare: [], add: [] };
+    const client = {
+        async listRepositories() { return [{ ...registered }]; },
+        async prepareRepository(input) {
+            calls.prepare.push({ ...input });
+            if (input.url !== CONFIGURED_URL && input.name !== registered.name) throw new Error('unknown source');
+            Object.assign(registered, { source, origin: 'installed' });
+            return client.listRepositories();
+        },
+        async install() { return { results: [], conflicts: [] }; },
+        async remove() { return { results: [], conflicts: [] }; },
+    };
+    const any = { safeParse: (value) => ({ success: true, data: value || {} }) };
+    const handlers = createToolHandlers({
+        repositoryClient: client, fs, path, schemas: new Proxy({}, { get: () => any }),
+        validatePath: async (value) => path.resolve(root, String(value).replace(/^\//, '')),
+        workspaceRoot: root,
+        invalidateCachesForPath() {}, invalidateStructureIndexSubtree() {},
+        getAllowedDirectories: () => [root], getInvocationContext: () => ({}),
+    });
+    const { modal } = createModal();
+    globalThis.__skillsModalCallTool = async (tool, args) => {
+        if (tool === 'add_skills_manifest_repo') calls.add.push({ ...args });
+        return handlers[tool](args);
+    };
+    if (typedUrl) {
+        modal.urlInput.value = typedUrl;
+        await modal.addRepository();
+    } else {
+        modal.state.skillRepositories = [{ name, label: name, url: '', branch: 'main' }];
+        await modal.addPresetRepository('0');
+    }
+    const manifest = JSON.parse(await fs.readFile(path.join(root, 'project', 'ploinky-skills-manifest.json'), 'utf8'));
+    return { calls, manifest, modal };
+}
+
+test('a remote registered repository named *.git is prepared and saved with its configured URL', async (t) => {
+    const { calls, manifest, modal } = await modalAgainstHandlers(t, { name: 'custom.git', origin: 'remote' });
+    assert.equal(calls.add[0].url, 'custom.git');
+    assert.deepEqual(calls.prepare.map((call) => call.url), [CONFIGURED_URL]);
+    assert.deepEqual(manifest.map((entry) => [entry.name, entry.url, entry.branch]), [['custom.git', CONFIGURED_URL, 'main']]);
+    assert.equal(modal.changed, true);
+});
+
+test('an installed registered repository named *.git is saved with its configured URL without preparation', async (t) => {
+    const { calls, manifest } = await modalAgainstHandlers(t, { name: 'custom.git', origin: 'installed' });
+    assert.deepEqual(calls.prepare, []);
+    assert.deepEqual(manifest.map((entry) => [entry.name, entry.url]), [['custom.git', CONFIGURED_URL]]);
+});
+
+test('an ordinary registered name keeps its configured URL', async (t) => {
+    const { calls, manifest } = await modalAgainstHandlers(t, { name: 'custom', origin: 'remote' });
+    assert.deepEqual(calls.prepare.map((call) => call.url), [CONFIGURED_URL]);
+    assert.equal(manifest[0].url, CONFIGURED_URL);
+});
+
+test('a manually entered URL is still prepared and saved as entered', async (t) => {
+    const { calls, manifest } = await modalAgainstHandlers(t, { name: 'real-skills', origin: 'remote', typedUrl: CONFIGURED_URL });
+    assert.equal(calls.add[0].url, CONFIGURED_URL);
+    assert.deepEqual(calls.prepare.map((call) => call.url), [CONFIGURED_URL]);
+    assert.deepEqual(manifest.map((entry) => [entry.name, entry.url]), [['real-skills', CONFIGURED_URL]]);
+});

@@ -318,6 +318,19 @@ export function createToolHandlers({
   async function resolveSkillRepoInput(input, explicitName = '') {
     const value = String(input || '').trim();
     if (!value) throw skillsManifestError('Repository URL or name is required.');
+    // An exact registered repository name wins over the URL heuristics, so a
+    // valid name such as `custom.git` resolves to its configured URL. URLs
+    // always contain characters outside the name charset and skip this lookup.
+    if (/^[a-zA-Z0-9_.-]+$/.test(value)) {
+      const exact = (await listKnownSkillRepositories()).find((repo) => repo.name === value);
+      if (exact) {
+        return {
+          url: exact.url,
+          name: normalizeRepoName(explicitName || exact.name),
+          branch: normalizeBranch(exact.branch)
+        };
+      }
+    }
     if (!looksLikeRepoUrl(value)) {
       const skillRepos = await listKnownSkillRepositories();
       const known = skillRepos.find((repo) => repo.name === value || repo.name.toLowerCase() === value.toLowerCase() || repo.url === value || repo.skillSource?.source === value);
