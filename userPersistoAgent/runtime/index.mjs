@@ -49,16 +49,47 @@ function normalizeAdminUser(user = {}) {
     };
 }
 
-async function postRuntime(config, endpoint, payload = {}) {
+// Every runtime call releases its socket within a bound. Session validation
+// stays below the Router bridge's 5 s validation deadline so a stuck call is
+// classified here first; the bridge's own signal aborts it as soon as the
+// bridge stops waiting.
+const RUNTIME_REQUEST_TIMEOUT_MS = 10_000;
+const SESSION_VALIDATION_TIMEOUT_MS = 4_000;
+
+// The only `sso-user` answers that refuse a Router session: the exact service
+// codes with their statuses (lib/sso.mjs). Anything else, including transport
+// failures, timeouts, 5xx, Router replies while this agent restarts, a missing
+// or mismatched runtime secret and malformed bodies, decides nothing.
+const SESSION_REFUSALS = new Map([
+    ['session_revoked', 401],
+    ['user_not_active', 403],
+    ['user_not_found', 404],
+]);
+
+function isSessionRefusal(error) {
+    return SESSION_REFUSALS.has(error?.code) && SESSION_REFUSALS.get(error.code) === error?.statusCode;
+}
+
+function providerUnavailable(error) {
+    return Object.assign(new Error('userpersisto_unavailable'), {
+        code: 'userpersisto_unavailable',
+        providerUnavailable: true,
+        ...(Number.isSafeInteger(error?.statusCode) ? { statusCode: error.statusCode } : {}),
+    });
+}
+
+async function postRuntime(config, endpoint, payload = {}, { signal, timeoutMs = RUNTIME_REQUEST_TIMEOUT_MS } = {}) {
     const base = routerBaseUrl(config);
     const runtimePath = String(config.runtimePath || '/base-agent-additional-server/userPersistoAgent/7000/service/runtime').replace(/\/+$/, '');
+    const timeout = AbortSignal.timeout(timeoutMs);
     const response = await fetch(new URL(`${runtimePath}/${endpoint}`, base), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'X-UserPersisto-Runtime-Secret': config.runtimeSecret
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data?.ok === false) {
@@ -125,12 +156,22 @@ export function createProvider({ getConfig }) {
                 }
             };
         },
-        async sso_refresh_session({ providerSession }) {
-            const config = await getConfig();
+        async sso_refresh_session({ providerSession, signal }) {
             const generation = Number.isSafeInteger(providerSession?.generation) ? providerSession.generation : 0;
-            const described = await postRuntime(config, 'sso-user', { userId: providerSession?.userId || '', generation });
+            let user;
+            try {
+                const config = await getConfig();
+                const described = await postRuntime(config, 'sso-user', { userId: providerSession?.userId || '', generation },
+                    { signal, timeoutMs: SESSION_VALIDATION_TIMEOUT_MS });
+                user = normalizeUser(described);
+            } catch (error) {
+                // A definitive refusal ends the Router session; anything else
+                // denies only the current admission and keeps the session.
+                if (isSessionRefusal(error)) throw error;
+                throw providerUnavailable(error);
+            }
             return {
-                user: normalizeUser(described),
+                user,
                 providerSession: { ...providerSession, generation, expiresAt: Date.now() + 4 * 60 * 60 * 1000 }
             };
         },
