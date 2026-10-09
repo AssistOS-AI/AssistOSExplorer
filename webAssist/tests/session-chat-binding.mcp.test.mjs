@@ -245,7 +245,10 @@ test('a wrong, malformed or absent secret rotates the session (A18 chat)', async
     const created = await chat(await guestGrant(), { message: 'OWNER-PRIVATE-MARKER' }, new ScriptedPlannerLLM());
     const { sessionId, sessionSecret } = created.payload;
     const other = await guestGrant();
-    for (const candidate of [undefined, '', `${sessionSecret.slice(0, -1)}A`, 'short', 'x'.repeat(5000)]) {
+    // Flip the last character so the near-miss secret always differs from the real one.
+    const nearMiss = `${sessionSecret.slice(0, -1)}${sessionSecret.endsWith('A') ? 'B' : 'A'}`;
+    assert.notEqual(nearMiss, sessionSecret);
+    for (const candidate of [undefined, '', nearMiss, 'short', 'x'.repeat(5000)]) {
         const llm = new ScriptedPlannerLLM();
         const result = await chat(other, { sessionId, ...(candidate === undefined ? {} : { sessionSecret: candidate }), message: 'hello' }, llm);
         assert.equal(result.exitCode, 0, result.stderr);
