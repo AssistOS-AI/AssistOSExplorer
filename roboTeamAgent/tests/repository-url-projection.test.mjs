@@ -43,12 +43,18 @@ test('repository display URLs keep only a credential-free remote origin', () => 
     for (const [input, expected] of VECTORS) assert.equal(remoteUrlOrEmpty(input), expected, JSON.stringify(input));
 });
 
-// Cross-checks the mirror against Ploinky's canonical module when available:
+// Cross-checks the mirror against Ploinky's canonical module:
 // PLOINKY_MARKETPLACE_PROJECTION_MODULE, or the sibling checkout once merged.
-test('the mirrored rule matches the canonical Ploinky marketplace projection when present', async () => {
+// Without it the comparison is skipped, never passed; acceptance and
+// integration runs set ROBOTEAM_REQUIRE_URL_PARITY=1 so a missing module fails.
+test('the mirrored rule matches the canonical Ploinky marketplace projection', async (t) => {
     const sibling = fileURLToPath(new URL('../../../ploinky/cli/server/authHandlers/marketplaceProjection.js', import.meta.url));
     const canonicalPath = process.env.PLOINKY_MARKETPLACE_PROJECTION_MODULE || (fs.existsSync(sibling) ? sibling : '');
-    if (!canonicalPath) return;
+    if (!canonicalPath) {
+        assert.notEqual(process.env.ROBOTEAM_REQUIRE_URL_PARITY, '1', 'canonical marketplaceProjection.js is required for URL parity');
+        t.skip('canonical marketplaceProjection.js not available');
+        return;
+    }
     const canonical = await import(pathToFileURL(canonicalPath).href);
     for (const [input] of VECTORS) assert.equal(remoteUrlOrEmpty(input), canonical.remoteUrlOrEmpty(input), JSON.stringify(input));
     process.stdout.write(`# compared ${VECTORS.length} vectors with ${canonicalPath}\n`);
