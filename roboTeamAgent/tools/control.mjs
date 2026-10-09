@@ -22,7 +22,21 @@ function invocationUser(payload) {
     };
 }
 
-async function request(pathname, { method = 'GET', body, user = {}, timeoutMs = 29000 }) {
+// robot_list is the only internal listing exception: the AgentServer-verified
+// grant must name an agent acting for itself, with no delegated or forwarded
+// user identity. Any other caller is rejected before an HTTP request is made.
+function agentOwnBehalf(payload) {
+    const grant = payload?.metadata?.invocation;
+    if (!grant || typeof grant !== 'object') return false;
+    const subject = typeof grant.sub === 'string' ? grant.sub : '';
+    return grant.actor?.kind === 'agent'
+        && /^agent:.+/.test(subject)
+        && grant.actor.id === subject
+        && !grant.usr && !grant.user && !grant.delegation
+        && !payload.metadata.user;
+}
+
+async function request(pathname, { method = 'GET', body, user = {}, listingOrigin = '', timeoutMs = 29000 }) {
     const port = Number(process.env.ROBOTEAM_SERVICE_PORT || 3001);
     const token = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
     if (!token) throw new Error('RoboTeam internal token is unavailable');
@@ -33,6 +47,7 @@ async function request(pathname, { method = 'GET', body, user = {}, timeoutMs = 
             'x-roboteam-internal-token': token,
             ...(user.id ? { 'x-roboteam-user-id': user.id } : {}),
             ...(user.roles?.length ? { 'x-roboteam-user-roles': JSON.stringify(user.roles) } : {}),
+            ...(listingOrigin ? { 'x-roboteam-listing-origin': listingOrigin } : {}),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
@@ -181,7 +196,8 @@ async function main() {
 
     if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, codingAgents: input.codingAgents }, user });
     else if (operation === 'robot-list') {
-        result = await request('/api/robots', { user });
+        if (!agentOwnBehalf(payload)) throw new Error('Access denied: robot_list is available only to an agent acting on its own behalf.');
+        result = await request('/api/robots', { listingOrigin: 'agent' });
         // Repository management includes disabled combinations; discovery must omit them.
         for (const robot of result.robots || []) {
             for (const repo of robot.repositories || []) {

@@ -8,6 +8,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
+import { authorizeRobotListing } from './listing-access.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
 import { robotTerminalDirectory } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
@@ -379,6 +380,14 @@ export function createRoboTeamServer(options) {
             if (pathname === '/status' && req.method === 'GET') {
                 return sendJson(res, 200, { ok: true, service: 'RoboTeamAgent', modes: ['browser', 'desktop'] });
             }
+            // Robot listing is decided on the signed request before the
+            // unsigned compatibility header is consulted.
+            if (pathname === '/api/robots' && req.method === 'GET') {
+                const listing = await authorizeRobotListing(req, url, { internalToken });
+                if (!listing.ok) return sendError(res, listing.status, listing.error);
+                const robots = await robotStore.list();
+                return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: robots.map((robot) => publicRobot(robot, runtimeManager.status(robot.id))) });
+            }
             const actor = requestActor(req, internalToken);
             if (!actor) return sendError(res, 401, 'authenticated Ploinky user is required');
 
@@ -473,10 +482,6 @@ export function createRoboTeamServer(options) {
                 return sendJson(res, 200, { ok: true, directory });
             }
 
-            if (pathname === '/api/robots' && req.method === 'GET') {
-                const robots = await robotStore.list();
-                return sendJson(res, 200, { ok: true, canAdmin: isAdminActor(actor), robots: robots.map((robot) => publicRobot(robot, runtimeManager.status(robot.id))) });
-            }
             if (pathname === '/api/robots' && req.method === 'POST') {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);

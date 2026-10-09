@@ -173,8 +173,17 @@ test('task starts validate allowed policy intent and ignore caller-supplied snap
 test('internal MCP control calls require only the generated service token', async () => {
     const fixture = await startFixture();
     try {
-        assert.equal((await fetch(`${fixture.baseUrl}/api/robots`, { headers: { 'x-roboteam-internal-token': 'test-token' } })).status, 200);
+        // Robot listing additionally requires the agent-origin proof (listing-access.test.mjs).
+        assert.equal((await fetch(`${fixture.baseUrl}/api/robots`, { headers: { 'x-roboteam-internal-token': 'test-token' } })).status, 403);
+        assert.equal((await fetch(`${fixture.baseUrl}/api/robots`, { headers: { 'x-roboteam-internal-token': 'test-token', 'x-roboteam-listing-origin': 'agent' } })).status, 200);
         assert.equal((await fetch(`${fixture.baseUrl}/api/robots`, { headers: { 'x-roboteam-internal-token': 'wrong' } })).status, 401);
+        const control = await fetch(`${fixture.baseUrl}/api/control`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-roboteam-internal-token': 'test-token' },
+            body: JSON.stringify({ operation: 'task-status', robotName: 'missing-robot' }),
+        });
+        assert.notEqual(control.status, 401, 'other internal operations keep the service-token path');
+        assert.notEqual(control.status, 403, 'other internal operations keep the service-token path');
     } finally {
         await fixture.close();
     }

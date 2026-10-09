@@ -36,7 +36,13 @@ export function requestActor(req, internalToken) {
             } catch {
                 roles = [];
             }
-            return { id, username: '', roles, internal: true };
+            // Only an internal call without forwarded user headers may claim
+            // the agent listing origin; control.mjs sets it after checking the
+            // AgentServer-verified grant.
+            const forwardsUser = Object.keys(req?.headers || {})
+                .some((name) => name.toLowerCase().startsWith('x-roboteam-user-'));
+            const origin = String(req?.headers?.['x-roboteam-listing-origin'] || '').trim();
+            return { id, username: '', roles, internal: true, listingOrigin: !forwardsUser && origin === 'agent' ? 'agent' : '' };
         }
     }
     const user = routerUser(req);
