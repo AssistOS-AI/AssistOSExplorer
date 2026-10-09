@@ -8,7 +8,7 @@ import { collectSecrets } from './security.mjs';
 
 const execFileAsync = promisify(execFile);
 const SENSITIVE_FIELD_NAME = String.raw`(?:authorization|(?:[a-z0-9_-]*cookie)|proxy-authorization|password|passphrase|username|credential|credentials|session[-_]?id|csrf(?:token)?|(?:[a-z0-9_-]*token)|(?:[a-z0-9_-]*secret)|(?:[a-z0-9_-]*assertion)|(?:[a-z0-9_-]*api[-_]?key)|private[-_]?key|signing[-_]?key)`;
-const SENSITIVE_HEADER_NAME = String.raw`(?:authorization|cookie|set-cookie|proxy-authorization|mcp-session-id|ploinky-agent-assertion|x-ploinky-session-id|x-ploinky-[a-z0-9_-]*(?:token|secret|assertion|key)|ploinky_(?:guest|jwt|sso|csrf))`;
+const SENSITIVE_HEADER_NAME = String.raw`(?:authorization|cookie|set-cookie|proxy-authorization|mcp-session-id|ploinky-agent-assertion|x-ploinky-session-id|x-ploinky-[a-z0-9_-]*(?:token|secret|assertion|key)|ploinky_(?:guest(?:_[a-z0-9_-]+)?|jwt|sso|csrf))`;
 const SENSITIVE_FORM_FIELD_NAME = String.raw`(?:password|passphrase|username|credential|credentials|session[-_]?id|csrf(?:token)?|(?:[a-z0-9_-]*token)|(?:[a-z0-9_-]*secret)|(?:[a-z0-9_-]*assertion)|(?:[a-z0-9_-]*api[-_]?key)|private[-_]?key|signing[-_]?key)`;
 const SENSITIVE_FIELD_EXPRESSION = new RegExp(`^${SENSITIVE_FIELD_NAME}$`, 'i');
 const SENSITIVE_HEADER_EXPRESSION = new RegExp(`^${SENSITIVE_HEADER_NAME}$`, 'i');

@@ -57,6 +57,22 @@ test('trace redaction removes dynamic join, TURN, cookie, assertion, and CSRF cr
   assert.match(redacted, /\[REDACTED:(?:FIELD|HEADER|FORM|JWT)\]/);
 });
 
+test('trace redaction removes per-route guest session cookies named as headers', () => {
+  const routeCookie = 'per-route-guest-cookie-value';
+  const legacyCookie = 'legacy-guest-cookie-value';
+  const input = JSON.stringify({
+    headers: [
+      { name: 'ploinky_guest_ncGyyzpdIxmPjORN_wQfqv', value: routeCookie },
+      { name: 'PLOINKY_GUEST_iw2P_FBNZBzQ_b5bTDMOLe', value: routeCookie },
+      { name: 'ploinky_guest', value: legacyCookie },
+    ],
+  });
+  const redacted = redactTraceText(input);
+  assert.equal(redacted.includes(routeCookie), false);
+  assert.equal(redacted.includes(legacyCookie), false);
+  assert.match(redacted, /\[REDACTED:HEADER\]/);
+});
+
 test('trace redaction handles JSON bodies escaped inside trace records', () => {
   const escaped = String.raw`{"body":"{\"participantToken\":\"dynamic-participant-token\",\"credential\":\"dynamic-turn-secret\",\"username\":\"dynamic-turn-user\"}"}`;
   const redacted = redactTraceText(escaped);
