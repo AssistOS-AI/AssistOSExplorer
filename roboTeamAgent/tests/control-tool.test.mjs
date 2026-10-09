@@ -207,3 +207,96 @@ test('resume tool decodes its handle and follows the replacement task to complet
     assert.deepEqual(requests[0], { operation: 'resume-task', robotId, taskId: interruptedTaskId,
         prompt: 'Continue from the current state.' });
 });
+
+// robot_list grants are minted by the sibling Ploinky RouterRequestTokenService
+// and passed through its real Agent verifier, as AgentServer does before a tool
+// runs. This section fails to load if that checkout is missing.
+const PLOINKY_ROOT = new URL('../../../ploinky/', import.meta.url);
+// Ploinky's signer resolves AchillesAgentLib only from an explicit source.
+process.env.PLOINKY_AGENTLIB_DIR ||= fileURLToPath(new URL('node_modules/achillesAgentLib', PLOINKY_ROOT));
+const { RouterRequestTokenService } = await import(new URL('cli/server/security/tokens/RouterRequestTokenService.js', PLOINKY_ROOT).href);
+const { verifyRouterRequestFromHeaders } = await import(new URL('Agent/lib/invocationAuth.mjs', PLOINKY_ROOT).href);
+const { computeRchTool } = await import(new URL('Agent/lib/requestHash.mjs', PLOINKY_ROOT).href);
+const ROBOTEAM_ID = 'agent:AchillesCLI/roboTeamAgent';
+const ROBOTEAM_SECRET = Buffer.alloc(32, 7);
+const grantMinter = new RouterRequestTokenService({ resolveAgentSecret: () => ROBOTEAM_SECRET });
+
+async function verifiedRobotListGrant(claims) {
+    const rch = computeRchTool({ method: 'POST', path: '/mcp', tool: 'robot_list', arguments: {} });
+    const { token } = await grantMinter.mintWithPayload({ targetAgentId: ROBOTEAM_ID, method: 'POST', path: '/mcp', tool: 'robot_list', rch, ...claims });
+    const verified = verifyRouterRequestFromHeaders({ authorization: `Bearer ${token}` }, {
+        env: { PLOINKY_AGENT_ID: ROBOTEAM_ID, PLOINKY_AGENT_SECRET: ROBOTEAM_SECRET.toString('hex') },
+        method: 'POST', path: '/mcp', tool: 'robot_list', rch,
+    });
+    assert.equal(verified.ok, true, verified.reason);
+    return verified.payload;
+}
+
+function runRobotList(port, metadata) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ['tools/control.mjs', 'robot-list'], {
+            cwd: AGENT_ROOT,
+            env: { ...process.env, ROBOTEAM_SERVICE_PORT: String(port), ROBOTEAM_INTERNAL_TOKEN: 'test-token' },
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (chunk) => { stdout += chunk; });
+        child.stderr.on('data', (chunk) => { stderr += chunk; });
+        child.once('error', reject);
+        child.once('close', (code) => resolve({ code, stdout, stderr }));
+        child.stdin.end(JSON.stringify({ tool: 'robot_list', input: {}, metadata }));
+    });
+}
+
+test('robot_list sends the agent origin proof only for an agent acting on its own behalf', async (t) => {
+    const requests = [];
+    const server = http.createServer((request, response) => {
+        requests.push({ method: request.method, url: request.url, headers: request.headers });
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ ok: true, canAdmin: false, robots: [{ id: 'robot-a1b2c3', repositories: [{ skillsets: [{ id: 'on' }, { id: 'off', enabled: false }] }] }] }));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const port = server.address().port;
+    const agent = 'agent:AssistOSExplorer/explorer';
+
+    const own = await runRobotList(port, { invocation: await verifiedRobotListGrant({
+        sub: agent, actor: { kind: 'agent', id: agent, roles: [] }, caller: { kind: 'agent', id: agent, roles: ['agent'] },
+    }) });
+    assert.equal(own.code, 0, own.stderr);
+    assert.deepEqual(JSON.parse(own.stdout).robots[0].repositories[0].skillsets, [{ id: 'on' }]);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, 'GET');
+    assert.equal(requests[0].url, '/api/robots');
+    assert.equal(requests[0].headers['x-roboteam-internal-token'], 'test-token');
+    assert.equal(requests[0].headers['x-roboteam-listing-origin'], 'agent');
+    assert.deepEqual(Object.keys(requests[0].headers).filter((name) => name.startsWith('x-roboteam-user-')), []);
+
+    const denied = {
+        'direct user': { invocation: await verifiedRobotListGrant({
+            sub: 'user:member-1', actor: { kind: 'user', id: 'user:member-1', roles: ['admin'], capabilities: ['explorer.access'] },
+        }) },
+        'delegated user': { invocation: await verifiedRobotListGrant({
+            sub: agent, actor: { kind: 'agent', id: agent, roles: [] }, caller: { kind: 'agent', id: agent, roles: ['agent'] },
+            usr: { id: 'member-1', username: 'member', roles: ['admin'] },
+            delegation: { jti: 'grant-1', scope: ['robots:list'], sourceAgentId: agent },
+        }) },
+        'singular delegation': { invocation: await verifiedRobotListGrant({
+            sub: agent, actor: { kind: 'agent', id: agent, roles: [] }, delegation: { sourceAgentId: agent, tool: 'robot_list' },
+        }) },
+        'forwarded metadata user': { user: { id: 'member-1', roles: ['admin'] }, invocation: await verifiedRobotListGrant({
+            sub: agent, actor: { kind: 'agent', id: agent, roles: [] },
+        }) },
+        'mismatched subject': { invocation: await verifiedRobotListGrant({
+            sub: 'agent:AssistOSExplorer/other', actor: { kind: 'agent', id: agent, roles: [] },
+        }) },
+        'missing grant': {},
+    };
+    for (const [name, metadata] of Object.entries(denied)) {
+        const result = await runRobotList(port, metadata);
+        assert.notEqual(result.code, 0, name);
+        assert.match(result.stderr, /Access denied: robot_list is available only to an agent acting on its own behalf/, name);
+    }
+    assert.equal(requests.length, 1, 'denied callers never reach the HTTP service');
+});

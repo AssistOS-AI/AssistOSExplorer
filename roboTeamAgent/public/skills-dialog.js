@@ -58,7 +58,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
             const row = node('section', '', 'repository-row');
             const details = document.createElement('details');
             const preferred = recommendations.find(item => hasRecommendedRepository({ repositories: [repo] }, item));
-            const summary = node('summary', repo.builtin ? 'Built-in copilot' : preferred?.source || repo.source);
+            const summary = node('summary', repo.builtin ? 'Built-in copilot' : preferred?.source || repo.source || repo.id);
             details.append(summary);
             const content = node('div', '', 'repository-content');
             content.append(node('h3', `Skills (${repo.skills.length})`));
@@ -93,7 +93,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
                 const remove = node('button', 'Remove', 'button danger');
                 remove.type = 'button';
                 remove.disabled = busy;
-                remove.setAttribute('aria-label', `Remove ${repo.source}`);
+                remove.setAttribute('aria-label', `Remove ${repo.source || repo.id}`);
                 remove.addEventListener('click', () => mutate('DELETE', { name: repo.id }));
                 row.append(remove);
             }
