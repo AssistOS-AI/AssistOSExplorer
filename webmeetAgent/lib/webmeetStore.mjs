@@ -8,6 +8,8 @@ import {
     isAdminAuthInfo,
     isGuestAuthInfo,
     isMeetingRecordOpen,
+    isVerifiedAdminAuthInfo,
+    isVerifiedListingEntitled,
     normalizeAuthInfo
 } from './store/accessPolicy.mjs';
 import {
@@ -430,8 +432,17 @@ export async function listMeetings(context, _workspaceId = '', authInfo = null) 
     if (isGuestAuthInfo(authInfo)) {
         throw new Error('Access denied: sign in to view WebMeet rooms.');
     }
+    // An authenticated user without verified listing access sees no rooms.
+    if (!isVerifiedListingEntitled(authInfo)) {
+        return [];
+    }
+    const verifiedAdmin = isVerifiedAdminAuthInfo(authInfo);
     const records = await listRoomRecords(context);
-    return records.filter((entry) => entry && canViewMeetingRecord(entry, authInfo)).map(buildMeetingView);
+    return records
+        .filter((entry) => entry
+            && (isMeetingRecordOpen(entry) || verifiedAdmin)
+            && canViewMeetingRecord(entry, authInfo))
+        .map(buildMeetingView);
 }
 
 export async function updateMeetingTitle(context, { meetingId, title, authInfo = null }) {

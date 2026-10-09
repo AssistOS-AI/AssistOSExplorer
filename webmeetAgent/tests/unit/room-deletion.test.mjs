@@ -13,6 +13,7 @@ import {
     mutateRoom
 } from '../../lib/store/roomRecords.mjs';
 import { installEdgeJoinFixture } from './edge-join-fixture.mjs';
+import { PRINCIPALS, directUserAuth } from './verified-grant-fixture.mjs';
 
 const ADMIN_AUTH = { user: { id: 'local:admin', username: 'admin', roles: ['user', 'admin'] } };
 const USER_AUTH = { user: { id: 'local:user', username: 'user', roles: ['user'] } };
@@ -143,6 +144,10 @@ test('administrator permanently deletes the complete WebMeet-owned room record s
         const roomWorkspaceDir = await roomWorkspaceDirectory(context, room.id);
         const unrelatedWorkspaceDir = await roomWorkspaceDirectory(context, unrelatedRoom.id);
         const liveKitCalls = [];
+        // The listing assertion after deletion is meaningful only if the same
+        // verified administrator listed the room before deletion.
+        const listingAdmin = await directUserAuth(PRINCIPALS.admin);
+        assert.equal((await store.listMeetings(context, '', listingAdmin)).some((entry) => entry.id === room.id), true);
         const deletingContext = {
             ...context,
             closeLiveKitRoom: async (roomName) => {
@@ -170,7 +175,7 @@ test('administrator permanently deletes the complete WebMeet-owned room record s
         assert.equal(await pathExists(roomWorkspaceDir), false);
         assert.equal(await pathExists(unrelatedWorkspaceDir), true);
         assert.deepEqual(await fs.readdir(context.deletionsDir), []);
-        assert.equal((await store.listMeetings(context, '', ADMIN_AUTH)).some((entry) => entry.id === room.id), false);
+        assert.equal((await store.listMeetings(context, '', listingAdmin)).some((entry) => entry.id === room.id), false);
         await assert.rejects(
             () => store.getMeeting(context, room.id, ADMIN_AUTH),
             /Meeting not found/

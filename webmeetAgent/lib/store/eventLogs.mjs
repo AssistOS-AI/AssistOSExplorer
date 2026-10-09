@@ -96,8 +96,24 @@ export async function listRoomEvents(context, roomId, { afterId = '' } = {}) {
     return await listEventLog(path.join(context.eventsDir, targetRoomId), afterId);
 }
 
+const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+export function isValidWorkspaceEventId(workspaceId) {
+    return typeof workspaceId === 'string' && WORKSPACE_ID_PATTERN.test(workspaceId);
+}
+
 export async function listWorkspaceEvents(context, workspaceId, { afterId = '' } = {}) {
     const targetWorkspaceId = String(workspaceId || '').trim();
     if (!targetWorkspaceId) return [];
-    return await listEventLog(path.join(context.eventsDir, 'workspaces', targetWorkspaceId), afterId);
+    // Only plain workspace ids are accepted, and the resolved directory must
+    // stay inside the workspace event root; nothing may reach a room's log.
+    if (!isValidWorkspaceEventId(targetWorkspaceId)) {
+        throw new Error('Invalid WebMeet workspace id.');
+    }
+    const workspacesRoot = path.resolve(context.eventsDir, 'workspaces');
+    const eventsDir = path.resolve(workspacesRoot, targetWorkspaceId);
+    if (path.dirname(eventsDir) !== workspacesRoot) {
+        throw new Error('Invalid WebMeet workspace id.');
+    }
+    return await listEventLog(eventsDir, afterId);
 }

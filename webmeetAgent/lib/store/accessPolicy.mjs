@@ -30,6 +30,45 @@ export function isAdminAuthInfo(authInfo = null) {
         || normalized.principalId === 'user:local:admin';
 }
 
+// Workspace-wide room listings and the workspace event feed are directory
+// reads. They are decided only on the Router-signed actor that
+// authInfoFromInvocation copied from an AgentServer-verified grant: a direct
+// user whose actor id, subject and principal agree, without delegation. Roles
+// are trimmed and lower-cased; guest is excluded on every arm. Usernames, id
+// aliases and unsigned user fields grant nothing here.
+export const LISTING_CAPABILITY = 'explorer.access';
+
+function verifiedDirectUserActor(authInfo = null) {
+    const invocation = authInfo?.invocation;
+    const actor = invocation?.actor;
+    if (!actor || typeof actor !== 'object' || actor.kind !== 'user') return null;
+    const actorId = typeof actor.id === 'string' ? actor.id : '';
+    if (!/^user:.+/.test(actorId) || !actorId.slice(5).trim()) return null;
+    if (invocation.subject !== actorId || authInfo.principalId !== actorId) return null;
+    if (invocation.delegation !== null) return null;
+    return actor;
+}
+
+function verifiedListingAccess(authInfo = null) {
+    const actor = verifiedDirectUserActor(authInfo);
+    if (!actor) return { entitled: false, admin: false };
+    const roles = Array.isArray(actor.roles)
+        ? actor.roles.filter((role) => typeof role === 'string').map((role) => role.trim().toLowerCase())
+        : [];
+    if (roles.includes('guest')) return { entitled: false, admin: false };
+    const admin = roles.includes('admin');
+    const capabilities = Array.isArray(actor.capabilities) ? actor.capabilities : [];
+    return { entitled: admin || capabilities.includes(LISTING_CAPABILITY), admin };
+}
+
+export function isVerifiedListingEntitled(authInfo = null) {
+    return verifiedListingAccess(authInfo).entitled;
+}
+
+export function isVerifiedAdminAuthInfo(authInfo = null) {
+    return verifiedListingAccess(authInfo).admin;
+}
+
 export function isGuestAuthInfo(authInfo = null) {
     const normalized = normalizeAuthInfo(authInfo);
     return normalized.roles.some((role) => String(role || '').trim().toLowerCase() === 'guest');

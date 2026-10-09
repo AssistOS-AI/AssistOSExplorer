@@ -4,7 +4,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { parseWebMeetEvent } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/services/webmeet-events.js';
 import { installEdgeJoinFixture } from './edge-join-fixture.mjs';
+import { PRINCIPALS, delegatedUserAuth, directUserAuth } from './verified-grant-fixture.mjs';
 import {
     createGuestParticipantAuth,
     withGuestParticipantOwner
@@ -31,7 +33,10 @@ test('WebMeet room list is dashboard-only and guest join is public-room-only', a
         const teamRoom = await createMeeting(context, { title: 'Team room', roomType: 'team', authInfo: ADMIN_AUTH });
         const publicRoom = await createMeeting(context, { title: 'Public room', roomType: 'guest', authInfo: ADMIN_AUTH });
 
-        const userRooms = await listMeetings(context, '', USER_AUTH);
+        // Listing is decided on the verified signed actor; an unsigned user
+        // object grants no directory access.
+        assert.deepEqual(await listMeetings(context, '', USER_AUTH), []);
+        const userRooms = await listMeetings(context, '', await directUserAuth(PRINCIPALS.explorerUser));
         assert.deepEqual(userRooms.map((entry) => entry.id).sort(), [publicRoom.id, teamRoom.id].sort());
 
         await assert.rejects(
@@ -123,4 +128,100 @@ test('public room scoped invocation can publish guest participant avatar through
         }
         await fs.rm(root, { recursive: true, force: true }).catch(() => {});
     }
+});
+
+async function withListingFixture(callback) {
+    const previousDataDir = process.env.WEBMEET_DATA_DIR;
+    const previousMasterKey = process.env.PLOINKY_WEBMEET_MASTER_KEY;
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'webmeet-listing-contract-'));
+    try {
+        process.env.WEBMEET_DATA_DIR = root;
+        process.env.PLOINKY_WEBMEET_MASTER_KEY = '0123456789abcdef0123456789abcdef';
+        const store = await import('../../lib/webmeetStore.mjs');
+        const { dispatch } = await import('../../tools/webmeet_tool.mjs');
+        const context = installEdgeJoinFixture(await store.createStoreContext(root));
+        // Task-owned rooms: a team room, a guest room and an archived room, so an
+        // empty store cannot satisfy the filtered-listing assertions.
+        const teamRoom = await store.createMeeting(context, { title: 'Listing team room', roomType: 'team', authInfo: ADMIN_AUTH });
+        const guestRoom = await store.createMeeting(context, { title: 'Listing guest room', roomType: 'guest', authInfo: ADMIN_AUTH });
+        const archivedRoom = await store.createMeeting(context, { title: 'Listing archived room', roomType: 'team', authInfo: ADMIN_AUTH });
+        await store.updateMeetingTitle(context, { meetingId: teamRoom.id, title: 'Listing team room renamed', authInfo: ADMIN_AUTH });
+        await store.archiveMeeting({ ...context, listLiveKitParticipants: async () => [], closeLiveKitRoom: async () => ({ ok: true }) }, archivedRoom.id, ADMIN_AUTH);
+        await callback({ store, dispatch, context, teamRoom, guestRoom, archivedRoom });
+    } finally {
+        if (previousDataDir === undefined) delete process.env.WEBMEET_DATA_DIR;
+        else process.env.WEBMEET_DATA_DIR = previousDataDir;
+        if (previousMasterKey === undefined) delete process.env.PLOINKY_WEBMEET_MASTER_KEY;
+        else process.env.PLOINKY_WEBMEET_MASTER_KEY = previousMasterKey;
+        await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
+const listIds = (result) => result.rooms.map((room) => room.id).sort();
+
+test('webmeet_room_list follows the verified listing entitlement matrix', async () => {
+    await withListingFixture(async ({ dispatch, context, teamRoom, guestRoom, archivedRoom }) => {
+        const list = async (authInfo) => dispatch('webmeet_room_list', {}, context, authInfo);
+        // Positive controls: the store is non-empty and the fixture grants verify.
+        const admin = await list(await directUserAuth({ ...PRINCIPALS.admin, capabilities: [] }));
+        assert.deepEqual(listIds(admin), [teamRoom.id, guestRoom.id, archivedRoom.id].sort());
+        assert.equal(admin.canManageRooms, true);
+        const spacedAdmin = await list(await directUserAuth({ id: 'owner-3', roles: [' Admin '], capabilities: [] }));
+        assert.equal(spacedAdmin.canManageRooms, true);
+        const member = await list(await directUserAuth(PRINCIPALS.explorerUser));
+        assert.deepEqual(listIds(member), [teamRoom.id, guestRoom.id].sort(), 'open rooms only');
+        assert.equal(member.canManageRooms, false);
+        assert.deepEqual(member.rooms.find((room) => room.id === teamRoom.id), {
+            id: teamRoom.id, roomId: teamRoom.id, name: 'Listing team room renamed', title: 'Listing team room renamed',
+            roomType: 'team', roomName: teamRoom.roomName, status: teamRoom.status,
+            createdAt: teamRoom.createdAt, updatedAt: member.rooms.find((room) => room.id === teamRoom.id).updatedAt, archivedAt: null,
+        }, 'listing projects only the room view allowlist');
+
+        for (const [name, authInfo] of [
+            ['selfRegistered', await directUserAuth(PRINCIPALS.selfRegistered)],
+            ['non-admin named admin', await directUserAuth(PRINCIPALS.namedAdmin)],
+            ['delegated admin with capability', await delegatedUserAuth({ agentId: 'agent:AchillesIDE/explorer', user: { id: 'owner-1', username: 'owner', roles: ['admin'], capabilities: ['explorer.access'] } })],
+            ['unsigned admin', ADMIN_AUTH],
+            ['unsigned capability', { user: { id: 'member-1', username: 'member', roles: ['user'] }, capabilities: ['explorer.access'] }],
+        ]) {
+            const result = await list(authInfo);
+            assert.deepEqual(result, { rooms: [], canManageRooms: false }, name);
+        }
+        for (const authInfo of [await directUserAuth(PRINCIPALS.adminGuest), await directUserAuth({ id: 'guest-2', roles: ['GUEST'], capabilities: ['explorer.access'] })]) {
+            await assert.rejects(() => list(authInfo), /Access denied/);
+        }
+        // Signed room scopes still restrict an entitled user.
+        const scoped = await list(await directUserAuth({ ...PRINCIPALS.explorerUser, scope: [`webmeet:room:${teamRoom.id}`] }));
+        assert.deepEqual(listIds(scoped), [teamRoom.id]);
+    });
+});
+
+test('the workspace room feed requires verified listing entitlement and a plain workspace id', async () => {
+    await withListingFixture(async ({ store, dispatch, context, teamRoom, archivedRoom }) => {
+        const feed = async (authInfo, roomId = 'rooms') => dispatch('webmeet_room_events_list', { roomId }, context, authInfo);
+        const memberAuth = await directUserAuth({ ...PRINCIPALS.explorerUser, tool: 'webmeet_room_events_list' });
+        const allowed = await feed(memberAuth);
+        assert.ok(allowed.events.length > 0, 'positive control reads the non-empty rooms feed');
+        assert.ok(allowed.events.some((event) => parseWebMeetEvent(event)?.payload?.meetingId === teamRoom.id));
+        assert.ok((await feed(await directUserAuth({ ...PRINCIPALS.admin, tool: 'webmeet_room_events_list' }))).events.length > 0);
+
+        for (const [name, authInfo] of [
+            ['selfRegistered', await directUserAuth({ ...PRINCIPALS.selfRegistered, tool: 'webmeet_room_events_list' })],
+            ['non-admin named admin', await directUserAuth({ ...PRINCIPALS.namedAdmin, tool: 'webmeet_room_events_list' })],
+            ['unsigned admin', ADMIN_AUTH],
+            ['delegated admin', await delegatedUserAuth({ agentId: 'agent:AchillesIDE/explorer', user: { id: 'owner-1', username: 'admin', roles: ['admin'] }, tool: 'webmeet_room_events_list' })],
+        ]) {
+            await assert.rejects(() => feed(authInfo), /Access denied: Explorer access is required/, name);
+        }
+        const adminGuestAuth = await directUserAuth({ ...PRINCIPALS.adminGuest, tool: 'webmeet_room_events_list' });
+        await assert.rejects(() => feed(adminGuestAuth), /Access denied/);
+
+        // An archived room's own log has events; traversal from the workspace
+        // branch must not reach it, even for an entitled user.
+        assert.ok((await store.listMeetingEvents(context, archivedRoom.id)).length > 0);
+        for (const roomId of [`../${archivedRoom.id}`, `rooms/../../${archivedRoom.id}`, '..', 'rooms/x', '.', 'a b']) {
+            await assert.rejects(() => feed(memberAuth, roomId), /Invalid WebMeet workspace id/, roomId);
+            await assert.rejects(() => store.listWorkspaceEvents(context, roomId), /Invalid WebMeet workspace id/, `store ${roomId}`);
+        }
+    });
 });
