@@ -398,6 +398,37 @@ test('workspace polling advances explicit cursors, retries pending invalidation,
     assert.throws(() => dashboard.webMeetRoom.handleIncomingEvent('livekit', buildWebMeetEvent('rooms', TYPES.WORKSPACE_ROOMS_INVALIDATED, { workspaceId: 'rooms' })), /untrusted/);
 });
 
+test('room archived between a cursor reset and the adopted blank-cursor response is left after the debounced list read', async (t) => {
+    const { dashboard, calls, timers, setList } = fixture(t);
+    const responses = [
+        { events: [], nextCursor: '', cursorReset: true },
+        { events: [], nextCursor: 'adopted-tail', cursorReset: false }
+    ];
+    dashboard.webMeetRoom.runTool = async () => responses.shift();
+    const fire = async (delay) => {
+        const entry = [...timers].find(([, timer]) => timer.delay === delay);
+        assert.ok(entry, `expected timer ${delay}`);
+        timers.delete(entry[0]);
+        await entry[1].fn();
+        await tick();
+    };
+    const listed = [];
+    let directory = [{ id: 'A', status: 'active' }];
+    setList(async () => { listed.push(directory.map((room) => room.status)); return { rooms: directory }; });
+    dashboard.startWorkspaceEvents();
+    await fire(0);
+    await fire(100);
+    assert.deepEqual(listed, [['active']], 'reset-time read sees the active room');
+    assert.equal(dashboard.state.session.meeting.id, 'A');
+    directory = [{ id: 'A', status: 'archived' }];
+    await fire(5000);
+    await fire(100);
+    assert.deepEqual(listed.slice(0, 2), [['active'], ['archived']], 'adopted response triggers a second directory read');
+    assert.equal(dashboard.state.session, null);
+    assert.deepEqual(calls.filter(([name]) => name === 'leave'), [['leave', { meetingId: 'A', participantId: 'participant-A' }]]);
+    assert.equal(dashboard.webMeetRoom.lastWorkspaceEventId, 'adopted-tail');
+});
+
 test('old LiveKit disconnect completion and callback preserve replacement adapter ownership', async (t) => {
     fixture(t);
     const pending = deferred();
