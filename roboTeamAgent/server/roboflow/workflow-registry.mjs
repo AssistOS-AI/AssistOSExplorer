@@ -1,11 +1,11 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { RoboFlowDatabase } from './database.mjs';
-import { normalizeWorkflow, invalid, slugifyWorkflow, workflowCatalogEntry } from './graph.mjs';
+import { normalizeWorkflow, invalid, slugifyWorkflow, workflowCatalogEntry, workflowDefaultObjective } from './graph.mjs';
 export { normalizeWorkflow, slugifyWorkflow, workflowCatalogEntry };
 
 const protectedIds = new Set(['default', 'code-development']);
-const presentWorkflow = graph => graph ? { ...graph, readOnly: protectedIds.has(graph.id) } : null;
+const presentWorkflow = graph => graph ? { ...graph, defaultObjective: workflowDefaultObjective(graph), readOnly: protectedIds.has(graph.id) } : null;
 
 export class WorkflowRegistry {
     constructor(options = {}) {
@@ -39,19 +39,23 @@ export class WorkflowRegistry {
     async update(id, input) {
         if (protectedIds.has(id)) throw Object.assign(invalid('built-in workflows cannot be edited'), { statusCode: 409 });
         await this.initialize();
-        const graph = normalizeWorkflow(input, { id });
         return this.database.transaction(() => {
             const previous = this.getSync(id);
             if (!previous) return null;
             if (input.revision !== previous.revision) throw Object.assign(invalid('workflow changed; reload before saving'), { statusCode: 409 });
+            let defaultObjective = input.defaultObjective === undefined ? previous.defaultObjective : input.defaultObjective;
+            // Definition-derived defaults follow edits; captured generation requirements remain intact.
+            if (defaultObjective === previous.defaultObjective && previous.defaultObjective === workflowDefaultObjective({ ...previous, defaultObjective: '' })) defaultObjective = undefined;
+            const graph = normalizeWorkflow({ ...input, defaultObjective }, { id });
             const record = { ...graph, revision: previous.revision + 1, createdAt: previous.createdAt, updatedAt: new Date().toISOString() };
             this.database.db.prepare('UPDATE workflow_types SET record=? WHERE id=?').run(JSON.stringify(record), id);
             return record;
         });
     }
-    async remove(id) {
+    async remove(id, { beforeRemove = () => {} } = {}) {
         if (protectedIds.has(id)) throw Object.assign(invalid('built-in workflows cannot be deleted'), { statusCode: 409 });
         await this.initialize();
+        beforeRemove(id);
         return this.database.db.prepare('DELETE FROM workflow_types WHERE id=?').run(id).changes > 0;
     }
 }

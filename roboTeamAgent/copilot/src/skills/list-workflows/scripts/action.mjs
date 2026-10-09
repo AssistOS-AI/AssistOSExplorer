@@ -13,7 +13,8 @@ export async function action(invocation = {}) {
             const modes = [...new Set([...(workflow.supportedExecutionTypes || []),
                 ...(workflow.tasks || []).flatMap((task) => task.supportedExecutionTypes || [])])];
             const choice = modes.length ? ` Choose executionType when starting: ${modes.join(', ')}.` : '';
-            return `- ${workflow.id} — ${workflow.name}${workflow.description ? ` — ${workflow.description}` : ''} Tasks: ${tasks}.${choice}`;
+            const objective = workflow.defaultObjective ? ' A saved default objective is available; omit objective only to run the workflow unchanged.' : ' Requires an explicit objective when starting.';
+            return `- ${workflow.id} — ${workflow.name}${workflow.description ? ` — ${workflow.description}` : ''} Tasks: ${tasks}.${choice}${objective}`;
         }).join('\n');
     } catch (error) {
         return `Could not list the workflows: ${error?.message || 'request failed'}`;

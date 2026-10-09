@@ -274,6 +274,36 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         if (!generation) { sendError(res, 404, 'generation not found'); return true; }
         sendJson(res, 200, { ok: true, ...generation }); return true;
     }
+    if (pathname === '/api/roboflow/schedule-folders' && ['GET', 'POST'].includes(req.method)) {
+        if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+        const result = req.method === 'GET' ? await roboflow.scheduleFolders.list(url.searchParams.get('path') || '')
+            : await roboflow.scheduleFolders.create(await readJsonBody(req));
+        sendJson(res, req.method === 'GET' ? 200 : 201, { ok: true, ...result }); return true;
+    }
+    if (pathname === '/api/roboflow/schedules' && req.method === 'GET') {
+        sendJson(res, 200, { ok: true, schedules: await roboflow.listSchedules() }); return true;
+    }
+    if (pathname === '/api/roboflow/schedules' && req.method === 'POST') {
+        if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+        sendJson(res, 201, { ok: true, schedule: await roboflow.saveSchedule(await readJsonBody(req), actor.id) }); return true;
+    }
+    const runScheduleId = pathname.match(/^\/api\/roboflow\/schedules\/(cron_[0-9a-f]{24})\/run-now$/)?.[1];
+    if (runScheduleId && req.method === 'POST') {
+        if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+        const input = await readJsonBody(req);
+        sendJson(res, 200, { ok: true, ...await roboflow.runScheduleNow(runScheduleId, input?.revision, actor.id) }); return true;
+    }
+    const scheduleId = pathname.match(/^\/api\/roboflow\/schedules\/(cron_[0-9a-f]{24})$/)?.[1];
+    if (scheduleId && ['PUT', 'DELETE'].includes(req.method)) {
+        if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+        if (req.method === 'PUT') sendJson(res, 200, { ok: true, schedule: await roboflow.saveSchedule(await readJsonBody(req), actor.id, scheduleId) });
+        else {
+            const deleted = await roboflow.deleteSchedule(scheduleId);
+            if (!deleted) sendError(res, 404, 'Cron job not found');
+            else sendJson(res, 200, { ok: true, deleted });
+        }
+        return true;
+    }
     if (pathname === '/api/roboflow/workflows' && req.method === 'GET') {
         sendJson(res, 200, { ok: true, workflows: await roboflow.listWorkflows() });
         return true;
@@ -405,6 +435,8 @@ export function createRoboTeamServer(options) {
             if (pathname === '/robot-controls.js' && req.method === 'GET') return serveFile(res, publicDir, 'robot-controls.js');
             if (pathname === '/page-navigation.js' && req.method === 'GET') return serveFile(res, publicDir, 'page-navigation.js');
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
+            if (pathname === '/cron-jobs.js' && req.method === 'GET') return serveFile(res, publicDir, 'cron-jobs.js');
+            if (pathname === '/schedule-folder-picker.js' && req.method === 'GET') return serveFile(res, publicDir, 'schedule-folder-picker.js');
             if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(res, publicDir, 'skills-dialog.js');
             if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(res, publicDir, 'terminal.js');
 

@@ -1,6 +1,6 @@
 ---
 title: DS003-main-behavior
-summary: Defines workspace robots, concurrent CLI conversations, retained visible workstations, observable delegated ALA tasks, and global task graph authoring and execution.
+summary: Defines workspace robots, concurrent CLI conversations, retained visible workstations, observable delegated ALA tasks, global graph workflows and recurring scheduled execution.
 ---
 
 ## Introduction
@@ -17,6 +17,7 @@ RoboTeam lets workspace administrators maintain durable robots and lets internal
 | Robot conversations | Every robot exposes the shared CLI/WebChat wrapper and retains independent conversations, cwd and native sessions; default is the Explorer copilot. |
 | Retained visible workstation | A Desktop or Browser container exposes the same Selkies session to ALA and a human, supports manual takeover with exact task continuation, and is reused or replaced according to mode and cwd. |
 | Graph authoring and execution | Generate and refine global task graphs, dispatch robot tasks by matching skillsets, coordinate sequential child workflows, and inspect durable run history and final responses. |
+| Scheduled workflows | Administrators persist interval or timezone-aware daily jobs; the running service starts ordinary graph workflows, skips restart backlogs and prevents overlap with the same job's unfinished execution. |
 | Queued observable ALA execution | Native asynchronous MCP start tools queue work per robot, stream ALA messages through Ploinky task logs, and reach a terminal state when the ALA process exits. |
 
 ### Workspace robot administration
@@ -47,9 +48,17 @@ RoboTeam must retain at most one GUI container per robot. A completed or paused 
 
 ### Graph authoring and execution
 
+Generated custom workflows capture the original requirements as a default run objective. Manual and legacy definitions derive a default from their saved instructions. `roboflow_start_flow` and WebChat may execute a workflow unchanged using that default; a concrete explicit user objective takes precedence. Standard development and Code Development remain generic and require explicit work requests. Objective resolution and graph snapshot capture share one transaction, and later edits do not change existing executions. DS007 owns the source and precedence rules.
+
 An opted-in task can pause the graph for a business decision missing from its prompt and context. The robot submits a question with three suggestions through the internal require-human-input skill and ends its execution. Explorer Observability lets an authenticated user select a suggestion or write an answer. RoboFlow persists the question before acknowledging it, prevents the next graph node from starting, and continues the same native session once answered. Pending questions survive restart and hold parent joins. See DS007 for the request and continuation contract.
 
 Administrators describe workflows and generate task graphs through the default robot, refine nodes and directed connections on the drawing board, and save them globally. RoboFlow matches each visited ordinary task to an available robot by its enabled skillsets, supplies only prior final responses and graph context, and follows outgoing edges. SQLite preserves the graph snapshot and distinct task visits for each run; folder-local output files support monitoring. A [task that allows sub-flows](../wiki.html#definition-workflow-creator) may delegate to sequential child workflows through the shared [Run workflows](../wiki.html#definition-run-workflows) node. RoboFlow starts children in array order and follows the creator-selected edge only after all children complete successfully. Failed or paused children block the sequence. The next child receives only the final response of the preceding child’s last task as cross-workflow context, and reads the shared working tree. Pending children do not count as active. Parent state retains running, then paused, then failed precedence. Children cannot themselves contain creators. Pause and Resume on the parent propagate to active and paused executions respectively, retaining finished child work and excluding pauses from durations. The creator phase exposes child states and links in Sub-flows. [DS007](DS007-roboflow-team-workflow.md) defines the graph, child-execution and Standard development workflow contracts.
+
+### Scheduled workflows
+
+Administrators can start a saved job immediately through Run now. Manual starts share the normal execution path and non-overlap rule, reset the next enabled occurrence from the attempt, and do not enable disabled jobs. The existing scheduling contract remains independent of browser refresh.
+
+Administrators create and manage global [Cron jobs](../wiki.html#definition-cron-job) for a saved workflow and working directory, inheriting the workflow's current default objective unless an explicit override is saved. Generic workflows require a concrete objective. The running RoboTeam service claims each interval or daily-time occurrence durably and launches it through the ordinary RoboFlow pipeline with a fresh saved-graph snapshot. The dashboard exposes upcoming timing, the last attempt and the ordinary execution page. Restart skips missed slots rather than replaying work; running and paused previous executions prevent overlap for the same job. Disabling or deleting a schedule leaves an already-created execution unchanged. [DS007](DS007-roboflow-team-workflow.md) defines timing, atomic launch linkage, authorization and recovery.
 
 ### Queued observable ALA execution
 

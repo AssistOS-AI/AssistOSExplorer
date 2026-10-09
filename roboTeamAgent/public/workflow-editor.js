@@ -64,7 +64,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         getGraph: () => graph,
         generate: (snapshot, previous, description, options) => reviseGraph(snapshot, previous, description, { ...options, request: api }),
         apply: revised => {
-            for (const key of ['tasks', 'edges', 'entryTaskId', 'layout']) graph[key] = structuredClone(revised[key]);
+            for (const key of ['tasks', 'edges', 'entryTaskId', 'layout', 'defaultObjective']) graph[key] = structuredClone(revised[key]);
             selectedEdgeId = null;
             changed(); render();
         },

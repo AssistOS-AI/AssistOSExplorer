@@ -74,7 +74,7 @@ test('dashboard tabs support wrapped arrows, Home, End and listener cleanup', ()
     state.tabs.forEach(tab => assert.equal(tab.listeners.size, 0));
 });
 
-test('dashboard markup groups existing controls into exactly three linked tabs and reserves Cron jobs', async () => {
+test('dashboard markup groups robot, workflow and scheduling controls into exactly three linked tabs', async () => {
     const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
     assert.equal((html.match(/role="tab"/g) || []).length, 3);
     assert.equal((html.match(/role="tabpanel"/g) || []).length, 3);
@@ -89,6 +89,6 @@ test('dashboard markup groups existing controls into exactly three linked tabs a
     for (const id of ['workflowsList', 'workflowCount', 'workflowListMessage', 'addWorkflowButton', 'flowsHistoryButton']) assert.ok(workflows.includes(`id="${id}"`));
     assert.doesNotMatch(robots, /id="workflowsList"/);
     assert.doesNotMatch(workflows, /id="createForm"/);
-    assert.doesNotMatch(kron, /<(button|form|input|select)\b/);
-    assert.match(kron, /Functionality will be defined later/);
+    for (const id of ['cronList', 'cronCount', 'createCronButton', 'cronDialog', 'cronForm']) assert.ok(kron.includes(`id="${id}"`));
+    assert.doesNotMatch(kron, /Functionality will be defined later/);
 });

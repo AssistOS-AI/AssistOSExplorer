@@ -6,7 +6,7 @@ description: List the RoboFlow workflow types defined in the workspace, with the
 # List Workflows
 
 ## Description
-Returns the current workspace workflow types from RoboFlow. Each line gives the workflow id, its name, its description and its tasks with their execution types. A workflow whose tasks support several execution modes says which `executionType` values can be chosen when it is started. The list is read from RoboFlow on every call, so it includes workflows created or changed since the conversation began.
+Returns the current workspace workflow types from RoboFlow. Each line gives the workflow id, its name, its description and its tasks with their execution types, and indicates whether a saved default objective is available or an explicit objective is required. A workflow whose tasks support several execution modes says which `executionType` values can be chosen when it is started. The list is read from RoboFlow on every call, so it includes workflows created or changed since the conversation began.
 
 ## Input Format
 No input is needed. Run `scripts/run.mjs` with no arguments, or with an empty `--input ""`.

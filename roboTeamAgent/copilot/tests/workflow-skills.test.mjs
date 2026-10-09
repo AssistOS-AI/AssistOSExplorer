@@ -59,8 +59,19 @@ test('list-workflows reports ids, tasks and the execution types a workflow needs
     };
     const result = await listWorkflows(invocation);
     assert.deepEqual(calls.map(([tool]) => tool), ['roboflow_list_workflows']);
-    assert.match(result, /^- default — Standard development — One task\. Tasks: Execute objective\. Choose executionType when starting: terminal, desktop, browser\.$/m);
-    assert.match(result, /^- code-development — Code Development Tasks: Planning \(terminal\)\.$/m);
+    assert.match(result, /^- default — Standard development — One task\. Tasks: Execute objective\. Choose executionType when starting: terminal, desktop, browser\. Requires an explicit objective when starting\.$/m);
+    assert.match(result, /^- code-development — Code Development Tasks: Planning \(terminal\)\. Requires an explicit objective when starting\.$/m);
+});
+test('launch-workflow may inherit a saved objective but never omits a concrete user request or invents generic work', async () => {
+    const calls = [], agentClient = { ensureAgentRunning: async () => {}, callToolWithoutWait: async (tool, args) => { calls.push(args); return {}; } };
+    for (const objective of [undefined, 'Changed scope']) {
+        const result = await launchWorkflow({ promptText: JSON.stringify({ action: 'start', workflowTypeId: 'daily-report', objective }), workingDir: '/workspace', agentClient });
+        assert.match(result, /workflow started/i);
+    }
+    assert.equal(Object.hasOwn(calls[0], 'objective'), false); assert.equal(calls[1].objective, 'Changed scope');
+    assert.equal(calls[0].folder, '/workspace');
+    for (const workflowTypeId of ['default', 'code-development']) assert.match(await launchWorkflow({ promptText: JSON.stringify({ action: 'start', workflowTypeId }), workingDir: '/workspace', agentClient }), /explicit objective/);
+    assert.equal(calls.length, 2);
 });
 
 test('list-workflows is a self-contained skill folder', () => {

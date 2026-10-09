@@ -4,6 +4,7 @@ import { openRobotTerminal } from './terminal.js';
 import { initDashboardTabs } from './dashboard-tabs.js';
 import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
 import { initPageNavigation, restoreNavigationFocus } from './page-navigation.js';
+import { initCronJobs } from './cron-jobs.js';
 
 const robotsList = document.querySelector('#robotsList');
 const robotTemplate = document.querySelector('#robotTemplate');
@@ -33,8 +34,10 @@ const navigation = initPageNavigation({
     }),
 });
 const initialView = navigation.view;
-initDashboardTabs({ initialTabId: initialView?.tabId || (new URL(location.href).searchParams.get('tab') === 'workflow-types' ? 'workflowTypesTab' : undefined),
-    onChange: () => closeOpenMenus() });
+const cronJobs = initCronJobs({ api, endpoint, bindLink: navigation.bindLink, closeMenus: closeOpenMenus });
+const requestedTab = new URL(location.href).searchParams.get('tab');
+initDashboardTabs({ initialTabId: initialView?.tabId || (requestedTab === 'workflow-types' ? 'workflowTypesTab' : requestedTab === 'cron-jobs' ? 'kronJobsTab' : undefined),
+    onChange: () => { closeOpenMenus(); void cronJobs.refresh(); } });
 navigation.bindLink(addWorkflowButton);
 navigation.bindLink(document.querySelector('#flowsHistoryButton'));
 
@@ -302,6 +305,7 @@ async function loadWorkflows(canAdmin) {
     addWorkflowButton.hidden = !canAdmin;
     try {
         const { workflows } = await api('api/roboflow/workflows');
+        cronJobs.setContext(workflows, canAdmin);
         workflowListMessage.textContent = '';
         renderWorkflows(workflows, canAdmin);
     } catch (error) {

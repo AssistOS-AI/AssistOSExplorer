@@ -12,6 +12,21 @@ export function textField(value, name, max, required = false) {
     if ((required && !text) || text.length > max) throw invalid(`${name} requires ${required ? '1' : '0'} to ${max} characters`);
     return text;
 }
+export function workflowDefaultObjective(graph) {
+    if (!graph || ['default', 'code-development'].includes(graph.id)) return '';
+    const configured = textField(graph.defaultObjective, 'defaultObjective', 32768);
+    if (configured) return configured;
+    const description = textField(graph.description, 'description', 4000);
+    if (description) return description;
+    const instructions = (graph.tasks || []).filter(task => !isCoordinator(task)).map(task => `${task.name}\n${task.prompt}`).join('\n\n');
+    // Do not silently truncate instructions or invent an objective for oversized definitions.
+    return instructions.length <= 32768 ? instructions.trim() : '';
+}
+export function resolveWorkflowObjective(graph, value) {
+    const objective = textField(value, 'objective', 32768) || workflowDefaultObjective(graph);
+    if (!objective) throw invalid('This workflow requires an explicit objective');
+    return objective;
+}
 export function normalizeWorkflow(input, { id, builtin = false } = {}) {
     const name = textField(input?.name, 'name', 120, true);
     const workflowId = id || input.id || slugifyWorkflow(name);
@@ -64,8 +79,10 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         return [task.id, { x: Number.isFinite(point?.x) ? Math.max(0, Math.min(10000, point.x)) : 60 + index % 4 * 240,
             y: Number.isFinite(point?.y) ? Math.max(0, Math.min(10000, point.y)) : 60 + Math.floor(index / 4) * 140 }];
     }));
-    return { schemaVersion: 2, id: workflowId, name, description: textField(input.description, 'description', 4000),
+    const graph = { schemaVersion: 2, id: workflowId, name, description: textField(input.description, 'description', 4000),
         ...(builtin ? { kind: 'default' } : {}), entryTaskId: input.entryTaskId, tasks, edges, layout };
+    graph.defaultObjective = workflowDefaultObjective({ ...graph, defaultObjective: textField(input.defaultObjective, 'defaultObjective', 32768) });
+    return graph;
 }
 export function graphDiagnostics(graph) {
     const seen = new Set([graph.entryTaskId]);

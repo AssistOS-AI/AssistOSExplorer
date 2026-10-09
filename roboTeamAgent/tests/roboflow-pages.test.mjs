@@ -31,7 +31,7 @@ test('the main page renders the RoboTeam breadcrumb and page links', async t => 
     const html = await response.text();
     assert.match(html, /class="breadcrumbs"[\s\S]*aria-current="page"[^>]*>RoboTeam</);
     assert.match(html, /id="flowsHistoryButton"[^>]*href="flows"/);
-    assert.match(html, /id="addWorkflowButton"[^>]*href="flow-types\/generate-new"[^>]*>[\s\S]*Create workflow</);
+    assert.match(html, /id="addWorkflowButton"[^>]*href="flow-types\/generate-new"[^>]*>[\s\S]*Create\s+workflow</);
     assert.equal(html.includes('id="workflowDialog"'), false);
     assert.equal(html.includes('id="flowsHistoryDialog"'), false);
 });
@@ -42,7 +42,7 @@ test('the flows list and flow execution pages are served under /flows', async t 
     assert.equal(list.status, 200);
     const listHtml = await list.text();
     assert.match(listHtml, /flows\.js/);
-    assert.match(listHtml, /class="breadcrumbs"[\s\S]*href="\.\/"[^>]*>RoboTeam</);
+    assert.match(listHtml, /class="breadcrumbs"[\s\S]*href="\.\/\?tab=workflow-types"[^>]*data-return-control[^>]*>RoboTeam</);
 
     const execution = await request('/flows?flowId=flow_123456789012345678901234');
     assert.equal(execution.status, 200);
