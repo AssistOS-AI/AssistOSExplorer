@@ -17,7 +17,8 @@ import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE
 import { prepareRobotShell } from './robot-shell.mjs';
 import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
-import { robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
+import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
+import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
 
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
@@ -246,11 +247,41 @@ export class RuntimeManager {
         catch (error) { console.error('[roboTeamAgent] task observer failed:', error?.message || error); }
     }
 
-    async prepareOpenCode(robotId) {
+    // `prepare` lets the caller wait for the shared plugin template (one npm install per
+    // OpenCode version, coalesced across robots); without it only a ready template is used.
+    // Either way a missing template leaves OpenCode to install its own dependency as before.
+    async prepareOpenCode(robotId, { prepare = false } = {}) {
         if (!/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) throw new Error('Invalid robot ID.');
         const home = path.join(this.dataDir, 'robots', robotId, 'home');
         await prepareRobotShell(home);
+        const seeded = await seedOpenCodePlugin(home, await this.openCodePluginTemplate({ prepare }));
+        if (seeded.status === 'failed') console.warn(`[roboTeamAgent] OpenCode plugin seeding failed for ${robotId}: ${seeded.error}`);
         await this.soulGateway.prepare(home);
+    }
+
+    async openCodePluginTemplate({ prepare = false } = {}) {
+        try {
+            const tools = prepare ? { agents: await this.toolCache.prepareCodingAgents?.(['opencode']) }
+                : await this.toolCache.peekShellTools?.();
+            const version = openCodeVersion(tools);
+            if (!version) return null;
+            return (prepare ? await this.toolCache.prepareOpenCodePlugin?.(version)
+                : await this.toolCache.peekOpenCodePlugin?.(version)) ?? null;
+        } catch (error) {
+            console.warn(`[roboTeamAgent] OpenCode plugin template unavailable: ${error?.message || error}`);
+            return null;
+        }
+    }
+
+    // After startup preparation: install the template once and seed every OpenCode robot,
+    // so no first turn or catalog call waits for OpenCode's dependency installation.
+    async warmOpenCodePlugins(robots) {
+        for (const robot of robots) {
+            if (!robotCodingAgents(robot).includes('opencode')) continue;
+            await this.prepareOpenCode(robot.id, { prepare: true }).catch(error => {
+                console.warn(`[roboTeamAgent] OpenCode preparation failed for ${robot.id}: ${error?.message || error}`);
+            });
+        }
     }
 
     async _podman(args, timeout = 120000) {
@@ -317,7 +348,7 @@ export class RuntimeManager {
             await fs.mkdir(cwd, { recursive: true });
             const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             await this._prepareRobotAgentState(originalHome);
-            await this.prepareOpenCode(robot.id);
+            await this.prepareOpenCode(robot.id, { prepare: robotCodingAgents(robot).includes('opencode') });
             const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
             await this._prepareRobotAgentState(robotHome);
             await prepareRobotShell(robotHome);
@@ -503,7 +534,7 @@ export class RuntimeManager {
             await fs.mkdir(cwd, { recursive: true });
             const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             await this._prepareRobotAgentState(originalHome);
-            await this.prepareOpenCode(robot.id);
+            await this.prepareOpenCode(robot.id, { prepare: (codingAgent === 'auto' ? selectedAgents : [codingAgent]).includes('opencode') });
             const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
             await this._prepareRobotAgentState(robotHome);
             await prepareRobotShell(robotHome);

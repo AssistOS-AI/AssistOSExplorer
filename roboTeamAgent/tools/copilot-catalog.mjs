@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { skillCatalogRequest } from '../server/skill-catalog-api.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
+import { createOpenCodeModelCache } from '../server/opencode-model-cache.mjs';
 import { publicSkillsets, publicRepositories } from '../server/robot-skillsets.mjs';
 import { loadAutocompleteCatalog, buildSessionCompletions, buildTaskActionCompletionMap } from '../copilot/src/mcp/list-slash-commands.mjs';
 
@@ -19,6 +20,7 @@ try {
         : await loadAutocompleteCatalog({ dir: workingDir, skillCatalog: catalog,
             sessionId: input.sessionId, freshSession: true, signal: AbortSignal.timeout(20000),
             execution: { robotId: context.robot.id },
+            modelCache: createOpenCodeModelCache({ directory: path.join(context.store.robotPath(context.robot.id), 'runtime', 'model-catalog') }),
             sessionCompletions: buildSessionCompletions(workingDir),
             taskCompletions: buildTaskActionCompletionMap(workingDir) });
     if (result.commands) {

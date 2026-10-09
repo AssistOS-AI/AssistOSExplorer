@@ -26,7 +26,7 @@ export class RobotModels {
         signal?.throwIfAborted();
         const tools = await this.runtime.toolCache.prepareCodingAgents([agent]);
         signal?.throwIfAborted();
-        if (agent === 'opencode') await this.runtime.prepareOpenCode(robot.id);
+        if (agent === 'opencode') await this.runtime.prepareOpenCode(robot.id, { prepare: true });
         const home = await workspaceDataPath(path.join(this.store.robotPath(robot.id), 'home'), this.runtime.workspaceRoot);
         const api = await this.api();
         const env = nativeEnvironment(codingAgentEnvironment(tools, process.env, this.runtime.toolCache.root), home);

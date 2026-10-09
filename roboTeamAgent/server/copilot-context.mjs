@@ -7,7 +7,7 @@ import { ToolCache } from './tool-cache.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { DATA_DIR } from './constants.mjs';
-import { CODING_AGENT_NAMES, robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
+import { CODING_AGENT_NAMES, robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
 
 // One CLI process owns one robot context; browser input cannot change its home.
 export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, usePreparedTools = false, holdUsage = false,
@@ -48,7 +48,11 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
             const environment = codingAgentEnvironment(selected, process.env, cache.root);
             for (const name of CODING_AGENT_NAMES) delete process.env[`${name.toUpperCase()}_BIN`];
             Object.assign(process.env, environment);
-            await prepareRobotShell(home, { codingAgents, binPath: tools.binPath, cacheRoot: cache.root });
+            // Peek only: a spawned catalog process never runs npm. Without a template for this
+            // exact OpenCode version, OpenCode installs for itself as before.
+            const openCodePlugin = codingAgents.includes('opencode')
+                ? await cache.peekOpenCodePlugin?.(openCodeVersion(tools)) : null;
+            await prepareRobotShell(home, { codingAgents, binPath: tools.binPath, cacheRoot: cache.root, openCodePlugin });
         }
         const skillsets = new RobotSkillsets({ robotStore: store,
             workspaceRoot, alaCommand: process.env.ACHILLES_ALA_COMMAND });

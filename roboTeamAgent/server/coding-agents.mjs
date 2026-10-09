@@ -30,3 +30,10 @@ export function codingAgentEnvironment(agents, environment = process.env, cacheR
     env.PATH = [...Object.values(agents).map(agent => agent.binPath), ...inherited].join(path.delimiter);
     return env;
 }
+
+// The OpenCode version of a prepared tool set, from the same record that names the binary
+// ALA will run, so the plugin template always matches that executable.
+export function openCodeVersion(tools) {
+    const version = tools?.agents?.opencode?.versions?.opencode;
+    return typeof version === 'string' && version ? version : null;
+}

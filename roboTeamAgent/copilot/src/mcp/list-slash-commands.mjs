@@ -91,7 +91,8 @@ export async function loadAutocompleteCatalog(options = {}) {
     const modelSubCommands = [{ name: 'default', description: 'Use the native backend default', argCompletions: [] }];
     let modelError;
     const execution = options.execution || (options.robotId ? { robotId: options.robotId } : {});
-    const engine = options.engine || createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, installation, execution });
+    const engine = options.engine || createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, installation, execution,
+        modelCache: options.modelCache });
     try {
         const current = options.sessionId ? storedSessions.loadSession(options.sessionId)
             : preview || await storedSessions.ensureCurrentSession();

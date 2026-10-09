@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { installSoulGatewayPlugin } from './soul-gateway-service.mjs';
+import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
 import { ensureAgentConfig } from './agent-model-config.mjs';
 import { CODING_AGENT_NAMES } from './coding-agents.mjs';
 
@@ -50,6 +51,8 @@ export async function prepareRobotShell(home, options) {
         }
     }
     await installSoulGatewayPlugin(home);
+    // Before OpenCode first runs here, so its own dependency installation finds nothing to do.
+    if (options?.openCodePlugin) await seedOpenCodePlugin(home, options.openCodePlugin);
     await ensureAgentConfig(home, { codingAgents: options?.codingAgents });
     for (const name of ['.roboteam-env.sh', '.bashrc', '.profile', '.bash_profile']) {
         const handle = await fs.open(path.join(home, name), fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);

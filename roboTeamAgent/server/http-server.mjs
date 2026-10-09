@@ -543,7 +543,7 @@ export function createRoboTeamServer(options) {
                 await prepareRobotShell(path.join(robotStore.robotPath(terminalRobotId), 'home'), {
                     codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
                 });
-                await runtimeManager.prepareOpenCode?.(terminalRobotId);
+                await runtimeManager.prepareOpenCode?.(terminalRobotId, { prepare: codingAgents.includes('opencode') });
                 return sendJson(res, 200, { ok: true, directory });
             }
 
