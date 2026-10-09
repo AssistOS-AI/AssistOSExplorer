@@ -147,3 +147,118 @@ test('ambiguous identities are hidden; profile projection allowlists fields; mal
         await assert.rejects(() => store.listWorkspaceEventsForViewer(context, 'rooms'), /Access denied/);
     });
 });
+
+// Counts fs.readFile calls by area. Both the event reader and the room-record
+// reader call the shared fs/promises object, so patching it observes both.
+async function measureFeedReads(context, operation) {
+    const eventsRoot = path.join(context.eventsDir, 'workspaces', 'rooms');
+    const original = fs.readFile;
+    const state = { eventReads: 0, recordReads: 0, inFlight: 0, peak: 0 };
+    fs.readFile = async (...args) => {
+        const target = String(args[0]);
+        const isEvent = path.dirname(target) === eventsRoot && target.endsWith('.event');
+        if (path.dirname(target) === context.meetingsDir) state.recordReads += 1;
+        if (!isEvent) return original(...args);
+        state.eventReads += 1;
+        state.inFlight += 1;
+        state.peak = Math.max(state.peak, state.inFlight);
+        try { return await original(...args); } finally { state.inFlight -= 1; }
+    };
+    let result;
+    try {
+        result = await operation();
+    } finally {
+        fs.readFile = original;
+    }
+    return { ...state, result };
+}
+
+test('workspace cursor found: returns only later events and the final raw cursor', async () => {
+    await fixture(async ({ context, admin, a, feed }) => {
+        const first = await feed();
+        const firstIds = first.events.map((event) => parseWebMeetEvent(event).id);
+        assert.ok(firstIds.length >= 2);
+        const middle = firstIds[0];
+        const later = await feed(undefined, middle);
+        assert.deepEqual(later.events.map((event) => parseWebMeetEvent(event).id), firstIds.slice(1));
+        assert.equal(later.nextCursor, first.nextCursor);
+        assert.equal(later.cursorReset, false);
+        await store.updateMeetingTitle(context, { meetingId: a.id, title: 'Cursor increment', authInfo: admin });
+        const increment = await feed(undefined, first.nextCursor);
+        assert.ok(increment.events.some((event) => parseWebMeetEvent(event).payload.title === 'Cursor increment'));
+        assert.equal(increment.cursorReset, false);
+        assert.notEqual(increment.nextCursor, first.nextCursor);
+    });
+});
+
+test('workspace latest cursor reads no event content and no room records', async () => {
+    await fixture(async ({ context, feed }) => {
+        const first = await feed();
+        for (let round = 0; round < 3; round += 1) {
+            const measured = await measureFeedReads(context, () => feed(undefined, first.nextCursor));
+            assert.deepEqual(measured.result, { events: [], nextCursor: first.nextCursor, cursorReset: false });
+            assert.equal(measured.eventReads, 0, `latest event reads round ${round}`);
+            assert.equal(measured.recordReads, 0, `latest record reads round ${round}`);
+        }
+    });
+});
+
+test('workspace missing cursor resets without any historical read, then a blank cursor recovers', async () => {
+    await fixture(async ({ context, admin, a, feed }) => {
+        const first = await feed();
+        const measured = await measureFeedReads(context, () => feed(undefined, 'event_missing_cursor'));
+        assert.deepEqual(measured.result, { events: [], nextCursor: '', cursorReset: true });
+        assert.equal(measured.eventReads, 0, 'a missing cursor must not read event history');
+        assert.equal(measured.recordReads, 0, 'a missing cursor must not read room records');
+        const recovered = await feed();
+        assert.equal(recovered.cursorReset, false);
+        assert.equal(recovered.nextCursor, first.nextCursor);
+        await store.updateMeetingTitle(context, { meetingId: a.id, title: 'After reset', authInfo: admin });
+        const next = await feed(undefined, recovered.nextCursor);
+        assert.ok(next.events.some((event) => parseWebMeetEvent(event).payload.title === 'After reset'));
+    });
+});
+
+test('workspace cursor removed by permanent room deletion resets, then recovers the current tail', async () => {
+    await fixture(async ({ context, admin, a, feed }) => {
+        const doomed = await store.createMeeting(context, { title: 'Doomed room', authInfo: admin });
+        const beforeDelete = await feed();
+        const cursorEvent = parseWebMeetEvent(beforeDelete.events.at(-1));
+        assert.equal(cursorEvent.payload.meetingId, doomed.id);
+        assert.equal(beforeDelete.nextCursor, cursorEvent.id);
+        await store.deleteMeeting(context, { meetingId: doomed.id, confirmed: true, authInfo: admin });
+        const measured = await measureFeedReads(context, () => feed(undefined, beforeDelete.nextCursor));
+        assert.deepEqual(measured.result, { events: [], nextCursor: '', cursorReset: true });
+        assert.equal(measured.eventReads, 0);
+        const recovered = await feed();
+        assert.equal(recovered.cursorReset, false);
+        assert.ok(recovered.events.every((event) => parseWebMeetEvent(event).payload.meetingId !== doomed.id));
+        assert.ok(recovered.nextCursor && recovered.nextCursor !== beforeDelete.nextCursor);
+        await store.updateMeetingTitle(context, { meetingId: a.id, title: 'After deletion', authInfo: admin });
+        const next = await feed(undefined, recovered.nextCursor);
+        assert.ok(next.events.some((event) => parseWebMeetEvent(event).payload.title === 'After deletion'));
+    });
+});
+
+test('workspace feed reads only later events with bounded concurrency', async () => {
+    await fixture(async ({ context, admin, a, feed }) => {
+        const first = await feed();
+        const titles = [];
+        for (let index = 0; index < 40; index += 1) {
+            titles.push(`Bounded ${String(index).padStart(2, '0')}`);
+            await store.updateMeetingTitle(context, { meetingId: a.id, title: titles[index], authInfo: admin });
+        }
+        const names = (await fs.readdir(path.join(context.eventsDir, 'workspaces', 'rooms'))).filter((name) => name.endsWith('.event'));
+        const measured = await measureFeedReads(context, () => feed(undefined, first.nextCursor));
+        const delivered = measured.result.events.map(parseWebMeetEvent);
+        assert.ok(delivered.length >= 40, `delivered ${delivered.length}`);
+        assert.equal(measured.eventReads, delivered.length, 'only events after the cursor are read');
+        assert.ok(measured.eventReads < names.length, 'events up to the cursor are not read');
+        assert.ok(measured.peak > 1, `peak in-flight reads ${measured.peak} must exceed 1`);
+        assert.ok(measured.peak <= 16, `peak in-flight reads ${measured.peak} must not exceed 16`);
+        const renamed = delivered.filter((event) => event.payload.title?.startsWith('Bounded '));
+        // Each rename may emit more than one workspace event for the same title.
+        assert.deepEqual([...new Set(renamed.map((event) => event.payload.title))].sort(), [...titles].sort());
+        assert.equal(measured.result.nextCursor, delivered.at(-1).id);
+    });
+});
