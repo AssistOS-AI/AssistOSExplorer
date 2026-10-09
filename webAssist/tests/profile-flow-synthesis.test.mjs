@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { LLMAgent } from 'achillesAgentLib';
 
 import { createWebAssistAgent } from '../src/index.mjs';
+import { LOCAL_OPERATOR_ACCESS } from '../src/runtime/sessionAccess.mjs';
 import { createWebAssistSandbox, ensureSiteAku, plannerDecision } from './helpers.mjs';
 import { loadAkuContext } from '../src/runtime/load-aku-context.mjs';
 
@@ -102,6 +103,7 @@ test('webAssist persists orchestrator-authored conversation memory inside sessio
         siteId: SITE_ID,
         sessionId: 'session-flow-1',
         message: 'Can we collaborate on AI research?',
+        access: LOCAL_OPERATOR_ACCESS,
     });
 
     assert.equal(firstTurn.response, 'Great. What available datasets and student resources can you provide for collaboration?');
@@ -110,6 +112,7 @@ test('webAssist persists orchestrator-authored conversation memory inside sessio
         siteId: SITE_ID,
         sessionId: 'session-flow-1',
         message: 'I can share some papers later.',
+        access: LOCAL_OPERATOR_ACCESS,
     });
 
     assert.equal(secondTurn.response, 'Thanks. I still need one detail: what project timeline and expected outcomes do you have?');

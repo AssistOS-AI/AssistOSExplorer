@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveWebAssistDataRoot } from '../runtime/akuStore.mjs';
+import { callerAccessFromEnvelope, formatToolError, publicError } from '../runtime/sessionAccess.mjs';
 
 function safeParseJson(text) {
     try {
@@ -12,33 +13,6 @@ function safeParseJson(text) {
     } catch {
         return null;
     }
-}
-
-function normalizeInput(envelope) {
-    let current = envelope;
-    for (let index = 0; index < 4; index += 1) {
-        if (!current || typeof current !== 'object') {
-            break;
-        }
-        if (current.input && typeof current.input === 'object') {
-            current = current.input;
-            continue;
-        }
-        if (current.arguments && typeof current.arguments === 'object') {
-            current = current.arguments;
-            continue;
-        }
-        if (current.params?.arguments && typeof current.params.arguments === 'object') {
-            current = current.params.arguments;
-            continue;
-        }
-        if (current.params?.input && typeof current.params.input === 'object') {
-            current = current.params.input;
-            continue;
-        }
-        break;
-    }
-    return current && typeof current === 'object' ? current : {};
 }
 
 async function readStdinFallback() {
@@ -60,9 +34,13 @@ async function readStdinFallback() {
     });
 }
 
-export async function listSites() {
-    const resolvedDataDir = resolveWebAssistDataRoot({ allowMissing: true });
-    const sitesDir = path.join(resolvedDataDir, 'sites');
+// Site ids are an Explorer-user surface (settings component); visitors and
+// guests are denied before any storage access. The data root is never returned.
+export async function listSites({ access = null } = {}) {
+    if (access?.explorerAccess !== true) {
+        throw publicError('Access denied: Explorer access is required to list webAssist sites.');
+    }
+    const sitesDir = path.join(resolveWebAssistDataRoot({ allowMissing: true }), 'sites');
 
     try {
         const entries = await fs.readdir(sitesDir, { withFileTypes: true });
@@ -74,14 +52,12 @@ export async function listSites() {
         return {
             sites: siteIds,
             count: siteIds.length,
-            dataRoot: resolvedDataDir,
         };
     } catch (error) {
         if (error && error.code === 'ENOENT') {
             return {
                 sites: [],
                 count: 0,
-                dataRoot: resolvedDataDir,
             };
         }
         throw error;
@@ -91,17 +67,21 @@ export async function listSites() {
 async function main() {
     const rawInput = await readStdinFallback();
     const envelope = rawInput && rawInput.trim() ? safeParseJson(rawInput) : null;
-    const input = normalizeInput(envelope || {});
-
-    const result = await listSites();
-
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    let access = null;
+    try {
+        access = await callerAccessFromEnvelope(envelope || {});
+        const result = await listSites({ access });
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } catch (error) {
+        process.stderr.write(`${formatToolError(error, access)}\n`);
+        process.exitCode = 1;
+    }
 }
 
 const currentFilePath = fileURLToPath(import.meta.url);
 if (process.argv[1] && path.resolve(process.argv[1]) === currentFilePath) {
-    main().catch((error) => {
-        process.stderr.write(`${error.message}\n`);
+    main().catch(() => {
+        process.stderr.write('webAssist request failed.\n');
         process.exitCode = 1;
     });
 }

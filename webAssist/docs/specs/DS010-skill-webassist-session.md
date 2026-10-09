@@ -15,9 +15,8 @@ This specification defines the active DS010-skill-webassist-session contract for
 
 `webassist-session` persists visitor session profile memory for the active site.
 
-### Required Input
-- `siteId`
-- `sessionId`
+### Trusted Context
+- `context.siteDataDir`, `context.siteId` and `context.sessionId` are supplied by the runtime for the effective session. The skill writes only `ku_sess_<context.sessionId>` and ignores any `siteId` or `sessionId` the model writes into the payload; it fails when the context values are missing.
 
 ### Optional Input
 - `profileDetails`

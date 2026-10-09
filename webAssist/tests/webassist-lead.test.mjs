@@ -33,6 +33,8 @@ test('webassist-lead writes a deterministic site-scoped lead', async (t) => {
         promptText: JSON.stringify(leadPayload()),
         context: {
             siteDataDir: path.join(sandbox.webAssistDataDir, 'sites', SITE_ID),
+            siteId: SITE_ID,
+            sessionId: 'session-xyz',
         },
     });
 
@@ -42,6 +44,8 @@ test('webassist-lead writes a deterministic site-scoped lead', async (t) => {
         promptText: JSON.stringify(leadPayload({ summary: 'Ready to scope an implementation call.' })),
         context: {
             siteDataDir: path.join(sandbox.webAssistDataDir, 'sites', SITE_ID),
+            siteId: SITE_ID,
+            sessionId: 'session-xyz',
         },
     });
 

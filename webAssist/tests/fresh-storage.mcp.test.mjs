@@ -8,7 +8,12 @@ import { listSites } from '../src/mcp/list-sites.mjs';
 import { getSessionHistory } from '../src/mcp/get-session-history.mjs';
 import { registerEvent } from '../src/mcp/register-events.mjs';
 import { updateSessionProfile } from '../src/runtime/update-session.mjs';
+import { callerAccessFromEnvelope } from '../src/runtime/sessionAccess.mjs';
 import { ensureSiteAku } from './helpers.mjs';
+import { PRINCIPALS, toolEnvelope, userGrant } from './fixtures/verified-grant.mjs';
+
+// list-sites and admin history reads require a verified Explorer administrator.
+const ADMIN_ACCESS = await callerAccessFromEnvelope(toolEnvelope(await userGrant(PRINCIPALS.admin), {}));
 
 async function createFreshStorage(t) {
     const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'webassist-fresh-mcp-'));
@@ -28,9 +33,9 @@ async function createFreshStorage(t) {
 test('site listing and session history work before chat without creating the missing data child', async (t) => {
     const { persistentRoot, dataRoot } = await createFreshStorage(t);
 
-    assert.deepEqual(await listSites(), { sites: [], count: 0, dataRoot });
-    assert.deepEqual(await listSites(), { sites: [], count: 0, dataRoot });
-    assert.deepEqual(await getSessionHistory({ siteId: 'new-site', sessionId: 'new-session' }), {
+    assert.deepEqual(await listSites({ access: ADMIN_ACCESS }), { sites: [], count: 0 });
+    assert.deepEqual(await listSites({ access: ADMIN_ACCESS }), { sites: [], count: 0 });
+    assert.deepEqual(await getSessionHistory({ siteId: 'new-site', sessionId: 'new-session', access: ADMIN_ACCESS }), {
         siteId: 'new-site',
         sessionId: 'new-session',
         exists: false,
@@ -51,7 +56,7 @@ test('standalone event registration creates the data child but still requires a 
     assert.deepEqual(await fs.readdir(dataRoot), []);
     await ensureSiteAku({ siteId: 'new-site' });
     assert.equal((await registerEvent(event)).ok, true);
-    assert.deepEqual((await listSites()).sites, ['new-site']);
+    assert.deepEqual((await listSites({ access: ADMIN_ACCESS })).sites, ['new-site']);
 });
 
 test('standalone session writers initialize storage independently of chat and preserve site admission', async (t) => {
@@ -80,8 +85,8 @@ for (const target of ['persistentRoot', 'dataRoot']) {
         await fs.symlink(outsideRoot, fixture[target]);
 
         for (const operation of [
-            () => listSites(),
-            () => getSessionHistory({ siteId: 'new-site', sessionId: 'session' }),
+            () => listSites({ access: ADMIN_ACCESS }),
+            () => getSessionHistory({ siteId: 'new-site', sessionId: 'session', access: ADMIN_ACCESS }),
             () => registerEvent({ siteId: 'new-site', visitorId: 'visitor', eventType: 'visit' }),
             () => updateSessionProfile({ siteId: 'new-site', sessionId: 'session' }),
         ]) {

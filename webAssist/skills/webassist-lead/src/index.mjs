@@ -54,20 +54,25 @@ async function getAkuInstance(siteDataDir, siteId) {
     return aku;
 }
 
+// The site and session come only from the trusted runtime context; any
+// `siteId`/`sessionId` the model writes into the payload is ignored.
 export async function action({ promptText, context }) {
     const {
-        siteId,
-        sessionId,
         profile,
         contactInfo,
     } = parseInput(promptText);
 
-    if (!siteId || !sessionId || !profile) {
-        throw new Error('webassist-lead requires siteId, sessionId, and profile.');
+    const siteDataDir = context?.siteDataDir || '';
+    const siteId = context?.siteId || '';
+    const sessionId = context?.sessionId || '';
+    if (!siteDataDir || !siteId || !sessionId) {
+        throw new Error('webassist-lead requires context.siteDataDir, context.siteId and context.sessionId.');
+    }
+    if (!profile) {
+        throw new Error('webassist-lead requires profile.');
     }
 
     const normalizedContactInfo = normalizeContactInfo(contactInfo);
-    const siteDataDir = context?.siteDataDir || '';
 
     const aku = await getAkuInstance(siteDataDir, siteId);
     const leadKuId = getLeadKuId(sessionId);

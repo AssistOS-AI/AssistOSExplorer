@@ -3,9 +3,15 @@ import assert from 'node:assert/strict';
 
 import { appendSessionTurn, updateSessionProfile } from '../src/runtime/update-session.mjs';
 import { getSessionHistory } from '../src/mcp/get-session-history.mjs';
+import { callerAccessFromEnvelope, createSessionOwner, generateSessionSecret, hashSessionSecret } from '../src/runtime/sessionAccess.mjs';
 import { createWebAssistSandbox, ensureSiteAku } from './helpers.mjs';
+import { PRINCIPALS, guestGrant, toolEnvelope, userGrant } from './fixtures/verified-grant.mjs';
 
 const SITE_ID = 'demo-site';
+
+async function accessFor(grant) {
+    return callerAccessFromEnvelope(toolEnvelope(grant, {}, 'web_cli_history'));
+}
 
 test('web_cli_history returns parsed session history for existing sessions', async (t) => {
     const sandbox = await createWebAssistSandbox();
@@ -13,6 +19,13 @@ test('web_cli_history returns parsed session history for existing sessions', asy
     await ensureSiteAku({
         siteId: SITE_ID,
     });
+    const owner = await accessFor(await guestGrant());
+    assert.equal(await createSessionOwner({
+        siteId: SITE_ID,
+        sessionId: 'history-sess-1',
+        access: owner,
+        secretHash: hashSessionSecret(generateSessionSecret()),
+    }), true);
 
     await updateSessionProfile({
         siteId: SITE_ID,
@@ -40,7 +53,14 @@ test('web_cli_history returns parsed session history for existing sessions', asy
     const result = await getSessionHistory({
         siteId: SITE_ID,
         sessionId: 'history-sess-1',
+        access: owner,
     });
+    const adminResult = await getSessionHistory({
+        siteId: SITE_ID,
+        sessionId: 'history-sess-1',
+        access: await accessFor(await userGrant(PRINCIPALS.admin)),
+    });
+    assert.deepEqual(adminResult, result);
 
     assert.equal(result.siteId, SITE_ID);
     assert.equal(result.sessionId, 'history-sess-1');
@@ -60,6 +80,7 @@ test('web_cli_history returns empty history when session file is missing', async
     const result = await getSessionHistory({
         siteId: SITE_ID,
         sessionId: 'missing-session',
+        access: await accessFor(await guestGrant()),
     });
 
     assert.equal(result.siteId, SITE_ID);

@@ -20,7 +20,7 @@ Define `webassist-settings` behavior and `web-assist-chat` runtime behavior for 
 
 ### Available configuration fields
 1. **Site ID** (`#webassistSiteId`)
-   - Source: MCP `list-sites`.
+   - Source: MCP `list-sites` (available to admins and users with `explorer.access`).
    - Required at runtime: chat surface is disabled if `siteId` is missing.
 2. **Theme** (`#webassistTheme`)
 3. **Header Text** (`#webassistHeaderText`)
@@ -53,15 +53,22 @@ Define `webassist-settings` behavior and `web-assist-chat` runtime behavior for 
   - an error message is shown,
   - no MCP calls are made.
 - Uses MCP tools:
-  - `web_cli_chat` with `{ siteId, message, sessionId?, json: true }`
-  - `web_cli_history` with `{ siteId, sessionId }`
+  - `web_cli_chat` with `{ siteId, message, sessionId?, sessionSecret?, json: true }`
+  - `web_cli_history` with `{ siteId, sessionId, sessionSecret? }`
   - `register-events` with `{ siteId, visitorId, eventType, ... }`
 - Uses `/MCPBrowserClient.js` against `/webAssist/mcp`.
 - No `prepare-wac` flow exists in the embedded runtime.
+- Session credentials:
+  - the widget stores `sessionId` and `sessionSecret` per site in `localStorage` and sends both with chat and history calls,
+  - it parses only the stdout block of a tool result as JSON and never renders raw tool text,
+  - a response that keeps the same `sessionId` without a secret keeps the stored secret,
+  - a response with a new `sessionId` and `sessionSecret` replaces both together; a new `sessionId` without a secret clears the stored secret.
+- A visitor whose guest identity changed (for example after the guest session expired) continues the same conversation through the stored secret.
 
 ### MCP contract
-- `list-sites` returns `{ sites, count, dataRoot }`.
+- `list-sites` returns `{ sites, count }` to admins and users with `explorer.access`; it is denied to every other caller before storage is read and never returns the data root path.
 - `web_cli_chat`, `web_cli_history`, and `register-events` require `siteId` and return session-oriented AKU-backed data.
+- `web_cli_chat` returns `sessionSecret` only in the response that creates a new owned session. `web_cli_history` returns `{ siteId, sessionId, exists, sessionKuId, history }`; a caller that is neither the owner, a secret holder, nor an admin receives `exists: false` and `history: []` (DS004 Session Ownership).
 
 ## Conclusion
 

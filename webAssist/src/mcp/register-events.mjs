@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { AgenticKnowledgeUnits } from 'achillesAgentLib/AgenticKnowledgeUnits';
 import { initializeWebAssistDataRoot, normalizeSiteId, resolveSiteDataDir } from '../runtime/akuStore.mjs';
+import { callerAccessFromEnvelope, formatToolError, publicError } from '../runtime/sessionAccess.mjs';
 
 function safeParseJson(text) {
     try {
@@ -63,12 +64,12 @@ async function readStdinFallback() {
 function normalizeVisitorId(value) {
     const raw = typeof value === 'string' ? value.trim() : '';
     if (!raw) {
-        throw new Error('register-events requires visitorId.');
+        throw publicError('register-events requires visitorId.');
     }
     const safe = raw.replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-');
     const normalized = safe.replace(/^[-.]+|[-.]+$/g, '');
     if (!normalized) {
-        throw new Error('register-events requires a valid visitorId.');
+        throw publicError('register-events requires a valid visitorId.');
     }
     return normalized;
 }
@@ -76,7 +77,7 @@ function normalizeVisitorId(value) {
 function normalizeEventType(value) {
     const raw = typeof value === 'string' ? value.trim() : '';
     if (!raw) {
-        throw new Error('register-events requires eventType.');
+        throw publicError('register-events requires eventType.');
     }
     return raw;
 }
@@ -96,11 +97,15 @@ export async function registerEvent({
     details = {},
 }) {
     if (!siteId) {
-        throw new Error('register-events requires siteId.');
+        throw publicError('register-events requires siteId.');
     }
     const normalizedVisitorId = normalizeVisitorId(visitorId);
     const normalizedEventType = normalizeEventType(eventType);
-    normalizeSiteId(siteId);
+    try {
+        normalizeSiteId(siteId);
+    } catch (error) {
+        throw publicError(error.message);
+    }
     await initializeWebAssistDataRoot();
     const akuRootDir = resolveSiteDataDir(siteId);
 
@@ -111,7 +116,7 @@ export async function registerEvent({
 
     const akuExists = await aku.exists();
     if (!akuExists) {
-        throw new Error(`AKU not initialized for site: ${siteId}`);
+        throw publicError(`AKU not initialized for site: ${siteId}`);
     }
 
     await aku.loadAKU();
@@ -159,29 +164,36 @@ export async function registerEvent({
     };
 }
 
+// Visitors may register site events; storage errors (which can carry absolute
+// paths) reach non-admin callers only as a generic message.
 async function main() {
     const rawInput = await readStdinFallback();
     const envelope = rawInput && rawInput.trim() ? safeParseJson(rawInput) : null;
     const input = normalizeInput(envelope || {});
-
-    const result = await registerEvent({
-        siteId: typeof input.siteId === 'string' ? input.siteId.trim() : '',
-        visitorId: input.visitorId,
-        eventType: typeof input.eventType === 'string' ? input.eventType.trim() : '',
-        sessionId: typeof input.sessionId === 'string' ? input.sessionId.trim() : '',
-        referrer: typeof input.referrer === 'string' ? input.referrer.trim() : '',
-        country: typeof input.country === 'string' ? input.country.trim() : '',
-        openedChat: input.openedChat === true,
-        details: input.details && typeof input.details === 'object' ? input.details : {},
-    });
-
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    let access = null;
+    try {
+        access = await callerAccessFromEnvelope(envelope || {});
+        const result = await registerEvent({
+            siteId: typeof input.siteId === 'string' ? input.siteId.trim() : '',
+            visitorId: input.visitorId,
+            eventType: typeof input.eventType === 'string' ? input.eventType.trim() : '',
+            sessionId: typeof input.sessionId === 'string' ? input.sessionId.trim() : '',
+            referrer: typeof input.referrer === 'string' ? input.referrer.trim() : '',
+            country: typeof input.country === 'string' ? input.country.trim() : '',
+            openedChat: input.openedChat === true,
+            details: input.details && typeof input.details === 'object' ? input.details : {},
+        });
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } catch (error) {
+        process.stderr.write(`${formatToolError(error, access)}\n`);
+        process.exitCode = 1;
+    }
 }
 
 const currentFilePath = fileURLToPath(import.meta.url);
 if (process.argv[1] && path.resolve(process.argv[1]) === currentFilePath) {
-    main().catch((error) => {
-        process.stderr.write(`${error.message}\n`);
+    main().catch(() => {
+        process.stderr.write('webAssist request failed.\n');
         process.exitCode = 1;
     });
 }

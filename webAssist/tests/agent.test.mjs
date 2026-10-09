@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AgenticKnowledgeUnits, LLMAgent } from 'achillesAgentLib';
 
 import { createWebAssistAgent } from '../src/index.mjs';
+import { LOCAL_OPERATOR_ACCESS } from '../src/runtime/sessionAccess.mjs';
 import { createWebAssistSandbox, ensureSiteAku, plannerDecision } from './helpers.mjs';
 import { loadAkuContext } from '../src/runtime/load-aku-context.mjs';
 
@@ -103,6 +104,7 @@ test('webAssist agent loads AchillesAgentLib and executes a full visitor turn', 
         siteId: SITE_ID,
         sessionId: 'visitor-42',
         message: 'Buna, vreau sa integrez API-ul vostru. Sunt Alice, alice@example.com. Putem programa o discutie?',
+        access: LOCAL_OPERATOR_ACCESS,
     });
 
     assert.equal(agent.achilles.libraryName, 'achillesAgentLib');

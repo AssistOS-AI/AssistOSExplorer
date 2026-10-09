@@ -25,6 +25,15 @@ This specification defines the active DS004-data-structure contract for WebAssis
 - Site root: `$WEBASSIST_DATA_ROOT/sites/<siteId>/`.
 - `siteId` is required for every runtime, CLI, MCP, and embedded chat operation.
 
+### Session Ownership
+- Session ids match `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`; any other caller-supplied id is rejected with the public error `Invalid sessionId.`. New ids are `session-<compact ISO timestamp>-<32 hex characters>` (16 random bytes).
+- Every chat session created through MCP has an owner record at `$WEBASSIST_DATA_ROOT/sites/<siteId>/session-owners/<sessionId>.json`, written before inference with exclusive create (`wx`, first writer wins) and mode `0600`. The `session-owners` directory is created when needed and must be a non-symlink directory. Owner records are written only for a site whose AKU is initialized.
+- Record content (schema 2): `{"schema":2,"kind":"guest"|"user","id":"<verified actor id>","secretHash":"<64 lowercase hex>","createdAt":"<ISO timestamp>"}`. The record is a separate file because AKU manifests do not keep nested metadata.
+- `sessionSecret` is 32 random bytes encoded as base64url (43 characters). It is returned once, in the `web_cli_chat` response that creates the session, and is never stored in plaintext. `secretHash` is the lowercase hex SHA-256 of the UTF-8 bytes of the `sessionSecret` text exactly as presented (the base64url string, not the decoded bytes).
+- Owner records are read without following symlinks. A missing, unreadable (`EACCES`, `ELOOP`, any read error), symlinked, malformed, or non-schema-2 record means the session has no owner; reading creates nothing.
+- A session may be continued in chat, and its history read, only when the verified caller's `kind` and `id` equal the owner record's, or when the caller presents a `sessionSecret` whose SHA-256 digest equals `secretHash` (constant-time comparison of digests). A wrong, malformed, oversized, or absent secret is treated exactly like no secret. A verified admin may read any history but never continues another principal's chat session.
+- Sessions without an owner record (created before ownership existed, or by the interactive CLI) fail closed: only an admin can read their history, and a chat that names one starts a new owned session. A caller-supplied id is never claimed: every chat that cannot continue the named session creates a new id, owner record and secret.
+
 ### Site Folders
 - `config/owner.md`: owner contact rules and routes that may be disclosed after lead creation.
 - `config/policy.md`: visitor notice, retention settings, lead statuses, and disclosure policy.
