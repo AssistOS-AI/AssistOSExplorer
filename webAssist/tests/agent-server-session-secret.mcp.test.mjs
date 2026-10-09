@@ -142,26 +142,37 @@ test('sessionSecret reaches webAssist through the AgentServer schema path (D1)',
         assert.equal((schema.required || []).includes('sessionSecret'), false, `${name} keeps sessionSecret optional`);
     }
 
-    async function callTool(name, rawArgs, guestId) {
+    async function rawCall(name, rawArgs, actor) {
         // The Router canonicalizes arguments against the agent's tools/list.
         const args = sanitizeArgumentsForTool(rawArgs, tools, name);
-        const subject = `user:guest:${guestId}`;
         const now = Math.floor(Date.now() / 1000);
         const token = signHmacJwt({
             secret,
             payload: {
-                typ: 'router-request', iss: 'ploinky-router', aud: WEBASSIST_ID, sub: subject,
-                actor: { kind: 'guest', id: subject, roles: ['guest'] },
+                typ: 'router-request', iss: 'ploinky-router', aud: WEBASSIST_ID, sub: actor.id, actor,
                 method: 'POST', path: '/mcp', tool: name,
                 rch: computeRchTool({ method: 'POST', path: '/mcp', tool: name, arguments: args }),
                 jti: randomUUID(), iat: now, exp: now + 60,
             },
         });
-        const { body } = await mcpRequest(port, { jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name, arguments: args } }, mcpSessionId, `Bearer ${token}`);
+        return (await mcpRequest(port, { jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name, arguments: args } }, mcpSessionId, `Bearer ${token}`)).body;
+    }
+
+    async function callTool(name, rawArgs, guestId) {
+        const subject = `user:guest:${guestId}`;
+        const body = await rawCall(name, rawArgs, { kind: 'guest', id: subject, roles: ['guest'] });
         assert.equal(body.error, undefined, JSON.stringify(body));
         assert.notEqual(body.result?.isError, true, JSON.stringify(body));
         return { raw: JSON.stringify(body), payload: JSON.parse(body.result.content[0].text) };
     }
+
+    // S1 through the real server: the guest denial text reaches the MCP client.
+    const deniedSites = JSON.stringify(await rawCall('list-sites', {}, { kind: 'guest', id: `user:guest:${randomUUID()}`, roles: ['guest'] }));
+    t.diagnostic(`guest list-sites response: ${deniedSites}`);
+    assert.match(deniedSites, /Access denied: Explorer access is required to list webAssist sites\./);
+    assert.equal(deniedSites.includes(sandbox.webAssistDataDir), false);
+    const adminSites = await rawCall('list-sites', {}, { kind: 'user', id: 'user:owner-1', roles: ['admin'], capabilities: ['explorer.access'] });
+    assert.deepEqual(JSON.parse(adminSites.result.content[0].text), { sites: [SITE_ID], count: 1 });
 
     const guestA = randomUUID();
     const guestB = randomUUID();
