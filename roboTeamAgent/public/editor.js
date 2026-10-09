@@ -2,7 +2,6 @@ import { api, endpoint } from './roboflow-api.js';
 import { createWorkflowEditor } from './workflow-editor.js';
 import { initPageNavigation } from './page-navigation.js';
 
-const leaf = document.querySelector('#breadcrumbLeaf');
 const generateLink = document.querySelector('#breadcrumbGenerate');
 const generateSep = document.querySelector('#breadcrumbGenerateSep');
 const message = document.querySelector('#workflowMessage');
@@ -26,7 +25,6 @@ try {
     }
     generateLink.hidden = Boolean(workflow);
     generateSep.hidden = Boolean(workflow);
-    leaf.textContent = workflow ? workflow.name : 'new';
     await editor.open(workflow || draft, { admin: canAdmin === true });
 } catch (error) {
     message.textContent = error.message;

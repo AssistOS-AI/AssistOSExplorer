@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
-import { normalizeWorkflow } from '../server/roboflow/graph.mjs';
+import { normalizeWorkflow, workflowDefaultObjective, resolveWorkflowObjective } from '../server/roboflow/graph.mjs';
 import { parseRoute } from '../server/roboflow/result-parser.mjs';
 import { coverage, canonicalSkillset, canonicalSkill, matchRobot, robotSelections } from '../server/roboflow/skill-matching.mjs';
 
@@ -13,7 +13,7 @@ const edge = (sourceTaskId, targetTaskId) => ({ id: `${sourceTaskId}-${targetTas
 const graph = () => ({ id: 'example', name: 'Example', entryTaskId: 'a', tasks: [task('a'), task('b'), task('c')], edges: [edge('a', 'b'), edge('a', 'c'), edge('b', 'a')] });
 const humanReport = text => `<<human-report>>\n${text}\n<<human-report>>`;
 async function fixture(t, options = {}) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-graph-'));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-graph-')));
     const robots = [{ id: 'default-id', name: 'default', codingAgents: ['codex'] }, { id: 'worker-id', name: 'worker', codingAgents: ['codex'] }];
     const started = [], stopped = [], messages = [], resumed = [];
     const robotStore = { list: async () => robots, getByName: async name => robots.find(robot => robot.name === name), get: async id => robots.find(robot => robot.id === id) };
@@ -53,6 +53,49 @@ test('branch parser tolerates aliases and formats but only authorizes outgoing e
     for (const source of ['#nextEdgeId\na-b', '# nextNodePrompt\nOK\n# Edge\na-b', '# NEXTEDGE\r\n```\r\na-b\r\n```', '{"nextEdge":"a-b"}', '```json\n{"Edge":"a-b"}\n```']) assert.equal(parseRoute(source, graph(), 'a').nextEdgeId, 'a-b');
     for (const source of ['Done', '#Edge\nb-a', '{"Edge":"a-b","nextEdge":"a-c"}', '#Edge\nunknown']) assert.throws(() => parseRoute(source, graph(), 'a'));
 });
+test('workflow defaults reuse saved requirements, descriptions or task prompts without inventing generic work', () => {
+    assert.equal(normalizeWorkflow({ ...graph(), defaultObjective: 'Original request', description: 'Short summary' }).defaultObjective, 'Original request');
+    assert.equal(normalizeWorkflow({ ...graph(), description: 'Write a report' }).defaultObjective, 'Write a report');
+    assert.match(normalizeWorkflow(graph()).defaultObjective, /a\nExecute a/);
+    for (const id of ['default', 'code-development']) assert.equal(workflowDefaultObjective({ id, description: 'Generic description', defaultObjective: 'Not a real request' }), '');
+    assert.equal(workflowDefaultObjective({ id: 'large', tasks: [{ name: 'Work', prompt: 'x'.repeat(32769) }] }), '');
+    assert.throws(() => resolveWorkflowObjective({ id: 'default' }), /explicit objective/);
+    assert.throws(() => normalizeWorkflow({ ...graph(), defaultObjective: 4 }), /must be text/);
+    assert.throws(() => normalizeWorkflow({ ...graph(), defaultObjective: 'x'.repeat(32769) }), /32768/);
+});
+test('legacy definitions inherit objectives without writes; new runs capture defaults and explicit overrides separately', async t => {
+    const f = await fixture(t);
+    const saved = await f.service.createWorkflow({ ...graph(), description: 'Write the saved report' });
+    const legacy = { ...saved }; delete legacy.defaultObjective;
+    f.service.database.db.prepare('UPDATE workflow_types SET record=? WHERE id=?').run(JSON.stringify(legacy), saved.id);
+    assert.equal((await f.service.registry.get(saved.id)).defaultObjective, 'Write the saved report');
+    assert.equal(JSON.parse(f.service.database.db.prepare('SELECT record FROM workflow_types WHERE id=?').get(saved.id).record).defaultObjective, undefined);
+    const inherited = await f.service.startFlow({ workflowTypeId: saved.id });
+    assert.equal(inherited.objective, 'Write the saved report'); assert.equal(JSON.parse(f.started[0].request.task).objective, inherited.objective);
+    const explicit = await f.service.startFlow({ workflowTypeId: saved.id, objective: 'Different work' });
+    assert.equal(explicit.objective, 'Different work');
+    const current = await f.service.registry.get(saved.id);
+    await f.service.updateWorkflow(saved.id, { ...current, description: 'Write the updated report' });
+    assert.equal((await f.service.registry.get(saved.id)).defaultObjective, 'Write the updated report');
+    assert.equal((await f.service.getFlow(inherited.id)).objective, 'Write the saved report');
+    await assert.rejects(f.service.startFlow({ workflowTypeId: 'default', executionType: 'terminal' }), /explicit objective/);
+    await assert.rejects(f.service.startFlow({ workflowTypeId: 'code-development' }), /explicit objective/);
+});
+test('captured generation requirements survive ordinary saves and default resolution uses the same fresh graph as its run snapshot', async t => {
+    const f = await fixture(t);
+    const saved = await f.service.createWorkflow({ ...graph(), description: 'Summary', defaultObjective: 'Original detailed requirements' });
+    const { defaultObjective, ...oldClient } = saved;
+    await f.service.updateWorkflow(saved.id, { ...oldClient, name: 'Renamed' });
+    assert.equal((await f.service.registry.get(saved.id)).defaultObjective, defaultObjective);
+    const create = f.service.store.createFromWorkflow.bind(f.service.store);
+    f.service.store.createFromWorkflow = async (...args) => {
+        const current = await f.service.registry.get(saved.id);
+        await f.service.updateWorkflow(saved.id, { ...current, defaultObjective: 'Requirements updated before capture' });
+        return create(...args);
+    };
+    const run = await f.service.startFlow({ workflowTypeId: saved.id });
+    assert.equal(run.objective, 'Requirements updated before capture'); assert.equal(run.graph.defaultObjective, run.objective);
+});
 
 test('cycles create distinct tasks, preserve only final response history and branch prompts', async t => {
     const f = await fixture(t); await f.service.createWorkflow(graph());
@@ -71,7 +114,7 @@ test('cycles create distinct tasks, preserve only final response history and bra
     assert.equal(completed.status, 'completed'); assert.equal(completed.result, 'Accepted');
     assert.deepEqual(completed.instances.map(instance => instance.taskId), ['a', 'b', 'a', 'c']);
     const tables = f.service.database.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name).sort();
-    assert.deepEqual(tables, ['task_instances', 'workflow_runs', 'workflow_types']);
+    assert.deepEqual(tables, ['task_instances', 'workflow_runs', 'workflow_schedules', 'workflow_types']);
     const stored = f.service.database.db.prepare('SELECT record FROM task_instances').all().map(row => row.record).join();
     assert.ok(!stored.includes('Revised')); assert.ok(!stored.includes('SECRET INTERMEDIATE'));
 });
@@ -186,6 +229,7 @@ test('generation uses supplied system instructions and returns a validated unsav
     while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
     assert.equal(f.started[0].robot.name, 'default'); assert.equal(f.started[0].type, 'simple'); assert.match(f.started[0].request.systemPrompt, /workflow planner/);
     await f.finish(0, JSON.stringify(graph())); const generated = await pending;
+    assert.equal(generated.graph.defaultObjective, 'Make a graph');
     assert.equal(generated.graph.entryTaskId, 'a'); assert.equal(await f.service.registry.get('example'), null);
 });
 
@@ -501,6 +545,7 @@ test('async generation streams task logs and returns the validated graph', async
     }
     assert.equal(done.status, 'completed');
     assert.equal(done.graph.entryTaskId, 'a');
+    assert.equal(done.graph.defaultObjective, 'Make a graph');
     assert.equal(f.service.generationInfo(id), null);
 });
 
@@ -512,6 +557,62 @@ test('cancelling an async generation stops its runtime task', async t => {
     assert.deepEqual(f.stopped, [f.started[0].taskId]);
     assert.equal(f.service.generationInfo(id), null);
     assert.equal(f.service.cancelGeneration(id), null);
+});
+
+test('description revision keeps typos unchanged and semantic changes return a validated unsaved graph', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow({ ...graph(), description: 'Write a report' });
+    const stored = await f.service.registry.get('example');
+    for (const regenerate of [false, true]) {
+        const index = f.started.length;
+        const description = regenerate ? 'Do not write a report; collect sources only' : 'Write a repport';
+        const { id } = await f.service.startGeneration({ workflow: stored, previousDescription: stored.description, description });
+        while (f.started.length === index) await new Promise(resolve => setImmediate(resolve));
+        const input = JSON.parse(f.started[index].request.task);
+        assert.equal(input.previousDescription, 'Write a report'); assert.equal(input.description, description);
+        assert.deepEqual(input.workflow.tasks, stored.tasks);
+        assert.match(f.started[index].request.systemPrompt, /do not judge by edit distance/i);
+        await f.finish(index, regenerate ? JSON.stringify({ ...graph(), id: 'invented', name: 'Invented name', regenerate: true, reason: 'Changed deliverable' })
+            : '# regenerate\nfalse\n# reason\nSpelling correction only');
+        while (f.service.generationTasks.get(id).status === 'running') await new Promise(resolve => setImmediate(resolve));
+        const result = f.service.generationInfo(id);
+        assert.equal(result.status, 'completed'); assert.equal(result.regenerate, regenerate);
+        if (regenerate) {
+            assert.equal(result.graph.id, 'example'); assert.equal(result.graph.name, stored.name);
+            assert.equal(result.graph.description, description);
+            assert.equal(result.graph.defaultObjective, description);
+        } else assert.equal(result.graph, null);
+        assert.deepEqual(await f.service.registry.get('example'), stored);
+    }
+});
+
+test('description revision rejects ambiguity, invalid graphs and unknown skills without updating storage', async t => {
+    const f = await fixture(t);
+    for (const output of [JSON.stringify(graph()), '# regenerate\nyes\n# reason\nMaybe',
+        JSON.stringify({ regenerate: true, reason: 'Changed' }),
+        JSON.stringify({ ...graph(), regenerate: true, reason: 'Changed', tasks: [task('a', { skillsets: ['unknown'] })], edges: [] })]) {
+        const index = f.started.length;
+        const { id } = await f.service.startGeneration({ workflow: graph(), previousDescription: 'Write', description: 'Read' });
+        while (f.started.length === index) await new Promise(resolve => setImmediate(resolve));
+        await f.finish(index, output);
+        while (f.service.generationTasks.get(id).status === 'running') await new Promise(resolve => setImmediate(resolve));
+        assert.equal(f.service.generationInfo(id).status, 'failed');
+        assert.equal(await f.service.registry.get('example'), null);
+    }
+    for (const workflow of [{ ...graph(), readOnly: true }, { ...graph(), id: 'code-development' }, { ...graph(), id: 'default' }]) {
+        await assert.rejects(f.service.startGeneration({ workflow, previousDescription: 'Write', description: 'Read' }), /Read-only/);
+    }
+});
+
+test('cancelling a description review releases the pending runtime completion and ignores later output', async t => {
+    const f = await fixture(t);
+    const { id } = await f.service.startGeneration({ workflow: graph(), previousDescription: 'Write', description: 'Read' });
+    while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
+    f.service.cancelGeneration(id);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.service.generations.size, 0);
+    await f.finish(0, JSON.stringify({ ...graph(), regenerate: true, reason: 'Late' }));
+    assert.equal(f.service.generationInfo(id), null); assert.equal(await f.service.registry.get('example'), null);
 });
 
 test('human input commits before routing and concurrent answers resume the same visit once', async t => {

@@ -9,7 +9,7 @@ import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
 const graph = { id: 'example', name: 'Example', entryTaskId: 'one', tasks: [{ id: 'one', name: 'One', prompt: 'Execute objective', skillsets: [], executionType: 'terminal' }], edges: [] };
 const headers = role => ({ 'content-type': 'application/json', 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'actor', roles: [role] } }) });
 async function fixture(t) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-http-'));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-http-')));
     const robotStore = new RobotStore({ dataDir: path.join(root, 'data') }); await robotStore.initialize(); await robotStore.ensureDefaultRobot();
     const started = [];
     const runtimeManager = { workspaceRoot: root, status: () => ({ state: 'stopped' }), resolveCwd: async () => root,
@@ -23,8 +23,121 @@ async function fixture(t) {
     t.after(async () => { await new Promise(resolve => server.close(resolve)); await roboflow.close(); await fs.rm(root, { recursive: true, force: true }); });
     const base = `http://127.0.0.1:${server.address().port}`;
     const request = (url, role = 'admin', body, method = body ? 'POST' : 'GET') => fetch(base + url, { method, headers: headers(role), ...(body ? { body: JSON.stringify(body) } : {}) });
-    return { request, roboflow, started, base };
+    return { request, roboflow, started, base, root };
 }
+test('schedule folder HTTP picker is administrator-only, read-only on browse and creates confined folders', async t => {
+    const f = await fixture(t), route = '/api/roboflow/schedule-folders';
+    assert.equal((await fetch(f.base + route)).status, 401);
+    assert.equal((await f.request(route, 'user')).status, 403);
+    assert.equal((await f.request(route, 'user', { name: 'Reports' })).status, 403);
+    const listing = await (await f.request(route)).json();
+    await assert.rejects(fs.stat(listing.defaultFolder), { code: 'ENOENT' });
+    const response = await f.request(route, 'admin', { parent: '', name: 'Daily reports' });
+    assert.equal(response.status, 201); assert.equal((await response.json()).path, 'Daily reports');
+    assert.equal((await f.request(route + '?path=Daily%20reports')).status, 200);
+    assert.equal((await f.request(route, 'admin', { name: 'Daily reports' })).status, 409);
+    assert.equal((await f.request(route + '?path=..%2Foutside')).status, 400);
+    assert.equal((await f.request(route, 'admin', { parent: '/tmp', name: 'No' })).status, 400);
+    assert.equal((await f.request('/schedule-folder-picker.js', 'user')).status, 200);
+    assert.equal((await fetch(f.base + '/schedule-folder-picker.js')).status, 401);
+});
+test('saving a job without a folder creates the workspace default and keeps it on later edits', async t => {
+    const f = await fixture(t);
+    const input = { name: 'Default results', workflowTypeId: 'default', objective: 'Write a report', executionType: 'terminal', timing: { kind: 'interval', everyMinutes: 60 } };
+    assert.equal((await f.request('/api/roboflow/schedules', 'admin', { ...input, workflowTypeId: 'missing' })).status, 400);
+    await assert.rejects(fs.stat(path.join(f.root, 'cron-jobs-results')), { code: 'ENOENT' });
+    const response = await f.request('/api/roboflow/schedules', 'admin', input); assert.equal(response.status, 201);
+    const { schedule } = await response.json();
+    assert.equal(schedule.folder, await fs.realpath(path.join(f.root, 'cron-jobs-results')));
+    assert.equal(schedule.folderLabel, 'Workspace / cron-jobs-results');
+    // The fixture runtime normally maps every input to root; use its real path contract here.
+    f.roboflow.runtimeManager.resolveCwd = folder => fs.realpath(folder);
+    const edited = await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: schedule.revision, name: 'Renamed' }, 'PUT');
+    assert.equal((await edited.json()).schedule.folder, schedule.folder);
+    await f.request('/api/roboflow/schedule-folders', 'admin', { name: 'Reports' });
+    const selected = await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: 2, folder: path.join(f.root, 'Reports') }, 'PUT');
+    assert.equal((await selected.json()).schedule.folderLabel, 'Workspace / Reports');
+    const reset = await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: 3, folder: '' }, 'PUT');
+    assert.equal((await reset.json()).schedule.folder, schedule.folder);
+});
+test('Cron job HTTP CRUD requires administrators and uses optimistic revisions', async t => {
+    const f = await fixture(t);
+    const input = { name: 'Scheduled default', workflowTypeId: 'default', objective: 'Write a report', folder: '/workspace/project', executionType: 'terminal', timing: { kind: 'interval', everyMinutes: 60 }, enabled: false, createdBy: 'spoofed' };
+    assert.equal((await f.request('/api/roboflow/schedules', 'user', input)).status, 403);
+    assert.equal((await fetch(f.base + '/api/roboflow/schedules')).status, 401);
+    const response = await f.request('/api/roboflow/schedules', 'admin', input); assert.equal(response.status, 201);
+    const { schedule } = await response.json(); assert.equal(schedule.createdBy, 'actor'); assert.equal(schedule.nextRunAt, null); assert.equal(schedule.pendingLaunch, undefined);
+    assert.equal((await f.request(`/api/roboflow/schedules/${schedule.id}`, 'user', { revision: 1, enabled: true }, 'PUT')).status, 403);
+    const updated = await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: 1, enabled: true }, 'PUT'); assert.equal(updated.status, 200);
+    assert.equal((await updated.json()).schedule.revision, 2);
+    assert.equal((await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: 1, enabled: false }, 'PUT')).status, 409);
+    assert.equal((await f.request('/api/roboflow/schedules', 'user')).status, 200);
+    assert.equal((await f.request(`/api/roboflow/schedules/${schedule.id}`, 'user', undefined, 'DELETE')).status, 403);
+    assert.equal((await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', undefined, 'DELETE')).status, 200);
+    assert.equal((await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', undefined, 'DELETE')).status, 404);
+});
+test('HTTP workflows and Cron jobs inherit saved objectives while generic workflows still require one', async t => {
+    const f = await fixture(t);
+    const definition = { ...graph, description: 'Produce the daily report', defaultObjective: 'Produce the daily report with source links' };
+    assert.equal((await f.request('/api/roboflow/workflows', 'admin', definition)).status, 201);
+    const response = await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example' }); assert.equal(response.status, 201);
+    assert.equal((await response.json()).flow.objective, definition.defaultObjective);
+    const input = { name: 'Inherited objective', workflowTypeId: 'example', timing: { kind: 'interval', everyMinutes: 60 } };
+    const created = await f.request('/api/roboflow/schedules', 'admin', input); assert.equal(created.status, 201);
+    const job = (await created.json()).schedule; assert.equal(job.objective, '');
+    assert.equal((await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'default', executionType: 'terminal' })).status, 400);
+    assert.equal((await f.request('/api/roboflow/schedules', 'admin', { ...input, workflowTypeId: 'code-development' })).status, 400);
+    const tools = JSON.parse(await fs.readFile(new URL('../mcp-config.json', import.meta.url), 'utf8'));
+    assert.ok(JSON.stringify(tools).includes('"objective":{"type":"string","minLength":1,"maxLength":32768,"optional":true}'));
+});
+test('scheduled HTTP runs use ordinary RoboFlow launch, history and actor identity', async t => {
+    const f = await fixture(t);
+    const { schedule } = await (await f.request('/api/roboflow/schedules', 'admin', { name: 'Report', workflowTypeId: 'default', objective: 'Write a report', folder: '/workspace/project', executionType: 'terminal', timing: { kind: 'interval', everyMinutes: 1 } })).json();
+    const record = f.roboflow.schedules.getSync(schedule.id); record.nextRunAt = new Date(Date.now() - 1000).toISOString(); f.roboflow.schedules.saveSync(record);
+    f.roboflow.scheduler.start(); await f.roboflow.scheduler.tick();
+    const { schedules } = await (await f.request('/api/roboflow/schedules', 'user')).json();
+    assert.equal(schedules[0].lastOutcome, 'started'); assert.equal(f.started.length, 1);
+    const { flow } = await (await f.request(`/api/roboflow/flows/${schedules[0].lastFlowId}?logs=none`, 'user')).json();
+    assert.equal(flow.scheduleId, schedule.id); assert.equal(flow.createdBy, 'actor'); assert.equal(flow.objective, 'Write a report');
+    assert.equal((await f.request('/cron-jobs.js', 'user')).status, 200); assert.equal((await fetch(f.base + '/cron-jobs.js')).status, 401);
+});
+test('Run now HTTP requires an administrator and revision, launches once and resets scheduling', async t => {
+    const f = await fixture(t); f.roboflow.scheduler.start();
+    const { schedule } = await (await f.request('/api/roboflow/schedules', 'admin', {
+        name: 'Manual report', workflowTypeId: 'default', objective: 'Write a report', executionType: 'terminal',
+        timing: { kind: 'interval', everyMinutes: 60 }, enabled: false,
+    })).json();
+    const route = `/api/roboflow/schedules/${schedule.id}/run-now`;
+    assert.equal((await fetch(f.base + route, { method: 'POST' })).status, 401);
+    assert.equal((await f.request(route, 'user', { revision: 1 })).status, 403);
+    assert.equal((await f.request(route, 'admin', {})).status, 400);
+    assert.equal((await fetch(f.base + route, { method: 'POST', headers: headers('admin'), body: 'null' })).status, 400);
+    assert.equal((await f.request(route, 'admin', { revision: 0 })).status, 409);
+    assert.equal(f.started.length, 0);
+    const response = await f.request(route, 'admin', { revision: 1, createdBy: 'spoofed' });
+    assert.equal(response.status, 200); const result = await response.json();
+    assert.equal(result.flow.createdBy, 'actor'); assert.equal(result.flow.scheduleId, schedule.id);
+    assert.equal(result.schedule.nextRunAt, null); assert.equal(result.schedule.enabled, false);
+    assert.equal(result.schedule.revision, 2); assert.equal(result.schedule.lastFlowId, result.flow.id);
+    assert.equal(f.started.length, 1);
+    assert.equal((await f.request(route, 'admin', { revision: 2 })).status, 409);
+    const missing = '/api/roboflow/schedules/cron_000000000000000000000000/run-now';
+    assert.equal((await f.request(missing, 'admin', { revision: 1 })).status, 404);
+    await f.roboflow.store.update(result.flow.id, record => { record.status = 'completed'; });
+    const enabled = (await (await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: 2, enabled: true }, 'PUT')).json()).schedule;
+    const before = Date.now();
+    const second = await (await f.request(route, 'admin', { revision: enabled.revision })).json();
+    assert.ok(Date.parse(second.schedule.nextRunAt) >= before + 3600000);
+    assert.ok(Date.parse(second.schedule.nextRunAt) <= Date.now() + 3600000);
+    assert.equal(f.started.length, 2);
+});
+test('Cron job HTTP validation rejects malformed schedules, missing workflows and extraneous modes', async t => {
+    const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);
+    const input = { name: 'Report', workflowTypeId: 'example', objective: 'Write a report', folder: '/workspace/project', timing: { kind: 'daily', times: ['09:00'], timeZone: 'Europe/Bucharest' } };
+    for (const extra of [{ workflowTypeId: 'missing' }, { executionType: 'terminal' }, { enabled: 'true' }, { timing: { kind: 'daily', times: ['24:00'], timeZone: 'UTC' } }, { timing: { kind: 'interval', everyMinutes: 0 } }]) assert.equal((await f.request('/api/roboflow/schedules', 'admin', { ...input, ...extra })).status, 400);
+    assert.equal((await f.request('/api/roboflow/schedules', 'admin', input)).status, 201);
+    assert.equal((await f.request('/api/roboflow/workflows/example', 'admin', undefined, 'DELETE')).status, 409);
+});
 test('graph HTTP CRUD and coverage preserve administrator boundaries', async t => {
     const f = await fixture(t);
     assert.equal((await f.request('/api/roboflow/workflows', 'user', graph)).status, 403);
@@ -108,6 +221,24 @@ test('HTTP async generation starts, streams logs and cancels', async t => {
     assert.equal(running.log, 'line one');
     assert.equal((await f.request(`/api/roboflow/generations/${id}`, 'admin', undefined, 'DELETE')).status, 200);
     assert.equal((await f.request(`/api/roboflow/generations/${id}`, 'user')).status, 404);
+});
+
+test('HTTP description revision retains admin checks and exposes a non-regeneration decision', async t => {
+    const f = await fixture(t);
+    const body = { workflow: graph, previousDescription: 'Write a report', description: 'Write a repport' };
+    assert.equal((await f.request('/api/roboflow/generations', 'user', body)).status, 403);
+    const started = await f.request('/api/roboflow/generations', 'admin', body);
+    assert.equal(started.status, 202);
+    const { id } = await started.json();
+    while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
+    f.roboflow.onRuntimeTaskEvent({ kind: 'terminal', taskId: f.started[0].request.runtimeTaskId,
+        state: 'completed', result: '# regenerate\nfalse\n# reason\nTypo only' });
+    while (f.roboflow.generationTasks.get(id).status === 'running') await new Promise(resolve => setImmediate(resolve));
+    const result = await (await f.request(`/api/roboflow/generations/${id}`, 'admin')).json();
+    assert.equal(result.regenerate, false); assert.equal(result.graph, null); assert.equal(result.reason, 'Typo only');
+    assert.equal(await f.roboflow.registry.get('example'), null);
+    const asset = await f.request('/workflow-description-revision.js');
+    assert.equal(asset.status, 200); assert.match(await asset.text(), /createDescriptionRevision/);
 });
 
 test('human-input answer route requires authentication and resumes with a validated choice', async t => {

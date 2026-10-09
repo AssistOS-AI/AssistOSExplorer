@@ -14,6 +14,7 @@ This skill does not list workflows. Run the list-workflows skill to get the curr
 Pass one JSON object, or a short command line, through `--input`:
 
 - `{"action":"start","workflowTypeId":"<id>","objective":"<self-contained task>","folder":"<workspace path>"}`
+- `{"action":"start","workflowTypeId":"<id>"}` uses that workflow's saved default objective and the conversation folder.
 - `{"action":"start","workflowTypeId":"default","executionType":"terminal","objective":"<self-contained task>"}`
 
 Command line: `start <workflowTypeId> :: <objective>` for workflows that do not need an execution type. Use JSON with `executionType` for a workflow that list-workflows marks as needing one, such as `default`.
@@ -23,7 +24,7 @@ Command line: `start <workflowTypeId> :: <objective>` for workflows that do not 
 
 ## Constraints
 - Use only a workflow id returned by list-workflows; never invent an id. Prefer the `default` workflow when nothing more specific fits.
-- Pass the user's objective as a self-contained task. The workflow team does not see this conversation.
+- Pass the user's objective as a self-contained task when the request specifies work or changes the saved workflow's scope. The workflow team does not see this conversation. Omit objective only when the user wants to execute the selected workflow unchanged using its saved default. Generic default and code-development workflows require an explicit objective; do not invent work for them.
 - Choose `executionType` terminal, desktop or browser only for a workflow that needs one, such as `default`. For every other workflow, omit it: the graph owns execution modes. Never choose robots, skillsets or graph transitions.
 - Start one workflow per user objective. If the user asks for follow-up work after a flow finished, start a new flow.
 

@@ -4,6 +4,7 @@ import { openRobotTerminal } from './terminal.js';
 import { initDashboardTabs } from './dashboard-tabs.js';
 import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
 import { initPageNavigation, restoreNavigationFocus } from './page-navigation.js';
+import { initCronJobs } from './cron-jobs.js';
 
 const robotsList = document.querySelector('#robotsList');
 const robotTemplate = document.querySelector('#robotTemplate');
@@ -19,7 +20,6 @@ const workflowTemplate = document.querySelector('#workflowTemplate');
 const workflowCount = document.querySelector('#workflowCount');
 const workflowListMessage = document.querySelector('#workflowListMessage');
 const addWorkflowButton = document.querySelector('#addWorkflowButton');
-const logPollers = new Set();
 
 const warningText = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
 
@@ -34,8 +34,10 @@ const navigation = initPageNavigation({
     }),
 });
 const initialView = navigation.view;
-initDashboardTabs({ initialTabId: initialView?.tabId || (new URL(location.href).searchParams.get('tab') === 'workflow-types' ? 'workflowTypesTab' : undefined),
-    onChange: () => closeOpenMenus() });
+const cronJobs = initCronJobs({ api, endpoint, bindLink: navigation.bindLink, closeMenus: closeOpenMenus });
+const requestedTab = new URL(location.href).searchParams.get('tab');
+initDashboardTabs({ initialTabId: initialView?.tabId || (requestedTab === 'workflow-types' ? 'workflowTypesTab' : requestedTab === 'cron-jobs' ? 'kronJobsTab' : undefined),
+    onChange: () => { closeOpenMenus(); void cronJobs.refresh(); } });
 navigation.bindLink(addWorkflowButton);
 navigation.bindLink(document.querySelector('#flowsHistoryButton'));
 
@@ -114,11 +116,6 @@ function reportSessionFailure(sessionWindow, error) {
     sessionWindow.document.body.textContent = error.message;
 }
 
-function clearLogPollers() {
-    for (const poller of logPollers) clearInterval(poller);
-    logPollers.clear();
-}
-
 async function startRobot(robot, mode, button) {
     const sessionWindow = openPendingSession(robot, mode);
     button.disabled = true;
@@ -148,7 +145,6 @@ async function stopRobot(robot, button) {
 }
 
 function renderRobots(robots, canAdmin = false) {
-    clearLogPollers();
     robotsList.replaceChildren();
     robotCount.textContent = `${robots.length} ${robots.length === 1 ? 'robot' : 'robots'}`;
     if (!robots.length) {
@@ -234,75 +230,9 @@ function renderRobots(robots, canAdmin = false) {
             if (ready && desktopRunning) navigateToSession(openPendingSession(robot, 'desktop'), robot.run);
             else startRobot(robot, 'desktop', event.currentTarget);
         });
-        const logsButton = card.querySelector('.view-logs');
-        const logsPanel = card.querySelector('.robot-logs');
-        const logSection = card.querySelector('.robot-log-section');
-        const hideLogsButton = card.querySelector('.hide-logs');
-        logsPanel.id = `robot-logs-${robot.id}`;
-        logsButton.setAttribute('aria-controls', logsPanel.id);
-        logsButton.setAttribute('aria-label', `Show logs for ${robot.name}`);
-        let logPoller = null;
-        let logRequestActive = false;
-        const stopLogPolling = () => {
-            if (logPoller === null) return;
-            clearInterval(logPoller);
-            logPollers.delete(logPoller);
-            logPoller = null;
-        };
-        const hideLogs = () => {
-            stopLogPolling();
-            logsPanel.hidden = true;
-            logSection.hidden = true;
-            logsButton.setAttribute('aria-expanded', 'false');
-            logsButton.setAttribute('aria-label', `Show logs for ${robot.name}`);
-            logsButton.title = 'Show logs';
-        };
-        hideLogsButton.addEventListener('click', () => {
-            hideLogs();
-            logsButton.focus();
-        });
-        const refreshContainerLogs = async () => {
-            if (logsPanel.hidden || logRequestActive) return;
-            logRequestActive = true;
-            const distanceFromBottom = logsPanel.scrollHeight - logsPanel.clientHeight - logsPanel.scrollTop;
-            const followLatest = distanceFromBottom <= 12;
-            const previousScrollTop = logsPanel.scrollTop;
-            try {
-                const result = await api(`api/robots/${robot.id}/logs?tail=200`);
-                const nextText = result.logs || 'No container output yet.';
-                if (logsPanel.textContent !== nextText) {
-                    logsPanel.textContent = nextText;
-                    requestAnimationFrame(() => {
-                        logsPanel.scrollTop = followLatest
-                            ? logsPanel.scrollHeight
-                            : Math.min(previousScrollTop, logsPanel.scrollHeight);
-                    });
-                }
-            } catch (error) {
-                stopLogPolling();
-                showError(error);
-            } finally {
-                logRequestActive = false;
-            }
-        };
-        logsButton.addEventListener('click', async () => {
-            if (!logsPanel.hidden) {
-                hideLogs();
-                logsButton.focus();
-                return;
-            }
-            logsPanel.textContent = 'Loading container logs…';
-            logsPanel.hidden = false;
-            logSection.hidden = false;
-            logsButton.setAttribute('aria-expanded', 'true');
-            logsButton.setAttribute('aria-label', `Hide logs for ${robot.name}`);
-            logsButton.title = 'Hide logs';
-            await refreshContainerLogs();
-            if (!logsPanel.hidden && logPoller === null) {
-                logPoller = setInterval(refreshContainerLogs, 1000);
-                logPollers.add(logPoller);
-            }
-        });
+        const logsLink = card.querySelector('.view-logs');
+        logsLink.href = endpoint(`robots/${encodeURIComponent(robot.id)}/logs`);
+        logsLink.setAttribute('aria-label', `Open logs for ${robot.name} (new tab)`);
         robotsList.append(card);
     }
 }
@@ -375,6 +305,7 @@ async function loadWorkflows(canAdmin) {
     addWorkflowButton.hidden = !canAdmin;
     try {
         const { workflows } = await api('api/roboflow/workflows');
+        cronJobs.setContext(workflows, canAdmin);
         workflowListMessage.textContent = '';
         renderWorkflows(workflows, canAdmin);
     } catch (error) {

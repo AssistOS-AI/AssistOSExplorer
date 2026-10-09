@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { RoboFlowDatabase } from './database.mjs';
 import { FLOW_ID_PATTERN, INVOCATION_ID_PATTERN } from './constants.mjs';
-import { invalid } from './graph.mjs';
+import { invalid, resolveWorkflowObjective } from './graph.mjs';
 
 const activePhase = phase => ['starting', 'running', 'pausing'].includes(phase.state);
 const flowTiming = flow => executionTiming(flow, flow.status === 'running', flow.createdAt, flow.finishedAt);
@@ -35,12 +35,14 @@ export class TaskFlowStore {
             ...input, elapsedMs: 0, activeSince: now, status: 'running', currentInstanceId: null,
             createdAt: now, updatedAt: now, finishedAt: null, error: null, instances: [] };
     }
-    async createFromWorkflow(registry, workflowId, input) {
+    async createFromWorkflow(registry, workflowId, input, onCreated = () => {}) {
         await this.initialize();
         return this.database.transaction(() => {
             const graph = registry.getSync(workflowId);
             if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
-            return this.saveSync(this.createRecord(graph, input));
+            const flow = this.saveSync(this.createRecord(graph, { ...input, objective: resolveWorkflowObjective(graph, input.objective) }));
+            onCreated(flow);
+            return flow;
         });
     }
     async get(id) { await this.initialize(); return this.getSync(id); }

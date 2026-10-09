@@ -31,43 +31,48 @@
 <body class="editor-page">
   <header class="hero" data-embed-header>
     <nav class="breadcrumbs" aria-label="Breadcrumb" data-embed-breadcrumbs>
-      <a href="./" data-return-control>RoboTeam</a>
+      <a href="./?tab=workflow-types" data-return-control title="Back to Workflow types">RoboTeam</a>
       <span id="breadcrumbGenerateSep" class="breadcrumb-sep" aria-hidden="true" hidden>/</span>
       <a id="breadcrumbGenerate" href="flow-types/generate-new" hidden>generate</a>
       <span class="breadcrumb-sep" aria-hidden="true">/</span>
-      <span id="breadcrumbLeaf" aria-current="page">new</span>
+      <span id="breadcrumbLeaf" class="workflow-name-field" aria-current="page"><input id="workflowName" name="name" form="workflowForm" class="workflow-name" data-embed-field="workflow-name" maxlength="120" aria-label="Workflow name" placeholder="Name your workflow" title="Rename workflow · Enter to finish · Escape to cancel" disabled><svg class="workflow-edit-icon" data-embed-edit-icon width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4l5 5M4 20l5-1L20 8a3.5 3.5 0 0 0-5-5L4 14z"/></svg></span>
     </nav>
   </header>
-
-  <nav class="page-navigation" aria-label="Return navigation"><a class="page-return" href="./?tab=workflow-types" data-return-control>← Back to Workflow types</a></nav>
 
   <form id="workflowForm" class="workflow-builder">
     <div class="builder-body">
       <div class="workflow-workspace">
         <aside class="task-sidebar">
-          <nav class="workflow-pages" aria-label="Workflow editor pages">
-            <button type="button" class="workflow-page-button" data-page="settings" aria-pressed="false">General</button>
-            <button type="button" class="workflow-page-button" data-page="graph" aria-pressed="false">Graph</button>
-          </nav>
           <div class="task-sidebar-header">
             <h3>Tasks</h3>
             <button type="button" id="addTaskButton" class="button add-task" title="Add a task" aria-label="Add a task">+</button>
           </div>
+          <div class="task-role-legend" aria-label="Node colors"><span class="legend-start">Start</span><span>Intermediate</span><span class="legend-end">End</span></div>
           <ul id="taskList" class="task-list"></ul>
         </aside>
         <div class="workflow-main">
-          <section id="flowSettingsPage" class="workflow-page" data-workflow-page="settings" aria-labelledby="flowSettingsTitle" hidden>
-            <h3 id="flowSettingsTitle">General</h3>
-            <section class="workflow-details">
-              <label class="field"><span>Name</span><input name="name" maxlength="120"></label>
-              <label class="field"><span>Description</span><textarea name="description" rows="3"></textarea></label>
+          <div class="workflow-overview">
+            <label class="workflow-description-field">
+              <textarea name="description" class="workflow-description" rows="2" maxlength="4000" aria-label="Workflow description" aria-describedby="descriptionReviewHint" placeholder="Add a workflow description…"></textarea>
+              <span id="descriptionReviewHint" class="workflow-description-hint">Changes are checked when you leave this field. New requirements update the graph; text corrections keep it unchanged.</span>
+            </label>
+            <details class="workflow-help">
+              <summary title="Graph editing help" aria-label="Graph editing help"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01" stroke-linecap="round"/></svg></summary>
+              <p class="hint">Drag nodes to arrange them. Drag a left or right connection point to another node’s point to create a directed connection. Use Start node in the task editor to choose the start node. Select a connection and press Delete or Backspace to remove it.</p>
+            </details>
+          </div>
+          <div id="descriptionReview" class="workflow-description-review" hidden>
+            <span id="descriptionReviewText" role="status" aria-live="polite"></span>
+            <button id="descriptionReviewRetry" type="button" class="description-review-retry" hidden>Retry review</button>
+          </div>
+          <div id="workflowContent" class="workflow-content">
+            <section id="taskPage" class="workflow-task-details" aria-label="Task details" hidden>
+              <button type="button" id="closeTaskEditor" class="task-editor-close" aria-label="Close task details" title="Close task details">×</button>
+              <div id="taskEditorPanel" class="task-editor-panel"></div>
             </section>
-          </section>
-          <section id="graphPage" class="workflow-page" data-workflow-page="graph" aria-label="Graph" hidden>
-            <p class="hint">Drag nodes to arrange them. Drag a left or right connection point to another node’s point to create a directed connection. Use Start node in the task editor to choose the start node. Select a connection and press Delete or Backspace to remove it.</p>
-            <div id="workflowBoard" aria-label="Workflow drawing board"></div>
-          </section>
-          <section id="taskPage" class="workflow-page" data-workflow-page="task" aria-label="Task details" hidden><div id="taskEditorPanel" class="task-editor-panel"></div></section>
+            <section id="graphPage" class="workflow-graph" aria-label="Graph"><div id="workflowBoard" aria-label="Workflow drawing board"></div></section>
+
+          </div>
           <p id="workflowMessage" class="message" role="status"></p>
         </div>
       </div>

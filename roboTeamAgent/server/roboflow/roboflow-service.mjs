@@ -6,10 +6,13 @@ import fs from 'node:fs/promises';
 import { RoboFlowDatabase } from './database.mjs';
 import { WorkflowRegistry } from './workflow-registry.mjs';
 import { TaskFlowStore } from './task-flow-store.mjs';
+import { ScheduleStore } from './schedule-store.mjs';
+import { ScheduleFolders } from './schedule-folders.mjs';
+import { WorkflowScheduler } from './workflow-scheduler.mjs';
 import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator } from './graph.mjs';
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
 import { parseRoute, parseWorkflowResponse, workflowResponseContext } from './result-parser.mjs';
-import { generationPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
+import { generationPrompt, descriptionRevisionPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
 import { ensureDefaultWorkflow } from './default-workflow.mjs';
 import { EXECUTION_TASK_TYPES, EXECUTION_TYPES, WORKFLOWS_DIR } from './constants.mjs';
 import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
@@ -35,8 +38,14 @@ export class RoboFlowService {
         this.database = options.database || new RoboFlowDatabase(options.databaseFile || (options.workflowsDirectory ? path.join(options.workflowsDirectory, 'roboflow.sqlite') : undefined));
         this.registry = new WorkflowRegistry({ database: this.database, legacyDirectory: options.workflowsDirectory || WORKFLOWS_DIR });
         this.store = new TaskFlowStore({ database: this.database });
-        this.random = options.random || Math.random;
         this.workspaceRoot = options.workspaceRoot || this.runtimeManager?.workspaceRoot || path.dirname(this.database.file);
+        this.scheduleFolders = new ScheduleFolders(this.workspaceRoot);
+        this.schedules = new ScheduleStore({ database: this.database, registry: this.registry,
+            resolveCwd: folder => this.runtimeManager.resolveCwd(folder),
+            defaultFolder: () => this.scheduleFolders.defaultFolder(), now: options.scheduleNow });
+        this.scheduler = new WorkflowScheduler({ schedules: this.schedules, flows: this.store,
+            startFlow: (input, options) => this.startFlow(input, options), now: options.scheduleNow, pollMs: options.schedulePollMs });
+        this.random = options.random || Math.random;
         this.maxVisits = Number(options.maxVisits ?? process.env.ROBOTEAM_WORKFLOW_MAX_VISITS ?? 500);
         this.presetRetryMs = Number(options.presetRetryMs ?? 5000);
         this.closed = false;
@@ -87,6 +96,7 @@ export class RoboFlowService {
             void this._serialize(flow.parentFlowId, () => this.subflows.reconcile(flow.parentFlowId))
                 .catch(error => this._serialize(flow.parentFlowId, () => this._fail(flow.parentFlowId, error.message)).catch(() => {}));
         };
+        this.scheduler.initialize();
     }
     async _ensureCodeDevelopmentPreset() {
         let reported = false;
@@ -138,15 +148,31 @@ export class RoboFlowService {
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
         return { ...graph, coverage: coverage(graph, await this.robotStore.list()) };
     }
-    async deleteWorkflow(id) { return this.registry.remove(id); }
-    async startFlow(input) {
+    async deleteWorkflow(id) { return this.registry.remove(id, { beforeRemove: id => this.schedules.assertWorkflowRemovable(id) }); }
+    async listSchedules() {
+        const root = await this.scheduleFolders.root();
+        return this.schedules.listSync().map(job => {
+            const { pendingLaunch, ...record } = job;
+            const flow = job.lastFlowId && this.store.getSync(job.lastFlowId);
+            return { ...record, folderLabel: this.scheduleFolders.label(job.folder, root), workflowName: this.registry.getSync(job.workflowTypeId)?.name || job.workflowTypeId,
+                lastFlowStatus: flow?.status || null, lastFlowError: flow?.error || null, launching: Boolean(pendingLaunch) };
+        });
+    }
+    async saveSchedule(input, createdBy, id) { const saved = await this.schedules.save(input, createdBy, id); return (await this.listSchedules()).find(job => job.id === saved.id); }
+    async deleteSchedule(id) { return this.schedules.remove(id); }
+    async runScheduleNow(id, revision, createdBy) {
+        const flow = await this.scheduler.runNow(id, revision, createdBy);
+        return { flow, schedule: (await this.listSchedules()).find(job => job.id === id) || null };
+    }
+    async startFlow(input, { onCreated, scheduleId, scheduledAt } = {}) {
         const graph = await this.registry.get(input.workflowTypeId);
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
         if (graph.kind === 'default' ? !EXECUTION_TYPES.includes(input.executionType) : input.executionType !== undefined) throw invalid('executionType is required only for the default workflow');
         const folder = await this.runtimeManager.resolveCwd(input.folder);
-        const objective = textField(input.objective, 'objective', 32768, true);
+        const objective = textField(input.objective, 'objective', 32768);
         const flow = await this.store.createFromWorkflow(this.registry, graph.id, { folder, objective, createdBy: input.createdBy || '',
-            ...(graph.kind === 'default' ? { executionType: input.executionType } : {}) });
+            ...(scheduleId ? { scheduleId, scheduledAt } : {}),
+            ...(graph.kind === 'default' ? { executionType: input.executionType } : {}) }, onCreated);
         await this._serialize(flow.id, async () => {
             await this._prepareVisit(flow.id, flow.graph.entryTaskId);
             await this._dispatch(flow.id);
@@ -559,7 +585,7 @@ export class RoboFlowService {
         try {
             signal?.throwIfAborted();
             await this._startTask(robot, { cwd, task: description, runtimeTaskId, skillSets: [], systemPrompt: generationPrompt(catalog) });
-            const graph = normalizeWorkflow(parseWorkflowResponse(await completed, { generation: true }));
+            const graph = normalizeWorkflow({ ...parseWorkflowResponse(await completed, { generation: true }), defaultObjective: description });
             const known = new Set(catalog.skillsets.map(set => set.id));
             if (graph.tasks.some(task => task.skillsets.some(id => !known.has(id)))) throw invalid('Generated graph contains an unknown skillset');
             return { graph, coverage: coverage(graph, await this.robotStore.list()), diagnostics: [...catalog.diagnostics, ...graphDiagnostics(graph)] };
@@ -569,12 +595,20 @@ export class RoboFlowService {
     // page polls generationInfo every couple of seconds for live task logs.
     async startGeneration(input) {
         const description = textField(input.description, 'description', 32768, true);
+        let revision;
+        if (input.workflow !== undefined) {
+            if (input.workflow?.readOnly || ['default', 'code-development'].includes(input.workflow?.id)) throw invalid('Read-only workflows cannot be regenerated');
+            const previousDescription = textField(input.previousDescription, 'previousDescription', 4000);
+            const workflow = normalizeWorkflow({ ...input.workflow, description: previousDescription });
+            textField(description, 'description', 4000, true);
+            revision = { previousDescription, description, workflow };
+        }
         const catalog = await this.catalog();
         const robot = await this.robotStore.getByName('default');
         if (!robot) throw new Error('Default robot is unavailable');
         const cwd = await this.generationCwd(input.folder);
         const record = { id: crypto.randomUUID(), runtimeTaskId: crypto.randomUUID(), robotId: robot.id,
-            status: 'running', graph: null, error: null, startedAt: new Date().toISOString(), catalog };
+            status: 'running', graph: null, error: null, startedAt: new Date().toISOString(), catalog, ...(revision ? { revision } : {}) };
         this.generationTasks.set(record.id, record);
         void this._runGeneration(record, robot, cwd, description).catch(() => {});
         return { id: record.id };
@@ -585,26 +619,39 @@ export class RoboFlowService {
         void completed.catch(() => {});
         this.generations.set(record.runtimeTaskId, { resolve, reject });
         try {
-            await this._startTask(robot, { cwd, task: description, runtimeTaskId: record.runtimeTaskId, skillSets: [],
-                systemPrompt: generationPrompt(record.catalog) });
-            const graph = normalizeWorkflow(parseWorkflowResponse(await completed, { generation: true }));
-            const known = new Set(record.catalog.skillsets.map(set => set.id));
-            if (graph.tasks.some(task => task.skillsets.some(id => !known.has(id)))) throw invalid('Generated graph contains an unknown skillset');
-            record.graph = { ...graph, coverage: coverage(graph, await this.robotStore.list()),
-                diagnostics: [...record.catalog.diagnostics, ...graphDiagnostics(graph)] };
+            await this._startTask(robot, { cwd, task: record.revision ? JSON.stringify(record.revision) : description, runtimeTaskId: record.runtimeTaskId, skillSets: [],
+                systemPrompt: record.revision ? descriptionRevisionPrompt(record.catalog) : generationPrompt(record.catalog) });
+            const parsed = parseWorkflowResponse(await completed, { generation: true, revision: Boolean(record.revision) });
+            if (record.status === 'cancelled') return;
+            if (record.revision) {
+                if (typeof parsed.regenerate !== 'boolean') throw invalid('Description revision requires a boolean regenerate decision');
+                record.reason = textField(parsed.reason, 'reason', 4000, true);
+                record.regenerate = parsed.regenerate;
+            }
+            if (!record.revision || record.regenerate) {
+                const graph = normalizeWorkflow(record.revision ? { ...parsed, id: record.revision.workflow.id,
+                    name: record.revision.workflow.name, description: record.revision.description, defaultObjective: record.revision.description }
+                    : { ...parsed, defaultObjective: description });
+                const known = new Set(record.catalog.skillsets.map(set => set.id));
+                if (graph.tasks.some(task => task.skillsets.some(id => !known.has(id)))) throw invalid('Generated graph contains an unknown skillset');
+                record.graph = { ...graph, coverage: coverage(graph, await this.robotStore.list()),
+                    diagnostics: [...record.catalog.diagnostics, ...graphDiagnostics(graph)] };
+            }
             record.status = 'completed';
         } catch (error) {
             if (record.status !== 'cancelled') { record.status = 'failed'; record.error = error.message; }
         } finally {
             this.generations.delete(record.runtimeTaskId);
             delete record.catalog;
+            delete record.revision;
         }
     }
     generationInfo(id) {
         const record = this.generationTasks.get(id);
         if (!record) return null;
         const log = (this.runtimeManager?.taskStatus?.(record.robotId, record.runtimeTaskId)?.logTail || '').slice(-256 * 1024);
-        const info = { id: record.id, status: record.status, log, graph: record.graph, error: record.error };
+        const info = { id: record.id, status: record.status, log, graph: record.graph, error: record.error,
+            ...(typeof record.regenerate === 'boolean' ? { regenerate: record.regenerate, reason: record.reason } : {}) };
         if (terminal(record.status)) this.generationTasks.delete(id);
         return info;
     }
@@ -614,11 +661,12 @@ export class RoboFlowService {
         if (record.status === 'running') {
             record.status = 'cancelled';
             record.error = 'Graph generation cancelled';
+            this.generations.get(record.runtimeTaskId)?.reject(new Error(record.error));
             try { Promise.resolve(this.runtimeManager?.stopTask?.({ id: record.robotId }, 'simple', record.runtimeTaskId)).catch(() => {}); } catch { /* Runtime may already be terminal. */ }
         }
         const info = { id: record.id, status: record.status, graph: record.graph, error: record.error };
         this.generationTasks.delete(id);
         return info;
     }
-    async close() { this.closed = true; clearTimeout(this.presetTimer); this.presetWake?.(); this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
+    async close() { this.closed = true; await this.scheduler.close(); clearTimeout(this.presetTimer); this.presetWake?.(); this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
 }

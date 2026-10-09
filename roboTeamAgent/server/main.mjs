@@ -54,6 +54,7 @@ const server = createRoboTeamServer({
 
 server.listen(port, host, () => {
     console.log(`RoboTeamAgent listening on ${host}:${port}`);
+    roboflow.scheduler.start();
     // Downloads must not delay service readiness; requests share this cache's pending preparations.
     void runtimeManager.toolCache.warmup().catch(error => {
         console.error(`[tool-cache] startup preparation failed: ${error.message}`);

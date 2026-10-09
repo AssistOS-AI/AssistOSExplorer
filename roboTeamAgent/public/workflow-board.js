@@ -1,6 +1,37 @@
 import { edgeRoute } from './workflow-routing.js';
 
 const svgNS = 'http://www.w3.org/2000/svg';
+export function workflowNodeRole(task, graph) {
+    const start = task.id === graph.entryTaskId;
+    const end = !graph.edges.some(edge => edge.sourceTaskId === task.id);
+    return start ? (end ? 'start-end' : 'start') : (end ? 'end' : 'intermediate');
+}
+
+const roleIcons = {
+    start: { role: 'start', label: 'Start node', path: 'M8 5l11 7-11 7Z' },
+    intermediate: { role: 'intermediate', label: 'Intermediate step', path: 'M5 6l6 6-6 6 M13 6l6 6-6 6' },
+    end: { role: 'end', label: 'End node', path: 'M5 21V3h14l-3 5 3 5H5' }
+};
+
+export function workflowRoleIcons(role) {
+    return role === 'start-end' ? [roleIcons.start, roleIcons.end] : [roleIcons[role]];
+}
+
+function graphRoleIcons(role) {
+    const group = document.createElement('span'); group.className = 'graph-role-icons';
+    group.title = workflowRoleIcons(role).map(icon => icon.label).join(' / ');
+    for (const definition of workflowRoleIcons(role)) {
+        const icon = document.createElementNS(svgNS, 'svg');
+        for (const [name, value] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8',
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round', role: 'img', 'aria-label': definition.label, focusable: 'false',
+            class: `graph-role-icon graph-role-icon-${definition.role}` })) icon.setAttribute(name, value);
+        const title = document.createElementNS(svgNS, 'title'); title.textContent = definition.label;
+        const path = document.createElementNS(svgNS, 'path'); path.setAttribute('d', definition.path);
+        icon.append(title, path); group.append(icon);
+    }
+    return group;
+}
+
 export function drawBoard(container, graph, { readOnly = false, onChange = () => {}, onSelect = () => {}, onSelectEdge = () => {}, selectedEdgeId = null, states = {} } = {}) {
     container._workflowBoardCleanup?.();
     const controller = new AbortController();
@@ -107,8 +138,10 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
     for (const task of graph.tasks) {
         const node = document.createElement('div'); node.className = 'graph-node'; node.tabIndex = 0;
         node.dataset.taskId = task.id;
+        node.dataset.nodeRole = workflowNodeRole(task, graph);
         nodeElements.set(task.id, node);
-        node.setAttribute('aria-label', `${task.name}. ${readOnly ? '' : 'Arrow keys move this task.'}`);
+        const roleLabel = workflowRoleIcons(node.dataset.nodeRole).map(icon => icon.label).join(' / ');
+        node.setAttribute('aria-label', `${task.name}. ${roleLabel}. ${readOnly ? '' : 'Arrow keys move this task.'}`);
         if (task.creator) node.classList.add('graph-creator');
         if (task.kind === 'run-workflows') node.classList.add('graph-coordinator');
         if (task.id === graph.entryTaskId) node.classList.add('graph-entry');
@@ -118,6 +151,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         const detail = document.createElement('span'); detail.className = 'graph-node-detail';
         const detailText = document.createElement('span'); detailText.className = 'graph-node-detail-text'; detailText.textContent = `${task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Sub-flows · ' : ''}${task.executionType || 'terminal / desktop / browser'}`}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
         detail.append(detailText);
+        detail.title = detailText.textContent;
         if (task.allowsHumanInput && task.kind !== 'run-workflows') {
             const icon = document.createElementNS(svgNS, 'svg');
             icon.classList.add('graph-human-input');
@@ -128,7 +162,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
             icon.append(title, person);
             detail.append(icon);
         }
-        node.append(label, detail);
+        node.append(graphRoleIcons(node.dataset.nodeRole), label, detail);
         const place = () => { node.style.left = `${graph.layout[task.id].x + offset.x}px`; node.style.top = `${graph.layout[task.id].y + offset.y}px`; };
         place();
         node.addEventListener('click', () => onSelect(task.id));

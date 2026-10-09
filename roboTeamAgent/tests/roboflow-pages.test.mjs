@@ -42,7 +42,7 @@ test('the flows list and flow execution pages are served under /flows', async t 
     assert.equal(list.status, 200);
     const listHtml = await list.text();
     assert.match(listHtml, /flows\.js/);
-    assert.match(listHtml, /class="breadcrumbs"[\s\S]*href="\.\/"[^>]*>RoboTeam</);
+    assert.match(listHtml, /class="breadcrumbs"[\s\S]*href="\.\/\?tab=workflow-types"[^>]*data-return-control[^>]*>RoboTeam</);
 
     const execution = await request('/flows?flowId=flow_123456789012345678901234');
     assert.equal(execution.status, 200);

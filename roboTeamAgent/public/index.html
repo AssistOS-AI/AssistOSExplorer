@@ -48,7 +48,7 @@
                 aria-controls="workflowTypesPanel" tabindex="-1">Workflow types
         </button>
         <button class="dashboard-tab" id="kronJobsTab" type="button" role="tab" aria-selected="false"
-                aria-controls="kronJobsPanel" tabindex="-1">Kron jobs
+                aria-controls="kronJobsPanel" tabindex="-1">Cron jobs
         </button>
     </div>
 
@@ -105,12 +105,86 @@
     </div>
 
     <div id="kronJobsPanel" role="tabpanel" aria-labelledby="kronJobsTab" tabindex="0" hidden>
-        <section class="panel empty-state" aria-labelledby="kron-jobs-title">
-            <h2 id="kron-jobs-title">Kron jobs</h2>
-            <p>Functionality will be defined later.</p>
+        <section aria-labelledby="kron-jobs-title">
+            <div class="section-heading">
+                <div class="heading-main"><h2 id="kron-jobs-title">Cron jobs</h2><span id="cronCount" class="robot-count">0 jobs</span></div>
+                <button id="createCronButton" class="button primary" type="button" aria-haspopup="dialog" aria-controls="cronDialog" disabled><span class="button-plus" aria-hidden="true">+</span>Create job</button>
+            </div>
+            <p class="lede">Run a workflow at regular intervals or at specific daily times. Missed runs are skipped; a running or paused workflow prevents overlapping runs from the same job.</p>
+            <p id="cronMessage" class="message" role="status"></p>
+            <div id="cronList" class="robot-list"></div>
         </section>
     </div>
+    <dialog id="cronDialog" class="create-robot-dialog cron-dialog" aria-labelledby="cronDialogTitle">
+        <div class="create-robot-heading"><h2 id="cronDialogTitle">Create Cron job</h2><button id="cronClose" class="button icon-button" type="button" aria-label="Close Cron job dialog" title="Close">×</button></div>
+        <form id="cronForm" class="robot-form">
+            <div class="cron-form-fields">
+            <label class="cron-field-half"><span>Name</span><input name="name" maxlength="120" required placeholder="Daily research" autofocus></label>
+            <label class="cron-field-half"><span>Workflow</span><select name="workflowTypeId" required></select></label>
+            <label id="cronExecutionField" hidden><span>Execution mode</span><select name="executionType"><option value="terminal">Terminal</option><option value="browser">Browser</option><option value="desktop">Desktop</option></select></label>
+            <div class="cron-folder-field" role="group" aria-labelledby="cronFolderTitle">
+                <span id="cronFolderTitle">Results folder</span>
+                <input name="folder" type="hidden">
+                <div class="cron-folder-selection"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></svg><output id="cronFolderLabel">Workspace / cron-jobs-results</output><button id="cronChangeFolder" class="button secondary" type="button">Change folder</button></div>
+                <div class="cron-folder-note"><span>Workflow results and logs are saved here.</span><button id="cronDefaultFolder" class="folder-text-action" type="button" hidden>Use default</button></div>
+            </div>
+            <label id="cronObjectiveField" hidden><span id="cronObjectiveLabel">Objective</span><textarea name="objective" rows="3" maxlength="32768" placeholder="What should this workflow accomplish each time?"></textarea></label>
+            <p id="cronObjectiveHint" class="cron-hint">Uses the selected workflow’s default objective.</p>
+            <label><span>Schedule</span><select name="scheduleKind"><option value="interval">At regular intervals</option><option value="daily">At daily times</option></select></label>
+            <div id="cronInterval" class="cron-interval">
+                <label><span>Every</span><input name="intervalValue" type="number" min="1" max="525600" step="1" value="1" required></label>
+                <label><span>Unit</span><select name="intervalUnit"><option value="1">Minutes</option><option value="60" selected>Hours</option><option value="1440">Days</option></select></label>
+            </div>
+            <div id="cronDaily" class="cron-daily" hidden>
+                <label><span>Time zone</span><input name="timeZone" list="cronTimeZones" maxlength="100" placeholder="Europe/Bucharest"></label>
+                <datalist id="cronTimeZones"></datalist>
+                <fieldset class="cron-times-field"><legend>Daily times</legend><div id="cronTimes" class="cron-times"></div><button id="cronAddTime" class="workflow-history" type="button">+ Add time</button></fieldset>
+            </div>
+            <label class="cron-enabled"><input name="enabled" type="checkbox" checked><span>Enabled</span></label>
+            <p class="cron-hint">Disabling this job does not stop a workflow already running. The RoboTeam service must be running for scheduled launches.</p>
+            <p id="cronFormMessage" class="message" role="status"></p>
+            </div>
+            <div class="create-robot-actions"><button id="cronCancel" class="button secondary" type="button">Cancel</button><button id="cronSave" class="button primary" type="submit">Create job</button></div>
+        </form>
+    </dialog>
+    <dialog id="cronFolderDialog" class="create-robot-dialog cron-dialog folder-dialog" aria-labelledby="cronFolderDialogTitle">
+        <div class="create-robot-heading"><h2 id="cronFolderDialogTitle">Select results folder</h2><button id="cronFolderClose" class="button icon-button" type="button" aria-label="Close folder selector">×</button></div>
+        <div class="folder-browser">
+            <nav id="cronFolderBreadcrumbs" class="folder-breadcrumbs" aria-label="Workspace folders"></nav>
+            <div class="folder-toolbar"><button id="cronFolderUp" class="button secondary" type="button">↑ Up</button><button id="cronFolderNew" class="button secondary" type="button">+ New folder</button></div>
+            <form id="cronNewFolderForm" class="folder-new-form" hidden><label for="cronNewFolderName">Folder name</label><div><input id="cronNewFolderName" name="name" maxlength="255" required placeholder="New folder"><button class="button primary" type="submit">Create</button><button id="cronNewFolderCancel" class="button secondary" type="button">Cancel</button></div></form>
+            <p id="cronFolderMessage" class="message" role="status"></p>
+            <ul id="cronFolderList" class="folder-list" aria-label="Folders"></ul>
+            <template id="cronFolderIcon"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></svg></template>
+        </div>
+        <div class="folder-footer"><button id="cronFolderCancel" class="button secondary" type="button">Cancel</button><button id="cronFolderUse" class="button primary" type="button" disabled>Use this folder</button></div>
+    </dialog>
 </main>
+
+<template id="cronTemplate">
+    <article class="robot-card cron-card">
+        <div class="robot-main">
+            <div class="robot-identity"><div class="avatar" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg></div><span class="run-state cron-state"></span></div>
+            <div class="robot-info">
+                <div class="robot-title-row"><h3 class="cron-name"></h3> <span class="cron-last"></span>
+                </div>
+                <p class="cron-workflow"></p>
+                <div class="cron-schedule"><p class="cron-timing"></p><p class="cron-next"></p><a class="view-logs cron-view-run" hidden>View last run</a></div>
+                <p class="cron-error" hidden></p>
+            </div>
+        </div>
+        <div class="robot-actions cron-actions">
+            <div class="robot-manage"><button class="button secondary icon-button manage-toggle" type="button" aria-expanded="false" aria-label="More job actions" title="More actions" data-robot-menu-toggle><span aria-hidden="true">⋮</span></button>
+                <div class="manage-options" data-robot-menu-options hidden>
+                    <button class="button secondary cron-run-now" type="button" title="Run immediately and reset the next scheduled run">Run now</button>
+                    <button class="button secondary cron-toggle" type="button"></button>
+                    <button class="button secondary cron-edit" type="button">Edit job</button>
+                    <div class="robot-danger-actions"><button class="button danger cron-delete" type="button">Delete job</button></div>
+                </div>
+            </div>
+        </div>
+    </article>
+</template>
 
 <template id="robotTemplate">
     <article class="robot-card">
@@ -124,7 +198,7 @@
                 <div class="robot-meta">
                     <p class="active-coding-agent"></p>
                     <span class="robot-mode" hidden></span>
-                    <button class="view-logs" type="button" aria-expanded="false" title="Show logs">Logs</button>
+                    <a class="view-logs" target="_blank" rel="noopener noreferrer" title="Open logs in a new tab">Logs</a>
                 </div>
             </div>
         </div>
@@ -155,14 +229,6 @@
         </div>
         <p class="robot-session" hidden><span></span><a class="session-url" target="_blank"
                                                         rel="noopener noreferrer"></a></p>
-        <div class="robot-log-section" hidden>
-            <div class="robot-log-heading"><span>Container logs</span>
-                <button class="button icon-button hide-logs" type="button" aria-label="Close container logs"
-                        title="Close logs">×
-                </button>
-            </div>
-            <pre class="robot-logs" hidden></pre>
-        </div>
     </article>
 </template>
 
