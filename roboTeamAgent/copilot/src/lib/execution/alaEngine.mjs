@@ -12,6 +12,7 @@ import { alaSkillMountArguments } from './alaSkillMounts.mjs';
 import { alaSessionsRoot, readAlaSession } from './alaTranscript.mjs';
 import * as workspaceSettings from '../config/achillesSettings.mjs';
 import { acquireExecutionLease } from '../storage/workspaceStateLock.mjs';
+import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
 import { ACHILLES_PRIVATE_DIRECTORY_NAME, resolveAchillesWorkspaceRoot } from '../storage/privateDataRoot.mjs';
 import { createPloinkyTaskContext } from '../ploinky/ploinkyTaskContext.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
@@ -162,6 +163,22 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
         active.add(operation);
         let release, catalogRelease, turn, scriptContext, child, childDone, failureChannel, forcedFailure;
+        // Diagnostics only: phase records with elapsed time, so a hang is a missing end and a throw an error record.
+        const phase = (event, extra = {}) => logDiagnostic(workingDir, `turn.${event}`, { sessionId, turnId,
+            elapsedMs: Math.round(performance.now() - responseStarted), ...extra });
+        const step = async (name, action) => {
+            const started = performance.now();
+            phase('finally.step.start', { step: name });
+            try {
+                const value = await action();
+                phase('finally.step.end', { step: name, ms: Math.round(performance.now() - started) });
+                return value;
+            } catch (error) {
+                phase('finally.step.error', { step: name, ms: Math.round(performance.now() - started), ...errorFields(error) });
+                throw error;
+            }
+        };
+        phase('start');
         const env = { ...process.env };
         const sanitize = createSanitizer(context, env);
         const emit = async (event) => { await onEvent?.(sanitize(event)); };
@@ -169,7 +186,13 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             controller.signal.throwIfAborted();
             const robotName = String(process.env.ROBOTEAM_COPILOT_ROBOT_NAME || '').trim();
             await emit({ type: 'progress', reason: robotName ? `Connecting to robot "${robotName}"` : 'Connecting to robot' });
-            release = await acquireExecutionLease(workingDir, `session:${sessionId}`);
+            try {
+                release = await acquireExecutionLease(workingDir, `session:${sessionId}`, { label: 'alaEngine.executeTurn' });
+            } catch (error) {
+                phase('lease.error', errorFields(error));
+                throw error;
+            }
+            phase('lease.acquired');
             const config = await configuration(sessionId, env);
             const { cwd, home, backend, api, permissionMode } = config;
             // Pi has no native ask mode. Reject before transcript or native state creation.
@@ -187,6 +210,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             controller.signal.throwIfAborted();
             turn = await sessionStore.beginTurn({ sessionId, turnId, text: sanitize(context.rawText || prompt),
                 attachments: sanitize(context.attachments || []), references: sanitize(context.references || []) });
+            phase('turn.begun');
             await emit({ type: 'turn-started', ...turn, turnId });
             const captured = { ...context, workingDir: cwd, sessionId, turnId,
                 assistantMessageId: turn.assistantMessageId, signal: controller.signal,
@@ -248,6 +272,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: alaSessionsRoot(cwd) },
                 shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
             });
+            phase('child.spawned', { childPid: child.pid ?? null });
             // The turn prompt is the first control record: ALA starts the coding
             // agent with `prompt` and records `displayText` as the user's message.
             child.stdin.write(`${JSON.stringify({ type: 'prompt', prompt: sanitize(nativePrompt),
@@ -259,15 +284,18 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             childDone = consumeChild(child, { config: { ...config, skillExecution: snapshot.revision ? { revision: snapshot.revision, catalogId: snapshot.catalogId } : null }, controller, context: captured, sessionId, turnId,
                 assistantMessageId: turn.assistantMessageId, emit, sanitize });
             const outputText = await childDone;
+            phase('childDone.resolved');
             if (failureChannel) {
                 await failureChannel.close();
                 failureChannel = null;
+                phase('failureChannel.closed');
             }
             if (forcedFailure) throw forcedFailure;
             if (scriptContext) {
                 const completedContext = scriptContext;
                 scriptContext = null;
                 await completedContext.close();
+                phase('scriptContext.closed');
             }
             controller.signal.throwIfAborted();
             let finalText = outputText;
@@ -281,9 +309,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             }
             const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText,
                 { durationMs: Math.max(0, Math.round(performance.now() - responseStarted)), thinkingUrl });
+            phase('completeTurn.done');
             return { outputText: finalText, session: completed, turnId, userMessageId: turn.userMessageId,
                 assistantMessageId: turn.assistantMessageId, backend };
         } catch (cause) {
+            phase('catch', errorFields(cause));
             const cancelled = !forcedFailure && (controller.signal.aborted || cause?.exitCode === 130);
             const error = forcedFailure || (cancelled ? interrupted() : new Error(sanitize(cause?.message || String(cause)), { cause }));
             if (!cancelled && !forcedFailure && cause?.exitCode !== undefined) error.exitCode = cause.exitCode;
@@ -297,12 +327,19 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         } finally {
             signal?.removeEventListener('abort', abort);
             interactions?.cancelTurn(turnId);
+            phase('finally.entered', { hasLease: Boolean(release), hasChild: Boolean(childDone) });
             try {
-                if (childDone) await childDone.catch(() => {});
-                await failureChannel?.close();
-                if (scriptContext) await scriptContext.close();
+                if (childDone) await step('childDone.catch', () => childDone.catch(() => {}));
+                if (failureChannel) await step('failureChannel.close', () => failureChannel.close());
+                if (scriptContext) await step('scriptContext.close', () => scriptContext.close());
             } finally {
-                try { await catalogRelease?.(); } finally { try { await release?.(); } finally { active.delete(operation); finish(); } }
+                try { if (catalogRelease) await step('catalogRelease', () => catalogRelease()); } finally {
+                    try { if (release) await step('release', () => release()); } finally {
+                        phase('finally.step.start', { step: 'active.delete/finish' });
+                        active.delete(operation); finish();
+                        phase('finally.step.end', { step: 'active.delete/finish' });
+                    }
+                }
             }
         }
     }

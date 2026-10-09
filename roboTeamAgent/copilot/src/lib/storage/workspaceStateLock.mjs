@@ -9,9 +9,24 @@ import {
     ensureAchillesPrivateDataRoot,
     ensureSafeAchillesPrivateDirectory,
 } from './privateDataRoot.mjs';
+import { errorFields, logDiagnostic, tokenPrefix } from './copilotDiagnostics.mjs';
 
 const mutations = new AsyncLocalStorage();
 const MUTATION_WAIT_MS = 5000;
+// Leases and mutation locks this process currently holds, for diagnosing BUSY refusals.
+const held = new Map();
+
+function callerFrame() {
+    try {
+        const frames = String(new Error().stack).split('\n').slice(2);
+        const frame = frames.find((line) => !line.includes('workspaceStateLock.mjs'));
+        return frame ? frame.trim().replace(/\(?file:\/\/|\)$/g, '').slice(0, 200) : null;
+    } catch { return null; }
+}
+
+function describe(context, extra = {}) {
+    return { lock: context.filename, kind: context.kind, ...extra };
+}
 
 function lockError(code, message) {
     return Object.assign(new Error(message), { code });
@@ -64,14 +79,14 @@ function ownerState(owner, boot) {
     }
 }
 
-function lockContext(workingDir, filename) {
+function lockContext(workingDir, filename, kind) {
     const root = fs.realpathSync(ensureAchillesPrivateDataRoot(workingDir));
     ensureSafeAchillesPrivateDirectory(workingDir, 'locks');
     const child = path.join('locks', filename);
     const safePath = (suffix = '') => assertSafeAchillesPrivatePath(workingDir, `${child}${suffix}`, {
         type: 'file', label: 'Workspace state lock',
     });
-    return { root, safePath };
+    return { root, safePath, workingDir, filename, kind };
 }
 
 function snapshot(context, suffix = '') {
@@ -94,13 +109,26 @@ function snapshot(context, suffix = '') {
 }
 
 function removeOwned(context, expected, suffix = '') {
-    const current = snapshot(context, suffix);
-    if (!current) return;
-    if (current.ino !== expected.ino || current.dev !== expected.dev
-        || current.owner?.token !== expected.owner?.token) {
-        throw lockError('WORKSPACE_STATE_LOCK_RECOVERY', 'Workspace lock ownership changed; refusing to remove it.');
+    const log = (result, extra = {}) => logDiagnostic(context.workingDir, 'lock.remove', describe(context, {
+        suffix, result, expectedIno: expected.ino, expectedDev: expected.dev,
+        expectedToken: tokenPrefix(expected.owner?.token), ...extra }));
+    let current;
+    try {
+        current = snapshot(context, suffix);
+        if (!current) { log('already-absent'); return; }
+        if (current.ino !== expected.ino || current.dev !== expected.dev
+            || current.owner?.token !== expected.owner?.token) {
+            log('mismatch', { currentIno: current.ino, currentDev: current.dev,
+                currentToken: tokenPrefix(current.owner?.token), currentOwnerPid: current.owner?.pid ?? null });
+            throw lockError('WORKSPACE_STATE_LOCK_RECOVERY', 'Workspace lock ownership changed; refusing to remove it.');
+        }
+        fs.unlinkSync(context.safePath(suffix));
+    } catch (error) {
+        log('error', { currentIno: current?.ino ?? null, currentDev: current?.dev ?? null,
+            currentToken: tokenPrefix(current?.owner?.token), ...errorFields(error) });
+        throw error;
     }
-    fs.unlinkSync(context.safePath(suffix));
+    log('removed');
 }
 
 function createOwner(context, owner, suffix = '') {
@@ -156,10 +184,14 @@ function tryAcquire(context, owner) {
     return null;
 }
 
-async function acquire(context, waitMs) {
-    const owner = ownerIdentity();
+async function acquire(context, waitMs, label) {
+    const log = (event, extra = {}) => logDiagnostic(context.workingDir, event, describe(context, extra));
+    let owner;
+    try { owner = ownerIdentity(); } catch (error) { log('lock.acquire.error', { stage: 'identity', ...errorFields(error) }); throw error; }
+    const token = tokenPrefix(owner.token);
     const deadline = performance.now() + waitMs;
     let incompleteRecord = false;
+    log('lock.acquire.begin', { waitMs, token, label });
     // A dead record can be recovered without sleeping even for an immediate lease.
     for (let attempt = 0; ; attempt += 1) {
         let acquired;
@@ -167,6 +199,7 @@ async function acquire(context, waitMs) {
             acquired = tryAcquire(context, owner);
             incompleteRecord = false;
         } catch (error) {
+            log('lock.acquire.error', { attempt, token, ...errorFields(error) });
             // Another process can observe wx creation before its owner write completes.
             // Wait once without removing or joining that ambiguous lock.
             if (waitMs && !incompleteRecord && performance.now() < deadline
@@ -178,30 +211,67 @@ async function acquire(context, waitMs) {
             throw error;
         }
         if (acquired) {
+            const acquiredAt = new Date().toISOString();
+            held.set(context.filename, { token, label, kind: context.kind, acquiredAt, ino: acquired.ino, dev: acquired.dev });
+            log('lock.acquired', { attempt, token, ownerPid: owner.pid, ino: acquired.ino, dev: acquired.dev, label });
             let released = false;
             return async () => {
-                if (released) return;
-                removeOwned(context, acquired);
+                if (released) { log('lock.release.repeat', { token, label }); return; }
+                log('lock.release.begin', { token, label, heldMs: Date.now() - Date.parse(acquiredAt) });
+                try {
+                    removeOwned(context, acquired);
+                } catch (error) {
+                    log('lock.release.error', { token, label, expectedIno: acquired.ino, expectedDev: acquired.dev, ...errorFields(error) });
+                    throw error;
+                }
                 released = true;
+                if (held.get(context.filename)?.token === token) held.delete(context.filename);
+                log('lock.release.done', { token, label });
             };
         }
         if (waitMs === 0) {
             if (attempt === 0 && !snapshot(context)) continue;
+            reportBusy(context, owner, 'immediate', attempt);
             throw lockError('WORKSPACE_STATE_BUSY', 'This workspace execution is already running.');
         }
         if (performance.now() >= deadline) {
+            reportBusy(context, owner, 'timeout', attempt);
             throw lockError('WORKSPACE_STATE_BUSY', 'Timed out waiting for a workspace state mutation.');
         }
         await delay(Math.min(20, Math.max(1, deadline - performance.now())));
     }
 }
 
+function reportBusy(context, owner, mode, attempt) {
+    try {
+        let current = null;
+        let readError = null;
+        try { current = snapshot(context); } catch (error) { readError = errorFields(error); }
+        const mine = held.get(context.filename) || null;
+        logDiagnostic(context.workingDir, 'lock.busy', describe(context, {
+            mode, attempt, requesterToken: tokenPrefix(owner.token),
+            ownerPid: current?.owner?.pid ?? null,
+            ownerIsThisProcess: current?.owner?.pid === process.pid,
+            ownerToken: tokenPrefix(current?.owner?.token),
+            ownerState: current ? ownerState(current.owner, owner.boot) : 'absent',
+            ino: current?.ino ?? null, dev: current?.dev ?? null,
+            thisProcessHolds: Boolean(mine),
+            thisProcessHold: mine && { ...mine, heldMs: Date.now() - Date.parse(mine.acquiredAt),
+                tokenMatchesFile: mine.token === tokenPrefix(current?.owner?.token) },
+            heldCount: held.size,
+            readError,
+        }));
+    } catch (error) {
+        logDiagnostic(context.workingDir, 'lock.busy.error', errorFields(error));
+    }
+}
+
 export async function withWorkspaceMutation(workingDir, callback) {
     if (typeof callback !== 'function') throw new TypeError('A workspace mutation callback is required.');
-    const context = lockContext(workingDir, 'mutation.lock');
+    const context = lockContext(workingDir, 'mutation.lock', 'mutation');
     const inherited = mutations.getStore();
     if (inherited?.get(context.root)?.active) return callback();
-    const release = await acquire(context, MUTATION_WAIT_MS);
+    const release = await acquire(context, MUTATION_WAIT_MS, callerFrame());
     const scope = { active: true };
     const owners = new Map(inherited);
     owners.set(context.root, scope);
@@ -213,12 +283,13 @@ export async function withWorkspaceMutation(workingDir, callback) {
     }
 }
 
-export async function acquireExecutionLease(workingDir, key) {
+export async function acquireExecutionLease(workingDir, key, { label } = {}) {
     if (typeof key !== 'string' || !key.trim()) throw new TypeError('An execution lease key is required.');
     const filename = `execution-${createHash('sha256').update(key).digest('hex')}.lock`;
-    const context = lockContext(workingDir, filename);
+    const kind = key.startsWith('task-continuation:') ? 'task-continuation' : key.startsWith('session:') ? 'session' : 'execution';
+    const context = lockContext(workingDir, filename, kind);
     if (mutations.getStore()?.get(context.root)?.active) {
         throw lockError('WORKSPACE_STATE_LOCK_ORDER', 'Acquire execution leases before workspace mutations.');
     }
-    return acquire(context, 0);
+    return acquire(context, 0, label || callerFrame());
 }
