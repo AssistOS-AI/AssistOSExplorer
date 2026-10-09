@@ -54,6 +54,46 @@ function extractToolText(result) {
     }
 }
 
+// Tool results carry stdout as the first text block and, when present, a
+// separate `stderr:` block. Only the stdout block is the structured result;
+// it is parsed strictly and raw tool text is never shown to the visitor,
+// because the creating chat response carries the session secret.
+function readToolStdoutJson(toolResult) {
+    let text = '';
+    if (typeof toolResult === 'string') {
+        text = toolResult;
+    } else if (Array.isArray(toolResult?.content)) {
+        const first = toolResult.content.find((entry) => entry && entry.type === 'text' && typeof entry.text === 'string');
+        text = first ? first.text : '';
+    }
+    try {
+        const parsed = JSON.parse(String(text).trim());
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+// Session credentials move together: a response that names a new session
+// replaces both the id and the secret (clearing the secret when none came
+// back); the same session without a secret keeps the stored secret.
+export function nextChatSessionState(current, response) {
+    const currentSessionId = normalizeString(current?.sessionId);
+    const currentSecret = normalizeString(current?.sessionSecret);
+    const nextSessionId = normalizeString(response?.sessionId);
+    const nextSecret = normalizeString(response?.sessionSecret);
+    if (!nextSessionId) {
+        return { sessionId: currentSessionId, sessionSecret: currentSecret };
+    }
+    if (nextSecret) {
+        return { sessionId: nextSessionId, sessionSecret: nextSecret };
+    }
+    if (nextSessionId === currentSessionId) {
+        return { sessionId: currentSessionId, sessionSecret: currentSecret };
+    }
+    return { sessionId: nextSessionId, sessionSecret: '' };
+}
+
 function sanitizeAgentText(rawText) {
     const text = normalizeString(rawText);
     if (!text) {
@@ -218,6 +258,7 @@ function pickReadableTextColor(backgroundHex, dark = '#0f172a', light = '#f8fafc
 }
 
 const BROWSER_STORAGE_KEY = 'webassist-chat:sessionId';
+const SECRET_STORAGE_KEY = 'webassist-chat:sessionSecret';
 const VISITOR_STORAGE_KEY = 'webassist-chat:visitorId';
 
 function generateVisitorId() {
@@ -239,7 +280,7 @@ function loadOrCreateVisitorId(storageKey) {
     return created;
 }
 
-class WebAssistMcpChatClient {
+export class WebAssistMcpChatClient {
     constructor(options = {}) {
         this.clientModuleUrl = options.clientModuleUrl || '/MCPBrowserClient.js';
         this.endpoint = options.endpoint || '/webAssist/mcp';
@@ -297,7 +338,7 @@ class WebAssistMcpChatClient {
         }
     }
 
-    async invokeChat(siteId, message, sessionId = '') {
+    async invokeChat(siteId, message, sessionId = '', sessionSecret = '') {
         const client = await this.ensureMcpClient();
         await this.ensureNamedToolAvailable(client, this.chatToolName);
 
@@ -311,33 +352,28 @@ class WebAssistMcpChatClient {
         if (normalizedSessionId) {
             args.sessionId = normalizedSessionId;
         }
+        const normalizedSecret = normalizeString(sessionSecret);
+        if (normalizedSecret) {
+            args.sessionSecret = normalizedSecret;
+        }
 
         const toolResult = await client.callTool(this.chatToolName, args);
-        const toolText = extractToolText(toolResult);
-        if (!toolText) {
-            throw new Error(`${this.chatToolName} MCP tool returned empty output.`);
+        if (toolResult?.isError === true) {
+            throw new Error(`${this.chatToolName} request failed.`);
         }
-
-        const parsed = tryParseJsonPayload(toolText);
-        if (parsed && typeof parsed === 'object') {
-            const responseText = sanitizeAgentText(parsed.message)
-                || sanitizeAgentText(parsed.response)
-                || sanitizeAgentText(toolText)
-                || '(no output)';
-            return {
-                responseText,
-                siteId: normalizeString(parsed.siteId, normalizedSiteId),
-                sessionId: normalizeString(parsed.sessionId),
-            };
+        const parsed = readToolStdoutJson(toolResult);
+        if (!parsed) {
+            throw new Error(`${this.chatToolName} returned an unreadable payload.`);
         }
-
         return {
-            responseText: sanitizeAgentText(toolText) || '(no output)',
-            sessionId: '',
+            responseText: sanitizeAgentText(parsed.message) || sanitizeAgentText(parsed.response) || '(no output)',
+            siteId: normalizeString(parsed.siteId, normalizedSiteId),
+            sessionId: normalizeString(parsed.sessionId),
+            sessionSecret: normalizeString(parsed.sessionSecret),
         };
     }
 
-    async invokeHistory(siteId, sessionId) {
+    async invokeHistory(siteId, sessionId, sessionSecret = '') {
         const normalizedSiteId = normalizeString(siteId);
         if (!normalizedSiteId) {
             throw new Error('Missing siteId for history loading.');
@@ -350,13 +386,14 @@ class WebAssistMcpChatClient {
         const client = await this.ensureMcpClient();
         await this.ensureNamedToolAvailable(client, this.historyToolName);
 
-        const toolResult = await client.callTool(this.historyToolName, {
-            siteId: normalizedSiteId,
-            sessionId: normalizedSessionId
-        });
-        const toolText = extractToolText(toolResult);
-        const parsed = tryParseJsonPayload(toolText);
-        if (!parsed || typeof parsed !== 'object') {
+        const args = { siteId: normalizedSiteId, sessionId: normalizedSessionId };
+        const normalizedSecret = normalizeString(sessionSecret);
+        if (normalizedSecret) {
+            args.sessionSecret = normalizedSecret;
+        }
+        const toolResult = await client.callTool(this.historyToolName, args);
+        const parsed = toolResult?.isError === true ? null : readToolStdoutJson(toolResult);
+        if (!parsed) {
             throw new Error(`Invalid history payload returned by ${this.historyToolName}.`);
         }
 
@@ -431,6 +468,7 @@ function mountChatSurface(rootNode, options = {}) {
     const chatClient = new WebAssistMcpChatClient({ validateTools, endpoint });
 
     let storageKey = `${BROWSER_STORAGE_KEY}:${siteId || 'pending'}`;
+    const secretStorageKey = `${SECRET_STORAGE_KEY}:${siteId || 'pending'}`;
     let visitorStorageKey = `${VISITOR_STORAGE_KEY}:${siteId || 'pending'}`;
 
     const theme = resolveChatTheme(query);
@@ -492,8 +530,17 @@ function mountChatSurface(rootNode, options = {}) {
     let isActivated = false;
     let missingSiteMessageShown = false;
     let currentSessionId = loadSessionId(storageKey);
+    let currentSessionSecret = loadSessionId(secretStorageKey);
     let visitorId = loadSessionId(visitorStorageKey);
     let hydratedHistorySessionId = '';
+
+    function applySessionState(response) {
+        const next = nextChatSessionState({ sessionId: currentSessionId, sessionSecret: currentSessionSecret }, response);
+        currentSessionId = next.sessionId;
+        currentSessionSecret = next.sessionSecret;
+        persistSessionId(storageKey, currentSessionId);
+        persistSessionId(secretStorageKey, currentSessionSecret);
+    }
 
     function hasConversationMessages() {
         return messagesEl.querySelector('.chat-message:not(.chat-typing)') !== null;
@@ -604,10 +651,8 @@ function mountChatSurface(rootNode, options = {}) {
 
         setPending(true);
         try {
-            const payload = await chatClient.invokeHistory(siteId, currentSessionId);
-            const nextSessionId = normalizeString(payload.sessionId, currentSessionId);
-            currentSessionId = nextSessionId;
-            persistSessionId(storageKey, currentSessionId);
+            const payload = await chatClient.invokeHistory(siteId, currentSessionId, currentSessionSecret);
+            applySessionState({ sessionId: normalizeString(payload.sessionId, currentSessionId) });
 
             const historyItems = Array.isArray(payload.history) ? payload.history : [];
             for (const entry of historyItems) {
@@ -664,13 +709,10 @@ function mountChatSurface(rootNode, options = {}) {
         setPending(true);
         showLoadingMessages();
         try {
-            const result = await chatClient.invokeChat(siteId, message, currentSessionId);
+            const result = await chatClient.invokeChat(siteId, message, currentSessionId, currentSessionSecret);
             hideLoadingMessages();
             appendMessage('agent', result.responseText);
-            if (result.sessionId) {
-                currentSessionId = result.sessionId;
-                persistSessionId(storageKey, currentSessionId);
-            }
+            applySessionState(result);
         } catch (error) {
             hideLoadingMessages();
             console.error('[WebAssistChat] Chat request failed:', error);
