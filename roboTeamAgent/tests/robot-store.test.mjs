@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import { RobotStore } from '../server/robot-store.mjs';
 
 async function withStore(operation) {
@@ -121,5 +123,42 @@ test('default provisioning reports corrupt and ambiguous registry metadata witho
         await assert.rejects(store.ensureDefaultRobot(), /more than one/u);
         assert.equal(await fs.readFile(duplicateFile, 'utf8'), bytes);
         assert.equal((await store.list()).length, 2);
+    });
+});
+
+async function writeDeadRegistryOwner(dataDir) {
+    const lock = path.join(dataDir, 'robots', '.registry.lock');
+    const owner = { pid: process.pid, start: '0', token: crypto.randomUUID(),
+        boot: (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() };
+    await fs.writeFile(lock, JSON.stringify(owner), { mode: 0o600 });
+    return { lock, owner };
+}
+
+// A virtiofs guest can report another inode for a hard link of an unchanged host file.
+function mockRecoveryLink(t, writeClaim) {
+    const link = fs.link.bind(fs);
+    t.mock.method(fs, 'link', async (source, target) => (String(target).endsWith('.recovery')
+        ? writeClaim(source, target) : link(source, target)));
+}
+
+test('dead registry owner recovery trusts the owner token when the claim has another inode', async (t) => {
+    await withStore(async (store, dataDir) => {
+        const { lock } = await writeDeadRegistryOwner(dataDir);
+        mockRecoveryLink(t, (source, target) => fs.copyFile(source, target, fsConstants.COPYFILE_EXCL));
+        const robot = await store.create({ name: 'Recovered' });
+        assert.equal(robot.name, 'Recovered');
+        await assert.rejects(fs.lstat(lock), { code: 'ENOENT' });
+        await assert.rejects(fs.lstat(`${lock}.recovery`), { code: 'ENOENT' });
+    });
+});
+
+test('dead registry owner recovery refuses a claim whose owner token differs', async (t) => {
+    await withStore(async (store, dataDir) => {
+        const { lock, owner } = await writeDeadRegistryOwner(dataDir);
+        mockRecoveryLink(t, (_source, target) => fs.writeFile(target,
+            JSON.stringify({ ...owner, token: crypto.randomUUID() }), { flag: 'wx', mode: 0o600 }));
+        await assert.rejects(store.create({ name: 'Refused' }), /owner changed/);
+        assert.equal(JSON.parse(await fs.readFile(lock, 'utf8')).token, owner.token);
+        await assert.rejects(fs.lstat(`${lock}.recovery`), { code: 'ENOENT' });
     });
 });

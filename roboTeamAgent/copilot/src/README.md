@@ -71,7 +71,7 @@ Delegated workers retain their own credentials and native sessions. The parent o
 
 ## Troubleshooting
 
-An unresolved ALA wrapper requires the real `bin/ala.mjs` path in `ACHILLES_ALA_COMMAND`. An incompatible Pi or OpenCode installation requires a supported executable override, not silent full-access fallback. Native login and provider quota errors remain provider prerequisites. A busy session must finish or be cancelled before another turn uses its UUID. Corrupt state and ambiguous lock recovery retain evidence for reconciliation instead of overwriting it.
+An unresolved ALA wrapper requires the real `bin/ala.mjs` path in `ACHILLES_ALA_COMMAND`. An incompatible Pi or OpenCode installation requires a supported executable override, not silent full-access fallback. Native login and provider quota errors remain provider prerequisites. A busy session must finish or be cancelled before another turn uses its UUID. Corrupt state and ambiguous lock recovery retain evidence for reconciliation instead of overwriting it. Lock records are owned by their per-acquisition token, so an inode change on a virtiofs share does not block release, and a lock this process failed to release is recovered by its next acquisition.
 
 Run `node tests/run-all.mjs` from the repository root. ALA has its own protocol/sandbox suite; real native-model, WebChat and RoboTeam GUI verification additionally requires authorized services and credentials.
 

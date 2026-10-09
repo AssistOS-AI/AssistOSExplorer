@@ -13,8 +13,12 @@ import { errorFields, logDiagnostic, tokenPrefix } from './copilotDiagnostics.mj
 
 const mutations = new AsyncLocalStorage();
 const MUTATION_WAIT_MS = 5000;
-// Leases and mutation locks this process currently holds, for diagnosing BUSY refusals.
+// Leases and mutation locks this process currently holds, by lock path. A holder is
+// active from acquisition until its release is attempted.
 const held = new Map();
+// Records this process created whose removal failed, by lock path, so a later acquisition
+// in this process can recover them instead of refusing its own live pid forever.
+const orphaned = new Map();
 
 function callerFrame() {
     try {
@@ -89,6 +93,10 @@ function lockContext(workingDir, filename, kind) {
     return { root, safePath, workingDir, filename, kind };
 }
 
+function lockKey(context, suffix = '') {
+    return path.join(context.root, 'locks', `${context.filename}${suffix}`);
+}
+
 function snapshot(context, suffix = '') {
     let fd;
     try {
@@ -108,27 +116,65 @@ function snapshot(context, suffix = '') {
     }
 }
 
+// Ownership is the random token written for each acquisition, never inode or device
+// identity. Guest-visible inode numbers on virtiofs shares (macOS hosts) are not stable:
+// an unchanged lock file can report another st_ino during a turn, and an identity check
+// would then refuse to release a lease this process still owns. Inode and device are
+// logged for diagnosis only. A missing, unreadable or foreign token still fails closed.
 function removeOwned(context, expected, suffix = '') {
     const log = (result, extra = {}) => logDiagnostic(context.workingDir, 'lock.remove', describe(context, {
         suffix, result, expectedIno: expected.ino, expectedDev: expected.dev,
         expectedToken: tokenPrefix(expected.owner?.token), ...extra }));
     let current;
+    let identityChanged = false;
     try {
         current = snapshot(context, suffix);
         if (!current) { log('already-absent'); return; }
-        if (current.ino !== expected.ino || current.dev !== expected.dev
-            || current.owner?.token !== expected.owner?.token) {
+        if (!validOwner(expected.owner) || !validOwner(current.owner)
+            || current.owner.token !== expected.owner.token) {
             log('mismatch', { currentIno: current.ino, currentDev: current.dev,
                 currentToken: tokenPrefix(current.owner?.token), currentOwnerPid: current.owner?.pid ?? null });
             throw lockError('WORKSPACE_STATE_LOCK_RECOVERY', 'Workspace lock ownership changed; refusing to remove it.');
         }
+        identityChanged = current.ino !== expected.ino || current.dev !== expected.dev;
         fs.unlinkSync(context.safePath(suffix));
     } catch (error) {
         log('error', { currentIno: current?.ino ?? null, currentDev: current?.dev ?? null,
             currentToken: tokenPrefix(current?.owner?.token), ...errorFields(error) });
         throw error;
     }
-    log('removed');
+    log(identityChanged ? 'identity-changed-token-match' : 'removed', identityChanged
+        ? { currentIno: current.ino, currentDev: current.dev, currentToken: tokenPrefix(current.owner.token) } : {});
+}
+
+// Removes a record this process created. If removal fails, the record is remembered so the
+// next acquisition of the same path in this process can recover it.
+function removeOwnRecord(context, record, suffix = '', lease = { released: false }) {
+    try {
+        removeOwned(context, record, suffix);
+    } catch (error) {
+        orphaned.set(lockKey(context, suffix), { token: record.owner.token, lease });
+        throw error;
+    }
+    if (orphaned.get(lockKey(context, suffix))?.token === record.owner.token) orphaned.delete(lockKey(context, suffix));
+}
+
+// Recovers a record this process created and failed to remove. It must carry this process's
+// identity and a token whose removal failed here, and no in-process holder may be active
+// for that path; a concurrent turn of the same session therefore still gets BUSY.
+function recoverOwnOrphan(context, owner, record, suffix = '') {
+    const key = lockKey(context, suffix);
+    const orphan = orphaned.get(key);
+    if (!orphan || held.has(key) || !validOwner(record.owner) || record.owner.token !== orphan.token
+        || record.owner.pid !== owner.pid || record.owner.start !== owner.start || record.owner.boot !== owner.boot) {
+        return false;
+    }
+    removeOwned(context, record, suffix);
+    orphaned.delete(key);
+    orphan.lease.released = true;
+    logDiagnostic(context.workingDir, 'lock.recovered-own-orphan', describe(context, {
+        suffix, token: tokenPrefix(orphan.token), ino: record.ino, dev: record.dev }));
+    return true;
 }
 
 function createOwner(context, owner, suffix = '') {
@@ -151,20 +197,26 @@ function createOwner(context, owner, suffix = '') {
 
 function tryAcquire(context, owner) {
     const recovery = snapshot(context, '.recovery');
-    if (recovery) {
+    if (recovery && !recoverOwnOrphan(context, owner, recovery, '.recovery')) {
         if (ownerState(recovery.owner, owner.boot) === 'live') return null;
         throw lockError('WORKSPACE_STATE_LOCK_RECOVERY', 'Workspace lock recovery has an abandoned or ambiguous claim; refusing to remove it.');
     }
-    const acquired = createOwner(context, owner);
-    if (acquired) {
-        if (snapshot(context, '.recovery')) {
-            removeOwned(context, acquired);
-            return null;
-        }
-        return acquired;
+    let acquired = createOwner(context, owner);
+    if (!acquired) {
+        const previous = snapshot(context);
+        if (!previous) return null;
+        if (!recoverOwnOrphan(context, owner, previous)) return recoverDeadOwner(context, owner, previous);
+        acquired = createOwner(context, owner);
+        if (!acquired) return null;
     }
-    const previous = snapshot(context);
-    if (!previous) return null;
+    if (snapshot(context, '.recovery')) {
+        removeOwnRecord(context, acquired);
+        return null;
+    }
+    return acquired;
+}
+
+function recoverDeadOwner(context, owner, previous) {
     const state = ownerState(previous.owner, owner.boot);
     if (state === 'live') return null;
     if (state !== 'dead') {
@@ -179,7 +231,7 @@ function tryAcquire(context, owner) {
             removeOwned(context, current);
         }
     } finally {
-        removeOwned(context, claim, '.recovery');
+        removeOwnRecord(context, claim, '.recovery');
     }
     return null;
 }
@@ -212,20 +264,25 @@ async function acquire(context, waitMs, label) {
         }
         if (acquired) {
             const acquiredAt = new Date().toISOString();
-            held.set(context.filename, { token, label, kind: context.kind, acquiredAt, ino: acquired.ino, dev: acquired.dev });
+            const key = lockKey(context);
+            const lease = { released: false };
+            // A new record at this path proves any earlier failed record there is gone.
+            orphaned.delete(key);
+            held.set(key, { token, label, kind: context.kind, acquiredAt, ino: acquired.ino, dev: acquired.dev });
             log('lock.acquired', { attempt, token, ownerPid: owner.pid, ino: acquired.ino, dev: acquired.dev, label });
-            let released = false;
             return async () => {
-                if (released) { log('lock.release.repeat', { token, label }); return; }
+                if (lease.released) { log('lock.release.repeat', { token, label }); return; }
                 log('lock.release.begin', { token, label, heldMs: Date.now() - Date.parse(acquiredAt) });
+                // The holder ends with its release attempt, whether or not removal succeeds.
+                if (held.get(key)?.token === token) held.delete(key);
                 try {
-                    removeOwned(context, acquired);
+                    removeOwnRecord(context, acquired, '', lease);
                 } catch (error) {
-                    log('lock.release.error', { token, label, expectedIno: acquired.ino, expectedDev: acquired.dev, ...errorFields(error) });
+                    log('lock.release.error', { token, label, expectedIno: acquired.ino, expectedDev: acquired.dev,
+                        orphaned: orphaned.get(key)?.lease === lease, ...errorFields(error) });
                     throw error;
                 }
-                released = true;
-                if (held.get(context.filename)?.token === token) held.delete(context.filename);
+                lease.released = true;
                 log('lock.release.done', { token, label });
             };
         }
@@ -247,7 +304,7 @@ function reportBusy(context, owner, mode, attempt) {
         let current = null;
         let readError = null;
         try { current = snapshot(context); } catch (error) { readError = errorFields(error); }
-        const mine = held.get(context.filename) || null;
+        const mine = held.get(lockKey(context)) || null;
         logDiagnostic(context.workingDir, 'lock.busy', describe(context, {
             mode, attempt, requesterToken: tokenPrefix(owner.token),
             ownerPid: current?.owner?.pid ?? null,
@@ -259,6 +316,7 @@ function reportBusy(context, owner, mode, attempt) {
             thisProcessHold: mine && { ...mine, heldMs: Date.now() - Date.parse(mine.acquiredAt),
                 tokenMatchesFile: mine.token === tokenPrefix(current?.owner?.token) },
             heldCount: held.size,
+            thisProcessOrphan: orphaned.has(lockKey(context)),
             readError,
         }));
     } catch (error) {

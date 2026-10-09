@@ -434,3 +434,31 @@ test('a lease release failure inside executeTurn is logged as an error record, n
     assert.ok(lines.some((line) => line.includes('"turn.finally.step.error"')), 'the error also reaches stderr');
     await fs.rm(path.join(h.workingDir, '.roboteam', 'locks'), { recursive: true, force: true });
 });
+
+test('a session lease whose lock file inode changed mid-turn is released and the next turn runs', { timeout: 15000, skip: existsSync('/proc/self/stat') ? false : 'workspace locks require Linux /proc' }, async (t) => {
+    let workingDir;
+    let replaced = false;
+    // The catalog release runs just before the lease release. Rewrite the lease
+    // with identical bytes and a new inode, as a virtiofs guest can observe.
+    const release = async () => {
+        if (replaced) return;
+        replaced = true;
+        const locks = path.join(workingDir, '.roboteam', 'locks');
+        const file = path.join(locks, (await fs.readdir(locks)).find((entry) => entry.startsWith('execution-')));
+        const before = (await fs.stat(file)).ino;
+        await fs.writeFile(`${file}.copy`, await fs.readFile(file));
+        await fs.rename(`${file}.copy`, file);
+        assert.notEqual((await fs.stat(file)).ino, before);
+    };
+    const h = await harness(t, {}, { skillSnapshot: { release } });
+    workingDir = h.workingDir;
+    const first = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'First turn' });
+    assert.equal(replaced, true);
+    assert.equal(first.session.messages.at(-1).status, 'completed');
+    const second = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Second turn' });
+    assert.equal(second.session.messages.at(-1).status, 'completed');
+    const file = path.join(h.workingDir, '.roboteam', 'logs', 'copilot-diagnostics.jsonl');
+    const records = (await fs.readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.ok(records.some((record) => record.event === 'lock.remove' && record.result === 'identity-changed-token-match'));
+    assert.equal(records.some((record) => record.event === 'lock.release.error'), false);
+});

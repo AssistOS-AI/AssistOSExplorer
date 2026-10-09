@@ -266,3 +266,125 @@ test('a release that finds a replaced owner logs expected and current identity, 
     assert.match(failed.stack, /removeOwned/);
     fs.rmSync(file);
 });
+
+function lockFile(dir, prefix = 'execution-') {
+    const locks = path.join(dir, '.roboteam', 'locks');
+    return path.join(locks, fs.readdirSync(locks).find((name) => name.startsWith(prefix) && !name.endsWith('.recovery')));
+}
+
+// Same bytes, new inode: what a virtiofs guest can report for an unchanged host file.
+function replaceWithIdenticalCopy(file) {
+    const before = fs.statSync(file).ino;
+    const copy = `${file}.copy`;
+    fs.writeFileSync(copy, fs.readFileSync(file));
+    fs.renameSync(copy, file);
+    assert.notEqual(fs.statSync(file).ino, before, 'the copy must have a new inode');
+}
+
+function simulatedIoError() {
+    return Object.assign(new Error('EIO: simulated i/o error, unlink'), { code: 'EIO' });
+}
+
+function processStart(pid) {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
+}
+
+test('a lease and a mutation lock whose inode changed are still released by their owner token', { skip: linuxOnly }, async (t) => {
+    const dir = rootedWorkspace(t);
+    const release = await acquireExecutionLease(dir, 'session:moved');
+    const file = lockFile(dir);
+    const token = JSON.parse(fs.readFileSync(file, 'utf8')).token;
+    replaceWithIdenticalCopy(file);
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, token);
+    await release();
+    assert.equal(fs.existsSync(file), false);
+    const removed = diagnosticRecords(dir).find((record) => record.event === 'lock.remove'
+        && record.result === 'identity-changed-token-match');
+    assert.ok(removed, 'the identity change is logged');
+    assert.notEqual(removed.expectedIno, removed.currentIno);
+    assert.equal(removed.expectedToken, removed.currentToken);
+    const next = await acquireExecutionLease(dir, 'session:moved');
+    await next();
+    await withWorkspaceMutation(dir, () => replaceWithIdenticalCopy(lockFile(dir, 'mutation.lock')));
+    assert.equal(fs.existsSync(path.join(dir, '.roboteam', 'locks', 'mutation.lock')), false);
+    await withWorkspaceMutation(dir, () => {});
+});
+
+test('a moved lock file with a different owner token is still never removed', { skip: linuxOnly }, async (t) => {
+    const dir = rootedWorkspace(t);
+    const release = await acquireExecutionLease(dir, 'session:foreign');
+    const file = lockFile(dir);
+    const foreign = { ...JSON.parse(fs.readFileSync(file, 'utf8')), token: randomUUID() };
+    fs.writeFileSync(`${file}.copy`, JSON.stringify(foreign));
+    fs.renameSync(`${file}.copy`, file);
+    await assert.rejects(release(), { code: 'WORKSPACE_STATE_LOCK_RECOVERY' });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, foreign.token);
+    await assert.rejects(acquireExecutionLease(dir, 'session:foreign'), { code: 'WORKSPACE_STATE_BUSY' });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, foreign.token);
+    fs.rmSync(file);
+});
+
+test('a lease whose release failed is recovered by the next acquisition in the same process', { skip: linuxOnly }, async (t) => {
+    const dir = rootedWorkspace(t);
+    const first = await acquireExecutionLease(dir, 'session:orphan');
+    const file = lockFile(dir);
+    const failing = t.mock.method(fs, 'unlinkSync', () => { throw simulatedIoError(); });
+    await assert.rejects(first(), { code: 'EIO' });
+    failing.mock.restore();
+    assert.equal(fs.existsSync(file), true);
+    const second = await acquireExecutionLease(dir, 'session:orphan');
+    const recovered = diagnosticRecords(dir).find((record) => record.event === 'lock.recovered-own-orphan');
+    assert.ok(recovered, 'the own-orphan recovery is logged');
+    const secondToken = JSON.parse(fs.readFileSync(file, 'utf8')).token;
+    // The new holder is active, so a concurrent turn of the same session is still refused.
+    await assert.rejects(acquireExecutionLease(dir, 'session:orphan'), { code: 'WORKSPACE_STATE_BUSY' });
+    // A late retry of the failed release cannot remove the new holder's lease.
+    await first();
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, secondToken);
+    await second();
+    assert.equal(fs.existsSync(file), false);
+});
+
+test('own-orphan recovery never reclaims a foreign token or another live process', { skip: linuxOnly }, async (t) => {
+    const dir = rootedWorkspace(t);
+    const first = await acquireExecutionLease(dir, 'session:guarded');
+    const file = lockFile(dir);
+    const owner = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const failing = t.mock.method(fs, 'unlinkSync', () => { throw simulatedIoError(); });
+    await assert.rejects(first(), { code: 'EIO' });
+    failing.mock.restore();
+    // This process's pid with a token it never failed to release is a live holder.
+    const foreignToken = { ...owner, token: randomUUID() };
+    fs.writeFileSync(file, JSON.stringify(foreignToken));
+    await assert.rejects(acquireExecutionLease(dir, 'session:guarded'), { code: 'WORKSPACE_STATE_BUSY' });
+    assert.equal(fs.readFileSync(file, 'utf8'), JSON.stringify(foreignToken));
+    // The failed token under another live process's identity is that process's lease.
+    const otherProcess = { ...owner, pid: process.ppid, start: processStart(process.ppid) };
+    fs.writeFileSync(file, JSON.stringify(otherProcess));
+    await assert.rejects(acquireExecutionLease(dir, 'session:guarded'), { code: 'WORKSPACE_STATE_BUSY' });
+    assert.equal(fs.readFileSync(file, 'utf8'), JSON.stringify(otherProcess));
+    assert.equal(diagnosticRecords(dir).some((record) => record.event === 'lock.recovered-own-orphan'), false);
+    fs.rmSync(file);
+});
+
+test('a recovery claim this process failed to remove does not block later acquisitions', { skip: linuxOnly }, async (t) => {
+    const dir = rootedWorkspace(t);
+    await acquireExecutionLease(dir, 'session:claim');
+    const file = lockFile(dir);
+    const owner = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({ ...owner, start: '0' }));
+    const unlink = fs.unlinkSync;
+    const failing = t.mock.method(fs, 'unlinkSync', (target) => {
+        if (String(target).endsWith('.recovery')) throw simulatedIoError();
+        return unlink(target);
+    });
+    await assert.rejects(acquireExecutionLease(dir, 'session:claim'), { code: 'EIO' });
+    failing.mock.restore();
+    assert.equal(fs.existsSync(`${file}.recovery`), true);
+    const release = await acquireExecutionLease(dir, 'session:claim');
+    assert.equal(fs.existsSync(`${file}.recovery`), false);
+    assert.ok(diagnosticRecords(dir).some((record) => record.event === 'lock.recovered-own-orphan'
+        && record.suffix === '.recovery'));
+    await release();
+});
