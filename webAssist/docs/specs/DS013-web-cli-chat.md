@@ -51,7 +51,7 @@ Define the active plugin contract for the Web CLI chat integration.
 - Client module: `/MCPBrowserClient.js`
 - Loaded dynamically via `import()`
 - Calls `callTool()` for chat and history operations
-- Parses only the stdout block of tool responses as JSON to extract response text, `sessionId` and `sessionSecret`; raw tool text is never rendered
+- Parses only the stdout block of tool responses as JSON to extract response text, `sessionId` and `sessionSecret`, tolerating debug banner lines before the JSON object; raw tool text is never rendered
 
 ### Session Data Layout
 - Session profile: `sessions/<sessionId>-profile.md` — profile details and contact information

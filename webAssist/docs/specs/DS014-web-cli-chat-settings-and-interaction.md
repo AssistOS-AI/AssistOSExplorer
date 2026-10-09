@@ -60,7 +60,7 @@ Define `webassist-settings` behavior and `web-assist-chat` runtime behavior for 
 - No `prepare-wac` flow exists in the embedded runtime.
 - Session credentials:
   - the widget stores `sessionId` and `sessionSecret` per site in `localStorage` and sends both with chat and history calls,
-  - it parses only the stdout block of a tool result as JSON and never renders raw tool text,
+  - it parses only the stdout block of a tool result as JSON (when debug banner lines precede the JSON, the object starting at the last line that begins with `{`), requires the expected keys, never reads the `stderr:` block, and never renders raw tool text,
   - a response that keeps the same `sessionId` without a secret keeps the stored secret,
   - a response with a new `sessionId` and `sessionSecret` replaces both together; a new `sessionId` without a secret clears the stored secret.
 - A visitor whose guest identity changed (for example after the guest session expired) continues the same conversation through the stored secret.

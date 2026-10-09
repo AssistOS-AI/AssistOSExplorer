@@ -55,10 +55,22 @@ function extractToolText(result) {
 }
 
 // Tool results carry stdout as the first text block and, when present, a
-// separate `stderr:` block. Only the stdout block is the structured result;
-// it is parsed strictly and raw tool text is never shown to the visitor,
-// because the creating chat response carries the session secret.
-function readToolStdoutJson(toolResult) {
+// separate `stderr:` block. Only the stdout block is the structured result and
+// raw tool text is never shown to the visitor, because the creating chat
+// response carries the session secret. Debug runs of the agent library print
+// banner lines to stdout before the JSON, so when the whole block is not JSON
+// the object starting at the last line that begins with `{` is parsed instead.
+// The result must be an object that carries `requiredKeys`.
+function parseJsonObject(text) {
+    try {
+        const parsed = JSON.parse(text);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+function readToolStdoutJson(toolResult, requiredKeys = []) {
     let text = '';
     if (typeof toolResult === 'string') {
         text = toolResult;
@@ -66,12 +78,23 @@ function readToolStdoutJson(toolResult) {
         const first = toolResult.content.find((entry) => entry && entry.type === 'text' && typeof entry.text === 'string');
         text = first ? first.text : '';
     }
-    try {
-        const parsed = JSON.parse(String(text).trim());
-        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-    } catch {
+    const trimmed = String(text).trim();
+    let parsed = parseJsonObject(trimmed);
+    if (!parsed) {
+        const lines = trimmed.split(/\r?\n/);
+        let start = -1;
+        for (let index = lines.length - 1; index >= 0; index -= 1) {
+            if (lines[index].startsWith('{')) {
+                start = index;
+                break;
+            }
+        }
+        parsed = start >= 0 ? parseJsonObject(lines.slice(start).join('\n')) : null;
+    }
+    if (!parsed || !requiredKeys.every((key) => Object.prototype.hasOwnProperty.call(parsed, key))) {
         return null;
     }
+    return parsed;
 }
 
 // Session credentials move together: a response that names a new session
@@ -361,7 +384,7 @@ export class WebAssistMcpChatClient {
         if (toolResult?.isError === true) {
             throw new Error(`${this.chatToolName} request failed.`);
         }
-        const parsed = readToolStdoutJson(toolResult);
+        const parsed = readToolStdoutJson(toolResult, ['siteId', 'sessionId']);
         if (!parsed) {
             throw new Error(`${this.chatToolName} returned an unreadable payload.`);
         }
@@ -392,7 +415,7 @@ export class WebAssistMcpChatClient {
             args.sessionSecret = normalizedSecret;
         }
         const toolResult = await client.callTool(this.historyToolName, args);
-        const parsed = toolResult?.isError === true ? null : readToolStdoutJson(toolResult);
+        const parsed = toolResult?.isError === true ? null : readToolStdoutJson(toolResult, ['siteId', 'sessionId', 'history']);
         if (!parsed) {
             throw new Error(`Invalid history payload returned by ${this.historyToolName}.`);
         }

@@ -80,3 +80,35 @@ test('session credential updates keep, replace together, or clear', async () => 
     assert.deepEqual(nextChatSessionState(current, { sessionId: 'session-3' }), { sessionId: 'session-3', sessionSecret: '' }, 'a new session without a secret clears it');
     assert.deepEqual(nextChatSessionState({ sessionId: '', sessionSecret: '' }, { sessionId: 'session-4', sessionSecret: SECRET }), { sessionId: 'session-4', sessionSecret: SECRET });
 });
+
+// achillesAgentLib prints this banner to stdout before the tool's JSON when
+// ACHILLES_DEBUG is 1 or true; AgentServer returns stdout as content[0].
+const DEBUG_BANNER = [
+    '[AchillesAgentsLib] Default LLM configuration:',
+    '[AchillesAgentsLib]   Config file: /code/node_modules/achillesAgentLib/LLMConfig.json',
+    '[AchillesAgentsLib]   Supported tiers: unknown',
+].join('\n');
+
+test('chat and history tolerate the AchillesAgentLib debug banner before the JSON', async () => {
+    const chatJson = JSON.stringify({ siteId: 's', sessionId: 'session-1', message: 'Hello!', sessionSecret: SECRET }, null, 2);
+    const historyJson = JSON.stringify({ siteId: 's', sessionId: 'session-1', exists: true, sessionKuId: 'ku_sess_session-1', history: [{ role: 'user', message: 'hi' }] }, null, 2);
+    const client = await chatClientWith([
+        stdout(`${DEBUG_BANNER}\n${chatJson}\n`, `stderr text ${SECRET}`),
+        stdout(`${DEBUG_BANNER}\n${historyJson}\n`),
+    ]);
+    const chat = await client.invokeChat('s', 'hi');
+    assert.equal(chat.responseText, 'Hello!');
+    assert.equal(chat.sessionId, 'session-1');
+    assert.equal(chat.sessionSecret, SECRET);
+    const history = await client.invokeHistory('s', 'session-1', SECRET);
+    assert.deepEqual(history.history, [{ role: 'user', message: 'hi' }]);
+});
+
+test('a preamble never turns raw or partial tool text into a result', async () => {
+    const withoutObject = await chatClientWith([stdout(`${DEBUG_BANNER}\nnot json ${SECRET}`)]);
+    await assert.rejects(withoutObject.invokeChat('s', 'hi'), (error) => !String(error.message).includes(SECRET));
+    const wrongShape = await chatClientWith([stdout(`${DEBUG_BANNER}\n{"unexpected": "${SECRET}"}`)]);
+    await assert.rejects(wrongShape.invokeChat('s', 'hi'), (error) => !String(error.message).includes(SECRET));
+    const stderrOnly = await chatClientWith([{ content: [{ type: 'text', text: DEBUG_BANNER }, { type: 'text', text: `stderr:\n{"siteId":"s","sessionId":"x","message":"${SECRET}"}` }] }]);
+    await assert.rejects(stderrOnly.invokeChat('s', 'hi'), (error) => !String(error.message).includes(SECRET));
+});

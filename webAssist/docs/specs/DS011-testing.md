@@ -33,7 +33,7 @@ This specification defines the active DS011-testing contract for WebAssist.
 - Visitor isolation of site-wide AKU search and trusted skill session ids (`session-chat-binding.mcp.test.mjs`).
 - Session-secret exposure with `ACHILLES_DEBUG=1`: returned exactly once, never in logs, debug files, storage, model input or skill context (`session-secret-exposure.mcp.test.mjs`).
 - `sessionSecret` reaching webAssist through a real AgentServer with this agent's `mcp-config.json` schemas and Router-style argument canonicalization (`agent-server-session-secret.mcp.test.mjs`; inference is replaced by a preload stub).
-- Widget credential handling: strict stdout parsing, no raw tool text, and session id/secret update rules (`web-assist-chat-session.test.mjs`).
+- Widget credential handling: stdout-only parsing (including the AchillesAgentLib debug banner before the JSON), no raw tool text, and session id/secret update rules (`web-assist-chat-session.test.mjs`); real `ACHILLES_DEBUG=1` tool stdout through the widget parser with no secret in the working directory or debug logs (`web-assist-chat-debug-stdout.mcp.test.mjs`).
 
 ### Fixtures
 Fixtures live under `tests/fixtures/seed-data/sites/demo-site/` and are copied into the configured `$WEBASSIST_DATA_ROOT/sites/demo-site/` during tests.
