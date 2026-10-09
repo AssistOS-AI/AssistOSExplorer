@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { WebmeetRoomSettingsModal } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-room-settings-modal/webmeet-room-settings-modal.js';
 import { applyPermanentRoomDeletion } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/controllers/permanent-room-deletion.js';
+import { dashboardDataMethods } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/controllers/dashboard-data-methods.js';
 
 const pluginRoot = path.resolve(import.meta.dirname, '../../IDE-plugins/webmeet-tool-button');
 
@@ -227,4 +228,99 @@ test('deleting the active room disconnects its local session before reporting ab
     assert.ok(calls.indexOf('delete-tool') < calls.indexOf('list-refresh'));
     assert.equal(controller.state.session, null);
     assert.equal(controller.state.meetings.length, 0);
+});
+
+function raceFixture(t) {
+    const previousWindow = globalThis.window;
+    const pendingLists = [];
+    globalThis.window = {
+        webSkel: { appServices: { getClient: () => ({ callTool: () => new Promise((resolve) => pendingLists.push(resolve)) }) } }
+    };
+    t.after(() => { globalThis.window = previousWindow; });
+    const workspace = { id: 'rooms' };
+    const controller = {
+        ...dashboardDataMethods,
+        state: { meetings: [{ id: 'room_race' }, { id: 'room_other' }], selectedMeetingId: '', meetingParticipantsById: {}, session: null },
+        webMeetRoom: { disposed: false, getSelectedWorkspaceId: () => workspace.id },
+        isGuestSession: () => false,
+        loadParticipantsForMeetings: async () => {},
+        loadMeetingDetails: async () => {},
+        renderAll() {},
+        setError() {}
+    };
+    const flush = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve(); };
+    return { controller, pendingLists, workspace, flush };
+}
+
+const deleteRoom = (controller) => applyPermanentRoomDeletion(
+    controller,
+    { id: 'room_race' },
+    { roomId: 'room_race', delete: true, confirmed: true },
+    async () => ({ deleted: true, roomId: 'room_race' })
+);
+
+test('deletion verifies absence against a current list when its own load is superseded by a concurrent refresh', async (t) => {
+    const { controller, pendingLists, flush } = raceFixture(t);
+    const deletion = deleteRoom(controller);
+    await flush();
+    assert.equal(pendingLists.length, 1);
+    const concurrent = controller.loadMeetings({ preserveConnectedRoomRoster: true });
+    await flush();
+    assert.equal(pendingLists.length, 2);
+    // Deletion's load resolves first but is superseded; state must stay untouched.
+    pendingLists[0]({ rooms: [{ id: 'room_other' }] });
+    await flush();
+    assert.equal(controller.state.meetings.some((entry) => entry.id === 'room_race'), true);
+    // The deletion retries rather than trusting the stale state.
+    await flush();
+    assert.equal(pendingLists.length, 3);
+    pendingLists[1]({ rooms: [{ id: 'room_other' }] });
+    pendingLists[2]({ rooms: [{ id: 'room_other' }] });
+    assert.equal(await deletion, true);
+    await concurrent;
+    assert.deepEqual(controller.state.meetings, [{ id: 'room_other' }]);
+});
+
+test('deletion still fails when a current list still contains the deleted room', async (t) => {
+    const { controller, pendingLists, flush } = raceFixture(t);
+    const deletion = deleteRoom(controller);
+    await flush();
+    pendingLists[0]({ rooms: [{ id: 'room_race' }] });
+    await assert.rejects(() => deletion, /still present/);
+});
+
+test('deletion gives up after bounded superseded loads and does not claim success', async (t) => {
+    const { controller, pendingLists, flush } = raceFixture(t);
+    const deletion = deleteRoom(controller);
+    deletion.catch(() => {});
+    for (let i = 0; i < 5; i += 1) {
+        await flush();
+        assert.equal(pendingLists.length, i + 1);
+        controller.meetingListLoadSeq += 1; // a newer load supersedes this one
+        pendingLists[i]({ rooms: [] });
+    }
+    await assert.rejects(() => deletion, /Could not confirm/);
+    assert.equal(controller.state.meetings.length, 2);
+});
+
+test('superseded, foreign-workspace and disposed loads never write room state', async (t) => {
+    const { controller, pendingLists, workspace, flush } = raceFixture(t);
+    const foreign = controller.loadMeetings();
+    await flush();
+    workspace.id = 'other';
+    pendingLists[0]({ rooms: [] });
+    assert.equal(await foreign, null);
+    workspace.id = 'rooms';
+    const disposed = controller.loadMeetings();
+    await flush();
+    controller.webMeetRoom.disposed = true;
+    pendingLists[1]({ rooms: [] });
+    assert.equal(await disposed, null);
+    controller.webMeetRoom.disposed = false;
+    const guest = controller.loadMeetings({ revalidateVisibility: true });
+    await flush();
+    controller.isGuestSession = () => true;
+    pendingLists[2]({ rooms: [] });
+    assert.equal(await guest, null);
+    assert.equal(controller.state.meetings.length, 2);
 });
