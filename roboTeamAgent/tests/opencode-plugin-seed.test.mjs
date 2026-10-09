@@ -300,7 +300,17 @@ async function writePreparedShell(cacheRoot, opencodeVersion, tag = 'a') {
     await fs.symlink(`../shell-generations/g-${tag}`, path.join(cacheRoot, 'shell-selections', 'shell'));
 }
 
-test('the catalog process seeds the robot home from a ready template and never runs npm', async (t) => {
+async function snapshot(directory) {
+    const entries = [];
+    for (const entry of await fs.readdir(directory, { withFileTypes: true, recursive: true })) {
+        const file = path.join(entry.parentPath, entry.name);
+        const metadata = await fs.lstat(file);
+        entries.push([path.relative(directory, file), metadata.mode, entry.isFile() ? (await fs.readFile(file)).toString('base64') : '']);
+    }
+    return JSON.stringify(entries.sort());
+}
+
+test('the catalog process never seeds, with or without a ready template, and never runs npm', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-catalog-'));
     const keys = ['ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID', 'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME',
         'ACHILLES_ALA_COMMAND', 'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH', 'PLOINKY_WORKSPACE_ROOT'];
@@ -313,7 +323,8 @@ test('the catalog process seeds the robot home from a ready template and never r
     const store = new RobotStore({ dataDir: root });
     await store.ensureDefaultRobot();
     const robot = await store.getByName('default');
-    const config = path.join(store.robotPath(robot.id), 'home', '.config', 'opencode');
+    const home = path.join(store.robotPath(robot.id), 'home');
+    const config = path.join(home, '.config', 'opencode');
     const cacheRoot = path.join(root, 'tool-cache');
     await writePreparedShell(cacheRoot, '1.18.35');
     const calls = [];
@@ -321,27 +332,21 @@ test('the catalog process seeds the robot home from a ready template and never r
     const context = () => prepareCopilotContext('default', { dataDir: root, usePreparedTools: true, toolCache: make() });
 
     await context();
-    assert.equal(await openCodeWouldInstall(config), true, 'no template yet: OpenCode installs for itself, as before');
-    assert.deepEqual(calls, []);
-
+    const unseeded = await snapshot(home);
+    // A template is ready for exactly this OpenCode version: only the service may use it.
     await make().prepareOpenCodePlugin('1.18.35');
     calls.length = 0;
     await context();
-    assert.equal(await openCodeWouldInstall(config), false);
-    assert.equal(await installedVersion(config), '1.18.35');
-    assert.deepEqual(calls, [], 'the catalog process only peeks');
-
-    // OpenCode upgraded in the tool cache but its template is not ready: the old install stays
-    // until the service prepares the new template, and a catalog call never installs.
-    await writePreparedShell(cacheRoot, '1.18.36', 'b');
     await context();
+    assert.equal(await snapshot(home), unseeded, 'the home is byte-identical');
+    assert.equal(await openCodeWouldInstall(config), true);
+    for (const name of ['node_modules', 'package.json', 'package-lock.json']) {
+        await assert.rejects(fs.access(path.join(config, name)), { code: 'ENOENT' }, name);
+    }
+    assert.deepEqual(calls, [], 'no npm in the catalog process');
+    // The service seeds the same home from the same template.
+    assert.equal((await seedOpenCodePlugin(home, await make().peekOpenCodePlugin('1.18.35'))).status, 'seeded');
     assert.equal(await installedVersion(config), '1.18.35');
-    assert.deepEqual(calls, []);
-    await make().prepareOpenCodePlugin('1.18.36');
-    calls.length = 0;
-    await context();
-    assert.equal(await installedVersion(config), '1.18.36', 'a version change reseeds the home');
-    assert.deepEqual(calls, []);
 });
 
 async function readyRuntime(t, robots) {
