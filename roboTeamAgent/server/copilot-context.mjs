@@ -48,6 +48,9 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
             const environment = codingAgentEnvironment(selected, process.env, cache.root);
             for (const name of CODING_AGENT_NAMES) delete process.env[`${name.toUpperCase()}_BIN`];
             Object.assign(process.env, environment);
+            // This process is spawned per call, outside the server's per-robot chain, so it never
+            // seeds the OpenCode plugin dependency: a copy here could race the deletion of the robot.
+            // Only the service seeds (startup, creation, task, GUI, Terminal, model listing).
             await prepareRobotShell(home, { codingAgents, binPath: tools.binPath, cacheRoot: cache.root });
         }
         const skillsets = new RobotSkillsets({ robotStore: store,

@@ -31,7 +31,8 @@ const runtimeManager = new RuntimeManager({
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot, alaCommand: runtimeManager.alaCommand });
 await runtimeManager.initialize();
-for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id);
+// Shell and socket only: seeding copies thousands of files per robot and runs after the service is listening.
+for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id, { seed: false });
 
 const roboflow = new RoboFlowService({
     robotStore,
@@ -56,9 +57,11 @@ server.listen(port, host, () => {
     console.log(`RoboTeamAgent listening on ${host}:${port}`);
     roboflow.scheduler.start();
     // Downloads must not delay service readiness; requests share this cache's pending preparations.
-    void runtimeManager.toolCache.warmup().catch(error => {
-        console.error(`[tool-cache] startup preparation failed: ${error.message}`);
-    });
+    void runtimeManager.toolCache.warmup()
+        .then(async () => runtimeManager.warmOpenCodePlugins(await robotStore.list()))
+        .catch(error => {
+            console.error(`[tool-cache] startup preparation failed: ${error.message}`);
+        });
 });
 
 let shuttingDown = false;

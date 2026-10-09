@@ -543,7 +543,7 @@ export function createRoboTeamServer(options) {
                 await prepareRobotShell(path.join(robotStore.robotPath(terminalRobotId), 'home'), {
                     codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
                 });
-                await runtimeManager.prepareOpenCode?.(terminalRobotId);
+                await runtimeManager.prepareOpenCode?.(terminalRobotId, { prepare: codingAgents.includes('opencode') });
                 return sendJson(res, 200, { ok: true, directory });
             }
 
@@ -551,7 +551,8 @@ export function createRoboTeamServer(options) {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);
                 const robot = await robotStore.create({ name: body.name, codingAgents: body.codingAgents });
-                await runtimeManager.prepareOpenCode?.(robot.id);
+                await runtimeManager.prepareOpenCode?.(robot.id, { seed: false });
+                runtimeManager.seedOpenCodeInBackground?.(robot);
                 await roboflow?.refreshCoverage();
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), await robotView(req, url)) });
             }

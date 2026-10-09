@@ -88,7 +88,7 @@ function interrupted() {
 }
 
 export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settings = workspaceSettings,
-    interactions, backgroundTasks, installation, execution = {}, webchatLogsBase = '' } = {}) {
+    interactions, backgroundTasks, installation, execution = {}, webchatLogsBase = '', modelCache = null } = {}) {
     if (!sessionStore || !skillCatalog) throw new TypeError('ALA requires a session store and Anthropic skill catalog.');
     const active = new Set();
     let closed = false;
@@ -494,10 +494,17 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 controller.signal.throwIfAborted();
                 const config = await configuration(sessionId, { ...process.env });
                 controller.signal.throwIfAborted();
+                // OpenCode takes seconds to start, so its list is reused while every input it
+                // derives from is unchanged; any failure to establish that lists as before.
+                const probe = modelCache && config.backend === 'opencode'
+                    ? await modelCache.probe(config, controller.signal).catch(() => null) : null;
+                const selection = { model: config.models[config.backend] || null, effort: config.efforts[config.backend] || null };
+                if (probe?.models) return { backend: config.backend, models: probe.models, ...selection };
                 service = config.api.createCodingAgentService({ agents: config.agents, workspace: config.cwd,
                     cwd: config.cwd, home: config.home, env: config.env, models: config.models });
-                return { backend: config.backend, models: await service.listModels(config.backend, { signal: controller.signal, details: true }),
-                    model: config.models[config.backend] || null, effort: config.efforts[config.backend] || null };
+                const models = await service.listModels(config.backend, { signal: controller.signal, details: true });
+                if (probe) await modelCache.store(probe, models).catch(() => {});
+                return { backend: config.backend, models, ...selection };
             } finally {
                 signal?.removeEventListener('abort', abort);
                 try { await service?.close(); } finally { active.delete(operation); finish(); }

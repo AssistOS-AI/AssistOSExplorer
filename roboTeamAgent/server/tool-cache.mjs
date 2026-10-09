@@ -5,10 +5,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, BROWSER_IMAGE, DESKTOP_IMAGE } from './constants.mjs';
+import { OPENCODE_PLUGIN_PACKAGE, openCodePluginState } from './opencode-plugin-seed.mjs';
 
 const execFileAsync = promisify(execFile);
 const CACHE_SCHEMA = 'roboteam-tool-cache-v1';
 const NPM_INSTALL_ARGS = ['install', '--omit=dev', '--no-audit', '--no-fund', '--no-package-lock'];
+// The OpenCode plugin template keeps package-lock.json: OpenCode skips its own dependency
+// installation only when the lock lists the dependency. Scripts stay off, as OpenCode runs them.
+const PLUGIN_TEMPLATE_NPM_ARGS = ['install', '--omit=dev', '--no-audit', '--no-fund', '--ignore-scripts'];
+const PLUGIN_TEMPLATE_BUNDLE = 'opencode-plugin';
 const TOOL_MOUNT_PATH = '/opt/roboteam-tools';
 const NESTED_CONTAINER_ARGS = ['--ipc', 'none'];
 const CODING_AGENT_PACKAGES = Object.freeze({
@@ -214,6 +219,79 @@ export class ToolCache {
         const uniqueNames = [...new Set(names)];
         const prepared = await Promise.all(uniqueNames.map((name) => this.prepareCodingAgent(name)));
         return Object.fromEntries(uniqueNames.map((name, index) => [name, prepared[index]]));
+    }
+
+    // The @opencode-ai/plugin dependency tree OpenCode would otherwise install into every robot
+    // home on its first run, prepared once per exact OpenCode version. The generation name
+    // derives from the version, platform and architecture, so a different OpenCode never
+    // reuses it. There is no fallback to another version: a mismatched plugin is never offered.
+    _openCodePluginPlan(version) {
+        if (typeof version !== 'string' || !PIN_PATTERN.test(version) || version.length > 64) {
+            throw new TypeError('invalid OpenCode version');
+        }
+        const identity = { package: OPENCODE_PLUGIN_PACKAGE, version, platform: process.platform, arch: this.arch,
+            runtime: process.versions.node };
+        const generation = generationName(identity);
+        return { identity, generation, version,
+            directory: path.join(this.root, PLUGIN_TEMPLATE_BUNDLE, 'generations', generation) };
+    }
+
+    async _openCodePluginUsable(plan) {
+        try {
+            const stamp = JSON.parse(await fs.readFile(path.join(plan.directory, 'stamp.json'), 'utf8'));
+            if (stamp?.schema !== CACHE_SCHEMA || stamp.name !== PLUGIN_TEMPLATE_BUNDLE || stamp.generation !== plan.generation
+                || JSON.stringify(stamp.identity) !== JSON.stringify(plan.identity)) return false;
+            const state = await openCodePluginState(plan.directory, plan.version);
+            return state.current && !state.unsafe;
+        } catch {
+            return false;
+        }
+    }
+
+    // Read-only and network-free; validated from disk on every call. Null when this exact
+    // OpenCode version has no prepared template.
+    async peekOpenCodePlugin(version) {
+        try {
+            const plan = this._openCodePluginPlan(version);
+            return await this._openCodePluginUsable(plan) ? { path: plan.directory, version } : null;
+        } catch {
+            return null;
+        }
+    }
+
+    prepareOpenCodePlugin(version) {
+        let plan;
+        try { plan = this._openCodePluginPlan(version); } catch (error) { return Promise.reject(error); }
+        return this._once(`${PLUGIN_TEMPLATE_BUNDLE}-${plan.generation}`, () => this._prepareOpenCodePlugin(plan));
+    }
+
+    async _prepareOpenCodePlugin(plan) {
+        const result = { path: plan.directory, version: plan.version };
+        if (await this._openCodePluginUsable(plan)) return result;
+        const generations = path.dirname(plan.directory);
+        await fs.mkdir(generations, { recursive: true, mode: 0o700 });
+        const staging = await fs.mkdtemp(path.join(generations, '.staging-'));
+        try {
+            this.log(`[tool-cache] preparing ${OPENCODE_PLUGIN_PACKAGE} ${plan.version}`);
+            await fs.writeFile(path.join(staging, 'package.json'),
+                `${JSON.stringify({ dependencies: { [OPENCODE_PLUGIN_PACKAGE]: plan.version } }, null, 2)}\n`, { mode: 0o600 });
+            await this.execFileImpl(this.npmCommand, [...PLUGIN_TEMPLATE_NPM_ARGS, '--prefix', staging], {
+                timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: this.processEnv,
+            });
+            const state = await openCodePluginState(staging, plan.version);
+            if (!state.current) throw new Error(`prepared ${OPENCODE_PLUGIN_PACKAGE} is not exactly ${plan.version}`);
+            await fs.writeFile(path.join(staging, 'stamp.json'), `${JSON.stringify({
+                schema: CACHE_SCHEMA, name: PLUGIN_TEMPLATE_BUNDLE, generation: plan.generation, identity: plan.identity,
+                versions: { [OPENCODE_PLUGIN_PACKAGE]: plan.version }, preparedAt: new Date().toISOString(),
+            }, null, 2)}\n`, { mode: 0o600 });
+            await fs.rename(staging, plan.directory).catch(error => {
+                if (!['EEXIST', 'ENOTEMPTY'].includes(error?.code)) throw error;
+            });
+        } finally {
+            await fs.rm(staging, { recursive: true, force: true });
+        }
+        if (!(await this._openCodePluginUsable(plan))) throw new Error(`${OPENCODE_PLUGIN_PACKAGE} template is not usable`);
+        return result;
     }
 
     prepareMode(mode) {
@@ -473,4 +551,4 @@ export class ToolCache {
     }
 }
 
-export const toolCacheInternals = { CACHE_SCHEMA, CODING_AGENT_PACKAGES, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, TOOL_MOUNT_PATH, codingAgentVersionPins, generationName, safeVersion, toolProcessEnv };
+export const toolCacheInternals = { CACHE_SCHEMA, CODING_AGENT_PACKAGES, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, PLUGIN_TEMPLATE_NPM_ARGS, TOOL_MOUNT_PATH, codingAgentVersionPins, generationName, safeVersion, toolProcessEnv };
