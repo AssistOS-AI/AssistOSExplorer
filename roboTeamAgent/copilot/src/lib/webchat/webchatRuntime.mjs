@@ -12,6 +12,7 @@ import { createProgressLineBuffer, createWebchatProgressEnvelope, codingAgentLab
 import { executeRuntimeCommand } from '../cli/cliRuntimeCommands.mjs';
 import { handleWebchatControlChunk, isWebchatEscapeControlChunk } from './webchatControl.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
+import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
 
 function target(context) {
     return {
@@ -56,6 +57,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
     const track = (promise) => {
         running.add(promise);
         promise.finally(() => running.delete(promise)).catch(() => {});
+        promise.then(null, (error) => logDiagnostic(runtime.workingDir, 'webchat.track.rejected', errorFields(error)));
         return promise;
     };
     const fail = (error, context, sessionId) => {
@@ -100,6 +102,10 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
         const input = message.rawText.trim();
         const isSlash = input.startsWith('/');
         const isExec = /^\/exec(?:\s|$)/.test(input);
+        const turnKind = !isSlash ? 'turn' : isExec ? 'exec' : 'command';
+        const diag = (event, extra = {}) => logDiagnostic(runtime.workingDir, `webchat.${event}`,
+            { turnId: operationId, kind: turnKind, sessionId, sourceTabId: context.sourceTabId || null, ...extra });
+        diag('execute.start', { activeOperations: active.size });
         const emitOutput = shouldEmitWebchatOutput(message, { isSlashCommand: isSlash });
         let commandTurn = null;
         let engineStarted = false;
@@ -156,7 +162,12 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             if (!isSlash) await runtime.historyManager.add(message.rawText);
             await afterAnswer();
             if (!context.sourceTabId && emitOutput && output) write(`${output}\n`);
+            diag('execute.end', { engineStarted });
         } catch (error) {
+            // Tab-bound errors after the engine started are not shown to the user, so record them here.
+            const reported = Boolean(emitOutput && (!engineStarted || !context.sourceTabId));
+            diag('execute.error', { engineStarted, failCalled: reported, hasCommandTurn: Boolean(commandTurn),
+                aborted: controller.signal.aborted, ...errorFields(error) });
             if (commandTurn) {
                 await runtime.sessionStore.completeTurn(sessionId, commandTurn.assistantMessageId,
                     sanitize(formatWebchatError(error, { publicBaseUrl: context.webchatOrigin?.publicBaseUrl })),
@@ -164,7 +175,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 update(runtime.sessionStore.loadSession(sessionId), context);
             } else if (engineStarted) update(runtime.sessionStore.loadSession(sessionId), context);
             if (emitOutput && (!engineStarted || !context.sourceTabId)) fail(error, context, sessionId);
-        } finally { active.delete(operationId); }
+        } finally { active.delete(operationId); diag('execute.finally', { activeOperations: active.size }); }
     };
     return {
         receive(raw) {
@@ -196,10 +207,17 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             // Only selection/control commands serialize. Turns acquire their own session lease
             // and must not block another conversation or conceal duplicate-turn contention.
             const startsTurn = !message.rawText.trim().startsWith('/') || /^\/exec(?:\s|$)/.test(message.rawText.trim());
+            logDiagnostic(runtime.workingDir, 'webchat.input.received', {
+                kind: startsTurn ? (/^\/exec(?:\s|$)/.test(message.rawText.trim()) ? 'exec' : 'turn') : 'command',
+                sessionId: connection.sessionId, sourceTabId: context.sourceTabId || null,
+                activeOperations: active.size, runningPromises: running.size });
             connection.chain = connection.chain.then(() => {
                 const execution = track(execute(message, context, connection));
                 if (!startsTurn) return execution;
-            }).catch((error) => fail(error, context, connection.sessionId));
+            }).catch((error) => {
+                logDiagnostic(runtime.workingDir, 'webchat.chain.error', { sessionId: connection.sessionId, ...errorFields(error) });
+                fail(error, context, connection.sessionId);
+            });
             track(connection.chain);
         },
         async drain() {

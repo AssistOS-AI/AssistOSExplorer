@@ -210,3 +210,59 @@ test('a reused PID identity is recoverable but an abandoned recovery claim is pr
     await assert.rejects(withWorkspaceMutation(dir, () => assert.fail('entered')), { code: 'WORKSPACE_STATE_LOCK_RECOVERY' });
     assert.equal(fs.readFileSync(claim, 'utf8'), evidence);
 });
+
+function rootedWorkspace(t) {
+    const dir = fs.realpathSync(workspace(t));
+    const old = process.env.PLOINKY_WORKSPACE_ROOT;
+    process.env.PLOINKY_WORKSPACE_ROOT = dir;
+    t.after(() => { if (old === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = old; });
+    return dir;
+}
+
+function diagnosticRecords(dir) {
+    const file = path.join(dir, '.roboteam', 'logs', 'copilot-diagnostics.jsonl');
+    return fs.readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+}
+
+const linuxOnly = fs.existsSync('/proc/self/stat') ? false : 'workspace locks require Linux /proc';
+
+test('a BUSY refusal logs the live owner and whether this process still holds the lease', { skip: linuxOnly }, async (t) => {
+    const dir = rootedWorkspace(t);
+    const release = await acquireExecutionLease(dir, 'session:diag', { label: 'unit' });
+    t.after(() => release().catch(() => {}));
+    await assert.rejects(acquireExecutionLease(dir, 'session:diag'), { code: 'WORKSPACE_STATE_BUSY' });
+    const records = diagnosticRecords(dir);
+    const busy = records.find((record) => record.event === 'lock.busy');
+    assert.equal(busy.kind, 'session');
+    assert.equal(busy.ownerPid, process.pid);
+    assert.equal(busy.ownerIsThisProcess, true);
+    assert.equal(busy.ownerState, 'live');
+    assert.equal(busy.thisProcessHolds, true);
+    assert.equal(busy.thisProcessHold.label, 'unit');
+    assert.equal(busy.thisProcessHold.tokenMatchesFile, true);
+    assert.match(busy.lock, /^execution-[0-9a-f]{64}\.lock$/);
+    assert.equal(typeof busy.ino, 'number');
+    const acquired = records.find((record) => record.event === 'lock.acquired');
+    assert.equal(acquired.token, busy.ownerToken);
+    assert.equal(JSON.stringify(records).includes(JSON.parse(fs.readFileSync(path.join(dir, '.roboteam', 'locks', busy.lock), 'utf8')).token), false);
+    await release();
+    assert.ok(diagnosticRecords(dir).some((record) => record.event === 'lock.release.done'));
+});
+
+test('a release that finds a replaced owner logs expected and current identity, then throws', { skip: linuxOnly }, async (t) => {
+    const dir = rootedWorkspace(t);
+    const release = await acquireExecutionLease(dir, 'session:replaced');
+    const lock = fs.readdirSync(path.join(dir, '.roboteam', 'locks')).find((name) => name.startsWith('execution-'));
+    const file = path.join(dir, '.roboteam', 'locks', lock);
+    const owner = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, `${JSON.stringify({ ...owner, token: randomUUID() })}\n`);
+    await assert.rejects(release(), { code: 'WORKSPACE_STATE_LOCK_RECOVERY' });
+    const records = diagnosticRecords(dir);
+    const mismatch = records.find((record) => record.event === 'lock.remove' && record.result === 'mismatch');
+    assert.notEqual(mismatch.expectedToken, mismatch.currentToken);
+    assert.equal(mismatch.expectedIno, mismatch.currentIno);
+    const failed = records.find((record) => record.event === 'lock.release.error');
+    assert.equal(failed.code, 'WORKSPACE_STATE_LOCK_RECOVERY');
+    assert.match(failed.stack, /removeOwned/);
+    fs.rmSync(file);
+});

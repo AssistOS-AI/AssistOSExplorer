@@ -2,6 +2,7 @@ import test from 'node:test';
 import './helpers/isolated-ala-home.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -270,7 +271,9 @@ test('a webchat turn links the coding-agent output ALA recorded for it', async (
     assert.equal(turn.turnId, result.turnId);
     assert.deepEqual(ala.messages.map((entry) => entry.text), ['Visible progress']);
     assert.equal(ala.user, 'Thinking');
-    await assert.rejects(fs.stat(path.join(h.workingDir, '.roboteam', 'logs')), { code: 'ENOENT' });
+    // No per-turn log is stored; only the copilot diagnostics file may exist in the private logs directory.
+    const logs = await fs.readdir(path.join(h.workingDir, '.roboteam', 'logs')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
+    assert.deepEqual(logs.filter((name) => name !== 'copilot-diagnostics.jsonl'), []);
 });
 
 test('a non-webchat turn keeps only the answer without a log link', async (t) => {
@@ -394,4 +397,37 @@ test('workflow execution reads current model and effort from robot home without 
         assert.equal(output.resumed, model === 'workflow-next');
     }
     await assert.rejects(fs.stat(path.join(path.dirname(h.store.sessionPath(h.sessionId)), 'ala-config.json')), { code: 'ENOENT' });
+});
+
+test('a lease release failure inside executeTurn is logged as an error record, not swallowed silently', { timeout: 15000, skip: existsSync('/proc/self/stat') ? false : 'workspace locks require Linux /proc' }, async (t) => {
+    const lines = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = (chunk) => { lines.push(String(chunk)); return true; };
+    t.after(() => { process.stderr.write = originalWrite; });
+    let workingDir;
+    // The catalog release runs just before the lease release; replace the lease owner there.
+    const release = async () => {
+        const locks = path.join(workingDir, '.roboteam', 'locks');
+        const name = (await fs.readdir(locks)).find((entry) => entry.startsWith('execution-'));
+        const file = path.join(locks, name);
+        const owner = JSON.parse(await fs.readFile(file, 'utf8'));
+        await fs.writeFile(file, `${JSON.stringify({ ...owner, token: '00000000-0000-4000-8000-000000000000' })}\n`);
+    };
+    const h = await harness(t, {}, { skillSnapshot: { release } });
+    workingDir = h.workingDir;
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'RELEASE_FAILS' }),
+        { code: 'WORKSPACE_STATE_LOCK_RECOVERY' });
+    const file = path.join(h.workingDir, '.roboteam', 'logs', 'copilot-diagnostics.jsonl');
+    const records = (await fs.readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const events = records.map((record) => record.event);
+    for (const expected of ['turn.start', 'turn.lease.acquired', 'turn.turn.begun', 'turn.child.spawned',
+        'turn.childDone.resolved', 'turn.completeTurn.done', 'turn.finally.entered']) {
+        assert.ok(events.includes(expected), `missing ${expected}`);
+    }
+    const stepError = records.find((record) => record.event === 'turn.finally.step.error' && record.step === 'release');
+    assert.equal(stepError.code, 'WORKSPACE_STATE_LOCK_RECOVERY');
+    assert.match(stepError.stack, /removeOwned/);
+    assert.ok(records.some((record) => record.event === 'turn.finally.step.end' && record.step === 'active.delete/finish'));
+    assert.ok(lines.some((line) => line.includes('"turn.finally.step.error"')), 'the error also reaches stderr');
+    await fs.rm(path.join(h.workingDir, '.roboteam', 'locks'), { recursive: true, force: true });
 });
