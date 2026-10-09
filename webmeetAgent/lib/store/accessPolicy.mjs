@@ -134,12 +134,19 @@ export function canViewMeetingRecord(record, authInfo = null) {
     if (isGuestAuthInfo(authInfo)) {
         return isMeetingRecordOpen(record) && String(record?.roomType || '').trim() === 'guest';
     }
+    const roomId = String(record?.meetingId || record?.roomId || '').trim();
+    if (hasAnyWebmeetRoomScope(authInfo) && !hasWebmeetRoomScope(authInfo, roomId)) {
+        return false;
+    }
     if (!isMeetingRecordOpen(record)) {
         return isAdminAuthInfo(authInfo);
     }
-    const roomId = String(record?.meetingId || record?.roomId || '').trim();
-    if (hasAnyWebmeetRoomScope(authInfo)) {
-        return hasWebmeetRoomScope(authInfo, roomId);
-    }
     return true;
+}
+
+export function canListMeetingRecord(record, authInfo = null) {
+    return Boolean(record)
+        && isVerifiedListingEntitled(authInfo)
+        && (isMeetingRecordOpen(record) || isVerifiedAdminAuthInfo(authInfo))
+        && canViewMeetingRecord(record, authInfo);
 }

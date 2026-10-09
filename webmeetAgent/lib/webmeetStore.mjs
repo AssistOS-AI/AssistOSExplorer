@@ -5,10 +5,10 @@ import {
     assertAdminAuthInfo,
     assertAuthenticatedAuthInfo,
     canViewMeetingRecord,
+    canListMeetingRecord,
     isAdminAuthInfo,
     isGuestAuthInfo,
     isMeetingRecordOpen,
-    isVerifiedAdminAuthInfo,
     isVerifiedListingEntitled,
     normalizeAuthInfo
 } from './store/accessPolicy.mjs';
@@ -36,6 +36,7 @@ import {
     listRoomEvents as listMeetingEventsImpl,
     listWorkspaceEvents as listWorkspaceEventsImpl
 } from './store/eventLogs.mjs';
+import { listWorkspaceEventsForViewer as listWorkspaceEventsForViewerImpl } from './services/workspaceEvents.mjs';
 import {
     cleanupRoomPresence as cleanupMeetingPresenceImpl,
     getRoomDetails as getMeetingImpl,
@@ -254,6 +255,10 @@ export async function listWorkspaceEvents(context, workspaceId, { afterId = '' }
     return await listWorkspaceEventsImpl(context, workspaceId, { afterId });
 }
 
+export async function listWorkspaceEventsForViewer(context, workspaceId, options = {}, authInfo = null) {
+    return await listWorkspaceEventsForViewerImpl(context, workspaceId, options, authInfo);
+}
+
 export async function getRoomBlackboard(context, { roomId, boardId = '', participantId = '', authInfo = null } = {}) {
     await repairScriptaBlackboardProjectionImpl(context, { roomId, participantId, authInfo });
     return await getRoomBlackboardImpl(context, { roomId, boardId, participantId, authInfo });
@@ -436,12 +441,9 @@ export async function listMeetings(context, _workspaceId = '', authInfo = null) 
     if (!isVerifiedListingEntitled(authInfo)) {
         return [];
     }
-    const verifiedAdmin = isVerifiedAdminAuthInfo(authInfo);
     const records = await listRoomRecords(context);
     return records
-        .filter((entry) => entry
-            && (isMeetingRecordOpen(entry) || verifiedAdmin)
-            && canViewMeetingRecord(entry, authInfo))
+        .filter((entry) => canListMeetingRecord(entry, authInfo))
         .map(buildMeetingView);
 }
 

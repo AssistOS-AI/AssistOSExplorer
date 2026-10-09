@@ -43,7 +43,7 @@ import {
     listMeetingChat,
     listMeetingEvents,
     listMeetings,
-    listWorkspaceEvents,
+    listWorkspaceEventsForViewer,
     removeMeetingParticipant,
     removeRoomResource,
     startMeetingNotesSession,
@@ -394,11 +394,9 @@ export async function dispatch(toolName, args, context, authInfo) {
             if (targetId !== 'rooms' && !isValidWorkspaceEventId(targetId)) {
                 throw new Error('Invalid WebMeet workspace id.');
             }
-            return {
-                events: await listWorkspaceEvents(context, targetId, {
-                    afterId: String(args?.afterId || '').trim()
-                })
-            };
+            return await listWorkspaceEventsForViewer(context, targetId, {
+                afterId: String(args?.afterId || '').trim()
+            }, authInfo);
         }
     case 'webmeet_participant_avatar_update':
         {

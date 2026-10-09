@@ -76,6 +76,14 @@ Response: A single atomically created lock file stores ownership at acquisition 
 
 Response: The room lock prevents a concurrent room mutation or join from crossing the deletion boundary. Closing LiveKit first invalidates active media state while the durable record still exists for authorization and rollback. WebMeet moves persistent artifacts only after that strict control-plane operation succeeds, so an unavailable or misrouted LiveKit control path cannot silently delete the application record and leave an active room behind.
 
+### Current directory visibility
+
+Signed room scopes restrict non-guest administrators before the archived-room allowance is considered. An administrator scoped to A cannot list or read archived B through the shared room guard. Both `webmeet:room:<id>` and `public:webmeet:room:<id>` retain their existing meaning; known-room access remains separate from directory entitlement.
+
+The room list and authenticated workspace feed use the same current-record directory predicate. The feed captures its event slice, then reads current room records once per request. Historical creation snapshots never authorize disclosure after archive or deletion. Visible room events preserve their stored bytes, including creation names and IDs. Every present top-level or nested room identity must agree with the visible record. Excluded or ambiguous room events become response-only `workspace.rooms.invalidated` events containing exactly `id`, `createdAt`, and `workspaceId`; persistent history is unchanged. Profile avatar notifications expose only those envelope fields and `userId`. Invalid encodings, event types, or workspace envelopes reject the response.
+
+This is a fresh read, not a multi-room transaction. An archive committed before the record read hides that room's history; a concurrent archive committed afterward is reconciled on a later feed update. Missing records are hidden. Event append remains best-effort after mutation, and opaque activity IDs and timing remain observable.
+
 ## Conclusion
 
 WebMeet room state remains coherent while `webmeetAgent` owns durable meeting records, encrypts payload data, validates team and guest access through the correct route shape, and treats LiveKit and Redis as media/runtime services rather than application storage.

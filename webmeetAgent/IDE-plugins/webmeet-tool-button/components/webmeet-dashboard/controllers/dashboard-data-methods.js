@@ -55,6 +55,7 @@ export const dashboardDataMethods = {
             includeParticipants
         })
             .then((value) => {
+                if (this.webMeetRoom?.disposed || this.meetingGetCache.get(cacheKey)?.promise !== requestPromise) return value;
                 this.meetingGetCache.set(cacheKey, {
                     value,
                     timestamp: Date.now(),
@@ -63,7 +64,7 @@ export const dashboardDataMethods = {
                 return value;
             })
             .catch((error) => {
-                this.meetingGetCache.delete(cacheKey);
+                if (this.meetingGetCache.get(cacheKey)?.promise === requestPromise) this.meetingGetCache.delete(cacheKey);
                 throw error;
             });
         this.meetingGetCache.set(cacheKey, {
@@ -75,15 +76,37 @@ export const dashboardDataMethods = {
     },
 
     async loadMeetings(options = {}) {
-        const loadSeq = this.meetingDetailsLoadSeq + 1;
-        this.meetingDetailsLoadSeq = loadSeq;
+        if (this.webMeetRoom?.disposed) return null;
+        const loadSeq = (this.meetingListLoadSeq || 0) + 1;
+        this.meetingListLoadSeq = loadSeq;
+        const workspaceId = this.webMeetRoom?.getSelectedWorkspaceId?.();
+        const current = () => !this.webMeetRoom?.disposed && loadSeq === this.meetingListLoadSeq
+            && workspaceId === this.webMeetRoom?.getSelectedWorkspaceId?.()
+            && (!options.revalidateVisibility || !this.isGuestSession());
         const payload = await runTool('webmeet_room_list');
-        this.state.meetings = Array.isArray(payload.meetings) ? payload.meetings : [];
+        if (!current()) return null;
+        if (!Array.isArray(payload?.meetings)) throw new Error('Invalid room directory response.');
+        this.state.meetings = payload.meetings;
         this.state.canManageRooms = payload.canManageRooms === true;
-        if (options.loadParticipants !== false) {
-            await this.loadParticipantsForMeetings(options);
+        const visibleIds = new Set(payload.meetings.map((meeting) => meeting.id));
+        for (const id of Object.keys(this.state.meetingParticipantsById || {})) {
+            if (!visibleIds.has(id)) delete this.state.meetingParticipantsById[id];
         }
-        if (loadSeq !== this.meetingDetailsLoadSeq) return;
+        for (const key of this.meetingGetCache?.keys?.() || []) {
+            if (!visibleIds.has(key.split(':')[0])) this.meetingGetCache.delete(key);
+        }
+        if (!visibleIds.has(this.state.selectedMeetingId)) {
+            this.state.selectedMeetingId = '';
+            this.state.participants = [];
+            this.state.chat = [];
+            this.state.resources = [];
+            this.state.agents = [];
+        }
+        if (options.revalidateVisibility) return payload.meetings;
+        if (options.loadParticipants !== false) {
+            await this.loadParticipantsForMeetings({ ...options, isCurrent: current });
+        }
+        if (!current()) return null;
         this.state.selectedMeetingId = this.state.meetings.some((entry) => entry.id === this.state.selectedMeetingId)
             ? this.state.selectedMeetingId
             : '';
@@ -93,16 +116,31 @@ export const dashboardDataMethods = {
                 includeParticipants: false
             });
         }
+        return current() ? payload.meetings : null;
     },
 
     async refreshMeetingsFromWorkspaceEvent() {
-        if (this.isGuestSession()) return;
-        const previousSelectedMeetingId = String(this.state.selectedMeetingId || '').trim();
-        await this.loadMeetings();
-        if (previousSelectedMeetingId && this.state.meetings.some((entry) => entry.id === previousSelectedMeetingId)) {
-            this.state.selectedMeetingId = previousSelectedMeetingId;
+        if (this.isGuestSession() || this.webMeetRoom.disposed || this.workspaceVisibilityRefreshInFlight) return;
+        this.workspaceVisibilityRefreshInFlight = true;
+        const captured = this.webMeetRoom.captureSession();
+        const version = this.webMeetRoom.workspaceInvalidationVersion;
+        const workspaceId = this.webMeetRoom.getSelectedWorkspaceId();
+        try {
+            const meetings = await this.loadMeetings({ revalidateVisibility: true });
+            if (!meetings || this.webMeetRoom.disposed || workspaceId !== this.webMeetRoom.getSelectedWorkspaceId()) return;
+            this.webMeetRoom.workspaceReconciledVersion = version;
+            const joined = meetings.find((meeting) => meeting.id === captured.meetingId);
+            if (captured.participantId && this.webMeetRoom.isSessionCurrent(captured)
+                && (!joined || joined.status === 'archived' || joined.archivedAt)) {
+                await this.leaveMeeting({ expectedSession: captured });
+                if (this.webMeetRoom.disposed) return;
+                // A queued replacement may already be installed after cleanup.
+                if (!this.state.session?.participantIdentity) this.setError('This room is no longer available.');
+            }
+            if (!this.webMeetRoom.disposed) this.renderAll();
+        } finally {
+            this.workspaceVisibilityRefreshInFlight = false;
         }
-        this.renderAll();
     },
 
     async refreshWorkspaceRosterFromEvent(meetingIds = []) {
@@ -111,6 +149,7 @@ export const dashboardDataMethods = {
             preserveConnectedRoomRoster: true,
             rosterMeetingIds: Array.isArray(meetingIds) ? meetingIds : []
         });
+        if (this.webMeetRoom?.disposed) return;
         this.renderMeetingList();
         this.renderMeetingSummary();
     },
@@ -137,7 +176,7 @@ export const dashboardDataMethods = {
     },
 
     scheduleWorkspaceMeetingsRefresh() {
-        this.clearWorkspaceMeetingsRefreshTimer();
+        if (this.webMeetRoom?.disposed || this.workspaceMeetingsRefreshTimer || this.workspaceVisibilityRefreshInFlight) return;
         this.workspaceMeetingsRefreshTimer = window.setTimeout(() => {
             this.workspaceMeetingsRefreshTimer = null;
             this.runBestEffortRealtimeRefresh(() => this.refreshMeetingsFromWorkspaceEvent());
@@ -145,6 +184,7 @@ export const dashboardDataMethods = {
     },
 
     scheduleWorkspaceRosterRefresh(meetingId = '') {
+        if (this.webMeetRoom?.disposed) return;
         const normalizedMeetingId = String(meetingId || '').trim();
         if (normalizedMeetingId) {
             this.pendingWorkspaceRosterRefreshMeetingIds ??= new Set();
@@ -184,6 +224,8 @@ export const dashboardDataMethods = {
     },
 
     async loadParticipantsForMeetings(options = {}) {
+        const current = () => !this.webMeetRoom?.disposed && (!options.isCurrent || options.isCurrent());
+        if (!current()) return;
         const meetings = Array.isArray(this.state.meetings) ? this.state.meetings : [];
         const preserveConnectedRoomRoster = Boolean(options.preserveConnectedRoomRoster);
         const rosterMeetingIds = Array.isArray(options.rosterMeetingIds)
@@ -243,10 +285,12 @@ export const dashboardDataMethods = {
             if (meeting?.id) {
                 try {
                     const details = await this.fetchPublicMeetingDetails(meeting.id);
+                    if (!current()) return;
                     this.state.meetingParticipantsById = {
                         [meeting.id]: mapMeetingRoster(details, meeting.id)
                     };
                 } catch (error) {
+                    if (!current()) return;
                     this.state.meetingParticipantsById = {};
                 }
             } else {
@@ -269,6 +313,7 @@ export const dashboardDataMethods = {
             })
         );
         const nextMap = {};
+        if (!current()) return;
         const missingMeetingIds = new Set();
         for (let index = 0; index < meetings.length; index += 1) {
             const meeting = meetings[index];
@@ -312,6 +357,7 @@ export const dashboardDataMethods = {
     },
 
     async loadMeetingDetails(options = {}) {
+        if (this.webMeetRoom?.disposed) return;
         const expectedMeetingId = String(options.expectedMeetingId || this.state.selectedMeetingId || '').trim();
         const includeParticipants = this.isGuestSession()
             ? (options.includeParticipants === true || options.includeParticipants !== false)

@@ -167,7 +167,7 @@ test("authenticated event list tools are exposed through MCP config and dispatch
     assert.match(toolSource, /case 'webmeet_room_events_list'/);
     assert.match(toolSource, /targetId\.startsWith\('room_'\)/);
     assert.match(toolSource, /listMeetingEvents\(context, targetId/);
-    assert.match(toolSource, /listWorkspaceEvents\(context, targetId/);
+    assert.match(toolSource, /listWorkspaceEventsForViewer\(context, targetId/);
 });
 
 test("join publishes workspace user id in participant state and LiveKit token attributes", async () => {
@@ -721,7 +721,7 @@ test("authenticated dashboard join keeps using the protected MCP tool path", asy
         'utf8'
     );
     const joinMethod = actionSource.slice(actionSource.indexOf('async joinMeeting'), actionSource.indexOf('getCurrentAvatarOverrideUserId'));
-    assert.match(joinMethod, /this\.webMeetRoom\.join\(payload\)/);
+    assert.match(joinMethod, /this\.webMeetRoom\.join\(payload, transition\)/);
     assert.match(apiSource, /runTool\('webmeet_room_join'/);
     assert.doesNotMatch(joinMethod, /public-services\/webmeet/);
     assert.doesNotMatch(joinMethod, /\/meetings\/.*\/join/);
@@ -779,19 +779,19 @@ test("authenticated dashboard join connects before publishing avatar best-effort
         'utf8'
     );
     const joinMethod = source.slice(source.indexOf('async joinMeeting'), source.indexOf('getCurrentAvatarOverrideUserId'));
-    assert.match(joinMethod, /await this\.webMeetRoom\.join\(payload\)/);
-    assert.match(joinMethod, /await this\.webMeetRoom\.connectLiveKit\(\)/);
+    assert.match(joinMethod, /await this\.webMeetRoom\.join\(payload, transition\)/);
+    assert.match(joinMethod, /await this\.webMeetRoom\.connectLiveKit\(transition\)/);
     assert.match(joinMethod, /await this\.webMeetRoom\.refreshState\(\)/);
     assert.match(joinMethod, /this\.syncParticipantsFromRoom\(this\.room, window\.LivekitClient\?\.Track \|\| null\)/);
     // Best effort: a failed publish is reported and never aborts the join.
     assert.match(joinMethod, /try \{\s*await this\.publishCurrentParticipantAvatar\(\{ force: true \}\);\s*\} catch \(error\) \{/);
     assert.match(joinMethod, /WebMeet could not publish the avatar/);
     assert.ok(
-        joinMethod.indexOf('await this.webMeetRoom.connectLiveKit()') < joinMethod.indexOf('await this.publishCurrentParticipantAvatar({ force: true })'),
+        joinMethod.indexOf('await this.webMeetRoom.connectLiveKit(transition)') < joinMethod.indexOf('await this.publishCurrentParticipantAvatar({ force: true })'),
         'avatar publish must happen after room connect'
     );
     assert.ok(
-        joinMethod.indexOf('await this.webMeetRoom.connectLiveKit()') < joinMethod.indexOf('await this.webMeetRoom.refreshState()'),
+        joinMethod.indexOf('await this.webMeetRoom.connectLiveKit(transition)') < joinMethod.indexOf('await this.webMeetRoom.refreshState()'),
         'presence reconciliation must happen after LiveKit connects'
     );
     assert.doesNotMatch(joinMethod, /initialAvatarState/);
@@ -1733,12 +1733,12 @@ test("guest room entry republishes the current avatar override after connecting"
         'utf8'
     );
 
-    assert.match(source, /async bootstrapGuestRoomEntry\(roomEntry = \{\}\)/);
+    assert.match(source, /async bootstrapGuestRoomEntry\(roomEntry = \{\}, transition = null\)/);
     assert.match(source, /this\.state\.skipConnectedAvatarRepublishOnce = true;/);
-    assert.match(source, /await this\.connectRoom\(\);/);
+    assert.match(source, /await this\.connectRoom\(transition\);/);
     assert.match(source, /try \{\s*await this\.publishCurrentParticipantAvatar\(\{ force: true \}\);\s*\} catch \(error\) \{/);
     assert.ok(
-        source.indexOf('await this.connectRoom();') < source.indexOf('await this.publishCurrentParticipantAvatar({ force: true });', source.indexOf('async bootstrapGuestRoomEntry')),
+        source.indexOf('await this.connectRoom(transition);') < source.indexOf('await this.publishCurrentParticipantAvatar({ force: true });', source.indexOf('async bootstrapGuestRoomEntry')),
         'the guest avatar is republished after the room connects'
     );
 });
@@ -1784,7 +1784,7 @@ test("guest room entry prepares route state before authenticated room loading", 
     assert.match(source, /async prepareGuestRoomEntry\(roomId\)/);
     // Guest entry is the dedicated modal component; its result bootstraps the room.
     assert.match(source, /showModal\('webmeet-guest-entry-modal'/);
-    assert.match(source, /await this\.bootstrapGuestRoomEntry\(\{ roomId: targetRoomId, displayName \}\)/);
+    assert.match(source, /await this\.bootstrapGuestRoomEntry\(\{ roomId: targetRoomId, displayName \}, transition\)/);
     assert.match(source, /function normalizeRoomPayload\(payload = null\)/);
     assert.match(source, /const wrapped = payload\.meeting \|\| payload\.room;/);
     assert.match(source, /const roomId = String\(payload\.roomId \|\| payload\.id \|\| ''\)\.trim\(\);/);

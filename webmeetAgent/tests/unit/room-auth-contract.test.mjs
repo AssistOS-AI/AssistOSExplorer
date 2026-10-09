@@ -193,6 +193,12 @@ test('webmeet_room_list follows the verified listing entitlement matrix', async 
         // Signed room scopes still restrict an entitled user.
         const scoped = await list(await directUserAuth({ ...PRINCIPALS.explorerUser, scope: [`webmeet:room:${teamRoom.id}`] }));
         assert.deepEqual(listIds(scoped), [teamRoom.id]);
+        for (const prefix of ['webmeet:room:', 'public:webmeet:room:']) {
+            const scopedAdmin = await directUserAuth({ ...PRINCIPALS.admin, scope: [`${prefix}${teamRoom.id}`] });
+            assert.deepEqual(listIds(await list(scopedAdmin)), [teamRoom.id]);
+            const archivedAdmin = await directUserAuth({ ...PRINCIPALS.admin, scope: [`${prefix}${archivedRoom.id}`] });
+            assert.deepEqual(listIds(await list(archivedAdmin)), [archivedRoom.id]);
+        }
     });
 });
 

@@ -30,6 +30,9 @@ export const dashboardRealtimeMethods = {
             return;
         }
         this.roomEventHandlersBound = true;
+        this.webMeetRoom.addEventListener(ROOM_EVENT_TYPES.WORKSPACE_INVALIDATED, (event) => {
+            if (event?.detail?.source === 'authenticated-workspace') this.scheduleWorkspaceMeetingsRefresh();
+        });
         this.webMeetRoom.addEventListener(ROOM_EVENT_TYPES.CREATED, (event) => {
             const source = String(event?.detail?.source || '').trim();
             if (source === 'authenticated-workspace') {
@@ -67,6 +70,10 @@ export const dashboardRealtimeMethods = {
             void this.handleParticipantRosterEvent({ data: parsed.encoded });
         });
         this.webMeetRoom.addEventListener(ROOM_EVENT_TYPES.ARCHIVED, (event) => {
+            if (event?.detail?.source === 'authenticated-workspace') {
+                this.webMeetRoom.requestWorkspaceRevalidation();
+                return;
+            }
             const payload = event?.detail?.payload || event?.detail?.parsed?.payload || {};
             const meetingId = String(payload?.meetingId || payload?.roomId || event?.detail?.parsed?.room || '').trim();
             const activeMeetingId = String(this.state.session?.meeting?.id || this.state.selectedMeetingId || '').trim();
@@ -160,6 +167,9 @@ export const dashboardRealtimeMethods = {
 
     stopWorkspaceEvents() {
         this.webMeetRoom.stopWorkspaceEvents();
+        this.clearWorkspaceMeetingsRefreshTimer();
+        this.clearWorkspaceRosterRefreshTimer();
+        this.meetingListLoadSeq = (this.meetingListLoadSeq || 0) + 1;
     },
 
     emitWebMeetInternalEvent(source, eventData = '', meta = {}) {

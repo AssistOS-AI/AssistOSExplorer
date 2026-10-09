@@ -20,8 +20,8 @@ async function pathExists(filePath) {
 }
 
 async function listEventLog(eventsDir, afterId = '') {
-    if (!(await pathExists(eventsDir))) return [];
     const afterEventId = String(afterId || '').trim();
+    if (!(await pathExists(eventsDir))) return { events: [], cursorFound: !afterEventId };
     let foundAfter = !afterEventId;
     const names = await fs.readdir(eventsDir);
     const events = await Promise.all(names
@@ -34,7 +34,7 @@ async function listEventLog(eventsDir, afterId = '') {
                 return null;
             }
         }));
-    return events
+    const selected = events
         .filter(Boolean)
         .filter((event) => {
             const eventId = getWebMeetEventId(event);
@@ -46,6 +46,7 @@ async function listEventLog(eventsDir, afterId = '') {
             return false;
         })
         .filter((event) => getWebMeetEventId(event) !== afterEventId);
+    return { events: selected, cursorFound: foundAfter };
 }
 
 function createRoomEvent(roomId, type, data = {}) {
@@ -93,7 +94,7 @@ export async function recordWorkspaceEvent(context, workspaceId, type, data = {}
 export async function listRoomEvents(context, roomId, { afterId = '' } = {}) {
     const targetRoomId = String(roomId || '').trim();
     if (!targetRoomId) return [];
-    return await listEventLog(path.join(context.eventsDir, targetRoomId), afterId);
+    return (await listEventLog(path.join(context.eventsDir, targetRoomId), afterId)).events;
 }
 
 const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -103,8 +104,12 @@ export function isValidWorkspaceEventId(workspaceId) {
 }
 
 export async function listWorkspaceEvents(context, workspaceId, { afterId = '' } = {}) {
+    return (await readWorkspaceEventSlice(context, workspaceId, { afterId })).events;
+}
+
+export async function readWorkspaceEventSlice(context, workspaceId, { afterId = '' } = {}) {
     const targetWorkspaceId = String(workspaceId || '').trim();
-    if (!targetWorkspaceId) return [];
+    if (!targetWorkspaceId) return { events: [], cursorFound: !afterId };
     // Only plain workspace ids are accepted, and the resolved directory must
     // stay inside the workspace event root; nothing may reach a room's log.
     if (!isValidWorkspaceEventId(targetWorkspaceId)) {
