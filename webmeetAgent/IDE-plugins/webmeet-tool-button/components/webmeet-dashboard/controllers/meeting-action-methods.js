@@ -702,7 +702,23 @@ export const meetingActionMethods = {
     },
 
     async handleExpandedModalUserClose() {
-        await this.leaveMeeting();
+        // Explorer awaits this hook before removing the frame. End its lifetime
+        // synchronously; backend availability must not keep the frame open.
+        writeWebMeetResume({ open: false, roomId: '', media: { microphone: false, camera: false } });
+        const room = this.roomLiveKit.getRoom();
+        this.webMeetRoom.dispose();
+        this.stopWorkspaceEvents();
+        this.clearRoomConnectionTimers();
+        this.uninstallJoinMaterialRefreshListeners?.();
+        window.clearInterval(this.audioWebRtcStatsTimer);
+        this.audioWebRtcStatsTimer = null;
+        try {
+            this.mediaController.hardStopMicrophoneTracks();
+            this.mediaController.hardStopAllLocalPublishedTracks(room);
+        } catch (_) {
+            // The captured asynchronous cleanup still releases remaining media.
+        }
+        void this.unjoinCurrentSession({ preserveDisplayName: false, unload: true }).catch(() => {});
     },
 
     async unjoinCurrentSession(options = {}) {

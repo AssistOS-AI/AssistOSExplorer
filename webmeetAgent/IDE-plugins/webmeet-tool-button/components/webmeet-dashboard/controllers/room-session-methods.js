@@ -12,6 +12,17 @@ import {
 import { isAudioPublication } from '../services/microphone-publication.js';
 
 export const roomSessionMethods = {
+    clearRoomConnectionTimers(room = null) {
+        const owner = this.roomConnectionOwner;
+        if (owner && (!room || owner.room === room)) owner.active = false;
+        for (const [timer, timerOwner] of this.roomConnectionTimers || []) {
+            if (room && timerOwner.room !== room) continue;
+            timerOwner.active = false;
+            window.clearTimeout(timer);
+            this.roomConnectionTimers.delete(timer);
+        }
+    },
+
     installJoinMaterialRefreshListeners() {
         if (this.joinMaterialNetworkRefreshHandler) return;
         this.joinMaterialNetworkRefreshHandler = () => {
@@ -106,6 +117,20 @@ export const roomSessionMethods = {
         if (!transition.isCurrent()) return;
         this.state.activeSpeakerIds = new Set();
 
+        const connectionOwner = { room: null, active: true };
+        const isConnectionCurrent = () => connectionOwner.active && transition.isCurrent()
+            && connectionOwner.room !== null && this.room === connectionOwner.room
+            && this.roomLiveKit.getRoom() === connectionOwner.room;
+        const scheduleConnectionTimer = (callback, delay) => {
+            if (!isConnectionCurrent()) return;
+            this.roomConnectionTimers ??= new Map();
+            const timer = window.setTimeout(() => {
+                this.roomConnectionTimers.delete(timer);
+                if (isConnectionCurrent()) callback();
+            }, delay);
+            this.roomConnectionTimers.set(timer, connectionOwner);
+        };
+
         const remoteVideoRecoveryCounts = new WeakMap();
 
         const isRemoteVideoElementReady = (mediaElement) => {
@@ -126,7 +151,7 @@ export const roomSessionMethods = {
             if (!publication || !mediaElement || !isVideoTrack) return;
 
             for (const delay of [1500, 3500, 7000]) {
-                window.setTimeout(() => {
+                scheduleConnectionTimer(() => {
                     if (!this.room) return;
                     if (!mediaElement.isConnected) return;
                     const isReady = isRemoteVideoElementReady(mediaElement);
@@ -330,10 +355,10 @@ export const roomSessionMethods = {
             });
             removePublication(publication, Track, participant);
             setPublicationSubscribed(publication, false, participant, `${reason}:refresh-off`);
-            window.setTimeout(() => {
+            scheduleConnectionTimer(() => {
                 if (!this.room) return;
                 setPublicationSubscribed(publication, true, participant, `${reason}:refresh-on`);
-                window.setTimeout(() => {
+                scheduleConnectionTimer(() => {
                     if (!this.room || !publication.track) return;
                     renderPublication(participant, publication, publication.track, Track);
                 }, 900);
@@ -370,7 +395,7 @@ export const roomSessionMethods = {
             }
 
             if (publication.isSubscribed && !publication.track) {
-                window.setTimeout(() => {
+                scheduleConnectionTimer(() => {
                     if (publication.track) {
                         setPublicationSubscribed(publication, true, participant, `${reason}:ensure-on`);
                         return;
@@ -399,12 +424,12 @@ export const roomSessionMethods = {
 
         const scheduleRemoteSubscriptionSweep = (TrackRef = null, reason = 'scheduled-sweep') => {
             for (const delay of [250, 1000, 2500, 5000]) {
-                window.setTimeout(() => subscribeRemotePublications(TrackRef, `${reason}:${delay}`), delay);
+                scheduleConnectionTimer(() => subscribeRemotePublications(TrackRef, `${reason}:${delay}`), delay);
             }
         };
 
         const collectAudioWebRtcDiagnostics = async () => {
-            if (!isMediaDiagnosticsEnabled() || !this.room) return;
+            if (!isConnectionCurrent() || !isMediaDiagnosticsEnabled()) return;
             const publications = [
                 ...(this.room.localParticipant?.trackPublications?.values?.() || []),
                 ...[...(this.room.remoteParticipants?.values?.() || [])]
@@ -416,6 +441,7 @@ export const roomSessionMethods = {
                 if (typeof track?.getRTCStatsReport !== 'function') continue;
                 try {
                     const report = await track.getRTCStatsReport();
+                    if (!isConnectionCurrent()) return;
                     reports.push(...(report?.values?.() || report || []));
                 } catch (_) {
                     // A track may disappear while diagnostics are being collected.
@@ -430,6 +456,8 @@ export const roomSessionMethods = {
         await this.roomLiveKit.connect(this.state.session, {
             onRoomCreated: ({ room }) => {
                 this.room = room;
+                connectionOwner.room = room;
+                this.roomConnectionOwner = connectionOwner;
             },
             onConnecting: () => {
                 this.state.roomState = 'Connecting';
@@ -640,6 +668,7 @@ export const roomSessionMethods = {
             isCurrent: () => transition.isCurrent(),
             onDisconnected: ({ room }) => {
                 if (!transition.isCurrent() || this.room !== room) return;
+                this.clearRoomConnectionTimers(room);
                 if (this.expectedLiveKitDisconnect) {
                     this.resetRoomUiState({ forceRenderAll: true, applyVideoFullscreenMode: false });
                     return;
@@ -676,6 +705,7 @@ export const roomSessionMethods = {
                 this.renderMeetingSummary();
             },
             onConnectError: (error) => {
+                this.clearRoomConnectionTimers(connectionOwner.room);
                 if (!transition.isCurrent()) return;
                 this.state.roomState = error instanceof Error ? error.message : String(error);
                 this.renderMeetingSummary();
@@ -825,8 +855,9 @@ export const roomSessionMethods = {
         window.clearTimeout(this.joinMaterialRefreshTimer);
         this.joinMaterialRefreshTimer = null;
         const room = Object.hasOwn(options, 'room') ? options.room : this.roomLiveKit.getRoom();
-        const captured = this.roomLiveKit.captureDisconnect(room);
         if (!room) return;
+        this.clearRoomConnectionTimers(room);
+        const captured = this.roomLiveKit.captureDisconnect(room);
         if (options.stopMediaFirst !== false) {
             await this.stopRoomMediaBeforeDisconnect(room, transition);
         }

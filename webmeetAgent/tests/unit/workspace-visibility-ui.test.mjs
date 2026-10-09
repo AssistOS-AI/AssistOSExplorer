@@ -9,6 +9,7 @@ import { roomSessionMethods } from '../../IDE-plugins/webmeet-tool-button/compon
 import { dashboardDataMethods } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/controllers/dashboard-data-methods.js';
 import { dashboardRealtimeMethods } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/controllers/dashboard-realtime-methods.js';
 import { buildWebMeetEvent, WEBMEET_EVENT_TYPES as TYPES } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/services/webmeet-events.js';
+import { readWebMeetResume, writeWebMeetResume } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/services/webmeet-session-store.js';
 
 const deferred = () => {
     let resolve, reject;
@@ -80,6 +81,107 @@ function fixture(t, { media = null, disconnect = null, leave = null } = {}) {
     dashboard.bindRoomEventHandlers();
     t.after(() => { dashboard.webMeetRoom.dispose(); globalThis.window = previous; });
     return { dashboard, calls, timers, setList: (next) => { list = next; } };
+}
+
+function resumeStorage(t) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+    const entries = new Map();
+    Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: {
+        getItem: (key) => entries.get(key) || null,
+        setItem: (key, value) => entries.set(key, value),
+    } });
+    t.after(() => {
+        if (previous) Object.defineProperty(globalThis, 'sessionStorage', previous);
+        else delete globalThis.sessionStorage;
+    });
+    writeWebMeetResume({ open: true, roomId: 'A', media: { microphone: true, camera: true } });
+}
+
+test('explicit close completes while server leave is unresolved and prevents auto-resume', async (t) => {
+    resumeStorage(t);
+    const pending = deferred();
+    const { dashboard, calls, setList } = fixture(t, { leave: pending });
+    setList(async () => { throw new Error('directory unavailable'); });
+    let completed = false;
+    const closing = dashboard.handleExpandedModalUserClose().then(() => { completed = true; });
+    try {
+        await tick();
+        assert.equal(completed, true, 'frame close must not await the server leave');
+        assert.equal(dashboard.webMeetRoom.disposed, true);
+        assert.deepEqual(readWebMeetResume(), { open: false, roomId: '', media: { microphone: false, camera: false } });
+        assert.equal(calls.some(([name]) => name === 'list'), false);
+    } finally {
+        pending.resolve();
+        await closing.catch(() => {});
+        await dashboard.webMeetRoom.cleanupTask?.catch(() => {});
+    }
+});
+
+test('directory failure cannot retain resume state during explicit close', async (t) => {
+    resumeStorage(t);
+    const { dashboard, calls, setList } = fixture(t);
+    setList(async () => { throw new Error('directory unavailable'); });
+    await dashboard.handleExpandedModalUserClose().catch(() => {});
+    await dashboard.webMeetRoom.cleanupTask?.catch(() => {});
+    assert.deepEqual(readWebMeetResume(), { open: false, roomId: '', media: { microphone: false, camera: false } });
+    assert.equal(calls.some(([name]) => name === 'list'), false);
+});
+
+for (const replaceOwner of [false, true]) {
+    test(`real connect timers cannot touch ${replaceOwner ? 'replacement' : 'unloading'} media owners`, async (t) => {
+        const { dashboard, calls, timers } = fixture(t);
+        const pending = deferred();
+        const publication = { trackSid: 'remote-track', kind: 'audio', isSubscribed: false,
+            setSubscribed: () => calls.push(['subscribe']), track: null };
+        const participant = { identity: 'remote', trackPublications: new Map([['remote-track', publication]]) };
+        class Room {
+            constructor() { this.localParticipant = { identity: 'participant-A', trackPublications: new Map() }; this.remoteParticipants = new Map([['remote', participant]]); }
+            on() { return this; }
+            async connect() {}
+            async disconnect() { calls.push(['sdk-disconnect']); }
+        }
+        const Track = { Kind: { Audio: 'audio', Video: 'video' }, Source: {} };
+        const RoomEvent = new Proxy({}, { get: (_target, name) => name });
+        dashboard.room = null;
+        dashboard.roomLiveKit = new WebMeetRoomLiveKit({
+            ensureLiveKitClient: async () => ({ Room, RoomEvent, Track }),
+            buildRtcConfigForSession: () => null, installRtcPeerConnectionOverride: () => () => {},
+        });
+        Object.assign(dashboard, {
+            installJoinMaterialRefreshListeners() {}, logAudioCaptureDiagnostics() {},
+            syncParticipantsFromRoom() {}, getParticipantDisplayName: () => 'Remote',
+            upsertParticipantView: () => calls.push(['render-participant']),
+            applyAudioOutputDeviceToElement() {}, applyOutputVolumePreviewToElement() {},
+            attachAudioTrack: () => calls.push(['attach']), isMicrophonePublication: () => false,
+        });
+        dashboard.state.session = { ...session(), participantToken: 'fixture', livekitUrl: 'wss://fixture.test' };
+        await dashboard.connectRoom();
+        await tick();
+        assert.ok(calls.some(([name]) => name === 'subscribe'), 'real connection subscribes visible remote publications');
+        const callbacks = [...timers.values()].filter(({ delay }) => [250, 1000, 2500, 5000].includes(delay));
+        assert.equal(callbacks.length, 4);
+        publication.track = { kind: 'audio', attach: () => { calls.push(['track-attach']); return { dataset: {} }; } };
+        dashboard.mediaController.stopProcessedMicrophoneCapture = () => pending.promise;
+        if (replaceOwner) {
+            const replacement = { localParticipant: { identity: 'replacement' } };
+            Object.defineProperty(replacement, 'remoteParticipants', { get() { calls.push(['replacement-read']); return new Map(); } });
+            dashboard.room = replacement;
+            dashboard.roomLiveKit.room = replacement;
+        } else {
+            WebmeetDashboard.prototype.afterUnload.call(dashboard);
+            await tick();
+        }
+        const position = calls.length;
+        try {
+            for (const { fn } of callbacks) await fn();
+            await tick();
+            assert.deepEqual(calls.slice(position), [], 'captured timer callbacks must not read, render, attach or subscribe after ownership ends');
+            if (!replaceOwner) assert.equal(timers.size, 0, 'unload cancels owned timers synchronously');
+        } finally {
+            pending.resolve();
+            await dashboard.webMeetRoom.cleanupTask?.catch(() => {});
+        }
+    });
 }
 
 for (const boundary of ['media', 'disconnect', 'leave']) {
@@ -181,6 +283,7 @@ test('late join response after unload cannot install a session and releases only
 });
 
 test('failed leave releases the transition gate and ordinary leave clears the session', async (t) => {
+    resumeStorage(t);
     const pending = deferred();
     const { dashboard, calls } = fixture(t, { leave: pending });
     const leaving = dashboard.leaveMeeting();
@@ -189,6 +292,7 @@ test('failed leave releases the transition gate and ordinary leave clears the se
     await leaving;
     assert.equal(dashboard.state.session, null);
     assert.equal(dashboard.state.leavingMeeting, false);
+    assert.deepEqual(readWebMeetResume(), { open: true, roomId: '', media: { microphone: false, camera: false } });
     assert.ok(calls.some(([name]) => name === 'list'));
     await dashboard.webMeetRoom.join({ meetingId: 'B' });
     assert.equal(dashboard.state.session.meeting.id, 'B');

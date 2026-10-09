@@ -758,6 +758,7 @@ export class WebmeetDashboard {
 
     afterUnload() {
         this.webMeetRoom.dispose();
+        this.clearRoomConnectionTimers();
         this.meetingListLoadSeq = (this.meetingListLoadSeq || 0) + 1;
         this.meetingDetailsLoadSeq = (this.meetingDetailsLoadSeq || 0) + 1;
         if (globalThis.__onExpandedModalClose) {

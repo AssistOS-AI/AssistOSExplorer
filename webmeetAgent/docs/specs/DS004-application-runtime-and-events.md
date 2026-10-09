@@ -124,6 +124,8 @@ Workspace polling pauses during joins and resumes for authenticated sessions, in
 
 Each dashboard serializes joins, reconnects, and cleanup through one lifecycle transition gate. Nested helpers reuse its context. Cleanup pins the participant, API adapter, session generation, and media resource owner before awaiting; an old cleanup cannot retarget server leave or clear replacement state. New joins, including joins that reuse a room or participant ID, get a new generation. Adapter disconnect callbacks release only their captured room and restore handle. Unload synchronously ends the dashboard lifetime, cancels queued joins and timers, and permits only captured-resource cleanup. It cannot reload the directory, render, write resume state, reconnect, or restart polling. Rejected transitions release the gate.
 
+Explicit panel close clears its resume record and ends the dashboard lifetime synchronously. The close hook never waits for server leave or directory reads; local tracks stop immediately and captured cleanup continues best-effort. Normal leave keeps WebMeet open. Remote subscription, retry, and video-readiness timers belong to their media connection: disconnect or unload cancels them, and already-queued callbacks verify the captured room owner before reading or changing media state.
+
 ## Conclusion
 
 `webmeetAgent` remains a coherent application runtime while API, MCP, browser shells, events, chat, resources, Ploinky room-agent metadata, blackboard state, and avatars all preserve the correct persistence and route boundaries.
