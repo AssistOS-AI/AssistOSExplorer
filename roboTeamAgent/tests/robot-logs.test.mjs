@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { initRobotLogViewer } from '../public/robot-log-viewer.js';
 import { createRoboTeamServer } from '../server/http-server.mjs';
+import { authHeader, routerFetch as fetch } from './helpers/router-signed.mjs';
 
 function fixture(load = async () => ({ logs: 'first line' })) {
     const output = { textContent: 'Loading…', scrollHeight: 1000, clientHeight: 100, scrollTop: 0 };
@@ -113,7 +114,7 @@ test('robot logs page, scripts and existing logs API require authentication and 
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise(resolve => server.close(resolve)));
     const base = `http://127.0.0.1:${server.address().port}`;
-    const headers = { 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'actor', roles: [] } }) };
+    const headers = { 'x-ploinky-auth-info': authHeader('actor', []) };
     for (const relative of [`robots/${robot.id}/logs`, 'robot-logs.js', 'robot-log-viewer.js', `api/robots/${robot.id}/logs?tail=200`]) {
         const anonymous = await fetch(`${base}/${relative}`);
         assert.equal(anonymous.status, 401);

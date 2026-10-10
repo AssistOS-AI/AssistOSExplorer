@@ -10,8 +10,9 @@ import { registerProject } from '../server/project-storage.mjs';
 import { resolveAlaCommand } from '../server/ala-command.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 import { pathToFileURL } from 'node:url';
+import { authHeader, routerFetch as fetch } from './helpers/router-signed.mjs';
 
-const headers = () => ({ 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'actor', roles: ['admin'] } }) });
+const headers = () => ({ 'x-ploinky-auth-info': authHeader('actor', ['admin']) });
 
 async function loadAla() {
     const root = path.dirname(path.dirname(await fs.realpath(resolveAlaCommand())));

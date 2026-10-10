@@ -3,7 +3,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import test from 'node:test';
 import { createRoboTeamServer } from '../server/http-server.mjs';
-import { DEFAULT_ROBOT_ID, OTHER_ROBOT_ID, SKILL_IDENTITY, authHeader, createConversationSkillsFixture } from './helpers/conversation-skills-fixture.mjs';
+import { DEFAULT_ROBOT_ID, OTHER_ROBOT_ID, SKILL_IDENTITY, createConversationSkillsFixture } from './helpers/conversation-skills-fixture.mjs';
+import { authHeader, routerFetch as fetch } from './helpers/router-signed.mjs';
 
 // The real RobotStore reads /proc, so this suite runs the real HTTP server with the
 // stub robot registry from the shared fixture.

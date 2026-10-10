@@ -6,8 +6,9 @@ import test from 'node:test';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
+import { authHeader, routerFetch as fetch } from './helpers/router-signed.mjs';
 const graph = { id: 'example', name: 'Example', entryTaskId: 'one', tasks: [{ id: 'one', name: 'One', prompt: 'Execute objective', skillsets: [], executionType: 'terminal' }], edges: [] };
-const headers = role => ({ 'content-type': 'application/json', 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'actor', roles: [role] } }) });
+const headers = role => ({ 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('actor', [role]) });
 async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-http-')));
     const robotStore = new RobotStore({ dataDir: path.join(root, 'data') }); await robotStore.initialize(); await robotStore.ensureDefaultRobot();
