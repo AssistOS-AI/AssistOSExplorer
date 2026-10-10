@@ -10,7 +10,16 @@ const admission = workflow.match(/# BEGIN QA fresh-install admission\n([\s\S]*?)
     .replace(/^ {10}/gm, '');
 
 test('deployment automatically updates existing QA with only the in_place_only input and no recreate fallback', () => {
-    assert.match(workflow, /workflow_dispatch:\n\s+inputs:\n\s+in_place_only:\n[\s\S]*?default: false\n\s*\nconcurrency:/);
+    const dispatch = workflow.match(/^on:\n([\s\S]*?)\nconcurrency:/m)[1];
+    assert.equal(dispatch, [
+        '  workflow_dispatch:',
+        '    inputs:',
+        '      in_place_only:',
+        "        description: 'Update the existing installation only; fail instead of installing when the QA workspace is absent'",
+        '        type: boolean',
+        '        default: false',
+        '',
+    ].join('\n'));
     assert.match(workflow, /name: Update the existing Explorer QA installation in place\n\s+id: inplace/);
     assert.match(workflow, /name: Reconcile and start Explorer QA Box\n\s+if: steps\.inplace\.outputs\.updated == 'false'/);
     assert.match(workflow, /if \[ "\$status" -eq 42 \]; then\n\s+echo 'updated=false'/);

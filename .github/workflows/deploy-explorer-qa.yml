@@ -2544,8 +2544,10 @@ jobs:
             if [ "$UPDATED_IN_PLACE" = true ]; then
               echo "- Deployment: AssistOSExplorer updated in place from its configured default branch"
               echo "- Existing Box, image, AgentLib, other repositories and workspace data retained"
-            else
+            elif [ "$UPDATED_IN_PLACE" = false ]; then
               echo "- First installation only: configured repository defaults, resolved and pinned at deploy time"
+            else
+              echo "- No installation was performed by the update step (in-place update failed, or in_place_only refused an absent workspace)"
             fi
             printf -- '- Cloudflare: dedicated persistent `%s` tunnel `%s`, ingress, and DNS API-managed by Ploinky\n' \
               "$CLOUDFLARE_TUNNEL_NAME" "${CLOUDFLARE_TUNNEL_ID:-not-created}"
