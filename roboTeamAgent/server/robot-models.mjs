@@ -10,7 +10,6 @@ export class RobotModels {
         this.store = robotStore;
         this.runtime = runtimeManager;
         this.installation = installation;
-        this.catalogs = new Map();
     }
     async api() {
         return this.installation({ env: { ...process.env, ACHILLES_ALA_COMMAND: this.runtime.alaCommand || '' } });
@@ -37,7 +36,6 @@ export class RobotModels {
         const service = api.createCodingAgentService({ agents, workspace: home, cwd: home, home, env });
         try {
             const models = await service.listModels(agent, { signal, details: true });
-            this.catalogs.set(`${robot.id}:${agent}`, { models, time: Date.now() });
             return { agent, models };
         } finally { await service.close(); }
     }
@@ -45,9 +43,9 @@ export class RobotModels {
         if (typeof effort !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(effort)) {
             throw Object.assign(new Error('Invalid effort'), { statusCode: 400 });
         }
-        const cached = this.catalogs.get(`${robot.id}:${agent}`);
-        const models = cached && Date.now() - cached.time < 300000 ? cached.models
-            : (await this.list(robot, agent, { signal: AbortSignal.timeout(90000) })).models;
+        // Always a fresh listing: a robot's models change upstream, and this runs only on the
+        // infrequent PATCH of a stopped robot, so no catalog is kept between calls.
+        const { models } = await this.list(robot, agent, { signal: AbortSignal.timeout(90000) });
         const id = model === null && agent === 'opencode' ? DEFAULT_OPENCODE_MODEL : model;
         const entry = models.find(item => typeof item !== 'string' && item.id === id);
         if (!entry?.efforts?.includes(effort)) throw Object.assign(new Error('The selected model does not advertise this effort'), { statusCode: 400 });
