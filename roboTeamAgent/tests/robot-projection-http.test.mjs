@@ -7,9 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 
 // Every outward robot view (list, create, coding-agent update and run
-// get/start/stop) is restricted unless the exact request is a verified
-// non-guest administrator. Signed requests are minted by the sibling Ploinky
-// checkout's real HTTP-route minter; this file fails to load without it.
+// get/start/stop) needs a verified Explorer-entitled user and is restricted
+// unless the exact request is a verified non-guest administrator. Signed
+// requests are minted by the sibling Ploinky checkout's real HTTP-route minter;
+// this file fails to load without it.
 const PLOINKY_ROOT = fileURLToPath(new URL('../../../ploinky/', import.meta.url));
 process.env.PLOINKY_MASTER_KEY = '4'.repeat(64);
 process.env.PLOINKY_AGENTLIB_DIR ||= path.join(PLOINKY_ROOT, 'node_modules', 'achillesAgentLib');
@@ -161,7 +162,13 @@ test('create, coding-agent update and run responses use the same projection', as
             ['tampered body', signed(PRINCIPALS.admin, method, pathname, body === undefined ? '{}' : `${body} `)],
         ]) {
             const response = await fixture.call(method, pathname, { body, headers });
-            if (['ordinary member', 'named non-admin', 'admin+guest'].includes(name) && ['/api/robots', `/api/robots/${robotId}/coding-agents`].includes(pathname)) {
+            if (['unsigned admin header', 'tampered body'].includes(name)) {
+                assert.equal(response.status, 401, `${label} ${name}`);
+                assert.equal('robot' in response.json, false, `${label} ${name}: no robot payload`);
+                continue;
+            }
+            // A guest role is refused by the entitlement gate on every route.
+            if (name === 'admin+guest' || (['ordinary member', 'named non-admin'].includes(name) && ['/api/robots', `/api/robots/${robotId}/coding-agents`].includes(pathname))) {
                 assert.equal(response.status, 403, `${label} ${name}`);
                 assert.equal('robot' in response.json, false, `${label} ${name}: no robot payload`);
                 continue;
@@ -183,6 +190,14 @@ const ADMIN_MUTATIONS = [
 
 function internalHeaders(id, roles) {
     return { 'x-roboteam-internal-token': 'projection-token', 'x-roboteam-user-id': id, 'x-roboteam-user-roles': JSON.stringify(roles) };
+}
+
+// A caller without the Explorer capability, or with a guest role, is refused by
+// the entitlement gate before the administrator check can run.
+const GATE_REFUSED = ['localIdWithoutRoles', 'adminGuest', 'normalizedAdminGuest'];
+function expectedRefusal(name, pathname) {
+    if (!GATE_REFUSED.includes(name)) return 'administrator role is required';
+    return pathname.startsWith('/api/roboflow') ? 'Explorer access permission is required to use RoboFlow' : 'Explorer access permission is required to use RoboTeam';
 }
 
 test('administrator mutations reject name aliases, guest roles and unprivileged internal actors without side effects', async (t) => {
@@ -213,7 +228,7 @@ test('administrator mutations reject name aliases, guest roles and unprivileged 
                 }
                 const response = await fixture.call(method, pathname, { body, headers });
                 assert.equal(response.status, 403, `${name}: ${method} ${pathname}`);
-                assert.equal(response.json.error, 'administrator role is required');
+                assert.equal(response.json.error, expectedRefusal(name, pathname));
                 assert.equal('robot' in response.json, false);
                 assert.deepEqual(fixture.mutations, { createRobot: 0, codingAgents: 0, createWorkflow: 0 });
                 assert.deepEqual([...fixture.robots.values()], fixture.snapshot);
@@ -248,7 +263,7 @@ test('differently named administrators, local CLI roles and forwarded administra
     }
 });
 
-test('missing verifier configuration falls back to the restricted projection', async (t) => {
+test('missing verifier configuration fails closed instead of falling back to a projection', async (t) => {
     const fixture = await startFixture();
     t.after(fixture.close);
     const secret = process.env.PLOINKY_AGENT_SECRET;
@@ -256,6 +271,7 @@ test('missing verifier configuration falls back to the restricted projection', a
     t.after(() => { process.env.PLOINKY_AGENT_SECRET = secret; });
     const pathname = '/api/robots/first-robot-a1b2c3/run';
     const response = await fixture.call('GET', pathname, { headers: signed(PRINCIPALS.admin, 'GET', pathname) });
-    assert.equal(response.status, 200);
-    assertRestricted(response.json.robot, 'project/sub', 'no agent secret');
+    assert.equal(response.status, 503);
+    assert.equal(response.json.error, 'request verification is unavailable');
+    assert.equal('robot' in response.json, false);
 });

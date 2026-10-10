@@ -174,13 +174,18 @@ test('internal robot listing requires the agent origin proof without forwarded u
     await expectStatus(await fixture.get('/api/robots', { 'x-roboteam-internal-token': 'wrong-token', 'x-roboteam-listing-origin': 'agent' }), 401, 'wrong internal token');
 });
 
-test('only the exact GET /api/robots path uses the listing gate', async (t) => {
+test('only the exact GET /api/robots path uses the listing gate; every other route needs a signed entitled user', async (t) => {
     t.after(configureAgentEnv());
     const fixture = await startFixture();
     t.after(fixture.close);
     const plain = { 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'self-1', username: 'self', roles: ['selfRegistered'] } }) };
-    // The session route keeps its existing plain-header handling.
-    const session = await fixture.get(`/api/robots/${fixture.robot.id}/session/`, plain);
-    assert.equal(session.status, 409);
-    assert.equal((await fixture.get('/api/robots/', plain)).status, 404);
+    // Other routes are gated on the signed request: the plain header is unauthenticated.
+    const sessionPath = `/api/robots/${fixture.robot.id}/session/`;
+    const session = await fixture.get(sessionPath, plain);
+    assert.equal(session.status, 401);
+    assert.equal((await fixture.get('/api/robots/', plain)).status, 401);
+    await expectStatus(await fixture.get(sessionPath, signedHeaders(PRINCIPALS.explorerUser, { pathname: sessionPath })), 409, 'signed explorer session');
+    await expectStatus(await fixture.get('/api/robots/', signedHeaders(PRINCIPALS.explorerUser, { pathname: '/api/robots/' })), 404, 'signed explorer /api/robots/');
+    const refused = await expectStatus(await fixture.get(sessionPath, signedHeaders(PRINCIPALS.selfRegistered, { pathname: sessionPath })), 403, 'signed selfRegistered session');
+    assert.equal(refused.error, 'Explorer access permission is required to use RoboTeam');
 });

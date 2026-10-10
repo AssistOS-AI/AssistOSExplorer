@@ -6,8 +6,9 @@ import test from 'node:test';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
+import { authHeader, routerFetch as fetch } from './helpers/router-signed.mjs';
 
-const headers = () => ({ 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'actor', roles: ['admin'] } }) });
+const headers = () => ({ 'x-ploinky-auth-info': authHeader('actor', ['admin']) });
 
 async function fixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-pages-'));

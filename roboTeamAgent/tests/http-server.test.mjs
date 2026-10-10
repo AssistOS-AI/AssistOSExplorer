@@ -5,10 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
-
-function authHeader(userId, roles = ['user']) {
-    return JSON.stringify({ user: { id: userId, username: userId, roles } });
-}
+import { authHeader, routerFetch as fetch } from './helpers/router-signed.mjs';
 
 async function startFixture(options = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-http-test-'));

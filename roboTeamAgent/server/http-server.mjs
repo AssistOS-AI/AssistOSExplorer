@@ -8,7 +8,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
-import { authorizeRobotListing, verifiedAdminRequest } from './listing-access.mjs';
+import { ROBOFLOW_ENTITLEMENT_ERROR, ROBOTEAM_ENTITLEMENT_ERROR, authorizeRobotListing, authorizeWorkspaceRequest } from './listing-access.mjs';
 import { projectRobotView } from './robot-projection.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
 import { robotTerminalDirectory } from './robot-terminal.mjs';
@@ -23,6 +23,7 @@ const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
 const BODY_LIMIT = 64 * 1024;
 const RAW_BODY = Symbol('roboteam.rawBody');
+const ACCESS = Symbol('roboteam.access');
 const ROBOT_ID = '[a-z0-9][a-z0-9-]{2,63}';
 
 const CONTENT_TYPES = Object.freeze({
@@ -54,7 +55,10 @@ function sendError(res, status, message) {
     sendJson(res, status, { ok: false, error: message });
 }
 
-async function readJsonBody(req) {
+// The request stream is consumed once. The exact bytes are kept on the request
+// so the signature check, the JSON parser and the session proxy all see them.
+async function readRawBody(req) {
+    if (Buffer.isBuffer(req[RAW_BODY])) return req[RAW_BODY];
     const chunks = [];
     let size = 0;
     for await (const chunk of req) {
@@ -62,9 +66,12 @@ async function readJsonBody(req) {
         if (size > BODY_LIMIT) throw new Error('request body is too large');
         chunks.push(chunk);
     }
-    // The exact bytes are kept so the signed request can be verified later.
     req[RAW_BODY] = Buffer.concat(chunks);
-    const raw = req[RAW_BODY].toString('utf8');
+    return req[RAW_BODY];
+}
+
+async function readJsonBody(req) {
+    const raw = (await readRawBody(req)).toString('utf8');
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON object body is required');
@@ -187,12 +194,26 @@ function proxySessionHttp(req, res, port, publicBasePath) {
         response.pipe(res);
     });
     upstream.once('error', () => sendError(res, 502, 'robot session is unavailable'));
-    req.pipe(upstream);
+    // The gate already consumed the stream; send the bytes it verified.
+    if (Buffer.isBuffer(req[RAW_BODY])) upstream.end(req[RAW_BODY]);
+    else req.pipe(upstream);
 }
 
 function websocketFailure(socket, status, reason) {
     socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     socket.destroy();
+}
+
+const DENIAL_REASONS = Object.freeze({ 401: 'Unauthorized', 403: 'Forbidden', 503: 'Service Unavailable' });
+
+// Gate refusal for an upgrade: a JSON body like the HTTP refusals. Only the
+// status and the path are logged, never headers or the query string.
+function websocketDenial(socket, status, error, pathname) {
+    console.warn(`[roboTeamAgent] WebSocket upgrade ${pathname} rejected (${status})`);
+    socket.on('error', () => {});
+    const payload = Buffer.from(JSON.stringify({ ok: false, error }));
+    socket.write(`HTTP/1.1 ${status} ${DENIAL_REASONS[status] || 'Forbidden'}\r\nConnection: close\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${payload.length}\r\n\r\n`);
+    socket.end(payload);
 }
 
 function proxySessionWebSocket(req, socket, head, port, publicBasePath) {
@@ -430,8 +451,9 @@ export function createRoboTeamServer(options) {
     const publicDir = path.resolve(options.publicDir || DEFAULT_PUBLIC_DIR);
     const mcpPort = Number(options.mcpPort) || 7000;
 
-    const robotView = async (req, url) => ({
-        privileged: await verifiedAdminRequest(req, url, { internalToken, body: req[RAW_BODY] || Buffer.alloc(0) }),
+    // The family gate verified this request once; its signed decision is reused.
+    const robotView = (req) => ({
+        privileged: req[ACCESS]?.internal === false && req[ACCESS].canAdmin === true,
         workspaceRoot: runtimeManager.workspaceRoot,
     });
 
@@ -451,6 +473,14 @@ export function createRoboTeamServer(options) {
                 const robots = await robotStore.list();
                 return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: robots.map((robot) => publicRobot(robot, runtimeManager.status(robot.id), { privileged: listing.canAdmin, workspaceRoot: runtimeManager.workspaceRoot })) });
             }
+            // Every other route needs an internal token or a verified, Explorer-entitled user.
+            const access = await authorizeWorkspaceRequest(req, url, {
+                internalToken,
+                readBody: () => readRawBody(req),
+                refusal: pathname.startsWith('/api/roboflow') ? ROBOFLOW_ENTITLEMENT_ERROR : ROBOTEAM_ENTITLEMENT_ERROR,
+            });
+            if (!access.ok) return sendError(res, access.status, access.error);
+            req[ACCESS] = access;
             const actor = requestActor(req, internalToken);
             if (!actor) return sendError(res, 401, 'authenticated Ploinky user is required');
 
@@ -554,7 +584,7 @@ export function createRoboTeamServer(options) {
                 await runtimeManager.prepareOpenCode?.(robot.id, { seed: false });
                 runtimeManager.seedOpenCodeInBackground?.(robot);
                 await roboflow?.refreshCoverage();
-                return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), await robotView(req, url)) });
+                return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)) });
             }
             const modelsId = matchRobotPath(pathname, '/models');
             if (modelsId && req.method === 'GET') {
@@ -591,7 +621,7 @@ export function createRoboTeamServer(options) {
                 }
                 const robot = await robotStore.setCodingAgents(codingAgentsId, body.codingAgents, { model: body.model, effort: body.effort });
                 await roboflow?.refreshCoverage();
-                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), await robotView(req, url)) });
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)) });
             }
             const skillsetsId = matchRobotPath(pathname, '/skillsets');
             if (skillsetsId && ['POST', 'DELETE', 'PATCH'].includes(req.method)) {
@@ -676,20 +706,20 @@ export function createRoboTeamServer(options) {
             if (runId && req.method === 'GET') {
                 const robot = await robotStore.get(runId);
                 if (!robot) return sendError(res, 404, 'robot not found');
-                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), await robotView(req, url)) });
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)) });
             }
             if (runId && req.method === 'POST') {
                 const robot = await robotStore.get(runId);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const body = await readJsonBody(req);
                 const run = await runtimeManager.start(robot, body.mode);
-                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run, await robotView(req, url)) });
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run, robotView(req)) });
             }
             if (runId && req.method === 'DELETE') {
                 const robot = await robotStore.get(runId);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const run = await runtimeManager.stop(robot.id);
-                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run, await robotView(req, url)) });
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run, robotView(req)) });
             }
             const logsPageId = pathname.match(new RegExp(`^/robots/(${ROBOT_ID})/logs$`))?.[1];
             if (logsPageId && req.method === 'GET') {
@@ -723,6 +753,9 @@ export function createRoboTeamServer(options) {
     server.on('upgrade', async (req, socket, head) => {
         try {
             const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+            // The Router mints upgrade auth-info over an empty body.
+            const access = await authorizeWorkspaceRequest(req, url, { internalToken, refusal: ROBOTEAM_ENTITLEMENT_ERROR });
+            if (!access.ok) return websocketDenial(socket, access.status, access.error, url.pathname);
             const robotId = sessionRobotId(url.pathname);
             if (!robotId) return websocketFailure(socket, 404, 'Not Found');
             const actor = requestActor(req, internalToken);
