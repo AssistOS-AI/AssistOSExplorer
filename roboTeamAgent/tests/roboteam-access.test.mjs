@@ -329,6 +329,15 @@ test('unsigned headers are 401', async (t) => {
     }
     assert.equal(await snapshotEffects(fixture), before, 'no robot was created and no handler ran');
     assert.equal((await fixture.call('GET', '/', { headers: { 'x-roboteam-internal-token': 'wrong-token' } })).status, 401, 'wrong internal token');
+    // The same holds for every row of the route table.
+    for (const [method, target, body] of [...gatedRows(fixture.robot.id), ...roboflowRows()]) {
+        for (const [name, headers] of [['no header', {}], ['plain header claiming admin and the capability', claims]]) {
+            const response = await fixture.call(method, target, { body, headers });
+            assert.equal(response.status, 401, `${name}: ${method} ${target}`);
+            assert.deepEqual(response.json, { ok: false, error: AUTH }, `${name}: ${method} ${target}`);
+        }
+    }
+    assert.equal(await snapshotEffects(fixture), before, 'no row had a handler effect');
 });
 
 test('tampered body is 401', async (t) => {
@@ -422,6 +431,15 @@ test('verifier missing is 503', async (t) => {
             const internal = await fixture.call('GET', '/api/roboflow/workflows', { headers: internalHeaders(['user']) });
             assert.equal(internal.status, 200, 'the internal token path does not need the verifier');
             assert.equal((await fixture.call('GET', '/', { headers: {} })).status, 401, 'no header stays 401');
+            const before = await snapshotEffects(fixture);
+            for (const [method, target, body] of [...gatedRows(fixture.robot.id), ...roboflowRows()]) {
+                for (const actor of ['userA', 'admin']) {
+                    const response = await fixture.call(method, target, { user: PRINCIPALS[actor], body });
+                    assert.equal(response.status, 503, `${JSON.stringify(Object.keys(override))} ${actor} ${method} ${target}`);
+                    assert.deepEqual(response.json, { ok: false, error: UNAVAILABLE });
+                }
+            }
+            assert.equal(await snapshotEffects(fixture), before, 'no row had a handler effect');
         } finally { restore(); }
     }
 });
