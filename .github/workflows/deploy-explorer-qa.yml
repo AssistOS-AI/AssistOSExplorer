@@ -2,6 +2,11 @@ name: Deploy Explorer QA Box
 
 on:
   workflow_dispatch:
+    inputs:
+      in_place_only:
+        description: 'Update the existing installation only; fail instead of installing when the QA workspace is absent'
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-explorer-qa
@@ -312,9 +317,18 @@ jobs:
 
       - name: Update the existing Explorer QA installation in place
         id: inplace
+        env:
+          IN_PLACE_ONLY: ${{ inputs.in_place_only }}
         run: |
           set -euo pipefail
           umask 077
+          case "${IN_PLACE_ONLY:-false}" in
+            true|false) ;;
+            *)
+              echo "::error::in_place_only must be true or false"
+              exit 1
+              ;;
+          esac
           SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
             -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
             -o ServerAliveInterval=30 -o ServerAliveCountMax=5)
@@ -322,24 +336,28 @@ jobs:
           [[ "$REMOTE_DIR" =~ ^/tmp/explorer-qa-update\.[A-Za-z0-9]{8}$ ]]
           cleanup_update() {
             "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
-              "rm -f '$REMOTE_DIR/update-explorer-qa.mjs' '$REMOTE_DIR/rollback-explorer-qa.mjs' '$REMOTE_DIR/update.json'; rmdir '$REMOTE_DIR'" || true
+              "rm -f '$REMOTE_DIR/update-explorer-qa.mjs' '$REMOTE_DIR/rollback-explorer-qa.mjs' '$REMOTE_DIR/qa-in-place-guard.sh' '$REMOTE_DIR/update.json'; rmdir '$REMOTE_DIR'" || true
           }
           trap cleanup_update EXIT
-          for helper in update-explorer-qa.mjs rollback-explorer-qa.mjs; do
+          for helper in update-explorer-qa.mjs rollback-explorer-qa.mjs qa-in-place-guard.sh; do
             scp -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
               -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
               "$GITHUB_WORKSPACE/.github/scripts/$helper" "${SSH_USER}@${SSH_HOST}:$REMOTE_DIR/$helper"
           done
           status=0
           "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
-            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_DIR'" \
+            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_DIR' '${IN_PLACE_ONLY:-false}'" \
             > "$RUNNER_TEMP/explorer-qa-update-result.json" <<'UPDATE' || status=$?
           set -euo pipefail
           update_dir="$1"
+          in_place_only="${2:-}"
           [[ "$update_dir" =~ ^/tmp/explorer-qa-update\.[A-Za-z0-9]{8}$ ]]
           test "$(id -un)" = admin
           test "$HOME" = /home/admin
           workspace=/home/admin/explorerQaWorkspace
+          # In-place-only admission: runs under the lock, before any engine probe,
+          # bootstrap or provisioning command. Exits non-zero (43) on an absent workspace.
+          bash "$update_dir/qa-in-place-guard.sh" "$workspace" "$in_place_only"
           if [ ! -e "$workspace" ] && [ ! -L "$workspace" ]; then
             # Prove absence before the fresh-install step can provision a tunnel.
             for engine in podman docker; do
@@ -369,6 +387,9 @@ jobs:
             echo '[deploy-qa] No existing workspace; proceeding to first installation.'
           elif [ "$status" -eq 0 ]; then
             echo 'updated=true' >> "$GITHUB_OUTPUT"
+          elif [ "$status" -eq 43 ]; then
+            echo '::error::in_place_only was requested but the QA workspace is absent. Nothing was provisioned and the fresh-install step is skipped.'
+            exit 43
           else
             echo '::error::In-place update failed. The deploy workflow will not recreate or destroy this installation.'
             exit "$status"
