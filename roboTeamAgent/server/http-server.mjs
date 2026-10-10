@@ -207,13 +207,18 @@ function websocketFailure(socket, status, reason) {
 const DENIAL_REASONS = Object.freeze({ 401: 'Unauthorized', 403: 'Forbidden', 503: 'Service Unavailable' });
 
 // Gate refusal for an upgrade: a JSON body like the HTTP refusals. Only the
-// status and the path are logged, never headers or the query string.
+// status and the path are logged, never headers or the query string. The
+// socket is destroyed once the response has flushed, so a peer that never
+// closes its side cannot keep the connection open; the timer is a safety net.
 function websocketDenial(socket, status, error, pathname) {
     console.warn(`[roboTeamAgent] WebSocket upgrade ${pathname} rejected (${status})`);
     socket.on('error', () => {});
     const payload = Buffer.from(JSON.stringify({ ok: false, error }));
     socket.write(`HTTP/1.1 ${status} ${DENIAL_REASONS[status] || 'Forbidden'}\r\nConnection: close\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${payload.length}\r\n\r\n`);
-    socket.end(payload);
+    const safety = setTimeout(() => socket.destroy(), 2000);
+    safety.unref();
+    socket.once('close', () => clearTimeout(safety));
+    socket.end(payload, () => socket.destroy());
 }
 
 function proxySessionWebSocket(req, socket, head, port, publicBasePath) {

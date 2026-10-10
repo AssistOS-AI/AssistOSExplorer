@@ -171,6 +171,7 @@ test('create, coding-agent update and run responses use the same projection', as
             if (name === 'admin+guest' || (['ordinary member', 'named non-admin'].includes(name) && ['/api/robots', `/api/robots/${robotId}/coding-agents`].includes(pathname))) {
                 assert.equal(response.status, 403, `${label} ${name}`);
                 assert.equal('robot' in response.json, false, `${label} ${name}: no robot payload`);
+                if (name === 'admin+guest') assert.equal(response.json.error, 'Explorer access permission is required to use RoboTeam', `${label} ${name}: gate refusal`);
                 continue;
             }
             assert.equal(response.status, status, `${label} ${name}`);

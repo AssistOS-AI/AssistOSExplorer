@@ -131,7 +131,7 @@ async function startFixture(t, { withRoboFlow = true } = {}) {
     const port = server.address().port;
     const baseUrl = `http://127.0.0.1:${port}`;
     const fixture = {
-        root, workspaceRoot, robotStore, robot, roboflow, runtimeManager, calls, ports, port, baseUrl,
+        root, workspaceRoot, robotStore, robot, roboflow, runtimeManager, calls, ports, port, baseUrl, server,
         // One request. A user is signed over this exact method, target and body.
         async call(method, target, { user, body, headers = {}, raw } = {}) {
             const payload = raw !== undefined ? raw : body === undefined ? undefined : JSON.stringify(body);
@@ -310,6 +310,18 @@ test('entitled users, administrators and internal callers reach the handler answ
     }
     assert.deepEqual(mismatches, []);
     assert.ok(reached.length > 150, `probed ${reached.length} entitled requests`);
+    // Entitled orphan rows end in the handler's own not-found answer and start nothing.
+    const startedBefore = fixture.calls.startTask.length;
+    for (const [method, target, body] of [
+        ['GET', `/api/robots/${ABSENT}/run`], ['POST', `/api/robots/${ABSENT}/run`, { mode: 'browser' }], ['DELETE', `/api/robots/${ABSENT}/run`],
+        ['GET', `/robots/${ABSENT}/logs`], ['GET', `/api/robots/${ABSENT}/logs`],
+        ['POST', '/api/control', { robotName: ABSENT, operation: 'start-simple-task', task: 'authorization probe, never run' }],
+    ]) {
+        const response = await fixture.call(method, target, { user: PRINCIPALS.userA, body });
+        assert.equal(response.status, 404, `${method} ${target}`);
+        assert.equal(response.json.error, 'robot not found', `${method} ${target}`);
+    }
+    assert.equal(fixture.calls.startTask.length, startedBefore, 'startTask was not called for an absent robot');
 });
 
 test('unsigned headers are 401', async (t) => {
@@ -622,15 +634,15 @@ test('upgrade: an entitled user with a running robot is switched to the session,
     assert.equal(/SENTINEL|invocationToken|x-ploinky/.test(line), false, 'no query, cookie or header value is logged');
 });
 
-test('twenty parallel signed requests succeed and at most one of ten replays does', async (t) => {
+test('twenty parallel signed requests succeed and exactly one of ten replays does', async (t) => {
     const fixture = await startFixture(t);
     const results = await Promise.all(Array.from({ length: 20 }, (_, index) => fixture.call('GET', '/styles.css', { user: index % 2 ? PRINCIPALS.userA : PRINCIPALS.userB })));
     assert.deepEqual(results.map((result) => result.status), Array(20).fill(200));
     const headers = mint(PRINCIPALS.userA, 'GET', '/app.js');
     const replays = await Promise.all(Array.from({ length: 10 }, () => fixture.call('GET', '/app.js', { headers })));
     const ok = replays.filter((result) => result.status === 200).length;
-    assert.ok(ok <= 1, `at most one replay succeeds, saw ${ok}`);
-    assert.equal(replays.filter((result) => result.status === 401).length, 10 - ok);
+    assert.equal(ok, 1, `exactly one replay succeeds, saw ${ok}`);
+    assert.equal(replays.filter((result) => result.status === 401).length, 9);
 });
 
 test('the bare route root without a trailing slash is signed as "/" and reaches the page', async (t) => {
@@ -643,4 +655,31 @@ test('the bare route root without a trailing slash is signed as "/" and reaches 
     // would not verify against the agent's "/": it fails closed with 401.
     const fallback = await fixture.call('GET', '/', { headers: mint(PRINCIPALS.userA, 'GET', '/', '', { externalTarget: '', routePath: PREFIX }) });
     assert.equal(fallback.status, 401);
+});
+
+test('a refused upgrade closes the connection even when the peer stays half-open', async (t) => {
+    const fixture = await startFixture(t);
+    // allowHalfOpen: the client does not answer the server's FIN with its own.
+    const socket = net.connect({ host: '127.0.0.1', port: fixture.port, allowHalfOpen: true });
+    const received = [];
+    socket.on('data', (chunk) => received.push(chunk));
+    socket.on('error', () => {});
+    try {
+        await new Promise((resolve) => socket.once('connect', resolve));
+        // No signature and no end of the client side: the peer never closes.
+        socket.write(`GET /api/robots/${fixture.robot.id}/session/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+        const connections = () => new Promise((resolve) => fixture.server.getConnections((_, count) => resolve(count)));
+        const deadline = Date.now() + 5000;
+        let open = await connections();
+        while (open !== 0 && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            open = await connections();
+        }
+        assert.equal(open, 0, 'the server closed the refused upgrade connection');
+        const text = Buffer.concat(received).toString('utf8');
+        assert.match(text, /^HTTP\/1\.1 401 Unauthorized/);
+        assert.ok(text.endsWith(JSON.stringify({ ok: false, error: AUTH })), 'the JSON body was delivered before the close');
+    } finally {
+        socket.destroy();
+    }
 });
