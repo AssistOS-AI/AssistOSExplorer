@@ -25,6 +25,4 @@ The Explorer history view must recover from transient gateway failures (HTTP 502
 
 After an unsuccessful history load, the dashboard must show a concise, actionable message and a Retry history control without exposing a raw gateway response. Live resource polling remains independent of history recovery. A new runtime selection or history interval, a cleared selection, a tab change, or dashboard unload must cancel pending retry delays and invalidate obsolete results and errors, including when the replacement interval is invalid. The shared MCP transport may finish an already-issued request, but its abandoned response must not update the interface or schedule another attempt.
 
-## Conclusion
-
 History preserves enough metric and threshold context for administrators to compare resource peaks with the settings that were active when they were recorded.

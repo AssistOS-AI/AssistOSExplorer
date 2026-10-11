@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>tasksAgent Docs - Architecture</title>
+    <title>Tasks Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,24 +12,12 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="tasksAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html" aria-current="page">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Architecture</h1>
-                    <p><code>tasksAgent</code> is an intermediary layer between Explorer task user interface (UI) actions and repository backlog file operations, routed through <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> over Model Context Protocol (MCP).</p>
+                    <p><code><a href="wiki.html#definition-tasksagent">tasksAgent</a></code> is an intermediary layer between Explorer task user interface (UI) actions and repository backlog file operations, routed through <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> over <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>).</p>
                 </section>
 
                 <section>
@@ -44,7 +32,7 @@
                         </thead>
                         <tbody>
                             <tr>
-                                <td>Model Context Protocol tool contracts</td>
+                                <td><a href="wiki.html#definition-mcp">Model Context Protocol</a> tool contracts</td>
                                 <td><code>tasksAgent/mcp-config.json</code></td>
                                 <td>Declares task tools, schemas, wrapper command, and per-tool <code>TOOL_NAME</code>.</td>
                             </tr>
@@ -56,7 +44,7 @@
                             <tr>
                                 <td>Dispatcher and handlers</td>
                                 <td><code>tasksAgent/tools/tasks_tool.mjs</code></td>
-                                <td>Parses Model Context Protocol envelope data, validates paths and arguments, executes tool logic.</td>
+                                <td>Parses <a href="wiki.html#definition-mcp">Model Context Protocol</a> envelope data, validates paths and arguments, executes tool logic.</td>
                             </tr>
                             <tr>
                                 <td>Markdown backlog persistence</td>
@@ -74,7 +62,7 @@
 
                 <section>
                     <h2>Runtime Boundary</h2>
-                    <p>AgentServer executes task tools from MCP configuration. Each operation runs through the wrapper script, then through dispatcher logic that validates <code>repoPath</code>/<code>backlogPath</code> constraints, and then applies backlog CRUD behavior through the shared Markdown persistence layer.</p>
+                    <p>AgentServer executes task tools from <a href="wiki.html#definition-mcp">MCP</a> configuration. Each operation runs through the wrapper script, then through dispatcher logic that validates <code>repoPath</code>/<code>backlogPath</code> constraints, and then applies backlog CRUD behavior through the shared Markdown persistence layer.</p>
                     <pre><code>{
   "name": "task_list",
   "command": "tools/tasks_tool.sh",
@@ -87,7 +75,7 @@
 
                 <section>
                     <h2>Intermediary Guarantee</h2>
-                    <p>Explorer does not write backlog files directly as a backend authority. It calls <code>tasksAgent</code> contracts, and the agent enforces repository scope, task normalization, and persistence behavior before returning results.</p>
+                    <p>Explorer does not write backlog files directly as a backend authority. It calls <code><a href="wiki.html#definition-tasksagent">tasksAgent</a></code> contracts, and the agent enforces repository scope, task normalization, and persistence behavior before returning results.</p>
                     <div class="doc-callout doc-callout--important">
                         <p>The architecture objective is contract-safe task operations, not moving backlog logic into Explorer host internals.</p>
                     </div>

@@ -31,6 +31,4 @@ The affected actor is the meeting room using Meeting Notes. At the configured 45
 
 The affected actor is the room control plane managing a running secretary. The worker reports listening, queued, analyzing, updating, and retrying phases, persists an encrypted recovery journal, retries transient failures with bounded backoff, and serializes durable apply before later analysis. Reset cancels obsolete retries, removes the journal, and disconnects the worker. The governing boundary is that the worker has no authority to replace a document directly outside the collaboration contract.
 
-## Conclusion
-
 Meeting Notes succeeds when admitted transcript text produces cumulative, validated, recoverable notes while room ownership and collaboration authorization remain authoritative.

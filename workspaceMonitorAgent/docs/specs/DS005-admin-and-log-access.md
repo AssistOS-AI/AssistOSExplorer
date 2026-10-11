@@ -7,7 +7,7 @@ summary: Defines administrator authorization, settings validation, Ploinky log o
 
 ## Introduction
 
-Workspace Monitor exposes operational controls only to a verified administrator.
+[Workspace Monitor](wiki.html#definition-workspace-monitor) exposes operational controls only to a verified administrator.
 
 ## Core Content
 
@@ -25,6 +25,4 @@ Refreshes and Reload of the same selection must preserve useful records while a 
 
 Changing the source, archive, or search must invalidate older in-flight results. Leaving the log view or unloading the WebSkel presenter must cancel scheduled polling and ignore late responses. Archive and search views must state that live checking is paused; clearing search returns to the selected log. These presentation safeguards do not change Ploinky's file ownership, rotation, authorization, or event-generation policy.
 
-## Conclusion
-
-Authorization and log ownership remain with verified runtime context and Ploinky services, while Workspace Monitor owns input validation and the administrator-facing tool contract.
+Authorization and log ownership remain with verified runtime context and Ploinky services, while [Workspace Monitor](wiki.html#definition-workspace-monitor) owns input validation and the administrator-facing tool contract.

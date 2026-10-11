@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>soplangAgent Docs - Overview</title>
+    <title>SOPLang Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,34 +12,35 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="soplangAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html" aria-current="page">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>SOPLang Runtime In Explorer</h1>
                     <p>Explorer documents can trigger builds, command execution, and runtime behaviors that belong to the <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> toolchain, but that logic should not live in the browser or be reimplemented by each user interface (UI) action.</p>
                 </section>
+<section id="documentation-map" class="documentation-map">
+<h2>Documentation Map</h2>
+<div class="documentation-map__scroll"><table><thead><tr><th scope="col">SOPLang</th><th scope="col">Reference</th></tr></thead><tbody>
+<tr><td><a href="index.html">Overview</a><p>Purpose, responsibilities, and the principal runtime workflows.</p></td><td><a href="wiki.html">Wiki</a><p>Canonical terminology, ownership, relationships, and limitations.</p></td></tr>
+<tr><td><a href="architecture.html">Architecture</a><p>Component relationships and the boundaries between the agent and Explorer.</p></td><td><a href="specsLoader.html?spec=matrix.md">Specifications</a><p>The specification matrix and normative project contracts.</p></td></tr>
+<tr><td><a href="execution-workflow.html">Tool Execution Workflow</a><p>Request processing, validation, dispatch, and result handling.</p></td><td></td></tr>
+<tr><td><a href="mcp-tools.html">MCP Tools</a><p>Declared tool interfaces and the operations available to callers.</p></td><td></td></tr>
+<tr><td><a href="integrations.html">Ploinky and Explorer Integration</a><p>How the agent connects to Ploinky and the Explorer shell.</p></td><td></td></tr>
+<tr><td><a href="configuration.html">Manifest and Environment</a><p>Manifest settings, environment variables, and startup requirements.</p></td><td></td></tr>
+</tbody></table></div>
+<p>Start with SOPLang / Overview for the project purpose, then follow the remaining SOPLang pages for the interfaces and workflows. Reference / Wiki defines project terminology; Reference / Specifications opens the contracts, including the coding style and test organization in DS001.</p>
+</section>
+
 
                 <section class="highlight-box">
                     <h2>SOPLang Runtime Boundary</h2>
-                    <p><code>soplangAgent</code> exposes that runtime through Model Context Protocol (MCP). It bridges workspace application programming interfaces (APIs) and runtime plugins into a stable tool surface declared in <code>soplangAgent/mcp-config.json</code>, while command registration, build orchestration, and skill discovery remain on the agent side.</p>
+                    <p><code><a href="wiki.html#definition-soplangagent">soplangAgent</a></code> exposes that runtime through <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>). It bridges workspace application programming interfaces (APIs) and runtime plugins into a stable tool surface declared in <code>soplangAgent/mcp-config.json</code>, while command registration, build orchestration, and skill discovery remain on the agent side.</p>
                 </section>
 
                 <section>
                     <h2>Runtime Behavior</h2>
-                    <p>At runtime each MCP tool call is executed through <code>soplangAgent/soplang-tool.sh</code>. Explorer and related flows call the agent for build and execution tasks, while SOPLang-specific orchestration stays inside <code>soplangAgent</code> rather than leaking into document plugins or toolbar code. Active Markdown discovery excludes private <code>.data</code> trees while retaining the public root <code>.ploinky/repos</code> source mount. Runtime logs <code>last-tool.log</code> and <code>achilles-debug.log</code> stay under the configured <code>LOGS_FOLDER</code>, defaulting to <code>$HOME/.soplang/logs</code>.</p>
+                    <p>At runtime each <a href="wiki.html#definition-mcp">MCP</a> tool call is executed through <code>soplangAgent/soplang-tool.sh</code>. Explorer and related flows call the agent for build and execution tasks, while SOPLang-specific orchestration stays inside <code><a href="wiki.html#definition-soplangagent">soplangAgent</a></code> rather than leaking into document plugins or toolbar code. Active Markdown discovery excludes private <code>.data</code> trees while retaining the public root <code>.ploinky/repos</code> source mount. Runtime logs <code>last-tool.log</code> and <code>achilles-debug.log</code> stay under the configured <code>LOGS_FOLDER</code>, defaulting to <code>$HOME/.soplang/logs</code>.</p>
                     <p>The Advanced Editor SCRIPTA plugin is a thin adapter over Explorer's shared, whitelisted variants component. The shared component renders tabs, votes, and proposals; the plugin retains document identity and persistence through the Advanced Editor presenter. Variants use canonical <code>p-variant-*</code> operations: everyone may vote, while only the participant who added a variant may edit or delete it.</p>
                     <div class="doc-callout">
                         <p><strong>Validation rule:</strong> run <code>npm test</code> from <code>soplangAgent/</code> for every code change, together with docs and specs updates.</p>

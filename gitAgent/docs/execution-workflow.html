@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>gitAgent Docs - Tool Execution Workflow</title>
+    <title>Git Agent Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,24 +12,12 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="gitAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html" aria-current="page">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Tool Execution Workflow</h1>
-                    <p>Every Model Context Protocol (MCP) tool invocation runs in a fresh process lifecycle started from <code>gitAgent/tools/git_tool.sh</code> and implemented in <code>git_tool.mjs</code>. The wrapper prefers the verified invocation grant attached by Ploinky AgentServer and uses that grant when nested capability calls need delegated user continuity.</p>
+                    <p>Every <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) tool invocation runs in a fresh process lifecycle started from <code>gitAgent/tools/git_tool.sh</code> and implemented in <code>git_tool.mjs</code>. The wrapper prefers the verified invocation grant attached by <a href="wiki.html#definition-ploinky">Ploinky</a> AgentServer and uses that grant when nested capability calls need delegated user continuity.</p>
                 </section>
 
                 <section>
@@ -48,19 +36,19 @@
   class Explorer client
   class Router,AgentServer routing
   class Wrapper,Dispatcher,Service runtime
-  class Result result</pre><figcaption><em>A Git request crosses the routed MCP boundary before the agent runs a validated operation.</em></figcaption></figure>
+  class Result result</pre><figcaption><em>A Git request crosses the routed <a href="wiki.html#definition-mcp">MCP</a> boundary before the agent runs a validated operation.</em></figcaption></figure>
                 </section>
 
                 <section>
                     <h2>Detailed Stages</h2>
                     <ol>
-                        <li><strong>Dispatch:</strong> AgentServer receives MCP tool request and runs <code>tools/git_tool.sh</code> for the tool.</li>
-                        <li><strong>Envelope parsing:</strong> <code>git_tool.mjs</code> parses stdin payload, extracts normalized input from MCP envelope variants, and prefers router-verified invocation metadata over legacy auth blobs.</li>
+                        <li><strong>Dispatch:</strong> AgentServer receives <a href="wiki.html#definition-mcp">MCP</a> tool request and runs <code>tools/git_tool.sh</code> for the tool.</li>
+                        <li><strong>Envelope parsing:</strong> <code>git_tool.mjs</code> parses stdin payload, extracts normalized input from <a href="wiki.html#definition-mcp">MCP</a> envelope variants, and prefers router-verified invocation metadata over legacy auth blobs.</li>
                         <li><strong>Tool resolution:</strong> tool identity is resolved from <code>TOOL_NAME</code> and envelope fallback fields; unsupported names fail explicitly.</li>
                         <li><strong>Path policy:</strong> repository path arguments are constrained to allowed roots from <code>ASSISTOS_FS_ROOT</code>, <code>WORKSPACE_ROOT</code>, or <code>PLOINKY_WORKSPACE_ROOT</code>.</li>
                         <li><strong>Operation execution:</strong> Git tools call <code>createGitService</code>; auth tools call GitHub auth handlers.</li>
                         <li><strong>Remote token fallback:</strong> push and pull can resolve tokens from auth metadata or stored token state.</li>
-                        <li><strong>Delegated DPU call:</strong> when GitHub auth or token storage needs a user-owned secret operation, the client forwards the router-minted <code>dpuGitSecrets</code> grant as <code>x-ploinky-user-delegation</code>, signs a DS013 Agent Assertion with <code>gitAgent</code>'s own <code>PLOINKY_AGENT_SECRET</code>, and calls only DPU's canonical authenticated <code>dpu_secret_*</code> tools through the router. The router verifies the source agent assertion and user delegation, applies MCP policy, and mints the DPU-audience invocation used by domain code.</li>
+                        <li><strong>Delegated DPU call:</strong> when GitHub auth or token storage needs a user-owned secret operation, the client forwards the router-minted <code>dpuGitSecrets</code> grant as <code>x-ploinky-user-delegation</code>, signs a DS013 Agent Assertion with <code><a href="wiki.html#definition-gitagent">gitAgent</a></code>'s own <code>PLOINKY_AGENT_SECRET</code>, and calls only DPU's canonical authenticated <code>dpu_secret_*</code> tools through the router. The router verifies the source agent assertion and user delegation, applies <a href="wiki.html#definition-mcp">MCP</a> policy, and mints the DPU-audience invocation used by domain code.</li>
                         <li><strong>Response emission:</strong> tool result is serialized to stdout; failures return <code>{ "ok": false, "error": ... }</code>.</li>
                     </ol>
                 </section>

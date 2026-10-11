@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>tasksAgent Docs - Integrations</title>
+    <title>Tasks Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,36 +12,24 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="tasksAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html" aria-current="page">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Ploinky and Explorer Integration</h1>
-                    <p><code>tasksAgent</code> is consumed as a <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> Model Context Protocol (MCP) agent and integrates with Explorer task user interface (UI) through dedicated IDE plugin components.</p>
+                    <p><code><a href="wiki.html#definition-tasksagent">tasksAgent</a></code> is consumed as a <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) agent and integrates with Explorer task user interface (UI) through dedicated IDE plugin components.</p>
                 </section>
 
                 <section>
                     <h2>Ploinky Runtime Integration</h2>
-                    <p>Agent lifecycle and environment exposure are defined in <code>tasksAgent/manifest.json</code>, while task contracts are declared in <code>tasksAgent/mcp-config.json</code>. AgentServer executes these tools in workspace context and returns MCP responses to Explorer clients without exposing backlog internals directly.</p>
+                    <p>Agent lifecycle and environment exposure are defined in <code>tasksAgent/manifest.json</code>, while task contracts are declared in <code>tasksAgent/mcp-config.json</code>. AgentServer executes these tools in workspace context and returns <a href="wiki.html#definition-mcp">MCP</a> responses to Explorer clients without exposing backlog internals directly.</p>
                 </section>
 
                 <section>
                     <h2>AssistOSExplorer Integration</h2>
-                    <p>The practical consumer is the internal <code>AssistOSExplorer</code> repository. Explorer plugin UI triggers task operations through MCP calls and depends on this agent for safe backlog CRUD, listing, and reorder behavior.</p>
+                    <p>The practical consumer is the internal <code>AssistOSExplorer</code> repository. Explorer plugin UI triggers task operations through <a href="wiki.html#definition-mcp">MCP</a> calls and depends on this agent for safe backlog CRUD, listing, and reorder behavior.</p>
                     <div class="doc-callout">
-                        <p>Explorer remains presentation and interaction layer; <code>tasksAgent</code> remains backend authority for task-file operations.</p>
+                        <p>Explorer remains presentation and interaction layer; <code><a href="wiki.html#definition-tasksagent">tasksAgent</a></code> remains backend authority for task-file operations.</p>
                     </div>
                 </section>
 

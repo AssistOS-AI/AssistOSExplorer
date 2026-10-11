@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>dpuAgent Docs - Architecture</title>
+    <title>DPU Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,25 +12,12 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="dpuAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html" aria-current="page">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                        <a href="research-data.html">Research Data</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Architecture</h1>
-                    <p>`dpuAgent` separates confidential metadata, permissions, secret values, and confidential file content so each layer can be controlled independently.</p>
+                    <p>`<a href="wiki.html#definition-dpuagent">dpuAgent</a>` separates confidential metadata, permissions, secret values, and confidential file content so each layer can be controlled independently.</p>
                 </section>
 
                 <section>
@@ -58,7 +45,7 @@
                             </tr>
                             <tr>
                                 <td><code>lib/dpu-store-internal/permissions-manifest.mjs</code></td>
-                                <td>Canonical principal identities and access control list (ACL) mutation helpers.</td>
+                                <td>Canonical principal identities and access control list (<a href="wiki.html#definition-acl">ACL</a>) mutation helpers.</td>
                             </tr>
                             <tr>
                                 <td><code>lib/dpu-store-internal/identity-acl.mjs</code></td>
@@ -66,7 +53,7 @@
                             </tr>
                             <tr>
                                 <td><code>tools/dpu_tool.mjs</code></td>
-                                <td>Model Context Protocol (MCP) tool dispatch, argument normalization, and auth envelope extraction.</td>
+                                <td><a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) tool dispatch, argument normalization, and auth envelope extraction.</td>
                             </tr>
                         </tbody>
                     </table>
@@ -74,7 +61,7 @@
 
                 <section>
                     <h2>Storage Layout</h2>
-                    <p>The required <code>DPU_DATA_ROOT</code> keeps metadata files and encrypted content in separate places. Ploinky mounts the managed <code>.data/dpu-data</code> storage at <code>/dpu-data</code>:</p>
+                    <p>The required <code>DPU_DATA_ROOT</code> keeps metadata files and encrypted content in separate places. <a href="wiki.html#definition-ploinky">Ploinky</a> mounts the managed <code>.data/dpu-data</code> storage at <code>/dpu-data</code>:</p>
                     <pre><code>/dpu-data/
   state.json
   permissions.manifest.json
@@ -86,7 +73,7 @@
 
                 <section>
                     <h2>What Explorer Delegates</h2>
-                    <p>Explorer does not decide who can read a secret value, who can update a confidential object, or how those records are stored. It asks DPU for actor-filtered results and drives the user interface from that response. That keeps the security and storage logic in one place instead of scattering it across plugins and views.</p>
+                    <p>Explorer does not decide who can read a secret value, who can update a confidential object, or how those records are stored. It asks <a href="wiki.html#definition-dpuagent">DPU</a> for actor-filtered results and drives the user interface from that response. That keeps the security and storage logic in one place instead of scattering it across plugins and views.</p>
                 </section>
             </div>
         </div>

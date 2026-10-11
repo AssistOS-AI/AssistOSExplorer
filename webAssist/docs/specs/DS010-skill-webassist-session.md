@@ -7,7 +7,7 @@ summary: Defines the DS010-skill-webassist-session contract for WebAssist.
 
 ## Introduction
 
-This specification defines the active DS010-skill-webassist-session contract for WebAssist.
+This specification defines the active DS010-skill-webassist-session contract for [WebAssist](wiki.html#definition-webassist).
 
 ## Core Content
 
@@ -28,6 +28,4 @@ This specification defines the active DS010-skill-webassist-session contract for
 - Uses the runtime `updateSessionProfile` function.
 - Does not call the LLM.
 
-## Conclusion
-
-WebAssist must preserve the responsibilities and boundaries stated by this specification.
+[WebAssist](wiki.html#definition-webassist) must preserve the responsibilities and boundaries stated by this specification.

@@ -7,7 +7,7 @@ summary: Defines the dpuAgent contract covered by DS002-storage-architecture.
 
 ## Introduction
 
-This specification defines the active contract for dpuAgent.
+This specification defines the active contract for [dpuAgent](wiki.html#definition-dpuagent).
 
 ## Core Content
 
@@ -15,15 +15,15 @@ This specification defines the active contract for dpuAgent.
 
 ### Summary
 
-`dpuAgent` stores confidential state in a dedicated storage root and keeps metadata, permissions, secret values, and confidential file content in separate files or directories.
+[`dpuAgent`](wiki.html#definition-dpuagent) stores confidential state in a dedicated storage root and keeps metadata, permissions, secret values, and confidential file content in separate files or directories.
 
 ### Background / Problem Statement
 
-The DPU domain has conflicting storage requirements. Lists and navigation need lightweight metadata. Permission checks need a canonical access control list (ACL) model. Secret values and confidential file bodies need encrypted persistence. A single flat store would make those responsibilities harder to reason about and easier to misuse.
+The [DPU](wiki.html#definition-dpuagent) domain has conflicting storage requirements. Lists and navigation need lightweight metadata. Permission checks need a canonical access control list ([ACL](wiki.html#definition-acl)) model. Secret values and confidential file bodies need encrypted persistence. A single flat store would make those responsibilities harder to reason about and easier to misuse.
 
 ### Storage Layout
 
-The storage root is supplied explicitly through required `DPU_DATA_ROOT`. Ploinky mounts the managed host storage `.data/dpu-data` at `/dpu-data`:
+The storage root is supplied explicitly through required `DPU_DATA_ROOT`. [Ploinky](wiki.html#definition-ploinky) mounts the managed host storage `.data/dpu-data` at `/dpu-data`:
 
 ```text
 /dpu-data/
@@ -42,7 +42,7 @@ The layers have separate roles:
 - `blobs/` stores encrypted confidential file content
 - `.lock/` is used by the file lock
 
-Agent secret-role policy lives inside `permissions.manifest.json` under `agentPolicies[<principalId>].secrets.allowedRoles`. DPU does not consult an agent manifest when deciding whether an agent may receive a secret role. Fresh storage roots seed the same-repository `gitAgent` principal with `["read"]`; existing manifests are never overwritten or backfilled automatically.
+Agent secret-role policy lives inside `permissions.manifest.json` under `agentPolicies[<principalId>].secrets.allowedRoles`. [DPU](wiki.html#definition-dpuagent) does not consult an agent manifest when deciding whether an agent may receive a secret role. Fresh storage roots seed the same-repository `gitAgent` principal with `["read"]`; existing manifests are never overwritten or backfilled automatically.
 
 ### Structural Separation
 
@@ -70,6 +70,4 @@ Workspace-root resolution is:
 3. `WORKSPACE_ROOT`
 4. `process.cwd()`
 
-## Conclusion
-
-dpuAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+[dpuAgent](wiki.html#definition-dpuagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.

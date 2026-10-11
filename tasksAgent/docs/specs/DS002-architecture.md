@@ -7,7 +7,7 @@ summary: Defines the tasksAgent contract covered by DS002-architecture.
 
 ## Introduction
 
-This specification defines the active contract for tasksAgent.
+This specification defines the active contract for [tasksAgent](wiki.html#definition-tasksagent).
 
 ## Core Content
 
@@ -15,11 +15,11 @@ This specification defines the active contract for tasksAgent.
 
 ### Role of This Document
 
-This document defines mandatory architecture rules for `tasksAgent` as a Ploinky Model Context Protocol (MCP) agent.
+This document defines mandatory architecture rules for [`tasksAgent`](wiki.html#definition-tasksagent) as a [Ploinky](wiki.html#definition-ploinky) [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) agent.
 
 ### Architectural Boundary
 
-The architecture boundary starts at Model Context Protocol (MCP) tool invocation and ends at serialized operation response. Explorer user interface (UI) rendering and host interactions remain outside this boundary. Backlog file execution logic remains inside the agent.
+The architecture boundary starts at [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) tool invocation and ends at serialized operation response. Explorer user interface (UI) rendering and host interactions remain outside this boundary. [Backlog](wiki.html#definition-backlog) file execution logic remains inside the agent.
 
 ### Architecture Shape
 
@@ -39,7 +39,7 @@ Requirement A4: repository-root and path-extension validation shall execute befo
 
 Requirement A5: task mutation flows shall route through the shared Markdown persistence functions and return serialized outcomes.
 
-Requirement A6: Explorer integration shall call MCP tools and shall not embed private backlog runtime operations.
+Requirement A6: Explorer integration shall call [MCP](wiki.html#definition-mcp) tools and shall not embed private backlog runtime operations.
 
 ### Constraints
 
@@ -53,7 +53,7 @@ Constraint K4: contract behavior cannot depend on undocumented envelope fields.
 
 ### Invariants
 
-Invariant V1: one MCP tool request maps to one declared operation path.
+Invariant V1: one [MCP](wiki.html#definition-mcp) tool request maps to one declared operation path.
 
 Invariant V2: path and extension policy remain mandatory for backlog and history files.
 
@@ -65,6 +65,4 @@ Invariant V4: IDE plugin channel remains integration surface, while backend sema
 
 Architecture validation succeeds when declared tools execute through wrapper and dispatcher flow, path and file-type constraints are enforced, backlog persistence behavior remains consistent, and Explorer integration remains decoupled from backend internals.
 
-## Conclusion
-
-tasksAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+[tasksAgent](wiki.html#definition-tasksagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.

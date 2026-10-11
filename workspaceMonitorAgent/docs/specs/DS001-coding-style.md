@@ -7,7 +7,7 @@ summary: Defines local module, storage, security, UI, and test conventions for W
 
 ## Introduction
 
-This specification defines the implementation rules for the Workspace Monitor agent and its Explorer plugin.
+This specification defines the implementation rules for the [Workspace Monitor](wiki.html#definition-workspace-monitor) agent and its Explorer plugin.
 
 ## Core Content
 
@@ -17,8 +17,6 @@ The MCP wrapper must derive identity from verified invocation metadata and must 
 
 Tests must remain under workspaceMonitorAgent/tests/ and must cover settings normalization, authorization, collection cadence, SQLite history, and Ploinky log calls. The local package test command is npm test.
 
-AchillesAgentLib use is authorized when supplied by the Ploinky runtime. Any LLM interaction must use the runtime-configured LLMAgent class and environment-based settings with repository-level manual overrides. Workspace Monitor currently has no LLM interaction and must not add one without an explicit contract.
+AchillesAgentLib use is authorized when supplied by the Ploinky runtime. Any LLM interaction must use the runtime-configured LLMAgent class and environment-based settings with repository-level manual overrides. [Workspace Monitor](wiki.html#definition-workspace-monitor) currently has no LLM interaction and must not add one without an explicit contract.
 
-## Conclusion
-
-Small modules, verified authorization, durable storage, and colocated tests keep Workspace Monitor safe to operate.
+Small modules, verified authorization, durable storage, and colocated tests keep [Workspace Monitor](wiki.html#definition-workspace-monitor) safe to operate.

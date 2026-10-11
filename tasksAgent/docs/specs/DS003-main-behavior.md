@@ -1,72 +1,27 @@
 ---
 title: DS003-main-behavior
-summary: Defines the tasksAgent contract covered by DS003-main-behavior.
+summary: Defines task and history operations through Explorer with repository-confined storage and explicit errors.
 ---
 
 # DS003-main-behavior
 
 ## Introduction
 
-The main behavior of tasksAgent is the user and integration outcome described by this contract.
+The [Tasks agent](wiki.html#definition-tasksagent) lets workspace users create, inspect, reorder, update, and complete tasks in repository backlog files through Explorer and [MCP](wiki.html#definition-mcp) tools.
 
 ## Core Content
 
-### DS03 - MCP Tool Contracts and Invocation Lifecycle
+### Main Behavior Components
 
-### Role of This Document
+| Name | Explanation |
+| --- | --- |
+| [Backlog](wiki.html#definition-backlog) operations through Explorer | Users manage task records and completion history through the owning agent. |
+| Repository-confined task storage | Users can change only supported backlog and history files inside the selected repository. |
 
-This document defines contract and lifecycle guarantees for `tasksAgent` Model Context Protocol (MCP) operations.
+### Backlog operations through Explorer
 
-### Contract Surface
+An Explorer task action invokes the declared configuration, list, get, create, update, delete, history, or reorder tool. The agent reads the selected Markdown backlog, applies the requested operation, and returns structured JSON. Updates with an `ifMatch` hash reject a changed task unless the caller explicitly requests `force`; completing a task preserves its history through the task storage contract. [DS004-explorer-integration](specsLoader.html?spec=DS004-explorer-integration.md) defines UI ownership and [DS007-mcp-task-lifecycle](specsLoader.html?spec=DS007-mcp-task-lifecycle.md) defines invocation semantics.
 
-Tool names declared in `mcp-config.json` are public contracts. The set includes config read, task list and history list, single-task read, task create/update/delete, and reorder operations.
+### Repository-confined task storage
 
-Each contract shall define required arguments and optional controls such as filtering, conflict checks, and explicit mutation inputs.
-
-### Invocation Lifecycle Rules
-
-Lifecycle Rule L1: each invocation begins by reading and parsing Model Context Protocol (MCP) envelope input from stdin.
-
-Lifecycle Rule L2: envelope normalization shall extract operational input from supported MCP payload shapes.
-
-Lifecycle Rule L3: tool identity resolution shall use `TOOL_NAME` and documented fallback fields.
-
-Lifecycle Rule L4: argument validation shall run before task operation dispatch.
-
-Lifecycle Rule L5: path policy checks for `repoPath` and backlog/history path arguments shall execute before any file read or write.
-
-Lifecycle Rule L6: operation output shall be serialized as JSON response payload.
-
-### Failure Semantics
-
-Failure Rule F1: missing tool identity fails explicitly.
-
-Failure Rule F2: invalid path arguments fail explicitly.
-
-Failure Rule F3: unsupported tool names fail explicitly.
-
-Failure Rule F4: backlog read or write failures return explicit error payloads and do not silently report success.
-
-### Constraints
-
-Constraint M1: contracts cannot depend on undocumented request fields.
-
-Constraint M2: tool handlers cannot operate outside validated repository paths.
-
-Constraint M3: response format drift for the same contract is forbidden unless explicitly documented.
-
-### Invariants
-
-Invariant T1: tool contract identity remains explicit and deterministic.
-
-Invariant T2: lifecycle order remains parse, normalize, validate, dispatch, execute, respond.
-
-Invariant T3: mutation operations remain guarded by path and file-type policy checks.
-
-### Validation Criteria
-
-Validation is satisfied when MCP clients can call task tools with schema-compliant inputs, receive deterministic success or explicit failures, and observe consistent lifecycle behavior across invocations.
-
-## Conclusion
-
-tasksAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+`repoPath` selects the repository boundary. [Backlog](wiki.html#definition-backlog) and history arguments must be absolute filesystem paths inside that boundary and use `.backlog` or `.history` as appropriate; `/.ploinky/...` virtual paths are rejected. Canonical path checks reject symbolic-link escapes before reading or writing. Invalid input and failed writes return explicit failures. [DS005-path-safety](specsLoader.html?spec=DS005-path-safety.md) defines the complete path policy.

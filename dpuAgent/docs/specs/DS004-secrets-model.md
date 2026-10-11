@@ -7,7 +7,7 @@ summary: Defines the dpuAgent contract covered by DS004-secrets-model.
 
 ## Introduction
 
-This specification defines the active contract for dpuAgent.
+This specification defines the active contract for [dpuAgent](wiki.html#definition-dpuagent).
 
 ## Core Content
 
@@ -15,7 +15,7 @@ This specification defines the active contract for dpuAgent.
 
 ### Summary
 
-In `dpuAgent`, a secret is not just a key-value pair. It is a metadata record, an access control list (ACL)-controlled object, and an encrypted value stored outside the metadata registry.
+In [`dpuAgent`](wiki.html#definition-dpuagent), a secret is not just a key-value pair. It is a metadata record, an access control list ([ACL](wiki.html#definition-acl))-controlled object, and an encrypted value stored outside the metadata registry.
 
 ### Background / Problem Statement
 
@@ -49,9 +49,9 @@ Secret roles are:
 
 These roles are not equivalent. An actor with `access` can be authorized operationally without seeing the plaintext value. An actor with `write-access` can update the value without seeing the current value. An actor with `read` can see the value. An actor with `write` can update the value, see the value, and inspect access control list details.
 
-When a new secret is created, the creator is treated as having the `write-access` role for that secret through ownership resolution. This means the owner can update the secret and manage its ACL without automatically materializing the current plaintext value. Delegated principals may still receive `read` or `write` when the workflow requires value visibility. Router-preserved user identity is authoritative for ownership; if the verified Ploinky user context contains an email principal, DPU may record the owner as that bare email instead of a `user:<id>` string.
+When a new secret is created, the creator is treated as having the `write-access` role for that secret through ownership resolution. This means the owner can update the secret and manage its [ACL](wiki.html#definition-acl) without automatically materializing the current plaintext value. Delegated principals may still receive `read` or `write` when the workflow requires value visibility. Router-preserved user identity is authoritative for ownership; if the verified [Ploinky](wiki.html#definition-ploinky) user context contains an email principal, [DPU](wiki.html#definition-dpuagent) may record the owner as that bare email instead of a `user:<id>` string.
 
-Secret ACL entries are principal-based. The same secret may therefore grant roles to user principals such as `user:local:admin`, email principals, and agent principals such as `agent:AssistOSExplorer/gitAgent`. Agent principals use the canonical Ploinky-derived `agent:<repo>/<agent>` form and are recorded in the identity registry inside `permissions.manifest.json`. The maximum role an agent may receive on any secret is validated against DPU-owned policy in `permissions.manifest.json -> agentPolicies[<principalId>].secrets.allowedRoles`, not against the agent's manifest. New data roots seed the same-repository `gitAgent` policy with `read` so Git remote operations can use a user-owned GitHub token without granting the agent write access.
+Secret [ACL](wiki.html#definition-acl) entries are principal-based. The same secret may therefore grant roles to user principals such as `user:local:admin`, email principals, and agent principals such as `agent:AssistOSExplorer/gitAgent`. Agent principals use the canonical Ploinky-derived `agent:<repo>/<agent>` form and are recorded in the identity registry inside `permissions.manifest.json`. The maximum role an agent may receive on any secret is validated against DPU-owned policy in `permissions.manifest.json -> agentPolicies[<principalId>].secrets.allowedRoles`, not against the agent's manifest. New data roots seed the same-repository `gitAgent` policy with `read` so Git remote operations can use a user-owned GitHub token without granting the agent write access.
 
 ### Practical Operation
 
@@ -67,6 +67,4 @@ Secret ACL entries are principal-based. The same secret may therefore grant role
 
 This keeps secret lifecycle state explicit instead of spreading it across Explorer-side caches or filesystem semantics.
 
-## Conclusion
-
-dpuAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+[dpuAgent](wiki.html#definition-dpuagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.

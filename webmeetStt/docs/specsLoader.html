@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Specification Matrix - Skill Repository Documentation</title>
+  <title>WebMeet STT Documentation</title>
   <link rel="stylesheet" href="styles.css">
   <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
@@ -29,11 +29,11 @@
       <div id="spec-meta"></div>
       <div id="content" class="content">
         <div class="loading">Loading specification...</div>
-      <nav class="spec-nav" aria-label="Specification navigation"><a id="previous-spec" href="#" hidden>Previous</a><a id="next-spec" href="#" hidden>Next</a></nav>
       </div>
+      <nav class="spec-nav" aria-label="Specification navigation"><a id="previous-spec" href="#" hidden>Previous</a><a id="next-spec" href="#" hidden>Next</a></nav>
     </div>
   </main>
-  <footer class="site-footer" data-include="partials/footer.html"></footer>
+  <div data-include="partials/footer.html"></div>
 
   <script>
     class SpecsLoader {
@@ -99,7 +99,7 @@
 
           const title = metadata.title || body.match(/^#\s+(.+)$/m)?.[1] || this.specPath;
           this.specTitle.textContent = title;
-          document.title = `${title} - Skill Repository Documentation`;
+          document.title = 'WebMeet STT Documentation';
         } catch (error) {
           this.showError(error.message);
         }

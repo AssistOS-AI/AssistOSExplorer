@@ -7,7 +7,7 @@ summary: Defines the DS008-runtime-update-session contract for WebAssist.
 
 ## Introduction
 
-This specification defines the active DS008-runtime-update-session contract for WebAssist.
+This specification defines the active DS008-runtime-update-session contract for [WebAssist](wiki.html#definition-webassist).
 
 ## Core Content
 
@@ -26,6 +26,4 @@ This specification defines the active DS008-runtime-update-session contract for 
 - Contact fields are merged with existing contact fields in the profile file.
 - History entries are available through `web_cli_history` and are also used by `loadAkuContext`.
 
-## Conclusion
-
-WebAssist must preserve the responsibilities and boundaries stated by this specification.
+[WebAssist](wiki.html#definition-webassist) must preserve the responsibilities and boundaries stated by this specification.

@@ -7,7 +7,7 @@ summary: Defines the gitAgent contract covered by DS004-mcp-tool-contracts.
 
 ## Introduction
 
-This specification defines the active contract for gitAgent.
+This specification defines the active contract for [gitAgent](wiki.html#definition-gitagent).
 
 ## Core Content
 
@@ -15,7 +15,7 @@ This specification defines the active contract for gitAgent.
 
 ### Role of This Document
 
-This document defines contract guarantees for Model Context Protocol (MCP) tool behavior and invocation lifecycle rules.
+This document defines contract guarantees for [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) tool behavior and invocation lifecycle rules.
 
 ### Contract Surface
 
@@ -27,9 +27,9 @@ Each contract shall define input schema expectations and tool identity mapping t
 
 ### Invocation Lifecycle Rules
 
-Lifecycle Rule L1: each invocation begins by reading Model Context Protocol (MCP) envelope input from stdin.
+Lifecycle Rule L1: each invocation begins by reading [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) envelope input from stdin.
 
-Lifecycle Rule L2: payload normalization shall handle expected MCP envelope shapes and extract effective input arguments.
+Lifecycle Rule L2: payload normalization shall handle expected [MCP](wiki.html#definition-mcp) envelope shapes and extract effective input arguments.
 
 Lifecycle Rule L3: argument normalization shall enforce tool-specific requirements before operation dispatch.
 
@@ -91,8 +91,6 @@ Invariant T5: loading the complete status of one repository cannot cause another
 
 ### Validation Criteria
 
-Validation is satisfied when MCP clients can call declared tools with schema-compliant inputs, receive deterministic success or explicit error payloads, observe consistent lifecycle behavior across invocations, and confirm that invalid repository paths never execute against a different discovered repository.
+Validation is satisfied when [MCP](wiki.html#definition-mcp) clients can call declared tools with schema-compliant inputs, receive deterministic success or explicit error payloads, observe consistent lifecycle behavior across invocations, and confirm that invalid repository paths never execute against a different discovered repository.
 
-## Conclusion
-
-gitAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+[gitAgent](wiki.html#definition-gitagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.

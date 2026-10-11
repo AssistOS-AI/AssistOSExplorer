@@ -7,7 +7,7 @@ summary: Defines the gitAgent contract covered by DS005-explorer-integration.
 
 ## Introduction
 
-This specification defines the active contract for gitAgent.
+This specification defines the active contract for [gitAgent](wiki.html#definition-gitagent).
 
 ## Core Content
 
@@ -15,15 +15,15 @@ This specification defines the active contract for gitAgent.
 
 ### Role of This Document
 
-This document defines integration rules for Explorer-facing usage of `gitAgent` and IDE plugin behavior.
+This document defines integration rules for Explorer-facing usage of [`gitAgent`](wiki.html#definition-gitagent) and IDE plugin behavior.
 
 ### Integration Position
 
-Explorer is the user interface (UI) host. `gitAgent` is the backend Git intermediary. IDE plugin artifacts in `gitAgent/IDE-plugins/` are the UI extension channel that connects Explorer interactions to Model Context Protocol (MCP) tool calls.
+Explorer is the user interface (UI) host. [`gitAgent`](wiki.html#definition-gitagent) is the backend Git intermediary. IDE plugin artifacts in `gitAgent/IDE-plugins/` are the UI extension channel that connects Explorer interactions to [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) tool calls.
 
 ### Integration Requirements
 
-Requirement U1: Explorer-facing UI components shall call `gitAgent` through MCP application programming interfaces (APIs).
+Requirement U1: Explorer-facing UI components shall call [`gitAgent`](wiki.html#definition-gitagent) through [MCP](wiki.html#definition-mcp) application programming interfaces (APIs).
 
 Requirement U2: Git operation decisions and execution shall remain in the agent backend, not in UI presenters.
 
@@ -31,7 +31,7 @@ Requirement U3: toolbar plugin integration in slot `file-exp:toolbar` shall rema
 
 Requirement U4: plugin dependency components shall remain declarative through plugin configuration.
 
-Requirement U5: asynchronous operation outcomes shall remain representable in UI state through MCP success and failure payloads.
+Requirement U5: asynchronous operation outcomes shall remain representable in UI state through [MCP](wiki.html#definition-mcp) success and failure payloads.
 
 Requirement U6: Explorer selection shall be the source of truth for Git action targeting. Selecting any file or folder inside a repository shall also select that repository for repository-level actions.
 
@@ -61,7 +61,7 @@ Invariant I1: communication between Explorer and Git backend remains MCP-based.
 
 Invariant I2: IDE plugin channel remains an integration surface, while tool contracts remain the operational source of truth.
 
-Invariant I3: the intermediary role of `gitAgent` between Explorer intent and Git runtime remains unchanged.
+Invariant I3: the intermediary role of [`gitAgent`](wiki.html#definition-gitagent) between Explorer intent and Git runtime remains unchanged.
 
 Invariant I4: manual selection state and autosync repository configuration remain separate sources of truth; one cannot silently substitute for the other.
 
@@ -71,7 +71,7 @@ Invariant I6: clearing the conflicted-file list does not by itself mark a merge 
 
 ### Validation Criteria
 
-Validation is satisfied when Explorer-triggered plugin actions call `gitAgent` tools successfully, tool outcomes map to UI state transitions, repository targeting follows explicit selection rules, autosync runs only for explicitly configured repositories, non-fast-forward recovery remains bounded to one synchronize-and-push retry without force, and Git execution behavior remains isolated from frontend internals.
+Validation is satisfied when Explorer-triggered plugin actions call [`gitAgent`](wiki.html#definition-gitagent) tools successfully, tool outcomes map to UI state transitions, repository targeting follows explicit selection rules, autosync runs only for explicitly configured repositories, non-fast-forward recovery remains bounded to one synchronize-and-push retry without force, and Git execution behavior remains isolated from frontend internals.
 
 Shared expanded panels serialize ownership across pending and visible launches. Reopening the same target retains its close promise and forwards updated properties; Git applies these through `updateModalProps` without recreating its panel or clearing drafts. Superseded launches are cancelled before display. Fullscreen restore preserves the previous dimensions within the viewport. Help delegates all window controls to the shared shell.
 
@@ -79,6 +79,4 @@ Closing an expanded panel aborts its owned startup requests, polling and waits, 
 
 The modal owns cleanup directly: closing marks it closed, aborts HTTP probes, clears its retry and readiness timers, and removes hosted content. Component loading uses normal awaits followed by closed checks. Each presenter releases its own resources in `afterUnload`; no generic promise cancellation wrapper is used.
 
-## Conclusion
-
-gitAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+[gitAgent](wiki.html#definition-gitagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.

@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>dpuAgent Docs - Integrations</title>
+    <title>DPU Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,35 +12,22 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="dpuAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html" aria-current="page">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                        <a href="research-data.html">Research Data</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Ploinky and Explorer Integration</h1>
-                    <p>`dpuAgent` is not a standalone product surface in practice. It exists because Explorer and related plugins need a confidential backend with a stable Model Context Protocol (MCP) contract.</p>
+                    <p>`<a href="wiki.html#definition-dpuagent">dpuAgent</a>` is not a standalone product surface in practice. It exists because Explorer and related plugins need a confidential backend with a stable <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) contract.</p>
                 </section>
 
                 <section>
                     <h2>Integration With Ploinky</h2>
-                    <p>Ploinky hosts the agent through its manifest and exposes the tool surface defined in <code>mcp-config.json</code>. When Explorer or another caller invokes a DPU tool, the runtime executes <code>tools/dpu_tool.sh</code> and returns the serialized result of the corresponding DPU operation.</p>
+                    <p><a href="wiki.html#definition-ploinky">Ploinky</a> hosts the agent through its manifest and exposes the tool surface defined in <code>mcp-config.json</code>. When Explorer or another caller invokes a <a href="wiki.html#definition-dpuagent">DPU</a> tool, the runtime executes <code>tools/dpu_tool.sh</code> and returns the serialized result of the corresponding <a href="wiki.html#definition-dpuagent">DPU</a> operation.</p>
                 </section>
 
                 <section>
                     <h2>Integration With Explorer</h2>
-                    <p>Explorer uses DPU for the virtual confidential surface rather than for normal filesystem browsing. The agent exposes the actor-owned <code>/Confidential/My Space</code> folder plus named shared, secret, research, job, and role-dependent audit projections. Ordinary confidential folders can be nested beneath the owned tree through their <code>parentId</code>; the named projections do not restrict which nested folders a user can create. DPU comments and permissions are surfaced through Explorer-side plugins instead of filesystem metadata.</p>
+                    <p>Explorer uses <a href="wiki.html#definition-dpuagent">DPU</a> for the virtual confidential surface rather than for normal filesystem browsing. The agent exposes the actor-owned <code>/Confidential/My Space</code> folder plus named shared, secret, research, job, and role-dependent audit projections. Ordinary confidential folders can be nested beneath the owned tree through their <code>parentId</code>; the named projections do not restrict which nested folders a user can create. <a href="wiki.html#definition-dpuagent">DPU</a> comments and permissions are surfaced through Explorer-side plugins instead of filesystem metadata.</p>
                 </section>
 
                 <section>

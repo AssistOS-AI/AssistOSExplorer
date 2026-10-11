@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workspace Monitor Execution Workflow</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workspace Monitor Documentation</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head>
 <body>
   <div data-include="partials/header.html"></div>
   <main class="page content--with-sidebar"><div class="doc-layout">
-    <aside class="doc-sidebar" aria-label="Workspace Monitor documentation navigation"><div class="doc-sidebar__group"><p class="doc-sidebar__group-title">Documentation</p><nav><a href="index.html">Overview</a><a href="architecture.html">Architecture</a><a href="execution-workflow.html" aria-current="page">Execution workflow</a><a href="mcp-tools.html">MCP tools</a><a href="integrations.html">Integrations</a><a href="configuration.html">Configuration</a></nav></div></aside>
+
     <div class="page__panel">
       <p class="breadcrumbs"><a href="index.html">Documentation</a> / Execution workflow</p>
       <h1>Execution workflow</h1>
@@ -18,9 +18,9 @@
   P->>C: Signed NDJSON metrics snapshots
   C->>C: Aggregate workspace and runtime series
   C->>S: Persist samples every 10 seconds
-  S-->>C: Commit or retry after failure</pre><figcaption><em>Live snapshots become durable series only after the per-series persistence cadence allows a write.</em></figcaption></figure>
+  S-->>C: Commit or retry after failure</pre><figcaption><em>Resource collection and history persistence</em></figcaption></figure>
       <h2>Logs</h2>
-      <p>For a log list, read, or search request, the wrapper checks the administrator and calls Ploinky's private <code>/api/edge/workspace-logs</code> route with a signed request. The result contains the requested live file or retained archive data; Workspace Monitor does not create a local copy of those logs.</p>
+      <p>For a log list, read, or search request, the wrapper checks the administrator and calls Ploinky's private <code>/api/edge/workspace-logs</code> route with a signed request. The result contains the requested live file or retained archive data; <a href="wiki.html#definition-workspace-monitor">Workspace Monitor</a> does not create a local copy of those logs.</p>
       <h2>Explorer surface</h2>
       <p>The Explorer plugin checks the browser's administrator projection and hides its toolbar item for other users. Opening the item changes the browser hash to <code>workspace-monitor-dashboard</code>; the dashboard then polls <code>workspace_monitor_snapshot_get</code> for fresh resource data and uses the other agent MCP tools for settings, history, and logs. It does not call Ploinky's localhost-only <code>/status/data</code> route.</p>
       <p>Resource history and selected-runtime history automatically retry temporary gateway or network failures up to three times, after 300, 900, and 1,800 milliseconds. Live metrics continue independently. If history still cannot load, use <strong>Retry history</strong> to request the current selection and interval again; access failures instead require an administrator session. The dashboard shows a short error message rather than the raw gateway response. Changing the runtime or interval, clearing the selection, leaving the tab, or closing the dashboard abandons older history requests and stops their pending retries. These gateway retries do not apply to settings changes or other monitor operations.</p>

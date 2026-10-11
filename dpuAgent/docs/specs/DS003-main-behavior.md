@@ -1,70 +1,32 @@
 ---
 title: DS003-main-behavior
-summary: Defines the dpuAgent contract covered by DS003-main-behavior.
+summary: Defines confidential objects, scoped secrets, and controlled research processing for authenticated users and agents.
 ---
 
 # DS003-main-behavior
 
 ## Introduction
 
-The main behavior of dpuAgent is the user and integration outcome described by this contract.
+[DPU](wiki.html#definition-dpuagent) lets authenticated workspace users and agents work with confidential files, secrets, and protected research data while [DPU](wiki.html#definition-dpuagent) applies the access policy for each operation.
 
 ## Core Content
 
-### DS04 - Confidential Objects Model
+### Main Behavior Components
 
-### Summary
+| Name | Explanation |
+| --- | --- |
+| Confidential workspace objects | Users browse and edit confidential files through Explorer without exposing a normal filesystem tree. |
+| Scoped secret access | Users and authorized agents retrieve credentials through ACL-aware tools without copying secret storage into Explorer. |
+| Controlled research processing | Research users consume authorized files and confirm processing jobs while participant data remains protected. |
 
-Confidential objects are the file and folder records behind Explorer’s `/Confidential` surface. They support ownership, access control lists (ACLs), encrypted file content, and comments.
+### Confidential workspace objects
 
-### Background / Problem Statement
+An authenticated user opens `/Confidential` or invokes `dpu_confidential_list`, `dpu_confidential_get`, or a mutation tool. [DPU](wiki.html#definition-dpuagent) resolves My Space, Shared, or the selected folder, checks the actor's access control list, and returns only visible records and permitted content. File bodies remain encrypted outside the ordinary workspace tree. Explorer must use [DPU](wiki.html#definition-dpuagent)'s returned capabilities and must not write these records through filesystem tools. [DS010-confidential-objects](specsLoader.html?spec=DS010-confidential-objects.md) defines the object and root constraints.
 
-Explorer needs folder-style navigation and file-style interaction for confidential content, but the underlying records still need actor-aware access control and encrypted persistence. That requires a model that feels file-like at the UI boundary without becoming a normal filesystem tree underneath.
+### Scoped secret access
 
-### Object Model
+A `dpu_secret_*` call must use verified invocation identity and the applicable scope and role policy. [DPU](wiki.html#definition-dpuagent) stores secret values separately from metadata and encrypts them at rest. A caller receives a value only when the secret access policy permits it; denied access must not expose that value. [DS004-secrets-model](specsLoader.html?spec=DS004-secrets-model.md) and [DS006-secrets-product-model](specsLoader.html?spec=DS006-secrets-product-model.md) govern the secret contract.
 
-The agent stores confidential objects in `state.confidentialObjects`. Each object is either:
+### Controlled research processing
 
-- a `folder`
-- a `file`
-
-Folder records are metadata-only. File records keep metadata in `state.confidentialObjects` and store their content in encrypted blob storage addressed by object id.
-
-The agent also maintains a per-user `My Space` root through `ensureUserRecord()`. Shared content is not a real top-level folder on disk. It is a filtered view computed from access control list visibility.
-
-### Roles and Serialization
-
-For confidential objects, the serialized result exposes capabilities such as:
-
-- `canRead`
-- `canComment`
-- `canWrite`
-
-This is important because Explorer should not infer collaboration rules on its own. It should use the capabilities returned by DPU.
-
-Comments are also actor-filtered. `serializeConfidentialObject()` includes comments only when the current request asks for content and the actor is allowed to read that object.
-
-### Practical Operation
-
-`listConfidential()` builds views such as:
-
-- the user’s own `My Space`
-- the shared list
-- a nested folder listing by `parentId`
-
-`getConfidentialById()` returns one confidential object with actor-filtered content and comment visibility.
-
-`createConfidential()`, `updateConfidential()`, and `deleteConfidential()` mutate the metadata tree and confidential blobs under the storage lock. Recursive delete removes child objects and deletes blob files for confidential files. All mutations are recorded in the audit log if the audit system is enabled.
-
-The `/Confidential/Audit` path is a special virtual root managed by the agent, accessible only to actors with `admin` or `security` roles. It provides read-only access to audit logs in JSON Lines (JSONL) format (see [DS007-audit-model](specsLoader.html?spec=DS007-audit-model.md)).
-
-The `My Space` root has these enforced invariants:
-
-- it is created or repaired automatically for authenticated users
-- it cannot be renamed directly
-- it cannot be deleted directly
-- it cannot be shared directly
-
-## Conclusion
-
-dpuAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+The research [MCP](wiki.html#definition-mcp) tools validate the caller, file access, backend capability, and required confirmation before processing. [DPU](wiki.html#definition-dpuagent) owns job transitions, protected results, and provenance; Explorer presents the workflow and does not become an alternative authorization authority. [DS009-research-data-and-secure-processing](specsLoader.html?spec=DS009-research-data-and-secure-processing.md) defines the supported processing and evidence boundaries.

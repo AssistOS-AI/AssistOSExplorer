@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>gitAgent Docs - Overview</title>
+    <title>Git Agent Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,39 +12,40 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="gitAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html" aria-current="page">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Git Workflows In The Workspace</h1>
                     <p>Explorer should not run raw Git commands directly from the browser or spread credential handling across user interface (UI) code. The workspace needs one boundary that understands repository roots, remote operations, and authentication state while keeping command execution on the agent side.</p>
                 </section>
+<section id="documentation-map" class="documentation-map">
+<h2>Documentation Map</h2>
+<div class="documentation-map__scroll"><table><thead><tr><th scope="col">Git Agent</th><th scope="col">Reference</th></tr></thead><tbody>
+<tr><td><a href="index.html">Overview</a><p>Purpose, responsibilities, and the principal runtime workflows.</p></td><td><a href="wiki.html">Wiki</a><p>Canonical terminology, ownership, relationships, and limitations.</p></td></tr>
+<tr><td><a href="architecture.html">Architecture</a><p>Component relationships and the boundaries between the agent and Explorer.</p></td><td><a href="specsLoader.html?spec=matrix.md">Specifications</a><p>The specification matrix and normative project contracts.</p></td></tr>
+<tr><td><a href="execution-workflow.html">Tool Execution Workflow</a><p>Request processing, validation, dispatch, and result handling.</p></td><td></td></tr>
+<tr><td><a href="mcp-tools.html">MCP Tools</a><p>Declared tool interfaces and the operations available to callers.</p></td><td></td></tr>
+<tr><td><a href="integrations.html">Ploinky and Explorer Integration</a><p>How the agent connects to Ploinky and the Explorer shell.</p></td><td></td></tr>
+<tr><td><a href="configuration.html">Manifest and Environment</a><p>Manifest settings, environment variables, and startup requirements.</p></td><td></td></tr>
+</tbody></table></div>
+<p>Start with Git Agent / Overview for the project purpose, then follow the remaining Git Agent pages for the interfaces and workflows. Reference / Wiki defines project terminology; Reference / Specifications opens the contracts, including the coding style and test organization in DS001.</p>
+</section>
+
 
                 <section class="highlight-box">
                     <h2>Workspace Boundary For Git Operations</h2>
-                    <p><code>gitAgent</code> provides that boundary. Explorer and related workflows call a finite Model Context Protocol (MCP) surface declared in <code>gitAgent/mcp-config.json</code>, while the agent validates repository scope, resolves credentials, and keeps command execution inside approved workspace paths.</p>
+                    <p><code><a href="wiki.html#definition-gitagent">gitAgent</a></code> provides that boundary. Explorer and related workflows call a finite <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) surface declared in <code>gitAgent/mcp-config.json</code>, while the agent validates repository scope, resolves credentials, and keeps command execution inside approved workspace paths.</p>
                     <p>The same contract also absorbs GitHub and token-based authentication flows so remote push, pull, and missing remote repository creation behavior stays in one place instead of leaking into plugin presenters.</p>
                 </section>
 
                 <section>
                     <h2>Runtime Behavior</h2>
-                    <p>At runtime, Git requests enter through MCP and are executed through <code>gitAgent/tools/git_tool.sh</code> and the modules behind <code>git_tool.mjs</code>. Explorer plugins stay thin: they collect intent, call the tool surface, and render status. The agent remains responsible for repository discovery, command dispatch, remote-auth persistence, canonical GitHub remote URLs, and creating missing GitHub repositories under the owner encoded in the remote URL.</p>
+                    <p>At runtime, Git requests enter through <a href="wiki.html#definition-mcp">MCP</a> and are executed through <code>gitAgent/tools/git_tool.sh</code> and the modules behind <code>git_tool.mjs</code>. Explorer plugins stay thin: they collect intent, call the tool surface, and render status. The agent remains responsible for repository discovery, command dispatch, remote-auth persistence, canonical GitHub remote URLs, and creating missing GitHub repositories under the owner encoded in the remote URL.</p>
                     <p>Repository initialization and cloning enforce one local checkout per canonical remote in the workspace. Equivalent GitHub HTTPS and SSH URLs identify the same repository. When that remote is already present, the operation stops before creating a directory and reports the existing workspace path.</p>
                     <p>GitHub token lookups call DPU through the router transport URL and preserve the canonical router authority in the HTTP <code>Host</code> header. This keeps agent-to-agent authentication working when a container reaches the router through a different internal hostname.</p>
                     <div class="doc-callout">
-                        <p><strong>Validation rule:</strong> run the Git agent test suite for code changes, together with docs and specification updates.</p>
+                        <p><strong>Validation rule:</strong> run the <a href="wiki.html#definition-gitagent">Git agent</a> test suite for code changes, together with docs and specification updates.</p>
                     </div>
                 </section>
             </div>

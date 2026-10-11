@@ -7,7 +7,7 @@ summary: Defines the gitAgent contract covered by DS000-vision.
 
 ## Introduction
 
-This specification defines the active contract for gitAgent.
+This specification defines the active contract for [gitAgent](wiki.html#definition-gitagent).
 
 ## Core Content
 
@@ -15,21 +15,21 @@ This specification defines the active contract for gitAgent.
 
 ### Role of This Document
 
-This document defines the strategic rules for `gitAgent` as a Ploinky agent that mediates between Explorer user interface (UI) flows and Git command execution.
+This document defines the strategic rules for [`gitAgent`](wiki.html#definition-gitagent) as a [Ploinky](wiki.html#definition-ploinky) agent that mediates between Explorer user interface (UI) flows and Git command execution.
 
 ### Agent Context
 
-`gitAgent` is integrated in Ploinky and consumed by internal Explorer workflows. The agent is not a UI framework and not a generic shell proxy. The agent exposes a controlled Model Context Protocol (MCP) contract for Git capabilities and centralizes path policy, error normalization, and auth handling.
+[`gitAgent`](wiki.html#definition-gitagent) is integrated in [Ploinky](wiki.html#definition-ploinky) and consumed by internal Explorer workflows. The agent is not a UI framework and not a generic shell proxy. The agent exposes a controlled [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) contract for Git capabilities and centralizes path policy, error normalization, and auth handling.
 
-The repository may host multiple agents in the future. This specification set addresses the current `gitAgent` scope.
+The repository may host multiple agents in the future. This specification set addresses the current [`gitAgent`](wiki.html#definition-gitagent) scope.
 
 ### Vision Direction
 
-The direction is to keep Git process execution behind MCP contracts, with Explorer acting as interaction layer and the agent acting as operational boundary. The agent must keep deterministic contract behavior for unchanged inputs and preserve guardrails that prevent unsafe filesystem reach.
+The direction is to keep Git process execution behind [MCP](wiki.html#definition-mcp) contracts, with Explorer acting as interaction layer and the agent acting as operational boundary. The agent must keep deterministic contract behavior for unchanged inputs and preserve guardrails that prevent unsafe filesystem reach.
 
 ### Agent Expectations
 
-Expectation E1: supported UI clients can trigger Git operations through MCP without direct shell-level Git integration.
+Expectation E1: supported UI clients can trigger Git operations through [MCP](wiki.html#definition-mcp) without direct shell-level Git integration.
 
 Expectation E2: repository path access remains constrained to declared workspace roots.
 
@@ -39,7 +39,7 @@ Expectation E4: error outcomes are attributable and suitable for UI handling.
 
 ### Requirements
 
-Requirement R1: the agent shall expose Git capabilities only through declared MCP tool contracts.
+Requirement R1: the agent shall expose Git capabilities only through declared [MCP](wiki.html#definition-mcp) tool contracts.
 
 Requirement R2: the agent shall preserve intermediary behavior between Explorer and Git by converting tool calls into validated Git operations.
 
@@ -61,9 +61,9 @@ Constraint C4: hidden side effects outside declared repository paths are forbidd
 
 ### Invariants
 
-Invariant I1: `gitAgent` remains an intermediary layer between Explorer intent and Git execution.
+Invariant I1: [`gitAgent`](wiki.html#definition-gitagent) remains an intermediary layer between Explorer intent and Git execution.
 
-Invariant I2: MCP tool names are the public agent contract for the current repository state.
+Invariant I2: [MCP](wiki.html#definition-mcp) tool names are the public agent contract for the current repository state.
 
 Invariant I3: tool failures remain explicit and do not silently report success.
 
@@ -71,8 +71,6 @@ Invariant I4: path policy enforcement remains mandatory for repository operation
 
 ### Validation Criteria
 
-The agent passes vision validation when Explorer-facing workflows can run Git operations through MCP, path safety rules are enforced consistently, and contract outcomes stay predictable for unchanged inputs.
+The agent passes vision validation when Explorer-facing workflows can run Git operations through [MCP](wiki.html#definition-mcp), path safety rules are enforced consistently, and contract outcomes stay predictable for unchanged inputs.
 
-## Conclusion
-
-gitAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+[gitAgent](wiki.html#definition-gitagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.

@@ -7,7 +7,7 @@ summary: Defines the gitAgent contract covered by DS002-architecture.
 
 ## Introduction
 
-This specification defines the active contract for gitAgent.
+This specification defines the active contract for [gitAgent](wiki.html#definition-gitagent).
 
 ## Core Content
 
@@ -15,11 +15,11 @@ This specification defines the active contract for gitAgent.
 
 ### Role of This Document
 
-This document defines mandatory architecture rules for `gitAgent` as a Ploinky Model Context Protocol (MCP) agent.
+This document defines mandatory architecture rules for [`gitAgent`](wiki.html#definition-gitagent) as a [Ploinky](wiki.html#definition-ploinky) [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) agent.
 
 ### Architectural Boundary
 
-The agent boundary starts at Model Context Protocol (MCP) tool invocation and ends at normalized result emission to MCP clients. Explorer-side rendering, host layout, and interaction concerns remain outside this boundary. Raw Git command execution internals are encapsulated in agent services.
+The agent boundary starts at [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) tool invocation and ends at normalized result emission to [MCP](wiki.html#definition-mcp) clients. Explorer-side rendering, host layout, and interaction concerns remain outside this boundary. Raw Git command execution internals are encapsulated in agent services.
 
 ### Architecture Shape
 
@@ -39,7 +39,7 @@ Requirement A4: repository path validation shall run before any Git subprocess e
 
 Requirement A5: remote operations shall support token fallback from auth context or stored auth state.
 
-Requirement A6: UI integration shall use MCP calls and shall not require private runtime imports from Git services.
+Requirement A6: UI integration shall use [MCP](wiki.html#definition-mcp) calls and shall not require private runtime imports from Git services.
 
 Requirement A7: manifest startup configuration shall not duplicate generic Node dependency installation already orchestrated by `ploinky`; it may validate the host Git executable for host sandbox startup or install Git packages in container startup.
 
@@ -61,7 +61,7 @@ Constraint K4: auth flows that expose raw token values to UI components as persi
 
 ### Invariants
 
-Invariant V1: one MCP tool request maps to one declared contract operation.
+Invariant V1: one [MCP](wiki.html#definition-mcp) tool request maps to one declared contract operation.
 
 Invariant V2: path-policy enforcement remains active regardless of tool type.
 
@@ -73,6 +73,4 @@ Invariant V4: IDE plugin integration remains a client channel, not the source of
 
 Architecture validation succeeds when declared tools execute through the wrapper and dispatcher layers, path constraints are enforced, auth-assisted remote operations behave predictably, and Explorer integration remains decoupled from Git subprocess internals.
 
-## Conclusion
-
-gitAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+[gitAgent](wiki.html#definition-gitagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.

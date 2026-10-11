@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>gitAgent Docs - Architecture</title>
+    <title>Git Agent Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,24 +12,12 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="gitAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html" aria-current="page">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Architecture</h1>
-                    <p><code>gitAgent</code> is the intermediary layer between Explorer user interface (UI) requests and Git command execution, routed through <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> AgentServer over Model Context Protocol (MCP).</p>
+                    <p><code><a href="wiki.html#definition-gitagent">gitAgent</a></code> is the intermediary layer between Explorer user interface (UI) requests and Git command execution, routed through <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> AgentServer over <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>).</p>
                 </section>
 
                 <section>
@@ -44,7 +32,7 @@
                         </thead>
                         <tbody>
                             <tr>
-                                <td>Model Context Protocol contract declaration</td>
+                                <td><a href="wiki.html#definition-mcp">Model Context Protocol</a> contract declaration</td>
                                 <td><code>gitAgent/mcp-config.json</code></td>
                                 <td>Declares all Git tools, command entrypoint, schemas, and per-tool <code>TOOL_NAME</code>.</td>
                             </tr>
@@ -56,7 +44,7 @@
                             <tr>
                                 <td>Tool dispatcher</td>
                                 <td><code>gitAgent/tools/git_tool.mjs</code></td>
-                                <td>Parses Model Context Protocol envelope data, validates args, resolves tool operation, and emits JSON results.</td>
+                                <td>Parses <a href="wiki.html#definition-mcp">Model Context Protocol</a> envelope data, validates args, resolves tool operation, and emits JSON results.</td>
                             </tr>
                             <tr>
                                 <td>Git execution service</td>
@@ -71,7 +59,7 @@
                             <tr>
                                 <td>Explorer user interface plugin channel</td>
                                 <td><code>gitAgent/IDE-plugins/git-tool-button/</code></td>
-                                <td>Injects Git interface components in Explorer and calls <code>gitAgent</code> tools via MCP.</td>
+                                <td>Injects Git interface components in Explorer and calls <code><a href="wiki.html#definition-gitagent">gitAgent</a></code> tools via <a href="wiki.html#definition-mcp">MCP</a>.</td>
                             </tr>
                         </tbody>
                     </table>
@@ -92,7 +80,7 @@
 
                 <section>
                     <h2>Intermediary Guarantee</h2>
-                    <p>Explorer never needs to execute raw shell Git commands directly. It calls MCP tools and receives normalized responses. This separation keeps Git process control, path security, and auth behavior centralized in the agent.</p>
+                    <p>Explorer never needs to execute raw shell Git commands directly. It calls <a href="wiki.html#definition-mcp">MCP</a> tools and receives normalized responses. This separation keeps Git process control, path security, and auth behavior centralized in the agent.</p>
                     <p>Commit-message assistance sends a small selected diff in one synthesis request. Larger selections include every selected file and are grouped into bounded semantic batches such as runtime, user interface, configuration, tests, and documentation, then reduced into one subject and concise body. This keeps related changes connected while avoiding one provider request per file.</p>
                     <p>The flow tolerates partial provider failure. Empty or failed batch summaries are discarded, successful summaries remain eligible for synthesis, and an empty or failed final synthesis falls back to a deterministic message built from the available summaries. When no summary succeeds, the complete affected-file inventory provides the fallback message.</p>
                     <div class="doc-callout doc-callout--important">

@@ -25,12 +25,12 @@ The editor needs dedicated plugins for upload, metadata editing, preview, and vi
 
 1. Provide a coherent set of IDE plugins for media attachments.
 2. Enable fast preview at paragraph and document levels.
-3. Include a reusable FFmpeg skill for image-to-video transformations.
+3. Include a reusable [FFmpeg](wiki.html#definition-ffmpeg) skill for image-to-video transformations.
 
 ### Non-Goals
 
 1. It is not a general-purpose LLM orchestration agent.
-2. It does not define a large Model Context Protocol (MCP) tool catalog like builder/runtime-oriented agents.
+2. It does not define a large [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) tool catalog like builder/runtime-oriented agents.
 
 ### Core Surfaces
 
@@ -43,7 +43,5 @@ The editor needs dedicated plugins for upload, metadata editing, preview, and vi
 ### Operational Note
 
 At agent startup, `scripts/install.sh` is executed, where `ffmpeg` is installed (or validated in bwrap mode) to support audio/video/image processing flows.
-
-## Conclusion
 
 multimedia must preserve the responsibilities, boundaries, and observable results stated in this specification.

@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>multimedia Docs - Overview</title>
+    <title>Multimedia Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,24 +12,25 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="multimedia documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html" aria-current="page">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="ide-plugins.html">IDE Plugins</a>
-                        <a href="media-workflows.html">Media Workflows</a>
-                        <a href="runtime-dependencies.html">Runtime and Dependencies</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Media Workflows In Explorer</h1>
                     <p>Explorer needs practical media workflows for upload, preview, metadata editing, and generated output, but media handling becomes hard to maintain if every document plugin owns its own validation, preview, and conversion logic.</p>
                 </section>
+<section id="documentation-map" class="documentation-map">
+<h2>Documentation Map</h2>
+<div class="documentation-map__scroll"><table><thead><tr><th scope="col">Multimedia</th><th scope="col">Reference</th></tr></thead><tbody>
+<tr><td><a href="index.html">Overview</a><p>Purpose, responsibilities, and the principal runtime workflows.</p></td><td><a href="wiki.html">Wiki</a><p>Canonical terminology, ownership, relationships, and limitations.</p></td></tr>
+<tr><td><a href="architecture.html">Architecture</a><p>Component relationships and the boundaries between the agent and Explorer.</p></td><td><a href="specsLoader.html?spec=matrix.md">Specifications</a><p>The specification matrix and normative project contracts.</p></td></tr>
+<tr><td><a href="ide-plugins.html">IDE Plugins</a><p>Document controls and the context supplied by the host interface.</p></td><td></td></tr>
+<tr><td><a href="media-workflows.html">Media Workflows</a><p>Attachment, preview, and generated media workflows.</p></td><td></td></tr>
+<tr><td><a href="runtime-dependencies.html">Runtime and Dependencies</a><p>Runtime setup and the Git and FFmpeg dependency checks.</p></td><td></td></tr>
+</tbody></table></div>
+<p>Start with Multimedia / Overview for the project purpose, then follow the remaining Multimedia pages for the interfaces and workflows. Reference / Wiki defines project terminology; Reference / Specifications opens the contracts, including the coding style and test organization in DS001.</p>
+</section>
+
 
                 <section class="highlight-box">
                     <h2>Media Workflow Boundary</h2>
@@ -38,7 +39,7 @@
 
                 <section>
                     <h2>Runtime Behavior</h2>
-                    <p>The main surface lives in <code>multimedia/IDE-plugins/</code>, where modal and embedded components handle document, chapter, and paragraph contexts. In parallel, the <code>ffmpegImageToVideo</code> skill drives image-to-video generation. This keeps user interface integration close to Explorer while media-specific processing remains inside the agent runtime.</p>
+                    <p>The main surface lives in <code>multimedia/IDE-plugins/</code>, where modal and embedded components handle document, chapter, and paragraph contexts. The <code>ffmpegImageToVideo</code> helper defines image-to-video processing; <a href="specsLoader.html?spec=DS004-ffmpeg-media-processing.md">DS004</a> records its inputs, dependencies, and entrypoint boundary. This keeps user interface integration close to Explorer while media-specific processing remains inside the agent runtime.</p>
                     <div class="doc-callout doc-callout--important">
                         <p><strong>Critical startup dependency:</strong> on agent startup, <code>/code/scripts/install.sh</code> is executed, and <code>git</code> plus <code>ffmpeg</code> are installed in containers or validated on the host sandbox to support video, audio, and image workflows.</p>
                     </div>

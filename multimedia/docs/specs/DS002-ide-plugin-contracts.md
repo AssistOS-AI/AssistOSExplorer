@@ -47,6 +47,4 @@ Invariant I2: the upload flow is `validate -> metadata -> upload -> persist -> i
 
 Invariant I3: media plugins remain the primary value channel of the agent.
 
-## Conclusion
-
 multimedia must preserve the responsibilities, boundaries, and observable results stated in this specification.

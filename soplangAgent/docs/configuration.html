@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>soplangBuilder Docs - Manifest and Environment</title>
+    <title>SOPLang Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,19 +12,7 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="soplangBuilder documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html" aria-current="page">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
@@ -67,7 +55,7 @@
                             </tr>
                             <tr>
                                 <td><code>SOPLANG_STATE_ROOT</code></td>
-                                <td>Optionally overrides the common SOPLang state root used for storage, logs, and audit data.</td>
+                                <td>Optionally overrides the common <a href="wiki.html#definition-soplangagent">SOPLang</a> state root used for storage, logs, and audit data.</td>
                             </tr>
                         </tbody>
                     </table>
@@ -81,9 +69,9 @@
 
                 <section>
                     <h2>Local Skills Folder</h2>
-                    <p>The repository includes <code>soplangAgent/skills/</code> with local skill packages. These skills are discoverable and can be registered as commands through Achilles bridge, but they are not yet actively used in current Explorer workflows.</p>
+                    <p>Local packages under <code>soplangAgent/skills/</code> can be discovered and registered as commands through Achilles bridge. Explorer invokes the declared MCP tools; local skill registration does not itself create an Explorer workflow.</p>
                     <div class="doc-callout">
-                        <p>This keeps future extension points ready without changing MCP API contracts.</p>
+                        <p>This keeps future extension points ready without changing <a href="wiki.html#definition-mcp">MCP</a> API contracts.</p>
                     </div>
                 </section>
 

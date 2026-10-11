@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>tasksAgent Docs - Manifest and Environment</title>
+    <title>Tasks Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,24 +12,12 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="tasksAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html" aria-current="page">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Manifest and Environment</h1>
-                    <p><code>tasksAgent</code> uses a Ploinky-compatible manifest and explicit filesystem-related environment variables for root and lock handling.</p>
+                    <p><code><a href="wiki.html#definition-tasksagent">tasksAgent</a></code> uses a Ploinky-compatible manifest and explicit filesystem-related environment variables for root and lock handling.</p>
                 </section>
 
                 <section>
@@ -75,7 +63,7 @@
 
                 <section>
                     <h2>Backlog File Contract</h2>
-                    <p>Backlog files must end with <code>.backlog</code>, history files must end with <code>.history</code>, and both must remain inside the selected repository root. The agent normalizes <code>/.ploinky/...</code> style inputs before validation.</p>
+                    <p><a href="wiki.html#definition-backlog">Backlog</a> files must end with <code>.backlog</code>, history files must end with <code>.history</code>, and both must remain inside the selected repository root. The agent normalizes <code>/.ploinky/...</code> style inputs before validation.</p>
                 </section>
 
                 <section>

@@ -7,7 +7,7 @@ summary: Defines the DS014-web-cli-chat-settings-and-interaction contract for We
 
 ## Introduction
 
-This specification defines the active DS014-web-cli-chat-settings-and-interaction contract for WebAssist.
+This specification defines the active DS014-web-cli-chat-settings-and-interaction contract for [WebAssist](wiki.html#definition-webassist).
 
 ## Core Content
 
@@ -20,7 +20,7 @@ Define `webassist-settings` behavior and `web-assist-chat` runtime behavior for 
 
 ### Available configuration fields
 1. **Site ID** (`#webassistSiteId`)
-   - Source: MCP `list-sites` (available to admins and users with `explorer.access`).
+   - Source: [MCP](wiki.html#definition-mcp) `list-sites` (available to admins and users with `explorer.access`).
    - Required at runtime: chat surface is disabled if `siteId` is missing.
 2. **Theme** (`#webassistTheme`)
 3. **Header Text** (`#webassistHeaderText`)
@@ -51,8 +51,8 @@ Define `webassist-settings` behavior and `web-assist-chat` runtime behavior for 
 - If `siteId` is missing:
   - composer is disabled,
   - an error message is shown,
-  - no MCP calls are made.
-- Uses MCP tools:
+  - no [MCP](wiki.html#definition-mcp) calls are made.
+- Uses [MCP](wiki.html#definition-mcp) tools:
   - `web_cli_chat` with `{ siteId, message, sessionId?, sessionSecret?, json: true }`
   - `web_cli_history` with `{ siteId, sessionId, sessionSecret? }`
   - `register-events` with `{ siteId, visitorId, eventType, ... }`
@@ -70,6 +70,4 @@ Define `webassist-settings` behavior and `web-assist-chat` runtime behavior for 
 - `web_cli_chat`, `web_cli_history`, and `register-events` require `siteId` and return session-oriented AKU-backed data.
 - `web_cli_chat` returns `sessionSecret` only in the response that creates a new owned session. `web_cli_history` returns `{ siteId, sessionId, exists, sessionKuId, history }`; a caller that is neither the owner, a secret holder, nor an admin receives `exists: false` and `history: []` (DS004 Session Ownership).
 
-## Conclusion
-
-WebAssist must preserve the responsibilities and boundaries stated by this specification.
+[WebAssist](wiki.html#definition-webassist) must preserve the responsibilities and boundaries stated by this specification.

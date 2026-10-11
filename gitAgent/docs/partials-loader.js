@@ -18,12 +18,12 @@ function initializeMenus() {
       trigger.setAttribute("aria-expanded", String(!open));
       menu.toggleAttribute("hidden", open);
     });
-    trigger.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        closeMenus(null);
-        trigger.focus();
-      }
-    });
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const open = document.querySelector('.site-nav__trigger[aria-expanded="true"]');
+    closeMenus(null);
+    open?.focus();
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".site-nav__group")) closeMenus(null);

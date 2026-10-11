@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>soplangBuilder Docs - Architecture</title>
+    <title>SOPLang Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,24 +12,12 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="soplangBuilder documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html" aria-current="page">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Architecture</h1>
-                    <p><code>soplangBuilder</code> is a bridge agent between <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> runtime capabilities and a Model Context Protocol (MCP) client surface used by <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> and Explorer user interface (UI) layers.</p>
+                    <p><code>soplangBuilder</code> is a bridge agent between <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> runtime capabilities and a <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) client surface used by <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> and Explorer user interface (UI) layers.</p>
                 </section>
 
                 <section>
@@ -44,19 +32,19 @@
                         </thead>
                         <tbody>
                             <tr>
-                                <td>Agent Model Context Protocol surface</td>
+                                <td>Agent <a href="wiki.html#definition-mcp">Model Context Protocol</a> surface</td>
                                 <td><code>soplangAgent/mcp-config.json</code></td>
                                 <td>Declares tool names, command entrypoint, env and schemas used by AgentServer.</td>
                             </tr>
                             <tr>
                                 <td>Tool wrapper</td>
                                 <td><code>soplangAgent/soplang-tool.sh</code></td>
-                                <td>Reads MCP payload from stdin and runs one Node process per invocation.</td>
+                                <td>Reads <a href="wiki.html#definition-mcp">MCP</a> payload from stdin and runs one Node process per invocation.</td>
                             </tr>
                             <tr>
                                 <td>Tool routing</td>
                                 <td><code>soplangAgent/plugins/lib/toolInvocation.mjs</code></td>
-                                <td>Maps MCP tool names to plugin + method + params.</td>
+                                <td>Maps <a href="wiki.html#definition-mcp">MCP</a> tool names to plugin + method + params.</td>
                             </tr>
                             <tr>
                                 <td><a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> APIs</td>
@@ -79,7 +67,7 @@
 
                 <section>
                     <h2>Runtime Boundary</h2>
-                    <p><a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> starts an AgentServer for this agent. AgentServer exposes MCP at <code>/mcp</code> and executes configured commands from <code>mcp-config.json</code>. In this project all tool calls use <code>/code/soplang-tool.sh</code> with a <code>TOOL_NAME</code> value selected per tool.</p>
+                    <p><a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> starts an AgentServer for this agent. AgentServer exposes <a href="wiki.html#definition-mcp">MCP</a> at <code>/mcp</code> and executes configured commands from <code>mcp-config.json</code>. In this project all tool calls use <code>/code/soplang-tool.sh</code> with a <code>TOOL_NAME</code> value selected per tool.</p>
                     <pre><code>{
   "name": "get_variables_with_values",
   "command": "/code/soplang-tool.sh",
@@ -88,12 +76,12 @@
     "TOOL_NAME": "get_variables_with_values"
   }
 }</code></pre>
-                    <p>This keeps the MCP server generic while concentrating <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a>-specific logic inside the wrapper and plugin layer.</p>
+                    <p>This keeps the <a href="wiki.html#definition-mcp">MCP</a> server generic while concentrating <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a>-specific logic inside the wrapper and plugin layer.</p>
                 </section>
 
                 <section>
                     <h2>System Positioning</h2>
-                    <p>The agent is a middle layer between <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> engine internals and <code>AssistOSExplorer</code> UI workflows. Explorer does not need direct <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> internals; it invokes MCP tools and receives normalized results.</p>
+                    <p>The agent is a middle layer between <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> engine internals and <code>AssistOSExplorer</code> UI workflows. Explorer does not need direct <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> internals; it invokes <a href="wiki.html#definition-mcp">MCP</a> tools and receives normalized results.</p>
                     <div class="doc-callout doc-callout--important">
                         <p>The focus is deterministic tooling exposure, not UI rendering. UI implementation remains in the Explorer repository.</p>
                     </div>

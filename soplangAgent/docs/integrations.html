@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>soplangBuilder Docs - Integrations</title>
+    <title>SOPLang Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,19 +12,7 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="soplangBuilder documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html" aria-current="page">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
@@ -34,7 +22,7 @@
 
                 <section>
                     <h2>Ploinky Integration Model</h2>
-                    <p><a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> starts AgentServer for <code>soplangAgent</code>, applies lifecycle settings from <code>soplangAgent/manifest.json</code>, and exposes the tool surface declared in <code>soplangAgent/mcp-config.json</code>. From the UI side, browser clients call the MCP endpoint at <code>/soplangAgent/mcp</code>, which keeps transport concerns outside the SOPLang layer.</p>
+                    <p><a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> starts AgentServer for <code><a href="wiki.html#definition-soplangagent">soplangAgent</a></code>, applies lifecycle settings from <code>soplangAgent/manifest.json</code>, and exposes the tool surface declared in <code>soplangAgent/mcp-config.json</code>. From the UI side, browser clients call the <a href="wiki.html#definition-mcp">MCP</a> endpoint at <code>/soplangAgent/mcp</code>, which keeps transport concerns outside the <a href="wiki.html#definition-soplangagent">SOPLang</a> layer.</p>
                 </section>
 
                 <section>
@@ -66,7 +54,7 @@
                             </tr>
                             <tr>
                                 <td><code>IDE-plugins/run-script/config.json</code></td>
-                                <td>Registers SOPLang script execution modal as an agent-owned plugin.</td>
+                                <td>Registers <a href="wiki.html#definition-soplangagent">SOPLang</a> script execution modal as an agent-owned plugin.</td>
                             </tr>
                             <tr>
                                 <td><code>IDE-plugins/open-builder-button/open-builder-button.js</code></td>
@@ -74,7 +62,7 @@
                             </tr>
                             <tr>
                                 <td><code>web/build-status.js</code></td>
-                                <td>Calls tools over MCP and streams build/task updates.</td>
+                                <td>Calls tools over <a href="wiki.html#definition-mcp">MCP</a> and streams build/task updates.</td>
                             </tr>
                         </tbody>
                     </table>

@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>dpuAgent Docs - Overview</title>
+    <title>DPU Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,35 +12,36 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="dpuAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html" aria-current="page">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                        <a href="research-data.html">Research Data</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>DPU Agent Overview</h1>
-                    <p>Explorer needs a place for secrets and confidential content that does not behave like the normal workspace filesystem. `dpuAgent` is that boundary.</p>
+                    <p>Explorer needs a place for secrets and confidential content that does not behave like the normal workspace filesystem. `<a href="wiki.html#definition-dpuagent">dpuAgent</a>` is that boundary.</p>
                 </section>
+<section id="documentation-map" class="documentation-map">
+<h2>Documentation Map</h2>
+<div class="documentation-map__scroll"><table><thead><tr><th scope="col">DPU</th><th scope="col">Reference</th></tr></thead><tbody>
+<tr><td><a href="index.html">Overview</a><p>Purpose, responsibilities, and the principal runtime workflows.</p></td><td><a href="wiki.html">Wiki</a><p>Canonical terminology, ownership, relationships, and limitations.</p></td></tr>
+<tr><td><a href="architecture.html">Architecture</a><p>Component relationships and the boundaries between the agent and Explorer.</p></td><td><a href="specsLoader.html?spec=matrix.md">Specifications</a><p>The specification matrix and normative project contracts.</p></td></tr>
+<tr><td><a href="execution-workflow.html">Tool Execution Workflow</a><p>Request processing, validation, dispatch, and result handling.</p></td><td></td></tr>
+<tr><td><a href="mcp-tools.html">MCP Tools</a><p>Declared tool interfaces and the operations available to callers.</p></td><td></td></tr>
+<tr><td><a href="integrations.html">Ploinky and Explorer Integration</a><p>How the agent connects to Ploinky and the Explorer shell.</p></td><td></td></tr>
+<tr><td><a href="configuration.html">Manifest and Environment</a><p>Manifest settings, environment variables, and startup requirements.</p></td><td></td></tr>
+<tr><td><a href="research-data.html">Research Data</a><p>Authorized file consumption, controlled processing, and research provenance.</p></td><td></td></tr>
+</tbody></table></div>
+<p>Start with DPU / Overview for the project purpose, then follow the remaining DPU pages for the interfaces and workflows. Reference / Wiki defines project terminology; Reference / Specifications opens the contracts, including the coding style and test organization in DS001.</p>
+</section>
+
 
                 <section>
                     <h2>Operational Need</h2>
-                    <p>The regular Explorer filesystem model is not enough for secrets, confidential files, or permission-driven collaboration. Those flows need actor-aware access checks, separate storage rules, and encrypted persistence for sensitive values. If Explorer stored this data directly as ordinary files, it would blur the security boundary and force user interface code to guess at storage and access control list (ACL) semantics that belong on the server side.</p>
+                    <p>The regular Explorer filesystem model is not enough for secrets, confidential files, or permission-driven collaboration. Those flows need actor-aware access checks, separate storage rules, and encrypted persistence for sensitive values. If Explorer stored this data directly as ordinary files, it would blur the security boundary and force user interface code to guess at storage and access control list (<a href="wiki.html#definition-acl">ACL</a>) semantics that belong on the server side.</p>
                 </section>
 
                 <section>
                     <h2>Service Boundary</h2>
-                    <p>`dpuAgent` exposes Model Context Protocol (MCP) surfaces for secrets, confidential objects, research resources, data sources, jobs, confirmations, provenance, audit, and permission checks. Explorer stays responsible for navigation and interaction flow, while the agent owns identity resolution, access control enforcement, metadata storage, encrypted value storage, provider orchestration, and confidential blob handling.</p>
+                    <p>`<a href="wiki.html#definition-dpuagent">dpuAgent</a>` exposes <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) surfaces for secrets, confidential objects, research resources, data sources, jobs, confirmations, provenance, audit, and permission checks. Explorer stays responsible for navigation and interaction flow, while the agent owns identity resolution, access control enforcement, metadata storage, encrypted value storage, provider orchestration, and confidential blob handling.</p>
                     <p>In practice, requests enter through <code>tools/dpu_tool.sh</code> and <code>tools/dpu_tool.mjs</code>, then dispatch into <code>lib/dpu-store.mjs</code>. Storage and access control list details are delegated further into <code>lib/dpu-store-internal/</code>, where the locking, manifest, and encryption helpers live.</p>
                 </section>
 
@@ -48,7 +49,7 @@
                     <h2>Runtime Behavior</h2>
                     <p>The agent exposes <code>/Confidential</code> with an actor-owned <code>My Space</code> folder and the named <code>Shared</code>, <code>Secrets</code>, <code>Research Data</code>, and <code>Jobs</code> projections. Users can create additional nested files and folders beneath their confidential folder tree; each child is linked to its containing folder by <code>parentId</code>. <code>Research Data</code> and <code>Jobs</code> remain specialized record projections rather than an exhaustive list of permitted directory names. Secret values are stored separately from metadata, confidential file bodies are encrypted, and provider operations run outside the short storage commit lock.</p>
                     <div class="doc-callout">
-                        <p><strong>Scope note:</strong> DPU records are not normal filesystem entities. Explorer can present them in file-like views, but persistence and permission rules come from DPU, not from the regular workspace filesystem.</p>
+                        <p><strong>Scope note:</strong> <a href="wiki.html#definition-dpuagent">DPU</a> records are not normal filesystem entities. Explorer can present them in file-like views, but persistence and permission rules come from <a href="wiki.html#definition-dpuagent">DPU</a>, not from the regular workspace filesystem.</p>
                     </div>
                 </section>
             </div>

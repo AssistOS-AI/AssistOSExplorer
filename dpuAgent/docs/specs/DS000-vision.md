@@ -7,7 +7,7 @@ summary: Defines the dpuAgent contract covered by DS000-vision.
 
 ## Introduction
 
-This specification defines the active contract for dpuAgent.
+This specification defines the active contract for [dpuAgent](wiki.html#definition-dpuagent).
 
 ## Core Content
 
@@ -15,7 +15,7 @@ This specification defines the active contract for dpuAgent.
 
 ### Summary
 
-`dpuAgent` is the confidential data service used by Explorer for secrets and for the virtual `/Confidential` surface. It exists because those records should not inherit normal filesystem behavior.
+[`dpuAgent`](wiki.html#definition-dpuagent) is the confidential data service used by Explorer for secrets and for the virtual `/Confidential` surface. It exists because those records should not inherit normal filesystem behavior.
 
 ### Background / Problem Statement
 
@@ -30,11 +30,11 @@ If these concerns were implemented as ordinary files plus ad-hoc UI logic, the p
 
 ### Goals
 
-1. Keep confidential storage behind a dedicated Model Context Protocol (MCP) boundary.
-2. Separate metadata, access control list (ACL) state, secret values, and confidential file blobs.
+1. Keep confidential storage behind a dedicated [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) boundary.
+2. Separate metadata, access control list ([ACL](wiki.html#definition-acl)) state, secret values, and confidential file blobs.
 3. Resolve actor identity consistently from auth context before access checks.
 4. Expose a stable tool surface for Explorer and related plugins.
-5. Support both embedded runtime hosting and standalone Model Context Protocol hosting.
+5. Support both embedded runtime hosting and standalone [Model Context Protocol](wiki.html#definition-mcp) hosting.
 
 ### Non-Goals
 
@@ -48,7 +48,7 @@ The agent routes all operations through `tools/dpu_tool.mjs` into `lib/dpu-store
 
 In practice:
 
-- `dpu_tool.mjs` normalizes the MCP envelope and extracts the verified `metadata.invocation` grant
+- `dpu_tool.mjs` normalizes the [MCP](wiki.html#definition-mcp) envelope and extracts the verified `metadata.invocation` grant
 - `dpu-store.mjs` implements the domain operations
 - `storage.mjs` owns the storage root, encryption helpers, and file lock
 - `permissions-manifest.mjs` owns principal normalization and access control list updates
@@ -64,8 +64,6 @@ The agent materializes virtual roots through `getWorkspaceRoots()`, including:
 - `/Confidential/Secrets`
 - `/Confidential/Audit` for audit viewers only
 
-Secrets and confidential objects are listed through separate tool families. Secret values are only materialized for actors whose role allows `read`. Confidential file content is only materialized for actors whose role allows `read`. Mutating operations run under the DPU file lock so metadata and permissions updates stay consistent.
+Secrets and confidential objects are listed through separate tool families. Secret values are only materialized for actors whose role allows `read`. Confidential file content is only materialized for actors whose role allows `read`. Mutating operations run under the [DPU](wiki.html#definition-dpuagent) file lock so metadata and permissions updates stay consistent.
 
-## Conclusion
-
-dpuAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+[dpuAgent](wiki.html#definition-dpuagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.

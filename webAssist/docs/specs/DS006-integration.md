@@ -7,13 +7,13 @@ summary: Defines the DS006-integration contract for WebAssist.
 
 ## Introduction
 
-This specification defines the active DS006-integration contract for WebAssist.
+This specification defines the active DS006-integration contract for [WebAssist](wiki.html#definition-webassist).
 
 ## Core Content
 
 ### DS003 - webAssist Integration and Loading
 
-`webAssist` is a Node.js Ploinky agent with CLI, MCP, and embedded chat entry points.
+`webAssist` is a Node.js [Ploinky](wiki.html#definition-ploinky) agent with CLI, [MCP](wiki.html#definition-mcp), and embedded chat entry points.
 
 ### CLI
 - Entry: `webAssist/src/index.mjs`.
@@ -43,6 +43,4 @@ The iframe URL must include `siteId`. If `siteId` is missing, chat is disabled a
 
 `web_cli_chat` returns `{ siteId, sessionId, message }` with the effective session id, plus `sessionSecret` only when the call created a new owned session.
 
-## Conclusion
-
-WebAssist must preserve the responsibilities and boundaries stated by this specification.
+[WebAssist](wiki.html#definition-webassist) must preserve the responsibilities and boundaries stated by this specification.

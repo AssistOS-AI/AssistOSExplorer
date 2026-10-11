@@ -1,16 +1,16 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workspace Monitor Configuration</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workspace Monitor Documentation</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head>
 <body>
   <div data-include="partials/header.html"></div>
   <main class="page content--with-sidebar"><div class="doc-layout">
-    <aside class="doc-sidebar" aria-label="Workspace Monitor documentation navigation"><div class="doc-sidebar__group"><p class="doc-sidebar__group-title">Documentation</p><nav><a href="index.html">Overview</a><a href="architecture.html">Architecture</a><a href="execution-workflow.html">Execution workflow</a><a href="mcp-tools.html">MCP tools</a><a href="integrations.html">Integrations</a><a href="configuration.html" aria-current="page">Configuration</a></nav></div></aside>
+
     <div class="page__panel">
       <p class="breadcrumbs"><a href="index.html">Documentation</a> / Configuration</p>
       <h1>Configuration</h1>
       <p>The manifest starts <code>server/supervisor.mjs</code>, declares administrator access to workspace logs, and mounts persistent storage at <code>/data</code>. <code>WORKSPACE_MONITOR_DATA_ROOT</code> points the agent to that storage root.</p>
       <div class="table-wrap"><table><thead><tr><th>Setting</th><th>Default</th><th>Validation</th></tr></thead><tbody><tr><td><code>workspaceCpuPercent</code></td><td><code>80</code></td><td>Finite number from 0 to 100,000.</td></tr><tr><td><code>workspaceMemoryBytes</code></td><td>4 GiB</td><td>Positive finite number.</td></tr><tr><td><code>routerCpuPercent</code></td><td><code>80</code></td><td>Finite number from 0 to 100,000.</td></tr><tr><td><code>routerMemoryBytes</code></td><td>512 MiB</td><td>Positive finite number.</td></tr><tr><td><code>logRetentionDays</code></td><td><code>7</code></td><td>Integer from 1 to 365.</td></tr></tbody></table></div>
-      <p>Settings are atomically written to <code>settings.json</code>. The allowlisted current resource projection is atomically written to <code>current-snapshot.json</code> and is considered stale fifteen seconds after its sampling instant. History is stored in <code>history.sqlite</code> with WAL mode and a thirteen-month retention window. History requests are limited to that window and to 50,000 points per series.</p>
+      <p>Settings are atomically written to <code>settings.json</code>. The allowlisted current resource projection is atomically written to <code>current-snapshot.json</code> and is considered stale fifteen seconds after its sampling instant. History is stored in <code>history.sqlite</code> with <a href="wiki.html#definition-wal">WAL</a> mode and a thirteen-month retention window. History requests are limited to that window and to 50,000 points per series.</p>
       <p>The implementation requires <code>PLOINKY_INTERNAL_ROUTER_URL</code> for private metrics and log requests. The repository does not define a separate user-facing configuration screen for that internal value.</p>
     </div>
   </div></main>

@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>multimedia Docs - Media Workflows</title>
+    <title>Multimedia Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,18 +12,7 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="multimedia documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="ide-plugins.html">IDE Plugins</a>
-                        <a href="media-workflows.html" aria-current="page">Media Workflows</a>
-                        <a href="runtime-dependencies.html">Runtime and Dependencies</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
@@ -43,7 +32,7 @@
 
                 <section>
                     <h2>FFmpeg Image to Video Flow</h2>
-                    <p>The <code>ffmpegImageToVideo</code> skill accepts images (and optional audio), normalizes inputs (blob id or URL), runs FFmpeg, and uploads the resulting MP4 to blob storage.</p>
+                    <p>The <code>ffmpegImageToVideo.mjs</code> helper implements image input normalization, optional audio, <a href="wiki.html#definition-ffmpeg">FFmpeg</a> processing, and MP4 upload to blob storage. <a href="specsLoader.html?spec=DS004-ffmpeg-media-processing.md">DS004</a> defines the input contract and the descriptor entrypoint boundary.</p>
                     <pre><code>{
   "images": ["blob-id-1", "blob-id-2"],
   "audio": "blob-audio-id",
@@ -61,7 +50,7 @@
                 <section>
                     <h2>Preview and Processing</h2>
                     <p><code>paragraph-video-preview</code> and <code>document-video-preview</code> are used for fast scene verification, including audio/video sync behavior and visibility of unfinished tasks.</p>
-                    <p>The <code>ffmpegImageToVideo</code> skill converts an explicit image sequence into an MP4. Whole-document video compilation is not published as an IDE action.</p>
+                    <p>The <code>ffmpegImageToVideo.mjs</code> processing helper defines conversion of an explicit image sequence into an MP4. Whole-document video compilation is not published as an IDE action.</p>
                 </section>
             </div>
         </div>

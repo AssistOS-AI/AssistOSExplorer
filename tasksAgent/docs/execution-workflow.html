@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>tasksAgent Docs - Tool Execution Workflow</title>
+    <title>Tasks Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,24 +12,12 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="tasksAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html" aria-current="page">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Tool Execution Workflow</h1>
-                    <p>Each Model Context Protocol (MCP) tool call starts a new process through <code>tasksAgent/tools/tasks_tool.sh</code> and executes in <code>tasks_tool.mjs</code>.</p>
+                    <p>Each <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) tool call starts a new process through <code>tasksAgent/tools/tasks_tool.sh</code> and executes in <code>tasks_tool.mjs</code>.</p>
                 </section>
 
                 <section>
@@ -57,7 +45,7 @@
                     <h2>Detailed Stages</h2>
                     <ol>
                         <li><strong>Dispatch:</strong> AgentServer invokes <code>tools/tasks_tool.sh</code> with environment-bound <code>TOOL_NAME</code>.</li>
-                        <li><strong>Envelope parsing:</strong> dispatcher reads stdin payload and extracts arguments from supported MCP envelope shapes.</li>
+                        <li><strong>Envelope parsing:</strong> dispatcher reads stdin payload and extracts arguments from supported <a href="wiki.html#definition-mcp">MCP</a> envelope shapes.</li>
                         <li><strong>Root resolution:</strong> repo root is validated through <code>repoPath</code> and workspace-root env variables.</li>
                         <li><strong>Path policy:</strong> <code>backlogPath</code> and <code>historyPath</code> are validated to stay inside repo root and required extensions.</li>
                         <li><strong>Operation logic:</strong> task list/get/create/update/delete/reorder/history flows are applied.</li>
@@ -70,7 +58,7 @@
                     <h2>Operational Notes</h2>
                     <p>The dispatcher keeps invocation state isolated per request while reading and writing task records through one Markdown persistence layer. This keeps operations predictable for concurrent Explorer interactions and keeps the file format human-readable.</p>
                     <div class="doc-callout">
-                        <p>Path safety and explicit operation contracts are enforced before any backlog mutation is persisted.</p>
+                        <p><a href="wiki.html#definition-path-safety">Path safety</a> and explicit operation contracts are enforced before any backlog mutation is persisted.</p>
                     </div>
                 </section>
             </div>

@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>multimedia Docs - Architecture</title>
+    <title>Multimedia Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,18 +12,7 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="multimedia documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html" aria-current="page">Architecture</a>
-                        <a href="ide-plugins.html">IDE Plugins</a>
-                        <a href="media-workflows.html">Media Workflows</a>
-                        <a href="runtime-dependencies.html">Runtime and Dependencies</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
@@ -53,7 +42,7 @@
                                 <td>Validates <code>git</code> + <code>ffmpeg</code> in containers or host sandbox mode; the shared image preinstalls them for container starts.</td>
                             </tr>
                             <tr>
-                                <td>IDE plugin bundles</td>
+                                <td><a href="wiki.html#definition-ide-plugin">IDE plugin</a> bundles</td>
                                 <td><code>multimedia/IDE-plugins/</code></td>
                                 <td>Primary functional surface: upload, metadata editing, preview, and compilation actions.</td>
                             </tr>
@@ -63,7 +52,7 @@
                                 <td>Shared helpers for blob upload, metadata extraction, and context resolution.</td>
                             </tr>
                             <tr>
-                                <td>FFmpeg skill</td>
+                                <td><a href="wiki.html#definition-ffmpeg">FFmpeg</a> skill</td>
                                 <td><code>multimedia/skills/ffmpegImageToVideo/</code></td>
                                 <td>Builds MP4 from images (optionally audio), then uploads the result to blob storage.</td>
                             </tr>
@@ -74,7 +63,7 @@
                 <section>
                     <h2>Execution Positioning</h2>
                     <p>The standard flow is user-interface-first: a plugin is mounted in document/paragraph/chapter host contexts, reads current context data, and then uses <code>document</code>, <code>workspace</code>, or <code>llm</code> modules for operations.</p>
-                    <p>The FFmpeg skill is separated from user interface plugins and runs as a media processing block, allowing reuse in automated flows that require standardized video output.</p>
+                    <p>The <a href="wiki.html#definition-ffmpeg">FFmpeg</a> skill is separated from user interface plugins and runs as a media processing block, allowing reuse in automated flows that require standardized video output.</p>
                     <div class="doc-callout">
                         <p>This agent is not focused on complex LLM orchestration; its value is in specialized IDE media extensions.</p>
                     </div>

@@ -1,70 +1,27 @@
 ---
 title: DS003-main-behavior
-summary: Defines the soplangAgent contract covered by DS003-main-behavior.
+summary: Defines structured document synchronization, explicit workspace builds, and invocation-safe persistence.
 ---
 
 # DS003-main-behavior
 
 ## Introduction
 
-The main behavior of soplangAgent is the user and integration outcome described by this contract.
+The [SOPLang](wiki.html#definition-soplangagent) agent lets workspace users synchronize structured Markdown documents and execute the workspace build through declared [MCP](wiki.html#definition-mcp) operations.
 
 ## Core Content
 
-### DS03 - MCP Tool Contract and Execution Lifecycle
+### Main Behavior Components
 
-### Role of This Document
+| Name | Explanation |
+| --- | --- |
+| Document synchronization and workspace builds | Users synchronize structured documents and explicitly start the build that executes workspace skills. |
+| Invocation validation and persistence | [MCP](wiki.html#definition-mcp) clients receive a declared result or an explicit failure, and state changes survive process completion. |
 
-This document specifies what the Model Context Protocol (MCP) tool surface must guarantee and what each tool invocation lifecycle must enforce.
+### Document synchronization and workspace builds
 
-### Contract Surface
+A `sync_markdown_documents` call scans supported Markdown documents and synchronizes them into the [SOPLang](wiki.html#definition-soplangagent) workspace without running the build pipeline. A separate `execute_workspace_build` call runs the build after synchronization. Variable, command, and type inspection expose the workspace information used by Explorer. Synchronization and execution must remain distinct actions so inspecting or importing documents does not silently execute their skills. [DS002-architecture](specsLoader.html?spec=DS002-architecture.md) defines the participating plugins.
 
-The Model Context Protocol (MCP) contract surface is defined by named tools, input schemas, and declared execution properties. Tool names are public agent contracts. A tool name is not an implementation hint; it is the externally visible agent operation.
+### Invocation validation and persistence
 
-The current contract set includes document synchronization, workspace build execution, variable inspection, command and type inspection, and skill execution. Additional tools may be introduced, but existing contract semantics must remain stable for unchanged names.
-
-### Lifecycle Rules
-
-Lifecycle Rule L1: each tool invocation starts as a new process lifecycle with fresh input payload context.
-
-Lifecycle Rule L2: the lifecycle must perform preflight validation before operation dispatch, including mandatory metadata required for safe routing.
-
-Lifecycle Rule L3: plugin and skill registration are invocation-scoped preparation stages and must complete before target method execution.
-
-Lifecycle Rule L4: operation result emission must be deterministic at contract level and must return machine-readable output suitable for MCP clients.
-
-Lifecycle Rule L5: lifecycle completion must include persistence-safe finalization, including explicit save behavior where required by operation semantics and shutdown closure behavior before exit.
-
-### Failure Semantics
-
-Failure Rule F1: unsupported tool names produce explicit contract failures.
-
-Failure Rule F2: invalid input schemas produce explicit contract failures and do not trigger partial execution side effects.
-
-Failure Rule F3: plugin bootstrap or execution errors remain attributable and visible to MCP clients.
-
-Failure Rule F4: failed tool execution does not silently report success states.
-
-### Constraints
-
-Constraint M1: a tool call cannot bypass invocation mapping and call private plugin methods directly.
-
-Constraint M2: agent behavior cannot depend on undocumented payload fields.
-
-Constraint M3: lifecycle finalization cannot be skipped for successful state-changing operations.
-
-### Invariants
-
-Invariant T1: each MCP tool request has one declared contract identity and one resolved execution path.
-
-Invariant T2: successful contract completion returns serialized output through MCP response content.
-
-Invariant T3: lifecycle boundaries are strict; invocation state is not guaranteed to persist as shared in-memory runtime state across calls.
-
-### Validation Criteria
-
-Validation is satisfied when independent MCP clients can call the same tool names and obtain contract-consistent outcomes, when unsupported tools fail explicitly, and when state-changing operations persist changes after lifecycle completion.
-
-## Conclusion
-
-soplangAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+Each request starts through `soplang-tool.sh`, validates its input and routing metadata, and registers the required plugins before dispatch. Successful state-changing operations must save the affected state and complete shutdown before exit. Unsupported operations and execution failures must not report success. [DS007-mcp-execution-lifecycle](specsLoader.html?spec=DS007-mcp-execution-lifecycle.md) preserves the detailed lifecycle contract; [DS006-runtime-invariants](specsLoader.html?spec=DS006-runtime-invariants.md) governs runtime authorization.

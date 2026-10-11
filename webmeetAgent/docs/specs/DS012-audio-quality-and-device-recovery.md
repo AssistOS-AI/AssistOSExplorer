@@ -9,7 +9,7 @@ summary: Defines WebMeet's browser-side microphone capture profiles, single-stag
 
 ## Introduction
 
-This specification defines how WebMeet captures, processes, and publishes participant audio without echoing, abrupt gain changes, or silent microphone failures. The contract keeps LiveKit and the browser WebRTC stack as the media transport and audio pipeline authority, and it does not introduce a WebMeet-owned jitter buffer, decoder, or additional neural denoiser.
+This specification defines how [WebMeet](wiki.html#definition-webmeetagent) captures, processes, and publishes participant audio without echoing, abrupt gain changes, or silent microphone failures. The contract keeps [LiveKit](wiki.html#definition-livekit) and the browser WebRTC stack as the media transport and audio pipeline authority, and it does not introduce a WebMeet-owned jitter buffer, decoder, or additional neural denoiser.
 
 The audio path is split into a capture profile, a single-stage processing chain, a capture-session lifecycle owner, publish defaults, and diagnostic observation. Each stage has one responsibility, and analysis never gates or rewrites the published signal.
 
@@ -28,7 +28,7 @@ After capture, the applied settings are read with `getSettings()` and compared w
 
 ### Single-stage voice processing
 
-The default path does not stack independent processors. WebMeet does not request browser noise suppression and a second noise reduction stage at the same time, and it does not run a WebMeet automatic gain stage against the browser automatic gain stage. The adaptive noise gate, the fixed compressor, and the automatic hum notch are removed from the default path. A high-pass filter and a manual 50/60 Hz notch remain available, and a manual gain stage remains available when the participant requests one. The hum filter defaults to off, so no notch is applied unless the participant selects one.
+The default path does not stack independent processors. [WebMeet](wiki.html#definition-webmeetagent) does not request browser noise suppression and a second noise reduction stage at the same time, and it does not run a [WebMeet](wiki.html#definition-webmeetagent) automatic gain stage against the browser automatic gain stage. The adaptive noise gate, the fixed compressor, and the automatic hum notch are removed from the default path. A high-pass filter and a manual 50/60 Hz notch remain available, and a manual gain stage remains available when the participant requests one. The hum filter defaults to off, so no notch is applied unless the participant selects one.
 
 The advanced profile runs the pinned `@jitsi/rnnoise-wasm` build inside an `AudioWorklet`. The worklet uses preallocated input and output ring buffers, processes fixed 480-sample frames at 48 kHz, and fills underrun output with silence instead of alternating between raw and processed audio. The processor is initialized before the processed track is published. Initialization failure, `processorerror`, or context closure marks the processor unavailable and falls back to the standard profile without leaving an apparently active but silent track.
 
@@ -38,11 +38,11 @@ A single capture session owns the original stream, the processed track, the audi
 
 ### Audio publish defaults
 
-Published microphone audio uses explicit LiveKit publish defaults: a voice-oriented Opus bitrate, DTX, RED, mono output, and `stopMicTrackOnMute`. WebMeet does not reimplement Opus encoding or network jitter compensation; the browser WebRTC stack provides those.
+Published microphone audio uses explicit [LiveKit](wiki.html#definition-livekit) publish defaults: a voice-oriented Opus bitrate, DTX, RED, mono output, and `stopMicTrackOnMute`. [WebMeet](wiki.html#definition-webmeetagent) does not reimplement Opus encoding or network jitter compensation; the browser WebRTC stack provides those.
 
 ### Analysis and diagnostics
 
-Audio analysis observes the capture and playback paths without gating them. Real-time level, peak, clipping, noise-floor, and speaking calculations run in an `AudioWorklet` processor over preallocated state and post aggregated metrics to the interface several times per second. When worklet analysis is unavailable, WebMeet falls back to the existing analyser-based monitor. Voice detection controls only the speaking indicator and never truncates the beginning of a word or a weak voice. Microphone indication, speaking detection, and signal processing remain separate concerns.
+Audio analysis observes the capture and playback paths without gating them. Real-time level, peak, clipping, noise-floor, and speaking calculations run in an `AudioWorklet` processor over preallocated state and post aggregated metrics to the interface several times per second. When worklet analysis is unavailable, [WebMeet](wiki.html#definition-webmeetagent) falls back to the existing analyser-based monitor. Voice detection controls only the speaking indicator and never truncates the beginning of a word or a weak voice. Microphone indication, speaking detection, and signal processing remain separate concerns.
 
 Diagnostics report the requested and effective profile, the requested and applied capture settings, audio level before and after processing where the path exposes it, and the available WebRTC statistics: packet loss, jitter, round-trip time, and concealed samples. Cumulative counters are reported as interval differences. Diagnostics never export tokens, cleartext device identifiers, or automatic audio recordings, and they reuse the existing redaction rules.
 
@@ -50,13 +50,13 @@ Transport diagnostics are read-only. They classify the selected ICE candidate pa
 
 ### Output playback recovery
 
-Remote audio playback is attempted when a track is attached. When the browser blocks playback under its autoplay policy, WebMeet exposes an explicit "Enable sound" action and marks the blocked state. A user gesture on the dashboard, or a return of document visibility or window focus, re-attempts playback, re-applies the selected output device to all audio elements, and resumes the shared analysis context. This keeps sound recovery reachable after sleep, tab switches, or a blocked autoplay without requiring a page reload.
+Remote audio playback is attempted when a track is attached. When the browser blocks playback under its autoplay policy, [WebMeet](wiki.html#definition-webmeetagent) exposes an explicit "Enable sound" action and marks the blocked state. A user gesture on the dashboard, or a return of document visibility or window focus, re-attempts playback, re-applies the selected output device to all audio elements, and resumes the shared analysis context. This keeps sound recovery reachable after sleep, tab switches, or a blocked autoplay without requiring a page reload.
 
 ### Room session resume across reload
 
-WebMeet records a per-tab resume record in `sessionStorage` when the dashboard opens, when a room is joined, and when microphone or camera state changes. The record stores whether the panel is open, the active room identifier, and the microphone and camera state. The browser room URL continues to carry the active room identifier for direct room entry.
+[WebMeet](wiki.html#definition-webmeetagent) records a per-tab resume record in `sessionStorage` when the dashboard opens, when a room is joined, and when microphone or camera state changes. The record stores whether the panel is open, the active room identifier, and the microphone and camera state. The browser room URL continues to carry the active room identifier for direct room entry.
 
-After a browser refresh, the WebMeet panel reopens when the record says it was open, and the active room is rejoined with a fresh participant token. Microphone and camera state are restored when they were on. Screen sharing is not restored automatically because display capture requires a fresh user gesture. Leaving a room clears the room identifier from the record while keeping the panel open, so a refresh does not rejoin a room that was left. Closing the panel clears the record so a refresh does not reopen it.
+After a browser refresh, the [WebMeet](wiki.html#definition-webmeetagent) panel reopens when the record says it was open, and the active room is rejoined with a fresh participant token. Microphone and camera state are restored when they were on. Screen sharing is not restored automatically because display capture requires a fresh user gesture. Leaving a room clears the room identifier from the record while keeping the panel open, so a refresh does not rejoin a room that was left. Closing the panel clears the record so a refresh does not reopen it.
 
 ### Device identification and recovery
 
@@ -74,8 +74,6 @@ Response: A gate or automatic gain stage that reacts to short analysis windows c
 
 ### Question #3: Why is `voiceIsolation` opt-in?
 
-Response: Platform voice isolation and a WebMeet noise-reduction stage are two independent reduction mechanisms. Requesting both can degrade speech, so `voiceIsolation` is requested only when a single reduction stage is intended.
+Response: Platform voice isolation and a [WebMeet](wiki.html#definition-webmeetagent) noise-reduction stage are two independent reduction mechanisms. Requesting both can degrade speech, so `voiceIsolation` is requested only when a single reduction stage is intended.
 
-## Conclusion
-
-WebMeet captures and publishes audio through one constraint builder, one processing stage per concern, and one capture-session owner, with verified applied settings and read-only diagnostics. This yields a stable and clear voice path on the supported browsers while leaving transport credential boundaries to DS005.
+[WebMeet](wiki.html#definition-webmeetagent) captures and publishes audio through one constraint builder, one processing stage per concern, and one capture-session owner, with verified applied settings and read-only diagnostics. This yields a stable and clear voice path on the supported browsers while leaving transport credential boundaries to DS005.

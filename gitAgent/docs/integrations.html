@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>gitAgent Docs - Integrations</title>
+    <title>Git Agent Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,37 +12,25 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="gitAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html" aria-current="page">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Ploinky and Explorer Integration</h1>
-                    <p><code>gitAgent</code> is integrated as a <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> Model Context Protocol (MCP) agent and consumed by Explorer-facing user interface (UI) flows as a backend Git mediator.</p>
+                    <p><code><a href="wiki.html#definition-gitagent">gitAgent</a></code> is integrated as a <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) agent and consumed by Explorer-facing user interface (UI) flows as a backend Git mediator.</p>
                 </section>
 
                 <section>
                     <h2>Ploinky Runtime Integration</h2>
-                    <p>Agent lifecycle is controlled by <code>gitAgent/manifest.json</code>, while tool contracts come from <code>gitAgent/mcp-config.json</code>. AgentServer executes those tool commands in workspace context and returns normalized MCP responses to clients, which keeps Git execution policy centralized in the agent.</p>
+                    <p>Agent lifecycle is controlled by <code>gitAgent/manifest.json</code>, while tool contracts come from <code>gitAgent/mcp-config.json</code>. AgentServer executes those tool commands in workspace context and returns normalized <a href="wiki.html#definition-mcp">MCP</a> responses to clients, which keeps Git execution policy centralized in the agent.</p>
                 </section>
 
                 <section>
                     <h2>AssistOSExplorer Integration</h2>
-                    <p>Explorer integration uses the internal <code>AssistOSExplorer</code> repository. Frontend code calls <code>callAgentTool("gitAgent", ...)</code> and relies on this agent for Git operations, conflict checks, push/pull flows, and repository overview behavior.</p>
+                    <p>Explorer integration uses the internal <code>AssistOSExplorer</code> repository. Frontend code calls <code>callAgentTool("<a href="wiki.html#definition-gitagent">gitAgent</a>", ...)</code> and relies on this agent for Git operations, conflict checks, push/pull flows, and repository overview behavior.</p>
                     <p>The Explorer <code>New</code> menu exposes two Git actions: <code>Add new repository</code> creates a GitHub remote or initializes a local repository from an editable remote URL, while <code>Clone repository</code> clones a selected GitHub repository or manual remote. Both actions are contextual: inside a repository they open <code>Add Git submodule</code> and accept only an existing GitHub repository or manual remote URL.</p>
                     <div class="doc-callout">
-                        <p>Explorer remains the interaction surface, while <code>gitAgent</code> remains the operational boundary for Git process execution.</p>
+                        <p>Explorer remains the interaction surface, while <code><a href="wiki.html#definition-gitagent">gitAgent</a></code> remains the operational boundary for Git process execution.</p>
                     </div>
                 </section>
 
@@ -72,7 +60,7 @@
                             </tr>
                             <tr>
                                 <td><code>IDE-plugins/git-tool-button/git-tool-button-controller.js</code></td>
-                                <td>Calls MCP tools via Explorer API and orchestrates autocommit/pull/push/conflict UI logic.</td>
+                                <td>Calls <a href="wiki.html#definition-mcp">MCP</a> tools via Explorer API and orchestrates autocommit/pull/push/conflict UI logic.</td>
                             </tr>
                         </tbody>
                     </table>

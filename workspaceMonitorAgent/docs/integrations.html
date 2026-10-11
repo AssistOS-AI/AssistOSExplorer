@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workspace Monitor Integrations</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workspace Monitor Documentation</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head>
 <body>
   <div data-include="partials/header.html"></div>
   <main class="page content--with-sidebar"><div class="doc-layout">
-    <aside class="doc-sidebar" aria-label="Workspace Monitor documentation navigation"><div class="doc-sidebar__group"><p class="doc-sidebar__group-title">Documentation</p><nav><a href="index.html">Overview</a><a href="architecture.html">Architecture</a><a href="execution-workflow.html">Execution workflow</a><a href="mcp-tools.html">MCP tools</a><a href="integrations.html" aria-current="page">Integrations</a><a href="configuration.html">Configuration</a></nav></div></aside>
+
     <div class="page__panel">
       <p class="breadcrumbs"><a href="index.html">Documentation</a> / Integrations</p>
       <h1>Integrations</h1>
@@ -13,7 +13,7 @@
       <h2>Ploinky metrics</h2>
       <p>The collector uses a private Router assertion to request the streaming workspace metrics route. Ploinky overlays current-run no-wait readiness on raw container state before publishing the stream; the projection retains both process liveness and semantic readiness so the Explorer dashboard counts only ready runtimes. The collector records the Router metrics separately, derives the workspace agent aggregate from available runtime metrics or from the total minus Router when runtime details are absent, and writes an allowlisted current projection for the administrator-only snapshot tool.</p>
       <h2>Ploinky logs</h2>
-      <p>Log listing, reading, searching, and retention maintenance call Ploinky's private log service. Workspace Monitor sends signed requests and returns the service response; Ploinky remains responsible for log ownership, active files, and retained archives.</p>
+      <p>Log listing, reading, searching, and retention maintenance call Ploinky's private log service. <a href="wiki.html#definition-workspace-monitor">Workspace Monitor</a> sends signed requests and returns the service response; Ploinky remains responsible for log ownership, active files, and retained archives.</p>
       <h2>Boundary</h2>
       <p>The repository does not establish a public browser route or direct runtime-port contract for this agent. Consumers must use the configured MCP tools through Ploinky.</p>
     </div>

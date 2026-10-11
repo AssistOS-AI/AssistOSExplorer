@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WebMeet Agent Documentation - Architecture</title>
+  <title>WebMeet Documentation</title>
   <link rel="stylesheet" href="styles.css">
   <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
 </head>
@@ -11,16 +11,16 @@
   <div id="site-header"></div>
   <main class="content content--with-sidebar">
     <div class="doc-layout">
-      <aside class="doc-sidebar" aria-label="WebMeet documentation navigation"><div class="doc-sidebar__group"><p class="doc-sidebar__group-title">Documentation</p><nav><a href="index.html">Overview</a><a href="architecture.html" aria-current="page">Architecture</a><a href="execution-workflow.html">Execution workflow</a><a href="collaboration.html">Collaboration features</a><a href="mcp-tools.html">MCP tools</a><a href="integrations.html">Integrations</a><a href="configuration.html">Configuration</a></nav></div></aside>
+
       <div class="doc-main">
         <p><a href="index.html">Documentation</a> / Architecture</p>
         <section class="lead">
           <h1>Architecture</h1>
-          <p>WebMeet separates workspace navigation, protected meeting state, realtime media, and collaborative document ownership so each service controls the data and operations within its domain.</p>
+          <p><a href="wiki.html#definition-webmeetagent">WebMeet</a> separates workspace navigation, protected meeting state, realtime media, and collaborative document ownership so each service controls the data and operations within its domain.</p>
         </section>
         <div>
           <h2>WebMeet Control And Collaboration Stack</h2>
-          <p>The diagram follows the three architectural layers used by WebMeet. The participant enters through Explorer and Ploinky Router, <code>webmeetAgent</code> authorizes the application capabilities, and durable state or delegated collaboration remains with its owning service.</p>
+          <p>The diagram follows the three architectural layers used by <a href="wiki.html#definition-webmeetagent">WebMeet</a>. The participant enters through Explorer and <a href="wiki.html#definition-ploinky">Ploinky</a> Router, <code><a href="wiki.html#definition-webmeetagent">webmeetAgent</a></code> authorizes the application capabilities, and durable state or delegated collaboration remains with its owning service.</p>
           <figure class="diagram">
             <pre class="mermaid">
 flowchart TB
@@ -66,11 +66,11 @@ flowchart TB
   class WebMeet,Rooms,Collaboration,Workspace,MediaControl control;
   class Store,Scripta,RoboTeam,Secretary durable;
             </pre>
-            <figcaption>WebMeet control and collaboration stack</figcaption>
+            <figcaption><em><a href="wiki.html#definition-webmeetagent">WebMeet</a> control and collaboration stack</em></figcaption>
           </figure>
 
           <h2>Media Infrastructure Layer</h2>
-          <p><code>AchillesIDE/liveKitServerAgent</code> supervises <a href="wiki.html#definition-livekit">LiveKit</a> Server, Redis, and Egress. WebMeet gives the participant browser a participant token, the Router signaling path, and the current RTC configuration. Ploinky Router carries public signaling and authenticated private Twirp calls. When the active topology declares external TURN, the Ploinky credential broker returns short-lived credentials to WebMeet, while the external TURN service alone relays WebRTC traffic when the direct media path is unavailable.</p>
+          <p><code>AchillesIDE/liveKitServerAgent</code> supervises <a href="wiki.html#definition-livekit">LiveKit</a> Server, Redis, and Egress. <a href="wiki.html#definition-webmeetagent">WebMeet</a> gives the participant browser a participant token, the Router signaling path, and the current RTC configuration. <a href="wiki.html#definition-ploinky">Ploinky</a> Router carries public signaling and authenticated private Twirp calls. When the active topology declares external TURN, the <a href="wiki.html#definition-ploinky">Ploinky</a> credential broker returns short-lived credentials to <a href="wiki.html#definition-webmeetagent">WebMeet</a>, while the external TURN service alone relays WebRTC traffic when the direct media path is unavailable.</p>
           <figure class="diagram">
             <pre class="mermaid">
 sequenceDiagram
@@ -89,7 +89,7 @@ sequenceDiagram
   WebMeet->>Router: Authenticated private Twirp request
   Router->>LiveKit: RoomService or AgentDispatchService call
             </pre>
-            <figcaption>LiveKit admission and control flow</figcaption>
+            <figcaption><em><a href="wiki.html#definition-livekit">LiveKit</a> admission and control flow</em></figcaption>
           </figure>
           <figure class="diagram">
             <pre class="mermaid">
@@ -111,33 +111,33 @@ flowchart TB
   class Browser client;
   class LiveKit,Redis,Egress,Turn media;
             </pre>
-            <figcaption>LiveKit media transport and supervised runtime</figcaption>
+            <figcaption><em><a href="wiki.html#definition-livekit">LiveKit</a> media transport and supervised runtime</em></figcaption>
           </figure>
         </div>
         <section>
           <h2>Control Plane And Durable State</h2>
-          <p>The agent owns room creation, admission, roles, archives, deletion, guest scope, authenticated and owner-bound guest chat records, resources, Blackboard state, and Ploinky-managed room-agent metadata. Room payloads are encrypted with AES-256-GCM and per-room data keys wrapped by <code>PLOINKY_WEBMEET_MASTER_KEY</code>. The central <code>WEBMEET_EVENT_TYPES</code> contract separates persisted events from realtime-only events and is shared by store and browser code.</p>
-          <p>LiveKit presence is not the durable room directory. WebMeet reconciles active media participation with its authorized participant state and keeps browser-facing projections free of private DPU profile data.</p>
+          <p>The agent owns room creation, admission, roles, archives, deletion, guest scope, authenticated and owner-bound guest chat records, resources, <a href="wiki.html#definition-blackboard">Blackboard</a> state, and Ploinky-managed room-agent metadata. Room payloads are encrypted with AES-256-GCM and per-room data keys wrapped by <code>PLOINKY_WEBMEET_MASTER_KEY</code>. The central <code>WEBMEET_EVENT_TYPES</code> contract separates persisted events from realtime-only events and is shared by store and browser code.</p>
+          <p><a href="wiki.html#definition-livekit">LiveKit</a> presence is not the durable room directory. <a href="wiki.html#definition-webmeetagent">WebMeet</a> reconciles active media participation with its authorized participant state and keeps browser-facing projections free of private DPU profile data.</p>
         </section>
         <section>
           <h2>Blackboard And RoboTeam Ownership</h2>
-          <p>The <a href="wiki.html#definition-blackboard">Blackboard</a> workspace is authoritative WebMeet room state. It is stored beneath the room-owned RoboTeam agent record in the encrypted payload because RoboTeam initializes and operates the collaboration surface, but the board is not model memory and is not owned by an LLM. <code>webmeetAgent</code> remains the persistence, authorization, revision-ordering, and history authority.</p>
-          <p>Realtime Blackboard delivery nests a <code>blackboard:&lt;from&gt;:&lt;to&gt;:&lt;base64(JSON)&gt;</code> projection or invalidation inside the standard <code>blackboard.updated</code> WebMeet event. Public-safe objects can render directly, while viewer-relative or invalidated state is reloaded through the authenticated WebMeet tool boundary. Realtime addresses and projections never replace room admission, server authorization, or the persisted viewer-filtered state.</p>
-          <p><a href="wiki.html#definition-roboteam">RoboTeam</a> is the room assistant and orchestration boundary above that state. It exposes administrator-managed collaboration settings and converts participant interface actions, deterministic events, and natural-language requests into one validated Blackboard mutation stream. Its logical roster projection is separate from LiveKit media agents, and its commands cannot bypass WebMeet authorization or Explorer's ownership of attached files and SCRIPTA replicas.</p>
+          <p>The <a href="wiki.html#definition-blackboard">Blackboard</a> workspace is authoritative <a href="wiki.html#definition-webmeetagent">WebMeet</a> room state. It is stored beneath the room-owned <a href="wiki.html#definition-roboteam">RoboTeam</a> agent record in the encrypted payload because <a href="wiki.html#definition-roboteam">RoboTeam</a> initializes and operates the collaboration surface, but the board is not model memory and is not owned by an LLM. <code><a href="wiki.html#definition-webmeetagent">webmeetAgent</a></code> remains the persistence, authorization, revision-ordering, and history authority.</p>
+          <p>Realtime <a href="wiki.html#definition-blackboard">Blackboard</a> delivery nests a <code>blackboard:&lt;from&gt;:&lt;to&gt;:&lt;base64(JSON)&gt;</code> projection or invalidation inside the standard <code>blackboard.updated</code> <a href="wiki.html#definition-webmeetagent">WebMeet</a> event. Public-safe objects can render directly, while viewer-relative or invalidated state is reloaded through the authenticated <a href="wiki.html#definition-webmeetagent">WebMeet</a> tool boundary. Realtime addresses and projections never replace room admission, server authorization, or the persisted viewer-filtered state.</p>
+          <p><a href="wiki.html#definition-roboteam">RoboTeam</a> is the room assistant and orchestration boundary above that state. It exposes administrator-managed collaboration settings and converts participant interface actions, deterministic events, and natural-language requests into one validated <a href="wiki.html#definition-blackboard">Blackboard</a> mutation stream. Its logical roster projection is separate from <a href="wiki.html#definition-livekit">LiveKit</a> media agents, and its commands cannot bypass <a href="wiki.html#definition-webmeetagent">WebMeet</a> authorization or Explorer's ownership of attached files and <a href="wiki.html#definition-scripta">SCRIPTA</a> replicas.</p>
         </section>
         <section>
           <h2>Media Plane</h2>
-          <p><code>AchillesIDE/liveKitServerAgent</code> supervises <a href="wiki.html#definition-livekit">LiveKit</a> signaling and media transport, Redis, Egress, and semantic health. It does not own local TURN, a public TLS proxy, or certificate management. Ploinky Router owns public signaling and private Twirp routing, while configured external TURN and Ploinky's broker provide short-lived relay material. WebMeet obtains generation-bound join material rather than publishing an alternative media-control path.</p>
-          <p>Leaving a room stops local capture and remote playback before exit completes. A refreshed join recreates the LiveKit connection and restores microphone and camera state; browser security requires a new user gesture before screen sharing can resume.</p>
+          <p><code>AchillesIDE/liveKitServerAgent</code> supervises <a href="wiki.html#definition-livekit">LiveKit</a> signaling and media transport, Redis, Egress, and semantic health. It does not own local TURN, a public TLS proxy, or certificate management. <a href="wiki.html#definition-ploinky">Ploinky</a> Router owns public signaling and private Twirp routing, while configured external TURN and <a href="wiki.html#definition-ploinky">Ploinky</a>'s broker provide short-lived relay material. <a href="wiki.html#definition-webmeetagent">WebMeet</a> obtains generation-bound join material rather than publishing an alternative media-control path.</p>
+          <p>Leaving a room stops local capture and remote playback before exit completes. A refreshed join recreates the <a href="wiki.html#definition-livekit">LiveKit</a> connection and restores microphone and camera state; browser security requires a new user gesture before screen sharing can resume.</p>
         </section>
         <section>
           <h2>Collaborative Documents</h2>
-          <p><a href="wiki.html#definition-scripta">SCRIPTA</a> documents and their canonical <a href="wiki.html#definition-automerge">Automerge</a> working state remain Explorer-owned. Markdown is the durable portable materialization. WebMeet stores room attachments, active document references per board, document-scoped presentation state, and safe projections, then calls Explorer for create, open, incremental collaboration, semantic mutation, and delete operations.</p>
-          <p>Explorer also provides <a href="wiki.html#definition-tinymde">TinyMDE</a> for ordinary Markdown source editing. TinyMDE emits incremental text changes, while SCRIPTA emits semantic and incremental variant operations; both use Explorer's Markdown CRDT authority. The interfaces remain separate, but WebMeet never parses or overwrites canonical Markdown.</p>
+          <p><a href="wiki.html#definition-scripta">SCRIPTA</a> documents and their canonical <a href="wiki.html#definition-automerge">Automerge</a> working state remain Explorer-owned. Markdown is the durable portable materialization. <a href="wiki.html#definition-webmeetagent">WebMeet</a> stores room attachments, active document references per board, document-scoped presentation state, and safe projections, then calls Explorer for create, open, incremental collaboration, semantic mutation, and delete operations.</p>
+          <p>Explorer also provides <a href="wiki.html#definition-tinymde">TinyMDE</a> for ordinary Markdown source editing. <a href="wiki.html#definition-tinymde">TinyMDE</a> emits incremental text changes, while <a href="wiki.html#definition-scripta">SCRIPTA</a> emits semantic and incremental variant operations; both use Explorer's Markdown CRDT authority. The interfaces remain separate, but <a href="wiki.html#definition-webmeetagent">WebMeet</a> never parses or overwrites canonical Markdown.</p>
         </section>
         <section>
           <h2>Browser Application</h2>
-          <p>The room loader initializes WebSkel from the shared Explorer library and mounts the WebMeet application. The browser combines room projections, LiveKit tracks, chat, Blackboard, SCRIPTA, media controls, and room settings while all authoritative mutations continue through the agent's configured tool boundary.</p>
+          <p>The room loader initializes WebSkel from the shared Explorer library and mounts the <a href="wiki.html#definition-webmeetagent">WebMeet</a> application. The browser combines room projections, <a href="wiki.html#definition-livekit">LiveKit</a> tracks, chat, <a href="wiki.html#definition-blackboard">Blackboard</a>, <a href="wiki.html#definition-scripta">SCRIPTA</a>, media controls, and room settings while all authoritative mutations continue through the agent's configured tool boundary.</p>
           <p>Avatar settings load the pack catalog from Explorer's generated public asset <code>/explorer/shared/generated/axi-face-packs.json</code>. Explorer prepares this catalog without modifying the AxiFace checkout; individual pack manifests and rendering assets retain their <code>/explorer/shared/vendor/axi-face/</code> URLs.</p>
         </section>
       </div>

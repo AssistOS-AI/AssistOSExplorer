@@ -17,14 +17,23 @@
       </aside>
       <div class="doc-main">
         <h1 id="overview">WebMeet STT</h1>
-        <p><code>webmeetStt</code> is an optional internal Faster-Whisper speech-to-text service. It is disabled by default and can be enabled by an administrator from Explorer Marketplace. The current text-only Meeting Secretary uses browser SpeechRecognition, with no STT fallback, and does not call this service. The STT service can apply the configured self-hosted DTLN denoise step before transcription.</p>
+        <p><code><a href="wiki.html#definition-webmeetstt">webmeetStt</a></code> is an optional internal Faster-Whisper speech-to-text service. It is disabled by default and can be enabled by an administrator from Explorer Marketplace. The current text-only Meeting Secretary uses browser SpeechRecognition, with no <a href="wiki.html#definition-stt">STT</a> fallback, and does not call this service. The <a href="wiki.html#definition-stt">STT</a> service can apply the configured self-hosted DTLN denoise step before transcription.</p>
+<section id="documentation-map" class="documentation-map">
+<h2>Documentation Map</h2>
+<div class="documentation-map__scroll"><table><thead><tr><th scope="col">WebMeet STT</th><th scope="col">Reference</th></tr></thead><tbody>
+<tr><td><a href="index.html">Overview</a><p>Purpose, responsibilities, and the principal runtime workflows.</p></td><td><a href="wiki.html">Wiki</a><p>Canonical terminology, ownership, relationships, and limitations.</p></td></tr>
+<tr><td></td><td><a href="specsLoader.html?spec=matrix.md">Specifications</a><p>The specification matrix and normative project contracts.</p></td></tr>
+</tbody></table></div>
+<p>Start with WebMeet STT / Overview for the project purpose, interfaces, and workflows. Reference / Wiki defines project terminology; Reference / Specifications opens the contracts, including the coding style and test organization in DS001.</p>
+</section>
+
         <h2 id="runtime-boundary">Runtime boundary</h2>
         <p>The manifest attaches the service to the isolated <code>webmeet</code> bridge, exposes no browser route or physical-host port, and verifies its loopback <code>/healthz</code> readiness endpoint. Pinned Python dependencies are installed into the <code>.data/webmeetStt</code> volume mounted at <code>/data</code> and reused on later launches.</p>
         <p>Read the <a href="specsLoader.html?spec=matrix.md">specifications</a> and <a href="wiki.html">Wiki</a> for the service contract.</p>
         <h2 id="system-outline">System outline</h2>
         <figure class="diagram"><pre class="mermaid">flowchart LR
   Worker[Private audio client] --> STT[Private speech-to-text service]
-  STT --> Text[Transcript text]</pre><figcaption><em>The STT agent stays on the private WebMeet network and returns transcript text.</em></figcaption></figure>
+  STT --> Text[Transcript text]</pre><figcaption><em>Private audio transcription</em></figcaption></figure>
       </div>
     </div>
   </main>

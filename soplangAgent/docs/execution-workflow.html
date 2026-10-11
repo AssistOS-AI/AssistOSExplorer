@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>soplangBuilder Docs - Tool Execution Workflow</title>
+    <title>SOPLang Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,24 +12,12 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="soplangBuilder documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html" aria-current="page">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Tool Execution Workflow</h1>
-                    <p>Every Model Context Protocol (MCP) tool call runs in a fresh process. There is no long-lived plugin instance shared between tool invocations in <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a>, and each call boots <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> plugins again.</p>
+                    <p>Every <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) tool call runs in a fresh process. There is no long-lived plugin instance shared between tool invocations in <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a>, and each call boots <a href="https://assistos-ai.github.io/soplang/" target="_blank" rel="noopener noreferrer">SOPLang</a> plugins again.</p>
                 </section>
 
                 <section>
@@ -47,7 +35,7 @@
   class Explorer client
   class Router,AgentServer routing
   class Wrapper,Runtime runtime
-  class Result result</pre><figcaption><em>SOPLang execution stays behind the routed MCP tool boundary.</em></figcaption></figure>
+  class Result result</pre><figcaption><em><a href="wiki.html#definition-soplangagent">SOPLang</a> execution stays behind the routed <a href="wiki.html#definition-mcp">MCP</a> tool boundary.</em></figcaption></figure>
                 </section>
 
                 <section>

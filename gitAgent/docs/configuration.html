@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>gitAgent Docs - Manifest and Environment</title>
+    <title>Git Agent Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,24 +12,12 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="gitAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html" aria-current="page">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Manifest and Environment</h1>
-                    <p><code>gitAgent</code> follows the <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> manifest model and uses explicit environment variables for filesystem scope, LLM provider access, and GitHub auth integration. Dependency installation is owned by <code>ploinky</code>, so the manifest stays focused on runtime entrypoints and environment.</p>
+                    <p><code><a href="wiki.html#definition-gitagent">gitAgent</a></code> follows the <a href="https://ploinky.com/" target="_blank" rel="noopener noreferrer">Ploinky</a> manifest model and uses explicit environment variables for filesystem scope, LLM provider access, and GitHub auth integration. Dependency installation is owned by <code>ploinky</code>, so the manifest stays focused on runtime entrypoints and environment.</p>
                 </section>
 
                 <section>
@@ -77,13 +65,13 @@
 
                 <section>
                     <h2>Auth State and Secrets</h2>
-                    <p>GitHub auth state is persisted only under user-scoped files in <code>.data/gitAgent/github-auth/</code>, while access tokens are stored through user-owned DPU secret keys derived from the routed Ploinky user. The GitHub auth tools declare a <code>dpuGitSecrets</code> MCP delegation in <code>mcp-config.json</code>; the router mints that short-lived grant only for signed-in users, and <code>gitAgent</code> forwards it to DPU as <code>x-ploinky-user-delegation</code>. DPU grants <code>gitAgent</code> only the <code>read</code> role allowed by <code>permissions.manifest.json</code> agent policy. Push and pull operations can read token metadata from request context or from stored auth state when token input is omitted.</p>
+                    <p>GitHub auth state is persisted only under user-scoped files in <code>.data/gitAgent/github-auth/</code>, while access tokens are stored through user-owned DPU secret keys derived from the routed <a href="wiki.html#definition-ploinky">Ploinky</a> user. The GitHub auth tools declare a <code>dpuGitSecrets</code> <a href="wiki.html#definition-mcp">MCP</a> delegation in <code>mcp-config.json</code>; the router mints that short-lived grant only for signed-in users, and <code><a href="wiki.html#definition-gitagent">gitAgent</a></code> forwards it to DPU as <code>x-ploinky-user-delegation</code>. DPU grants <code><a href="wiki.html#definition-gitagent">gitAgent</a></code> only the <code>read</code> role allowed by <code>permissions.manifest.json</code> agent policy. Push and pull operations can read token metadata from request context or from stored auth state when token input is omitted.</p>
                     <p>Every local state operation revalidates the full managed directory chain, including the state and temporary files. Symbolic links are rejected with <code>PLOINKY_AGENT_DATA_POLICY_VIOLATION</code>; the agent does not follow or replace them and never reads or migrates a retired state location.</p>
                 </section>
 
                 <section>
                     <h2>Test Validation</h2>
-                    <p>Code changes should be treated as complete only after the Git agent tests pass, together with docs and specifications updates.</p>
+                    <p>Code changes should be treated as complete only after the <a href="wiki.html#definition-gitagent">Git agent</a> tests pass, together with docs and specifications updates.</p>
                 </section>
             </div>
         </div>

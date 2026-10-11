@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>webAssist Docs</title>
+    <title>WebAssist Documentation</title>
     <link rel="stylesheet" href="styles.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -49,6 +49,15 @@
         <main class="doc-main">
             <h1>webAssist Agent Documentation</h1>
             <p>The visitor-facing agent for lead qualification, session tracking, and meeting escalation.</p>
+<section id="documentation-map" class="documentation-map">
+<h2>Documentation Map</h2>
+<div class="documentation-map__scroll"><table><thead><tr><th scope="col">WebAssist</th><th scope="col">Reference</th></tr></thead><tbody>
+<tr><td><a href="index.html">Overview</a><p>Purpose, responsibilities, and the principal runtime workflows.</p></td><td><a href="wiki.html">Wiki</a><p>Canonical terminology, ownership, relationships, and limitations.</p></td></tr>
+<tr><td></td><td><a href="specsLoader.html?spec=matrix.md">Specifications</a><p>The specification matrix and normative project contracts.</p></td></tr>
+</tbody></table></div>
+<p>Start with WebAssist / Overview for the project purpose, interfaces, and workflows. Reference / Wiki defines project terminology; Reference / Specifications opens the contracts, including the coding style and test organization in DS001.</p>
+</section>
+
 
             <h2 id="overview">Overview</h2>
             <p>webAssist is a visitor-facing agent designed to serve as a conversational chat assistant for website visitors. Its primary goal is to interact with visitors, understand their needs through profiling, and convert them into valuable leads for the site owner.</p>
@@ -73,10 +82,10 @@
             <p>webAssist includes an IDE chat widget plugin located at <code>IDE-plugins/web-assist-chat/</code>. The widget appears as a launcher icon that opens a chat panel when clicked.</p>
 
             <h3>Configuring the Widget</h3>
-            <p>Open the <strong>WebAssist Chat Settings</strong> dialog from the IDE plugin system. You can configure:</p>
+            <p>Open the <strong><a href="wiki.html#definition-webassist">WebAssist</a> Chat Settings</strong> dialog from the IDE plugin system. You can configure:</p>
             <ul>
                 <li><strong>Theme</strong> — Choose from Light, Dark, Aqua, Forest, or Amethyst color palettes</li>
-                <li><strong>Header Text</strong> — Customize the chat title (default: "WebAssist Assistant")</li>
+                <li><strong>Header Text</strong> — Customize the chat title (default: "<a href="wiki.html#definition-webassist">WebAssist</a> Assistant")</li>
                 <li><strong>Subheader Text</strong> — Customize the subtitle below the title</li>
                 <li><strong>Chat Background</strong> — Set the background color</li>
                 <li><strong>User Bubble</strong> — Set the visitor message bubble color</li>
@@ -102,7 +111,7 @@
                 <li>Different sites do not share sessions, leads, visits, or profile memory</li>
                 <li>Conversation history is loaded when the widget first opens on a new tab</li>
             </ul>
-            <p>Each session is stored in the site AKU under <code>$WEBASSIST_DATA_ROOT/sites/&lt;siteId&gt;/.aku/</code>. Ploinky supplies that required root as <code>{{STORAGE_CONTAINER_PATH}}/data</code>, backed in the host sandbox by <code>.data/webAssist/data</code>. WebAssist requires the managed storage parent to pre-exist as a non-symlink directory, creates only the application-owned <code>data</code> child, canonically revalidates it, and does not fall back to or migrate the retired workspace-level directory.</p>
+            <p>Each session is stored in the site AKU under <code>$WEBASSIST_DATA_ROOT/sites/&lt;siteId&gt;/.aku/</code>. <a href="wiki.html#definition-ploinky">Ploinky</a> supplies that required root as <code>{{STORAGE_CONTAINER_PATH}}/data</code>, backed in the host sandbox by <code>.data/webAssist/data</code>. <a href="wiki.html#definition-webassist">WebAssist</a> requires the managed storage parent to pre-exist as a non-symlink directory, creates only the application-owned <code>data</code> child, canonically revalidates it, and does not fall back to or migrate the retired workspace-level directory.</p>
             <p>Each chat session belongs to the verified visitor or user that created it. The first chat writes an owner record under <code>sites/&lt;siteId&gt;/session-owners/&lt;sessionId&gt;.json</code> (schema 2: caller kind and id, the SHA-256 digest of a session secret, and a creation time) and returns that secret once. A later chat or history request continues the session only for the same verified caller or for a caller that presents the secret, so a visitor whose guest identity changed keeps the conversation. Anyone else who names the session starts a new one, and history requests from them return an empty, non-existent session. Admins may read any history. Sessions created before ownership existed have no owner record and are readable only by admins. Site-wide knowledge search never includes another visitor's session profile or lead.</p>
             <p>Site listing and session history work before the first chat: an absent <code>data</code> child produces an empty result without a write. Standalone event and session writers initialize that child themselves, but still reject an unprovisioned site AKU. Every entrypoint validates the managed parent and rejects symbolic links rather than treating them as missing data.</p>
             <ul>
@@ -112,7 +121,7 @@
             <p>The profile file is updated by the <code>webassist-session</code> skill when the agent persists profiling data. The history file is appended automatically by the runtime after each turn, independent of the skill. At runtime, the orchestrator receives a bounded snapshot of the latest 10 persisted user/agent messages to improve short-term continuity.</p>
 
             <h2 id="mcp-contract">MCP Contract</h2>
-            <p>webAssist exposes four MCP tools via the <code>/webAssist/mcp</code> endpoint:</p>
+            <p>webAssist exposes four <a href="wiki.html#definition-mcp">MCP</a> tools via the <code>/webAssist/mcp</code> endpoint:</p>
             <ul>
                 <li><code>web_cli_chat</code> — Executes a conversational turn. Inputs: <code>siteId</code>, <code>message</code>, optional <code>sessionId</code>, optional <code>sessionSecret</code>, and optional <code>json</code>.</li>
                 <li><code>web_cli_history</code> — Returns chat history for a session to its owner, a caller with its secret, or an admin. Inputs: <code>siteId</code>, <code>sessionId</code>, and optional <code>sessionSecret</code>.</li>

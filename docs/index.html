@@ -14,36 +14,39 @@
 <main class="page">
     <div class="page__panel">
         <h1>AchillesIDE</h1>
-        <p class="overview-lead">A secure, extensible workspace where files, editors, AI-assisted workflows, and
-            specialized agents work together without giving up clear ownership or authorization boundaries.</p>
+        <p class="overview-lead">A secure, extensible workspace where files, editors, AI-assisted workflows, and specialized agents work together without giving up clear ownership or authorization boundaries.</p>
 
 
-        <p>People and AI agents need a shared workspace where they can work on the same project, use the same context,
-            and collaborate without exposing credentials or protected data. Files, conversations, decisions, and domain
-            tools should remain connected, while every action still respects the identity, permissions, and
-            responsibilities of its owner.</p>
-        <p>AchillesIDE brings files, previews, editing, AI-assisted workflows, and specialized tools into one
-            authenticated browser workspace. Explorer provides a consistent surface for working with the project, so
-            users and agents can act on the current context without repeatedly moving information between separate
-            applications.</p>
-        <p>Explorer owns the shared workspace experience, while each specialized agent owns its domain operations and
-            protected state. The Ploinky router authenticates requests, and verified plugins connect Explorer to enabled
-            agents. Before performing a protected action, the owning agent validates the caller and applicable policy,
-            then returns only the result needed by the workspace.</p>
+        <p>People and AI agents need a shared workspace where they can work on the same project, use the same context, and collaborate without exposing credentials or protected data. Files, conversations, decisions, and domain tools should remain connected, while every action still respects the identity, permissions, and responsibilities of its owner.</p>
+        <p>AchillesIDE brings files, previews, editing, AI-assisted workflows, and specialized tools into one authenticated browser workspace. <a href="wiki.html#definition-explorer">Explorer</a> provides a consistent surface for working with the project, so users and agents can act on the current context without repeatedly moving information between separate applications.</p>
+        <p><a href="wiki.html#definition-explorer">Explorer</a> owns the shared workspace experience, while each specialized agent owns its domain operations and protected state. The <a href="wiki.html#definition-ploinky">Ploinky</a> router authenticates requests, and verified plugins connect <a href="wiki.html#definition-explorer">Explorer</a> to enabled agents. Before performing a protected action, the owning agent validates the caller and applicable policy, then returns only the result needed by the workspace.</p>
 
 
-        <h2>Workspace copilot</h2>
-        <p>Open Copilot here in a directory context menu opens the selected directory in RoboTeam's ordinary robot named <code>default</code>. Explorer enables <code>AchillesCLI/roboTeamAgent global no-wait</code>; there is no separate AchillesCLI agent. Other robots have their own Open Chat action in RoboTeam. Independent CLI conversations can run concurrently, while Desktop and Browser retain one shared GUI container per robot.</p>
-        <p>Robot skills and skillsets are managed in RoboTeam. Explorer Settings does not provide Copilot skill controls.</p>
+        <section id="documentation-map" class="documentation-map">
+<h2>Documentation Map</h2>
+<div class="documentation-map__scroll"><table><thead><tr><th scope="col">Explorer</th><th scope="col">Extensions</th><th scope="col">Reference</th></tr></thead><tbody>
+<tr><td><a href="index.html">Overview</a><p>Purpose, responsibilities, and the principal runtime workflows.</p></td><td><a href="plugins.html">Runtime plugins</a><p>Runtime plugin discovery, mounting policy, and host ownership.</p></td><td><a href="specsLoader.html?spec=matrix.md">Specifications</a><p>The specification matrix and normative project contracts.</p></td></tr>
+<tr><td><a href="workspace-operations.html">Workspace operations</a><p>Navigation, file management, search, replace, and settings.</p></td><td><a href="plugins.html#example">Authoring example</a><p>A concrete plugin contribution and its Explorer integration.</p></td><td><a href="wiki.html">Wiki</a><p>Canonical terminology, ownership, relationships, and limitations.</p></td></tr>
+<tr><td><a href="architecture.html">Architecture</a><p>Component relationships and the boundaries between the agent and Explorer.</p></td><td><a href="development.html">Development</a><p>Source layout, bootstrap behavior, coding style, and validation.</p></td><td></td></tr>
+<tr><td><a href="documents.html">Documents</a><p>Document previews, editing, SOPLang, and collaboration.</p></td><td></td><td></td></tr>
+<tr><td><a href="backend.html">Backend</a><p>Explorer services and their agent integration boundaries.</p></td><td></td><td></td></tr>
+<tr><td><a href="mcp-tools.html">MCP tools</a><p>Declared tool interfaces and the operations available to callers.</p></td><td></td><td></td></tr>
+</tbody></table></div>
+<p>Start with Explorer / Overview for the project purpose, then follow the remaining Explorer pages for the interfaces and workflows. Reference / Wiki defines project terminology; Reference / Specifications opens the contracts, including the coding style and test organization in DS001.</p>
+</section>
+
+<h2>Workspace copilot</h2>
+        <p>Open Copilot here in a directory context menu opens the selected directory in RoboTeam's ordinary robot named <code>default</code>. <a href="wiki.html#definition-explorer">Explorer</a> enables <code>AchillesCLI/roboTeamAgent global no-wait</code>; there is no separate AchillesCLI agent. Other robots have their own Open Chat action in RoboTeam. Independent CLI conversations can run concurrently, while Desktop and Browser retain one shared GUI container per robot.</p>
+        <p>Robot skills and skillsets are managed in RoboTeam. <a href="wiki.html#definition-explorer">Explorer</a> Settings does not provide Copilot skill controls.</p>
         <h2>How the workspace fits together</h2>
         <figure class="diagram"><pre class="mermaid">flowchart TB
-      User([Workspace user]) -->|authenticated session| Runtime["Ploinky runtime<br/>routing · authentication · lifecycle"]
+      User([Workspace user]) -->|authenticated session| Runtime["Ploinky runtime routing · authentication · lifecycle"]
 
       subgraph Shell["Explorer — shared workspace shell"]
         direction LR
         WorkspaceUI["Navigation & selection"] --> Content["Previews & editors"]
-        WorkspaceUI --> PluginHost["Verified runtime plugins<br/>manifest policy · WebSkel slots"]
-        WorkspaceUI --> FileTools["Root-confined<br/>filesystem MCP"]
+        WorkspaceUI --> PluginHost["Verified runtime plugins manifest policy · WebSkel slots"]
+        WorkspaceUI --> FileTools["Root-confined filesystem MCP"]
       end
 
       Runtime -->|workspace route| WorkspaceUI
@@ -51,8 +54,8 @@
 
       subgraph Domains["Agent-owned domains"]
         direction LR
-        DomainAgents["Git · SOPLang · Tasks<br/>WebMeet · Multimedia"]
-        DPU["dpuAgent<br/>Confidential & research data"]
+        DomainAgents["Git · SOPLang · Tasks WebMeet · Multimedia"]
+        DPU["dpuAgent Confidential & research data"]
       end
 
       PluginHost -->|scoped, router-mediated calls| DomainAgents
@@ -72,8 +75,7 @@
       class Files,DomainState,ProtectedState state
       style Shell fill:#f8fafc,stroke:#145ea8,stroke-width:1px
       style Domains fill:#fffaf3,stroke:#a65d03,stroke-width:1px</pre>
-            <figcaption><em>Explorer owns the shared interface and root-confined filesystem operations. Verified plugins
-                delegate protected work to the agent that owns its authorization, state, and mutations.</em></figcaption>
+            <figcaption><em>Explorer workspace and agent ownership</em></figcaption>
         </figure>
         <h2>Core workspace capabilities</h2>
         <div class="agent-grid">
@@ -83,29 +85,18 @@
                 <p>Find paths by name, search file content, select matches, and replace within a workspace scope.</p>
             </a>
             <a class="agent-card" href="workspace-operations.html#settings"><h3>Settings</h3>
-                <p>Configure agents, plugins, shortcuts, editor auto-save, theme, avatars, and authorized administration
-                    surfaces.</p></a>
+                <p>Configure agents, plugins, shortcuts, editor auto-save, theme, avatars, and authorized administration surfaces.</p></a>
             <a class="agent-card" href="documents.html"><h3>Preview and editing</h3>
                 <p>Open source files, Markdown, structured documents, media, and supported Office documents.</p></a>
         </div>
 
         <section id="agents-and-plugins">
             <h2>Agents and Plugins</h2>
-            <p>Explorer provides the shared workspace shell. The integrations below are declared by <code>explorer/manifest.json</code>
-                or discovered from verified <code>IDE-plugins</code> manifests. Each owning agent remains responsible
-                for its domain behavior, authorization, and protected state. Runtime-owned workspace data volumes live below
-                <code>.data/</code>; <code>.ploinky/repos</code> is the single named source-state volume exception.</p>
-            <p>Fresh deployments require an <code>AdvancedLanguageAgent</code> checkout at the workspace root
-                with its selected <code>achillesAgentLib</code> dependency available. Explorer enables RoboTeam
-                globally so its default robot can use that workspace checkout for Copilot.</p>
-            <p>The QA workflow installs ALA from its default branch, verifies its exact clean revision,
-                and binds it to the same Ploinky-selected AgentLib used by the agents. Its preflight exercises
-                the ALA loader and required CLI options before starting the Explorer runtime graph.</p>
+            <p><a href="wiki.html#definition-explorer">Explorer</a> provides the shared workspace shell. The integrations below are declared by <code>explorer/manifest.json</code> or discovered from verified <code>IDE-plugins</code> manifests. Each owning agent remains responsible for its domain behavior, authorization, and protected state. Runtime-owned workspace data volumes live below <code>.data/</code>; <code>.ploinky/repos</code> is the single named source-state volume exception.</p>
+            <p>Fresh deployments require an <code>AdvancedLanguageAgent</code> checkout at the workspace root with its selected <code>achillesAgentLib</code> dependency available. <a href="wiki.html#definition-explorer">Explorer</a> enables RoboTeam globally so its default robot can use that workspace checkout for Copilot.</p>
+            <p>The QA workflow installs ALA from its default branch, verifies its exact clean revision, and binds it to the same Ploinky-selected AgentLib used by the agents. Its preflight exercises the ALA loader and required CLI options before starting the <a href="wiki.html#definition-explorer">Explorer</a> runtime graph.</p>
 
-            <p>OnlyOffice, WebMeet Scribe (Meeting Secretary), and WebMeet STT are disabled by default.
-                An administrator can enable each from Marketplace. Office editing requires OnlyOffice; automatic
-                meeting notes require Scribe. The current Secretary uses browser SpeechRecognition and does not
-                require the separate STT service.</p>
+            <p>OnlyOffice, WebMeet Scribe (Meeting Secretary), and WebMeet STT are disabled by default. An administrator can enable each from Marketplace. Office editing requires OnlyOffice; automatic meeting notes require Scribe. The current Secretary uses browser SpeechRecognition and does not require the separate STT service.</p>
 
             <h3>Application Agents and Plugins</h3>
             <div class="agent-grid">
@@ -145,63 +136,10 @@
             </div>
 
             <h3>Live Media Runtime</h3>
-            <p><a href="../liveKitServerAgent/docs/index.html">LiveKit Server</a> runs as
-                <code>AchillesIDE/liveKitServerAgent</code> from this repository. Explorer and WebMeet enable
-                the same runtime, which owns Redis, LiveKit Server, Egress, and private health. Its pinned image,
-                readiness checks, <code>.data/liveKitServerAgent/</code> storage, Router routes, and fixed UDP
-                <code>7882</code> media mux are unchanged. The default stack requires no separate media-runtime
-                repository or <code>basic</code> installation. Skills Explorer deployment retires existing media
-                registrations through Ploinky before source update, verifies old runtime absence inside the owning
-                Box, and preserves agent data. Failed migration evidence remains available for recovery and retry.</p>
+            <p><a href="../liveKitServerAgent/docs/index.html">LiveKit Server</a> runs as <code>AchillesIDE/liveKitServerAgent</code> from this repository. <a href="wiki.html#definition-explorer">Explorer</a> and WebMeet enable the same runtime, which owns Redis, LiveKit Server, Egress, and private health. Its pinned image, readiness checks, <code>.data/liveKitServerAgent/</code> storage, Router routes, and fixed UDP <code>7882</code> media mux define its runtime boundary. The default stack requires no separate media-runtime repository or <code>basic</code> installation. Skills <a href="wiki.html#definition-explorer">Explorer</a> deployment retires existing media registrations through <a href="wiki.html#definition-ploinky">Ploinky</a> before source update, verifies old runtime absence inside the owning Box, and preserves agent data. Failed migration evidence remains available for recovery and retry.</p>
 
             <h3>Explorer-Owned and External Entries</h3>
-            <p>The <code>help</code> plugin is owned by Explorer and is covered by the <a href="plugins.html">runtime
-                plugins guide</a>. The manifest also enables RoboTeam, Soul Gateway, and Umami as
-                supporting dependencies. A fresh <code>ploinky start explorer</code> does not download or start a
-                local model: the local Soul Gateway seeds a restricted free OpenRouter provider with the tiers
-                <code>fast</code>, <code>code</code>, <code>plan</code>, <code>write</code>, <code>deep</code>,
-                <code>ultra</code>, and <code>web-assist</code>. It uses a bundled free-only credential whose daily
-                quota is shared by every installation using it, requires internet access, and is not available
-                offline. Administrators can replace the credential in the admin-only Soul Gateway settings
-                dashboard. OpenCode's free models are available through the optional <code>proxies/opencode-free</code> agent, which <code>ploinky start explorer</code> does not enable; to add it to a workspace, run <code>ploinky enable agent proxies/opencode-free</code> from the workspace root. The agent wraps the unmodified OpenCode CLI; once enabled, Soul Gateway discovers it like any other agent and adds it to no tier by default: plain-text chat only, no tool calls and no images, one answer per request delivered as a single chunk after several seconds, a free quota shared by every installation that uses the bundled key, and prompts subject to the free models' data-use terms. Native OpenCode execution through RoboTeam's installed OpenCode CLI is unchanged.
-                Ploinky core supplies the administrator-only WebTTY surface through the
-                selected Explorer host. Explorer owns its folder target chooser, while Ploinky supplies safe Box and
-                live-agent choices and remains authoritative for runtime identity, mount access, translated working
-                directory, and launch authorization. This checkout does not provide local documentation entry pages
-                for those dependencies or that core surface, so the overview does not create unsupported links for
-                them.</p>
-        </section>
-
-        <section id="site-map">
-            <h2>Site Map</h2>
-            <nav class="site-map" aria-label="AchillesIDE documentation map">
-                <section class="site-map__group">
-                    <h3>Explorer</h3>
-                    <ul>
-                        <li><a href="workspace-operations.html">Workspace operations</a><span>Navigation, file management, search, replace, and settings.</span></li>
-                        <li><a href="documents.html">Documents</a><span>Markdown, SOPLang, previews, editing, and collaboration.</span></li>
-                        <li><a href="architecture.html">Architecture</a><span>Workspace ownership, components, and runtime boundaries.</span></li>
-                        <li><a href="backend.html">Backend</a><span>Explorer services and agent integrations.</span></li>
-                        <li><a href="mcp-tools.html">MCP tools</a><span>Filesystem-facing tools and safety constraints.</span></li>
-                    </ul>
-                </section>
-                <section class="site-map__group">
-                    <h3>Extensions</h3>
-                    <ul>
-                        <li><a href="#agents-and-plugins">Agents and plugins</a><span>Integrated capabilities and their owning agents.</span></li>
-                        <li><a href="plugins.html">Runtime plugins</a><span>Discovery, policy, host slots, and plugin ownership.</span></li>
-                        <li><a href="plugins.html#example">Authoring example</a><span>A practical Explorer plugin implementation.</span></li>
-                        <li><a href="development.html">Development</a><span>Working context, bootstrap flow, and validation.</span></li>
-                    </ul>
-                </section>
-                <section class="site-map__group">
-                    <h3>Reference</h3>
-                    <ul>
-                        <li><a href="wiki.html">Wiki</a><span>Canonical AchillesIDE terminology.</span></li>
-                        <li><a href="specsLoader.html?spec=matrix.md">Specifications</a><span>Normative requirements and implementation coverage.</span></li>
-                    </ul>
-                </section>
-            </nav>
+            <p>The <code>help</code> plugin is owned by <a href="wiki.html#definition-explorer">Explorer</a> and is covered by the <a href="plugins.html">runtime plugins guide</a>. The manifest also enables RoboTeam, Soul Gateway, and Umami as supporting dependencies. A fresh <code>ploinky start explorer</code> does not download or start a local model: the local Soul Gateway seeds a restricted free OpenRouter provider with the tiers <code>fast</code>, <code>code</code>, <code>plan</code>, <code>write</code>, <code>deep</code>, <code>ultra</code>, and <code>web-assist</code>. It uses a bundled free-only credential whose daily quota is shared by every installation using it, requires internet access, and is not available offline. Administrators can replace the credential in the admin-only Soul Gateway settings dashboard. OpenCode's free models are available through the optional <code>proxies/opencode-free</code> agent, which <code>ploinky start explorer</code> does not enable; to add it to a workspace, run <code>ploinky enable agent proxies/opencode-free</code> from the workspace root. The agent wraps the unmodified OpenCode CLI; once enabled, Soul Gateway discovers it like any other agent and adds it to no tier by default: plain-text chat only, no tool calls and no images, one answer per request delivered as a single chunk after several seconds, a free quota shared by every installation that uses the bundled key, and prompts subject to the free models' data-use terms. Native OpenCode execution through RoboTeam's installed OpenCode CLI is unchanged. <a href="wiki.html#definition-ploinky">Ploinky</a> core supplies the administrator-only WebTTY surface through the selected <a href="wiki.html#definition-explorer">Explorer</a> host. <a href="wiki.html#definition-explorer">Explorer</a> owns its folder target chooser, while <a href="wiki.html#definition-ploinky">Ploinky</a> supplies safe Box and live-agent choices and remains authoritative for runtime identity, mount access, translated working directory, and launch authorization. Those dependencies own their documentation and runtime contracts.</p>
         </section>
     </div>
 </main>

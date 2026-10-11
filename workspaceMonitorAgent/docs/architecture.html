@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workspace Monitor Architecture</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workspace Monitor Documentation</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head>
 <body>
   <div data-include="partials/header.html"></div>
   <main class="page content--with-sidebar"><div class="doc-layout">
-    <aside class="doc-sidebar" aria-label="Workspace Monitor documentation navigation"><div class="doc-sidebar__group"><p class="doc-sidebar__group-title">Documentation</p><nav><a href="index.html">Overview</a><a href="architecture.html" aria-current="page">Architecture</a><a href="execution-workflow.html">Execution workflow</a><a href="mcp-tools.html">MCP tools</a><a href="integrations.html">Integrations</a><a href="configuration.html">Configuration</a></nav></div></aside>
+
     <div class="page__panel">
       <p class="breadcrumbs"><a href="index.html">Documentation</a> / Architecture</p>
       <h1>Architecture</h1>
@@ -18,10 +18,10 @@
   Collector --> Current[(Current snapshot)]
   Collector --> Store[(SQLite WAL store)]
   AgentServer --> Current
-  Maintenance --> LogService[Private Ploinky log service]</pre><figcaption><em>The supervisor keeps collection, log maintenance, and the agent server alive as separate workers.</em></figcaption></figure>
+  Maintenance --> LogService[Private Ploinky log service]</pre><figcaption><em>Workspace Monitor supervisor and workers</em></figcaption></figure>
       <h2>Collector and storage</h2>
       <p>The collector signs <code>/api/edge/workspace-metrics?follow=1</code>, consumes newline-delimited snapshots, and derives aggregate workspace, Router, and per-runtime CPU and memory series. Ploinky publishes process liveness separately from semantic readiness, so a live no-wait container remains <code>starting</code> and not ready until the current launch passes its manifest probe and route activation. For each received sample the collector atomically replaces <code>current-snapshot.json</code> with an allowlisted projection and persists historical series at most once per ten seconds. The two writes have independent bounded retry state.</p>
-      <p><a href="wiki.html#definition-private-metrics-stream">The private metrics stream</a> is the only source for live samples. The administrator-only snapshot tool reads the current projection and marks it stale after fifteen seconds. SQLite stores historical samples in <code>resource_samples</code> with WAL mode and removes records older than the thirteen-month retention window.</p>
+      <p><a href="wiki.html#definition-private-metrics-stream">The private metrics stream</a> is the only source for live samples. The administrator-only snapshot tool reads the current projection and marks it stale after fifteen seconds. SQLite stores historical samples in <code>resource_samples</code> with <a href="wiki.html#definition-wal">WAL</a> mode and removes records older than the thirteen-month retention window.</p>
       <h2>Log maintenance</h2>
       <p>At startup and at each UTC day boundary, the maintenance worker sends the configured retention period to Ploinky's private log service. It uses bounded retry backoff when the service is unavailable. Router and Policy log contents remain owned by Ploinky.</p>
     </div>

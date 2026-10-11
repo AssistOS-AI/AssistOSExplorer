@@ -7,7 +7,7 @@ summary: Defines the DS009-skill-webassist-lead contract for WebAssist.
 
 ## Introduction
 
-This specification defines the active DS009-skill-webassist-lead contract for WebAssist.
+This specification defines the active DS009-skill-webassist-lead contract for [WebAssist](wiki.html#definition-webassist).
 
 ## Core Content
 
@@ -30,6 +30,4 @@ This specification defines the active DS009-skill-webassist-lead contract for We
 - Preserves `Created At` on update and refreshes `Updated At`.
 - Stores match explanation, contact route, and summary in Markdown sections.
 
-## Conclusion
-
-WebAssist must preserve the responsibilities and boundaries stated by this specification.
+[WebAssist](wiki.html#definition-webassist) must preserve the responsibilities and boundaries stated by this specification.

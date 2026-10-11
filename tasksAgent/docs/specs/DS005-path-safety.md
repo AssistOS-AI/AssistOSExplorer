@@ -7,7 +7,7 @@ summary: Defines the tasksAgent contract covered by DS005-path-safety.
 
 ## Introduction
 
-This specification defines the active contract for tasksAgent.
+This specification defines the active contract for [tasksAgent](wiki.html#definition-tasksagent).
 
 ## Core Content
 
@@ -19,7 +19,7 @@ This document defines mandatory safeguards for backlog path policy, persistence 
 
 ### Safety and Persistence Scope
 
-`tasksAgent` processes task data from repository-local backlog files. The agent must constrain file operations to valid repository scope and preserve consistent persistence behavior through the shared Markdown parser and serializer.
+[`tasksAgent`](wiki.html#definition-tasksagent) processes task data from repository-local backlog files. The agent must constrain file operations to valid repository scope and preserve consistent persistence behavior through the shared Markdown parser and serializer.
 
 ### Operational Requirements
 
@@ -35,7 +35,7 @@ Requirement O5: backlog tasks shall persist an explicit `task id`, while task or
 
 Requirement O6: recursive backlog discovery shall exclude private `.data` trees.
 
-Requirement O6: repository validation shall run through task agent tests under `tasksAgent/tests`.
+Requirement O7: repository validation shall run through task agent tests under `tasksAgent/tests`.
 
 ### Constraints
 
@@ -51,12 +51,10 @@ Invariant G1: path and extension checks remain mandatory before backlog or histo
 
 Invariant G2: task mutation outcomes remain explicit and serialized in contract responses.
 
-Invariant G3: operational diagnostics remain visible to Model Context Protocol (MCP) clients.
+Invariant G3: operational diagnostics remain visible to [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) clients.
 
 ### Validation Criteria
 
 Validation is satisfied when invalid path operations fail safely, mutation operations persist expected file changes, declared contracts remain aligned with configuration, and task agent tests pass for code changes.
 
-## Conclusion
-
-tasksAgent must preserve the responsibilities, boundaries, and observable results stated in this specification.
+[tasksAgent](wiki.html#definition-tasksagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.

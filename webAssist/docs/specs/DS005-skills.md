@@ -7,7 +7,7 @@ summary: Defines the DS005-skills contract for WebAssist.
 
 ## Introduction
 
-This specification defines the active DS005-skills contract for WebAssist.
+This specification defines the active DS005-skills contract for [WebAssist](wiki.html#definition-webassist).
 
 ## Core Content
 
@@ -37,6 +37,4 @@ Visitor turn orchestration is driven by the system prompt (`visitor-flow-system-
 - Session state is persisted through `webassist-session` before final response.
 - Leads are persisted only through `webassist-lead`.
 
-## Conclusion
-
-WebAssist must preserve the responsibilities and boundaries stated by this specification.
+[WebAssist](wiki.html#definition-webassist) must preserve the responsibilities and boundaries stated by this specification.

@@ -4,7 +4,7 @@
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>tasksAgent Docs - Overview</title>
+    <title>Tasks Documentation</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,29 +12,30 @@
 
     <main class="content content--with-sidebar">
         <div class="doc-layout">
-            <aside class="doc-sidebar" aria-label="tasksAgent documentation navigation">
-                <div class="doc-sidebar__group">
-                    <p class="doc-sidebar__group-title">Documentation</p>
-                    <nav>
-                        <a href="index.html" aria-current="page">Overview</a>
-                        <a href="architecture.html">Architecture</a>
-                        <a href="execution-workflow.html">Tool Execution Workflow</a>
-                        <a href="mcp-tools.html">MCP Tools</a>
-                        <a href="integrations.html">Ploinky and Explorer Integration</a>
-                        <a href="configuration.html">Manifest and Environment</a>
-                    </nav>
-                </div>
-            </aside>
+
 
             <div class="doc-main">
                 <section class="lead">
                     <h1>Backlog Operations In Explorer</h1>
                     <p>Explorer needs structured task and backlog workflows that can mutate repository files safely, but those rules should not be distributed across buttons, modal presenters, and ad-hoc file operations in the user interface (UI).</p>
                 </section>
+<section id="documentation-map" class="documentation-map">
+<h2>Documentation Map</h2>
+<div class="documentation-map__scroll"><table><thead><tr><th scope="col">Tasks</th><th scope="col">Reference</th></tr></thead><tbody>
+<tr><td><a href="index.html">Overview</a><p>Purpose, responsibilities, and the principal runtime workflows.</p></td><td><a href="wiki.html">Wiki</a><p>Canonical terminology, ownership, relationships, and limitations.</p></td></tr>
+<tr><td><a href="architecture.html">Architecture</a><p>Component relationships and the boundaries between the agent and Explorer.</p></td><td><a href="specsLoader.html?spec=matrix.md">Specifications</a><p>The specification matrix and normative project contracts.</p></td></tr>
+<tr><td><a href="execution-workflow.html">Tool Execution Workflow</a><p>Request processing, validation, dispatch, and result handling.</p></td><td></td></tr>
+<tr><td><a href="mcp-tools.html">MCP Tools</a><p>Declared tool interfaces and the operations available to callers.</p></td><td></td></tr>
+<tr><td><a href="integrations.html">Ploinky and Explorer Integration</a><p>How the agent connects to Ploinky and the Explorer shell.</p></td><td></td></tr>
+<tr><td><a href="configuration.html">Manifest and Environment</a><p>Manifest settings, environment variables, and startup requirements.</p></td><td></td></tr>
+</tbody></table></div>
+<p>Start with Tasks / Overview for the project purpose, then follow the remaining Tasks pages for the interfaces and workflows. Reference / Wiki defines project terminology; Reference / Specifications opens the contracts, including the coding style and test organization in DS001.</p>
+</section>
+
 
                 <section class="highlight-box">
                     <h2>Backlog Boundary For Explorer</h2>
-                    <p><code>tasksAgent</code> centralizes that responsibility behind Model Context Protocol (MCP) tools for configuration, listing, retrieval, mutation, history, and reorder operations. It owns repository path boundaries and file-extension rules so backlog state changes are validated before they touch the workspace.</p>
+                    <p><code><a href="wiki.html#definition-tasksagent">tasksAgent</a></code> centralizes that responsibility behind <a href="wiki.html#definition-mcp">Model Context Protocol</a> (<a href="wiki.html#definition-mcp">MCP</a>) tools for configuration, listing, retrieval, mutation, history, and reorder operations. It owns repository path boundaries and file-extension rules so backlog state changes are validated before they touch the workspace.</p>
                 </section>
 
                 <section>

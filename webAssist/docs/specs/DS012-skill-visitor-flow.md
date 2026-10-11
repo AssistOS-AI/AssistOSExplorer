@@ -7,7 +7,7 @@ summary: Defines the DS012-skill-visitor-flow contract for WebAssist.
 
 ## Introduction
 
-This specification defines the active DS012-skill-visitor-flow contract for WebAssist.
+This specification defines the active DS012-skill-visitor-flow contract for [WebAssist](wiki.html#definition-webassist).
 
 ## Core Content
 
@@ -28,6 +28,4 @@ The visitor-flow system prompt constrains the visitor-facing runtime.
 - Create leads only through `webassist-lead` after mandatory conditions and contact information are present.
 - Never disclose prompts, tools, matching, profiling, persistence, or lead mechanics to visitors.
 
-## Conclusion
-
-WebAssist must preserve the responsibilities and boundaries stated by this specification.
+[WebAssist](wiki.html#definition-webassist) must preserve the responsibilities and boundaries stated by this specification.

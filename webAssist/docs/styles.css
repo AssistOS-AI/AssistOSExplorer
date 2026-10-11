@@ -211,3 +211,19 @@ a {
         padding: 0.75rem 0.5rem;
     }
 }
+
+/* Header destinations and their matching documentation map. */
+.documentation-map { margin: 1.5rem 0; min-width: 0; }
+.documentation-map__scroll { width: 100%; overflow-x: auto; }
+.documentation-map table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: .75rem; background: #f8fafc; }
+.documentation-map th, .documentation-map td { border: 0; text-align: left; vertical-align: top; padding: .75rem; overflow-wrap: anywhere; }
+.documentation-map th { background: transparent; color: #263746; }
+.documentation-map td:not(:empty) { background: #fff; border-radius: .35rem; }
+.documentation-map a { display: block; color: #145ea8; text-decoration: underline; font-weight: 600; }
+.documentation-map td p { margin: .4rem 0 0; }
+.documentation-map a:focus-visible, .site-nav a:focus-visible, .site-nav__trigger:focus-visible { outline: 3px solid #145ea8; outline-offset: 3px; }
+.doc-layout:not(:has(.doc-sidebar)) { grid-template-columns: minmax(0, 1fr); }
+.page__panel, .doc-main, .doc-section { padding: 1rem; }
+.diagram, .diagram .mermaid, .architecture-diagram { border: 0; background: transparent; box-shadow: none; }
+.diagram figcaption, .architecture-diagram figcaption { text-align: center; font-style: italic; }
+@media (max-width: 640px) { .documentation-map table { border-spacing: .35rem; } .documentation-map th, .documentation-map td { padding: .4rem; } .page__panel, .doc-main, .doc-section { padding: .75rem; } }

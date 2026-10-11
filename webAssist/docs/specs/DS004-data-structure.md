@@ -7,7 +7,7 @@ summary: Defines the DS004-data-structure contract for WebAssist.
 
 ## Introduction
 
-This specification defines the active DS004-data-structure contract for WebAssist.
+This specification defines the active DS004-data-structure contract for [WebAssist](wiki.html#definition-webassist).
 
 ## Core Content
 
@@ -23,11 +23,11 @@ This specification defines the active DS004-data-structure contract for WebAssis
 - Read-only site listing and session history return empty results when the application-owned `data` child is absent, without creating it or requiring an earlier chat call. The managed persistent parent is still required and validated; symlinks are errors rather than empty results.
 - Creating the data child does not provision a site AKU. Standalone event/session writers retain the explicit uninitialized-site error until that site has been provisioned.
 - Site root: `$WEBASSIST_DATA_ROOT/sites/<siteId>/`.
-- `siteId` is required for every runtime, CLI, MCP, and embedded chat operation.
+- `siteId` is required for every runtime, CLI, [MCP](wiki.html#definition-mcp), and embedded chat operation.
 
 ### Session Ownership
 - Session ids match `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`; any other caller-supplied id is rejected with the public error `Invalid sessionId.`. New ids are `session-<compact ISO timestamp>-<32 hex characters>` (16 random bytes).
-- Every chat session created through MCP has an owner record at `$WEBASSIST_DATA_ROOT/sites/<siteId>/session-owners/<sessionId>.json`, written before inference with exclusive create (`wx`, first writer wins) and mode `0600`. The `session-owners` directory is created when needed and must be a non-symlink directory. Owner records are written only for a site whose AKU is initialized.
+- Every chat session created through [MCP](wiki.html#definition-mcp) has an owner record at `$WEBASSIST_DATA_ROOT/sites/<siteId>/session-owners/<sessionId>.json`, written before inference with exclusive create (`wx`, first writer wins) and mode `0600`. The `session-owners` directory is created when needed and must be a non-symlink directory. Owner records are written only for a site whose AKU is initialized.
 - Record content (schema 2): `{"schema":2,"kind":"guest"|"user","id":"<verified actor id>","secretHash":"<64 lowercase hex>","createdAt":"<ISO timestamp>"}`. The record is a separate file because AKU manifests do not keep nested metadata.
 - `sessionSecret` is 32 random bytes encoded as base64url (43 characters). It is returned once, in the `web_cli_chat` response that creates the session, and is never stored in plaintext. `secretHash` is the lowercase hex SHA-256 of the UTF-8 bytes of the `sessionSecret` text exactly as presented (the base64url string, not the decoded bytes).
 - Owner records are read without following symlinks. A missing, unreadable (`EACCES`, `ELOOP`, any read error), symlinked, malformed, or non-schema-2 record means the session has no owner; reading creates nothing.
@@ -73,8 +73,6 @@ Required sections:
 - `Contact Info`
 - `Summary`
 
-Lead creation requires target profile match, mandatory conditions, and explicit contact information.
+[Lead](wiki.html#definition-lead) creation requires target profile match, mandatory conditions, and explicit contact information.
 
-## Conclusion
-
-WebAssist must preserve the responsibilities and boundaries stated by this specification.
+[WebAssist](wiki.html#definition-webassist) must preserve the responsibilities and boundaries stated by this specification.

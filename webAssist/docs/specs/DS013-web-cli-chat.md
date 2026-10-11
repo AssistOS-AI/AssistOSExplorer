@@ -7,7 +7,7 @@ summary: Defines the DS013-web-cli-chat contract for WebAssist.
 
 ## Introduction
 
-This specification defines the active DS013-web-cli-chat contract for WebAssist.
+This specification defines the active DS013-web-cli-chat contract for [WebAssist](wiki.html#definition-webassist).
 
 ## Core Content
 
@@ -36,7 +36,7 @@ Define the active plugin contract for the Web CLI chat integration.
   - close button (`X`) in header closes panel.
 
 ### Runtime Contract
-- MCP endpoint: `/webAssist/mcp` (always; no token-based routing)
+- [MCP](wiki.html#definition-mcp) endpoint: `/webAssist/mcp` (always; no token-based routing)
 - Tools:
   - `web_cli_chat` with `{ siteId, message, sessionId?, sessionSecret?, json: true }`
   - `web_cli_history` with `{ siteId, sessionId, sessionSecret? }`
@@ -58,6 +58,4 @@ Define the active plugin contract for the Web CLI chat integration.
 - Session history: `sessions/<sessionId>-history.md` — conversation transcript
 - History is appended automatically by the runtime after each turn, independent of the `webassist-session` skill
 
-## Conclusion
-
-WebAssist must preserve the responsibilities and boundaries stated by this specification.
+[WebAssist](wiki.html#definition-webassist) must preserve the responsibilities and boundaries stated by this specification.
