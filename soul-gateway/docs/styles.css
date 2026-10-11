@@ -53,7 +53,7 @@ table { width: 100%; border-collapse: collapse; }
 th, td { padding: 0.75rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
 .documentation-map { display: block; overflow-x: auto; border-collapse: separate; border-spacing: 0.75rem; }
 .documentation-map th { border: 0; color: var(--muted); }
-.documentation-map td { min-width: 13rem; border: 0; border-radius: 0.4rem; background: var(--background); }
+.documentation-map td { min-width: 13rem; border: 0; background: transparent; }
 .documentation-map td:empty { background: transparent; }
 .documentation-map a { display: block; margin-bottom: 0.25rem; font-weight: 700; }
 .documentation-map span { color: var(--muted); line-height: 1.45; }

@@ -19,7 +19,7 @@ Middleware may perform work before and after <code>next()</code>. Post-phase beh
 
 Gateway bindings apply to every request. Model bindings apply to the resolved direct or cascade model. Provider bindings apply inside each direct-model attempt after the target and credential lease are known. A binding must declare its scope, target where required, middleware key, order, enabled state, and settings. Gateway bindings must not declare a target; model and provider bindings must declare one.
 
-The [middleware catalog](../wiki.html#definition-middleware-catalog) must resolve enabled modules and bindings from the snapshot and preserve deterministic ordering. Settings must merge only through the precedence rules owned by the middleware framework; a request override must not bypass a key, model, provider, or gateway restriction unless the affected policy explicitly permits it.
+The [middleware catalog](wiki.html#definition-middleware-catalog) must resolve enabled modules and bindings from the snapshot and preserve deterministic ordering. Settings must merge only through the precedence rules owned by the middleware framework; a request override must not bypass a key, model, provider, or gateway restriction unless the affected policy explicitly permits it.
 
 ### Built-in middleware
 
@@ -29,11 +29,11 @@ Content and budget rules that protect a mandatory security or cost boundary must
 
 ### Provider middleware
 
-[Provider middleware](../wiki.html#definition-provider-middleware) must run within an attempt and may use the chosen model, provider, and credential context without exposing secrets. The registry must load built-ins and validated extension modules. Recompilation on each retry may observe a refreshed binding generation, but the model and snapshot invariants of the request must remain explicit.
+[Provider middleware](wiki.html#definition-provider-middleware) must run within an attempt and may use the chosen model, provider, and credential context without exposing secrets. The registry must load built-ins and validated extension modules. Recompilation on each retry may observe a refreshed binding generation, but the model and snapshot invariants of the request must remain explicit.
 
 ### Backends and extensions
 
-Every [provider backend](../wiki.html#definition-provider-backend) must have a validated manifest and an <code>execute()</code> function. The backend catalog must wrap execution once into a terminal and serve both the hot path and lifecycle operations from the same registered module. Built-in and extension backends must follow the same manifest and error-classification contract.
+Every [provider backend](wiki.html#definition-provider-backend) must have a validated manifest and an <code>execute()</code> function. The backend catalog must wrap execution once into a terminal and serve both the hot path and lifecycle operations from the same registered module. Built-in and extension backends must follow the same manifest and error-classification contract.
 
 The extension loader may discover backends, middleware, and provider middleware under <code>EXTENSIONS_DIR</code>. Invalid manifests or modules must not enter the active generation. Rescans must create replaceable catalog generations and give in-flight work a grace period before old generation cleanup.
 

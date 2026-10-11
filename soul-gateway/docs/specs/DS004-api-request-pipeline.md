@@ -11,7 +11,7 @@ The public request pipeline converts supported HTTP protocols into one runtime c
 
 ### Public routes
 
-Soul Gateway must register <code>POST /v1/chat/completions</code>, <code>POST /v1/messages</code>, <code>POST /v1/responses</code>, <code>POST /v1/embeddings</code>, and <code>GET /v1/models</code>. Completion routes must enter <code>runRouteRequest()</code> with the correct route kind. The model list must authenticate the caller and enumerate the current [runtime snapshot](../wiki.html#definition-runtime-snapshot) without a database or provider network call.
+Soul Gateway must register <code>POST /v1/chat/completions</code>, <code>POST /v1/messages</code>, <code>POST /v1/responses</code>, <code>POST /v1/embeddings</code>, and <code>GET /v1/models</code>. Completion routes must enter <code>runRouteRequest()</code> with the correct route kind. The model list must authenticate the caller and enumerate the current [runtime snapshot](wiki.html#definition-runtime-snapshot) without a database or provider network call.
 
 ### Route composition
 
@@ -21,7 +21,7 @@ The body parser must enforce <code>BODY_LIMIT_BYTES</code>, require valid JSON, 
 
 ### Normalization and validation
 
-OpenAI Chat, Anthropic Messages, and OpenAI Responses inputs must become the same [canonical request](../wiki.html#definition-canonical-request). Normalization must preserve supported messages, system instructions, tools, streaming intent, token controls, and provider options. Validation must reject missing model names, malformed messages, unsupported values, and invalid tool structures before execution.
+OpenAI Chat, Anthropic Messages, and OpenAI Responses inputs must become the same [canonical request](wiki.html#definition-canonical-request). Normalization must preserve supported messages, system instructions, tools, streaming intent, token controls, and provider options. Validation must reject missing model names, malformed messages, unsupported values, and invalid tool structures before execution.
 
 Identity may derive <code>soulId</code>, agent name, session hints, and other supported metadata from request headers after authentication. Identity metadata must not replace the signed-subject security decision.
 
@@ -33,6 +33,6 @@ Session resolution must group requests using verified API-key identity and avail
 
 ### Egress
 
-A streaming request must serialize the [canonical stream](../wiki.html#definition-canonical-stream) as OpenAI Chat SSE, Anthropic event streams, or OpenAI Responses events according to the ingress route. A non-streaming request must buffer canonical events and return the matching JSON envelope. Client disconnect must abort or stop downstream work where the active backend supports cancellation.
+A streaming request must serialize the [canonical stream](wiki.html#definition-canonical-stream) as OpenAI Chat SSE, Anthropic event streams, or OpenAI Responses events according to the ingress route. A non-streaming request must buffer canonical events and return the matching JSON envelope. Client disconnect must abort or stop downstream work where the active backend supports cancellation.
 
 Structured errors must preserve a stable error type and request context. When a streaming response has already started, the error boundary must emit a protocol-compatible terminal error event rather than attempt a second HTTP status response.

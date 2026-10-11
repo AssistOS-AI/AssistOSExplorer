@@ -19,13 +19,13 @@ Every <code>/management</code> HTTP route and management WebSocket route must pa
 
 The management API must expose operations for API-key subjects; direct and cascade models; cascade children and ordering; compatibility tiers; providers and provider accounts; OAuth flows; provider discovery and synchronization; backend and middleware catalogs; gateway, model, and provider middleware bindings; blacklist rules; and cooldown clearing.
 
-Create and update handlers must validate identifiers, ownership constraints, strategy-specific fields, settings shapes, and referential integrity before persistence. A mutation that changes request-time configuration must request the relevant [runtime snapshot](../wiki.html#definition-runtime-snapshot), backend catalog, or [middleware catalog](../wiki.html#definition-middleware-catalog) refresh. Deletes must respect dependent records and soft-delete semantics owned by the DAO.
+Create and update handlers must validate identifiers, ownership constraints, strategy-specific fields, settings shapes, and referential integrity before persistence. A mutation that changes request-time configuration must request the relevant [runtime snapshot](wiki.html#definition-runtime-snapshot), backend catalog, or [middleware catalog](wiki.html#definition-middleware-catalog) refresh. Deletes must respect dependent records and soft-delete semantics owned by the DAO.
 
-Deleting a model that a catalog sync created records a [model tombstone](../wiki.html#definition-model-tombstone) in the same transaction as the delete, so provider synchronization does not recreate it; creating a model manually with the same key clears that tombstone, and no update clears one (DS008).
+Deleting a model that a catalog sync created records a [model tombstone](wiki.html#definition-model-tombstone) in the same transaction as the delete, so provider synchronization does not recreate it; creating a model manually with the same key clears that tombstone, and no update clears one (DS008).
 
 ### User-key provisioning
 
-An administrator may request a user key only for the verified Ploinky user identity supported by the provisioning route. The returned public value must use the <code>sk-soul-</code> encoded [signed-subject key](../wiki.html#definition-signed-subject-key) format. The API-key table must store the deterministic subject record and policy metadata, not reusable plaintext signing material.
+An administrator may request a user key only for the verified Ploinky user identity supported by the provisioning route. The returned public value must use the <code>sk-soul-</code> encoded [signed-subject key](wiki.html#definition-signed-subject-key) format. The API-key table must store the deterministic subject record and policy metadata, not reusable plaintext signing material.
 
 ### Provider lifecycle
 
