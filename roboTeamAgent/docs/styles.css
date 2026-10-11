@@ -22,7 +22,7 @@ h1 { margin: 0 0 .8rem; font-size: clamp(2.2rem, 5vw, 4rem); letter-spacing: -.0
 h2 { margin-top: 2.4rem; padding-top: .4rem; font-size: 1.55rem; letter-spacing: -.025em; }
 h3 { margin-top: 1.6rem; }
 p, li { color: #cfdae2; }
-.lede { max-width: 70rem; color: var(--muted); font-size: 1.08rem; }
+.lede { max-width: none; color: var(--muted); font-size: 1.08rem; }
 code { border-radius: .3rem; padding: .08rem .3rem; color: #bcf8df; background: #0b141a; }
 pre { overflow: auto; padding: 1rem; border-radius: .65rem; background: #091017; }
 pre code { padding: 0; background: transparent; }

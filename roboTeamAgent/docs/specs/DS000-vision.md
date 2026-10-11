@@ -5,11 +5,11 @@ summary: Defines RoboTeam as one Ploinky-hosted nested-container manager for per
 
 ## Introduction
 
-[RoboTeam](../wiki.html#definition-roboteam) manages persistent [robots](../wiki.html#definition-robot). Each robot keeps a durable home and work area while its graphical runtime is an on-demand inner Podman container.
+[RoboTeam](wiki.html#definition-roboteam) manages persistent [robots](wiki.html#definition-robot). Each robot keeps a durable home and work area while its graphical runtime is an on-demand inner Podman container.
 
 ## Core Content
 
-RoboTeam remains exactly one [Ploinky agent](../wiki.html#definition-ploinky-agent). Robots are records and directories inside that agent, not additional Ploinky agents or public services.
+RoboTeam remains exactly one [Ploinky agent](wiki.html#definition-ploinky-agent). Robots are records and directories inside that agent, not additional Ploinky agents or public services.
 
 The Ploinky-hosted outer container owns a release-pinned stable Podman 5.8.7 inner engine through Ploinky's bounded `nestedPodman` capability. A robot may run visible `browser` or `desktop` tasks and non-GUI simple ALA tasks. One ALA process runs per robot, and additional requests wait in that robot's FIFO queue. A robot retains at most one GUI container independently from the ALA process lifetime.
 

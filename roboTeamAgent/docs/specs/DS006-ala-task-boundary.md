@@ -133,7 +133,7 @@ WebChat task metadata persists completed active time as `elapsedMs` and the curr
 
 ### Creator skill policy
 
-A [task that allows sub-flows](../wiki.html#definition-workflow-creator) policy must always include the bundled workflow-creator descriptor as a required, read-only skill. Normal robot skill selections still determine robot eligibility. The creator policy is stored with the native session and retained on continuation. The managed [Run workflows](../wiki.html#definition-run-workflows) node must execute entirely within RoboFlow without an ALA session. [DS007](DS007-roboflow-team-workflow.md) owns the creator response and child lifecycle contracts.
+A [task that allows sub-flows](wiki.html#definition-workflow-creator) policy must always include the bundled workflow-creator descriptor as a required, read-only skill. Normal robot skill selections still determine robot eligibility. The creator policy is stored with the native session and retained on continuation. The managed [Run workflows](wiki.html#definition-run-workflows) node must execute entirely within RoboFlow without an ALA session. [DS007](DS007-roboflow-team-workflow.md) owns the creator response and child lifecycle contracts.
 
 ### Background task diagnostics
 
@@ -165,6 +165,6 @@ Chat and CLI `/model` changes only the selected conversation. Its metadata store
 
 Each execution resolves the robot defaults, then the session override, then any explicit execution model override. A session or task override must be passed through `--model` and `--effort`, using `default` when the resolved effort is absent. A different explicit task model must clear effort belonging to the prior model. Without an override, RoboTeam must omit both arguments so ALA reads the current robot home configuration. RoboTeam must not write an intermediate configuration or pass `--config`, and execution must not modify the robot's `.ala/config.json`. Each ALA process retains its loaded settings for that execution. Concurrent sessions receive independent arguments. Workflow phases inherit their executing robot's defaults and never copy the launching chat's model override. Existing sessions without `modelOverride` inherit defaults without migration; previous shared model selections cannot be attributed retroactively to individual sessions.
 
-## Session listing
+### Session listing
 
 `/session`, the WebChat Sessions picker and session-resume completions exclude workflow phase sessions. The session store reads the existing `.roboteam/tasks/<sessionId>/task.json` definition, matches its `alaSessionId`, and excludes the session when `request.workflowRunId` is present, regardless of task state. This uses existing records without adding session fields or migrating history. Direct session loading and workflow continuation remain available. WebChat has no Tasks button in its desktop header or mobile menu; users browse workflow runs through Observability.
