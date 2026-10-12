@@ -41,6 +41,7 @@ async function writeFixture(directory, name, source) {
 
 async function storageInitFixture(directory) {
     await writeFixture(directory, 'roboteam-podman-init', '#!/bin/sh\nexit "${STORAGE_INIT_EXIT:-0}"\n');
+    await writeFixture(directory, 'required-skills.mjs', 'process.exit(Number(process.env.REQUIRED_SKILLS_EXIT || 0));\n');
     return `${directory}:${process.env.PATH}`;
 }
 
@@ -63,6 +64,7 @@ setTimeout(() => process.exit(7), 200);
     for (let run = 0; run < 2; run++) {
         const result = await runScript(join(AGENT_ROOT, 'scripts/startAgent.sh'), {
             PATH: fixturePath,
+            ROBOTEAM_REQUIRED_SKILLS_CHECK: join(directory, 'required-skills.mjs'),
             ROBOTEAM_INTERNAL_TOKEN: 'a'.repeat(64), TOKEN_CHECK_DIR: directory, TOKEN_FIXTURE: fixture,
             ROBOTEAM_AGENT_SERVER_SCRIPT: agent, ROBOTEAM_SERVICE_MAIN: service, ROBOTEAM_SERVICE_CHECK: check,
         });
@@ -110,6 +112,14 @@ test('manifest stores RoboTeam state in the workspace private data tree', async 
     assert.deepEqual(manifest.volumes, {
         '.data/roboTeamAgent': '/data',
     });
+});
+
+test('manifest declares the required report repository alongside ALA', async () => {
+    const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
+    assert.deepEqual(manifest['link-install'], [
+        'https://github.com/AssistOS-AI/AdvancedLanguageAgent.git',
+        'https://github.com/AssistOS-AI/DocumentationSkills.git',
+    ]);
 });
 
 test('manifest selects runtime-only GUI images and the persistent tool cache', async () => {
@@ -175,6 +185,7 @@ setInterval(() => {}, 1000);
 
     const result = await runScript(join(AGENT_ROOT, 'scripts', 'startAgent.sh'), {
         PATH: fixturePath,
+        ROBOTEAM_REQUIRED_SKILLS_CHECK: join(directory, 'required-skills.mjs'),
         PEER_STOPPED_PATH: peerStoppedPath,
         ROBOTEAM_AGENT_SERVER_SCRIPT: agentServer,
         ROBOTEAM_SERVICE_MAIN: service,
@@ -200,6 +211,7 @@ while :; do sleep 0.05; done
 
     const result = await runScript(join(AGENT_ROOT, 'scripts', 'startAgent.sh'), {
         PATH: fixturePath,
+        ROBOTEAM_REQUIRED_SKILLS_CHECK: join(directory, 'required-skills.mjs'),
         PEER_STOPPED_PATH: peerStoppedPath,
         ROBOTEAM_AGENT_SERVER_SCRIPT: agentServer,
         ROBOTEAM_SERVICE_MAIN: service,
@@ -222,4 +234,21 @@ test('storage initialization failure stops startup before either service', async
     });
     assert.equal(result.code, 19);
     assert.equal(result.stdout + result.stderr, '');
+});
+
+test('required skill failure stops startup before MCP or HTTP can become ready', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-skills-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const fixturePath = await storageInitFixture(directory);
+    const result = await runScript(join(AGENT_ROOT, 'scripts/startAgent.sh'), {
+        PATH: fixturePath, REQUIRED_SKILLS_EXIT: '23',
+        ROBOTEAM_REQUIRED_SKILLS_CHECK: join(directory, 'required-skills.mjs'),
+        ROBOTEAM_AGENT_SERVER_SCRIPT: '/nonexistent-agent-server',
+        ROBOTEAM_SERVICE_MAIN: '/nonexistent-service',
+    });
+    assert.equal(result.code, 23, result.stderr);
+    assert.equal(result.stdout + result.stderr, '');
+    const source = await readFile(join(AGENT_ROOT, 'scripts/startAgent.sh'), 'utf8');
+    assert.ok(source.indexOf('node "$required_skills_check"') < source.indexOf('sh "$agent_server_script"'));
+    assert.ok(source.indexOf('node "$required_skills_check"') < source.indexOf('node "$service_main"'));
 });

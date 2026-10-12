@@ -1,4 +1,4 @@
-const DEFAULT_LABEL = 'Workspace / cron-jobs-results';
+const DEFAULT_LABEL = 'workflow-runs';
 
 export function initScheduleFolderPicker({ root = document, api, input, windowRef = window }) {
     const element = id => root.querySelector(`#${id}`);
@@ -97,7 +97,7 @@ export function initScheduleFolderPicker({ root = document, api, input, windowRe
     };
     use.onclick = () => {
         if (!current || use.disabled) return;
-        setFolder(current.folder, current.path ? `Workspace / ${current.path}` : 'Workspace'); dialog.close();
+        setFolder(current.folder, current.path || '/'); dialog.close();
     };
     defaultButton.onclick = () => setFolder();
     windowRef.addEventListener('pagehide', () => { epoch++; controller?.abort(); if (dialog.open) dialog.close(); });

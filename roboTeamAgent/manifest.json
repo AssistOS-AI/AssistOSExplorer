@@ -52,6 +52,7 @@
     }
   },
   "link-install": [
-    "https://github.com/AssistOS-AI/AdvancedLanguageAgent.git"
+    "https://github.com/AssistOS-AI/AdvancedLanguageAgent.git",
+    "https://github.com/AssistOS-AI/DocumentationSkills.git"
   ]
 }

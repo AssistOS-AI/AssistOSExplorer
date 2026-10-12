@@ -8,8 +8,9 @@ import { WorkflowRegistry } from './workflow-registry.mjs';
 import { TaskFlowStore } from './task-flow-store.mjs';
 import { ScheduleStore } from './schedule-store.mjs';
 import { ScheduleFolders } from './schedule-folders.mjs';
+import { RunFolders } from './run-folders.mjs';
 import { WorkflowScheduler } from './workflow-scheduler.mjs';
-import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator } from './graph.mjs';
+import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator, resolveWorkflowObjective } from './graph.mjs';
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
 import { parseRoute, parseWorkflowResponse, workflowResponseContext } from './result-parser.mjs';
 import { generationPrompt, descriptionRevisionPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
@@ -40,8 +41,10 @@ export class RoboFlowService {
         this.store = new TaskFlowStore({ database: this.database });
         this.workspaceRoot = options.workspaceRoot || this.runtimeManager?.workspaceRoot || path.dirname(this.database.file);
         this.scheduleFolders = new ScheduleFolders(this.workspaceRoot);
+        this.runFolders = new RunFolders({ folders: this.scheduleFolders,
+            resolveCwd: folder => this.runtimeManager.resolveCwd(folder), now: options.scheduleNow });
         this.schedules = new ScheduleStore({ database: this.database, registry: this.registry,
-            resolveCwd: folder => this.runtimeManager.resolveCwd(folder),
+            resolveCwd: folder => this.runFolders.base(folder),
             defaultFolder: () => this.scheduleFolders.defaultFolder(), now: options.scheduleNow });
         this.scheduler = new WorkflowScheduler({ schedules: this.schedules, flows: this.store,
             startFlow: (input, options) => this.startFlow(input, options), now: options.scheduleNow, pollMs: options.schedulePollMs });
@@ -153,8 +156,12 @@ export class RoboFlowService {
         const root = await this.scheduleFolders.root();
         return this.schedules.listSync().map(job => {
             const { pendingLaunch, ...record } = job;
+            delete record.name;
+            if (this.runFolders.isLegacyDefault(record.folder, root)) record.folder = path.join(root, 'workflow-runs');
+            const workflow = this.registry.getSync(job.workflowTypeId);
             const flow = job.lastFlowId && this.store.getSync(job.lastFlowId);
-            return { ...record, folderLabel: this.scheduleFolders.label(job.folder, root), workflowName: this.registry.getSync(job.workflowTypeId)?.name || job.workflowTypeId,
+            return { ...record, folderLabel: this.scheduleFolders.label(record.folder, root), workflowName: workflow?.name || job.workflowTypeId,
+                effectiveObjective: job.objective || workflow?.defaultObjective || '',
                 lastFlowStatus: flow?.status || null, lastFlowError: flow?.error || null, launching: Boolean(pendingLaunch) };
         });
     }
@@ -168,11 +175,19 @@ export class RoboFlowService {
         const graph = await this.registry.get(input.workflowTypeId);
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
         if (graph.kind === 'default' ? !EXECUTION_TYPES.includes(input.executionType) : input.executionType !== undefined) throw invalid('executionType is required only for the default workflow');
-        const folder = await this.runtimeManager.resolveCwd(input.folder);
         const objective = textField(input.objective, 'objective', 32768);
-        const flow = await this.store.createFromWorkflow(this.registry, graph.id, { folder, objective, createdBy: input.createdBy || '',
-            ...(scheduleId ? { scheduleId, scheduledAt } : {}),
-            ...(graph.kind === 'default' ? { executionType: input.executionType } : {}) }, onCreated);
+        resolveWorkflowObjective(graph, objective);
+        const allocated = Boolean(scheduleId) || !input.folder;
+        const folder = allocated ? await this.runFolders.create(input.folder, Boolean(scheduleId)) : await this.runtimeManager.resolveCwd(input.folder);
+        let flow;
+        try {
+            flow = await this.store.createFromWorkflow(this.registry, graph.id, { folder, objective, createdBy: input.createdBy || '',
+                ...(scheduleId ? { scheduleId, scheduledAt } : {}),
+                ...(graph.kind === 'default' ? { executionType: input.executionType } : {}) }, onCreated);
+        } catch (error) {
+            if (allocated) await this.runFolders.discard(folder);
+            throw error;
+        }
         await this._serialize(flow.id, async () => {
             await this._prepareVisit(flow.id, flow.graph.entryTaskId);
             await this._dispatch(flow.id);
@@ -551,6 +566,11 @@ export class RoboFlowService {
         if (flow.status === 'completed') flow.result = flow.instances.at(-1)?.finalResponse || '';
         return flow;
     }
+    subscribeFlow(id, listener) {
+        return this.store.subscribe(event => {
+            if (event.kind === 'close' || event.flowId === id || (event.kind === 'flow' && event.parentFlowId === id)) listener(event);
+        });
+    }
     async getInvocationLog(id, instanceId) {
         try { return await this.store.readOutput(id, instanceId); }
         catch (error) {
@@ -668,5 +688,5 @@ export class RoboFlowService {
         this.generationTasks.delete(id);
         return info;
     }
-    async close() { this.closed = true; await this.scheduler.close(); clearTimeout(this.presetTimer); this.presetWake?.(); this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
+    async close() { this.closed = true; this.store.closeObservers(); await this.scheduler.close(); clearTimeout(this.presetTimer); this.presetWake?.(); this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
 }

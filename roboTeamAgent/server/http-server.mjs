@@ -1,6 +1,7 @@
 import { RobotModels } from './robot-models.mjs';
 import { conversationSummaries, workflowSummaries } from './impact-summaries.mjs';
 import { requiredHumanReportSkill } from './required-skills.mjs';
+import { streamFlowEvents } from './roboflow/flow-events.mjs';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
@@ -388,6 +389,11 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id }) });
         return true;
     }
+    const eventsId = pathname.match(new RegExp(`^${FLOW_PATH}/events$`))?.[1];
+    if (eventsId && req.method === 'GET') {
+        await streamFlowEvents({ req, res, roboflow, flowId: eventsId, instanceId: url.searchParams.get('instanceId') || null });
+        return true;
+    }
     const flowId = pathname.match(new RegExp(`^${FLOW_PATH}$`))?.[1];
     if (flowId && req.method === 'GET') {
         const requested = String(url.searchParams.get('logs') || 'tail');
@@ -506,7 +512,7 @@ export function createRoboTeamServer(options) {
             if (pathname === '/InterVariable.woff2' && req.method === 'GET') return serveFile(req, res, publicDir, 'InterVariable.woff2');
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(req, res, publicDir, 'styles.css');
             if (['/workflow-editor.js', '/workflow-board.js', '/workflow-routing.js', '/workflow-generator.js', '/workflow-description-revision.js', '/workflow-editor.css',
-                '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js',
+                '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js', '/workflow-execution.css', '/workflow-phase-list.js', '/workflow-execution-state.js', '/workflow-live-updates.js',
                 '/log-render.js', '/webchat-logs.js', '/robot-logs.js', '/robot-log-viewer.js', '/summary.js', '/conversation-skills.js', '/conversation-skills-model.js'].includes(pathname) && req.method === 'GET') return serveFile(req, res, publicDir, pathname.slice(1));
             if (pathname === '/dashboard-tabs.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'dashboard-tabs.js');
             if (pathname === '/robot-controls.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'robot-controls.js');

@@ -1,5 +1,6 @@
 import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
 import { initScheduleFolderPicker } from './schedule-folder-picker.js';
+import { renderExecutionState, executionStatePresentation } from './workflow-execution-state.js';
 
 export function scheduleSummary(timing) {
     if (timing.kind === 'daily') return `Daily at ${timing.times.join(', ')} · ${timing.timeZone}`;
@@ -11,8 +12,27 @@ export function schedulePayload(values, times) {
     const timing = values.scheduleKind === 'daily'
         ? { kind: 'daily', times, timeZone: values.timeZone.trim() }
         : { kind: 'interval', everyMinutes: Number(values.intervalValue) * Number(values.intervalUnit) };
-    return { name: values.name.trim(), workflowTypeId: values.workflowTypeId, folder: values.folder.trim(), objective: values.objective.trim(),
+    return { workflowTypeId: values.workflowTypeId, folder: values.folder.trim(), objective: values.objective.trim(),
         enabled: values.enabled, timing, ...(values.defaultWorkflow ? { executionType: values.executionType } : {}) };
+}
+export function cronJobPresentation(job) {
+    const workflow = job.workflowName || job.workflowTypeId;
+    const objective = job.effectiveObjective || job.objective || '';
+    return { workflow, objective, label: [workflow, objective].filter(Boolean).join(' · ') };
+}
+export function renderCronLastAttempt(element, status, job, attemptedAt, ownerDocument = document) {
+    element.replaceChildren();
+    status.hidden = !job.lastAttemptAt && !job.launching;
+    if (status.hidden) { element.textContent = 'Not run yet'; return; }
+    element.textContent = job.lastAttemptAt ? `Last attempt · ${attemptedAt}` : 'Last attempt';
+    const outcome = job.launching ? 'starting' : job.lastOutcome === 'skipped' ? 'skipped' : job.lastFlowStatus || job.lastOutcome || '—';
+    renderExecutionState(status, outcome, ownerDocument);
+    if (job.launching) status.children[1].textContent = 'Launching';
+    else if (outcome === 'skipped') status.children[1].textContent = 'Skipped';
+    else status.children[1].textContent = executionStatePresentation(outcome).label;
+    if (outcome === 'running' || outcome === 'starting') {
+        status.children[0].children[0].setAttribute('d', 'M21 12a9 9 0 1 1-9-9');
+    }
 }
 export function initCronJobs({ root = document, api, endpoint, bindLink, closeMenus }) {
     const panel = root.querySelector('#kronJobsPanel'), list = root.querySelector('#cronList'), template = root.querySelector('#cronTemplate');
@@ -30,7 +50,7 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
         for (const input of form.querySelectorAll('input, select, textarea, button')) input.disabled = value;
         if (!value) syncFields();
     }
-    function values() { return Object.fromEntries(['name', 'workflowTypeId', 'folder', 'objective', 'scheduleKind', 'timeZone', 'intervalValue', 'intervalUnit', 'executionType'].map(name => [name, control(name).value])); }
+    function values() { return Object.fromEntries(['workflowTypeId', 'folder', 'objective', 'scheduleKind', 'timeZone', 'intervalValue', 'intervalUnit', 'executionType'].map(name => [name, control(name).value])); }
     function captureDraft() {
         if (!editing && !busy) newDraft = { ...values(), enabled: control('enabled').checked, times: [...timesList.querySelectorAll('input')].map(input => input.value) };
     }
@@ -71,7 +91,7 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
         control('timeZone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
         timesList.replaceChildren();
         if (job) {
-            for (const name of ['name', 'workflowTypeId', 'folder', 'objective']) control(name).value = job[name];
+            for (const name of ['workflowTypeId', 'folder', 'objective']) control(name).value = job[name];
             control('enabled').checked = job.enabled; control('scheduleKind').value = job.timing.kind; control('executionType').value = job.executionType || 'terminal';
             if (job.timing.kind === 'daily') control('timeZone').value = job.timing.timeZone;
             else {
@@ -86,7 +106,7 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
         folderPicker.setFolder(control('folder').value, job?.folderLabel);
         syncFields();
         if (show && !dialog.open) dialog.showModal();
-        control('name').focus();
+        control('workflowTypeId').focus();
     }
     root.querySelector('#cronAddTime').onclick = () => { addTime(''); timesList.lastElementChild.querySelector('input').focus(); };
     control('scheduleKind').onchange = syncFields; control('workflowTypeId').onchange = syncFields; control('intervalUnit').onchange = syncFields;
@@ -111,7 +131,8 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
     };
     async function mutate(job, button, operation) {
         if (!admin || button.disabled || pendingMutations.has(job.id)) return;
-        if (operation === 'delete' && !confirm(`Delete Cron job “${job.name}”? Any already running workflow will remain unchanged.`)) return;
+        const label = cronJobPresentation(job).label.replace(/\s+/g, ' ');
+        if (operation === 'delete' && !confirm(`Delete Cron job “${label.length > 200 ? `${label.slice(0, 199)}…` : label}”? Any already running workflow will remain unchanged.`)) return;
         pendingMutations.add(job.id);
         const card = button.closest('.cron-card'), menuToggle = card.querySelector('.manage-toggle');
         closeMenus(); menuToggle.focus({ preventScroll: true });
@@ -138,18 +159,18 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
         }
         for (const job of jobs) {
             const card = template.content.firstElementChild.cloneNode(true);
-            card.querySelector('.cron-name').textContent = job.name;
+            const presentation = cronJobPresentation(job);
+            const workflow = card.querySelector('.cron-workflow'); workflow.textContent = presentation.workflow; workflow.title = presentation.workflow;
+            const objective = card.querySelector('.cron-objective'); objective.textContent = presentation.objective; objective.title = presentation.objective; objective.hidden = !presentation.objective;
             const state = card.querySelector('.cron-state'); state.textContent = job.enabled ? 'Enabled' : 'Disabled'; state.classList.add(job.enabled ? 'enabled' : 'disabled');
-            card.querySelector('.cron-workflow').textContent = job.workflowName;
             card.querySelector('.cron-timing').textContent = scheduleSummary(job.timing);
             card.querySelector('.cron-next').textContent = job.nextRunAt ? `Next run · ${date(job.nextRunAt, job.timing)}` : 'No upcoming run';
-            const outcome = job.launching ? 'Launching' : job.lastOutcome === 'skipped' ? 'Skipped' : job.lastFlowStatus || job.lastOutcome;
-            card.querySelector('.cron-last').textContent = job.lastAttemptAt ? `Last attempt · ${date(job.lastAttemptAt, job.timing)} · ${outcome || '—'}` : 'Not run yet';
+            renderCronLastAttempt(card.querySelector('.cron-last'), card.querySelector('.cron-run-status'), job, job.lastAttemptAt ? date(job.lastAttemptAt, job.timing) : '', root);
             const error = card.querySelector('.cron-error'); error.hidden = !job.lastError && !job.lastFlowError; error.textContent = job.lastError || job.lastFlowError || '';
             const run = card.querySelector('.cron-view-run'); run.hidden = !job.lastFlowId;
             if (job.lastFlowId) { run.href = endpoint(`flows?flowId=${encodeURIComponent(job.lastFlowId)}`); run.dataset.navigationKey = `cron-run:${job.id}`; bindLink(run); }
             const toggle = card.querySelector('.cron-toggle'); toggle.textContent = job.enabled ? 'Disable' : 'Enable'; toggle.dataset.navigationKey = `cron-toggle:${job.id}`;
-            toggle.setAttribute('aria-label', `${job.enabled ? 'Disable' : 'Enable'} ${job.name}`); toggle.onclick = () => mutate(job, toggle, 'toggle');
+            toggle.setAttribute('aria-label', `${job.enabled ? 'Disable' : 'Enable'} ${presentation.workflow}`); toggle.onclick = () => mutate(job, toggle, 'toggle');
             const edit = card.querySelector('.cron-edit'); edit.onclick = () => open(job, card.querySelector('.manage-toggle'));
             const remove = card.querySelector('.cron-delete'); remove.onclick = () => mutate(job, remove, 'delete');
             const runNow = card.querySelector('.cron-run-now'); runNow.onclick = () => mutate(job, runNow, 'run-now');
@@ -159,7 +180,7 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
             if (pendingMutations.has(job.id)) card.querySelectorAll('[data-robot-menu-options] button').forEach(control => { control.disabled = true; });
             card.querySelector('.manage-toggle').dataset.navigationKey = `cron-menu:${job.id}`;
             card.querySelector('.cron-actions').hidden = !admin;
-            initRobotMenu({ menu: card.querySelector('.robot-manage'), id: `cron-options-${job.id}`, label: `More actions for ${job.name}`, closeMenus });
+            initRobotMenu({ menu: card.querySelector('.robot-manage'), id: `cron-options-${job.id}`, label: `More actions for ${presentation.workflow}`, closeMenus });
             list.append(card);
         }
         if (focused) [...list.querySelectorAll('[data-navigation-key]')].find(element => element.dataset.navigationKey === focused)?.focus({ preventScroll: true });

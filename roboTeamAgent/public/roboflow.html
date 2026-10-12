@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RoboFlow</title>
   <link rel="stylesheet" href="roboflow.css">
+  <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="workflow-editor.css">
+  <link rel="stylesheet" href="workflow-execution.css">
   <script>
     (() => {
       const keys = ['assistosExplorerTheme', 'webchat_theme'];
@@ -29,7 +31,7 @@
   </script>
   <link rel="stylesheet" href="/webchat/assets/logMarkdown.css">
 </head>
-<body>
+<body class="flow-execution-page">
   <main class="shell">
     <header class="hero" data-embed-header>
       <nav class="breadcrumbs" aria-label="Breadcrumb" data-embed-breadcrumbs>
@@ -44,7 +46,13 @@
     <section id="detail" class="flow-workspace" aria-labelledby="detail-title">
       <header class="flow-header">
         <div class="flow-heading">
-          <h2 id="detail-title">Flow</h2>
+          <div class="flow-title-row">
+            <h2 id="detail-title">Flow</h2>
+            <div class="flow-run-meta">
+              <span id="flowStatus" class="status-badge" role="status" aria-live="polite"></span>
+              <span id="flowDuration" class="phase-view-duration"></span>
+            </div>
+          </div>
           <div class="flow-objective-container">
             <p id="flowObjective" class="flow-objective"></p>
             <button id="toggleFlowObjective" class="flow-objective-toggle" type="button" aria-controls="flowObjective" aria-expanded="false" aria-label="View more" title="View more" hidden>
@@ -53,24 +61,42 @@
           </div>
         </div>
         <div class="flow-actions">
-          <span id="flowDuration" class="phase-view-duration"></span>
-          <span id="flowStatus" class="status-badge"></span>
-          <button id="terminateFlowButton" class="button danger" type="button">Terminate workflow</button>
-          <button id="pauseFlowButton" class="button danger" type="button">Pause workflow</button>
+          <div id="flowActionsMenu" class="robot-manage">
+            <button class="button secondary icon-button manage-toggle" type="button" aria-expanded="false" aria-label="More workflow actions" title="More workflow actions" data-robot-menu-toggle><span aria-hidden="true">⋮</span></button>
+            <div class="manage-options" data-robot-menu-options hidden>
+              <button id="pauseFlowButton" class="button secondary" type="button">Pause workflow</button>
+              <div class="robot-danger-actions"><button id="terminateFlowButton" class="button danger" type="button">Terminate workflow</button></div>
+            </div>
+          </div>
         </div>
       </header>
       <p id="flowError" class="message is-error" hidden></p>
       <div class="flow-columns">
         <aside class="phase-pane" aria-label="Workflow phases">
-          <button id="graphButton" class="button" type="button">View execution graph</button>
-          <div class="section-heading"><h3>Phases</h3><span id="phaseCount" class="count">0</span></div>
+          <button id="graphButton" class="graph-navigation" type="button" aria-controls="executionGraph"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M9 3h6v5H9z M3 16h6v5H3z M15 16h6v5h-6z M12 8v4 M6 16v-4h12v4"/></svg>View execution graph</button>
+          <div class="section-heading"><h3>Phases</h3><span id="phaseCount" class="robot-count">0</span></div>
           <ol id="phaseList" class="phase-list"></ol>
+          <section class="phase-state-legend" aria-label="Status legend">
+            <ul id="phaseStateLegend" aria-label="Common execution states"></ul>
+            <button id="phaseLegendToggle" class="phase-legend-more" type="button" popovertarget="phaseLegendPopover" aria-controls="phaseLegendPopover" aria-expanded="false" aria-label="Show all execution states">More…</button>
+            <div id="phaseLegendPopover" class="phase-legend-popover" popover role="region" aria-labelledby="phaseLegendTitle">
+              <h4 id="phaseLegendTitle">Status legend</h4>
+              <ul id="phaseStateLegendMore"></ul>
+            </div>
+          </section>
         </aside>
-        <section class="stage-pane" aria-label="Phase detail">
+        <section class="stage-pane" aria-label="Phase detail" tabindex="-1">
           <div class="stage-toolbar">
             <span id="stageTitle" class="stage-title">Select a phase to view its log</span>
           </div>
           <div id="stageBody" class="stage-body"></div>
+        </section>
+        <section id="executionGraph" class="execution-graph-pane" aria-labelledby="executionGraphTitle" tabindex="-1">
+          <div class="stage-toolbar">
+            <h3 id="executionGraphTitle" class="stage-title">Execution graph</h3>
+            <p class="graph-caption">Select a task to view its details and log.</p>
+          </div>
+          <div id="executionGraphBoard" class="stage-board"></div>
         </section>
       </div>
     </section>

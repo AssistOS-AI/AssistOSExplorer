@@ -18,7 +18,7 @@ async function fixture(t) {
         scheduleNow: () => now, schedulePollMs: 2147480000 });
     await service.initialize(); await service.presetReady; await service.createWorkflow(definition); service.scheduler.start();
     t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });
-    const create = (extra = {}) => service.saveSchedule({ name: 'Hourly report', workflowTypeId: 'scheduled', folder: root, objective: 'Write the report', timing: { kind: 'interval', everyMinutes: 60 }, ...extra }, 'admin');
+    const create = (extra = {}) => service.saveSchedule({ workflowTypeId: 'scheduled', folder: root, objective: 'Write the report', timing: { kind: 'interval', everyMinutes: 60 }, ...extra }, 'admin');
     return { service, root, started, create, advance: minutes => { now += minutes * 60000; }, now: () => now };
 }
 test('durable Cron jobs create ordinary workflow snapshots and do not launch twice on concurrent ticks', async t => {
@@ -31,6 +31,9 @@ test('durable Cron jobs create ordinary workflow snapshots and do not launch twi
     assert.equal(current.lastOutcome, 'started'); assert.equal(current.lastFlowStatus, 'running');
     assert.equal(flow.scheduleId, job.id); assert.equal(flow.scheduledAt, '2026-10-09T08:00:00.000Z'); assert.equal(flow.createdBy, 'admin');
     assert.equal(flow.graph.id, 'scheduled'); assert.equal(flow.objective, 'Write the report');
+    assert.equal(path.dirname(flow.folder), f.root);
+    assert.equal(path.basename(flow.folder), 'cron-2026-10-09_08-00-00-000Z');
+    assert.equal(f.started[0].cwd, flow.folder);
     assert.equal(current.nextRunAt, '2026-10-09T09:00:00.000Z');
 });
 test('running and paused scheduled flows skip subsequent slots; completion permits a future run', async t => {
@@ -77,10 +80,41 @@ test('editing, disabling or deleting a claimed job cancels its launch and rolls 
         };
         f.advance(60); const tick = f.service.scheduler.tick(); await waiting;
         if (operation === 'delete') await f.service.deleteSchedule(job.id);
-        else await f.service.saveSchedule({ revision: job.revision, ...(operation === 'disable' ? { enabled: false } : { name: 'Edited before launch' }) }, 'admin', job.id);
+        else await f.service.saveSchedule({ revision: job.revision, ...(operation === 'disable' ? { enabled: false } : { objective: 'Edited before launch' }) }, 'admin', job.id);
         release(); await tick;
         assert.equal(f.started.length, 0, operation); assert.equal((await f.service.store.list()).length, 0, operation);
+        assert.equal((await fs.readdir(f.root)).filter(name => name.startsWith('cron-')).length, 0, operation);
     }
+});
+
+test('scheduled and manual cron runs share workflow-runs with distinct per-attempt folders', async t => {
+    const f = await fixture(t), job = await f.create({ folder: '' });
+    assert.equal(job.folder, path.join(f.root, 'workflow-runs'));
+    assert.equal(job.folderLabel, 'workflow-runs');
+    const manual = (await f.service.runScheduleNow(job.id, job.revision, 'runner')).flow;
+    assert.equal(manual.folder, path.join(job.folder, 'cron-2026-10-09_07-00-00-000Z'));
+    assert.equal(f.started[0].cwd, manual.folder);
+    await fs.writeFile(path.join(manual.folder, 'report.md'), 'First run');
+    await f.service.store.update(manual.id, flow => { flow.status = 'completed'; });
+    f.advance(60); await f.service.scheduler.tick();
+    const current = (await f.service.listSchedules())[0], scheduled = await f.service.store.get(current.lastFlowId);
+    assert.equal(scheduled.folder, path.join(job.folder, 'cron-2026-10-09_08-00-00-000Z'));
+    assert.equal(f.started[1].cwd, scheduled.folder);
+    assert.equal(await fs.readFile(path.join(manual.folder, 'report.md'), 'utf8'), 'First run');
+    assert.equal(current.folder, job.folder);
+});
+
+test('legacy default jobs use workflow-runs for future attempts without migrating history or read-time records', async t => {
+    const f = await fixture(t), job = await f.create(), legacy = path.join(f.root, 'cron-jobs-results');
+    await fs.mkdir(legacy); await fs.writeFile(path.join(legacy, 'old.md'), 'Keep old results');
+    const stored = { ...f.service.schedules.getSync(job.id), folder: legacy };
+    f.service.schedules.saveSync(stored);
+    const presented = (await f.service.listSchedules())[0];
+    assert.equal(presented.folder, path.join(f.root, 'workflow-runs')); assert.equal(presented.folderLabel, 'workflow-runs');
+    assert.deepEqual(f.service.schedules.getSync(job.id), stored);
+    const flow = (await f.service.runScheduleNow(job.id, job.revision, 'runner')).flow;
+    assert.equal(path.dirname(flow.folder), path.join(f.root, 'workflow-runs'));
+    assert.equal(await fs.readFile(path.join(legacy, 'old.md'), 'utf8'), 'Keep old results');
 });
 test('schedule references prevent workflow deletion and each future run uses the latest workflow definition', async t => {
     const f = await fixture(t), job = await f.create();
@@ -92,7 +126,7 @@ test('schedule references prevent workflow deletion and each future run uses the
 });
 test('invalid input, unavailable workflows and mode mismatches do not create jobs', async t => {
     const f = await fixture(t);
-    for (const extra of [{ name: '' }, { objective: null }, { folder: '/outside' }, { workflowTypeId: 'missing' }, { enabled: 'yes' }, { executionType: 'browser' }, { timing: { kind: 'daily', times: ['27:00'], timeZone: 'UTC' } }]) await assert.rejects(f.create(extra));
+    for (const extra of [{ objective: null }, { folder: '/outside' }, { workflowTypeId: 'missing' }, { enabled: 'yes' }, { executionType: 'browser' }, { timing: { kind: 'daily', times: ['27:00'], timeZone: 'UTC' } }]) await assert.rejects(f.create(extra));
     await assert.rejects(f.create({ workflowTypeId: 'default' }), /Execution mode/);
     const job = await f.create({ workflowTypeId: 'default', executionType: 'browser' }); assert.equal(job.executionType, 'browser');
     const changed = await f.service.saveSchedule({ revision: job.revision, workflowTypeId: 'scheduled' }, 'admin', job.id); assert.equal(changed.executionType, undefined);
@@ -100,15 +134,32 @@ test('invalid input, unavailable workflows and mode mismatches do not create job
 test('Cron jobs inherit the current workflow objective while explicit legacy overrides stay unchanged', async t => {
     const f = await fixture(t);
     const inherited = await f.create({ objective: '' }); assert.equal(inherited.objective, '');
+    assert.equal(inherited.effectiveObjective, (await f.service.registry.get('scheduled')).defaultObjective);
     const explicit = await f.create({ name: 'Explicit job', objective: 'Keep this request' });
     const previous = await f.service.registry.get('scheduled');
     await f.service.updateWorkflow('scheduled', { ...previous, defaultObjective: 'Produce the revised daily report' });
     f.advance(60); await f.service.scheduler.tick();
     const jobs = await f.service.listSchedules();
+    assert.equal(jobs.find(job => job.id === inherited.id).effectiveObjective, 'Produce the revised daily report');
+    assert.equal(jobs.find(job => job.id === explicit.id).effectiveObjective, 'Keep this request');
     assert.equal((await f.service.store.get(jobs.find(job => job.id === inherited.id).lastFlowId)).objective, 'Produce the revised daily report');
     assert.equal((await f.service.store.get(jobs.find(job => job.id === explicit.id).lastFlowId)).objective, 'Keep this request');
     await assert.rejects(f.create({ workflowTypeId: 'default', executionType: 'terminal', objective: '' }), /explicit objective/);
     await assert.rejects(f.create({ workflowTypeId: 'code-development', objective: '' }), /explicit objective/);
+});
+test('names are unnecessary and legacy named jobs keep their identity, schedule and history', async t => {
+    const f = await fixture(t), job = await f.create();
+    assert.equal(Object.hasOwn(job, 'name'), false);
+    assert.equal(Object.hasOwn(f.service.schedules.getSync(job.id), 'name'), false);
+    const record = f.service.schedules.getSync(job.id); record.name = 'Legacy display name'; record.lastFlowId = 'historical-flow';
+    f.service.schedules.saveSync(record);
+    const listed = (await f.service.listSchedules())[0];
+    assert.equal(Object.hasOwn(listed, 'name'), false); assert.equal(listed.lastFlowId, 'historical-flow');
+    assert.equal(f.service.schedules.getSync(job.id).name, 'Legacy display name');
+    const edited = await f.service.saveSchedule({ revision: job.revision, name: 'Ignored legacy input' }, 'admin', job.id);
+    assert.equal(edited.id, job.id); assert.equal(edited.nextRunAt, job.nextRunAt); assert.deepEqual(edited.timing, job.timing);
+    assert.equal(edited.lastFlowId, 'historical-flow'); assert.equal(edited.objective, job.objective);
+    assert.equal(Object.hasOwn(f.service.schedules.getSync(job.id), 'name'), false);
 });
 test('daily scheduled jobs launch at the selected local time and disabling before that time prevents execution', async t => {
     const f = await fixture(t), job = await f.create({ timing: { kind: 'daily', times: ['12:00', '18:00'], timeZone: 'Europe/Bucharest' } });

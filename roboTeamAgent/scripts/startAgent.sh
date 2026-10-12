@@ -4,6 +4,10 @@ set -eu
 # Re-establish disposable storage after a container restart, before Podman use.
 roboteam-podman-init
 
+# Required source mounts must be usable before either readiness surface opens.
+required_skills_check="${ROBOTEAM_REQUIRED_SKILLS_CHECK:-/code/scripts/check-required-skills.mjs}"
+node "$required_skills_check"
+
 # Fresh per launch, shared only by AgentServer callbacks and the HTTP service.
 ROBOTEAM_INTERNAL_TOKEN=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')
 export ROBOTEAM_INTERNAL_TOKEN

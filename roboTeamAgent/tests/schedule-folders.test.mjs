@@ -16,17 +16,19 @@ test('browsing is read-only and lists only visible ordinary directories', async 
     await fs.writeFile(path.join(root, 'file.txt'), 'untouched'); await fs.symlink('Reports', path.join(root, 'link'));
     const listing = await folders.list();
     assert.deepEqual(listing.folders, [{ name: 'Reports', path: 'Reports' }]);
-    assert.equal(listing.defaultFolder, path.join(root, 'cron-jobs-results'));
+    assert.equal(listing.defaultFolder, path.join(root, 'workflow-runs'));
     await assert.rejects(fs.stat(listing.defaultFolder), { code: 'ENOENT' });
     assert.equal((await folders.list('Reports')).path, 'Reports');
 });
 test('default folder is created on demand and reused without deleting its contents', async t => {
     const { root, folders } = await fixture(t), destination = await folders.defaultFolder();
-    assert.equal(destination, path.join(root, 'cron-jobs-results'));
+    assert.equal(destination, path.join(root, 'workflow-runs'));
     await fs.writeFile(path.join(destination, 'result.txt'), 'keep');
     assert.equal(await folders.defaultFolder(), destination);
     assert.equal(await fs.readFile(path.join(destination, 'result.txt'), 'utf8'), 'keep');
-    assert.equal(folders.label(destination, root), 'Workspace / cron-jobs-results');
+    assert.equal(folders.label(destination, root), 'workflow-runs');
+    assert.equal(folders.label(root, root), '/');
+    assert.equal(folders.label(path.join(root, 'Reports', 'October'), root), 'Reports/October');
 });
 test('new folders support spaces and Unicode, preserve existing names and remain confined', async t => {
     const { root, folders } = await fixture(t);
@@ -44,7 +46,7 @@ test('symlinks, files and destinations outside the workspace cannot be selected'
     for (const key of ['link', 'outside', 'file']) await assert.rejects(folders.list(key), { statusCode: 400 });
     await assert.rejects(folders.list(os.tmpdir()), { statusCode: 400 });
     await assert.rejects(folders.list('missing'), { statusCode: 404 });
-    await fs.symlink('Reports', path.join(root, 'cron-jobs-results'));
+    await fs.symlink('Reports', path.join(root, 'workflow-runs'));
     await assert.rejects(folders.defaultFolder(), { statusCode: 400 });
     await assert.rejects(folders.create({ parent: 'outside', name: 'Never-created' }), { statusCode: 400 });
 });

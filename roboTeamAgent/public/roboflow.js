@@ -1,8 +1,13 @@
 import { drawBoard } from './workflow-board.js';
 import { renderLog } from './log-render.js';
 import { initPageNavigation } from './page-navigation.js';
+import { initRobotMenu } from './robot-controls.js';
+import { createPhaseListItem, phasePauseControl } from './workflow-phase-list.js';
+import { renderExecutionState, initExecutionStateLegend } from './workflow-execution-state.js';
+import { observeWorkflow } from './workflow-live-updates.js';
 
 initPageNavigation({ fallbackUrl: new URL('?tab=workflow-types', document.baseURI).href });
+initExecutionStateLegend(document.querySelector('.phase-state-legend'));
 
 const element = (tag, text) => { const node = document.createElement(tag); node.textContent = text; return node; };
 const api = path => new URL(path, document.baseURI).toString();
@@ -10,14 +15,15 @@ const FLOW_TERMINAL = new Set(['completed', 'failed', 'paused', 'terminated']);
 
 async function get(path, text = false) {
     const response = await fetch(api(path), { credentials: 'include' });
-    if (!response.ok) throw new Error(`Request failed (${response.status})`);
+    if (!response.ok) throw Object.assign(new Error(`Request failed (${response.status})`), { statusCode: response.status });
     return text ? response.text() : response.json();
 }
 
 async function post(path) {
     const response = await fetch(api(path), { method: 'POST', credentials: 'include' });
-    if (!response.ok) throw new Error(`Request failed (${response.status})`);
-    return response.json();
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+    return payload;
 }
 
 async function postJson(path, body) {
@@ -37,8 +43,14 @@ let selected = params.get('flowId') || params.get('flow');
 let currentFlow = null;
 let selectedInstanceId = null;
 let selectedTaskId = null;
+let phaseSelectionExplicit = false;
 let stageView = 'empty';
 let logRequest = null;
+let liveUpdates = null;
+let flowRequest = null;
+let graphSignature = null;
+let flowControlPending = false;
+const phaseRows = new Map();
 
 function setMessage(text, error = false) {
     const message = document.querySelector('#message');
@@ -68,12 +80,13 @@ function instanceForTask(taskId) {
 }
 
 function renderHeader(flow) {
-    document.querySelector('#detail-title').textContent = flow.workflowName;
+    const title = document.querySelector('#detail-title');
+    title.textContent = flow.workflowName; title.title = flow.workflowName;
     const objective = document.querySelector('#flowObjective');
     if (objective.textContent !== (flow.objective || '')) objective.textContent = flow.objective || '';
     updateObjectiveToggle();
     const status = document.querySelector('#flowStatus');
-    status.textContent = flow.status;
+    renderExecutionState(status, flow.status);
     status.dataset.status = flow.status;
     document.querySelector('#flowDuration').textContent = duration(flow);
     const error = document.querySelector('#flowError');
@@ -82,99 +95,115 @@ function renderHeader(flow) {
     const control = document.querySelector('#pauseFlowButton');
     const paused = flow.status === 'paused';
     control.textContent = paused ? 'Resume workflow' : 'Pause workflow';
-    control.classList.toggle('danger', !paused);
-    control.classList.toggle('primary', paused);
-    control.disabled = ['completed', 'failed', 'terminated'].includes(flow.status);
-    control.hidden = flow.status === 'terminated';
+    control.disabled = flowControlPending || ['completed', 'failed', 'terminated'].includes(flow.status)
+        || (paused && flow.humanInput?.status === 'pending');
+    control.title = paused && flow.humanInput?.status === 'pending' ? 'Answer the pending question in Observability before resuming' : '';
+    control.hidden = ['completed', 'failed', 'terminated'].includes(flow.status);
     document.querySelector('#terminateFlowButton').hidden = ['completed', 'terminated'].includes(flow.status);
+    document.querySelector('#flowActionsMenu').hidden = ['completed', 'terminated'].includes(flow.status);
     let parentLink = document.querySelector('#parentFlowLink');
     if (!parentLink && flow.parentFlowId) {
         parentLink = element('a', 'Parent workflow'); parentLink.id = 'parentFlowLink';
-        control.parentElement.prepend(parentLink);
+        parentLink.className = 'flow-parent-link';
+        document.querySelector('.flow-heading').append(parentLink);
     }
-    if (parentLink) parentLink.href = api(`flows?flowId=${encodeURIComponent(flow.parentFlowId)}`);
+    if (parentLink) { parentLink.hidden = !flow.parentFlowId; parentLink.href = api(`flows?flowId=${encodeURIComponent(flow.parentFlowId)}`); }
 }
 
 function phaseItem(task, instance) {
-    const item = document.createElement('li');
-    const card = document.createElement('div');
-    card.className = 'phase-card';
-    card.dataset.state = instance.state;
-    if (instance.id === selectedInstanceId) card.classList.add('is-selected');
-    card.tabIndex = 0;
-    card.onclick = () => selectPhase(instance.id);
-    card.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectPhase(instance.id); } };
-    const head = document.createElement('div');
-    head.className = 'phase-card-head';
-    head.append(element('strong', `${instance.sequence + 1}. ${task.name}`));
-    head.append(element('span', duration(instance)));
-    const meta = element('span', task.kind === 'run-workflows' ? `Sequential workflows · ${instance.state}`
-        : `${instance.robotName || 'Awaiting robot'} · ${instance.executionType || ''} · ${instance.state}`);
-    meta.className = 'phase-card-meta';
-    card.append(head, meta);
-    if (!terminalStatus(instance.state)) {
-        const pause = element('button', 'Pause');
-        pause.type = 'button';
-        pause.className = 'button danger phase-pause';
-        pause.onclick = event => { event.stopPropagation(); void pausePhase(instance.id); };
-        card.append(pause);
-    }
-    item.append(card);
-    return item;
+    return createPhaseListItem({ task, graph: currentFlow.graph, instance, selected: instance.id === selectedInstanceId,
+        repeated: currentFlow.instances.filter(candidate => candidate.taskId === task.id).length > 1,
+        elapsed: duration(instance), flow: currentFlow, controlsPending: flowControlPending,
+        onSelect: () => { selectPhase(instance.id); scrollToPhaseLogs(); }, onPause: () => void pausePhase(instance.id), onResume: () => void resumePhase(instance.id) });
 }
 
 function pendingItem(task) {
-    const item = document.createElement('li');
-    const card = document.createElement('div');
-    card.className = 'phase-card is-pending';
-    card.dataset.state = 'pending';
-    if (task.id === selectedTaskId) card.classList.add('is-selected');
-    card.tabIndex = 0;
-    card.onclick = () => selectPending(task.id);
-    card.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectPending(task.id); } };
-    const head = document.createElement('div');
-    head.className = 'phase-card-head';
-    head.append(element('strong', task.name));
-    const meta = element('span', `${task.executionType || ''} · not started`);
-    meta.className = 'phase-card-meta';
-    card.append(head, meta);
-    item.append(card);
-    return item;
+    return createPhaseListItem({ task, graph: currentFlow.graph, selected: task.id === selectedTaskId,
+        onSelect: () => { selectPending(task.id); scrollToPhaseLogs(); } });
 }
 
 function renderPhases(flow) {
     document.querySelector('#phaseCount').textContent = flow.graph.tasks.length;
     const list = document.querySelector('#phaseList');
-    list.replaceChildren();
+    const focused = list.contains(document.activeElement) ? document.activeElement.dataset.phaseKey : null;
+    const focusedTask = focused ? document.activeElement.dataset.taskId : null;
+    const entries = [];
     for (const task of flow.graph.tasks) {
         const instances = flow.instances.filter(instance => instance.taskId === task.id);
-        if (!instances.length) {
-            list.append(pendingItem(task));
-            continue;
+        for (const instance of instances.length ? instances : [null]) {
+            const key = instance ? `instance:${instance.id}` : `task:${task.id}`;
+            const signature = JSON.stringify([task, flow.graph.entryTaskId, flow.graph.edges, instance?.state,
+                instance?.robotName, instance?.executionType, instance?.sequence, instances.length > 1,
+                flow.status, flow.humanInput?.status === 'pending', flowControlPending,
+                instance ? instance.id === selectedInstanceId : task.id === selectedTaskId]);
+            let row = phaseRows.get(key);
+            if (row?.signature !== signature) {
+                row = { signature, instanceId: instance?.id, node: instance ? phaseItem(task, instance) : pendingItem(task) };
+                phaseRows.set(key, row);
+            }
+            entries.push({ key, ...row });
         }
-        for (const instance of instances) list.append(phaseItem(task, instance));
     }
-    if (!flow.graph.tasks.length) list.append(element('li', 'No phases defined.'));
+    const retained = new Set(entries.map(entry => entry.key));
+    for (const [key, row] of phaseRows) if (!retained.has(key)) { row.node.remove(); phaseRows.delete(key); }
+    if (!entries.length) {
+        if (list.textContent !== 'No phases defined.') list.replaceChildren(element('li', 'No phases defined.'));
+    } else {
+        for (const child of [...list.children]) if (!entries.some(entry => entry.node === child)) child.remove();
+        entries.forEach((entry, index) => { if (list.children[index] !== entry.node) list.insertBefore(entry.node, list.children[index] || null); });
+    }
+    updateDurations();
+    if (focused) {
+        const target = [...list.querySelectorAll('[data-phase-key]')].find(control => control.dataset.phaseKey === focused)
+            || [...list.querySelectorAll('.phase-select')].find(control => control.dataset.taskId === focusedTask);
+        target?.focus({ preventScroll: true });
+    }
+}
+
+function updateDurations() {
+    if (!currentFlow) return;
+    document.querySelector('#flowDuration').textContent = duration(currentFlow);
+    for (const row of phaseRows.values()) {
+        const target = row.node.querySelector('.phase-card-duration');
+        const instance = currentFlow.instances.find(item => item.id === row.instanceId);
+        if (target && instance) {
+            const text = duration(instance);
+            if (target.textContent !== text) target.textContent = text;
+        }
+    }
+    const phaseDuration = document.querySelector('#stageBody .phase-view-duration');
+    const selectedPhase = currentFlow.instances.find(item => item.id === selectedInstanceId);
+    if (phaseDuration && selectedPhase) phaseDuration.textContent = duration(selectedPhase);
+}
+
+function renderGraph() {
+    const signature = JSON.stringify([currentFlow.graph, currentFlow.instances.map(instance => [instance.taskId, instance.state])]);
+    if (signature === graphSignature) return;
+    graphSignature = signature;
+    const states = Object.fromEntries(currentFlow.graph.tasks.map(task => [task.id, 'unvisited']));
+    for (const instance of currentFlow.instances) states[instance.taskId] = instance.state;
+    drawBoard(document.querySelector('#executionGraphBoard'), currentFlow.graph, { readOnly: true, states, onSelect: taskId => {
+        const instance = instanceForTask(taskId);
+        if (instance) selectPhase(instance.id);
+        else selectPending(taskId);
+        scrollToPanel(document.querySelector('.stage-pane'));
+    } });
+}
+
+function scrollToPanel(panel) {
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+    panel.focus({ preventScroll: true });
+    panel.scrollIntoView({ behavior, block: 'start', inline: 'nearest' });
+}
+
+function scrollToPhaseLogs() {
+    if (window.matchMedia('(max-width: 720px)').matches) scrollToPanel(document.querySelector('.stage-pane'));
 }
 
 function renderStage() {
     const body = document.querySelector('#stageBody');
     const title = document.querySelector('#stageTitle');
     body.replaceChildren();
-    if (stageView === 'graph') {
-        title.textContent = 'Workflow graph — click a task to open its log';
-        const board = document.createElement('div');
-        board.className = 'stage-board';
-        body.append(board);
-        const states = Object.fromEntries(currentFlow.graph.tasks.map(task => [task.id, 'unvisited']));
-        for (const instance of currentFlow.instances) states[instance.taskId] = instance.state;
-        drawBoard(board, currentFlow.graph, { readOnly: true, states, onSelect: taskId => {
-            const instance = instanceForTask(taskId);
-            if (instance) selectPhase(instance.id);
-            else selectPending(taskId);
-        } });
-        return;
-    }
     if (stageView === 'log') {
         const instance = currentFlow.instances.find(item => item.id === selectedInstanceId);
         title.textContent = 'Phase logs';
@@ -238,7 +267,7 @@ function renderStage() {
     }
     if (stageView === 'pending') {
         const task = currentFlow.graph.tasks.find(item => item.id === selectedTaskId);
-        title.textContent = 'Task details';
+        title.textContent = 'Phase logs';
         if (!task) {
             body.append(element('p', 'This task is no longer available.'));
             return;
@@ -261,7 +290,7 @@ function renderStage() {
         return;
     }
     title.textContent = 'Select a phase to view its log';
-    body.append(element('p', 'Pick a phase on the left, or open the graph to follow the running tasks.'));
+    body.append(element('p', 'Pick a phase from the list, or select a task in the execution graph below.'));
 }
 
 function renderSubflows(container, instance) {
@@ -277,7 +306,8 @@ function renderSubflows(container, instance) {
         const row = document.createElement('li');
         const link = element('a', child.workflowName || child.id);
         link.href = api(`flows?flowId=${encodeURIComponent(child.id)}`);
-        const status = element('span', child.status); status.className = `phase-view-status is-${phaseStatusClass(child.status)}`;
+        const status = element('span', ''); status.className = 'phase-view-status';
+        renderExecutionState(status, child.status);
         row.append(link, status, element('span', duration(child)));
         if (child.error) {
             const error = element('p', child.error); error.className = 'workflow-error';
@@ -286,14 +316,6 @@ function renderSubflows(container, instance) {
         list.append(row);
     }
     container.append(list);
-}
-
-function phaseStatusClass(state) {
-    if (['running', 'queued', 'starting'].includes(state)) return 'running';
-    if (state === 'completed') return 'finished';
-    if (state === 'failed') return 'error';
-    if (['paused', 'terminated'].includes(state)) return 'paused';
-    return 'ongoing';
 }
 
 function phaseTab(label, active, onClick) {
@@ -309,16 +331,21 @@ function renderPhaseHeader(header, instance) {
     header.replaceChildren();
     const name = element('strong', task?.name || instance.taskId);
     name.className = 'phase-view-name';
-    const status = element('span', instance.state);
-    status.className = `phase-view-status is-${phaseStatusClass(instance.state)}`;
+    const status = element('span', '');
+    status.className = 'phase-view-status';
+    renderExecutionState(status, instance.state);
     const time = element('span', duration(instance));
     time.className = 'phase-view-duration';
     header.append(name, status, time);
-    if (instance.id && !terminalStatus(instance.state)) {
-        const pause = element('button', 'Pause');
+    const control = phasePauseControl(instance, currentFlow);
+    if (control) {
+        const pause = element('button', control.label);
         pause.type = 'button';
-        pause.className = 'button danger phase-pause';
-        pause.onclick = () => void pausePhase(instance.id);
+        pause.className = 'button secondary phase-pause';
+        pause.title = control.title;
+        pause.disabled = flowControlPending || control.disabled;
+        pause.setAttribute('aria-label', `${control.label} workflow · ${task?.name || instance.taskId}`);
+        pause.onclick = () => void (control.action === 'resume' ? resumePhase(instance.id) : pausePhase(instance.id));
         header.append(pause);
     }
 }
@@ -445,92 +472,153 @@ function renderPhaseComposer(container, instance) {
 }
 
 
-async function loadLog(instance) {
+function invocationLogKey(instance) {
+    return JSON.stringify([selected, instance.id, instance.runtimeTaskId]);
+}
+
+async function loadLog(instance, { force = false } = {}) {
+    if (document.hidden) return;
     if (!selected || !instance) return;
     const container = document.querySelector('#stageBody .phase-log');
     if (!container) return;
-    const key = JSON.stringify([selected, instance.id, instance.runtimeTaskId, instance.state, instance.endedAt]);
+    const key = invocationLogKey(instance);
     if (logRequest?.key !== key) logRequest = { key, pending: false, attempted: false, failures: 0, nextAt: 0 };
     const request = logRequest;
-    if (request.pending) return;
-    if (terminalStatus(instance.state) && request.attempted) {
-        if (request.container !== container) {
+    if (request.pending) { if (force) request.dirty = true; return; }
+    if (!force && terminalStatus(instance.state) && request.attempted) {
+        if (request.container !== container || request.finalResponse !== instance.finalResponse) {
             renderLog(container, request.error || request.log || '', request.error ? '' : instance.finalResponse);
             request.container = container;
+            request.finalResponse = instance.finalResponse;
         }
         return;
     }
-    if (Date.now() < request.nextAt) return;
+    if (!force && Date.now() < request.nextAt) return;
     request.pending = true;
     request.attempted = true;
     try {
         const log = await get(`api/roboflow/flows/${encodeURIComponent(selected)}/logs/${encodeURIComponent(instance.id)}`, true);
-        const changed = request.log !== log || request.error || request.container !== container;
+        const latest = currentFlow?.instances.find(item => item.id === instance.id);
+        const finalResponse = latest ? latest.finalResponse : instance.finalResponse;
+        const changed = request.log !== log || request.error || request.container !== container || request.finalResponse !== finalResponse;
         request.log = log; request.error = ''; request.failures = 0; request.nextAt = Date.now() + 1000;
         if (logRequest !== request || selectedInstanceId !== instance.id || !container.isConnected) return;
-        if (changed) renderLog(container, log, instance.finalResponse);
+        if (changed) renderLog(container, log, finalResponse);
         request.container = container;
+        request.finalResponse = finalResponse;
     } catch (error) {
         request.error = error.message;
+        if ([401, 403, 404].includes(error.statusCode)) observationError(error);
         request.nextAt = Date.now() + Math.min(30000, 1000 * 2 ** Math.min(++request.failures, 5));
         if (logRequest !== request || selectedInstanceId !== instance.id || !container.isConnected) return;
         renderLog(container, error.message, '');
         request.container = container;
     } finally {
         request.pending = false;
+        if (request.dirty && logRequest === request) {
+            request.dirty = false;
+            const latest = currentFlow?.instances.find(item => item.id === selectedInstanceId);
+            if (latest) void loadLog(latest, { force: true });
+        }
     }
 }
 
-function selectPhase(instanceId) {
+function selectDefaultPhase() {
+    if (phaseSelectionExplicit) return;
+    const running = [...currentFlow.instances].reverse().find(instance => instance.state === 'running');
+    const taskId = running?.taskId || currentFlow.graph.entryTaskId;
+    const instance = running || instanceForTask(taskId);
+    if (instance) {
+        if (stageView !== 'log' || selectedInstanceId !== instance.id) selectPhase(instance.id, { explicit: false });
+    } else if (stageView !== 'pending' || selectedTaskId !== taskId) {
+        selectPending(taskId, { explicit: false });
+    }
+}
+
+function selectPhase(instanceId, { explicit = true } = {}) {
     const instance = currentFlow?.instances.find(item => item.id === instanceId);
     if (!instance) return;
+    if (explicit) phaseSelectionExplicit = true;
     selectedInstanceId = instanceId;
     selectedTaskId = instance.taskId;
     stageView = 'log';
     renderPhases(currentFlow);
     renderStage();
+    liveUpdates?.reconnect();
 }
 
-function selectPending(taskId) {
+function selectPending(taskId, { explicit = true } = {}) {
     if (!currentFlow?.graph.tasks.some(task => task.id === taskId)) return;
+    if (explicit) phaseSelectionExplicit = true;
     selectedInstanceId = null;
     selectedTaskId = taskId;
     stageView = 'pending';
     renderPhases(currentFlow);
     renderStage();
+    liveUpdates?.reconnect();
 }
 
 function showGraph() {
-    stageView = 'graph';
-    selectedInstanceId = null;
-    selectedTaskId = null;
-    renderPhases(currentFlow);
-    renderStage();
+    scrollToPanel(document.querySelector('#executionGraph'));
 }
 
 async function toggleFlowPause() {
     if (!selected) return;
     const action = currentFlow?.status === 'paused' ? 'resume' : 'pause';
-    const button = document.querySelector('#pauseFlowButton'); button.disabled = true;
-    try { await post(`api/roboflow/flows/${encodeURIComponent(selected)}/${action}`); await refresh(); }
-    catch (error) { setMessage(error.message, true); }
-    finally { if (currentFlow) renderHeader(currentFlow); }
+    if (action === 'resume' && currentFlow?.humanInput?.status === 'pending') return;
+    await changeFlowControl(`api/roboflow/flows/${encodeURIComponent(selected)}/${action}`);
 }
 
 async function pausePhase(instanceId) {
     if (!selected) return;
-    try { await post(`api/roboflow/flows/${encodeURIComponent(selected)}/instances/${encodeURIComponent(instanceId)}/pause`); await refresh(); }
+    const control = phasePauseControl(currentFlow?.instances.find(instance => instance.id === instanceId), currentFlow);
+    if (!control || control.action !== 'pause' || control.disabled) return;
+    await changeFlowControl(`api/roboflow/flows/${encodeURIComponent(selected)}/instances/${encodeURIComponent(instanceId)}/pause`);
+}
+
+async function resumePhase(instanceId) {
+    if (!selected) return;
+    const control = phasePauseControl(currentFlow?.instances.find(instance => instance.id === instanceId), currentFlow);
+    if (!control || control.action !== 'resume' || control.disabled) return;
+    await changeFlowControl(`api/roboflow/flows/${encodeURIComponent(selected)}/resume`);
+}
+
+function renderFlowControls() {
+    if (!currentFlow) return;
+    renderHeader(currentFlow);
+    renderPhases(currentFlow);
+    const instance = currentFlow.instances.find(item => item.id === selectedInstanceId);
+    const header = document.querySelector('#stageBody .phase-view-header');
+    if (instance && header) renderPhaseHeader(header, instance);
+}
+
+async function changeFlowControl(path) {
+    if (flowControlPending) return;
+    flowControlPending = true;
+    renderFlowControls();
+    try { await post(path); await refresh(); }
     catch (error) { setMessage(error.message, true); }
+    finally { flowControlPending = false; renderFlowControls(); }
 }
 
 async function refresh() {
     if (!selected) return;
-    const { flow } = await get(`api/roboflow/flows/${encodeURIComponent(selected)}?logs=none`);
+    if (flowRequest) return flowRequest;
+    flowRequest = (async () => {
+        const { flow } = await get(`api/roboflow/flows/${encodeURIComponent(selected)}?logs=none`);
+        applyFlow(flow);
+    })();
+    try { await flowRequest; } finally { flowRequest = null; }
+}
+
+function applyFlow(flow) {
+    if (flow.id !== selected || (currentFlow && (flow.revision || 0) < (currentFlow.revision || 0))) return;
     currentFlow = flow;
     renderHeader(flow);
     renderPhases(flow);
-    if (stageView === 'graph') renderStage();
-    else if (stageView === 'log') {
+    renderGraph();
+    selectDefaultPhase();
+    if (stageView === 'log') {
         const instance = flow.instances.find(item => item.id === selectedInstanceId);
         const header = document.querySelector('#stageBody .phase-view-header');
         const detail = document.querySelector('#stageBody .phase-view-detail');
@@ -540,9 +628,10 @@ async function refresh() {
         if (instance && children) renderSubflows(children, instance);
         if (instance && detail) renderPhaseDetail(detail, instance);
         if (instance && composer && composer.dataset.mode !== composerMode(instance)) renderPhaseComposer(composer, instance);
+        if (instance && (logRequest?.key !== invocationLogKey(instance) || logRequest?.finalResponse !== instance.finalResponse)) void loadLog(instance);
     } else if (stageView === 'pending') {
         const instance = [...flow.instances].reverse().find(item => item.taskId === selectedTaskId);
-        if (instance) selectPhase(instance.id);
+        if (instance) selectPhase(instance.id, { explicit: false });
     }
 }
 
@@ -550,7 +639,22 @@ async function pollLog() {
     if (stageView !== 'log' || !selectedInstanceId || !currentFlow) return;
     const instance = currentFlow.instances.find(item => item.id === selectedInstanceId);
     if (!instance) return;
-    await loadLog(instance);
+    await loadLog(instance, { force: true });
+}
+
+function appendLiveLog(event) {
+    if (stageView !== 'log' || event.instanceId !== selectedInstanceId) return;
+    const instance = currentFlow?.instances.find(item => item.id === selectedInstanceId);
+    if (!instance) return;
+    const request = logRequest;
+    const key = invocationLogKey(instance);
+    const bytes = typeof request?.log === 'string' ? new TextEncoder().encode(request.log).length : -1;
+    if (request?.key === key && !request.pending && !request.error && bytes >= event.end) return;
+    if (request?.key === key && !request.pending && !request.error && bytes === event.start) {
+        request.log += event.chunk;
+        const container = document.querySelector('#stageBody .phase-log');
+        if (container) { renderLog(container, request.log, instance.finalResponse); request.container = container; request.finalResponse = instance.finalResponse; }
+    } else void loadLog(instance, { force: true });
 }
 
 async function render() {
@@ -565,8 +669,9 @@ async function render() {
         stageView = 'empty';
         selectedInstanceId = null;
         selectedTaskId = null;
+        phaseSelectionExplicit = false;
         await refresh();
-        renderStage();
+        if (stageView === 'empty') renderStage();
     } catch (error) {
         setMessage(error.message, true);
     }
@@ -621,7 +726,28 @@ confirmTerminateButton.onclick = async () => {
     }
 };
 document.querySelector('#pauseFlowButton').onclick = () => void toggleFlowPause();
+const flowMenu = document.querySelector('#flowActionsMenu');
+const closeFlowMenu = () => {
+    flowMenu.querySelector('[data-robot-menu-options]').hidden = true;
+    flowMenu.querySelector('[data-robot-menu-toggle]').setAttribute('aria-expanded', 'false');
+};
+initRobotMenu({ menu: flowMenu, id: 'flow-menu-options', label: 'More workflow actions', closeMenus: closeFlowMenu });
+document.addEventListener('click', event => { if (!flowMenu.contains(event.target)) closeFlowMenu(); });
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && flowMenu.querySelector('[data-robot-menu-toggle]').getAttribute('aria-expanded') === 'true') {
+        closeFlowMenu(); flowMenu.querySelector('[data-robot-menu-toggle]').focus();
+    }
+});
 
 await render();
-setInterval(() => { if (!document.hidden && selected) void refresh().catch(() => {}); }, 2000);
-setInterval(() => { if (!document.hidden) void pollLog(); }, 1000);
+function observationError(error) {
+    setMessage(error.message, true);
+    if ([401, 403, 404].includes(error.statusCode)) liveUpdates?.dispose();
+}
+liveUpdates = observeWorkflow({
+    url: () => api(`api/roboflow/flows/${encodeURIComponent(selected)}/events${stageView === 'log' && selectedInstanceId ? `?instanceId=${encodeURIComponent(selectedInstanceId)}` : ''}`),
+    onFlow: flow => { applyFlow(flow); if (document.querySelector('#message').textContent === 'Live updates interrupted; reconnecting.') setMessage(''); },
+    onLog: appendLiveLog, onResync: pollLog, onError: observationError,
+    fallback: async () => { await refresh(); await pollLog(); },
+});
+setInterval(() => { if (!document.hidden) updateDurations(); }, 1000);

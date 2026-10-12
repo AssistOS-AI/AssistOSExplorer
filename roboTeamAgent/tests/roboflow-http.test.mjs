@@ -44,20 +44,20 @@ test('schedule folder HTTP picker is administrator-only, read-only on browse and
 });
 test('saving a job without a folder creates the workspace default and keeps it on later edits', async t => {
     const f = await fixture(t);
-    const input = { name: 'Default results', workflowTypeId: 'default', objective: 'Write a report', executionType: 'terminal', timing: { kind: 'interval', everyMinutes: 60 } };
+    const input = { workflowTypeId: 'default', objective: 'Write a report', executionType: 'terminal', timing: { kind: 'interval', everyMinutes: 60 } };
     assert.equal((await f.request('/api/roboflow/schedules', 'admin', { ...input, workflowTypeId: 'missing' })).status, 400);
-    await assert.rejects(fs.stat(path.join(f.root, 'cron-jobs-results')), { code: 'ENOENT' });
+    await assert.rejects(fs.stat(path.join(f.root, 'workflow-runs')), { code: 'ENOENT' });
     const response = await f.request('/api/roboflow/schedules', 'admin', input); assert.equal(response.status, 201);
     const { schedule } = await response.json();
-    assert.equal(schedule.folder, await fs.realpath(path.join(f.root, 'cron-jobs-results')));
-    assert.equal(schedule.folderLabel, 'Workspace / cron-jobs-results');
+    assert.equal(schedule.folder, await fs.realpath(path.join(f.root, 'workflow-runs')));
+    assert.equal(schedule.folderLabel, 'workflow-runs');
     // The fixture runtime normally maps every input to root; use its real path contract here.
     f.roboflow.runtimeManager.resolveCwd = folder => fs.realpath(folder);
-    const edited = await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: schedule.revision, name: 'Renamed' }, 'PUT');
+    const edited = await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: schedule.revision, objective: 'Write the revised report' }, 'PUT');
     assert.equal((await edited.json()).schedule.folder, schedule.folder);
     await f.request('/api/roboflow/schedule-folders', 'admin', { name: 'Reports' });
     const selected = await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: 2, folder: path.join(f.root, 'Reports') }, 'PUT');
-    assert.equal((await selected.json()).schedule.folderLabel, 'Workspace / Reports');
+    assert.equal((await selected.json()).schedule.folderLabel, 'Reports');
     const reset = await f.request(`/api/roboflow/schedules/${schedule.id}`, 'admin', { revision: 3, folder: '' }, 'PUT');
     assert.equal((await reset.json()).schedule.folder, schedule.folder);
 });
@@ -83,13 +83,30 @@ test('HTTP workflows and Cron jobs inherit saved objectives while generic workfl
     assert.equal((await f.request('/api/roboflow/workflows', 'admin', definition)).status, 201);
     const response = await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example' }); assert.equal(response.status, 201);
     assert.equal((await response.json()).flow.objective, definition.defaultObjective);
-    const input = { name: 'Inherited objective', workflowTypeId: 'example', timing: { kind: 'interval', everyMinutes: 60 } };
+    const input = { workflowTypeId: 'example', timing: { kind: 'interval', everyMinutes: 60 } };
     const created = await f.request('/api/roboflow/schedules', 'admin', input); assert.equal(created.status, 201);
     const job = (await created.json()).schedule; assert.equal(job.objective, '');
+    assert.equal(job.effectiveObjective, definition.defaultObjective); assert.equal(Object.hasOwn(job, 'name'), false);
     assert.equal((await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'default', executionType: 'terminal' })).status, 400);
     assert.equal((await f.request('/api/roboflow/schedules', 'admin', { ...input, workflowTypeId: 'code-development' })).status, 400);
     const tools = JSON.parse(await fs.readFile(new URL('../mcp-config.json', import.meta.url), 'utf8'));
     assert.ok(JSON.stringify(tools).includes('"objective":{"type":"string","minLength":1,"maxLength":32768,"optional":true}'));
+});
+test('direct HTTP launch defaults to a dated run folder without creating or changing schedules', async t => {
+    const f = await fixture(t);
+    await f.request('/api/roboflow/workflows', 'admin', { ...graph, defaultObjective: 'Write a verified report' });
+    const response = await f.request('/api/roboflow/flows', 'admin', { workflowTypeId: 'example' });
+    assert.equal(response.status, 201);
+    const { flow } = await response.json();
+    assert.equal(path.dirname(flow.folder), path.join(f.root, 'workflow-runs'));
+    assert.match(path.basename(flow.folder), /^run-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{3}Z(?:-[a-f0-9]{8})?$/);
+    assert.equal(flow.objective, 'Write a verified report'); assert.equal(flow.createdBy, 'actor');
+    assert.equal(flow.scheduleId, undefined); assert.equal(flow.scheduledAt, undefined);
+    assert.equal(f.started[0].request.cwd, flow.folder);
+    assert.equal((await f.roboflow.listSchedules()).length, 0);
+    await assert.rejects(fs.stat(path.join(f.root, 'cron-jobs-results')), { code: 'ENOENT' });
+    const explicit = await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example', folder: f.root });
+    assert.equal((await explicit.json()).flow.folder, f.root);
 });
 test('scheduled HTTP runs use ordinary RoboFlow launch, history and actor identity', async t => {
     const f = await fixture(t);
@@ -161,6 +178,54 @@ test('HTTP runs return task instances and project logs; retired execution contro
     assert.equal(await (await f.request(`/api/roboflow/flows/${flow.id}/logs/${flow.instances[0].id}`)).text(), 'Task progress');
     assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/launch`, 'user', { member: 'one' })).status, 404);
     assert.equal((await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'default', objective: 'Work' })).status, 400);
+});
+
+test('workflow SSE authenticates, scopes logs, sends post-commit updates and cleans up on disconnect', async t => {
+    const f = await fixture(t);
+    await f.roboflow.createWorkflow(graph);
+    const flow = await f.roboflow.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    const other = await f.roboflow.startFlow({ workflowTypeId: 'example', objective: 'Other' });
+    const instance = flow.instances[0], route = `/api/roboflow/flows/${flow.id}/events`;
+    assert.equal((await fetch(f.base + route)).status, 401);
+    assert.equal((await f.request('/api/roboflow/flows/flow_000000000000000000000000/events', 'user')).status, 404);
+    assert.equal((await f.request(route + `?instanceId=${other.instances[0].id}`, 'user')).status, 404);
+    const controller = new AbortController();
+    let reader;
+    try {
+        const response = await fetch(f.base + route + `?instanceId=${instance.id}`, { headers: headers('user'), signal: controller.signal });
+        assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /text\/event-stream/);
+        reader = response.body.getReader(); let buffer = ''; const decoder = new TextDecoder();
+        async function next(name) {
+            const timeout = setTimeout(() => controller.abort(), 3000);
+            try {
+                while (true) {
+                    const boundary = buffer.indexOf('\n\n');
+                    if (boundary >= 0) {
+                        const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+                        if (frame.startsWith(`event: ${name}\n`)) return JSON.parse(frame.split('\ndata: ')[1]);
+                        continue;
+                    }
+                    const chunk = await reader.read(); if (chunk.done) throw new Error('Stream ended');
+                    buffer += decoder.decode(chunk.value, { stream: true });
+                }
+            } finally { clearTimeout(timeout); }
+        }
+        const snapshot = await next('snapshot'); assert.equal(snapshot.flow.id, flow.id);
+        assert.equal(f.roboflow.store.subscribers.size, 1);
+        await f.roboflow.store.update(flow.id, record => { record.instances[0].state = 'running'; });
+        const changed = await next('flow'); assert.equal(changed.flow.instances[0].state, 'running');
+        assert.ok(changed.flow.revision > snapshot.flow.revision);
+        await f.roboflow.store.writeOutput(other.id, other.instances[0].id, 'Other log');
+        await f.roboflow.store.writeOutput(flow.id, instance.id, 'știre ');
+        await f.roboflow.store.writeOutput(flow.id, instance.id, 'nouă');
+        const log = await next('log'); assert.equal(log.instanceId, instance.id); assert.equal(log.chunk, 'știre nouă');
+        assert.equal(log.start, 0); assert.equal(log.end, Buffer.byteLength(log.chunk));
+        assert.equal(await f.roboflow.getInvocationLog(flow.id, instance.id), log.chunk);
+    } finally {
+        controller.abort(); await reader?.cancel().catch(() => {});
+        for (let i = 0; i < 20 && f.roboflow.store.subscribers.size; i++) await new Promise(resolve => setTimeout(resolve, 10));
+        assert.equal(f.roboflow.store.subscribers.size, 0);
+    }
 });
 
 test('human-report HTTP view excludes routing fields while debug output retains the entire final response', async t => {

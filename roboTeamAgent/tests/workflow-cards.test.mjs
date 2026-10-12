@@ -4,13 +4,14 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
-const renderer = source.slice(source.indexOf('function renderWorkflows('), source.indexOf('async function loadWorkflows('));
+const renderer = source.slice(source.indexOf('async function runWorkflowNow('), source.indexOf('async function loadWorkflows('));
 
 function element(hidden = false) {
     return {
         hidden, disabled: false, textContent: '', attributes: {}, listeners: {}, dataset: {},
         setAttribute(name, value) { this.attributes[name] = value; },
         addEventListener(name, listener) { this.listeners[name] = listener; },
+        focus() { this.focused = true; },
     };
 }
 
@@ -18,11 +19,11 @@ function fixture() {
     const cards = [];
     const menus = [];
     const context = {
-        workflowCount: element(), workflowListMessage: element(), warningText: 'Matching robots are missing',
-        workflowsList: { replaceChildren() { cards.length = 0; }, append(card) { cards.push(card); } },
+        workflowCount: element(), workflowListMessage: element(), warningText: 'Matching robots are missing', launchingWorkflows: new Set(),
+        workflowsList: { get children() { return cards; }, replaceChildren() { cards.length = 0; }, append(card) { cards.push(card); } },
         workflowTemplate: { content: { firstElementChild: { cloneNode() {
             const nodes = new Map(['.avatar', 'h3', '.robot-id', '.workflow-kind', '.workflow-description',
-                '.workflow-counts', '.workflow-open', '.delete-workflow'].map(selector => [selector, element()]));
+                '.workflow-counts', '.workflow-open', '.manage-toggle', '.workflow-run-now', '.delete-workflow'].map(selector => [selector, element()]));
             nodes.set('.workflow-coverage-warning', element(true));
             nodes.set('.robot-manage', element(true));
             const classes = new Set();
@@ -31,7 +32,7 @@ function fixture() {
         document: { createElement: () => element() },
         initials: name => name[0], endpoint: value => `/rt/${value}`,
         closeOpenMenus() {}, initRobotMenu(options) { menus.push(options); },
-        navigation: { bindLink() {} },
+        navigation: { bindLink() {}, navigate() {} },
         confirm: () => false, api: async () => {}, loadWorkflows: async () => {},
     };
     vm.runInNewContext(`${renderer}\nthis.render = renderWorkflows;`, context);
@@ -59,6 +60,7 @@ test('workflow markup shares the robot card layout and has compact creation and 
     assert.match(template, /class="robot-identity"[\s\S]*class="workflow-kind"/);
     assert.match(template, /class="robot-meta"[\s\S]*class="workflow-counts"/);
     assert.match(template, /class="robot-manage" hidden[\s\S]*class="manage-options"[\s\S]*class="button danger delete-workflow"/);
+    assert.match(template, /class="manage-options"[\s\S]*class="button secondary workflow-run-now"[\s\S]*class="robot-danger-actions"/);
 });
 
 test('workflow card navigation has hover feedback without underlines or persistent mouse focus outlines', async () => {
@@ -68,6 +70,19 @@ test('workflow card navigation has hover feedback without underlines or persiste
     assert.match(css, /\.workflow-open:focus:not\(:focus-visible\), \.workflow-open\.pointer-restored-focus:focus \{ outline: none; \}/);
     assert.match(css, /\.workflow-card:hover \{[^}]*border-color: var\(--accent-muted\);[^}]*box-shadow: var\(--shadow-sm\)/);
     assert.match(css, /:where\(button, a, summary\):focus-visible \{ outline: 2px solid var\(--accent\)/);
+});
+
+test('dashboard descriptions stay plain text and card menus share the title-row alignment', async () => {
+    const [css, editorCss] = await Promise.all(['styles.css', 'workflow-editor.css']
+        .map(file => readFile(new URL(`../public/${file}`, import.meta.url), 'utf8')));
+    assert.match(editorCss, /^textarea\.workflow-description \{/m);
+    assert.doesNotMatch(editorCss, /^\.workflow-description(?=[ :{])/m);
+    assert.match(css, /\.robot-main \{[^}]*align-items: start;/);
+    assert.match(css, /\.robot-title-row \{[^}]*min-height: 36px;/);
+    assert.match(css, /\.workflow-card > \.robot-manage \{ position: absolute; top: 16px; right: 16px; \}/);
+    assert.match(css, /\.cron-card \.robot-main \{[^}]*padding-right: var\(--cron-actions-space\);/);
+    assert.match(css, /\.cron-card \.cron-actions \{ position: absolute; top: 16px; right: 16px; \}/);
+    assert.match(css, /\.workflow-card-manageable \.workflow-open \{ padding-right: 70px; \}/);
 });
 
 test('custom workflows expose Edit and grouped Delete while protected workflows stay view-only', () => {
@@ -92,6 +107,7 @@ test('custom workflows expose Edit and grouped Delete while protected workflows 
         assert.equal(card.classes.has('workflow-card-manageable'), false);
         assert.equal(card.querySelector('.robot-manage').hidden, true);
         assert.equal(card.querySelector('.delete-workflow').listeners.click, undefined);
+        assert.equal(card.querySelector('.workflow-run-now').listeners.click, undefined);
     }
 });
 
@@ -107,6 +123,7 @@ test('non-administrators cannot delete and coverage warnings and task counts rem
     assert.equal(card.querySelector('.workflow-coverage-warning').hidden, false);
     assert.equal(card.querySelector('.workflow-coverage-warning').attributes['aria-label'], context.warningText);
     assert.equal(card.querySelector('.robot-manage').hidden, true);
+    assert.equal(card.querySelector('.workflow-run-now').listeners.click, undefined);
     assert.equal(menus.length, 0);
 });
 
@@ -152,4 +169,50 @@ test('empty workflow catalogs use the shared empty state', () => {
     assert.equal(cards.length, 1);
     assert.equal(cards[0].className, 'empty-state');
     assert.match(cards[0].innerHTML, /No workflow types yet/);
+});
+
+test('Run now launches the saved workflow directly and navigates with return context', async () => {
+    const { context, cards } = fixture();
+    context.render([workflow()], true);
+    const button = cards[0].querySelector('.workflow-run-now'), remove = cards[0].querySelector('.delete-workflow');
+    let finish, requests = 0, destination;
+    context.api = async (url, options) => {
+        requests++;
+        assert.equal(url, 'api/roboflow/flows');
+        assert.equal(options.method, 'POST');
+        assert.deepEqual(JSON.parse(JSON.stringify(options.body)), { workflowTypeId: 'custom-flow' });
+        await new Promise(resolve => { finish = resolve; });
+        return { flow: { id: 'flow_123' } };
+    };
+    context.navigation.navigate = url => { destination = url; };
+    assert.equal(button.dataset.navigationKey, 'workflow-run:custom-flow');
+    assert.equal(cards[0].querySelector('.manage-toggle').dataset.navigationKey, 'workflow-menu:custom-flow');
+    assert.equal(button.attributes['aria-label'], 'Run workflow Research now');
+    const pending = button.listeners.click();
+    assert.equal(button.disabled, true); assert.equal(remove.disabled, true); assert.equal(button.textContent, 'Starting…');
+    assert.equal(cards[0].querySelector('.manage-toggle').focused, true);
+    await button.listeners.click();
+    // A catalog refresh cannot enable a second launch while the first request is pending.
+    context.render([workflow()], true);
+    assert.equal(cards[0].querySelector('.workflow-run-now').disabled, true);
+    await cards[0].querySelector('.workflow-run-now').listeners.click();
+    assert.equal(requests, 1);
+    finish(); await pending;
+    assert.equal(destination, '/rt/flows?flowId=flow_123');
+    assert.equal(button.disabled, false); assert.equal(remove.disabled, false);
+    assert.equal(button.textContent, 'Run now');
+    assert.equal(cards[0].querySelector('.workflow-run-now').disabled, false);
+});
+
+test('a rejected direct launch displays its error and permits retry without navigation', async () => {
+    const { context, cards } = fixture();
+    context.render([workflow()], true);
+    const button = cards[0].querySelector('.workflow-run-now');
+    context.api = async () => { context.render([workflow()], true); throw new Error('Working folder unavailable'); };
+    context.navigation.navigate = () => assert.fail('A rejected launch must not navigate');
+    await button.listeners.click();
+    assert.equal(context.workflowListMessage.textContent, 'Working folder unavailable');
+    assert.equal(button.disabled, false); assert.equal(context.launchingWorkflows.size, 0);
+    assert.equal(cards[0].querySelector('.workflow-run-now').disabled, false);
+    assert.equal(cards[0].querySelector('.delete-workflow').disabled, false);
 });

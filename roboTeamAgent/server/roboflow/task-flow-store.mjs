@@ -14,7 +14,17 @@ const flowTiming = flow => executionTiming(flow, flow.status === 'running', flow
 const phaseTiming = phase => executionTiming(phase, activePhase(phase), phase.startedAt, phase.endedAt);
 
 export class TaskFlowStore {
-    constructor(options = {}) { this.database = options.database || new RoboFlowDatabase(options.databaseFile); }
+    constructor(options = {}) {
+        this.database = options.database || new RoboFlowDatabase(options.databaseFile);
+        this.subscribers = new Set();
+    }
+    subscribe(listener) { this.subscribers.add(listener); return () => this.subscribers.delete(listener); }
+    publish(event) {
+        for (const listener of this.subscribers) {
+            try { listener(event); } catch (error) { console.error('[roboflow] observation failed:', error.message); }
+        }
+    }
+    closeObservers() { this.publish({ kind: 'close' }); this.subscribers.clear(); }
     async initialize() { this.database.initialize(); }
     static newFlowId() { return `flow_${crypto.randomBytes(12).toString('hex')}`; }
     static newInvocationId() { return `inv_${crypto.randomBytes(12).toString('hex')}`; }
@@ -32,7 +42,7 @@ export class TaskFlowStore {
     createRecord(graph, input = {}) {
         const now = new Date().toISOString();
         return { id: TaskFlowStore.newFlowId(), workflowTypeId: graph.id, workflowName: graph.name, graph,
-            ...input, elapsedMs: 0, activeSince: now, status: 'running', currentInstanceId: null,
+            ...input, revision: 0, elapsedMs: 0, activeSince: now, status: 'running', currentInstanceId: null,
             createdAt: now, updatedAt: now, finishedAt: null, error: null, instances: [] };
     }
     async createFromWorkflow(registry, workflowId, input, onCreated = () => {}) {
@@ -61,7 +71,7 @@ export class TaskFlowStore {
         await fs.writeFile(marker, new Date().toISOString(), { mode: 0o600 });
     }
     async list() { await this.initialize(); return this.database.db.prepare('SELECT id FROM workflow_runs ORDER BY rowid DESC').all().map(row => this.getSync(row.id)); }
-    async update(id, operation) {
+    async update(id, operation, { notify = true } = {}) {
         await this.initialize();
         let previousStatus;
         const updated = this.database.transaction(() => {
@@ -71,6 +81,7 @@ export class TaskFlowStore {
             const timing = flowTiming(flow);
             const phases = new Map(flow.instances.map(phase => [phase.id, phaseTiming(phase)]));
             operation(flow);
+            flow.revision = (flow.revision || 0) + 1;
             flow.updatedAt = new Date().toISOString();
             Object.assign(flow, transitionTiming(timing, flow.status === 'running', flow.updatedAt));
             for (const phase of flow.instances) {
@@ -79,6 +90,7 @@ export class TaskFlowStore {
             return this.saveSync(flow);
         });
         if (previousStatus !== updated.status) this.onStatusChange?.(updated);
+        if (notify) this.publish({ kind: 'flow', flowId: id, parentFlowId: updated.parentFlowId });
         return updated;
     }
     async outputPath(flowId, instanceId, suffix, create = false) {
@@ -128,7 +140,8 @@ export class TaskFlowStore {
                 current.summaryOutputs[suffix] = index;
                 current.summarySequence = sequence;
                 if (suffix === 'result') current.latestResult = { start, end: start + Buffer.byteLength(text) };
-            });
+            }, { notify: false });
+            this.publish({ kind: 'output', flowId, instanceId, suffix, start, end: start + Buffer.byteLength(output), chunk: output });
         });
     }
     async readOutput(flowId, instanceId, suffix = 'log') {

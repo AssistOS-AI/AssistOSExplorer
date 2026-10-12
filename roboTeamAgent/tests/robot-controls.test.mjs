@@ -64,6 +64,19 @@ test('robot total is secondary text rather than a boxed count badge', async () =
     assert.doesNotMatch(countStyle, /background|border|padding/);
 });
 
+test('robot action menus share one row without moving workflow and Cron card menus', async () => {
+    const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
+    const actions = css.match(/\.robot-card:not\(\.workflow-card\):not\(\.cron-card\) \.robot-actions \{([^}]+)\}/)?.[1];
+    assert.match(actions, /align-items: center;/);
+    assert.match(actions, /flex-wrap: nowrap;/);
+    assert.doesNotMatch(actions, /padding-top/);
+    assert.match(css, /\.robot-open, \.robot-manage \{ position: relative; \}/);
+    assert.doesNotMatch(css, /\.robot-card \.robot-manage \{ position: absolute;/);
+    assert.match(css, /\.workflow-card > \.robot-manage \{ position: absolute; top: 16px; right: 16px;/);
+    assert.match(css, /\.cron-card \.cron-actions \{ position: absolute; top: 16px; right: 16px;/);
+    assert.doesNotMatch(css, /\.robot-card:not\(\.workflow-card\):not\(\.cron-card\) \.robot-main \{ padding-right: 48px;/);
+});
+
 test('creation dialog handles Escape and backdrop without dismissing a pending submission', () => {
     const state = dialogFixture();
     state.trigger.fire('click');

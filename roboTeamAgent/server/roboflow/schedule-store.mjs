@@ -24,7 +24,6 @@ export class ScheduleStore {
         if (id && !previous) throw Object.assign(invalid('Cron job not found'), { statusCode: 404 });
         if (id && input.revision !== previous.revision) throw conflict('Cron job changed; reload before saving');
         const value = { ...previous, ...input };
-        const name = textField(value.name, 'name', 120, true);
         const objective = textField(value.objective, 'objective', 32768);
         const workflowTypeId = textField(value.workflowTypeId, 'workflowTypeId', 80, true);
         const timing = normalizeTiming(value.timing);
@@ -45,11 +44,12 @@ export class ScheduleStore {
             const timestamp = this.now(), now = new Date(timestamp).toISOString(), enabled = value.enabled ?? true;
             const configChanged = !current || current.enabled !== enabled || JSON.stringify(current.timing) !== JSON.stringify(timing);
             const record = { ...current, id: id || `cron_${crypto.randomBytes(12).toString('hex')}`, revision: (current?.revision || 0) + 1,
-                name, objective, folder, workflowTypeId: graph.id, ...(graph.kind === 'default' ? { executionType: value.executionType } : {}), timing, enabled,
+                objective, folder, workflowTypeId: graph.id, ...(graph.kind === 'default' ? { executionType: value.executionType } : {}), timing, enabled,
                 createdBy: current?.createdBy || createdBy, updatedBy: createdBy, createdAt: current?.createdAt || now, updatedAt: now,
                 nextRunAt: enabled ? (configChanged ? new Date(nextRun(timing, timestamp)).toISOString() : current.nextRunAt) : null,
                 lastFlowId: current?.lastFlowId || null, lastAttemptAt: current?.lastAttemptAt || null, lastOutcome: current?.lastOutcome || null,
                 lastError: current?.lastError || null, pendingLaunch: null };
+            delete record.name;
             if (graph.kind !== 'default') delete record.executionType;
             return this.saveSync(record);
         });

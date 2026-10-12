@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { invalid } from './graph.mjs';
 
-const DEFAULT_FOLDER = 'cron-jobs-results';
+const DEFAULT_FOLDER = 'workflow-runs';
 const fail = (message, statusCode = 400) => Object.assign(invalid(message), { statusCode });
 function segments(value) {
     if (typeof value !== 'string' || value.length > 4096 || /[\\\x00-\x1f\x7f]/.test(value) || path.isAbsolute(value)) throw fail('Choose a folder inside the workspace');
@@ -60,6 +60,6 @@ export class ScheduleFolders {
     }
     label(folder, root) {
         const relative = path.relative(root, folder).split(path.sep).join('/');
-        return !relative ? 'Workspace' : !relative.startsWith('../') && !path.isAbsolute(relative) ? `Workspace / ${relative}` : 'Previously selected folder';
+        return !relative ? '/' : !relative.startsWith('../') && !path.isAbsolute(relative) ? relative : 'Previously selected folder';
     }
 }

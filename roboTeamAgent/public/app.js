@@ -20,6 +20,7 @@ const workflowTemplate = document.querySelector('#workflowTemplate');
 const workflowCount = document.querySelector('#workflowCount');
 const workflowListMessage = document.querySelector('#workflowListMessage');
 const addWorkflowButton = document.querySelector('#addWorkflowButton');
+const launchingWorkflows = new Set();
 
 const warningText = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
 
@@ -237,6 +238,36 @@ function renderRobots(robots, canAdmin = false) {
     }
 }
 
+async function runWorkflowNow(workflow, button, remove, toggle) {
+    if (launchingWorkflows.has(workflow.id)) return;
+    toggle.focus({ preventScroll: true });
+    launchingWorkflows.add(workflow.id);
+    button.disabled = true;
+    remove.disabled = true;
+    button.textContent = 'Starting…';
+    workflowListMessage.textContent = '';
+    try {
+        const { flow } = await api('api/roboflow/flows', {
+            method: 'POST', body: { workflowTypeId: workflow.id },
+        });
+        navigation.navigate(endpoint(`flows?flowId=${encodeURIComponent(flow.id)}`));
+    } catch (error) {
+        workflowListMessage.textContent = error.message;
+    } finally {
+        launchingWorkflows.delete(workflow.id);
+        button.disabled = false;
+        remove.disabled = false;
+        button.textContent = 'Run now';
+        for (const card of workflowsList.children) {
+            const current = card.querySelector('.workflow-run-now');
+            if (current?.dataset.navigationKey !== `workflow-run:${workflow.id}`) continue;
+            current.disabled = false;
+            current.textContent = 'Run now';
+            card.querySelector('.delete-workflow').disabled = false;
+        }
+    }
+}
+
 function renderWorkflows(workflows, canAdmin) {
     workflowCount.textContent = `${workflows.length} ${workflows.length === 1 ? 'workflow' : 'workflows'}`;
     workflowsList.replaceChildren();
@@ -280,6 +311,14 @@ function renderWorkflows(workflows, canAdmin) {
             initRobotMenu({ menu, id: `workflow-options-${workflow.id}`,
                 label: `More actions for workflow ${workflow.name}`, closeMenus: closeOpenMenus });
             const remove = card.querySelector('.delete-workflow');
+            const runNow = card.querySelector('.workflow-run-now');
+            const toggle = card.querySelector('.manage-toggle');
+            toggle.dataset.navigationKey = `workflow-menu:${workflow.id}`;
+            runNow.dataset.navigationKey = `workflow-run:${workflow.id}`;
+            runNow.setAttribute('aria-label', `Run workflow ${workflow.name} now`);
+            runNow.disabled = remove.disabled = launchingWorkflows.has(workflow.id);
+            runNow.textContent = runNow.disabled ? 'Starting…' : 'Run now';
+            runNow.addEventListener('click', () => runWorkflowNow(workflow, runNow, remove, toggle));
             remove.setAttribute('aria-label', `Delete workflow type ${workflow.name}`);
             remove.addEventListener('click', async () => {
                 if (remove.disabled || !confirm(`Delete workflow type "${workflow.name}"? Existing runs and their history will be kept.`)) return;

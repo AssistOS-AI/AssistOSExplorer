@@ -37,6 +37,22 @@ async function fixture(t, options = {}) {
     return { service, robots, started, stopped, messages, resumed, root, finish };
 }
 
+test('flow observers see committed phase changes even when overall status is unchanged, but never failed transactions', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow(graph());
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work' });
+    const events = [];
+    const unsubscribe = f.service.subscribeFlow(flow.id, event => {
+        if (event.kind === 'flow') events.push(f.service.store.getSync(flow.id));
+    });
+    await assert.rejects(f.service.store.update(flow.id, record => { record.error = 'Not committed'; throw new Error('Rollback'); }), /Rollback/);
+    assert.equal(events.length, 0); assert.equal((await f.service.store.get(flow.id)).error, null);
+    await f.service.store.update(flow.id, record => { record.instances[0].state = 'running'; });
+    assert.equal(events.length, 1); assert.equal(events[0].status, 'running');
+    assert.equal(events[0].instances[0].state, 'running'); assert.equal(events[0].revision, flow.revision + 1);
+    unsubscribe(); assert.equal(f.service.store.subscribers.size, 0);
+});
+
 test('graph validation accepts cycles and rejects broken identity or legacy robot assignments', () => {
     const normalized = normalizeWorkflow(graph());
     assert.equal(normalized.tasks.length, 3);

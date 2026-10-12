@@ -119,14 +119,13 @@
         <div class="create-robot-heading"><h2 id="cronDialogTitle">Create Cron job</h2><button id="cronClose" class="button icon-button" type="button" aria-label="Close Cron job dialog" title="Close">×</button></div>
         <form id="cronForm" class="robot-form">
             <div class="cron-form-fields">
-            <label class="cron-field-half"><span>Name</span><input name="name" maxlength="120" required placeholder="Daily research" autofocus></label>
-            <label class="cron-field-half"><span>Workflow</span><select name="workflowTypeId" required></select></label>
+            <label><span>Workflow</span><select name="workflowTypeId" required autofocus></select></label>
             <label id="cronExecutionField" hidden><span>Execution mode</span><select name="executionType"><option value="terminal">Terminal</option><option value="browser">Browser</option><option value="desktop">Desktop</option></select></label>
             <div class="cron-folder-field" role="group" aria-labelledby="cronFolderTitle">
                 <span id="cronFolderTitle">Results folder</span>
                 <input name="folder" type="hidden">
-                <div class="cron-folder-selection"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></svg><output id="cronFolderLabel">Workspace / cron-jobs-results</output><button id="cronChangeFolder" class="button secondary" type="button">Change folder</button></div>
-                <div class="cron-folder-note"><span>Workflow results and logs are saved here.</span><button id="cronDefaultFolder" class="folder-text-action" type="button" hidden>Use default</button></div>
+                <div class="cron-folder-selection"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></svg><output id="cronFolderLabel">workflow-runs</output><button id="cronChangeFolder" class="button secondary" type="button">Change folder</button></div>
+                <div class="cron-folder-note"><span>Each run uses its own cron-date-time folder for results and logs.</span><button id="cronDefaultFolder" class="folder-text-action" type="button" hidden>Use default</button></div>
             </div>
             <label id="cronObjectiveField" hidden><span id="cronObjectiveLabel">Objective</span><textarea name="objective" rows="3" maxlength="32768" placeholder="What should this workflow accomplish each time?"></textarea></label>
             <p id="cronObjectiveHint" class="cron-hint">Uses the selected workflow’s default objective.</p>
@@ -166,10 +165,10 @@
         <div class="robot-main">
             <div class="robot-identity"><div class="avatar" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg></div><span class="run-state cron-state"></span></div>
             <div class="robot-info">
-                <div class="robot-title-row"><h3 class="cron-name"></h3> <span class="cron-last"></span>
-                </div>
-                <p class="cron-workflow"></p>
-                <div class="cron-schedule"><p class="cron-timing"></p><p class="cron-next"></p><a class="view-logs cron-view-run" hidden>View last run</a></div>
+                <div class="robot-title-row"><h3 class="cron-workflow"></h3></div>
+                <p class="cron-objective"></p>
+                <div class="cron-schedule"><p class="cron-timing"></p><p class="cron-next"></p></div>
+                <div class="cron-last-run"><div class="cron-last-details"><span class="cron-last"></span><a class="view-logs cron-view-run" hidden>View last run</a></div><span class="run-state cron-run-status" hidden></span></div>
                 <p class="cron-error" hidden></p>
             </div>
         </div>
@@ -255,7 +254,8 @@
                     aria-label="More workflow actions" title="More actions" data-robot-menu-toggle><span
                     aria-hidden="true">⋮</span></button>
             <div class="manage-options" data-robot-menu-options hidden>
-                <button class="button danger delete-workflow" type="button">Delete workflow</button>
+                <button class="button secondary workflow-run-now" type="button" title="Run now; save results in a dated workflow-runs folder">Run now</button>
+                <div class="robot-danger-actions"><button class="button danger delete-workflow" type="button">Delete workflow</button></div>
             </div>
         </div>
     </article>

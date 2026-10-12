@@ -25,11 +25,17 @@
 .task-type-icons { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
 .task-type-icon, .task-coverage-icon { width: 16px; height: 16px; flex-shrink: 0; }
 .task-list-item[data-node-role='start-end'] .task-type-icons { color: var(--task-end-color); }
-.task-role-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: var(--font-xs, .75rem); color: var(--text-soft); }
-.task-role-legend span { display: inline-flex; align-items: center; gap: 4px; }
-.task-role-legend span::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--task-intermediate-color); }
-.task-role-legend .legend-start::before { background: var(--task-start-color); }
-.task-role-legend .legend-end::before { background: var(--task-end-color); }
+.task-role-icons { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+.task-role-icon { width: 18px; height: 18px; flex: 0 0 18px; }
+.task-role-icon-start { color: var(--task-start-color); }
+.task-role-icon-intermediate { color: var(--task-intermediate-color); }
+.task-role-icon-end { color: var(--task-end-color); }
+.task-role-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); font-size: var(--font-xs, .75rem); font-weight: 500; color: var(--task-intermediate-color); }
+.task-role-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.task-role-legend > .task-role-legend-label { flex-basis: 100%; color: var(--text-soft); font-weight: 600; }
+.task-role-legend [data-node-role='start'] { color: var(--task-start-color); }
+.task-role-legend [data-node-role='end'] { color: var(--task-end-color); }
+.task-role-legend .task-role-icon { box-sizing: content-box; padding: 4px; border: 1px solid color-mix(in srgb, currentColor 24%, transparent); border-radius: 5px; background: color-mix(in srgb, currentColor 10%, transparent); }
 .task-list-empty { padding: 10px; color: var(--text-soft); font-size: var(--font-sm); }
 .add-task { min-width: 34px; padding: 2px 10px; font-size: 1.25rem; line-height: 1.4; }
 
@@ -46,9 +52,9 @@
 .workflow-description-field { flex: 1 1 auto; min-width: 0; display: grid; gap: 6px; }
 .workflow-field-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-soft); font-size: var(--font-xs, .75rem); font-weight: 500; }
 .workflow-description-field:has(textarea:is(:disabled, [readonly])) .workflow-edit-icon { display: none; }
-.workflow-description { min-width: 0; min-height: 64px; max-height: 180px; field-sizing: content; resize: vertical; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); font-size: var(--font-sm); line-height: 1.6; cursor: text; }
-.workflow-description:hover:not(:disabled):not([readonly]) { border-color: var(--accent); }
-.workflow-description:is(:disabled, [readonly]) { border-color: transparent; background: transparent; color: var(--text-soft); resize: none; opacity: 1; cursor: default; }
+textarea.workflow-description { min-width: 0; min-height: 64px; max-height: 180px; field-sizing: content; resize: vertical; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); font-size: var(--font-sm); line-height: 1.6; cursor: text; }
+textarea.workflow-description:hover:not(:disabled):not([readonly]) { border-color: var(--accent); }
+textarea.workflow-description:is(:disabled, [readonly]) { border-color: transparent; background: transparent; color: var(--text-soft); resize: none; opacity: 1; cursor: default; }
 .workflow-help { position: relative; flex: 0 0 auto; margin-top: 26px; }
 .workflow-help summary { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 1px solid transparent; border-radius: 50%; color: var(--text-soft); cursor: pointer; list-style: none; }
 .workflow-help summary::-webkit-details-marker { display: none; }
@@ -106,6 +112,20 @@
 .graph-node .graph-role-icons { position: absolute; top: 12px; right: 8px; display: flex; align-items: center; gap: 3px; margin: 0; opacity: 1; color: var(--task-color); }
 .graph-role-icon { width: 16px; height: 16px; flex: 0 0 16px; }
 .graph-role-icon-end { color: var(--task-end-color); }
+/* Execution progress is independent of the node's graph role. */
+:root { --execution-pending: #606060; --execution-queued: #7c3aed; --execution-starting: #00acc1; --execution-running: #1d4ed8; --execution-completed: #15803d; --execution-failed: #b91c1c; --execution-paused: #facc15; --execution-terminated: #475569; --execution-starting-ink: #00616e; --execution-paused-ink: #725600; --execution-failed-ink: var(--execution-failed); }
+.theme-dark { --execution-pending: #b5b5b5; --execution-queued: #c4b5fd; --execution-starting: #00acc1; --execution-running: #93c5fd; --execution-completed: #86efac; --execution-failed: #ef4444; --execution-paused: #facc15; --execution-terminated: #cbd5e1; --execution-starting-ink: var(--execution-starting); --execution-paused-ink: var(--execution-paused); --execution-failed-ink: #fca5a5; }
+[data-execution-state] { --execution-color: var(--execution-pending); --execution-text: var(--execution-color); }
+[data-execution-state='queued'] { --execution-color: var(--execution-queued); }
+[data-execution-state='starting'] { --execution-color: var(--execution-starting); --execution-text: var(--execution-starting-ink); }
+[data-execution-state='running'] { --execution-color: var(--execution-running); }
+[data-execution-state='completed'] { --execution-color: var(--execution-completed); }
+[data-execution-state='failed'] { --execution-color: var(--execution-failed); --execution-text: var(--execution-failed-ink); }
+[data-execution-state='paused'], [data-execution-state='pausing'] { --execution-color: var(--execution-paused); --execution-text: var(--execution-paused-ink); }
+[data-execution-state='terminated'] { --execution-color: var(--execution-terminated); }
+.execution-state-icon { width: 14px; height: 14px; flex: 0 0 14px; color: var(--execution-color); }
+.graph-node .graph-execution-state { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--execution-color) 10%, var(--surface)); color: var(--execution-text); font-size: 11px; font-weight: 600; opacity: 1; }
+.graph-node .graph-execution-state span { display: inline; margin: 0; font-size: inherit; opacity: 1; }
 .graph-human-input { width: 15px; height: 15px; flex: 0 0 15px; fill: #2563eb; }
 .theme-dark .graph-human-input { fill: #60a5fa; }
 .graph-node:focus-visible { outline: 3px solid var(--accent); }
@@ -114,6 +134,18 @@
 .graph-node[data-node-role='end'] { --task-color: var(--task-end-color); }
 .graph-node[data-node-role='start'], .graph-node[data-node-role='start-end'] { --task-color: var(--task-start-color); }
 .graph-node[data-node-role='start-end'] { border-right-color: var(--task-end-color); padding-right: 56px; }
+.graph-node[data-execution-state] { --graph-node-surface: color-mix(in srgb, var(--execution-color) 9%, var(--surface)); border-color: var(--execution-color); cursor: pointer; }
+.graph-node[data-execution-state] strong { color: var(--execution-text); }
+.graph-node[data-execution-state]:hover { --graph-node-surface: color-mix(in srgb, var(--execution-color) 16%, var(--surface)); }
+.graph-node .graph-execution-state .execution-state-icon { width: 18px; height: 18px; flex-basis: 18px; }
+.graph-node[data-execution-state].graph-state-running { animation: execution-state-pulse 1.6s ease-in-out infinite; }
+@keyframes execution-state-pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--execution-color) 30%, transparent); }
+    70%, 100% { box-shadow: 0 0 0 6px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .graph-node[data-execution-state].graph-state-running { animation: none; }
+}
 .workflow-description-hint { color: var(--text-soft); font-size: 11px; line-height: 1.4; }
 .workflow-description-review { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--text-soft); }
 .workflow-description-review[data-state='failed'] { color: var(--danger); }

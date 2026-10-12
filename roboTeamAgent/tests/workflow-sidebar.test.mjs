@@ -96,9 +96,9 @@ test('graph, sidebar and legend share the selected turquoise, olive-gold and nav
     assert.match(css, /\.graph-node\[data-node-role='start'\][^{}]*\{ --task-color: var\(--task-start-color\); \}/);
     assert.match(rule(css, '.task-list-item'), /--task-color: var\(--task-intermediate-color\);/);
     assert.match(css, /\.graph-node \{ --task-color: var\(--task-intermediate-color\);/);
-    assert.match(rule(css, '.task-role-legend .legend-start::before'), /background: var\(--task-start-color\);/);
-    assert.match(rule(css, '.task-role-legend span::before'), /background: var\(--task-intermediate-color\);/);
-    assert.match(rule(css, '.task-role-legend .legend-end::before'), /background: var\(--task-end-color\);/);
+    assert.match(rule(css, ".task-role-legend [data-node-role='start']"), /color: var\(--task-start-color\);/);
+    assert.match(rule(css, '.task-role-legend'), /color: var\(--task-intermediate-color\);/);
+    assert.match(rule(css, ".task-role-legend [data-node-role='end']"), /color: var\(--task-end-color\);/);
     assert.match(board, /node\.dataset\.nodeRole = workflowNodeRole\(task, graph\)/);
     assert.match(editor, /const role = workflowNodeRole\(task, graph\)/);
     assert.doesNotMatch(css, /\.graph-node\.graph-terminal \{[^}]*var\(--danger/);
@@ -146,4 +146,21 @@ test('execution modes and special task capabilities have distinct accessible ico
     assert.deepEqual(creator.icons.map(icon => icon.label), ['Browser', 'Allows sub-flows']);
     const coordinator = taskSidebarPresentation({ id: 'task', kind: 'run-workflows', executionType: 'browser' }, graph);
     assert.deepEqual(coordinator.icons.map(icon => icon.label), ['RoboFlow coordinator']);
+});
+
+test('sidebar uses graph-role icons instead of mode icons and places the colored legend beneath the list', async () => {
+    const [html, js, css] = await Promise.all([read('editor.html'), read('workflow-editor.js'), read('workflow-editor.css')]);
+    assert.ok(html.indexOf('id="taskList"') < html.indexOf('class="task-role-legend"'));
+    assert.match(html, /class="task-role-legend-label">Legend<\/span>/);
+    assert.match(rule(css, '.task-role-legend > .task-role-legend-label'), /flex-basis: 100%;[^}]*color: var\(--text-soft\);/);
+    assert.match(js, /icons\.append\(\.\.\.presentation\.roleIcons\.map/);
+    assert.doesNotMatch(js, /icons\.append\(\.\.\.presentation\.icons\.map/);
+    assert.match(js, /entry\.prepend\(taskIcon\(icon/);
+    assert.match(rule(css, '.task-role-legend'), /margin-top: auto;[^}]*border-top:/);
+    assert.match(rule(css, '.task-role-legend .task-role-icon'), /background: color-mix/);
+    const graph = { entryTaskId: 'start', edges: [{ sourceTaskId: 'start', targetTaskId: 'middle' }, { sourceTaskId: 'middle', targetTaskId: 'end' }] };
+    const tasks = ['start', 'middle', 'end'].map(id => ({ id, executionType: 'browser' }));
+    assert.deepEqual(tasks.map(task => taskSidebarPresentation(task, graph).roleIcons.map(icon => icon.role)), [['start'], ['intermediate'], ['end']]);
+    assert.deepEqual(taskSidebarPresentation({ id: 'only' }, { entryTaskId: 'only', edges: [] }).roleIcons.map(icon => icon.role), ['start', 'end']);
+    assert.equal(taskSidebarPresentation(tasks[0], graph).roleIcons[0].path, 'M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5 M3 12h12 M10 7l5 5-5 5');
 });

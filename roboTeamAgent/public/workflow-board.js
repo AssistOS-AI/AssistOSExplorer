@@ -1,4 +1,5 @@
 import { edgeRoute } from './workflow-routing.js';
+import { renderExecutionState, executionStatePresentation } from './workflow-execution-state.js';
 
 const svgNS = 'http://www.w3.org/2000/svg';
 export function workflowNodeRole(task, graph) {
@@ -8,7 +9,7 @@ export function workflowNodeRole(task, graph) {
 }
 
 const roleIcons = {
-    start: { role: 'start', label: 'Start node', path: 'M8 5l11 7-11 7Z' },
+    start: { role: 'start', label: 'Start node', path: 'M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5 M3 12h12 M10 7l5 5-5 5' },
     intermediate: { role: 'intermediate', label: 'Intermediate step', path: 'M5 6l6 6-6 6 M13 6l6 6-6 6' },
     end: { role: 'end', label: 'End node', path: 'M5 21V3h14l-3 5 3 5H5' }
 };
@@ -115,6 +116,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
     surface.append(svg);
     container.append(surface);
     let connecting = null;
+    let suppressNodeClick = false;
     const localPoint = event => { const rect = surface.getBoundingClientRect(), scale = Number(surface.dataset.scale) || 1; return { x: (event.clientX - rect.left) / scale - offset.x, y: (event.clientY - rect.top) / scale - offset.y }; };
     const drawPreview = position => {
         svg.querySelector('.graph-preview')?.remove();
@@ -123,7 +125,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         const preview = document.createElementNS(svgNS, 'path'); preview.classList.add('graph-preview'); preview.setAttribute('d', curve(start, position)); preview.setAttribute('transform', `translate(${offset.x} ${offset.y})`); svg.append(preview);
     };
     const finishConnect = (event, cancelled = false) => {
-        if (!connecting) return;
+        if (!connecting || event.pointerId !== connecting.pointerId) return;
         const origin = connecting; connecting = null;
         svg.querySelector('.graph-preview')?.remove();
         if (cancelled) return;
@@ -131,7 +133,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         const destination = targetPort && { taskId: targetPort.dataset.taskId, side: targetPort.dataset.side };
         if (destination && destination.taskId !== origin.taskId) onChange({ connect: { source: origin, target: destination } });
     };
-    window.addEventListener('pointermove', event => { if (connecting) drawPreview(localPoint(event)); }, { signal: controller.signal });
+    window.addEventListener('pointermove', event => { if (connecting && event.pointerId === connecting.pointerId) drawPreview(localPoint(event)); }, { signal: controller.signal });
     window.addEventListener('pointerup', event => finishConnect(event), { signal: controller.signal });
     window.addEventListener('pointercancel', event => finishConnect(event, true), { signal: controller.signal });
     window.addEventListener('keydown', event => { if (event.key === 'Escape' && connecting) { connecting = null; svg.querySelector('.graph-preview')?.remove(); } }, { signal: controller.signal });
@@ -141,7 +143,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         node.dataset.nodeRole = workflowNodeRole(task, graph);
         nodeElements.set(task.id, node);
         const roleLabel = workflowRoleIcons(node.dataset.nodeRole).map(icon => icon.label).join(' / ');
-        node.setAttribute('aria-label', `${task.name}. ${roleLabel}. ${readOnly ? '' : 'Arrow keys move this task.'}`);
+        node.setAttribute('aria-label', `${task.name}. ${roleLabel}. ${states[task.id] ? `${executionStatePresentation(states[task.id]).label}. ` : ''}${readOnly ? '' : 'Arrow keys move this task.'}`);
         if (task.creator) node.classList.add('graph-creator');
         if (task.kind === 'run-workflows') node.classList.add('graph-coordinator');
         if (task.id === graph.entryTaskId) node.classList.add('graph-entry');
@@ -149,7 +151,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         if (states[task.id]) node.classList.add(`graph-state-${states[task.id]}`);
         const label = document.createElement('strong'); label.textContent = task.name;
         const detail = document.createElement('span'); detail.className = 'graph-node-detail';
-        const detailText = document.createElement('span'); detailText.className = 'graph-node-detail-text'; detailText.textContent = `${task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Sub-flows · ' : ''}${task.executionType || 'terminal / desktop / browser'}`}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
+        const detailText = document.createElement('span'); detailText.className = 'graph-node-detail-text'; detailText.textContent = task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Sub-flows · ' : ''}${task.executionType || 'terminal / desktop / browser'}`;
         detail.append(detailText);
         detail.title = detailText.textContent;
         if (task.allowsHumanInput && task.kind !== 'run-workflows') {
@@ -163,31 +165,72 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
             detail.append(icon);
         }
         node.append(graphRoleIcons(node.dataset.nodeRole), label, detail);
+        if (states[task.id]) {
+            node.dataset.executionState = states[task.id];
+            const status = document.createElement('span'); status.className = 'graph-execution-state';
+            renderExecutionState(status, states[task.id]); node.append(status);
+        }
         const place = () => { node.style.left = `${graph.layout[task.id].x + offset.x}px`; node.style.top = `${graph.layout[task.id].y + offset.y}px`; };
         place();
-        node.addEventListener('click', () => onSelect(task.id));
+        node.addEventListener('click', event => {
+            if (suppressNodeClick || event.target.closest?.('.graph-port') || event.button !== 0
+                || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+            onSelect(task.id);
+        });
         if (!readOnly) {
             for (const side of ['left', 'right']) {
                 const port = document.createElement('button'); port.type = 'button'; port.className = `graph-port graph-port-${side}`; port.textContent = '●'; port.title = 'Drag to another connection point'; port.dataset.taskId = task.id; port.dataset.side = side;
                 port.setAttribute('aria-label', `${side} connection point for ${task.name}`);
                 port.addEventListener('pointerdown', event => {
-                    if (event.button !== 0) return;
+                    if (event.button !== 0 || event.isPrimary === false || connecting) return;
+                    suppressNodeClick = true;
                     event.preventDefault(); event.stopPropagation(); connecting = { taskId: task.id, side, pointerId: event.pointerId }; drawPreview(localPoint(event));
                 });
                 node.append(port);
             }
             node.addEventListener('pointerdown', event => {
-                if (event.target.closest?.('.graph-port') || event.button !== 0) return;
-                const start = { x: event.clientX, y: event.clientY, ...graph.layout[task.id] };
+                if (event.target.closest?.('.graph-port') || event.button !== 0 || event.isPrimary === false || connecting) return;
+                suppressNodeClick = false;
+                const start = { ...graph.layout[task.id] };
                 const clientX = event.clientX, clientY = event.clientY;
                 const scale = Number(surface.dataset.scale) || 1;
+                let moved = false, finished = false;
                 node.setPointerCapture(event.pointerId);
                 const move = next => {
+                    if (next.pointerId !== event.pointerId) return;
+                    if (!moved && Math.hypot(next.clientX - clientX, next.clientY - clientY) < 4) return;
+                    moved = true;
+                    suppressNodeClick = true;
                     graph.layout[task.id] = { x: Math.max(0, start.x + (next.clientX - clientX) / scale), y: Math.max(0, start.y + (next.clientY - clientY) / scale) };
                     place(); edges();
                 };
-                const up = () => { node.removeEventListener('pointermove', move); node.removeEventListener('pointerup', up); resizeSurface(); onChange({ moved: task.id }); };
-                node.addEventListener('pointermove', move); node.addEventListener('pointerup', up, { once: true });
+                const finish = (next, cancelled = false) => {
+                    if (finished || next.pointerId !== event.pointerId) return;
+                    finished = true;
+                    node.removeEventListener('pointermove', move);
+                    node.removeEventListener('pointerup', up);
+                    node.removeEventListener('pointercancel', cancel);
+                    node.removeEventListener('lostpointercapture', cancel);
+                    window.removeEventListener('keydown', escape);
+                    controller.signal.removeEventListener('abort', abort);
+                    if (cancelled) {
+                        suppressNodeClick = true;
+                        graph.layout[task.id] = start;
+                    }
+                    if (node.hasPointerCapture(event.pointerId)) node.releasePointerCapture(event.pointerId);
+                    if (moved) resizeSurface();
+                    if (moved && !cancelled) onChange({ moved: task.id });
+                };
+                const up = next => finish(next);
+                const cancel = next => finish(next, true);
+                const abort = () => cancel(event);
+                const escape = next => { if (next.key === 'Escape') { next.preventDefault(); cancel(event); } };
+                node.addEventListener('pointermove', move);
+                node.addEventListener('pointerup', up);
+                node.addEventListener('pointercancel', cancel);
+                node.addEventListener('lostpointercapture', cancel);
+                window.addEventListener('keydown', escape);
+                controller.signal.addEventListener('abort', abort, { once: true });
             });
             node.addEventListener('keydown', event => {
                 const deltas = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] };

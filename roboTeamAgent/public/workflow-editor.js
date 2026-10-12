@@ -1,4 +1,4 @@
-import { drawBoard, workflowNodeRole } from './workflow-board.js';
+import { drawBoard, workflowNodeRole, workflowRoleIcons } from './workflow-board.js';
 import { reviseGraph } from './workflow-generator.js';
 import { createDescriptionRevision } from './workflow-description-revision.js';
 const warningText = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
@@ -20,14 +20,14 @@ export function taskSidebarPresentation(task, graph) {
     const mode = task.kind === 'run-workflows' ? 'coordinator' : (['browser', 'terminal', 'desktop'].includes(task.executionType) ? task.executionType : 'automatic');
     const icons = [taskIcons[mode]];
     if (task.creator && task.kind !== 'run-workflows') icons.push(taskIcons.creator);
-    return { role, roleLabel, icons };
+    return { role, roleLabel, icons, roleIcons: workflowRoleIcons(role) };
 }
 
-function taskIcon({ label, path }, className = 'task-type-icon') {
-    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+export function taskIcon({ label, path }, className = 'task-type-icon', ownerDocument = document) {
+    const icon = ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
     for (const [name, value] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', role: 'img', 'aria-label': label, focusable: 'false', class: className })) icon.setAttribute(name, value);
-    const title = document.createElementNS(icon.namespaceURI, 'title'); title.textContent = label;
-    const shape = document.createElementNS(icon.namespaceURI, 'path'); shape.setAttribute('d', path);
+    const title = ownerDocument.createElementNS(icon.namespaceURI, 'title'); title.textContent = label;
+    const shape = ownerDocument.createElementNS(icon.namespaceURI, 'path'); shape.setAttribute('d', path);
     icon.append(title, shape);
     return icon;
 }
@@ -44,6 +44,10 @@ function leaveEditor() {
 export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const form = document.querySelector('#workflowForm');
     const taskList = document.querySelector('#taskList');
+    for (const entry of document.querySelectorAll('.task-role-legend [data-node-role]')) {
+        const [icon] = workflowRoleIcons(entry.dataset.nodeRole);
+        entry.prepend(taskIcon(icon, `task-role-icon task-role-icon-${icon.role}`));
+    }
     const taskPanel = document.querySelector('#taskEditorPanel');
     const board = document.querySelector('#workflowBoard');
     const message = document.querySelector('#workflowMessage');
@@ -297,15 +301,15 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             item.dataset.nodeRole = presentation.role;
             const order = node('span', String(index + 1), 'task-order');
             order.setAttribute('aria-hidden', 'true');
-            const icons = node('span', null, 'task-type-icons');
-            icons.append(...presentation.icons.map(icon => taskIcon(icon)));
+            const icons = node('span', null, 'task-role-icons');
+            icons.append(...presentation.roleIcons.map(icon => taskIcon(icon, `task-role-icon task-role-icon-${icon.role}`)));
             const warning = taskIcon({ label: warningText, path: 'M12 3L2 21h20z M12 9v5 M12 17h.01' }, 'task-coverage-icon');
             warning.id = `task-sidebar-warning-${task.id}`;
             if (task.id === selected) item.classList.add('selected');
             item.setAttribute('aria-pressed', String(task.id === selected));
             if (warningTaskIds.has(task.id)) { item.classList.add('coverage-warning'); item.setAttribute('aria-describedby', warning.id); }
             const name = task.name || 'Untitled task';
-            const description = `${index + 1}. ${name} · ${presentation.roleLabel} · ${presentation.icons.map(icon => icon.label).join(' · ')}`;
+            const description = `${index + 1}. ${name} · ${presentation.roleLabel}`;
             item.setAttribute('aria-label', description);
             item.append(order, icons, node('strong', name), warning);
             item.onclick = () => select(task.id);

@@ -86,11 +86,17 @@ test('the flow type generation step is a separate page', async t => {
 
 test('page modules are served as javascript', async t => {
     const request = await fixture(t);
-    for (const asset of ['/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow-api.js', '/app.js', '/dashboard-tabs.js', '/robot-controls.js', '/page-navigation.js']) {
+    for (const asset of ['/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow-api.js', '/workflow-phase-list.js', '/workflow-execution-state.js', '/app.js', '/dashboard-tabs.js', '/robot-controls.js', '/page-navigation.js']) {
         const response = await request(asset);
         assert.equal(response.status, 200, asset);
         assert.match(response.headers.get('content-type') || '', /javascript/, asset);
     }
+});
+test('execution styling is served through the existing authenticated application', async t => {
+    const request = await fixture(t);
+    const response = await request('/workflow-execution.css');
+    assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /text\/css/);
+    assert.match(await response.text(), /\.flow-execution-page/);
 });
 
 test('agent pages mark an embeddable header and breadcrumbs', async t => {
