@@ -125,8 +125,7 @@ export function createGitOpsActions(ctx) {
     };
 
     const gitPushAfterEnsuringRemote = async (repoPath) => {
-        await ensureRemoteExists(repoPath);
-        await gitPushWithToken(repoPath);
+        await service.gitPush({ path: repoPath }, { beforeMutation: () => ensureRemoteExists(repoPath) });
     };
 
     const getRemoteUrl = async (repoPath) => {
@@ -370,20 +369,8 @@ export function createGitOpsActions(ctx) {
                     pulledRepos += 1;
                     continue;
                 }
-                const hasLocalChanges = (normalized.counts.staged
-                    + normalized.counts.unstaged
-                    + normalized.counts.untracked) > 0;
-                if (hasLocalChanges) {
-                    const autoOk = await pullWithAutoStash(repoPath, auth.tokenStored ? '__backend__' : '', list);
-                    if (!autoOk) return { ok: false, pulledRepos };
-                    pulledRepos += 1;
-                    continue;
-                }
-                if (!statusPayload.upstream) {
-                    pulledRepos += 1;
-                    continue;
-                }
-                await gitPullWithToken(repoPath);
+                const pullOk = await pullWithAutoStash(repoPath, auth.tokenStored ? '__backend__' : '', list);
+                if (!pullOk) return { ok: false, pulledRepos };
                 pulledRepos += 1;
             } catch (error) {
                 const msg = humanizeGitError(normalizeErrorMessage(error), { action: 'pull' });

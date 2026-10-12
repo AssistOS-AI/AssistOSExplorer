@@ -16,7 +16,7 @@ Model Context Protocol (MCP) agent for Git operations inside a Ploinky workspace
 - diff and ignore inspection: `git_diff`, `git_check_ignore`, `git_add_ignore`, `git_remove_ignore`
 - staging workflow: `git_stage`, `git_stage_exact`, `git_unstage`, `git_untrack`, `git_restore`
 - conflict workflow: `git_conflict_versions`, `git_checkout_conflict`
-- remote workflow: `git_commit`, `git_push`, `git_pull`, `git_stash`, `git_stash_pop`
+- remote workflow: `git_check_large_files`, `git_commit`, `git_push`, `git_fetch`, `git_pull`, `git_stash`, `git_stash_pop`
 - support tools: `git_diagnose`, `git_set_identity`, `git_commit_message`
 
 ## Runtime
@@ -54,6 +54,9 @@ and are deliberately absent from this agent's manifest environment.
 - Explorer selection semantics are strict: selecting any file or folder inside a repository selects that repository for repository-level actions, while commit and push flows remain limited to the selected files from that repository.
 - Autosync/autocommit runs only for repositories explicitly chosen in autosync settings. It does not infer targets from the current tree selection and does not default to all discovered repositories.
 - When an AutoSync push is explicitly rejected as non-fast-forward, AutoSync pulls the new remote commits and retries the push once. It never force-pushes and stops for conflicts or a second rejection.
+- Before integrating remote updates, Commit, Commit & Push, Sync, Pull, and AutoSync fetch the current upstream and check for incoming commits. With no incoming commits, they leave working files and staging unchanged during this check. Incoming commits plus uncommitted work require an explicit **Stash & pull** or **Abort** choice. Closing the warning also aborts; AutoSync stops after an abort. Pause coding agents working in the repository before granting permission because stash temporarily removes local changes. Approved updates restore the stash afterward; conflicts stop the operation for review.
+- `git_fetch` refreshes upstream metadata without changing working files, staging, or `HEAD`. Credential validation uses fetch, not pull. Direct `git_pull` disables Git's configured autostash; it never implicitly stashes local work.
+- Commit and Push warn about Git file content of at least 50 MiB, showing paths and sizes with **Continue** or **Abort**. Commit checks added or modified staged versions; Push checks outgoing history, including files deleted in later commits. Closing the warning aborts and stops AutoSync. Staging and existing commits remain available; no files are deleted or automatically migrated to Git LFS. Push inspection uses local remote-tracking refs and can over-warn when those refs are stale. Direct MCP callers receive `large_files_warning` and must obtain user permission before retrying with the listed `approvedLargeFileOids`; approval applies only to those exact blob versions for that invocation.
 - Git status reports a pending merge and its prepared message separately from unresolved files. After every conflict is resolved and staged, the commit modal pre-fills that message so manual Commit and Commit & Push can use or edit it; Sync and AutoSync complete the merge with Git's prepared message before another pull or push.
 - `git_add_ignore` both appends the ignore pattern and removes already tracked paths from the Git index, including staged-but-diverged entries that require forced index removal, so ignored items stop participating in future commits unless explicitly re-added.
 - `git_remove_ignore` removes the matching ignore rule and re-adds the target to Git tracking when possible.

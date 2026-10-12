@@ -1,0 +1,16 @@
+<div class="modal-header">
+    <div class="modal-title">Remote updates require your permission</div>
+    <button class="close" type="button" data-local-action="abort" aria-label="Abort pull">
+        <img class="close-icon" src="/explorer/assets/icons/close.svg" alt="">
+    </button>
+</div>
+<div class="modal-body git-pull-warning-modal">
+    <p><strong>$$incoming incoming remote commit(s)</strong> were found for this repository:</p>
+    <p class="git-pull-warning-path">$$repoPath</p>
+    <p>You also have uncommitted local changes. Stash &amp; pull will temporarily remove these changes, update the branch, then restore them. This can interrupt a coding agent working in this folder; pause it before continuing.</p>
+    <p>Abort leaves your working files and staging unchanged and stops this operation before commit or push for this repository.</p>
+    <div class="bottom-modal-section modal-actions">
+        <button class="gray-button" type="button" data-local-action="abort">Abort</button>
+        <button class="general-button" type="button" data-local-action="stashAndPull">Stash &amp; pull</button>
+    </div>
+</div>

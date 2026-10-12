@@ -274,6 +274,10 @@ function normalizeArgs(toolName, args) {
     case 'git_stash_list':
       requirePath();
       return input;
+    case 'git_check_large_files':
+      requirePath();
+      if (!['commit', 'push'].includes(input.operation)) throw new Error('operation must be commit or push.');
+      return input;
     case 'git_commit':
       requirePath();
       input.message = typeof input.message === 'string' ? input.message : '';
@@ -287,6 +291,10 @@ function normalizeArgs(toolName, args) {
       input.remote = input.remote ?? null;
       input.branch = input.branch ?? null;
       input.setUpstream = Boolean(input.setUpstream || false);
+      input.token = input.token ?? null;
+      return input;
+    case 'git_fetch':
+      requirePath();
       input.token = input.token ?? null;
       return input;
     case 'git_pull':
@@ -353,7 +361,7 @@ async function main() {
     const workspaceRoot = roots[0] || process.cwd();
 
     const payload = normalizeArgs(toolName, args);
-    if ((toolName === 'git_push' || toolName === 'git_pull' || toolName === 'git_clone_repository' || toolName === 'git_create_github_repository' || toolName === 'git_submodule_add') && !payload.token) {
+    if ((toolName === 'git_push' || toolName === 'git_pull' || toolName === 'git_fetch' || toolName === 'git_clone_repository' || toolName === 'git_create_github_repository' || toolName === 'git_submodule_add') && !payload.token) {
       const accessToken = String(authInfo?.github?.accessToken || '').trim();
       if (accessToken) {
         payload.token = accessToken;
@@ -515,12 +523,19 @@ async function main() {
         result = await gitService.gitStashList(payload);
         writeJson(result);
         return;
+      case 'git_check_large_files':
+        writeJson(await gitService.gitCheckLargeFiles(payload));
+        return;
       case 'git_commit':
         result = await gitService.gitCommit(payload);
         writeJson(result);
         return;
       case 'git_push':
         result = await gitService.gitPush(payload);
+        writeJson(result);
+        return;
+      case 'git_fetch':
+        result = await gitService.gitFetch(payload);
         writeJson(result);
         return;
       case 'git_pull':

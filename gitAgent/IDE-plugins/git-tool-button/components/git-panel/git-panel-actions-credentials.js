@@ -553,11 +553,7 @@ export function createCredentialsActions(ctx) {
         }
         setStatusLine('Validating credentials...');
         try {
-            await service.gitPull({
-                path: validationRepoPath,
-                rebase: false,
-                ffOnly: false
-            });
+            await service.gitFetch({ path: validationRepoPath });
         } catch (error) {
             const msg = normalizeErrorMessage(error);
             const lower = msg.toLowerCase();

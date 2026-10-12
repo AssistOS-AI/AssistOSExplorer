@@ -1,6 +1,10 @@
 import { parseJsonToolResult } from "./git-panel-utils.js";
+import { runGitWithLargeFileWarning } from '../../utils/git-large-file-warning.js';
 
-export function createGitCommitService({ callTool, callAgentTool }) {
+export function createGitCommitService({ callTool, callAgentTool, isActive, onAbort }) {
+    const mutateGit = (toolName, args, options = {}) => runGitWithLargeFileWarning({
+        callAgentTool, toolName, args, isActive, onAbort, ...options
+    });
     const extractToolText = (result) => {
         if (!result) return '';
         if (typeof result === 'string') return result;
@@ -52,8 +56,9 @@ export function createGitCommitService({ callTool, callAgentTool }) {
         gitReposOverview: (path) => callAgentTool('gitAgent', 'git_repos_overview', { path }),
         listDirectoryDetailed: (path) => callTool('list_directory_detailed', { path }),
         gitStatus: (path, options = {}) => callAgentTool('gitAgent', 'git_status', { path, ...options }),
-        gitPush: (payload) => callAgentTool('gitAgent', 'git_push', payload),
+        gitPush: (payload, options) => mutateGit('git_push', payload, options),
         gitPull: (payload) => callAgentTool('gitAgent', 'git_pull', payload),
+        gitFetch: (payload) => callAgentTool('gitAgent', 'git_fetch', payload),
         gitRemoteSet: (payload) => callAgentTool('gitAgent', 'git_remote_set', payload),
         gitSetIdentity: (payload) => callAgentTool('gitAgent', 'git_set_identity', payload),
         gitStage: (path, files) => callAgentTool('gitAgent', 'git_stage', { path, files }),
@@ -68,7 +73,7 @@ export function createGitCommitService({ callTool, callAgentTool }) {
         gitStash: (payload) => callAgentTool('gitAgent', 'git_stash', payload),
         gitStashList: (payload) => callAgentTool('gitAgent', 'git_stash_list', payload),
         gitStashPop: (payload) => callAgentTool('gitAgent', 'git_stash_pop', compact(payload), { raw: true }),
-        gitCommit: (payload) => callAgentTool('gitAgent', 'git_commit', payload),
+        gitCommit: (payload) => mutateGit('git_commit', payload),
         llmResolveConflict: (payload) => callAgentTool('gitAgent', 'git_resolve_conflict', payload),
         deleteFile: (path) => callTool('delete_file', { path }),
         readTextFile: (path) => callTool('read_text_file', { path }),

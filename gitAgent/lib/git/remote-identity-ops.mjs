@@ -1,13 +1,22 @@
 import { ensureGithubHttpsRemoteRepository, getGithubAccessTokenFromMeta, isGithubHttpsRemote, toBasicAuthHeader } from './github-remotes.mjs';
 import { normalizeErrorMessage, runGit } from './run-git.mjs';
 import { normalizeGitConfigValue } from './validators.mjs';
+import { inspectLargeFiles } from './large-files.mjs';
 
 export function createRemoteIdentityOps(ctx) {
   const { getGitBinary, resolveRepoWorkTreePath } = ctx;
 
-  async function gitCommit({ path: repoPathArg, message, amend = false, signoff = false, useExistingMessage = false, userName = null, userEmail = null }) {
+  async function gitCheckLargeFiles({ path: repoPathArg, ...options }) {
     const repoPath = await resolveRepoWorkTreePath(repoPathArg);
     const gitBinary = await getGitBinary(repoPath);
+    return inspectLargeFiles(repoPath, gitBinary, options);
+  }
+
+  async function gitCommit({ path: repoPathArg, message, amend = false, signoff = false, useExistingMessage = false, userName = null, userEmail = null, approvedLargeFileOids = [] }) {
+    const repoPath = await resolveRepoWorkTreePath(repoPathArg);
+    const gitBinary = await getGitBinary(repoPath);
+    const warning = await inspectLargeFiles(repoPath, gitBinary, { operation: 'commit', approvedLargeFileOids });
+    if (!warning.ok) return warning;
     const args = [gitBinary];
     const cleanName = userName ? String(userName).trim() : '';
     const cleanEmail = userEmail ? String(userEmail).trim() : '';
@@ -24,9 +33,11 @@ export function createRemoteIdentityOps(ctx) {
     return { ok: true, stdout, stderr };
   }
   
-  async function gitPush({ path: repoPathArg, remote = null, branch = null, setUpstream = false, token = null, _meta = null, params = null }) {
+  async function gitPush({ path: repoPathArg, remote = null, branch = null, setUpstream = false, token = null, _meta = null, params = null, approvedLargeFileOids = [] }) {
     const repoPath = await resolveRepoWorkTreePath(repoPathArg);
     const gitBinary = await getGitBinary(repoPath);
+    const warning = await inspectLargeFiles(repoPath, gitBinary, { operation: 'push', remote, branch, setUpstream, approvedLargeFileOids });
+    if (!warning.ok) return warning;
     const getCurrentBranch = async () => {
       try {
         const { stdout } = await runGit(repoPath, [gitBinary, 'branch', '--show-current'], { timeoutMs: 5000 });
@@ -162,7 +173,7 @@ export function createRemoteIdentityOps(ctx) {
     if (extraHeader) {
       args.push('-c', `http.extraHeader=${extraHeader}`);
     }
-    args.push('pull');
+    args.push('pull', '--no-autostash');
     // Newer git versions may require explicitly choosing the reconcile strategy when branches diverge.
     // Keep defaults safe: ff-only unless user explicitly chose merge/rebase.
     if (ffOnly) {
@@ -274,6 +285,7 @@ export function createRemoteIdentityOps(ctx) {
   }
 
   return {
+    gitCheckLargeFiles,
     gitCommit,
     gitPull,
     gitPush,

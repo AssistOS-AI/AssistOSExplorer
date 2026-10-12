@@ -33,7 +33,7 @@
                         <tbody>
                             <tr>
                                 <td>Repository inspection</td>
-                                <td><code>git_info</code>, <code>git_status</code>, <code>git_diff</code>, <code>git_repos_overview</code>, <code>git_diagnose</code></td>
+                                <td><code>git_info</code>, <code>git_status</code>, <code>git_diff</code>, <code>git_repos_overview</code>, <code>git_diagnose</code>, <code>git_check_large_files</code></td>
                                 <td>Read repository shape, branch/upstream state, diffs, and diagnostics.</td>
                             </tr>
                             <tr>
@@ -68,7 +68,7 @@
                             </tr>
                             <tr>
                                 <td>Remote and identity</td>
-                                <td><code>git_remote_set</code>, <code>git_push</code>, <code>git_pull</code>, <code>git_identity</code>, <code>git_set_identity</code></td>
+                                <td><code>git_remote_set</code>, <code>git_push</code>, <code>git_fetch</code>, <code>git_pull</code>, <code>git_identity</code>, <code>git_set_identity</code></td>
                                 <td>Add or update remote URLs, run remote synchronization, and manage author identity settings.</td>
                             </tr>
                             <tr>
@@ -84,6 +84,10 @@
                     <h2>Common Input Rules</h2>
                     <p>Most tools require a <code>path</code> argument and reject values outside allowed workspace roots. Operations that target subsets use <code>files</code> arrays, remote operations can accept token overrides through <code>token</code>, and conflict checkout requires <code>source</code> constrained to <code>{"ours","theirs"}</code>.</p>
                     <p><code>git_submodule_add</code> requires a parent <code>path</code> inside a Git worktree, a child directory <code>name</code>, and an existing <code>remoteUrl</code> with a checkoutable commit. It stages the resulting <code>.gitmodules</code> entry and gitlink without committing them.</p>
+                    <p><code>git_fetch</code> requires <code>path</code> and accepts an optional <code>token</code>. It refreshes only the named current branch's configured upstream reference, without changing working files, staging, or <code>HEAD</code>, recursing into submodules, or creating a remote repository. A branch without an upstream returns <code>ok: true, skipped: true, reason: "no_upstream"</code>. Detached HEAD, unreachable remotes, and deleted source branches fail explicitly. After success, <code>git_status</code> with <code>includeAhead: true</code> reports updated ahead and behind counts. Fetch still writes Git metadata; it is not a read-only filesystem operation.</p>
+                    <p><code>git_pull</code> runs with <code>--no-autostash</code>. A client that needs to stash local work must obtain explicit permission and call <code>git_stash</code> separately; a configured Git autostash setting cannot bypass this boundary.</p>
+                    <p><code>git_check_large_files</code> requires <code>path</code> and <code>operation</code> (<code>commit</code> or <code>push</code>). Push inspection also accepts <code>remote</code>, <code>branch</code>, and <code>setUpstream</code>. It reads object sizes without fetching or modifying working files, staging, commits, or remotes. A file version of at least 52,428,800 bytes returns <code>ok: false, code: "large_files_warning"</code>, with <code>operation</code>, <code>thresholdBytes</code>, and <code>files</code> entries containing <code>oid</code>, <code>path</code>, and <code>sizeBytes</code>.</p>
+                    <p><code>git_commit</code> and <code>git_push</code> enforce the same check before mutation, including before GitHub remote creation during push. Callers must show the warning and ask for permission. After approval, retry with <code>approvedLargeFileOids</code> containing the approved blob IDs. A different large blob requires another warning; no blanket approval flag exists. Commit inspection uses added or modified index versions. Push inspection includes earlier outgoing commits and compares against local references for the target remote, so stale references and matching refspecs may over-warn. The 50 MiB threshold is not a provider limit, and approval does not guarantee that the remote will accept the push.</p>
                 </section>
 
                 <section>

@@ -3,6 +3,7 @@ import { createGitCommitDiff } from "./git-panel-diff.js";
 import { createGitCommitRepo } from "./git-panel-repo.js";
 import { createGitCommitService } from "./git-panel-service.js";
 import { createGitCommitState } from "./git-panel-state.js";
+import { AUTOCOMMIT_STOP_EVENT } from '/explorer/utils/appEvents.js';
 import { createGitCommitUI } from "./git-panel-ui.js";
 import { callExplorerTool, callAgentTool } from "/explorer/services/infrastructure/explorerApi.js";
 import { joinPath } from "/explorer/web-components/pages/file-exp/file-exp-utils.js";
@@ -41,7 +42,9 @@ export class GitPanel {
         this.state = this.stateStore.state;
         this.service = createGitCommitService({
             callTool: this.callTool.bind(this),
-            callAgentTool: this.callAgentTool.bind(this)
+            callAgentTool: this.callAgentTool.bind(this),
+            isActive: () => !this.unloaded,
+            onAbort: (message) => window.dispatchEvent(new CustomEvent(AUTOCOMMIT_STOP_EVENT, { detail: { message } }))
         });
         this.repo = createGitCommitRepo({
             element: this.element,
@@ -94,6 +97,7 @@ export class GitPanel {
             cancelConflictResolution: this.cancelConflictResolution.bind(this)
         });
         this.actions = createGitCommitActions({
+            isActive: () => !this.unloaded,
             getState: () => this.state,
             setState: this.setState.bind(this),
             setStateIn: this.setStateIn.bind(this),

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { createDiffOps } from './git/diff-ops.mjs';
+import { createFetchOps } from './git/fetch-ops.mjs';
 import { createBranchOps } from './git/branch-ops.mjs';
 import { createIgnoreOps } from './git/ignore-ops.mjs';
 import { createOverviewOps } from './git/overview-ops.mjs';
@@ -109,6 +110,7 @@ export function createGitService({ validatePath, workspaceRoots = [] }) {
   Object.assign(ops, createOverviewOps(context, ops));
   Object.assign(ops, createStashConflictOps(context, ops));
   Object.assign(ops, createRemoteIdentityOps(context));
+  Object.assign(ops, createFetchOps(context));
   const { gitStatusOverview, ...publicOps } = ops;
 
   return {

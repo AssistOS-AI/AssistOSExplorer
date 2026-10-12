@@ -461,6 +461,8 @@ export function createGitCommitActions(ctx) {
     const { stashSelectedRepos, unstashSelectedRepos } = stashActions;
 
     const autoStashActions = createAutoStashActions({
+        isActive: ctx.isActive,
+        dispatchAutocommitStop,
         getState,
         applyState,
         service,

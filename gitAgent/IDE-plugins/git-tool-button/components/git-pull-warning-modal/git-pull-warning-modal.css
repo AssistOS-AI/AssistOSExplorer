@@ -1,0 +1,15 @@
+.git-pull-warning-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    color: var(--text);
+}
+
+.git-pull-warning-modal p {
+    margin: 0;
+}
+
+.git-pull-warning-path {
+    overflow-wrap: anywhere;
+    color: var(--text-soft);
+}
