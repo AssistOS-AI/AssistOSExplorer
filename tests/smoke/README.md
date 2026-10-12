@@ -4,6 +4,31 @@ This package contains the maintainable Playwright smoke suite for Explorer, WebC
 
 ## Quick Start
 
+### Optional local-llm model suite
+
+Run `npm run test:local-llm -- --help` for the explicit interface. This Node dispatcher calls the fixed sibling `ploinky/tests/hardware-limits/verify.mjs`. The canonical runner owns authorization, staging, model inference, evidence and owned-resource cleanup. The command is opt-in; it adds no Playwright specs or default/full-suite selection.
+
+| Profile | Canonical block / case | Required target |
+| --- | --- | --- |
+| `apple` | `mac-model-venus` / `LIVE-L6` | Already selected rootless libkrun machine with Venus |
+| `nvidia` | `apparatus-model-nvidia` / `LIVE-L4` | Native Linux CUDA, no MPS |
+| `cpu` | `apparatus-model-cpu` / `LIVE-L5` | Native Linux with workspace-wide GPU withdrawal before startup |
+
+Every invocation requires `--profile`, `--action` and an absolute `--run` manifest file path. Prepare also requires absolute config and observed-pins paths. For example, using operator-selected paths:
+
+```bash
+npm run test:local-llm -- --profile cpu --action prepare --run /absolute/evidence/cpu-run.json --config /absolute/config.json --pins /absolute/cpu-pins.json
+npm run test:local-llm -- --profile cpu --action provision --run /absolute/evidence/cpu-run.json --authorization /absolute/authorization-provision.json
+npm run test:local-llm -- --profile cpu --action live --run /absolute/evidence/cpu-run.json --authorization /absolute/authorization-live.json
+npm run test:local-llm -- --profile cpu --action cleanup --run /absolute/evidence/cpu-run.json --authorization /absolute/authorization-cleanup.json
+```
+
+Prepare maps to `prepare-live` and checks the resulting manifest's profile and block. The other actions check that binding before invocation and require the canonical execution-time authorization for that action and exact manifest. The dispatcher creates no approval. It propagates canonical exit codes; an interrupted runner, binding mismatch or missing proof cannot establish a pass.
+
+Use separate fresh sequential NVIDIA and CPU cohorts. The Apple suite uses the selected machine and its reviewed setup/restoration envelope; it never installs, creates, switches, stops or deletes machines. A passing case needs canonical backend, model/image/source and nonempty inference evidence, positive generation rate, successful owned-resource cleanup and, for Apple, restoration evidence. Failed cleanup or missing retrieved artifacts keeps recovery evidence and remains non-PASS. These optional checks do not replace broader release gates.
+
+Offline dispatcher checks use `node --test lib/local-llm-e2e.test.mjs` from this directory. Injected runner results prove argument binding and error handling only; they do not prove model execution.
+
 Run `npm run test:optional-agents` in a separate fresh cohort to prove the unchanged
 three-agent default/activation workflow. This opt-in gate requires OnlyOffice, WebMeet Scribe, and
 WebMeet STT to be disabled in both Marketplace and the real runtime snapshot.

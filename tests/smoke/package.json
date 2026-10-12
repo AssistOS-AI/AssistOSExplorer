@@ -17,6 +17,7 @@
     "test:webmeet-headless": "SMOKE_WEBMEET_HEADLESS=1 SMOKE_WEBMEET_MEDIA=1 SMOKE_MEDIA_TIMEOUT_MS=60000 node ./scripts/run-playwright.mjs --project=chromium specs/30-webmeet-room-chat.spec.mjs specs/31-webmeet-settings.spec.mjs specs/40-webmeet-tagged-research.spec.mjs",
     "test:webmeet-screen": "SMOKE_WEBMEET_MEDIA=1 SMOKE_WEBMEET_SCREEN=1 node ./scripts/run-playwright.mjs --headed --project=chromium specs/30-webmeet-room-chat.spec.mjs",
     "test:webmeet-network-matrix": "node ./scripts/run-webmeet-network-matrix.mjs",
+    "test:local-llm": "node ./scripts/run-local-llm-e2e.mjs",
     "test:quick": "node ./scripts/run-playwright.mjs --grep-invert @external",
     "test:unit": "node --test lib/*.test.mjs",
     "test:full": "SMOKE_GITHUB=1 SMOKE_GPT_RESEARCHER=1 SMOKE_ONLYOFFICE=1 SMOKE_UMAMI=1 SMOKE_WEBMEET_HEADLESS=1 SMOKE_WEBMEET_MEDIA=1 SMOKE_OPEN_INTERPRETER=1 SMOKE_WEBTTY_CORE=1 node ./scripts/run-playwright.mjs",
