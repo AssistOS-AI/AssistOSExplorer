@@ -1,5 +1,6 @@
 export const GPU_HELP = [
     'GPU shares use NVIDIA MPS and are best-effort, not a security boundary.',
+    'GPU shares are NVIDIA-only; AMD and Apple GPUs used through Vulkan cannot be shared.',
     'Share clients use the same Box user as the MPS daemon. They can issue control commands, widen settings, stop the daemon and alter its writable pipe-directory entries.',
     'A process that drops the MPS environment can use the GPU outside MPS in DEFAULT compute mode.',
     'The MPS device-memory limit applies to each CUDA process, not to the sum of every process in an agent.',
