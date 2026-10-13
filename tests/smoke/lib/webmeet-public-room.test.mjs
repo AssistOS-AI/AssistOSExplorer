@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {leaveWebMeetRoomIfJoined} from './webmeet.mjs';
 import {
     describeGuestCookies, evaluateGuestPresence, forbiddenGuestAdmissionTools,
     mcpToolNamesFromPostData, publicRoomLoaderUrl,
@@ -15,6 +16,43 @@ test('public room URL has the roomLoader form the WebMeet UI publishes', () => {
     for (const bad of ['', 'room_x', `${roomId}/../x`, '../room_x']) {
         assert.throws(() => publicRoomLoaderUrl('http://127.0.0.1:8080', bad), /Invalid WebMeet room id/);
     }
+});
+
+test('guest UI leave waits for both session cleanup and captured LiveKit disconnection', async () => {
+    const presenter = {state: {session: {participantIdentity: 'guest'}, leavingMeeting: false}};
+    const room = {state: 'connected'};
+    const captured = {presenter, room, joined: true};
+    let disposed = false;
+    let clicked = false;
+    const page = {
+        evaluateHandle: async () => ({
+            evaluate: async (read) => read(captured),
+            dispose: async () => {disposed = true;},
+        }),
+        locator: (selector) => {
+            assert.equal(selector, '#webmeetLeaveButton');
+            return {click: async () => {
+                clicked = true;
+                presenter.state.session = null;
+                presenter.state.leavingMeeting = true;
+                setImmediate(() => {
+                    room.state = 'disconnected';
+                    presenter.state.leavingMeeting = false;
+                });
+            }};
+        },
+    };
+    await leaveWebMeetRoomIfJoined(page);
+    assert.equal(clicked, true);
+    assert.equal(room.state, 'disconnected', 'a cleared session alone must not finish cleanup');
+    assert.equal(presenter.state.leavingMeeting, false);
+    assert.equal(disposed, true);
+    captured.joined = false;
+    clicked = false;
+    disposed = false;
+    await leaveWebMeetRoomIfJoined(page);
+    assert.equal(clicked, false, 'a visitor that never joined needs no leave click');
+    assert.equal(disposed, true);
 });
 
 test('MCP tool names are read from single and batched tools/call bodies only', () => {

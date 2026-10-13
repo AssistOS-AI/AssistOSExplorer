@@ -1,4 +1,4 @@
-import { test, expect, attachPageDiagnostics, installRtcProbe } from '../lib/fixtures.mjs';
+import { test, expect, attachPageDiagnostics, installRtcProbe, expectNoUnfilteredBrowserErrors } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import {
   assertDistinctAuthenticatedPrincipals,
@@ -32,6 +32,7 @@ import {
   exerciseScreenShareDirection,
   joinStandaloneGuestRoom,
   joinRoom,
+  leaveWebMeetRoomIfJoined,
   openStandaloneWebMeet,
   openWebMeet,
   readRoomShareLink,
@@ -45,12 +46,6 @@ import {
   mcpToolNamesFromPostData,
   publicRoomLoaderUrl,
 } from '../lib/webmeet-public-room.mjs';
-
-function expectNoUnfilteredBrowserErrors(diagnostics, label) {
-  expect(diagnostics.events.filter((event) => (
-    event.kind === 'pageerror' || (event.kind === 'console' && event.type === 'error')
-  )), `${label} must have zero browser errors, including cleanup`).toEqual([]);
-}
 
 test.describe('WebMeet rooms', () => {
   test('standalone loader serves the authenticated dashboard and a guest invitation', async ({ page, browser }, testInfo) => {
@@ -182,6 +177,13 @@ test.describe('WebMeet rooms', () => {
         )),
       ]);
     } finally {
+      if (!guestPage.isClosed()) {
+        await failureCollector.required('standalone guest UI leave before room deletion', () => (
+          leaveWebMeetRoomIfJoined(guestPage)
+        ));
+      }
+      await failureCollector.required('standalone guest context close before room deletion', () => guestContext.close());
+      await failureCollector.required('standalone refused visitor context close', () => deniedContext.close());
       if ((publicRoomCreated || teamRoomCreated) && !page.isClosed()) {
         await failureCollector.required('standalone run-scoped room deletion', async () => {
           await openWebMeet(page);
@@ -189,13 +191,17 @@ test.describe('WebMeet rooms', () => {
           await deleteRoomIfPresent(page, teamTitle);
         });
       }
-      await Promise.all([
-        failureCollector.required('standalone owner diagnostics', () => ownerDiagnostics.flush()),
-        failureCollector.required('standalone guest diagnostics', () => guestDiagnostics.flush()),
-        failureCollector.required('standalone refused visitor diagnostics', () => deniedDiagnostics.flush()),
-        failureCollector.required('standalone guest context close', () => guestContext.close()),
-        failureCollector.required('standalone refused visitor context close', () => deniedContext.close()),
-      ]);
+      await failureCollector.required('standalone owner context close', () => page.context().close());
+      for (const [label, diagnostics] of [
+        ['standalone owner', ownerDiagnostics],
+        ['standalone guest', guestDiagnostics],
+        ['standalone refused visitor', deniedDiagnostics],
+      ]) {
+        await failureCollector.required(`${label} final diagnostics`, () => diagnostics.flush());
+        await failureCollector.required(`${label} zero browser errors`, () => (
+          expectNoUnfilteredBrowserErrors(diagnostics, label)
+        ));
+      }
     }
     failureCollector.throwIfAny({ primaryError, label: 'standalone WebMeet gate' });
   });

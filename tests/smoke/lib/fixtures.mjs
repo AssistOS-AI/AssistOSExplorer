@@ -81,6 +81,12 @@ export function assertPageDiagnosticsClean(page, label = 'browser console, page,
   for (const controller of controllers) expect(controller.actionableEvents(), label).toEqual([]);
 }
 
+export function expectNoUnfilteredBrowserErrors(diagnostics, label) {
+    expect(diagnostics.events.filter((event) => (
+        event.kind === 'pageerror' || (event.kind === 'console' && event.type === 'error')
+    )), `${label} must have zero browser errors, including cleanup`).toEqual([]);
+}
+
 export function acknowledgeExactPageDiagnostics(page, checkpoint, expectedSignatures) {
   if (checkpoint?.page !== page || !Array.isArray(checkpoint?.entries)) {
     throw new Error('the diagnostic checkpoint does not belong to this page');
