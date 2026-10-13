@@ -2,6 +2,7 @@ import { getApplicationPluginsForSlot } from "./file-exp-application-plugins.js"
 import { DPU_SECRETS_PATH, isDpuManagedPath } from "./file-exp-dpu-provider.js";
 import { resolveExplorerPathToFilesystemPath } from "../../../services/infrastructure/explorerApi.js";
 import { isAdminUser } from "../../../services/auth/adminUser.js";
+import { isDownloadablePath } from "./file-exp-download.js";
 
 export const FILE_EXP_MENU_SLOTS = Object.freeze({
     contextFile: 'file-exp:context-menu:file',
@@ -204,6 +205,20 @@ export function getBuiltInContextMenuItems(fileExp, target) {
             disabled: isManaged
         }
     ];
+
+    if (!isManaged && ['file', 'directory'].includes(type) && isDownloadablePath(entryPath)) {
+        items.push({
+            id: 'host:download',
+            source: 'host',
+            slot: type === 'directory' ? FILE_EXP_MENU_SLOTS.contextDirectory : FILE_EXP_MENU_SLOTS.contextFile,
+            action: 'downloadEntry',
+            label: 'Download',
+            entryPath,
+            entryType: type,
+            icon: './assets/icons/download.svg',
+            disabled: false
+        });
+    }
 
     if (type === 'file') {
         items.push({

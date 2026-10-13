@@ -518,6 +518,7 @@ export function createGitCommitActions(ctx) {
     } = conflictActions;
 
     const gitOpsActions = createGitOpsActions({
+        isActive: ctx.isActive,
         getState,
         applyState,
         service,

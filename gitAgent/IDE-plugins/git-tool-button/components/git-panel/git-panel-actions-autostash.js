@@ -67,7 +67,7 @@ export function createAutoStashActions(ctx) {
             setStatusLine
         });
 
-        if (result.ok) return true;
+        if (result.ok) return result;
 
         if (result.reason === 'aborted') {
             dispatchAutocommitStop?.(result.message);
@@ -110,9 +110,9 @@ export function createAutoStashActions(ctx) {
                 if (restored.ok) {
                     applyState({ autoStash: null }, { silent: true });
                 }
-                return restored.ok;
+                return restored.ok ? { ok: true, pulled: true } : false;
             }
-            return true;
+            return { ok: true, pulled: true };
         }
 
         if (result.reason === 'pull_blocked') {

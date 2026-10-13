@@ -120,6 +120,7 @@ test('no incoming remote commits leaves dirty files and staging untouched', asyn
     const fixture = createFlowFixture({ behind: 0 });
     const result = await pullWithAutoStashFlow(fixture.options);
     assert.equal(result.reason, 'up_to_date');
+    assert.equal(result.pulled, false);
     assert.deepEqual(fixture.events, ['status', 'fetch', 'status']);
 });
 
@@ -127,6 +128,7 @@ test('an incoming update with dirty files requires fresh explicit consent', asyn
     const fixture = createFlowFixture();
     const result = await pullWithAutoStashFlow(fixture.options);
     assert.equal(result.ok, true);
+    assert.equal(result.pulled, true);
     assert.deepEqual(fixture.events, ['status', 'fetch', 'status', 'consent', 'status', 'stash', 'pull', 'restore']);
 });
 

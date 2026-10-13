@@ -89,7 +89,7 @@ test('Explorer completes merges without dropping remaining selected changes', as
 
     assert.match(source, /!message && !hasPendingMergeForRepos\(selected, state\)/);
     assert.doesNotMatch(source, /if \(completedMergeRepos\.has\(repoPath\)\) continue;/);
-    assert.match(source, /const afterStage = parseJsonToolResult\(await service\.gitStatus\(repoPath\)\)/);
+    assert.match(source, /const afterStage = await readCommitStatus\(repoPath\)/);
     assert.match(source, /if \(stagedPaths\.length\)/);
 });
 
@@ -196,6 +196,7 @@ test('manual Commit and Commit & Push use the merge message shown in the editabl
         applyState() {},
         getSelectedReposForBatch: () => [repoPath],
         getPathsForCommitInRepo: () => ['shared.txt'],
+        updateRepoOverviewFromStatus() {},
         setStatusLine() {},
         updateCommitButtons() {},
         syncStaticUI() {},

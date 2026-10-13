@@ -115,6 +115,14 @@ For the host-owned Explorer `New` menu, the owning Git behavior is:
 4. Credentials UI may capture a manual token or start GitHub device flow, but the token itself is persisted server-side in DPU Secrets.
 5. Explorer refreshes its visible state after Git operations complete.
 
+### Commit Selection And Completion
+
+Commit and Commit & Push must capture the selected files, folder prefixes and exclusions when the user starts the action. After remote preparation, they must await a complete `git_status` response for each selected repository before staging any files. A compact overview, cached display rows or a background status request must not decide the operation's input. A missing, incomplete or failed status response stops the commit and preserves the selection and draft. Full status, including files beyond the display row limit, is intersected with the captured selection; ignored-only paths are excluded. Sync uses this same selection rule.
+
+The operation must stage the resolved selection, await the staged status, create the commit and then push when requested. Presenter closure before a pending preparation response returns must prevent new stage, commit or push operations. Already submitted Git operations remain server-owned. This ordering uses completion of the actual requests, without an added timeout, polling or artificial delay. The existing Git command deadlines remain unchanged.
+
+For manual Commit and Commit & Push, no selected changes means no commit and no push; the panel must state this outcome and retain the selection and commit draft. Failures and aborted operations must not clear that input. A successful batch clears only the repositories that actually committed; skipped repositories retain their selection and the draft. The completion summary reports only completed Git operations. A fetch-only remote check, an up-to-date branch, a missing upstream or an unborn branch must not increment the pull count. Completing an existing merge is reported separately from executing a pull.
+
 ### Interaction Model
 
 The plugin follows the Explorer presenter model and uses WebSkel as the UI framework.

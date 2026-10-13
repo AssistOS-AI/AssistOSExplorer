@@ -11,6 +11,18 @@ export function createSelectionEntry() {
     return { files: new Set(), prefixes: new Set(), sectionsByFile: new Map(), excludedFiles: new Set() };
 }
 
+export function snapshotSelectionEntry(entry) {
+    return {
+        files: new Set(entry?.files || []),
+        prefixes: new Set(entry?.prefixes || []),
+        excludedFiles: new Set(entry?.excludedFiles || [])
+    };
+}
+
+export function selectChangedPaths(entry, changedPaths) {
+    return [...new Set(changedPaths)].filter(filePath => isPathSelected(entry, filePath));
+}
+
 export function peekSelectionEntry(selectedFilesByRepo, repoPath) {
     if (!repoPath) return null;
     return selectedFilesByRepo?.[repoPath] || null;
