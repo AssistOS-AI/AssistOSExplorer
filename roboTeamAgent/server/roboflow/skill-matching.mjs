@@ -46,10 +46,11 @@ export async function discoverWorkflowSkillsets(client) {
     const repositories = await client.listRepositories();
     const skillsets = [], diagnostics = [];
     for (let repository of repositories) {
-        // Only dedicated skill repositories contribute workflow skillsets. Their
-        // skills live under `skills/`; other directories such as `.agents/skills`
+        // Skill repositories and mixed repositories (agents plus a root `skills/`
+        // folder) contribute workflow skillsets. Their skills live under `skills/`;
+        // other directories such as `.agents/skills` or an agent's own folders
         // belong to agent instructions and are never scanned.
-        if (repository.kind !== 'skills') continue;
+        if (!['skills', 'mixed'].includes(repository.kind)) continue;
         if (!repository.source) { diagnostics.push({ repository: repository.name, message: 'Repository source is unavailable' }); continue; }
         try {
             if (repository.origin === 'remote') {

@@ -62,7 +62,7 @@ export class RobotSkillsets {
         const requestedSource = String(input.source || '').trim();
         const source = requestedSource;
         if (!source || source.length > 2048) throw invalid('invalid skillset source or description');
-        const local = await this.resolveLiveRepository(source);
+        const local = await this.skillRoot(await this.resolveLiveRepository(source));
         const workspace = await fs.realpath(this.workspaceRoot);
         if (!local.startsWith(`${workspace}${path.sep}`)) throw invalid('skillset source must be inside the workspace');
         const dataRoot = await fs.realpath(this.robotStore.dataDir);
@@ -109,6 +109,25 @@ export class RobotSkillsets {
         }
         if (!repo || repo.origin === 'remote') throw invalid('repository is unavailable');
         return fs.realpath(repo.source);
+    }
+
+    // A mixed repository (agents plus a root skills/ folder, as Ploinky classifies it) contributes only that
+    // folder: the rest holds agent instructions and agents' own skills. Other sources are read whole, as before;
+    // without the Ploinky repository client the classification is unknown and the source is read whole.
+    async skillRoot(local) {
+        let repositories = [];
+        try { repositories = await (this.repositoriesClient || await repositoryClient()).listRepositories(); }
+        catch { return local; }
+        let mixed = false;
+        for (const entry of repositories || []) {
+            if (entry?.kind !== 'mixed' || !entry.source || entry.origin === 'remote') continue;
+            if (await fs.realpath(entry.source).catch(() => null) === local) { mixed = true; break; }
+        }
+        if (!mixed) return local;
+        const root = path.join(local, 'skills');
+        const stat = await fs.lstat(root).catch(() => null);
+        if (!stat?.isDirectory()) throw invalid('mixed repository has no skills/ folder');
+        return root;
     }
 
     async setSkillsetEnabled(robotId, { id, enabled }) {

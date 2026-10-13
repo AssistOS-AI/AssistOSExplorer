@@ -12,6 +12,8 @@ function normalizeRepositorySource(source) {
 
 export function hasRecommendedRepository(robot, recommendation) {
     const sources = [recommendation.source, recommendation.url].filter(Boolean).map(normalizeRepositorySource);
+    // A mixed repository is registered by its skills/ folder.
+    if (recommendation.kind === 'mixed' && recommendation.source?.startsWith('/')) sources.push(`${normalizeRepositorySource(recommendation.source)}/skills`);
     return (robot.repositories || []).some(repo => !repo.builtin && (sources.includes(normalizeRepositorySource(repo.source))
         || (recommendation.name && repo.source?.startsWith('/') && normalizeRepositorySource(repo.source).endsWith('/.ploinky/repos/' + recommendation.name))));
 }
@@ -22,7 +24,7 @@ export async function loadSkillRecommendations(fetchImpl = globalThis.fetch) {
     if (!response.ok) throw new Error('Could not load recommended repositories from Ploinky.');
     const payload = await response.json();
     return (payload.marketplace?.repositories || []).filter(repo => ['skills', 'mixed'].includes(repo.kind) && (repo.skillSource?.source || repo.url))
-        .map(repo => ({ name: repo.name, description: repo.description || '', url: repo.url,
+        .map(repo => ({ name: repo.name, kind: repo.kind, description: repo.description || '', url: repo.url,
             warnings: Array.isArray(repo.warnings) ? repo.warnings : [],
             source: repo.skillSource?.source || repo.url, origin: repo.skillSource?.origin || 'remote' }));
 }

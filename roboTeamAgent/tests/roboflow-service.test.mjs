@@ -436,10 +436,13 @@ test('workflow skillset discovery reads only skills/ by folder name and never pa
     await fs.mkdir(path.dirname(skill), { recursive: true });
     // A descriptor with a different declared name must not affect the catalog.
     await fs.writeFile(skill, '---\nname: Review Extra\ndescription: Review code.\n---\n');
+    const mixedSource = path.join(f.root, 'mixed');
+    await fs.mkdir(path.join(mixedSource, 'skills', 'review'), { recursive: true });
+    await fs.writeFile(path.join(mixedSource, 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: Review code.\n---\n');
     const catalog = await discoverWorkflowSkillsets({
         listRepositories: async () => [
             { name: 'project', source, origin: 'workspace', kind: 'skills' },
-            { name: 'mixed-repo', source, origin: 'workspace', kind: 'mixed' },
+            { name: 'mixed-repo', source: mixedSource, origin: 'workspace', kind: 'mixed' },
             { name: 'agent-repo', source, origin: 'workspace', kind: 'agents' },
         ],
     });
@@ -447,7 +450,8 @@ test('workflow skillset discovery reads only skills/ by folder name and never pa
     assert.ok(catalog.skillsets.some(set => set.kind === 'skill' && set.repositoryName === 'project' && set.name === 'review'));
     assert.equal(catalog.skillsets.some(set => set.name === 'Review Extra'), false);
     assert.equal(catalog.skillsets.some(set => set.name === 'achilles_specs'), false);
-    assert.equal(catalog.skillsets.some(set => ['mixed-repo', 'agent-repo'].includes(set.repositoryName)), false);
+    assert.ok(catalog.skillsets.some(set => set.repositoryName === 'mixed-repo' && set.name === 'review'), 'mixed repositories contribute their skills/ folder');
+    assert.equal(catalog.skillsets.some(set => set.repositoryName === 'agent-repo'), false);
 });
 
 test('repositories without declared skillsets match and mount individual skills', () => {

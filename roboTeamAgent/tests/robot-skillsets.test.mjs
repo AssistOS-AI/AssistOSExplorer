@@ -446,3 +446,31 @@ test('remote and managed registrations use workspace skills during import and la
     const remote = await f.skillsets.add(second.id, { source: 'https://example.invalid/WorkspaceSkills.git' });
     assert.equal(remote.source, local);
 });
+
+test('a mixed repository contributes only its root skills/ folder, not its agents\' skills', async t => {
+    const f = await fixture(t);
+    const workspace = f.skillsets.workspaceRoot;
+    const mixed = path.join(workspace, 'Mixed');
+    // An agent folder with its own skills and agent instructions, beside the repository's skills/ folder.
+    for (const [folder, name] of [['skills/list-topics', 'list-topics'], ['scout/skills/private', 'private'], ['.agents/skills/specs', 'specs']]) {
+        await fs.mkdir(path.join(mixed, folder), { recursive: true });
+        await fs.writeFile(path.join(mixed, folder, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\n---\n`);
+    }
+    await fs.writeFile(path.join(mixed, 'scout/manifest.json'), '{}');
+    const repositories = [f.documentationRepository, { name: 'Mixed', source: mixed, origin: 'workspace', kind: 'mixed' }];
+    f.skillsets.repositoriesClient = { listRepositories: async () => repositories };
+    const record = await f.skillsets.add(f.robot.id, { name: 'mixed', source: mixed });
+    assert.equal(record.source, path.join(await fs.realpath(mixed), 'skills'));
+    assert.deepEqual(record.skills.map(skill => skill.name), ['list-topics']);
+    const captured = await f.capture(await f.store.get(f.robot.id), { skillSets: ['mixed'] });
+    assert.deepEqual(selectedSkills(captured.entries.map(entry => entry.identity)), ['mixed/list-topics']);
+
+    // A skills or unclassified repository is still read whole; a mixed one without skills/ is refused.
+    repositories[1] = { ...repositories[1], kind: 'skills' };
+    const other = await f.store.create({ name: 'Other' });
+    assert.equal((await f.skillsets.add(other.id, { name: 'whole', source: mixed })).skills.length, 3);
+    await fs.rm(path.join(mixed, 'skills'), { recursive: true });
+    repositories[1] = { ...repositories[1], kind: 'mixed' };
+    const third = await f.store.create({ name: 'Third' });
+    await assert.rejects(f.skillsets.add(third.id, { name: 'empty', source: mixed }), /mixed repository has no skills\/ folder/);
+});

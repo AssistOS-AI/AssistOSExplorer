@@ -13,6 +13,12 @@ test('recommendations recognize existing local and Git registrations on the curr
     assert.equal(hasRecommendedRepository({ repositories: [] }, recommendation), false);
 });
 
+test('a mixed recommendation is recognized by the skills/ folder robots register for it', () => {
+    const mixed = { kind: 'mixed', source: '/workspace/AchillesCLI', url: 'https://github.com/AssistOS-AI/AchillesCLI.git' };
+    assert.equal(hasRecommendedRepository({ repositories: [{ source: '/workspace/AchillesCLI/skills' }] }, mixed), true);
+    assert.equal(hasRecommendedRepository({ repositories: [{ source: '/workspace/AchillesCLI/skills' }] }, { ...mixed, kind: 'skills' }), false);
+});
+
 test('recommendations include workspace-only repositories with no remote and mixed repositories', async () => {
     const { loadSkillRecommendations } = await import('../public/skills-dialog.js');
     const recommendations = await loadSkillRecommendations(async () => ({
@@ -23,6 +29,7 @@ test('recommendations include workspace-only repositories with no remote and mix
         ] } })
     }));
     assert.deepEqual(recommendations.map(repo => repo.name), ['Local', 'Mixed']);
+    assert.deepEqual(recommendations.map(repo => repo.kind), ['skills', 'mixed']);
     assert.equal(recommendations[0].source, '/workspace/Local');
     assert.deepEqual(recommendations[0].warnings, ['skills/incomplete: missing SKILL.md']);
 });
