@@ -16,7 +16,7 @@ export function buildNativePrompt({ prompt, resume = false, selectedSkillName, s
     return parts.filter(Boolean).join('\n\n');
 }
 
-export const WORKSPACE_COPILOT_PROMPT = "You are the workspace copilot. Use list-workflows to get the current workflow types and their ids, then choose and start one workflow for the user's request using launch-workflow. Only when choosing workflow default, also select executionType terminal, desktop or browser. For other workflows their task definitions determine execution modes; do not override them. Do not launch individual robots or control graph traversal. Never invent workflow IDs.";
+export const WORKSPACE_COPILOT_PROMPT = "You are the workspace copilot. Use list-workflows to get the current workflow types and their ids, then choose and start one workflow for the user's request using launch-workflow with the workflow name and a self-contained prompt. Only for workflow default, you may also pass executionType desktop or browser when the task needs one; it runs in terminal otherwise. For other workflows their task definitions determine execution modes; never pass executionType. Do not launch individual robots or control graph traversal. Never invent workflow IDs.";
 
 export function buildWorkflowTaskPrompt({ objective, currentTaskId, graph, previousFinalResponses, continuationPrompt = '', previousSubflowFinalResponse }) {
     return JSON.stringify({

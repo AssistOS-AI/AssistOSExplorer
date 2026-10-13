@@ -1,57 +1,53 @@
 import { createRoboTeamClient } from './roboTeamClient.mjs';
 
+// Only the Standard development workflow takes an execution mode; it runs in a terminal unless one is given.
+const DEFAULT_WORKFLOW_ID = 'default';
+const EXECUTION_TYPES = ['terminal', 'desktop', 'browser'];
+const REQUIRES_PROMPT = ['default', 'code-development'];
+
 function trim(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
+// Accepts `<workflow>`, `<workflow> :: <prompt>` or {"workflow":"<id>","prompt":"<task>","executionType":"<mode>"}.
 export function normalizeRequest(promptText) {
     const text = trim(promptText);
-    if (!text) throw new Error('a workflow start request is required');
+    if (!text) throw new Error('a workflow name is required');
     if (text.startsWith('{')) {
         let parsed;
         try { parsed = JSON.parse(text); }
         catch { throw new Error('the JSON workflow request is invalid'); }
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('the JSON workflow request must be an object');
-        return parsed;
+        if (parsed.prompt !== undefined && typeof parsed.prompt !== 'string') throw new Error('prompt must be text');
+        if (parsed.executionType !== undefined && typeof parsed.executionType !== 'string') throw new Error('executionType must be text');
+        return { workflow: trim(parsed.workflow), prompt: trim(parsed.prompt),
+            ...(trim(parsed.executionType) ? { executionType: trim(parsed.executionType) } : {}) };
     }
-    const [action, ...rest] = text.split(/\s+/);
-    const remainder = rest.join(' ');
-    if (action === 'start') {
-        const separator = remainder.indexOf('::');
-        if (separator < 0) throw new Error('use start <workflowTypeId> :: <objective>');
-        return { action, workflowTypeId: trim(remainder.slice(0, separator)), objective: trim(remainder.slice(separator + 2)) };
-    }
-    throw new Error('unsupported workflow action');
+    const separator = text.indexOf('::');
+    if (separator < 0) return { workflow: text, prompt: '' };
+    return { workflow: trim(text.slice(0, separator)), prompt: trim(text.slice(separator + 2)) };
 }
 
 export async function action(invocation = {}) {
     try {
-        const request = normalizeRequest(invocation.promptText);
-        const actionName = trim(request.action);
-        // Listing workflows is the list-workflows skill's job.
-        if (actionName !== 'start') throw new Error('unsupported workflow action; use list-workflows to list workflows');
+        const { workflow, prompt, executionType } = normalizeRequest(invocation.promptText);
+        if (!workflow) throw new Error('a workflow name is required');
+        if (/\s/.test(workflow)) throw new Error('the workflow name must be a single id from list-workflows');
+        if (executionType && workflow !== DEFAULT_WORKFLOW_ID) throw new Error('executionType is only for the default workflow');
+        if (executionType && !EXECUTION_TYPES.includes(executionType)) throw new Error(`executionType must be one of ${EXECUTION_TYPES.join(', ')}`);
+        if (!prompt && REQUIRES_PROMPT.includes(workflow)) throw new Error('This workflow requires a prompt');
+        const folder = trim(invocation.workingDir);
+        if (!folder) throw new Error('a working folder is required');
         const client = await createRoboTeamClient(invocation);
-
-        if (actionName === 'start') {
-            const workflowTypeId = trim(request.workflowTypeId);
-            if (!workflowTypeId) throw new Error('workflowTypeId is required');
-            if (request.objective !== undefined && typeof request.objective !== 'string') throw new Error('objective must be text');
-            const objective = trim(request.objective);
-            if (!objective && ['default', 'code-development'].includes(workflowTypeId)) throw new Error('This workflow requires an explicit objective');
-            const folder = trim(request.folder) || trim(invocation.workingDir);
-            if (!folder) throw new Error('a working folder is required');
-            await client.call('roboflow_start_flow', {
-                workflowTypeId,
-                ...(request.executionType ? { executionType: request.executionType } : {}),
-                ...(objective ? { objective } : {}),
-                folder,
-            });
-            return 'RoboFlow workflow started. It keeps running as a background task in this conversation; open that task to follow the workflow, its phases and their logs.';
-        }
-
-        throw new Error('unsupported workflow action');
+        await client.call('roboflow_start_flow', {
+            workflowTypeId: workflow,
+            ...(workflow === DEFAULT_WORKFLOW_ID ? { executionType: executionType || 'terminal' } : {}),
+            ...(prompt ? { objective: prompt } : {}),
+            folder,
+        });
+        return 'RoboFlow workflow started. It keeps running as a background task in this conversation; open that task to follow the workflow, its phases and their logs.';
     } catch (error) {
-        return `Could not run the workflow action: ${error?.message || 'request failed'}`;
+        return `Could not start the workflow: ${error?.message || 'request failed'}`;
     }
 }
 
