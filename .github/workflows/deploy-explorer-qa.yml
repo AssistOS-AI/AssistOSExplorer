@@ -2,11 +2,6 @@ name: Deploy Explorer QA Box
 
 on:
   workflow_dispatch:
-    inputs:
-      in_place_only:
-        description: 'Update the existing installation only; fail instead of installing when the QA workspace is absent'
-        type: boolean
-        default: false
 
 concurrency:
   group: deploy-explorer-qa
@@ -317,18 +312,9 @@ jobs:
 
       - name: Update the existing Explorer QA installation in place
         id: inplace
-        env:
-          IN_PLACE_ONLY: ${{ inputs.in_place_only }}
         run: |
           set -euo pipefail
           umask 077
-          case "${IN_PLACE_ONLY:-false}" in
-            true|false) ;;
-            *)
-              echo "::error::in_place_only must be true or false"
-              exit 1
-              ;;
-          esac
           SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
             -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
             -o ServerAliveInterval=30 -o ServerAliveCountMax=5)
@@ -336,28 +322,24 @@ jobs:
           [[ "$REMOTE_DIR" =~ ^/tmp/explorer-qa-update\.[A-Za-z0-9]{8}$ ]]
           cleanup_update() {
             "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
-              "rm -f '$REMOTE_DIR/update-explorer-qa.mjs' '$REMOTE_DIR/rollback-explorer-qa.mjs' '$REMOTE_DIR/qa-in-place-guard.sh' '$REMOTE_DIR/update.json'; rmdir '$REMOTE_DIR'" || true
+              "rm -f '$REMOTE_DIR/update-explorer-qa.mjs' '$REMOTE_DIR/rollback-explorer-qa.mjs' '$REMOTE_DIR/update.json'; rmdir '$REMOTE_DIR'" || true
           }
           trap cleanup_update EXIT
-          for helper in update-explorer-qa.mjs rollback-explorer-qa.mjs qa-in-place-guard.sh; do
+          for helper in update-explorer-qa.mjs rollback-explorer-qa.mjs; do
             scp -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
               -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
               "$GITHUB_WORKSPACE/.github/scripts/$helper" "${SSH_USER}@${SSH_HOST}:$REMOTE_DIR/$helper"
           done
           status=0
           "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
-            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_DIR' '${IN_PLACE_ONLY:-false}'" \
+            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_DIR'" \
             > "$RUNNER_TEMP/explorer-qa-update-result.json" <<'UPDATE' || status=$?
           set -euo pipefail
           update_dir="$1"
-          in_place_only="${2:-}"
           [[ "$update_dir" =~ ^/tmp/explorer-qa-update\.[A-Za-z0-9]{8}$ ]]
           test "$(id -un)" = admin
           test "$HOME" = /home/admin
           workspace=/home/admin/explorerQaWorkspace
-          # In-place-only admission: runs under the lock, before any engine probe,
-          # bootstrap or provisioning command. Exits non-zero (43) on an absent workspace.
-          bash "$update_dir/qa-in-place-guard.sh" "$workspace" "$in_place_only"
           if [ ! -e "$workspace" ] && [ ! -L "$workspace" ]; then
             # Prove absence before the fresh-install step can provision a tunnel.
             for engine in podman docker; do
@@ -387,9 +369,6 @@ jobs:
             echo '[deploy-qa] No existing workspace; proceeding to first installation.'
           elif [ "$status" -eq 0 ]; then
             echo 'updated=true' >> "$GITHUB_OUTPUT"
-          elif [ "$status" -eq 43 ]; then
-            echo '::error::in_place_only was requested but the QA workspace is absent. Nothing was provisioned and the fresh-install step is skipped.'
-            exit 43
           else
             echo '::error::In-place update failed. The deploy workflow will not recreate or destroy this installation.'
             exit "$status"
@@ -1853,53 +1832,34 @@ jobs:
           // END QA policy restoration
           NODE
 
-          echo "[deploy-qa] Binding ALA to the one Ploinky-selected AgentLib and checking its CLI contract..."
+          echo "[deploy-qa] Checking the dependency-free ALA CLI contract..."
           "$BOX_ENGINE" container exec -i --user podman "$BOX_INSTANCE" \
-            node --input-type=module - "$WORK_DIR/AdvancedLanguageAgent" /opt/ploinky-agentlib <<'NODE'
+            node --input-type=module - "$WORK_DIR/AdvancedLanguageAgent" <<'NODE'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import path from 'node:path';
           import { spawnSync } from 'node:child_process';
-          import { pathToFileURL } from 'node:url';
 
-          const [alaRoot, selectedAgentLib] = process.argv.slice(2);
-          for (const directory of [alaRoot, selectedAgentLib]) {
+          const [alaRoot] = process.argv.slice(2);
+          for (const directory of [alaRoot, path.join(alaRoot, 'bin')]) {
               const stat = fs.lstatSync(directory);
-              assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'ALA and selected AgentLib must be real directories');
+              assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'ALA checkout and bin must be real directories');
           }
           const manifest = JSON.parse(fs.readFileSync(path.join(alaRoot, 'package.json'), 'utf8'));
           assert.equal(manifest.name, 'advanced-language-agent');
-          assert.deepEqual(Object.keys(manifest.dependencies || {}), ['ploinky-agent-lib'], 'ALA dependency changes require deployment review');
-          const modules = path.join(alaRoot, 'node_modules');
-          try {
-              const stat = fs.lstatSync(modules);
-              assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'ALA node_modules must be a real directory');
-          } catch (error) {
-              if (error.code !== 'ENOENT') throw error;
-              fs.mkdirSync(modules);
+          for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+              assert.deepEqual(Object.keys(manifest[field] || {}), [], 'ALA runtime dependency changes require deployment review');
           }
-          const binding = path.join(modules, 'ploinky-agent-lib');
-          try {
-              assert.ok(fs.lstatSync(binding).isSymbolicLink(), 'ALA must not install a private AgentLib copy');
-              assert.equal(fs.readlinkSync(binding), selectedAgentLib, 'ALA must use the selected AgentLib');
-          } catch (error) {
-              if (error.code !== 'ENOENT') throw error;
-              fs.symlinkSync(selectedAgentLib, binding, 'dir');
-          }
-          const { loadAchillesAgentLib } = await import(pathToFileURL(path.join(alaRoot, 'src/achilles-loader.mjs')).href);
-          const loaded = await loadAchillesAgentLib({ env: {} });
-          assert.equal(loaded.strategy, 'package', 'ALA must not shadow the selected AgentLib with another checkout');
-          assert.ok(fs.realpathSync(loaded.entry).startsWith(`${fs.realpathSync(selectedAgentLib)}${path.sep}`), 'ALA must load the selected AgentLib');
-          assert.equal(typeof loaded.module.MainAgent, 'function');
-          assert.equal(typeof loaded.module.LLMAgent, 'function');
           const executable = path.join(alaRoot, 'bin/ala.mjs');
+          const stat = fs.lstatSync(executable);
+          assert.ok(stat.isFile() && !stat.isSymbolicLink(), 'ALA CLI must be a regular file');
           fs.accessSync(executable, fs.constants.X_OK);
           const help = spawnSync(process.execPath, [executable, '--help'], { encoding: 'utf8', timeout: 15000 });
           assert.equal(help.status, 0, 'ALA help must run successfully');
           for (const option of ['--home', '--cwd', '--MCPServers']) {
-              assert.ok(help.stdout.includes(option), `ALA must support ${option}`);
+              assert.ok(help.stdout.includes(option), 'ALA must support ' + option);
           }
-          console.log('[deploy-qa] ALA imports the selected AgentLib and supports the RoboTeam CLI contract.');
+          console.log('[deploy-qa] Dependency-free ALA supports the RoboTeam CLI contract.');
           NODE
           verify_ala_checkout
 
@@ -2547,7 +2507,7 @@ jobs:
             elif [ "$UPDATED_IN_PLACE" = false ]; then
               echo "- First installation only: configured repository defaults, resolved and pinned at deploy time"
             else
-              echo "- No installation was performed by the update step (in-place update failed, or in_place_only refused an absent workspace)"
+              echo "- No installation was performed by the update step (in-place update failed)"
             fi
             printf -- '- Cloudflare: dedicated persistent `%s` tunnel `%s`, ingress, and DNS API-managed by Ploinky\n' \
               "$CLOUDFLARE_TUNNEL_NAME" "${CLOUDFLARE_TUNNEL_ID:-not-created}"
