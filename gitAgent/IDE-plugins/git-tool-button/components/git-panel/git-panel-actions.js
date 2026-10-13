@@ -138,6 +138,7 @@ export function createGitCommitActions(ctx) {
         clearGitCredentials,
         saveGitToken,
         saveGitCredentials,
+        completeGithubAuthentication,
         ensureGitIdentityOrPrompt,
         saveGitIdentity
     } = credentialsActions;
@@ -578,6 +579,7 @@ export function createGitCommitActions(ctx) {
         generateCommitMessage,
         saveGitToken,
         saveGitCredentials,
+        completeGithubAuthentication,
         selectConflictFile,
         applyConflictChoice,
         saveConflictResolution,
