@@ -1,5 +1,3 @@
-import { isAdminUser } from '../../services/auth/adminUser.js';
-
 export class LiveSessionsToolButton {
     constructor(element, invalidate) {
         this.element = element;
@@ -36,14 +34,12 @@ export class LiveSessionsToolButton {
         if (this.button) {
             this.button.title = tooltip;
             this.button.setAttribute('aria-label', tooltip);
-            this.button.hidden = !isAdminUser(globalThis.assistOS?.user);
         }
     }
 
     openSessions = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
-        if (!isAdminUser(globalThis.assistOS?.user)) return;
         const open = globalThis.assistOS?.UI?.openExpandedModal;
         if (typeof open !== 'function') return;
         // Only component metadata reaches the modal descriptor and resume storage.

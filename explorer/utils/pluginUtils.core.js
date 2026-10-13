@@ -1,3 +1,5 @@
+import { normalizeLiveSessionSource } from './liveSessionSource.mjs';
+
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 const WORKSPACE_FILES_PREFIX = '/workspace-files';
 
@@ -285,6 +287,16 @@ export function normalizeRuntimePlugins(runtimePlugins) {
         }
 
         const agent = isNonEmptyString(entry.agent) ? entry.agent.trim() : '';
+        if (entry.contributionType === 'live-sessions-source') {
+            const liveSessions = normalizeLiveSessionSource(entry.liveSessions, agent);
+            if (category !== APPLICATION_PLUGIN_CATEGORY || location !== 'live-sessions:source' || !liveSessions
+                || !/^[a-z][a-z0-9-]*$/i.test(entry.id) || !isNonEmptyString(entry.label)) return;
+            bucket.push({
+                pluginCategory: category, contributionType: 'live-sessions-source', location,
+                agent, id: entry.id, label: entry.label || agent, liveSessions, runtime: true,
+            });
+            return;
+        }
         const contributionType = entry?.contributionType === MENU_PLUGIN_CONTRIBUTION_TYPE ? MENU_PLUGIN_CONTRIBUTION_TYPE : 'mount';
         const component = isNonEmptyString(entry.component) ? entry.component.trim() : '';
         if (contributionType !== MENU_PLUGIN_CONTRIBUTION_TYPE && !component) {

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { normalizeLiveSessionSource } from './liveSessionSource.mjs';
 
 const runFile = promisify(execFile);
 
@@ -54,7 +55,7 @@ export const DEFAULT_DOCUMENT_PLUGIN_LOCATIONS = ['document', 'chapter', 'paragr
 export const APPLICATION_PLUGIN_LOCATION_PATTERN = /^[a-z0-9-]+(?::[a-z0-9-]+)+$/i;
 export const APPLICATION_PLUGIN_ID_PATTERN = /^[a-z][a-z0-9-]*$/i;
 const VALID_PLUGIN_TYPES = new Set(['embedded', 'modal', 'global']);
-const VALID_APPLICATION_CONTRIBUTION_TYPES = new Set(['mount', 'menu']);
+const VALID_APPLICATION_CONTRIBUTION_TYPES = new Set(['mount', 'menu', 'live-sessions-source']);
 const AGENT_SETTING_KEY_PATTERN = /^[a-z][a-z0-9-]*$/i;
 const AGENT_SETTING_PLUGIN_KEY_PATTERN = /^[a-z0-9_.-]+\/[a-z][a-z0-9-]*$/i;
 const SETTINGS_COMPONENT_PATTERN = /^[a-z][a-z0-9]*-[a-z0-9-]*$/i;
@@ -496,6 +497,14 @@ export async function aggregateIdePlugins(rootDir) {
       const { location, ...pluginConfigWithoutLocation } = pluginConfig;
       const finalPluginConfig = pluginConfigWithoutLocation;
       finalPluginConfig.agent = agentName;
+      if (finalPluginConfig.contributionType === 'live-sessions-source') {
+        const source = normalizeLiveSessionSource(finalPluginConfig.liveSessions, agentName);
+        if (!source || !isNonEmptyString(finalPluginConfig.id) || !isNonEmptyString(finalPluginConfig.label)
+          || locations.length !== 1 || locations[0] !== 'live-sessions:source') continue;
+        finalPluginConfig.liveSessions = source;
+        delete finalPluginConfig.component;
+        delete finalPluginConfig.dependencies;
+      }
 
       const relativePluginDir = path.relative(rootDir, pluginDir);
       if (relativePluginDir && !relativePluginDir.startsWith('..') && !path.isAbsolute(relativePluginDir)) {

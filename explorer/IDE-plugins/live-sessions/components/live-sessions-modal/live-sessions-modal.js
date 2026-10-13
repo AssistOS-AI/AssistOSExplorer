@@ -4,7 +4,10 @@ import {
     navigateTerminalWindow,
     reserveTerminalWindow,
 } from '../../../../web-components/modals/terminal-target-modal/terminal-target-modal.js';
-import { killLiveSession, listLiveSessions, mintLiveSessionAttach } from '../../live-sessions-api.js';
+import {
+    aggregateLiveSessions, discoverLiveSessionSources, ENDED_STATUSES, killLiveSession,
+    mintLiveSessionAttach, navigateLiveSessionWindow, stopAgentSession,
+} from '../../live-sessions-api.js';
 
 const POLL_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10000;
@@ -30,6 +33,7 @@ export class LiveSessionsModal {
         this.closed = false;
         this.started = false;
         this.rows = new Map();
+        this.sourceErrors = [];
         this.controllers = new Set();
         this.pendingPopups = new Set();
         this.pendingId = '';
@@ -83,30 +87,55 @@ export class LiveSessionsModal {
     }
 
     canUseSessions() {
-        if (isAdminUser(globalThis.assistOS?.user)) return true;
-        clearTimeout(this.pollTimer);
-        this.rows.clear();
-        this.listElement?.replaceChildren();
-        this.detachViewer();
-        this.statusElement.textContent = 'Administrator access is required.';
-        return false;
+        return !this.closed;
     }
 
     async refresh() {
         clearTimeout(this.pollTimer);
         this.pollTimer = null;
-        if (this.closed || this.listPending || this.unsupported || !this.canUseSessions()) return;
+        if (this.closed || this.listPending) return;
         this.listPending = true;
-        let continuePolling = true;
+        const sources = discoverLiveSessionSources(globalThis.assistOS?.workspace?.appPlugins);
+        const admin = isAdminUser(globalThis.assistOS?.user) && !this.unsupported;
+        let continuePolling = admin || sources.length > 0;
         try {
-            const rows = await this.withRequest(listLiveSessions);
-            if (this.closed || !this.canUseSessions()) return;
-            this.rows = new Map(rows.map((row) => [row.id, row]));
-            if (this.viewerId && (!this.rows.has(this.viewerId) || this.rows.get(this.viewerId).status === 'exited')) {
+            const sourceKey = (source) => source.shell ? 'webtty' : source.liveSessions.base;
+            const activeSources = new Set([...(admin ? ['webtty'] : []), ...sources.map(sourceKey)]);
+            for (const [key, row] of this.rows) {
+                if (!activeSources.has(sourceKey(row.sessionSource))) this.rows.delete(key);
+            }
+            this.sourceErrors = [];
+            await this.withRequest(({ signal }) => aggregateLiveSessions(sources, { admin, signal, onResult: (result) => {
+                if (this.closed) return;
+                if (result.source.shell && !isAdminUser(globalThis.assistOS?.user)) return;
+                if (result.error?.status === 404 && result.source.shell) this.unsupported = true;
+                if (result.error) this.sourceErrors.push(result);
+                // A temporary read failure does not establish that a running session disappeared.
+                // Successful reads and authorization refusals replace only their own source rows.
+                if (!result.error || [401, 403].includes(result.error.status)) {
+                    for (const [key, row] of this.rows) {
+                        if (sourceKey(row.sessionSource) === sourceKey(result.source)) this.rows.delete(key);
+                    }
+                }
+                for (const row of result.rows) {
+                    const key = result.source.shell ? row.id : `${result.source.liveSessions.base}:${row.id}`;
+                    this.rows.set(key, { ...row, key, sessionSource: result.source });
+                }
+                this.renderRows();
+            } }));
+            if (this.closed) return;
+            if (this.viewerId && (!this.rows.has(this.viewerId)
+                || ['exited', ...ENDED_STATUSES].includes(this.rows.get(this.viewerId).status))) {
                 this.detachViewer();
             }
-            this.renderRows();
-            this.statusElement.textContent = rows.length ? `${rows.length} terminal session${rows.length === 1 ? '' : 's'}.` : 'No live terminal sessions.';
+            if (this.streamPresenter && this.rows.has(this.viewerId)) {
+                const row = this.rows.get(this.viewerId);
+                this.streamPresenter.row = row;
+                this.streamPresenter.form.hidden = !row.isOwner || !row.capabilities.message;
+            }
+            continuePolling = sources.length > 0 || (admin && !this.unsupported);
+            this.statusElement.textContent = this.unsupported && sources.length === 0 ? 'Live Sessions needs a newer Ploinky'
+                : this.rows.size ? `${this.rows.size} live session${this.rows.size === 1 ? '' : 's'}.` : 'No live sessions.';
         } catch (error) {
             if (this.closed) return;
             if (error?.status === 404) {
@@ -126,7 +155,7 @@ export class LiveSessionsModal {
             }
         } finally {
             this.listPending = false;
-            if (!this.closed && continuePolling && !this.unsupported && isAdminUser(globalThis.assistOS?.user)) {
+            if (!this.closed && continuePolling) {
                 this.pollTimer = setTimeout(() => void this.refresh(), POLL_MS);
             }
         }
@@ -134,25 +163,35 @@ export class LiveSessionsModal {
 
     renderRows() {
         const fragment = document.createDocumentFragment();
+        for (const { source, error } of this.sourceErrors) {
+            fragment.appendChild(textElement('li', `${source.label || source.agent}: ${error.status === 404 && source.shell
+                ? 'Live Sessions needs a newer Ploinky' : 'This session source is unavailable.'}`, 'live-sessions-row'));
+        }
         for (const row of this.rows.values()) {
             const item = textElement('li', '', 'live-sessions-row');
-            item.dataset.sessionId = row.id;
+            item.dataset.sessionId = row.key || row.id;
             item.appendChild(textElement('h3', row.title));
             item.appendChild(textElement('p', `${row.detail} · ${row.cwdDisplay}`, 'live-sessions-detail'));
-            item.appendChild(textElement('p', `${row.status} · ${row.ownerLabel} · ${row.viewerCount} viewer${row.viewerCount === 1 ? '' : 's'} · ${row.status === 'exited' ? 'Input closed' : row.isOwner ? 'You can type' : 'Watch only'} · ${row.access === 'ro' ? 'Read-only folder' : 'Read/write folder'}`));
+            item.appendChild(textElement('p', `${row.status} · ${row.ownerLabel} · ${row.viewerCount} viewer${row.viewerCount === 1 ? '' : 's'} · ${row.status === 'exited' ? 'Input closed' : row.kind === 'shell' && row.isOwner ? 'You can type' : 'Watch only'} · ${row.access === 'ro' ? 'Read-only folder' : 'Read/write folder'}`));
             if (row.status === 'exited') {
                 item.appendChild(textElement('p', `Ended: ${row.exitReason || 'exited'}`));
             } else {
                 const actions = textElement('div', '', 'live-sessions-actions');
-                const confirmation = this.confirmId === row.id;
-                if (confirmation) item.appendChild(textElement('p', 'Kill this terminal and its running processes?'));
+                const key = row.key || row.id;
+                const confirmation = this.confirmId === key;
+                if (confirmation) item.appendChild(textElement('p', row.kind === 'shell' ? 'Kill this terminal and its running processes?'
+                    : row.kind === 'workflow-phase' ? 'Pause the whole workflow? It can be resumed from Observability.' : 'Stop this run?'));
+                const rowActions = [['attach', row.kind === 'shell' ? 'Attach' : 'Watch']];
+                if (row.kind === 'shell' || row.viewUrl) rowActions.push(['pop-out', 'Pop out']);
+                if (row.transcriptUrl) rowActions.push(['transcript', 'Transcript']);
+                if (row.capabilities.stop && !ENDED_STATUSES.includes(row.status)) rowActions.push(['kill', row.kind === 'shell' ? 'Kill' : row.kind === 'workflow-phase' ? 'Pause workflow' : 'Stop']);
                 for (const [action, label] of confirmation
-                    ? [['confirm-kill', 'Confirm Kill'], ['cancel-kill', 'Cancel']]
-                    : [['attach', 'Attach'], ['pop-out', 'Pop out'], ['kill', 'Kill']]) {
+                    ? [['confirm-kill', row.kind === 'shell' ? 'Confirm Kill' : row.kind === 'workflow-phase' ? 'Confirm pause' : 'Confirm stop'], ['cancel-kill', 'Cancel']]
+                    : rowActions) {
                     const button = textElement('button', label, action === 'attach' ? 'general-button secondary' : 'gray-button');
                     button.type = 'button';
                     button.dataset.sessionAction = action;
-                    button.dataset.sessionId = row.id;
+                    button.dataset.sessionId = key;
                     button.disabled = Boolean(this.pendingId);
                     actions.appendChild(button);
                 }
@@ -179,16 +218,21 @@ export class LiveSessionsModal {
         if (this.closed || this.pendingId || !this.canUseSessions()) return;
         const row = this.rows.get(id);
         if (!row || row.status === 'exited') return;
+        if (row.kind === 'shell' && !isAdminUser(globalThis.assistOS?.user)) return;
         if (action === 'kill' || action === 'cancel-kill') {
+            if (!row.capabilities.stop || ENDED_STATUSES.includes(row.status)) return;
             this.confirmId = action === 'kill' ? id : '';
             this.renderRows();
             this.listElement.querySelector(`[data-session-id="${id}"][data-session-action="${action === 'kill' ? 'confirm-kill' : 'kill'}"]`)?.focus();
             return;
         }
-        if (!['attach', 'pop-out', 'confirm-kill'].includes(action) || (action === 'confirm-kill' && this.confirmId !== id)) return;
+        if (!['attach', 'pop-out', 'transcript', 'confirm-kill'].includes(action) || (action === 'confirm-kill' && this.confirmId !== id)) return;
+        if (action === 'confirm-kill' && (!row.capabilities.stop || ENDED_STATUSES.includes(row.status))) return;
+        if (action === 'pop-out' && row.kind !== 'shell' && !row.viewUrl) return;
+        if (action === 'transcript' && !row.transcriptUrl) return;
         // Reserve in the click event, before awaiting the fresh token, so popup blocking stays detectable.
-        const popup = action === 'pop-out' ? reserveTerminalWindow() : null;
-        if (action === 'pop-out' && !popup) {
+        const popup = ['pop-out', 'transcript'].includes(action) ? reserveTerminalWindow() : null;
+        if (['pop-out', 'transcript'].includes(action) && !popup) {
             this.statusElement.textContent = 'The browser blocked the terminal tab. Allow popups for this site, then try again.';
             return;
         }
@@ -198,17 +242,37 @@ export class LiveSessionsModal {
         this.renderRows();
         try {
             if (action === 'confirm-kill') {
-                await this.withRequest((options) => killLiveSession(id, options));
+                await this.withRequest((options) => row.kind === 'shell' ? killLiveSession(row.id, options) : stopAgentSession(row.sessionSource, row, options));
                 if (this.closed) return;
                 this.confirmId = '';
                 if (this.viewerId === id) this.detachViewer();
+            } else if (row.kind !== 'shell') {
+                if (popup) {
+                    if (!navigateLiveSessionWindow(popup, action === 'transcript' ? row.transcriptUrl : row.viewUrl, row.sessionSource.agent)) throw new Error('The tab could not be opened.');
+                    this.pendingPopups.delete(popup);
+                } else {
+                    this.detachViewer();
+                    const mountSequence = this.attachSequence;
+                    this.viewerId = id;
+                    this.viewerTitle.textContent = row.title;
+                    this.viewerElement.hidden = false;
+                    const proxy = globalThis.assistOS.UI.createElement('live-session-stream-view', this.frameElement, {}, {}, true);
+                    const node = proxy.element?.deref?.();
+                    await node?.presenterReadyPromise;
+                    await node?.renderCompletePromise;
+                    if (this.closed || mountSequence !== this.attachSequence) return;
+                    this.streamPresenter = node?.webSkelPresenter;
+                    if (!this.streamPresenter) throw new Error('The stream view could not be opened.');
+                    this.streamPresenter.updateSession(row, row.sessionSource);
+                }
             } else {
-                const attach = await this.withRequest((options) => mintLiveSessionAttach(id, options));
+                const attach = await this.withRequest((options) => mintLiveSessionAttach(row.id, options));
                 if (this.closed || sequence !== this.attachSequence || !this.canUseSessions()) return;
                 if (action === 'pop-out') {
                     if (!navigateTerminalWindow(popup, { attach })) throw new Error('Terminal tab could not be opened.');
                     this.pendingPopups.delete(popup);
                 } else {
+                    this.detachViewer();
                     const frame = document.createElement('iframe');
                     frame.title = `${row.title} (${row.isOwner ? 'owner' : 'watch only'})`;
                     frame.referrerPolicy = 'no-referrer';
@@ -234,6 +298,8 @@ export class LiveSessionsModal {
     detachViewer() {
         this.attachSequence += 1;
         this.viewerId = '';
+        this.streamPresenter?.afterUnload();
+        this.streamPresenter = null;
         this.frameElement?.replaceChildren();
         if (this.viewerElement) this.viewerElement.hidden = true;
     }

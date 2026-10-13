@@ -64,11 +64,11 @@ function environment(t, { admin = true } = {}) {
     return { modal, elements };
 }
 
-test('Live Sessions survives real discovery and normalization as an admin toolbar component', async () => {
+test('Live Sessions survives real discovery and normalization as an authenticated toolbar component', async () => {
     const config = JSON.parse(await fs.readFile(path.join(root, 'IDE-plugins/live-sessions/config.json'), 'utf8'));
     const manifest = JSON.parse(await fs.readFile(path.join(root, 'manifest.json'), 'utf8'));
     assert.equal(manifest.applicationPlugins['live-sessions'], true);
-    assert.equal(config.adminOnly, true);
+    assert.equal(config.adminOnly, false);
     assert.equal(config.locationOrder, 380);
     assert.deepEqual(config.toolbarModal, { mode: 'component', component: 'live-sessions-modal', fullscreen: true });
     const catalog = normalizeRuntimePlugins(await aggregateIdePlugins(path.resolve(root, '..')));
@@ -77,7 +77,7 @@ test('Live Sessions survives real discovery and normalization as an admin toolba
     assert.equal(plugin.agent, 'explorer');
     assert.equal(plugin.component, 'live-sessions-tool-button');
     assert.equal(plugin.dependencies[0].component, 'live-sessions-modal');
-    assert.equal(plugin.adminOnly, true);
+    assert.equal(plugin.adminOnly, false);
 });
 
 test('strict shell normalizer rejects unknown keys, kinds, capabilities, duplicate IDs and unsafe text', () => {
@@ -125,6 +125,134 @@ test('non-admin makes zero list fetches even when the component is opened direct
     await modal.refresh();
     assert.equal(calls, 0);
     assert.equal(modal.pollTimer, null);
+});
+
+test('ordinary users discover agent rows through the modal without requesting the shell source', async (t) => {
+    const { modal, elements } = environment(t, { admin: false });
+    const source = {
+        agent: 'roboTeamAgent', id: 'runs', label: 'Agent runs', contributionType: 'live-sessions-source',
+        liveSessions: { version: 1, base: '/roboTeamAgent/api/live-sessions' },
+    };
+    globalThis.assistOS.workspace = { appPlugins: { 'live-sessions:source': [source] } };
+    const urls = [];
+    const agent = {
+        ...row(), id: 'ls_task', source: 'roboTeamAgent', kind: 'workflow-phase', status: 'running',
+        attach: { mode: 'event-stream' }, ownerState: 'verified', exit: null,
+        capabilities: { watch: true, input: false, stop: true, message: true },
+    };
+    globalThis.fetch = async (url, options) => {
+        urls.push(url);
+        return options.method === 'POST' ? response({ ok: true }) : response(payload([agent]));
+    };
+    modal.afterRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(urls, ['/roboTeamAgent/api/live-sessions']);
+    const displayed = elements.get('#liveSessionsList').children[0];
+    assert.equal(displayed.children[0].textContent, '<img onerror=bad>');
+    const actions = displayed.children.find((child) => child.className === 'live-sessions-actions');
+    assert.deepEqual(actions.children.map((button) => button.textContent), ['Watch', 'Pause workflow']);
+    const key = '/roboTeamAgent/api/live-sessions:ls_task';
+    await modal.performAction(key, 'kill');
+    assert.match(elements.get('#liveSessionsList').children[0].children[3].textContent, /whole workflow/);
+    await modal.performAction(key, 'confirm-kill');
+    assert.equal(urls.filter((url) => url.endsWith('/ls_task/stop')).length, 1);
+    assert.ok(urls.every((url) => !url.startsWith('/webtty')));
+});
+
+test('an unavailable source renders an independent error row while unauthorized agent sources are empty', async (t) => {
+    const { modal, elements } = environment(t, { admin: false });
+    const makeSource = (id) => ({ agent: 'roboTeamAgent', id, label: id, contributionType: 'live-sessions-source', liveSessions: { version: 1, base: `/roboTeamAgent/${id}` } });
+    globalThis.assistOS.workspace = { appPlugins: { 'live-sessions:source': [makeSource('failed'), makeSource('forbidden')] } };
+    globalThis.fetch = async (url) => response({}, url.endsWith('/forbidden') ? 403 : 500);
+    modal.afterRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    const displayed = elements.get('#liveSessionsList').children;
+    assert.equal(displayed.length, 1);
+    assert.equal(displayed[0].textContent, 'failed: This session source is unavailable.');
+});
+
+test('transient source polls preserve an attached agent view; authoritative removal and authorization refusal detach it', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { modal } = environment(t, { admin: false });
+    const source = { agent: 'roboTeamAgent', id: 'runs', label: 'Runs', contributionType: 'live-sessions-source', liveSessions: { version: 1, base: '/roboTeamAgent/runs' } };
+    globalThis.assistOS.workspace = { appPlugins: { 'live-sessions:source': [source] } };
+    const agent = { ...row(), id: 'ls_task', source: 'roboTeamAgent', kind: 'robot-task', status: 'running',
+        attach: { mode: 'event-stream' }, ownerState: 'verified', exit: null,
+        capabilities: { watch: true, input: false, stop: true, message: true } };
+    let body = payload([agent]);
+    let status = 200;
+    let hung = false;
+    let hungSignal;
+    globalThis.fetch = async (_url, options) => {
+        if (hung) { hungSignal = options.signal; return new Promise(() => {}); }
+        return response(body, status);
+    };
+    modal.afterRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    const key = '/roboTeamAgent/runs:ls_task';
+    let unloads = 0;
+    const presenter = { row: agent, form: {}, afterUnload() { unloads += 1; } };
+    modal.viewerId = key;
+    modal.streamPresenter = presenter;
+    status = 503;
+    await modal.refresh();
+    assert.equal(modal.viewerId, key);
+    assert.equal(modal.streamPresenter, presenter);
+    assert.equal(unloads, 0);
+    hung = true;
+    const timeoutPoll = modal.refresh();
+    t.mock.timers.tick(4999);
+    assert.equal(hungSignal.aborted, false);
+    t.mock.timers.tick(1);
+    await timeoutPoll;
+    assert.equal(hungSignal.aborted, true);
+    assert.equal(modal.streamPresenter, presenter);
+    assert.equal(modal.viewerId, key);
+    assert.equal(unloads, 0);
+    hung = false;
+    status = 200;
+    await modal.refresh();
+    assert.equal(modal.streamPresenter, presenter);
+    assert.equal(unloads, 0);
+    body = payload([]);
+    await modal.refresh();
+    assert.equal(modal.viewerId, '');
+    assert.equal(unloads, 1);
+    body = payload([agent]);
+    await modal.refresh();
+    modal.viewerId = key;
+    modal.streamPresenter = presenter;
+    status = 403;
+    await modal.refresh();
+    assert.equal(modal.viewerId, '');
+    assert.equal(unloads, 2);
+    status = 200;
+    await modal.refresh();
+    modal.viewerId = key;
+    modal.streamPresenter = presenter;
+    body = payload([{ ...agent, status: 'stopped', exit: { reason: 'owner_stop' }, capabilities: { ...agent.capabilities, message: false, stop: false } }]);
+    await modal.refresh();
+    assert.equal(modal.viewerId, '');
+    assert.equal(unloads, 3);
+});
+
+test('temporary shell-list errors preserve its iframe while authorization refusal detaches it', async (t) => {
+    const { modal, elements } = environment(t);
+    let status = 200;
+    globalThis.fetch = async () => response(payload(), status);
+    modal.afterRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    const frame = new Element('iframe');
+    modal.viewerId = ID;
+    elements.get('#liveSessionsFrame').replaceChildren(frame);
+    status = 503;
+    await modal.refresh();
+    assert.equal(modal.viewerId, ID);
+    assert.equal(elements.get('#liveSessionsFrame').children[0], frame);
+    status = 401;
+    await modal.refresh();
+    assert.equal(modal.viewerId, '');
+    assert.equal(elements.get('#liveSessionsFrame').children.length, 0);
 });
 
 test('older Ploinky HTML 404 renders the upgrade notice and stops polling', async (t) => {

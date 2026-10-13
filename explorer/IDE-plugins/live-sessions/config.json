@@ -5,11 +5,11 @@
   "location": ["file-exp:toolbar"],
   "locationOrder": 380,
   "label": "Live Sessions",
-  "tooltip": "Watch, reattach or kill running terminals",
+  "tooltip": "Watch and manage live terminals and agent runs",
   "icon": "./icon.svg",
   "presenter": "LiveSessionsToolButton",
   "type": "embedded",
-  "adminOnly": true,
+  "adminOnly": false,
   "autoPin": false,
   "toolbarModal": {
     "mode": "component",
@@ -21,6 +21,11 @@
       "component": "live-sessions-modal",
       "presenter": "LiveSessionsModal",
       "type": "modal"
+    },
+    {
+      "component": "live-session-stream-view",
+      "presenter": "LiveSessionStreamView",
+      "type": "embedded"
     }
   ]
 }
