@@ -43,7 +43,7 @@ contents-table {
     margin-right: 10px;
     cursor: pointer;
     transition: transform 0.3s;
-    background-image: url("./assets/icons/arrow-down.svg");
+    background-image: url("/explorer/assets/icons/arrow-down.svg");
     background-repeat: no-repeat;
     background-position: center;
     flex-shrink: 0; /

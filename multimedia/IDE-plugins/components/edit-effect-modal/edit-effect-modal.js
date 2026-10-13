@@ -65,7 +65,7 @@ export class EditEffectModal{
         this.form.hasWarnings = true;
         let warning = `
                 <div class="paragraph-warning">
-                    <img loading="lazy" src="./assets/icons/warning.svg" class="video-warning-icon" alt="warn">
+                    <img loading="lazy" src="/explorer/assets/icons/warning.svg" class="video-warning-icon" alt="warn">
                     <div class="warning-text">${message}</div>
                 </div>`;
         this.form.insertAdjacentHTML("beforeend", warning);

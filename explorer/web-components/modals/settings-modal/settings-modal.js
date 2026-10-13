@@ -23,6 +23,13 @@ import { runtimeSettingsController } from "./settings-runtime-controller.js";
 import { accountController } from "./settings-account-controller.js";
 import { usersController } from "./settings-users-controller.js";
 import { hardwareController } from "./settings-hardware-controller.js";
+import { buildSettingsUrl, updateSettingsLocation } from "../../../shared/ui/settings-navigation.js";
+import {
+    loadEditorAutoSavePreference,
+    loadEditorAutoSaveIntervalPreference,
+    saveEditorAutoSavePreference,
+    saveEditorAutoSaveIntervalPreference
+} from "../../pages/file-exp/file-exp-state.js";
 
 const BASE_TABS = ['account', 'agents', 'plugins', 'keymap', 'editor', 'theme', 'avatar'];
 
@@ -46,10 +53,11 @@ export class SettingsModal {
             activeTab: initialTab,
             selectedTheme: this.props.theme === "dark" ? "dark" : getCurrentTheme(),
             keymap: { ...(this.props.keymap || getKeymap()) },
-            editorAutoSaveEnabled: Boolean(this.props.editorAutoSaveEnabled),
+            editorAutoSaveEnabled: this.props.editorAutoSaveEnabled === undefined
+                ? loadEditorAutoSavePreference() : Boolean(this.props.editorAutoSaveEnabled),
             editorAutoSaveIntervalSeconds: Number.isFinite(this.props.editorAutoSaveIntervalSeconds)
                 ? Math.max(1, Math.round(this.props.editorAutoSaveIntervalSeconds))
-                : 10,
+                : loadEditorAutoSaveIntervalPreference(),
             hasConflicts: false,
             pluginItems: [],
             pluginSettings: {},
@@ -87,6 +95,7 @@ export class SettingsModal {
             hardwareAccessChecked: false,
             hardwareAccess: false,
         };
+        this.savedPreferences = this.preferenceSignature();
         this.invalidate();
     }
 
@@ -150,16 +159,6 @@ export class SettingsModal {
     }
 
     bindEvents() {
-        if (!this.element.dataset.boundSettingsModal) {
-            this.element.addEventListener("keydown", (event) => {
-                if (event.key === "Escape") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    this.closeModal();
-                }
-            });
-            this.element.dataset.boundSettingsModal = "true";
-        }
         if (this.editorAutoSaveEnabledInput && !this.editorAutoSaveEnabledInput.dataset.bound) {
             this.editorAutoSaveEnabledInput.addEventListener('change', () => this.handleEditorAutoSaveToggle());
             this.editorAutoSaveEnabledInput.dataset.bound = 'true';
@@ -239,10 +238,15 @@ export class SettingsModal {
     }
 
     updateTabUI() {
+        if (this.hardwareClosed || this.element?.isConnected === false) return;
         if (!this.getAllowedTabs().includes(this.state.activeTab)) {
             this.state.activeTab = 'agents';
         }
         this.element.dataset.activeTab = this.state.activeTab;
+        // Only a Settings-addressed tab tracks this route; the originating Explorer URL stays intact.
+        if (typeof window !== 'undefined' && window.location?.href) {
+            updateSettingsLocation(window.location, window.history, this.requestedInitialTab || this.state.activeTab);
+        }
         const tabs = this.element.querySelectorAll(".settings-tab");
         tabs.forEach((tab) => {
             const isActive = tab.dataset.tab === this.state.activeTab;
@@ -431,6 +435,9 @@ export class SettingsModal {
         if (this.state.hasConflicts) return;
         const keymap = setKeymap(this.state.keymap);
         const theme = setTheme(this.state.selectedTheme);
+        saveEditorAutoSavePreference(this.state.editorAutoSaveEnabled);
+        saveEditorAutoSaveIntervalPreference(this.state.editorAutoSaveIntervalSeconds);
+        this.savedPreferences = this.preferenceSignature();
         this.closeModal({
             keymap,
             theme,
@@ -441,8 +448,38 @@ export class SettingsModal {
         });
     }
 
+    preferenceSignature() {
+        return JSON.stringify([
+            Object.entries(this.state.keymap).sort(([a], [b]) => a.localeCompare(b)),
+            this.state.selectedTheme,
+            Boolean(this.state.editorAutoSaveEnabled),
+            this.state.editorAutoSaveIntervalSeconds
+        ]);
+    }
+
+    confirmDiscardChanges(action) {
+        const hardware = this.hardwareSection?.querySelector('hardware-limits-panel')?.webSkelPresenter;
+        const dirtyHardware = [...(hardware?.drafts?.values() || [])].some(draft => draft.dirty);
+        if (!dirtyHardware && this.preferenceSignature() === this.savedPreferences) return true;
+        return window.confirm(`You have unsaved settings. ${action === 'reload' ? 'Reload' : 'Close'} and discard them?`);
+    }
+
+    getOpenInNewTabUrl() {
+        return buildSettingsUrl(window.location, this.state.activeTab);
+    }
+
+    getReloadProps() {
+        // Omit the launch snapshot so the remounted component reads saved preferences.
+        return { tab: this.state.activeTab };
+    }
+
     closeModal(payload) {
-        assistOS.UI.closeModal(this.element, payload);
+        const shell = this.element.closest('expanded-modal')?.webSkelPresenter;
+        if (!shell) return;
+        // WebSkel passes the clicked control as the first argument to local actions.
+        if (payload?.nodeType) payload = undefined;
+        if (payload !== undefined) shell.completeComponent(payload);
+        else void shell.closeModal();
     }
 }
 

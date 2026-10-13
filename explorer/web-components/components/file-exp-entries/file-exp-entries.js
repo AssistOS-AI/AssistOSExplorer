@@ -258,7 +258,7 @@ export class FileExpEntries {
         const triggerIcon = document.createElement('img');
         triggerIcon.className = 'action-menu-trigger-icon';
         triggerIcon.loading = 'lazy';
-        triggerIcon.src = './assets/icons/action-dots.svg';
+        triggerIcon.src = '/explorer/assets/icons/action-dots.svg';
         triggerIcon.alt = 'More actions';
         trigger.appendChild(triggerIcon);
 

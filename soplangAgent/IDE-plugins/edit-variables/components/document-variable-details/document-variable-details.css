@@ -33,14 +33,14 @@ document-variable-details .modal-body{
     margin-right: 10px;
 }
 .values{
-    -webkit-mask: url("./assets/icons/eye.svg") no-repeat center;
-    mask: url("./assets/icons/eye.svg") no-repeat center;
+    -webkit-mask: url("/explorer/assets/icons/eye.svg") no-repeat center;
+    mask: url("/explorer/assets/icons/eye.svg") no-repeat center;
     -webkit-mask-size: contain;
     mask-size: contain;
 }
 .edit{
-    -webkit-mask: url("./assets/icons/edit.svg") no-repeat center;
-    mask: url("./assets/icons/edit.svg") no-repeat center;
+    -webkit-mask: url("/explorer/assets/icons/edit.svg") no-repeat center;
+    mask: url("/explorer/assets/icons/edit.svg") no-repeat center;
     -webkit-mask-size: contain;
     mask-size: contain;
 }

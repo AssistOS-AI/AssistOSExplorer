@@ -135,7 +135,7 @@ export function getBuiltInNewMenuItems(fileExp) {
             slot: FILE_EXP_MENU_SLOTS.newMenu,
             action: 'newDirectory',
             label: 'New Folder',
-            icon: './assets/icons/folder-with-letter.svg',
+            icon: '/explorer/assets/icons/folder-with-letter.svg',
             disabled: !allowNewDirectory,
             title: allowNewDirectory ? 'Create folder' : 'Folders are not allowed in this location.'
         },
@@ -145,7 +145,7 @@ export function getBuiltInNewMenuItems(fileExp) {
             slot: FILE_EXP_MENU_SLOTS.newMenu,
             action: 'newFile',
             label: newFileLabel,
-            icon: './assets/icons/document.svg',
+            icon: '/explorer/assets/icons/document.svg',
             disabled: !allowNewFile,
             title: allowNewFile
                 ? (newFileLabel === 'New Secret' ? 'Create secret' : 'Create file')
@@ -179,7 +179,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
             label: 'Rename',
             entryPath,
             entryType: type,
-            icon: './assets/icons/edit.svg',
+            icon: '/explorer/assets/icons/edit.svg',
             disabled: !canRename
         },
         {
@@ -190,7 +190,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
             label: 'Copy',
             entryPath,
             entryType: type,
-            icon: './assets/icons/copy.svg',
+            icon: '/explorer/assets/icons/copy.svg',
             disabled: isManaged
         },
         {
@@ -201,7 +201,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
             label: 'Cut',
             entryPath,
             entryType: type,
-            icon: './assets/icons/cut.svg',
+            icon: '/explorer/assets/icons/cut.svg',
             disabled: isManaged
         }
     ];
@@ -215,7 +215,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
             label: 'Download',
             entryPath,
             entryType: type,
-            icon: './assets/icons/download.svg',
+            icon: '/explorer/assets/icons/download.svg',
             disabled: false
         });
     }
@@ -229,7 +229,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
             label: 'Open in new tab',
             entryPath,
             entryType: type,
-            icon: './assets/icons/document.svg',
+            icon: '/explorer/assets/icons/document.svg',
             disabled: false
         });
     }
@@ -245,7 +245,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
                 entryPath,
                 entryType: type,
                 targetPath: entryPath,
-                icon: './assets/icons/terminal.svg',
+                icon: '/explorer/assets/icons/terminal.svg',
                 disabled: false
             });
         }
@@ -259,7 +259,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
                 entryPath,
                 entryType: type,
                 targetPath: entryPath,
-                icon: './assets/icons/upload.svg',
+                icon: '/explorer/assets/icons/upload.svg',
                 disabled: isManaged ? !canCreateChildren : false
             }
         );
@@ -273,7 +273,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
                 entryPath,
                 entryType: type,
                 targetPath: entryPath,
-                icon: './assets/icons/paste.svg'
+                icon: '/explorer/assets/icons/paste.svg'
             });
         }
     }
@@ -287,7 +287,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
             label: 'Permissions',
             entryPath,
             entryType: type,
-            icon: './assets/icons/keys.svg'
+            icon: '/explorer/assets/icons/keys.svg'
         });
     }
 
@@ -299,7 +299,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
         label: 'Delete',
         entryPath,
         entryType: type,
-        icon: './assets/icons/trash-can.svg',
+        icon: '/explorer/assets/icons/trash-can.svg',
         destructive: true,
         disabled: !canDelete
     });

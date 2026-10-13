@@ -98,7 +98,7 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
     await openExplorer(page);
     await page.locator('#accountMenuButton').click();
     await page.getByRole('menuitem', { name: 'Settings' }).click();
-    const dialog = page.locator('dialog.settings-modal-dialog');
+    const dialog = page.locator('dialog.expanded-modal-dialog:has(settings-modal)');
     await expect(dialog).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
     const tab = dialog.getByRole('tab', { name: 'Hardware limits' });
     await expect(tab).toBeVisible({ timeout: smokeConfig.timeouts.navigation });

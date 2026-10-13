@@ -40,28 +40,28 @@ file-exp-entries {
 }
 
 .entry-icon.icon-folder {
-    -webkit-mask-image: url("./assets/icons/folder-fill.svg");
-    mask-image: url("./assets/icons/folder-fill.svg");
+    -webkit-mask-image: url("/explorer/assets/icons/folder-fill.svg");
+    mask-image: url("/explorer/assets/icons/folder-fill.svg");
 }
 
 .entry-icon.icon-folder-secure {
-    -webkit-mask-image: url("./assets/icons/folder-secure.svg");
-    mask-image: url("./assets/icons/folder-secure.svg");
+    -webkit-mask-image: url("/explorer/assets/icons/folder-secure.svg");
+    mask-image: url("/explorer/assets/icons/folder-secure.svg");
 }
 
 .entry-icon.icon-file {
-    -webkit-mask-image: url("./assets/icons/file-fill.svg");
-    mask-image: url("./assets/icons/file-fill.svg");
+    -webkit-mask-image: url("/explorer/assets/icons/file-fill.svg");
+    mask-image: url("/explorer/assets/icons/file-fill.svg");
 }
 
 .entry-icon.icon-folder-symlink {
-    -webkit-mask-image: url("./assets/icons/folder-symlink.svg");
-    mask-image: url("./assets/icons/folder-symlink.svg");
+    -webkit-mask-image: url("/explorer/assets/icons/folder-symlink.svg");
+    mask-image: url("/explorer/assets/icons/folder-symlink.svg");
 }
 
 .entry-icon.icon-file-symlink {
-    -webkit-mask-image: url("./assets/icons/file-symlink.svg");
-    mask-image: url("./assets/icons/file-symlink.svg");
+    -webkit-mask-image: url("/explorer/assets/icons/file-symlink.svg");
+    mask-image: url("/explorer/assets/icons/file-symlink.svg");
 }
 
 tr.is-symlink .col-name .icon {

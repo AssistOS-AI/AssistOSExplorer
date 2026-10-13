@@ -243,7 +243,7 @@ export class DocumentVideoPreview {
         if(tasks > 0){
             let info = `
                 <div class="vide-preview-info">
-                    <img loading="lazy" src="./assets/icons/info.svg" class="tasks-warning-icon" alt="info">
+                    <img loading="lazy" src="/explorer/assets/icons/info.svg" class="tasks-warning-icon" alt="info">
                     <div class="info-text">There are ${tasks} unfinished tasks.</div>
                 </div>`;
             let closeSection = this.element.querySelector(".close-player");
@@ -421,9 +421,9 @@ export class DocumentVideoPreview {
         playPause.setAttribute("data-local-action", "playPause");
         let mode = playPause.getAttribute("data-mode");
         if (mode === "play") {
-            playPause.innerHTML = `<img class="pointer" src="./assets/icons/pause.svg" alt="pause">`;
+            playPause.innerHTML = `<img class="pointer" src="/explorer/assets/icons/pause.svg" alt="pause">`;
         } else if (mode === "pause" || mode === "playFromBeginning") {
-            playPause.innerHTML = `<img class="pointer" src="./assets/icons/play.svg" alt="play">`;
+            playPause.innerHTML = `<img class="pointer" src="/explorer/assets/icons/play.svg" alt="play">`;
         }
     }
 
@@ -504,17 +504,17 @@ export class DocumentVideoPreview {
         let mode = targetElement.getAttribute("data-mode");
         let imgTag;
         if (mode === "pause") {
-            imgTag = `<img class="pointer" src="./assets/icons/pause.svg" alt="pause">`;
+            imgTag = `<img class="pointer" src="/explorer/assets/icons/pause.svg" alt="pause">`;
             mode = "play";
             this.setEditingState(false);
             await this.resumeVideo();
         } else if (mode === "play") {
-            imgTag = `<img class="pointer" src="./assets/icons/play.svg" alt="play">`;
+            imgTag = `<img class="pointer" src="/explorer/assets/icons/play.svg" alt="play">`;
             this.pauseVideoPreview();
             mode = "pause";
             this.setEditingState(true);
         } else if (mode === "reload" || mode === "playFromBeginning") {
-            imgTag = `<img class="pointer" src="./assets/icons/pause.svg" alt="pause">`;
+            imgTag = `<img class="pointer" src="/explorer/assets/icons/pause.svg" alt="pause">`;
             mode = "play";
             this.nextButton.classList.remove("disabled");
             this.previousButton.classList.remove("disabled");
@@ -688,7 +688,7 @@ export class DocumentVideoPreview {
     prepareVideoForReload() {
         let playButton = this.element.querySelector(".play-pause");
         playButton.setAttribute("data-mode", "reload");
-        playButton.innerHTML = `<img class="pointer" src="./assets/icons/refresh.svg" alt="reload">`;
+        playButton.innerHTML = `<img class="pointer" src="/explorer/assets/icons/refresh.svg" alt="reload">`;
         this.isPaused = false;
         this.chapterAudioPlayer.pause();
         this.setEditingState(true);
@@ -928,7 +928,7 @@ export class DocumentVideoPreview {
         //skip previous is called at the end of the document
         if (currentMode === "reload") {
             playPause.setAttribute("data-mode", "pause");
-            playPause.innerHTML = `<img class="pointer" src="./assets/icons/play.svg" alt="play">`;
+            playPause.innerHTML = `<img class="pointer" src="/explorer/assets/icons/play.svg" alt="play">`;
             currentMode = "pause";
             this.isPaused = true;
             let lastParagraphIndex = this.document.chapters[this.document.chapters.length - 1].paragraphs.length - 1;
