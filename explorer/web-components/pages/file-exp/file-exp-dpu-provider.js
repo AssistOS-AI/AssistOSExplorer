@@ -904,7 +904,7 @@ export function buildSecretPreviewMarkup(fileExp, secretState) {
     const displayValue = String(secretState?.value ?? '');
     const draftValue = String(secretState?.draft ?? displayValue);
     const revealLabel = masked ? 'Reveal value' : 'Mask value';
-    const revealIcon = masked ? './assets/icons/eye.svg' : './assets/icons/eye-edit.svg';
+    const revealIcon = masked ? '/explorer/assets/icons/eye.svg' : '/explorer/assets/icons/eye-edit.svg';
     const maskedPreview = '&bull;'.repeat(Math.max(12, Math.min(32, displayValue.length || 20)));
     const readOnlyMessage = secretState?.valueMaskedByPolicy
         ? 'Value is hidden. You have access to this secret, but not read permission.'

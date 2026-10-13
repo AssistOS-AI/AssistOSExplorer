@@ -708,7 +708,7 @@ git-panel {
     outline: none;
 }
 
-.git-tree-file-row.is-modified .git-tree-file {
+.git-tree-file-row.is-modified:not(.is-conflicted) .git-tree-file {
     color: rgba(96, 165, 250, 0.95);
 }
 
@@ -716,19 +716,19 @@ git-panel {
     color: #DB5C5C;
 }
 
-.git-tree-file-row.is-new .git-tree-file {
+.git-tree-file-row.is-new:not(.is-conflicted) .git-tree-file {
     color: rgba(115, 189, 121, 1);
 }
 
-.git-tree-file-row.is-untracked .git-tree-file {
+.git-tree-file-row.is-untracked:not(.is-conflicted) .git-tree-file {
     color: rgba(115, 189, 121, 0.75);
 }
 
-.git-tree-file-row.is-ignored .git-tree-file {
+.git-tree-file-row.is-ignored:not(.is-conflicted) .git-tree-file {
     color: #8b5a2b;
 }
 
-.git-tree-file-row.is-deleted .git-tree-file {
+.git-tree-file-row.is-deleted:not(.is-conflicted) .git-tree-file {
     color: rgba(148, 163, 184, 0.9);
 }
 
@@ -821,8 +821,8 @@ git-panel {
     color: rgba(15, 23, 42, 0.6);
     flex: 0 0 auto;
     background-color: currentColor;
-    -webkit-mask-image: url("./assets/icons/folder-fill.svg");
-    mask-image: url("./assets/icons/folder-fill.svg");
+    -webkit-mask-image: url("/explorer/assets/icons/folder-fill.svg");
+    mask-image: url("/explorer/assets/icons/folder-fill.svg");
     -webkit-mask-repeat: no-repeat;
     mask-repeat: no-repeat;
     -webkit-mask-position: center;
@@ -1313,6 +1313,10 @@ git-panel {
 .git-credentials-buttons {
     display: inline-flex;
     gap: 8px;
+}
+
+.git-credentials-buttons[hidden] {
+    display: none;
 }
 
 .git-ignore {

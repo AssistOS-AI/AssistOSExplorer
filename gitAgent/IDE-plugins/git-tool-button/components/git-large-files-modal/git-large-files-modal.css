@@ -1,0 +1,18 @@
+.git-large-files-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    color: var(--text);
+}
+.git-large-files-modal p { margin: 0; }
+.git-large-files-path { overflow-wrap: anywhere; color: var(--text-soft); }
+.git-large-files-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    max-height: 240px;
+    overflow-y: auto;
+}
+.git-large-files-list li { display: flex; gap: 16px; padding: 8px 0; }
+.git-large-files-list li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.git-large-files-list li strong { flex-shrink: 0; }

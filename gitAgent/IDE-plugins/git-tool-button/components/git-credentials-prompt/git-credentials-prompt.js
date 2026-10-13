@@ -10,11 +10,13 @@ export class GitCredentialsPrompt {
             token: '',
             authRequired: false,
             credentialsDirty: false,
+            credentialsAuthAction: null,
             autocommitDirty: false,
             tokenStored: false,
             githubConfigured: false,
             githubConnected: false,
             githubError: '',
+            githubAuthLoading: '',
             githubUserLabel: '',
             githubScope: '',
             githubHasRepoScope: false,
@@ -52,6 +54,7 @@ export class GitCredentialsPrompt {
         this.tokenHint = this.element.querySelector('#gitTokenHint');
         this.githubAuth = this.element.querySelector('#gitGithubAuth');
         this.githubStatus = this.element.querySelector('#gitGithubStatus');
+        this.githubLoadingSpinner = this.element.querySelector('.git-github-loading-spinner');
         this.githubScope = this.element.querySelector('#gitGithubScope');
         this.githubWarning = this.element.querySelector('#gitGithubWarning');
         this.githubPending = this.element.querySelector('#gitGithubPending');
@@ -65,6 +68,8 @@ export class GitCredentialsPrompt {
         this.showAgentReposInput = this.element.querySelector('#gitCredentialsShowAgentRepos');
         this.autoresolveInput = this.element.querySelector('#gitCredentialsAutoresolve');
         this.saveButton = this.element.querySelector('[data-local-action="saveGitCredentials"]');
+        this.credentialsButtons = this.element.querySelector('.git-credentials-buttons');
+        this.closeButton = this.element.querySelector('[data-local-action="closeGitCredentials"]');
         this.clearButton = this.element.querySelector('[data-local-action="clearGitCredentials"]');
         this.attachDelegatedListeners();
         this.applyState(this.state);
@@ -188,7 +193,8 @@ export class GitCredentialsPrompt {
             autocommitIntervalMinutes,
             autocommitRepos,
             showAgentRepos: this.state.showAgentRepos,
-            autoresolveConflicts
+            autoresolveConflicts,
+            preferencesOnly: this.state.activeTab === 'preferences'
         });
     }
 
@@ -197,6 +203,11 @@ export class GitCredentialsPrompt {
         this.clearGithubVerificationWatch();
         this.updateContinueButtonState();
         this.getParentPresenter()?.cancelGitCredentials?.();
+    }
+
+    closeGitCredentials() {
+        // Dismiss unsaved settings and UI polling without disconnecting active GitHub auth.
+        this.cancelGitCredentials();
     }
 
     clearGitCredentials() {
@@ -357,6 +368,10 @@ export class GitCredentialsPrompt {
         this.state.email = email;
         this.state.credentialsDirty = true;
         this.updateValidationState();
+        this.getParentPresenter()?.handleCredentialsChange?.({
+            name, email, authMethod: this.state.authMethod,
+            token: this.state.token, credentialsDirty: true
+        });
     }
 
     handleAuthMethodChange() {
@@ -383,6 +398,10 @@ export class GitCredentialsPrompt {
         this.state.token = token;
         this.state.credentialsDirty = true;
         this.updateValidationState();
+        this.getParentPresenter()?.handleCredentialsChange?.({
+            name: this.state.name, email: this.state.email,
+            authMethod: this.state.authMethod, token, credentialsDirty: true
+        });
     }
 
     handleAutocommitChange() {
@@ -395,6 +414,7 @@ export class GitCredentialsPrompt {
 
     commitCredentialsDraft() {
         this.getParentPresenter()?.handleCredentialsChange?.({
+            finalizeIdentity: true,
             name: this.state.name,
             email: this.state.email,
             authMethod: this.state.authMethod,
@@ -519,6 +539,9 @@ export class GitCredentialsPrompt {
 
     applyState(next) {
         if (!next || typeof next !== 'object') return;
+        if (Object.prototype.hasOwnProperty.call(next, 'credentialsAuthAction')) {
+            this.state.credentialsAuthAction = next.credentialsAuthAction || null;
+        }
         const refreshAutocommitRepos = Boolean(next.refreshAutocommitRepos);
         if (Object.prototype.hasOwnProperty.call(next, 'visible')) {
             this.state.visible = Boolean(next.visible);
@@ -555,6 +578,9 @@ export class GitCredentialsPrompt {
         }
         if (Object.prototype.hasOwnProperty.call(next, 'githubError')) {
             this.state.githubError = String(next.githubError || '').trim();
+        }
+        if (Object.prototype.hasOwnProperty.call(next, 'githubAuthLoading')) {
+            this.state.githubAuthLoading = String(next.githubAuthLoading || '');
         }
         if (Object.prototype.hasOwnProperty.call(next, 'githubUserLabel')) {
             this.state.githubUserLabel = String(next.githubUserLabel || '');
@@ -644,12 +670,22 @@ export class GitCredentialsPrompt {
         }
         if (this.clearButton) {
             this.clearButton.hidden = !(this.state.tokenStored || this.state.githubConnected);
+            this.clearButton.disabled = Boolean(this.state.githubAuthLoading);
+        }
+        if (this.githubLoadingSpinner) {
+            this.githubLoadingSpinner.hidden = !this.state.githubAuthLoading;
         }
         if (this.githubStatus) {
-            if (this.state.githubConnected) {
+            if (this.state.githubAuthLoading) {
+                this.githubStatus.textContent = this.state.githubAuthLoading === 'disconnecting'
+                    ? 'Disconnecting GitHub…'
+                    : 'Preparing GitHub sign-in…';
+            } else if (this.state.githubConnected) {
                 this.githubStatus.textContent = this.state.githubUserLabel
                     ? `Connected as ${this.state.githubUserLabel}.`
                     : 'Connected.';
+            } else if (this.state.authMethod === 'token' && this.state.credentialsAuthAction) {
+                this.githubStatus.textContent = 'Credentials will be cleared on Save. Cancel keeps the current authentication.';
             } else if (this.state.githubError) {
                 this.githubStatus.textContent = this.state.githubError;
             } else if (!this.state.githubConfigured) {
@@ -680,14 +716,15 @@ export class GitCredentialsPrompt {
         }
         if (this.githubAuth) {
             let githubState = 'idle';
-            if (this.state.githubConnected) githubState = 'connected';
+            if (this.state.githubAuthLoading) githubState = 'loading';
+            else if (this.state.githubConnected) githubState = 'connected';
             else if (this.state.githubError) githubState = 'error';
             else if (!this.state.githubConfigured) githubState = 'unavailable';
             else if (this.state.githubPending) githubState = 'pending';
             this.githubAuth.dataset.state = githubState;
         }
         if (this.githubPending) {
-            this.githubPending.hidden = !this.state.githubPending;
+            this.githubPending.hidden = Boolean(this.state.githubAuthLoading) || !this.state.githubPending;
         }
         if (this.githubCode) {
             this.githubCode.textContent = this.state.githubUserCode || '';
@@ -699,6 +736,7 @@ export class GitCredentialsPrompt {
         this.updateContinueButtonState();
         if (this.githubDisconnectButton) {
             this.githubDisconnectButton.hidden = !this.state.githubConnected;
+            this.githubDisconnectButton.disabled = Boolean(this.state.githubAuthLoading);
         }
         if (this.githubActions) {
             this.githubActions.hidden = !this.state.githubConnected;
@@ -791,9 +829,19 @@ export class GitCredentialsPrompt {
         if (this.tokenPanel) {
             this.tokenPanel.hidden = useGithub;
         }
+        this.updateCredentialsButtons();
+    }
+
+    updateCredentialsButtons() {
+        const githubAuthentication = this.state.activeTab !== 'preferences' && this.state.authMethod === 'github';
+        if (this.credentialsButtons) {
+            this.credentialsButtons.hidden = githubAuthentication;
+        }
+        if (this.closeButton) this.closeButton.hidden = !githubAuthentication;
     }
 
     updateTabUi() {
+        this.updateCredentialsButtons();
         const activeTab = this.state.activeTab === 'preferences' ? 'preferences' : 'authentication';
         this.root?.setAttribute('data-active-tab', activeTab);
         for (const button of this.tabButtons || []) {
@@ -815,6 +863,8 @@ export class GitCredentialsPrompt {
     }
 
     canSaveCredentials() {
+        if (this.state.activeTab === 'preferences') return true;
+        if (this.state.credentialsAuthAction) return true;
         if (this.state.authMethod === 'github' && !this.state.githubConnected) {
             return Boolean(this.state.githubConfigured);
         }

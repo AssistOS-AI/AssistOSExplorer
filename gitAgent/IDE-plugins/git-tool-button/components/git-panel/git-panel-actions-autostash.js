@@ -1,6 +1,7 @@
 import { extractGitPullBlockedFiles } from "./git-panel-utils.js";
 import { FILE_EXP_REFRESH_EVENT } from "/explorer/utils/appEvents.js";
 import { pullWithAutoStashFlow } from "../../utils/git-auto-stash-flow.js";
+import { requestPullStashConsent } from "../../utils/git-pull-consent.js";
 
 export function createAutoStashActions(ctx) {
     const {
@@ -14,6 +15,8 @@ export function createAutoStashActions(ctx) {
         handlePullConflicts,
         ensureGitIdentityOrPrompt,
         showGitAuthPrompt,
+        dispatchAutocommitStop,
+        isActive,
         gitPullWithToken,
         restoreStash,
         hasConflictsForRepos,
@@ -56,13 +59,21 @@ export function createAutoStashActions(ctx) {
             token,
             repoPaths,
             gitPullWithToken,
+            confirmStash: requestPullStashConsent,
+            isActive,
             restoreStash: (nextRepoPath, nextStashRef) => rollbackAutoStash(nextRepoPath, nextStashRef, {
                 restoreStatusLine: true
             }),
             setStatusLine
         });
 
-        if (result.ok) return true;
+        if (result.ok) return result;
+
+        if (result.reason === 'aborted') {
+            dispatchAutocommitStop?.(result.message);
+            setStatusLine(result.message);
+            return false;
+        }
 
         if (result.reason === 'restore_failed') {
             if (result.stashCreated) {
@@ -99,9 +110,9 @@ export function createAutoStashActions(ctx) {
                 if (restored.ok) {
                     applyState({ autoStash: null }, { silent: true });
                 }
-                return restored.ok;
+                return restored.ok ? { ok: true, pulled: true } : false;
             }
-            return true;
+            return { ok: true, pulled: true };
         }
 
         if (result.reason === 'pull_blocked') {

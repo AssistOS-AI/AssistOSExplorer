@@ -115,9 +115,35 @@ For the host-owned Explorer `New` menu, the owning Git behavior is:
 4. Credentials UI may capture a manual token or start GitHub device flow, but the token itself is persisted server-side in DPU Secrets.
 5. Explorer refreshes its visible state after Git operations complete.
 
+GitHub Authentication is a direct device flow without Save or Cancel controls. Selecting GitHub or opening the Authentication tab with GitHub selected shows the existing connection or immediately prepares a device code and polls the existing authorization flow. Successful approval activates the server-side DPU token directly and remembers the GitHub method. Existing valid codes resume polling rather than creating a second authorization. Clear Stored credentials and Disconnect act immediately in GitHub mode; after successful removal, the open panel prepares a fresh code if GitHub is configured. A failed removal preserves the existing connection and does not start a new flow. Panel closure ignores late UI responses but cannot undo authorization already submitted to the server.
+
+After GitHub approval, missing identity fields are filled from the profile where available. Valid name/email edits apply locally on field blur in GitHub mode, without changing Git config. Missing or invalid identity keeps Git operations gated; a pending operation resumes only once identity is valid. Direct GitHub completion never saves Preferences or submits a manual token draft. Switching to Token stops polling in this panel; a late GitHub response must not apply the Token draft or resume its pending operation.
+
+GitHub Disconnect displays a status spinner immediately, first with Disconnecting GitHub and then Preparing GitHub sign-in while requesting a fresh device code. The indicator ends when the request completes or fails, rather than after a timer. Duplicate Disconnect/Clear actions are disabled during this transition. Device-code preparation on initial sign-in uses the same indicator; once the code is ready the status changes to Complete sign-in in GitHub. The spinner respects reduced-motion preferences and the status is announced through a polite live region.
+
+Token Authentication retains Save and Cancel. Identity, a newly entered manual token, method selection and Clear Stored credentials remain drafts until Save. Typing or blurring a Token field never stores or activates it. Cancel discards the draft and restores saved identity and method without deleting or replacing active credentials. Save validates the draft before persisting it. A failed token update or credential deletion leaves saved identity and method unchanged; manual replacement does not delete the previous token first.
+
+A staged Token removal is confined to Token mode. Switching to GitHub discards that removal draft without deleting the stored token, and the GitHub presenter must never hide a server-returned code or error behind the Token Save/Cancel message. A begin response must contain either an active GitHub session or a usable device code and verification URI; otherwise the panel shows an explicit sign-in preparation error with retry guidance, stops its spinner, and does not remain silently idle.
+
+Preferences retains its own Save and Cancel controls regardless of authentication method. Preferences Save persists only preferences and never applies an unsaved Token or pending credential removal.
+
+Successful GitHub authentication keeps the credentials container open, including when it was first displayed by the credentials gate. GitHub Authentication provides a Close button instead of Save/Cancel. Close dismisses the credentials container and abandons unsaved preferences or identity drafts; it does not disconnect or undo the saved GitHub session. It also stops panel-owned polling and ignores late UI responses if clicked while authorization is pending. Token and Preferences retain their existing Save/Cancel behavior.
+
+### Commit Selection And Completion
+
+Commit and Commit & Push must capture the selected files, folder prefixes and exclusions when the user starts the action. After remote preparation, they must await a complete `git_status` response for each selected repository before staging any files. A compact overview, cached display rows or a background status request must not decide the operation's input. A missing, incomplete or failed status response stops the commit and preserves the selection and draft. Full status, including files beyond the display row limit, is intersected with the captured selection; ignored-only paths are excluded. Sync uses this same selection rule.
+
+The operation must stage the resolved selection, await the staged status, create the commit and then push when requested. Presenter closure before a pending preparation response returns must prevent new stage, commit or push operations. Already submitted Git operations remain server-owned. This ordering uses completion of the actual requests, without an added timeout, polling or artificial delay. The existing Git command deadlines remain unchanged.
+
+For manual Commit and Commit & Push, no selected changes means no commit and no push; the panel must state this outcome and retain the selection and commit draft. Failures and aborted operations must not clear that input. A successful batch clears only the repositories that actually committed; skipped repositories retain their selection and the draft. The completion summary reports only completed Git operations. A fetch-only remote check, an up-to-date branch, a missing upstream or an unborn branch must not increment the pull count. Completing an existing merge is reported separately from executing a pull.
+
 ### Interaction Model
 
 The plugin follows the Explorer presenter model and uses WebSkel as the UI framework.
+
+Conflict color has priority in the Git changes tree: a row marked `is-conflicted` remains red (`#DB5C5C`) even when it also carries modified, new, untracked, ignored or deleted classes. Other status-color rules must exclude conflicted rows.
+
+Repository Visibility is a settings draft confined to the credentials dialog. Toggling Show agent repositories changes the checkbox and dialog's repository choices without changing the Git changes list, persisting the preference or notifying other panels. The Git changes list, including background refreshes, uses the saved visibility until Save persists the preference and applies it to the panel. Cancel restores the saved checkbox and leaves the Git changes list unchanged, including when the saved preference is enabled. An unsuccessful Save leaves the saved preference and Git changes list unchanged.
 
 - Click actions are declared with `data-local-action` and dispatched through presenter methods.
 - Form-oriented events that WebSkel does not dispatch natively, such as `input`, `change`, and selected `keydown` flows, are handled through delegated listeners attached once at component root level.

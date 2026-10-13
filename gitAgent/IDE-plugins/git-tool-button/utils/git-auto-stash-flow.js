@@ -92,6 +92,8 @@ export async function pullWithAutoStashFlow({
     repoPaths = [],
     gitPullWithToken,
     restoreStash,
+    confirmStash = null,
+    isActive = () => true,
     setStatusLine = () => {}
 } = {}) {
     let stashPayload = null;
@@ -100,15 +102,20 @@ export async function pullWithAutoStashFlow({
     let hasLocalChanges = false;
     let branch = null;
     let upstream = null;
+    let behind = null;
+    let counts = null;
+    const readStatus = async () => {
+        const text = await service.gitStatus(repoPath, { includeAhead: true });
+        const payload = parseJsonToolResult(text) || {};
+        if (payload.ok === false) throw new Error(payload.error || 'Could not read repository status.');
+        const normalized = normalizeGitStatusPayload(payload);
+        if (payload.mergeInProgress || normalized.counts.conflicted > 0) {
+            throw new Error('Complete the pending merge and resolve conflicts before pulling.');
+        }
+        return { payload, counts: normalized.counts };
+    };
     try {
-        const statusText = await service.gitStatus(repoPath, { includeAhead: true });
-        const statusPayload = parseJsonToolResult(statusText) || {};
-        const normalized = normalizeGitStatusPayload(statusPayload);
-        const changesCount = normalized.counts.staged
-            + normalized.counts.unstaged
-            + normalized.counts.untracked
-            + normalized.counts.conflicted;
-        hasLocalChanges = changesCount > 0;
+        const { payload: statusPayload } = await readStatus();
         branch = statusPayload.branch || null;
         upstream = statusPayload.upstream || null;
     } catch (error) {
@@ -116,14 +123,59 @@ export async function pullWithAutoStashFlow({
     }
 
     if (!branch) {
-        return { ok: true, reason: 'no_commits', message: 'No commits yet. Nothing to pull.' };
+        return { ok: true, pulled: false, reason: 'no_commits', message: 'No commits yet. Nothing to pull.' };
     }
     if (!upstream) {
-        return { ok: true, reason: 'no_upstream', message: 'No upstream branch configured. Nothing to pull.' };
+        return { ok: true, pulled: false, reason: 'no_upstream', message: 'No upstream branch configured. Nothing to pull.' };
+    }
+
+    try {
+        setStatusLine('Checking remote updates...');
+        const fetched = parseJsonToolResult(await service.gitFetch({ path: repoPath }));
+        if (fetched?.ok !== true || fetched.skipped) {
+            throw new Error(fetched?.error || 'Remote updates could not be verified. Pull stopped.');
+        }
+        const fresh = await readStatus();
+        if (fresh.payload.branch !== branch || fresh.payload.upstream !== upstream) {
+            throw new Error('The branch changed while checking remote updates. Retry the operation.');
+        }
+        behind = fresh.payload.behind;
+        if (!Number.isInteger(behind) || behind < 0) {
+            throw new Error('Could not determine incoming remote commits. Pull stopped without changing local files.');
+        }
+        counts = fresh.counts;
+        hasLocalChanges = counts.staged + counts.unstaged + counts.untracked > 0;
+    } catch (error) {
+        const message = normalizeErrorMessage(error);
+        return { ok: false, reason: isGitAuthError(message) ? 'auth' : 'remote_check_failed', message };
+    }
+    if (!isActive()) return { ok: false, reason: 'aborted', message: 'Pull aborted.' };
+    if (behind === 0) {
+        return { ok: true, pulled: false, reason: 'up_to_date', message: 'No incoming remote commits. Local files left unchanged.' };
     }
 
     if (hasLocalChanges) {
-        setStatusLine('Local changes detected. Stashing before pull...');
+        const approved = typeof confirmStash === 'function'
+            && await confirmStash({ repoPath, branch, upstream, behind, counts });
+        if (approved !== true || !isActive()) {
+            return { ok: false, reason: 'aborted', message: 'Pull aborted. Local files and staging left unchanged.' };
+        }
+        // Consent is for this branch only, not a branch switched while the dialog was open.
+        try {
+            const fresh = await readStatus();
+            if (fresh.payload.branch !== branch || fresh.payload.upstream !== upstream) {
+                throw new Error('The branch changed while awaiting confirmation. Pull aborted.');
+            }
+            counts = fresh.counts;
+            hasLocalChanges = counts.staged + counts.unstaged + counts.untracked > 0;
+        } catch (error) {
+            return { ok: false, reason: 'status_error', message: normalizeErrorMessage(error) };
+        }
+    }
+
+    if (hasLocalChanges) {
+        if (!isActive()) return { ok: false, reason: 'aborted', message: 'Pull aborted.' };
+        setStatusLine('Stashing local changes with your permission before pull...');
         try {
             const text = await service.gitStash({
                 path: repoPath,
@@ -137,11 +189,11 @@ export async function pullWithAutoStashFlow({
 
         stashCreated = Boolean(stashPayload.created);
         stashRef = stashPayload.ref || null;
-        if (!stashCreated && stashPayload.ok === false) {
+        if (!stashCreated) {
             return {
                 ok: false,
                 reason: 'stash_failed',
-                message: 'Failed to stash local changes. Resolve them before pulling.'
+                message: 'No stash was created. Pull stopped to preserve local changes.'
             };
         }
     }
@@ -235,5 +287,5 @@ export async function pullWithAutoStashFlow({
         }
     }
 
-    return { ok: true, repoPath, repoPaths };
+    return { ok: true, pulled: true, repoPath, repoPaths };
 }

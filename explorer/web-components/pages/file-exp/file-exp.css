@@ -1157,13 +1157,13 @@ main {
     }
 
     .entry-type-icon-folder {
-        -webkit-mask-image: url("./assets/icons/folder-fill.svg");
-        mask-image: url("./assets/icons/folder-fill.svg");
+        -webkit-mask-image: url("/explorer/assets/icons/folder-fill.svg");
+        mask-image: url("/explorer/assets/icons/folder-fill.svg");
     }
 
     .entry-type-icon-file {
-        -webkit-mask-image: url("./assets/icons/file-fill.svg");
-        mask-image: url("./assets/icons/file-fill.svg");
+        -webkit-mask-image: url("/explorer/assets/icons/file-fill.svg");
+        mask-image: url("/explorer/assets/icons/file-fill.svg");
     }
 
     table {

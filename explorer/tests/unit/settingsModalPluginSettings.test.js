@@ -101,9 +101,9 @@ test('DPU Data Sources settings assets match the nested runtime path', () => {
     assert.doesNotMatch(template, /id="dpuSourceType"|data-name="type"/);
     assert.match(presenter, /assistOS\.UI\.showModal\('confirm-action-modal'/);
     assert.doesNotMatch(presenter, /window\.confirm|window\.prompt|window\.alert/);
-    assert.match(template, /class="close"[\s\S]*?\/explorer\/assets\/icons\/x-mark\.svg/);
+    assert.match(template, /class="close"[\s\S]*?\/explorer\/shared\/assets\/icons\/x-mark\.svg/);
     assert.match(template, /data-local-action="toggleFullscreen"/);
-    assert.match(template, /\/explorer\/assets\/icons\/fullscreen\.svg/);
+    assert.match(template, /\/explorer\/shared\/assets\/icons\/fullscreen\.svg/);
     assert.match(template, /class="settings-card settings-card-static dpu-source-editor"/);
     assert.match(template, /data-local-action="addSource huggingface"/);
     assert.match(template, /data-local-action="addSource edc"/);

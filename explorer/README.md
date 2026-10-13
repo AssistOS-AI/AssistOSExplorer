@@ -27,6 +27,8 @@ Explorer owns:
 - session-expiration handling for the browser client
 - global loading overlays for long-running UI actions, which remain visible until the wrapped async workflow finishes with success or failure
 
+Settings uses the shared expanded window, fullscreen by default, with Refresh, Open in new tab, Fullscreen/Restore and Close in its sole header. Open in new tab preserves the selected Settings tab and workspace route through `?settings=<tab>#file-exp/...`. The original draft stays in its window; the new tab reads saved settings. Close and Refresh confirm before discarding unsaved general preferences or hardware-policy drafts.
+
 For the general text and code editor, the current collaboration behavior is:
 
 - auto-save is a user setting, default `off`, with a default interval of `10` seconds when enabled

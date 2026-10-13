@@ -716,7 +716,7 @@
     {
       "name": "git_commit",
       "title": "Git Commit",
-      "description": "Create a commit from staged changes.",
+      "description": "Create a commit from staged changes. Files >= 50 MiB return large_files_warning without committing. Ask the user before retrying with the listed approvedLargeFileOids.",
       "command": "tools/git_tool.sh",
       "cwd": "workspace",
       "inputSchema": {
@@ -747,6 +747,12 @@
         "userEmail": {
           "type": "string",
           "optional": true
+        },
+        "approvedLargeFileOids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "optional": true,
+          "description": "Blob IDs explicitly approved by the user for this operation. Never approve automatically."
         }
       },
       "env": {
@@ -861,7 +867,7 @@
     {
       "name": "git_push",
       "title": "Git Push",
-      "description": "Push the current branch to a remote.",
+      "description": "Push the current branch to a remote. Outgoing blobs >= 50 MiB return large_files_warning before pushing or creating a remote. Ask the user before retrying with the listed approvedLargeFileOids.",
       "command": "tools/git_tool.sh",
       "cwd": "workspace",
       "inputSchema": {
@@ -881,6 +887,12 @@
           "type": "boolean",
           "optional": true
         },
+        "approvedLargeFileOids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "optional": true,
+          "description": "Blob IDs explicitly approved by the user for this operation. Never approve automatically."
+        },
         "token": {
           "type": "string",
           "optional": true
@@ -898,6 +910,43 @@
       "env": {
         "TOOL_NAME": "git_push"
       }
+    },
+    {
+      "name": "git_check_large_files",
+      "title": "Check Large Git Files",
+      "description": "Read-only preflight for commit or push. Returns large_files_warning with blob IDs, paths and sizes for files >= 50 MiB. Push checks selected local history against local remote-tracking refs; stale refs may over-warn. Does not fetch, stage, commit or push.",
+      "command": "tools/git_tool.sh",
+      "cwd": "workspace",
+      "inputSchema": {
+        "path": { "type": "string", "optional": false },
+        "operation": { "type": "string", "enum": ["commit", "push"], "optional": false },
+        "remote": { "type": "string", "optional": true },
+        "branch": { "type": "string", "optional": true },
+        "setUpstream": { "type": "boolean", "optional": true },
+        "approvedLargeFileOids": { "type": "array", "items": { "type": "string" }, "optional": true }
+      },
+      "env": { "TOOL_NAME": "git_check_large_files" }
+    },
+    {
+      "name": "git_fetch",
+      "title": "Git Fetch",
+      "description": "Refresh the current branch's upstream remote references without changing working files, staging, or HEAD. Skips branches without an upstream.",
+      "command": "tools/git_tool.sh",
+      "cwd": "workspace",
+      "inputSchema": {
+        "path": { "type": "string", "optional": false },
+        "token": { "type": "string", "optional": true }
+      },
+      "delegations": [
+        {
+          "key": "dpuGitSecrets",
+          "targetAgentId": "agent:./dpuAgent",
+          "tools": ["dpu_secret_get"],
+          "scopes": ["secret:read"],
+          "ttlSeconds": 120
+        }
+      ],
+      "env": { "TOOL_NAME": "git_fetch" }
     },
     {
       "name": "git_pull",

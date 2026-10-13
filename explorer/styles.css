@@ -762,8 +762,8 @@ tr.clipboard-row.clipboard-copy.active {
     height: 22px;
     margin-top: 1px;
     background: currentColor;
-    -webkit-mask: url("./assets/icons/info.svg") center / contain no-repeat;
-    mask: url("./assets/icons/info.svg") center / contain no-repeat;
+    -webkit-mask: url("/explorer/assets/icons/info.svg") center / contain no-repeat;
+    mask: url("/explorer/assets/icons/info.svg") center / contain no-repeat;
 }
 
 .timeout-toast.success {
@@ -800,8 +800,8 @@ tr.clipboard-row.clipboard-copy.active {
 }
 
 .timeout-toast.warning .toast-icon {
-    -webkit-mask-image: url("./assets/icons/warning.svg");
-    mask-image: url("./assets/icons/warning.svg");
+    -webkit-mask-image: url("/explorer/assets/icons/warning.svg");
+    mask-image: url("/explorer/assets/icons/warning.svg");
 }
 
 .timeout-toast.error {
@@ -816,13 +816,13 @@ tr.clipboard-row.clipboard-copy.active {
 }
 
 .timeout-toast.error .toast-icon {
-    -webkit-mask-image: url("./assets/icons/error.svg");
-    mask-image: url("./assets/icons/error.svg");
+    -webkit-mask-image: url("/explorer/assets/icons/error.svg");
+    mask-image: url("/explorer/assets/icons/error.svg");
 }
 
 .timeout-toast.success .toast-icon {
-    -webkit-mask-image: url("./assets/icons/success.svg");
-    mask-image: url("./assets/icons/success.svg");
+    -webkit-mask-image: url("/explorer/assets/icons/success.svg");
+    mask-image: url("/explorer/assets/icons/success.svg");
 }
 
 .theme-dark .timeout-toast {

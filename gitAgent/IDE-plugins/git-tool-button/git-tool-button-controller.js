@@ -19,7 +19,9 @@ import {
 import { callAgentTool } from "/explorer/services/infrastructure/explorerApi.js";
 import { getReposRoot, getRepoScanPaths } from "/explorer/utils/reposRoot.js";
 import { pullWithAutoStashFlow, restoreStashFlow } from "./utils/git-auto-stash-flow.js";
+import { requestPullStashConsent } from "./utils/git-pull-consent.js";
 import { pushWithNonFastForwardRetry } from "./utils/git-autosync-push-flow.js";
+import { runGitWithLargeFileWarning } from './utils/git-large-file-warning.js';
 import {
     AUTOCOMMIT_SETTINGS_CHANGED_EVENT,
     AUTOCOMMIT_RESET_EVENT,
@@ -143,7 +145,8 @@ export function attachGitController(fileExp) {
     };
 
     const autoStashService = {
-        gitStatus: (repoPath) => callAgentTool('gitAgent', 'git_status', { path: repoPath }, { raw: true }),
+        gitStatus: (repoPath, options = {}) => callAgentTool('gitAgent', 'git_status', { path: repoPath, ...options }, { raw: true }),
+        gitFetch: (payload) => callAgentTool('gitAgent', 'git_fetch', payload, { raw: true }),
         gitStash: (payload) => callAgentTool('gitAgent', 'git_stash', payload, { raw: true }),
         gitStashPop: (payload) => callAgentTool('gitAgent', 'git_stash_pop', payload, { raw: true })
     };
@@ -229,14 +232,23 @@ export function attachGitController(fileExp) {
         await callAgentTool('gitAgent', 'git_pull', payload);
     };
 
+    const guardedGitMutation = (toolName, args) => runGitWithLargeFileWarning({
+        callAgentTool, toolName, args,
+        isActive: () => Boolean(fileExp.element?.isConnected),
+        onAbort: showAutocommitStopped
+    });
+
     const pushAutocommitRepo = async (repoPath, token) => {
-        const push = () => callAgentTool('gitAgent', 'git_push', {
+        const push = () => guardedGitMutation('git_push', {
             path: repoPath,
             token: String(token || '').trim() || undefined
         });
         const pushResult = await pushWithNonFastForwardRetry({
             push,
-            synchronize: () => pullRepoWithToken(repoPath, token)
+            synchronize: async () => {
+                const result = await pullWithAutoStash(repoPath, token);
+                if (!result.ok) throw new Error(result.message);
+            }
         });
         if (pushResult.ok) {
             setPushWarning('');
@@ -280,7 +292,7 @@ export function attachGitController(fileExp) {
             return { ok: false, completed: false };
         }
         try {
-            await callAgentTool('gitAgent', 'git_commit', {
+            await guardedGitMutation('git_commit', {
                 path: repoPath,
                 useExistingMessage: true,
                 userName,
@@ -324,6 +336,8 @@ export function attachGitController(fileExp) {
             repoPath,
             token,
             gitPullWithToken: pullRepoWithToken,
+            confirmStash: requestPullStashConsent,
+            isActive: () => Boolean(fileExp.element?.isConnected),
             restoreStash: (nextRepoPath, nextStashRef) => rollbackAutoStash(nextRepoPath, nextStashRef),
             setStatusLine: (message, isError = false) => {
                 if (message) {
@@ -443,7 +457,15 @@ export function attachGitController(fileExp) {
                     continue;
                 }
                 try {
-                    await pullRepoWithToken(repoPath, token);
+                    const checkedPull = await pullWithAutoStash(repoPath, token);
+                    if (!checkedPull.ok) {
+                        if (checkedPull.conflicts) {
+                            setConflictAndStop(checkedPull.message, repoPath);
+                        } else {
+                            showAutocommitStopped(checkedPull.message);
+                        }
+                        return;
+                    }
                 } catch (error) {
                     const msg = humanizeGitError(normalizeErrorMessage(error), { action: 'pull' });
                     if (isGitIdentityError(msg)) {
@@ -515,7 +537,7 @@ export function attachGitController(fileExp) {
                     return;
                 }
                 try {
-                    await callAgentTool('gitAgent', 'git_commit', {
+                    await guardedGitMutation('git_commit', {
                         path: repoPath,
                         message: AUTOCOMMIT_MESSAGE,
                         userName: userName || null,

@@ -39,6 +39,16 @@
       "type": "modal"
     },
     {
+      "component": "git-pull-warning-modal",
+      "presenter": "GitPullWarningModal",
+      "type": "modal"
+    },
+    {
+      "component": "git-large-files-modal",
+      "presenter": "GitLargeFilesModal",
+      "type": "modal"
+    },
+    {
       "component": "git-branch-dirty-modal",
       "presenter": "GitBranchDirtyModal",
       "type": "modal"

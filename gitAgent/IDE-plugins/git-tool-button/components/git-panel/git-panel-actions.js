@@ -138,6 +138,7 @@ export function createGitCommitActions(ctx) {
         clearGitCredentials,
         saveGitToken,
         saveGitCredentials,
+        completeGithubAuthentication,
         ensureGitIdentityOrPrompt,
         saveGitIdentity
     } = credentialsActions;
@@ -461,6 +462,8 @@ export function createGitCommitActions(ctx) {
     const { stashSelectedRepos, unstashSelectedRepos } = stashActions;
 
     const autoStashActions = createAutoStashActions({
+        isActive: ctx.isActive,
+        dispatchAutocommitStop,
         getState,
         applyState,
         service,
@@ -516,6 +519,7 @@ export function createGitCommitActions(ctx) {
     } = conflictActions;
 
     const gitOpsActions = createGitOpsActions({
+        isActive: ctx.isActive,
         getState,
         applyState,
         service,
@@ -575,6 +579,7 @@ export function createGitCommitActions(ctx) {
         generateCommitMessage,
         saveGitToken,
         saveGitCredentials,
+        completeGithubAuthentication,
         selectConflictFile,
         applyConflictChoice,
         saveConflictResolution,

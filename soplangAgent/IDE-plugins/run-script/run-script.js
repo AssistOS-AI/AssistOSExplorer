@@ -48,7 +48,7 @@ export class RunScript {
             <span class="arg-label">arg${argsNr + 1}</span>
             <input type="text" class="arg-input form-input">
             <div class="delete-arg">
-                <img data-local-action="deleteArg" src="./assets/icons/trash-can.svg" alt="delete">
+                <img data-local-action="deleteArg" src="/explorer/assets/icons/trash-can.svg" alt="delete">
             </div>`;
         argList.appendChild(newArg);
     }

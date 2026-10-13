@@ -1,0 +1,16 @@
+<div class="modal-header">
+    <div class="modal-title">Large files in this $$operation</div>
+    <button class="close" type="button" data-local-action="abort" aria-label="Abort operation">
+        <img class="close-icon" src="/explorer/assets/icons/close.svg" alt="">
+    </button>
+</div>
+<div class="modal-body git-large-files-modal">
+    <p class="git-large-files-path">$$repoPath</p>
+    <p>The following files are at least 50 MiB. Large Git blobs can slow cloning and pushing; your remote may reject them. This is a warning threshold, not a provider limit.</p>
+    <ul class="git-large-files-list">$$files</ul>
+    <p>For a push, this also includes large files in earlier outgoing commits, even if deleted later. Abort stops this operation without deleting files, undoing staging, or removing existing commits. Nothing is automatically moved to Git LFS.</p>
+    <div class="bottom-modal-section modal-actions">
+        <button class="gray-button" type="button" data-local-action="abort">Abort</button>
+        <button class="general-button" type="button" data-local-action="continueOperation">Continue $$operation</button>
+    </div>
+</div>

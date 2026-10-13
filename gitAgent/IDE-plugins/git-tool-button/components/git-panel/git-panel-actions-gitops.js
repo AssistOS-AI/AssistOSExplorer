@@ -18,6 +18,7 @@ import {
     getGithubRepositoryCreateUrl,
     parseGithubRepositoryRemote
 } from "./github-remote-utils.js";
+import { snapshotSelectionEntry, selectChangedPaths } from "./git-panel-selection.js";
 
 export function createGitOpsActions(ctx) {
     const {
@@ -29,11 +30,9 @@ export function createGitOpsActions(ctx) {
         syncStaticUI,
         closeActionsMenu,
         getSelectedReposForBatch,
-        getPathsForCommitInRepo,
         setCommitMessage,
         clearCommitMessageInput,
         clearDiffCache,
-        loadRepoOverviews,
         refreshAll,
         refreshAfterGitOperation,
         showGitAuthPrompt,
@@ -52,6 +51,30 @@ export function createGitOpsActions(ctx) {
         promptForFallbackCommitMessage,
         withPanelLoader
     } = ctx;
+    const isActive = ctx.isActive || (() => true);
+
+    const snapshotSelections = (repoPaths, state) => new Map(repoPaths.map(repoPath => [
+        repoPath, snapshotSelectionEntry(state.selectedFilesByRepo?.[repoPath])
+    ]));
+
+    const readCommitStatus = async (repoPath) => {
+        const payload = parseJsonToolResult(await service.gitStatus(repoPath));
+        if (payload?.ok !== true || !payload.status
+            || !['staged', 'unstaged', 'untracked', 'conflicted'].every(key => Array.isArray(payload.status[key]))) {
+            throw new Error(payload?.error || 'Could not load complete repository status. Commit stopped.');
+        }
+        updateRepoOverviewFromStatus(repoPath, payload);
+        if (normalizeGitStatusPayload(payload).counts.conflicted > 0) {
+            throw new Error('Resolve merge conflicts before committing.');
+        }
+        return payload;
+    };
+
+    // Operation inputs come from awaited Git status, never from the lazy display cache.
+    const pathsFromStatus = (selection, payload) => {
+        const { paths } = normalizeGitStatusPayload(payload);
+        return selectChangedPaths(selection, [...paths.staged, ...paths.unstaged, ...paths.untracked]);
+    };
 
     const formatCount = (count, singular, plural = `${singular}s`) => {
         const safe = Number.isFinite(Number(count)) ? Number(count) : 0;
@@ -125,8 +148,7 @@ export function createGitOpsActions(ctx) {
     };
 
     const gitPushAfterEnsuringRemote = async (repoPath) => {
-        await ensureRemoteExists(repoPath);
-        await gitPushWithToken(repoPath);
+        await service.gitPush({ path: repoPath }, { beforeMutation: () => ensureRemoteExists(repoPath) });
     };
 
     const getRemoteUrl = async (repoPath) => {
@@ -363,28 +385,14 @@ export function createGitOpsActions(ctx) {
                     setStatusLine('Completing resolved merge...');
                     await service.gitCommit({ path: repoPath, useExistingMessage: true });
                     completedMergeRepos.push(repoPath);
-                    pulledRepos += 1;
                     continue;
                 }
                 if (!statusPayload.branch) {
-                    pulledRepos += 1;
                     continue;
                 }
-                const hasLocalChanges = (normalized.counts.staged
-                    + normalized.counts.unstaged
-                    + normalized.counts.untracked) > 0;
-                if (hasLocalChanges) {
-                    const autoOk = await pullWithAutoStash(repoPath, auth.tokenStored ? '__backend__' : '', list);
-                    if (!autoOk) return { ok: false, pulledRepos };
-                    pulledRepos += 1;
-                    continue;
-                }
-                if (!statusPayload.upstream) {
-                    pulledRepos += 1;
-                    continue;
-                }
-                await gitPullWithToken(repoPath);
-                pulledRepos += 1;
+                const pullResult = await pullWithAutoStash(repoPath, auth.tokenStored ? '__backend__' : '', list);
+                if (!pullResult?.ok) return { ok: false, pulledRepos };
+                if (pullResult.pulled) pulledRepos += 1;
             } catch (error) {
                 const msg = humanizeGitError(normalizeErrorMessage(error), { action: 'pull' });
                 if (isGitIdentityError(msg)) {
@@ -418,7 +426,6 @@ export function createGitOpsActions(ctx) {
                                 setStatusLine('Completing resolved merge...');
                                 await service.gitCommit({ path: repoPath, useExistingMessage: true });
                                 completedMergeRepos.push(repoPath);
-                                pulledRepos += 1;
                             } else {
                                 pendingMergeRepos.push(repoPath);
                             }
@@ -428,9 +435,9 @@ export function createGitOpsActions(ctx) {
                     return { ok: false, pulledRepos };
                 }
                 if (isGitPullBlockedError(msg)) {
-                    const autoOk = await pullWithAutoStash(repoPath, auth.tokenStored ? '__backend__' : '', list);
-                    if (!autoOk) return { ok: false, pulledRepos };
-                    pulledRepos += 1;
+                    const pullResult = await pullWithAutoStash(repoPath, auth.tokenStored ? '__backend__' : '', list);
+                    if (!pullResult?.ok) return { ok: false, pulledRepos };
+                    if (pullResult.pulled) pulledRepos += 1;
                     continue;
                 }
                 throw error;
@@ -446,16 +453,17 @@ export function createGitOpsActions(ctx) {
         pendingAction,
         state
     }) => {
-        const identityOk = await ensureGitIdentityOrPrompt(repoPath, pendingAction);
-        if (!identityOk) {
-            return { ok: false, blocked: true };
-        }
         const list = Array.isArray(files) ? files.filter(Boolean) : [];
         if (!list.length) {
             return { ok: true, committed: false, fileCount: 0 };
         }
+        const identityOk = await ensureGitIdentityOrPrompt(repoPath, pendingAction);
+        if (!identityOk || !isActive()) {
+            return { ok: false, blocked: true };
+        }
         await service.gitStageExact(repoPath, list);
-        const after = parseJsonToolResult(await service.gitStatus(repoPath)) || {};
+        const after = await readCommitStatus(repoPath);
+        if (!isActive()) return { ok: false, blocked: true };
         const normalizedAfter = normalizeGitStatusPayload(after);
         if (!normalizedAfter.paths.staged.length) {
             return { ok: true, committed: false, fileCount: 0 };
@@ -486,6 +494,7 @@ export function createGitOpsActions(ctx) {
     const commitSelectedRepos = async () => {
         const state = getState();
         const selected = getSelectedReposForBatch();
+        const selections = snapshotSelections(selected, state);
         const message = (state.commitMessage || '').trim();
         if (!message && !hasPendingMergeForRepos(selected, state)) {
             setStatusLine('Enter a commit message.', true);
@@ -500,17 +509,20 @@ export function createGitOpsActions(ctx) {
             await handlePullConflicts('Merge conflicts detected. Resolve them before continuing.', selected, 'merge');
             return;
         }
-        setStatusLine('Pulling latest changes before commit...');
+        setStatusLine('Checking remote updates before commit...');
         return withPanelLoader(async () => {
             try {
                 const pullResult = await pullRepos(selected, {
                     pendingAction: { type: 'sync', mode: 'batch', repoPaths: selected },
                     completePendingMerges: !message
                 });
-                if (!pullResult?.ok) return;
-                await loadRepoOverviews({ force: true });
-                syncStaticUI();
-                updateCommitButtons();
+                if (!pullResult?.ok || !isActive()) return;
+                const preparedSelections = new Map();
+                for (const repoPath of selected) {
+                    const status = await readCommitStatus(repoPath);
+                    if (!isActive()) return;
+                    preparedSelections.set(repoPath, pathsFromStatus(selections.get(repoPath), status));
+                }
                 if (hasConflictsForRepos(selected)) {
                     await handlePullConflicts('Merge conflicts detected. Resolve them before continuing.', selected, 'merge');
                     return;
@@ -523,9 +535,10 @@ export function createGitOpsActions(ctx) {
                 }
                 let committedRepos = 0;
                 let committedFiles = 0;
+                const committedRepoPaths = new Set();
                 let pushSummary = { ok: false, pushedRepos: 0, pushedCommits: 0, skippedRepos: 0 };
                 for (const repoPath of selected) {
-                    const list = getPathsForCommitInRepo(repoPath);
+                    const list = preparedSelections.get(repoPath);
                     const commitResult = message
                         ? await commitSelectionForRepo({
                             repoPath,
@@ -536,9 +549,11 @@ export function createGitOpsActions(ctx) {
                         })
                         : { ok: true, committed: false, fileCount: 0 };
                     if (!commitResult?.ok) return;
+                    if (!isActive()) return;
                     if (commitResult.committed) {
                         committedRepos += 1;
                         committedFiles += commitResult.fileCount;
+                        committedRepoPaths.add(repoPath);
                     }
                     if (shouldPush && (commitResult.committed || completedMergeRepos.has(repoPath))) {
                         const auth = getAuthContext(getState());
@@ -582,8 +597,20 @@ export function createGitOpsActions(ctx) {
                     }));
                     return;
                 }
-                applyState({ selectedFilesByRepo: {}, commitMessage: '' }, { silent: true });
-                clearCommitMessageInput();
+                if (committedRepos === 0 && completedMergeRepos.size === 0) {
+                    setStatusLine(buildCompletionMessage({
+                        intro: 'No selected changes to commit.',
+                        details: pullResult.pulledRepos > 0
+                            ? [`pulled the latest changes for ${formatCount(pullResult.pulledRepos, 'repository')}`] : [],
+                        outro: `${shouldPush ? 'Nothing was pushed. ' : ''}Your selection and commit message were kept.`
+                    }));
+                    return;
+                }
+                const remainingSelections = { ...getState().selectedFilesByRepo };
+                for (const repoPath of [...committedRepoPaths, ...completedMergeRepos]) delete remainingSelections[repoPath];
+                const skippedRepos = selected.filter(repoPath => !committedRepoPaths.has(repoPath) && !completedMergeRepos.has(repoPath));
+                applyState({ selectedFilesByRepo: remainingSelections, ...(skippedRepos.length ? {} : { commitMessage: '' }) }, { silent: true });
+                if (!skippedRepos.length) clearCommitMessageInput();
                 await refreshAfterGitOperation();
                 const details = [];
                 if (pullResult.pulledRepos > 0) {
@@ -598,8 +625,10 @@ export function createGitOpsActions(ctx) {
                 if (shouldPush && pushSummary.pushedRepos > 0) {
                     details.push(`pushed ${formatCount(pushSummary.pushedCommits, 'commit')} from ${formatCount(pushSummary.pushedRepos, 'repository')}`);
                 }
+                if (skippedRepos.length) details.push(`skipped ${formatCount(skippedRepos.length, 'repository')} with no selected changes`);
                 const intro = shouldPush ? 'Commit and push finished.' : 'Commit finished.';
-                setStatusLine(buildCompletionMessage({ intro, details }));
+                setStatusLine(buildCompletionMessage({ intro, details,
+                    outro: skippedRepos.length ? 'Selection and commit message were kept for skipped repositories.' : '' }));
             } catch (error) {
                 setStatusLine(humanizeGitError(normalizeErrorMessage(error)), true);
             }
@@ -611,6 +640,7 @@ export function createGitOpsActions(ctx) {
         const selected = Array.isArray(repoPaths) && repoPaths.length
             ? repoPaths.filter(Boolean)
             : getSelectedReposForBatch();
+        const selections = snapshotSelections(selected, state);
         if (!selected.length) {
             setStatusLine('Select at least one repository to sync.', true);
             return;
@@ -709,13 +739,12 @@ export function createGitOpsActions(ctx) {
                 const stagedSelections = [];
                 const initialStagedByRepo = new Map();
                 for (const repoPath of selected) {
-                    const statusPayload = parseJsonToolResult(await service.gitStatus(repoPath)) || {};
-                    updateRepoOverviewFromStatus(repoPath, statusPayload);
+                    const statusPayload = await readCommitStatus(repoPath);
                     initialStagedByRepo.set(repoPath, normalizeGitStatusPayload(statusPayload).paths.staged);
-                    const selectedPaths = getPathsForCommitInRepo(repoPath);
+                    const selectedPaths = pathsFromStatus(selections.get(repoPath), statusPayload);
                     if (selectedPaths.length) {
                         await service.gitStageExact(repoPath, selectedPaths);
-                        const afterStage = parseJsonToolResult(await service.gitStatus(repoPath)) || {};
+                        const afterStage = await readCommitStatus(repoPath);
                         const stagedPaths = normalizeGitStatusPayload(afterStage).paths.staged;
                         if (stagedPaths.length) {
                             stagedSelections.push({ repoPath, files: stagedPaths });
@@ -868,9 +897,10 @@ export function createGitOpsActions(ctx) {
                 if (!pullResult?.ok) return;
                 await refreshAfterGitOperation();
                 setStatusLine(buildCompletionMessage({
-                    intro: 'Pull finished.',
+                    intro: pullResult.pulledRepos > 0 ? 'Pull finished.' : 'No pull was needed.',
                     details: [
-                        `updated ${formatCount(pullResult.pulledRepos, 'repository')}`
+                        pullResult.pulledRepos > 0 ? `updated ${formatCount(pullResult.pulledRepos, 'repository')}` : '',
+                        pullResult.completedMergeRepos?.length ? `completed ${formatCount(pullResult.completedMergeRepos.length, 'merge')}` : ''
                     ]
                 }));
             } catch (error) {

@@ -115,7 +115,9 @@ export function createGitCommitUI(ctx) {
             ? draftInterval
             : Number(autocommit.intervalMinutes || 15);
         const autocommitSelected = savedRepos !== null ? savedRepos : null;
-        const showAgentRepos = Boolean(state.showAgentRepos ?? getShowAgentReposSetting());
+        const showAgentRepos = useDraft && typeof autocommitDraft.showAgentRepos === 'boolean'
+            ? autocommitDraft.showAgentRepos
+            : Boolean(state.showAgentRepos ?? getShowAgentReposSetting());
         const autoresolveConflicts = useAutoresolveDraft
             ? Boolean(autoresolveDraft.enabled)
             : Boolean(autoresolveSaved);
@@ -127,8 +129,12 @@ export function createGitCommitUI(ctx) {
         );
         const refreshAutocommitRepos = Boolean(options.refreshAutocommitRepos || (visible && !credentialsPromptVisible));
         credentialsPromptVisible = visible;
-        const githubAuth = state.githubAuth || {};
-        const githubConnection = githubAuth.connection || rememberedGithubConnection || {};
+        const authMethod = normalizeGitAuthMethod(authState.authMethod || rememberedAuthMethod);
+        const pendingTokenRemoval = authMethod === 'token' && Boolean(state.credentialsAuthAction);
+        const githubAuth = pendingTokenRemoval
+            ? { ...state.githubAuth, connected: false, tokenStored: false, connection: null, pending: null, error: '' }
+            : (state.githubAuth || {});
+        const githubConnection = githubAuth.connection || (!pendingTokenRemoval && rememberedGithubConnection) || {};
         const githubPending = githubAuth.pending || {};
         const githubError = String(githubAuth.error || '').trim();
         const githubConnectionSource = String(githubConnection?.source || '').trim().toLowerCase();
@@ -141,14 +147,6 @@ export function createGitCommitUI(ctx) {
         const tokenValue = authState.token || '';
         const tokenStored = Boolean(githubAuth.tokenStored);
         const githubConnected = Boolean(githubAuth.connected && githubConnectionSource === 'github');
-        const preferredGithub = Boolean(
-            githubConnected
-            && !authState.token
-            && !state.credentialsDirty
-        );
-        const authMethod = preferredGithub
-            ? 'github'
-            : normalizeGitAuthMethod(authState.authMethod || rememberedAuthMethod);
         const fallbackToGithubIdentity = Boolean(
             githubConnected
             && authMethod === 'github'
@@ -164,12 +162,14 @@ export function createGitCommitUI(ctx) {
             token: tokenValue,
             authRequired: Boolean(authState.visible),
             credentialsDirty: Boolean(state.credentialsDirty),
+            credentialsAuthAction: pendingTokenRemoval ? state.credentialsAuthAction : null,
             autocommitDirty: Boolean(state.autocommitDirty),
             autoresolveDirty: Boolean(state.autoresolveDirty),
             tokenStored,
             githubConfigured: Boolean(githubAuth.configured),
             githubConnected,
             githubError,
+            githubAuthLoading: state.githubAuthLoading || '',
             githubUserLabel: githubConnection?.user?.login || githubConnection?.user?.name || '',
             githubScope,
             githubHasRepoScope,

@@ -44,6 +44,8 @@ export function createGitCommitState(props = {}) {
         credentialsGate: false,
         credentialsValidated: false,
         credentialsDirty: false,
+        credentialsAuthAction: null,
+        githubAuthLoading: '',
         credentialsBaseline: null,
         autocommitDirty: false,
         autocommitDraft: null,
