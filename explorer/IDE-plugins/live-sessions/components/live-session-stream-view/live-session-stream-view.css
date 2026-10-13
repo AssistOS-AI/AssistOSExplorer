@@ -6,7 +6,7 @@ live-session-stream-view {
     gap: 12px;
 }
 
-live-session-stream-view .live-session-output {
+live-session-stream-view pre.live-session-output {
     flex: 1;
     min-height: 180px;
     overflow: auto;
