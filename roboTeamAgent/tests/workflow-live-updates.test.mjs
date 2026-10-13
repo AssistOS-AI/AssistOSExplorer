@@ -37,6 +37,43 @@ test('disconnects back off, use rare fallback polling and resynchronize after re
     t.mock.timers.tick(5000); const source = f.connections.at(-1); source.open(); source.send('snapshot', { flow: { revision: 4 } });
     t.mock.timers.tick(60_000); assert.equal(f.calls.filter(call => call[0] === 'fallback').length, 1);
     assert.deepEqual(f.calls.slice(-2), [['flow', { revision: 4 }], ['resync']]);
+    assert.equal(f.calls.filter(call => call[0] === 'error').length, 0);
+});
+
+test('normal stream renewal and persistent transport outages do not create user-facing errors', t => {
+    const f = fixture(t), initial = f.connections[0]; initial.open();
+    initial.send('snapshot', { flow: { revision: 1 } }); initial.fail();
+    t.mock.timers.tick(5000); f.connections.at(-1).fail();
+    t.mock.timers.tick(10_000); f.connections.at(-1).fail();
+    t.mock.timers.tick(15_000);
+    assert.equal(f.calls.filter(call => call[0] === 'fallback').length, 1);
+    assert.equal(f.calls.filter(call => call[0] === 'error').length, 0);
+    t.mock.timers.tick(5000); const resumed = f.connections.at(-1); resumed.open();
+    resumed.send('snapshot', { flow: { revision: 2 } });
+    assert.equal(f.observer.connected, true);
+    assert.equal(f.calls.filter(call => call[0] === 'error').length, 0);
+});
+
+test('explicit server and decoding errors remain visible and are not replaced by generic reconnect messages', t => {
+    const f = fixture(t), source = f.connections[0]; source.open();
+    source.send('stream-error', { message: 'Unable to read this workflow' }); source.fail();
+    assert.deepEqual(f.calls, [['error', 'Unable to read this workflow']]);
+    t.mock.timers.tick(5000);
+    const event = new Event('flow'); event.data = '{invalid';
+    f.connections.at(-1).dispatchEvent(event);
+    assert.equal(f.calls.filter(call => call[0] === 'error').length, 2);
+});
+
+test('failed fallback reads still report errors when the live transport is unavailable', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    const doc = new EventTarget(); doc.hidden = false;
+    const errors = [];
+    const observer = observeWorkflow({ url: () => '/events', ownerDocument: doc, ownerWindow: new EventTarget(), EventSourceImpl: null,
+        onFlow() {}, onLog() {}, onResync: async () => {}, onError: error => errors.push(error.message),
+        fallback: async () => { throw new Error('Request failed (403)'); } });
+    t.after(() => observer.dispose());
+    t.mock.timers.tick(30_000); await Promise.resolve(); await Promise.resolve();
+    assert.deepEqual(errors, ['Request failed (403)']);
 });
 test('visibility, navigation and phase selection retain only one live connection', t => {
     const f = fixture(t); f.connections[0].open(); f.select('?instanceId=one');

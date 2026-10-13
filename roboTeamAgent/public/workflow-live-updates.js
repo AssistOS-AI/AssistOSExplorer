@@ -37,7 +37,8 @@ export function observeWorkflow({ url, onFlow, onLog, onResync, onError, fallbac
         connection.onerror = () => {
             if (source !== connection) return;
             connection.close(); source = null;
-            onError(new Error('Live updates interrupted; reconnecting.'));
+            // Stream renewal and transport retries are background recovery, not
+            // workflow failures. Failed fallback reads still report real errors.
             backup();
             retry = setTimeout(() => { retry = null; connect(); }, Math.min(60_000, 5000 * 2 ** Math.min(attempts++, 4)));
         };

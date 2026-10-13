@@ -746,7 +746,7 @@ function observationError(error) {
 }
 liveUpdates = observeWorkflow({
     url: () => api(`api/roboflow/flows/${encodeURIComponent(selected)}/events${stageView === 'log' && selectedInstanceId ? `?instanceId=${encodeURIComponent(selectedInstanceId)}` : ''}`),
-    onFlow: flow => { applyFlow(flow); if (document.querySelector('#message').textContent === 'Live updates interrupted; reconnecting.') setMessage(''); },
+    onFlow: applyFlow,
     onLog: appendLiveLog, onResync: pollLog, onError: observationError,
     fallback: async () => { await refresh(); await pollLog(); },
 });
