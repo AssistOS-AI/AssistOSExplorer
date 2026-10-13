@@ -1,0 +1,26 @@
+{
+  "pluginCategory": "application",
+  "id": "live-sessions",
+  "component": "live-sessions-tool-button",
+  "location": ["file-exp:toolbar"],
+  "locationOrder": 380,
+  "label": "Live Sessions",
+  "tooltip": "Watch, reattach or kill running terminals",
+  "icon": "./icon.svg",
+  "presenter": "LiveSessionsToolButton",
+  "type": "embedded",
+  "adminOnly": true,
+  "autoPin": false,
+  "toolbarModal": {
+    "mode": "component",
+    "component": "live-sessions-modal",
+    "fullscreen": true
+  },
+  "dependencies": [
+    {
+      "component": "live-sessions-modal",
+      "presenter": "LiveSessionsModal",
+      "type": "modal"
+    }
+  ]
+}

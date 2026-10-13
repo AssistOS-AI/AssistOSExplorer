@@ -61,4 +61,6 @@ The modal owns cleanup directly: closing marks it closed, aborts HTTP probes, cl
 
 Once the panel is visible, the toolbar control remains in its normal state. Its presenter may finish mounting in a hidden sibling and replaces the host button only after rendering completes; this background work must not reapply toolbar loading indicators.
 
+The `live-sessions` application plugin mounts `live-sessions-tool-button` in `file-exp:toolbar` at order 380, before Help. Its administrator-only, fullscreen component descriptor loads `live-sessions-modal` and does not opt into refresh resume. [Live Sessions](wiki.html#definition-live-sessions) lists existing WebTTY shells, embeds an attached terminal, opens a separate isolated tab with a fresh token, and confirms Kill inline. It never creates a shell. The component polls every five seconds while open, aborts owned requests and removes its iframe on unload, and stops polling after an older Router returns 404. Row validation rejects unknown fields and unsupported kinds; display fields are rendered as text. Ploinky remains the authority for ownership, input and Kill. Attach URLs are constructed inside the component and never passed to the expanded-modal descriptor or storage.
+
 The runtime plugin contract makes one workspace interface extensible while keeping each domain implementation independent.

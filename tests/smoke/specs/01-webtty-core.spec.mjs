@@ -14,6 +14,7 @@ import {
 } from '../lib/fixtures.mjs';
 import { assertDistinctAuthenticatedPrincipals, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
 import { captureRouterRecoveryAuthentication, expectedRouterRecoveryDiagnostics, recoveryConsoleText } from '../lib/webtty-router-recovery.mjs';
+import { cleanupWebttyTerminals, requireDetachedShell } from '../lib/webtty-terminal-cleanup.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { diagnosticEventSignature } from '../lib/diagnostic-ledger.mjs';
 import { createReadinessDiagnostics, withFailureArtifact } from '../lib/readiness-diagnostics.mjs';
@@ -311,7 +312,7 @@ async function readSessionCreation(response) {
   expect(response.status()).toBe(201);
   const payload = await response.json();
   expect(Object.keys(payload).sort()).toEqual(['ok', 'session']);
-  expect(Object.keys(payload.session).sort()).toEqual(['cols', 'cwd', 'id', 'rows', 'target']);
+  expect(Object.keys(payload.session).sort()).toEqual(['cols', 'cwd', 'id', 'role', 'rows', 'state', 'target']);
   expect(Object.keys(payload.session.target).sort()).toEqual([
     'access',
     'cwdDisplay',
@@ -323,6 +324,8 @@ async function readSessionCreation(response) {
     ok: true,
     session: {
       id: expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/),
+      role: 'owner',
+      state: 'detached',
       target: {
         kind: expect.stringMatching(/^(?:box|agent)$/),
         label: expect.any(String),
@@ -445,14 +448,70 @@ function sortedTargets(targets) {
   return targets.map(publicTarget).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
 }
 
-async function closeTerminal(terminal, { closePage = true } = {}) {
+async function closeTerminal(terminal, { closePage = true, requestPage = terminal.terminalPage, allowMissing = false } = {}) {
+  if (terminal.cleaned) return;
   const result = await browserMutation(
-    terminal.terminalPage,
+    requestPage,
     `/webtty/sessions/${encodeURIComponent(terminal.session.id)}`,
     { method: 'DELETE' },
   );
-  expect(result).toMatchObject({ status: 200, payload: { ok: true } });
-  if (closePage) await terminal.terminalPage.close();
+  if (allowMissing && result.status === 404) {
+    expect(result.payload).toEqual({ ok: false, error: 'not_found' });
+  } else {
+    expect(result).toMatchObject({ status: 200, payload: { ok: true } });
+  }
+  terminal.cleaned = true;
+  if (closePage && !terminal.terminalPage.isClosed()) await terminal.terminalPage.close();
+}
+
+function requireWatcherAccount() {
+  const username = String(process.env.SMOKE_WEBTTY_WATCHER_USERNAME || '').trim();
+  if (!username) throw new Error('SMOKE_WEBTTY_WATCHER_USERNAME must identify a distinct administrator for the Live Sessions gate.');
+  const signInMethod = process.env.SMOKE_WEBTTY_WATCHER_SIGN_IN_METHOD || 'emailCode';
+  if (!['password', 'emailCode', 'totp'].includes(signInMethod)) throw new Error('Invalid Live Sessions watcher sign-in method.');
+  return {
+    username,
+    loginEmail: process.env.SMOKE_WEBTTY_WATCHER_LOGIN_EMAIL || username,
+    password: process.env.SMOKE_WEBTTY_WATCHER_PASSWORD || '',
+    accountPassword: process.env.SMOKE_WEBTTY_WATCHER_ACCOUNT_PASSWORD || '',
+    signInMethod,
+    totpSecret: process.env.SMOKE_WEBTTY_WATCHER_TOTP_SECRET || '',
+  };
+}
+
+async function attachFromLiveSessions(page, id, role) {
+  await waitForExplorerPluginRender(page);
+  const host = page.locator('[data-app-plugin-key="explorer/live-sessions"]');
+  await host.locator('button:visible').click();
+  const panel = page.getByRole('dialog', { name: 'Live Sessions', exact: true });
+  await expect(panel).toBeVisible();
+  const row = panel.locator(`li[data-session-id="${id}"]`);
+  await expect(row).toBeVisible();
+  const attachment = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/webtty/attachments' && response.request().method() === 'POST'
+  ));
+  const minted = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === `/webtty/live-sessions/${id}/attach-tokens` && response.request().method() === 'POST'
+  ));
+  await row.getByRole('button', { name: 'Attach', exact: true }).click();
+  const response = await attachment;
+  expect(response.status()).toBe(200);
+  expect(await response.json()).toMatchObject({ ok: true, session: { id, role } });
+  const tokenResponse = await minted;
+  expect(tokenResponse.status()).toBe(201);
+  const attach = (await tokenResponse.json()).attach;
+  expect(typeof attach === 'string' && /^[A-Za-z0-9_-]{32}$/.test(attach), 'the attach response must contain an opaque token').toBe(true);
+  const frame = panel.locator('#liveSessionsFrame iframe');
+  await expect(frame).toHaveAttribute('referrerpolicy', 'no-referrer');
+  await expect.poll(() => frame.evaluate((element) => ({ search: element.contentWindow.location.search, hash: element.contentWindow.location.hash })))
+    .toEqual({ search: '', hash: '' });
+  expect(await page.evaluate((token) => {
+    const stores = [window.sessionStorage, window.localStorage];
+    const iframe = document.querySelector('#liveSessionsFrame iframe');
+    stores.push(iframe.contentWindow.sessionStorage, iframe.contentWindow.localStorage);
+    return stores.some((storage) => Object.keys(storage).some((key) => storage.getItem(key)?.includes(token)));
+  }, attach), 'attach tokens must never reach parent or iframe browser storage').toBe(false);
+  return { panel, row, frame: panel.frameLocator('#liveSessionsFrame iframe') };
 }
 
 async function restartPloinkyTarget(target, fixture) {
@@ -587,10 +646,15 @@ test.describe('Ploinky core WebTTY release gate', () => {
   test('local administrator controls the mounted workspace while an ordinary user is denied', async ({ page, browser }, testInfo) => {
     test.setTimeout(Math.max(smokeConfig.timeouts.test, 900_000));
     const runtimeBinding = requirePinnedRuntimeBinding();
+    const watcherAccount = requireWatcherAccount();
     const fixture = requireLocalWorkspaceFixture();
     const terminals = [];
     let userContext = null;
     let foreignAdminContext = null;
+    let ownerReattachContext = null;
+    let watcherContext = null;
+    let cleanupPage = page;
+    let primaryFailure = null;
     try {
       await observeExplorerPluginReadiness(page);
       await openExplorer(page, { hash: fixture.explorerHash });
@@ -768,13 +832,38 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(firstDiagnostics.actionableEvents(), 'the connected terminal page must have no browser errors').toEqual([]);
       firstDiagnostics.pause();
 
-      const firstClose = await browserMutation(
-        first.terminalPage,
-        `/webtty/sessions/${encodeURIComponent(first.session.id)}`,
-        { method: 'DELETE' },
-      );
-      expect(firstClose).toMatchObject({ status: 200, payload: { ok: true } });
+      // This close is the detach probe, not cleanup. Kill still uses the helper below.
+      let unloadDeletes = 0;
+      first.terminalPage.on('request', (request) => {
+        if (request.method() === 'DELETE' && new URL(request.url()).pathname === `/webtty/sessions/${first.session.id}`) unloadDeletes += 1;
+      });
       await first.terminalPage.close();
+      await expect.poll(async () => {
+        const detachedRows = await page.evaluate(async () => {
+          const response = await fetch('/webtty/live-sessions', { credentials: 'same-origin', cache: 'no-store' });
+          if (!response.ok) throw new Error('Live Sessions list failed after tab close.');
+          return response.json();
+        });
+        const row = detachedRows.sessions?.find((candidate) => candidate.id === first.session.id);
+        if (row?.status === 'exited') requireDetachedShell(detachedRows, first.session.id);
+        if (row?.status !== 'detached' || row.viewerCount !== 0) return false;
+        requireDetachedShell(detachedRows, first.session.id);
+        return true;
+      }, { message: 'tab close must leave the same live shell detached with zero viewers' }).toBe(true);
+      expect(unloadDeletes, 'tab close must never send a terminal DELETE').toBe(0);
+      const tabCloseView = await attachFromLiveSessions(page, first.session.id, 'owner');
+      await expect(tabCloseView.frame.locator('#status')).toHaveText('Connected');
+      const tabCloseMarker = `tab-close-${crypto.randomUUID()}`;
+      const tabCloseInput = await browserMutation(page, `/webtty/sessions/${first.session.id}/input`, {
+        body: { data: `printf '%s\\n' '${tabCloseMarker}' > tab-close-marker.txt\r` },
+      });
+      expect(tabCloseInput).toMatchObject({ status: 200, payload: { ok: true } });
+      await expect.poll(() => {
+        try { return fs.readFileSync(path.join(fixture.nestedRoot, 'tab-close-marker.txt'), 'utf8').trim(); } catch { return ''; }
+      }, { message: 'the same reattached shell must execute input after its original tab closes' }).toBe(tabCloseMarker);
+      await closeTerminal(first, { requestPage: page });
+      await tabCloseView.panel.getByRole('button', { name: 'Close panel', exact: true }).click();
+      await expect(tabCloseView.panel).toBeHidden();
       await firstDiagnostics.flush();
 
       const legacyUrl = new URL('/webtty/', smokeConfig.baseURL);
@@ -803,13 +892,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(second.launch).not.toBe(first.launch);
       expect(secondDiagnostics.actionableEvents(), 'WebTTY must remain available after normal terminal cleanup').toEqual([]);
       secondDiagnostics.pause();
-      const secondClose = await browserMutation(
-        second.terminalPage,
-        `/webtty/sessions/${encodeURIComponent(second.session.id)}`,
-        { method: 'DELETE' },
-      );
-      expect(secondClose).toMatchObject({ status: 200, payload: { ok: true } });
-      await second.terminalPage.close();
+      await closeTerminal(second);
       await secondDiagnostics.flush();
 
       if (readOnlyAgent) {
@@ -960,7 +1043,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await waitForAgentProcess(initialRuntime, initialGitAgent, foregroundPattern, true);
       expect(agentDiagnostics.actionableEvents(), 'the live agent terminal must have no browser errors').toEqual([]);
       agentDiagnostics.pause();
-      await agentTerminal.terminalPage.close();
+      await closeTerminal(agentTerminal);
       await agentDiagnostics.flush();
       await waitForAgentExecDelta(initialRuntime, initialGitAgent, initialGitAgent.execIds, 0);
       await waitForAgentProcess(initialRuntime, initialGitAgent, foregroundPattern, false);
@@ -1020,7 +1103,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         replacementVictimDiagnostics.actionableEvents(),
         'active target replacement may interrupt transport but must not produce an unhandled browser failure',
       ).toEqual([]);
-      await replacementVictim.terminalPage.close().catch(() => {});
+      await closeTerminal(replacementVictim);
       await replacementVictimDiagnostics.flush();
 
       const replacementRuntimeBeforeStale = collectWebttyRuntimeEvidence({
@@ -1224,7 +1307,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(logoutSleepInput).toMatchObject({ status: 200, payload: { ok: true } });
       const logoutSleepPattern = new RegExp(`(?:^|\\s)sleep ${logoutSleepSeconds}(?:$|\\s)`);
       await waitForAgentProcess(replacementRuntime, replacementGitAgent, logoutSleepPattern, true);
-      expect(replacementDiagnostics.actionableEvents(), 'the replacement agent terminal must remain error-free before revocation').toEqual([]);
+      expect(replacementDiagnostics.actionableEvents(), 'the replacement agent terminal must remain error-free before logout').toEqual([]);
       replacementDiagnostics.setExpectedOffline(true);
       await page.goto('/auth/logout?returnTo=/', { waitUntil: 'load' });
       await Promise.all([
@@ -1235,23 +1318,77 @@ test.describe('Ploinky core WebTTY release gate', () => {
         replacementRuntime,
         replacementGitAgent,
         replacementGitAgent.execIds,
-        0,
+        1,
       );
-      await waitForAgentProcess(replacementRuntime, replacementGitAgent, logoutSleepPattern, false);
-      await waitForAgentMarker(replacementRuntime, replacementGitAgent, replacementTerminalMarker, false);
+      await waitForAgentProcess(replacementRuntime, replacementGitAgent, logoutSleepPattern, true);
+      await waitForAgentMarker(replacementRuntime, replacementGitAgent, replacementTerminalMarker, true);
       await expect(replacementTerminal.terminalPage.locator('#status')).not.toHaveText('Connected');
       replacementDiagnostics.setExpectedOffline(false);
       expect(
         replacementDiagnostics.actionableEvents(),
-        'auth revocation may terminate transport but must not produce an unhandled browser failure',
+        'logout may detach transport but must not produce an unhandled browser failure',
       ).toEqual([]);
-      await replacementTerminal.terminalPage.close().catch(() => {});
+
+      ownerReattachContext = await browser.newContext({ baseURL: smokeConfig.baseURL, ignoreHTTPSErrors: true });
+      const ownerReattachPage = await ownerReattachContext.newPage();
+      const ownerViewDiagnostics = attachPageDiagnostics(ownerReattachPage, testInfo, 'webtty-owner-reattach');
+      await observeExplorerPluginReadiness(ownerReattachPage);
+      await openExplorer(ownerReattachPage, { account: smokeConfig.primaryUser, hash: fixture.explorerHash });
+      const reauthenticatedOwner = await readAuthenticatedPrincipal(ownerReattachPage, smokeConfig.primaryUser);
+      expect(reauthenticatedOwner.id).toBe(admin.id);
+      cleanupPage = ownerReattachPage;
+      const ownerView = await attachFromLiveSessions(ownerReattachPage, replacementTerminal.session.id, 'owner');
+      await expect(ownerView.frame.locator('#status')).toHaveText('Connected');
+      await expect(ownerView.frame.locator('#terminal .xterm-rows')).toContainText('__WEBTTY_REPLACEMENT_PWD__');
+      const resumeMarker = `reattach-${crypto.randomUUID()}`;
+      await ownerView.frame.locator('#terminal .xterm-helper-textarea').press('Control+C');
+      await waitForAgentProcess(replacementRuntime, replacementGitAgent, logoutSleepPattern, false);
+      await ownerView.frame.locator('#terminal .xterm-helper-textarea').pressSequentially(`printf '%s\\n' '${resumeMarker}' > reattach-marker.txt`);
+      await ownerView.frame.locator('#terminal .xterm-helper-textarea').press('Enter');
+      await expect.poll(() => {
+        try { return fs.readFileSync(path.join(fixture.nestedRoot, 'reattach-marker.txt'), 'utf8').trim(); } catch { return ''; }
+      }, { message: 'the reattached owner must type a marker that executes in the existing shell' }).toBe(resumeMarker);
+
+      watcherContext = await browser.newContext({ baseURL: smokeConfig.baseURL, ignoreHTTPSErrors: true });
+      const watcherPage = await watcherContext.newPage();
+      const watcherDiagnostics = attachPageDiagnostics(watcherPage, testInfo, 'webtty-foreign-admin-watcher');
+      await observeExplorerPluginReadiness(watcherPage);
+      await openExplorer(watcherPage, { account: watcherAccount, hash: fixture.explorerHash });
+      const watcher = await readAuthenticatedPrincipal(watcherPage, watcherAccount);
+      assertDistinctAuthenticatedPrincipals(admin, watcher);
+      expect(watcher.roles).toContain('admin');
+      const watcherView = await attachFromLiveSessions(watcherPage, replacementTerminal.session.id, 'watcher');
+      await expect(watcherView.frame.locator('#status')).toHaveText('Connected');
+      await expect(watcherView.frame.locator('#terminal .xterm-rows')).toContainText('__WEBTTY_REPLACEMENT_PWD__');
+      const ownerInputPath = `/webtty/sessions/${replacementTerminal.session.id}/input`;
+      const watcherCheckpoint = watcherDiagnostics.checkpoint();
+      const deniedOwnerInput = await browserMutation(watcherPage, ownerInputPath, { body: { data: 'forbidden\r' } });
+      expect(deniedOwnerInput).toMatchObject({ status: 403, payload: { ok: false, error: 'owner_required' } });
+      const ownerInputUrl = new URL(ownerInputPath, smokeConfig.baseURL).toString();
+      watcherDiagnostics.acknowledgeExact(watcherCheckpoint, [
+        diagnosticEventSignature({ kind: 'response', type: 'error', status: 403, url: ownerInputUrl, method: 'POST' }),
+        diagnosticEventSignature({ kind: 'console', type: 'error', text: 'Failed to load resource: the server responded with a status of 403 (Forbidden)', location: { url: ownerInputUrl } }),
+      ]);
+      await watcherView.row.getByRole('button', { name: 'Kill', exact: true }).click();
+      await watcherView.row.getByRole('button', { name: 'Confirm Kill', exact: true }).click();
+      await waitForAgentExecDelta(replacementRuntime, replacementGitAgent, replacementGitAgent.execIds, 0);
+      await waitForAgentMarker(replacementRuntime, replacementGitAgent, replacementTerminalMarker, false);
+      await closeTerminal(replacementTerminal, { requestPage: ownerReattachPage });
       await replacementDiagnostics.flush();
+      expect(ownerViewDiagnostics.actionableEvents(), 'the reattached owner must remain browser-error-free').toEqual([]);
+      expect(watcherDiagnostics.actionableEvents(), 'the foreign administrator permits only the exact owner-required denial').toEqual([]);
+      await watcherContext.close();
+      await watcherDiagnostics.flush();
+      watcherContext = null;
+      await ownerReattachContext.close();
+      await ownerViewDiagnostics.flush();
+      ownerReattachContext = null;
 
       await openExplorer(page, {
         account: smokeConfig.primaryUser,
         hash: fixture.explorerHash,
       });
+      cleanupPage = page;
       await assertExplorerDirectory(page, fixture.parentDirectoryPath);
       const recoveryTerminalMarkerBaseline = collectAgentMarkerTokens(
         replacementRuntime,
@@ -1368,6 +1505,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
             expectedRouterRecoveryDiagnostics(smokeConfig.baseURL, restartRecoveryTerminal.session.id, recoveryAuthentication.mode),
           );
           expect(recoveryDiagnostics.actionableEvents(), 'Router recovery diagnostics must match the exact prior-epoch stream').toEqual([]);
+          // The exact backend cleanup was proved above. SSO is still expired here;
+          // the authenticated DELETE absence probe follows re-login below.
           await restartRecoveryTerminal.terminalPage.close();
           await recoveryDiagnostics.flush();
         },
@@ -1382,6 +1521,11 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await assertExplorerDirectory(page, fixture.parentDirectoryPath);
       acknowledgeExactPageDiagnostics(page, primaryRecoveryCheckpoint, []);
       assertPageDiagnosticsClean(page, 'Explorer must reopen cleanly after verified Router recovery');
+      const cleanupCheckpoint = checkpointPageDiagnostics(page, 'authenticated prior Router terminal DELETE');
+      await closeTerminal(restartRecoveryTerminal, { requestPage: page, allowMissing: true });
+      acknowledgeExactPageDiagnostics(page, cleanupCheckpoint, expectedHttpFailureDiagnostics(
+        `/webtty/sessions/${restartRecoveryTerminal.session.id}`, { method: 'DELETE', status: 404 },
+      ));
       const explorerReopenedAt = new Date().toISOString();
       const isolationHostMarker = `box-isolation-host-${crypto.randomUUID()}`;
       const isolationBrowserMarker = `box-isolation-browser-${crypto.randomUUID()}`;
@@ -1504,7 +1648,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
           agentCwdMatchedIndependentMountProof: true,
           agentBidirectionalIo: true,
           agentResize: true,
-          agentDisconnectRemovedExecAndForegroundProcess: true,
+          agentKillRemovedExecAndForegroundProcess: true,
           predecessorTargetRemoved: true,
           activeTargetReplacementRemovedExactMarkerContainer: true,
           staleLaunchStatus: staleLaunch.status,
@@ -1512,11 +1656,15 @@ test.describe('Ploinky core WebTTY release gate', () => {
           staleLaunchExactExecEventCount: staleObservation.exactEventCount,
           replacementTargetChangedImmutableContainer: true,
           replacementTargetPreservedCoordinatedIdentity: true,
-          authRevocationRemovedExecAndForegroundProcess: true,
+          logoutKeptExecAndForegroundProcess: true,
+          ownerReloginReplayedAndExecutedMarker: true,
+          foreignAdminWatchOnlyAndKill: true,
+          attachTokenAbsentFromQueryAndStorage: true,
           defaultRouterCrashRecoveryRemovedAgentExecAndForegroundProcess: true,
           boxAvailableAfterAgentAndRouterFailures: true,
           legacyDirectoryQueryCreatedSession: false,
           normalCloseKeptWebttyAvailable: true,
+          tabCloseKeptShellAndSentNoDelete: true,
           ordinaryUserMenuItemVisible: false,
           ordinaryUserPageStatus: directResponse.status(),
           ordinaryUserDiscoveryStatus: deniedDiscovery.status,
@@ -1524,20 +1672,30 @@ test.describe('Ploinky core WebTTY release gate', () => {
         }, null, 2)),
         contentType: 'application/json',
       });
+    } catch (error) {
+      primaryFailure = error;
+      throw error;
     } finally {
-      await userContext?.close().catch(() => {});
-      await foreignAdminContext?.close().catch(() => {});
-      for (const terminal of terminals.reverse()) {
-        if (!terminal.terminalPage.isClosed()) {
-          await browserMutation(
-            terminal.terminalPage,
-            `/webtty/sessions/${encodeURIComponent(terminal.session.id)}`,
-            { method: 'DELETE' },
-          ).catch(() => {});
-          await terminal.terminalPage.close().catch(() => {});
-        }
-      }
-      fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+      await cleanupWebttyTerminals({
+        terminals,
+        priorFailure: primaryFailure,
+        authenticate: async () => {
+          const requestPage = cleanupPage.isClosed() ? page : cleanupPage;
+          // This also renews authentication when an assertion failed immediately after logout.
+          const principal = await signIn(requestPage, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true });
+          expect(principal.roles).toContain('admin');
+          return requestPage;
+        },
+        closeTerminal,
+        closeContexts: async () => {
+          const outcomes = await Promise.allSettled([
+            userContext?.close(), foreignAdminContext?.close(), watcherContext?.close(), ownerReattachContext?.close(),
+          ]);
+          const errors = outcomes.filter((outcome) => outcome.status === 'rejected').map((outcome) => outcome.reason);
+          if (errors.length) throw new AggregateError(errors, 'WebTTY browser contexts could not be closed.');
+        },
+        removeFixture: () => fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true }),
+      });
     }
   });
 });

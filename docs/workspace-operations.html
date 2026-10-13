@@ -17,6 +17,7 @@
           <li><a href="#workspace-navigation">Navigation</a></li>
           <li><a href="#file-management">File management</a></li>
           <li><a href="#terminal-targets">Terminal targets</a></li>
+          <li><a href="#live-sessions">Live Sessions</a></li>
           <li><a href="#search-replace">Search and replace</a></li>
           <li><a href="#settings">Settings</a></li>
           <li><a href="#boundaries">Safety boundaries</a></li>
@@ -49,6 +50,13 @@
           <p><strong>Open Terminal Here</strong> sends only the canonical workspace-relative directory to <a href="wiki.html#definition-ploinky">Ploinky</a>'s same-origin, mutation-protected discovery route. The chooser lists <strong><a href="wiki.html#definition-ploinky">Ploinky</a> Box</strong> first. It then lists only running agents whose current runtime identity and live mounts <a href="wiki.html#definition-ploinky">Ploinky</a> has independently proven can access the selected folder. <a href="wiki.html#definition-explorer">Explorer</a> does not inspect containers, infer mounts, or translate a path.</p>
           <p>Each choice shows its server-provided label, detail, effective working directory, and read-only or read/write access for the selected folder. Agent choices also explain that the terminal uses the container's normal user, tools, environment, permissions, and credential context. A read-only badge describes this folder mapping, not the entire container.</p>
           <p>Selecting a row directly opens <code>/webtty/#launch=&lt;opaque-id&gt;</code> in a new tab with no opener or referrer. The short-lived launch ID is not a container selector and is not placed in a query parameter or browser storage. A blocked popup leaves the chooser open. Refresh replaces the complete discovery batch, and cancel asks <a href="wiki.html#definition-ploinky">Ploinky</a> to invalidate the unused choices. <a href="wiki.html#definition-explorer">Explorer</a> never sends a raw container identity, translated or physical path, shell, arguments, environment, user, or runtime flags.</p>
+        </section>
+
+        <section class="doc-section" id="live-sessions">
+          <h2>Live Sessions</h2>
+          <p>Closing a terminal tab keeps its shell running. Open <strong>Live Sessions</strong> in the toolbar to list existing shells, attach an embedded view, pop out to a separate tab, or confirm Kill. Exited rows show why the shell ended. This administrator-only tool does not create terminals; use Open Terminal Here to start one.</p>
+          <p>The owner can type from any attached tab or device after signing in again. Other administrators can watch and Kill, but cannot type or resize. Closing the panel removes its embedded view and only detaches. Logout and session expiry detach viewers. A decided owner demotion ends their shells at their next authenticated browser request. Shells expire after 24 hours without input, output, resize or attach, or seven days in total, and Router restart ends them.</p>
+          <p>Attach and pop-out use fresh, single-use tokens in <code>/webtty/#attach=&lt;opaque-id&gt;</code>. Tokens never reach a query string, browser storage or the modal descriptor. A refreshed terminal tab asks you to reopen it from Live Sessions. Older Ploinky versions show an upgrade notice.</p>
         </section>
 
         <section class="doc-section" id="search-replace">

@@ -1,0 +1,14 @@
+<div class="live-sessions-body">
+    <div class="live-sessions-list-panel">
+        <p class="live-sessions-guidance">Closing a terminal tab or this panel keeps the shell running. Use Kill to end it.</p>
+        <p id="liveSessionsStatus" role="status" aria-live="polite">Loading live sessions…</p>
+        <ul id="liveSessionsList" class="live-sessions-list" aria-label="Live terminal sessions"></ul>
+    </div>
+    <section id="liveSessionsViewer" class="live-sessions-viewer" aria-label="Attached terminal" hidden>
+        <div class="live-sessions-viewer-heading">
+            <span id="liveSessionsViewerTitle"></span>
+            <button class="gray-button" type="button" data-local-action="detachViewer">Detach view</button>
+        </div>
+        <div id="liveSessionsFrame" class="live-sessions-frame"></div>
+    </section>
+</div>

@@ -17,6 +17,7 @@ AchillesIDE enables a workspace user to work with files and agent-owned resource
 | --- | --- |
 | Workspace navigation and editing | Users browse workspace or virtual resources, select a compatible preview, and edit only through the owning storage contract. |
 | Agent-owned workflows | Users reach domain workflows through runtime plugins while the owning agent preserves authorization and state. |
+| Persistent terminal management | Administrators reattach to shells after closing a view or signing in again, watch other owners' shells and confirm Kill while Ploinky enforces ownership and lifetime. |
 | Protected runtime access | [Ploinky](wiki.html#definition-ploinky) and [Explorer](wiki.html#definition-explorer) preserve router-authenticated access and workspace confinement for every essential path. |
 
 ### Workspace navigation and editing
@@ -26,6 +27,10 @@ The affected user is a workspace operator who needs to inspect and change files 
 ### Agent-owned workflows
 
 The affected user is a workspace operator who needs Git, [DPU](wiki.html#definition-dpu), task, [SOPLang](wiki.html#definition-soplang), media, meeting, or other enabled domain actions in the same application. [Runtime plugin](wiki.html#definition-runtime-plugin) discovery starts from enabled `IDE-plugins/*/config.json` bundles and the [Explorer](wiki.html#definition-explorer) `applicationPlugins` policy controls which application plugins can mount. The observable result is a contextual control or settings surface that calls the owning agent. For research data, this includes verified file consumption and confirmed federated jobs whose raw participant data remains local. [Explorer](wiki.html#definition-explorer) must preserve the boundary that domain authorization, state, and mutation remain with the owning agent; [DPU](wiki.html#definition-dpu) remains responsible for every file-read [ACL](wiki.html#definition-acl) check, backend capability decision, confirmation, job transition, protected result, and provenance event.
+
+### Persistent terminal management
+
+An administrator starts a shell through Open Terminal Here and manages existing shells through [Live Sessions](wiki.html#definition-live-sessions) in the toolbar. Closing a terminal tab, closing the embedded view or ending a login only detaches viewers, so the owner can sign in again and reattach from another tab or device. The tool lists shells, embeds a view, opens an isolated pop-out tab and confirms Kill. It never creates a shell. Other administrators can watch and Kill; only the owner can type or resize. [Ploinky](wiki.html#definition-ploinky) enforces these permissions, a 24-hour idle timeout and a seven-day absolute lifetime. A decided owner demotion ends their shells at their next authenticated browser request, and Router restart ends all shells. Fresh single-use attach tokens remain in component-built URL fragments, never query strings, browser storage or resumable modal descriptors. The observable result is a workspace shell the owner can revisit without keeping a browser view open, within Ploinky's process lifetime.
 
 ### Protected runtime access
 

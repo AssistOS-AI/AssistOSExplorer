@@ -118,16 +118,18 @@ export function normalizeTerminalDiscoveryPayload(payload) {
     });
 }
 
-export function buildTerminalLaunchUrl(launch) {
-    const normalized = String(launch || '');
-    if (!IDENTIFIER_PATTERN.test(normalized)) {
+export function buildTerminalLaunchUrl(handoff) {
+    const attach = isPlainObject(handoff) && hasExactKeys(handoff, ['attach']);
+    const launch = typeof handoff === 'string' || (isPlainObject(handoff) && hasExactKeys(handoff, ['launch']));
+    const normalized = attach ? handoff.attach : typeof handoff === 'string' ? handoff : handoff?.launch;
+    if ((!attach && !launch) || typeof normalized !== 'string'
+        || !(attach ? /^[A-Za-z0-9_-]{32}$/ : IDENTIFIER_PATTERN).test(normalized)) {
         throw new Error('Invalid terminal launch identifier.');
     }
-    return `/webtty/#launch=${encodeURIComponent(normalized)}`;
+    return `/webtty/#${attach ? 'attach' : 'launch'}=${encodeURIComponent(normalized)}`;
 }
 
-export function openTerminalLaunchWindow(launch, windowRef = globalThis.window) {
-    const launchUrl = buildTerminalLaunchUrl(launch);
+export function reserveTerminalWindow(windowRef = globalThis.window) {
     // Chromium deliberately returns null for window.open() when the noopener
     // feature is present, even when it opened the tab. Probe with a same-origin
     // blank tab so a null return still means blocked. Fail closed unless opener
@@ -140,13 +142,6 @@ export function openTerminalLaunchWindow(launch, windowRef = globalThis.window) 
         if (popup.opener !== null) {
             throw new Error('The terminal popup opener could not be isolated.');
         }
-        const anchor = popup.document.createElement('a');
-        anchor.href = launchUrl;
-        anchor.target = '_self';
-        anchor.rel = 'noopener noreferrer';
-        anchor.referrerPolicy = 'no-referrer';
-        popup.document.body.appendChild(anchor);
-        anchor.click();
         return popup;
     } catch (_) {
         try {
@@ -154,6 +149,28 @@ export function openTerminalLaunchWindow(launch, windowRef = globalThis.window) 
         } catch (_) {}
         return null;
     }
+}
+
+export function navigateTerminalWindow(popup, handoff) {
+    try {
+        if (!popup || popup.closed || popup.opener !== null) throw new Error('Unsafe terminal popup.');
+        const anchor = popup.document.createElement('a');
+        anchor.href = buildTerminalLaunchUrl(handoff);
+        anchor.target = '_self';
+        anchor.rel = 'noopener noreferrer';
+        anchor.referrerPolicy = 'no-referrer';
+        popup.document.body.appendChild(anchor);
+        anchor.click();
+        return popup;
+    } catch (_) {
+        try { popup?.close?.(); } catch (_) {}
+        return null;
+    }
+}
+
+export function openTerminalLaunchWindow(handoff, windowRef = globalThis.window) {
+    buildTerminalLaunchUrl(handoff);
+    return navigateTerminalWindow(reserveTerminalWindow(windowRef), handoff);
 }
 
 function mutationHeaders() {

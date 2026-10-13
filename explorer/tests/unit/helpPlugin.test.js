@@ -47,7 +47,7 @@ test('Help plugin is a discoverable Explorer toolbar application with a modal de
     const normalized = normalizeRuntimePlugins(aggregated);
     const toolbarPluginIds = (normalized.application['file-exp:toolbar'] || [])
         .map((plugin) => plugin.id);
-    assert.deepEqual(toolbarPluginIds, ['git', 'marketplace', 'webmeet', 'help']);
+    assert.deepEqual(toolbarPluginIds, ['git', 'marketplace', 'webmeet', 'live-sessions', 'help']);
 });
 
 test('Help modal exposes the six documented, accessible topics', async () => {

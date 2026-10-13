@@ -1,0 +1,20 @@
+live-sessions-tool-button {
+    display: block;
+    width: 100%;
+    text-align: center;
+}
+
+.app-toolbar-slot live-sessions-tool-button,
+live-sessions-tool-button[data-host-orientation="horizontal"] {
+    width: auto;
+    text-align: initial;
+}
+
+live-sessions-tool-button .live-sessions-tool {
+    display: inline-flex;
+    justify-content: center;
+}
+
+live-sessions-tool-button button[hidden] {
+    display: none;
+}

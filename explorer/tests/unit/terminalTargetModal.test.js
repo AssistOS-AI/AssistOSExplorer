@@ -332,6 +332,27 @@ test('target selection opens an isolated no-referrer fragment and closes only fo
     assert.doesNotMatch(navigated[0], /(?:dir|container|runtime|cwd)=/);
 });
 
+test('attach popup preserves isolation and uses only the exact attach fragment', () => {
+    const attach = 'T'.repeat(32);
+    const anchors = [];
+    const popup = {
+        opener: {},
+        document: {
+            createElement() { const anchor = { click() {} }; anchors.push(anchor); return anchor; },
+            body: { appendChild() {} },
+        },
+    };
+    assert.equal(buildTerminalLaunchUrl({ attach }), `/webtty/#attach=${attach}`);
+    assert.equal(openTerminalLaunchWindow({ attach }, { open: () => popup }), popup);
+    assert.equal(popup.opener, null);
+    assert.equal(anchors[0].href, `/webtty/#attach=${attach}`);
+    assert.equal(anchors[0].referrerPolicy, 'no-referrer');
+    assert.equal(anchors[0].rel, 'noopener noreferrer');
+    assert.equal(openTerminalLaunchWindow({ attach }, { open: () => null }), null);
+    assert.throws(() => buildTerminalLaunchUrl({ attach, launch: BOX_LAUNCH }), /Invalid/);
+    assert.throws(() => buildTerminalLaunchUrl({ attach: 'A'.repeat(33) }), /Invalid/);
+});
+
 test('ready rendering supports 15 semantic rows, read-only badges, and safe availability messages', (t) => {
     const previousDocument = globalThis.document;
     globalThis.document = {
