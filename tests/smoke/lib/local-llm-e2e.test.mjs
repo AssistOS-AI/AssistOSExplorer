@@ -6,7 +6,10 @@ import test from 'node:test';
 
 import { canonicalRunner, dispatchLocalLlm, localLlmHelp } from '../scripts/run-local-llm-e2e.mjs';
 
-const blocks = { apple: 'mac-model-venus', 'apple-cpu': 'mac-model-cpu', nvidia: 'apparatus-model-nvidia', cpu: 'apparatus-model-cpu' };
+const blocks = {
+    apple: 'mac-model-venus', 'apple-cpu': 'mac-model-cpu', nvidia: 'apparatus-model-nvidia', cpu: 'apparatus-model-cpu',
+    'amd-apu': 'linux-model-amd-apu', 'amd-apu-pressure': 'linux-model-amd-apu-pressure', 'amd-apu-cpu': 'linux-model-amd-apu-cpu',
+};
 const manifest = (profile) => ({ block: blocks[profile], target: { execution: { model: { profile } } } });
 const args = (profile, action = 'live') => ['--profile', profile, '--action', action, '--run', '/tmp/run.json', ...(action === 'prepare' ? ['--config', '/tmp/config.json', '--pins', '/tmp/pins.json'] : ['--authorization', '/tmp/auth.json'])];
 
@@ -81,12 +84,28 @@ test('prepare rejects a successful canonical result with a mismatched generated 
     assert.throws(() => dispatchLocalLlm(args('cpu', 'prepare'), offline('apple')), /binding/);
 });
 
+test('AMD profiles reject every foreign run binding and preserve canonical failure results', () => {
+    for (const profile of ['amd-apu', 'amd-apu-pressure', 'amd-apu-cpu']) {
+        for (const action of ['prepare', 'provision', 'live', 'cleanup']) {
+            for (const foreign of Object.keys(blocks).filter(value => value !== profile)) {
+                const injected = offline(foreign);
+                assert.throws(() => dispatchLocalLlm(args(profile, action), injected), /binding/);
+                assert.equal(injected.calls.length, action === 'prepare' ? 1 : 0);
+            }
+        }
+        for (const status of [1, 2, 7]) assert.equal(dispatchLocalLlm(args(profile), offline(profile, { status })), status);
+        assert.throws(() => dispatchLocalLlm(args(profile), offline(profile, { status: null, signal: 'SIGTERM' })), /SIGTERM/);
+    }
+});
+
 test('help is read-only and exposes the complete explicit interface', () => {
     const injected = offline('cpu');
     injected.readJson = () => { throw new Error('help must not read'); };
     assert.equal(dispatchLocalLlm(['--help'], injected), 0);
     assert.equal(injected.calls.length, 0);
-    for (const value of ['apple|apple-cpu|nvidia|cpu', 'prepare|provision|live|cleanup', '--run', '--config', '--pins', '--authorization']) assert.ok(localLlmHelp.includes(value));
+    for (const value of ['apple|apple-cpu|nvidia|cpu|amd-apu|amd-apu-pressure|amd-apu-cpu', 'prepare|provision|live|cleanup', '--run', '--config', '--pins', '--authorization',
+        'mac-model-cpu / LIVE-L7', 'linux-model-amd-apu / LIVE-L13,LIVE-L9,LIVE-L11,LIVE-L12',
+        'linux-model-amd-apu-pressure / LIVE-L10', 'linux-model-amd-apu-cpu / LIVE-L8']) assert.ok(localLlmHelp.includes(value));
     const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/run-local-llm-e2e.mjs', import.meta.url)), '--help'], { encoding: 'utf8', cwd: '/' });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), localLlmHelp.trim());
