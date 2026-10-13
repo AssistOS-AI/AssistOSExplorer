@@ -11,6 +11,7 @@ Run `npm run test:local-llm -- --help` for the explicit interface. This Node dis
 | Profile | Canonical block / case | Required target |
 | --- | --- | --- |
 | `apple` | `mac-model-venus` / `LIVE-L6` | Already selected rootless libkrun machine with Venus |
+| `apple-cpu` | `mac-model-cpu` / `LIVE-L7` | Same selected rootless libkrun machine, fresh workspace with GPU withdrawal before first startup |
 | `nvidia` | `apparatus-model-nvidia` / `LIVE-L4` | Native Linux CUDA, no MPS |
 | `cpu` | `apparatus-model-cpu` / `LIVE-L5` | Native Linux with workspace-wide GPU withdrawal before startup |
 
@@ -26,6 +27,8 @@ npm run test:local-llm -- --profile cpu --action cleanup --run /absolute/evidenc
 Prepare maps to `prepare-live` and checks the resulting manifest's profile and block. The other actions check that binding before invocation and require the canonical execution-time authorization for that action and exact manifest. The dispatcher creates no approval. It propagates canonical exit codes; an interrupted runner, binding mismatch or missing proof cannot establish a pass.
 
 Use separate fresh sequential NVIDIA and CPU cohorts. The Apple suite uses the selected machine and its reviewed setup/restoration envelope; it never installs, creates, switches, stops or deletes machines. A passing case needs canonical backend, model/image/source and nonempty inference evidence, positive generation rate, successful owned-resource cleanup and, for Apple, restoration evidence. Failed cleanup or missing retrieved artifacts keeps recovery evidence and remains non-PASS. These optional checks do not replace broader release gates.
+
+For a same-Mac comparison, run `apple` and `apple-cpu` in separate fresh sequential workspaces under the reviewed Apple envelope. The Linux `cpu` profile remains Linux-only. Prepare may freeze `pins.model.measurement` with the canonical scenario, comparison ID, cohort and baseline context. Later actions consume that manifest; the dispatcher accepts no scenario or parameter overrides. Without measurement pins, the single functional smoke case remains unchanged. A selected measurement case that is refused, blocked, failed or not exercised cannot count as a benchmark pass. Complete comparison evidence requires both baseline pairs, owned-action settlement, cleanup and recorded machine restoration.
 
 Offline dispatcher checks use `node --test lib/local-llm-e2e.test.mjs` from this directory. Injected runner results prove argument binding and error handling only; they do not prove model execution.
 

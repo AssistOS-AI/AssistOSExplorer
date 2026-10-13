@@ -8,18 +8,20 @@ import { fileURLToPath } from 'node:url';
 export const canonicalRunner = fileURLToPath(new URL('../../../../ploinky/tests/hardware-limits/verify.mjs', import.meta.url));
 const blocks = Object.freeze({
     apple: 'mac-model-venus',
+    'apple-cpu': 'mac-model-cpu',
     nvidia: 'apparatus-model-nvidia',
     cpu: 'apparatus-model-cpu',
 });
 
 export const localLlmHelp = `Optional local-llm E2E dispatcher
-Usage: npm run test:local-llm -- --profile apple|nvidia|cpu --action prepare|provision|live|cleanup --run ABS_PATH [options]
+Usage: npm run test:local-llm -- --profile apple|apple-cpu|nvidia|cpu --action prepare|provision|live|cleanup --run ABS_PATH [options]
 
 prepare requires --config ABS_PATH --pins ABS_PATH and maps to prepare-live.
 provision, live and cleanup require --authorization ABS_PATH for that exact action.
 --run names the canonical run manifest file, not a directory.
 
 apple  -> mac-model-venus / LIVE-L6, selected existing rootless libkrun machine
+apple-cpu -> mac-model-cpu / LIVE-L7, same selected machine without GPU exposure
 nvidia -> apparatus-model-nvidia / LIVE-L4, native Linux CUDA without MPS
 cpu    -> apparatus-model-cpu / LIVE-L5, native Linux without GPU exposure
 
@@ -40,7 +42,7 @@ function parseOptions(argv) {
         if (typeof value !== 'string' || !value.trim() || value.startsWith('--')) throw new Error(`--${key} requires a value.`);
         options[key] = value;
     }
-    if (!Object.hasOwn(blocks, options.profile || '')) throw new Error('--profile must be apple, nvidia or cpu.');
+    if (!Object.hasOwn(blocks, options.profile || '')) throw new Error('--profile must be apple, apple-cpu, nvidia or cpu.');
     if (!['prepare', 'provision', 'live', 'cleanup'].includes(options.action)) throw new Error('--action must be prepare, provision, live or cleanup.');
     const paths = options.action === 'prepare' ? ['run', 'config', 'pins'] : ['run', 'authorization'];
     for (const key of paths) {

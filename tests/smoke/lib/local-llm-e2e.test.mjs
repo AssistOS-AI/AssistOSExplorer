@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { canonicalRunner, dispatchLocalLlm, localLlmHelp } from '../scripts/run-local-llm-e2e.mjs';
 
-const blocks = { apple: 'mac-model-venus', nvidia: 'apparatus-model-nvidia', cpu: 'apparatus-model-cpu' };
+const blocks = { apple: 'mac-model-venus', 'apple-cpu': 'mac-model-cpu', nvidia: 'apparatus-model-nvidia', cpu: 'apparatus-model-cpu' };
 const manifest = (profile) => ({ block: blocks[profile], target: { execution: { model: { profile } } } });
 const args = (profile, action = 'live') => ['--profile', profile, '--action', action, '--run', '/tmp/run.json', ...(action === 'prepare' ? ['--config', '/tmp/config.json', '--pins', '/tmp/pins.json'] : ['--authorization', '/tmp/auth.json'])];
 
@@ -86,10 +86,27 @@ test('help is read-only and exposes the complete explicit interface', () => {
     injected.readJson = () => { throw new Error('help must not read'); };
     assert.equal(dispatchLocalLlm(['--help'], injected), 0);
     assert.equal(injected.calls.length, 0);
-    for (const value of ['apple|nvidia|cpu', 'prepare|provision|live|cleanup', '--run', '--config', '--pins', '--authorization']) assert.ok(localLlmHelp.includes(value));
+    for (const value of ['apple|apple-cpu|nvidia|cpu', 'prepare|provision|live|cleanup', '--run', '--config', '--pins', '--authorization']) assert.ok(localLlmHelp.includes(value));
     const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/run-local-llm-e2e.mjs', import.meta.url)), '--help'], { encoding: 'utf8', cwd: '/' });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), localLlmHelp.trim());
+});
+
+test('Mac CPU and Linux CPU cannot be redirected into each other or override frozen scenarios', () => {
+    for (const profile of ['apple-cpu', 'cpu']) {
+        for (const action of ['provision', 'live', 'cleanup']) {
+            for (const foreign of Object.keys(blocks).filter(value => value !== profile)) {
+                const injected = offline(foreign);
+                assert.throws(() => dispatchLocalLlm(args(profile, action), injected), /binding/);
+                assert.equal(injected.calls.length, 0);
+            }
+            for (const option of ['scenario', 'measurement', 'context', 'pins', 'config']) {
+                const injected = offline(profile);
+                assert.throws(() => dispatchLocalLlm([...args(profile, action), `--${option}`, '/tmp/override'], injected));
+                assert.equal(injected.calls.length, 0);
+            }
+        }
+    }
 });
 
 test('the opt-in script preserves baseline scripts and Playwright discovery', () => {
