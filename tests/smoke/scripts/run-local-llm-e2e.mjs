@@ -11,10 +11,13 @@ const blocks = Object.freeze({
     'apple-cpu': 'mac-model-cpu',
     nvidia: 'apparatus-model-nvidia',
     cpu: 'apparatus-model-cpu',
+    'amd-apu': 'linux-model-amd-apu',
+    'amd-apu-pressure': 'linux-model-amd-apu-pressure',
+    'amd-apu-cpu': 'linux-model-amd-apu-cpu',
 });
 
 export const localLlmHelp = `Optional local-llm E2E dispatcher
-Usage: npm run test:local-llm -- --profile apple|apple-cpu|nvidia|cpu --action prepare|provision|live|cleanup --run ABS_PATH [options]
+Usage: npm run test:local-llm -- --profile apple|apple-cpu|nvidia|cpu|amd-apu|amd-apu-pressure|amd-apu-cpu --action prepare|provision|live|cleanup --run ABS_PATH [options]
 
 prepare requires --config ABS_PATH --pins ABS_PATH and maps to prepare-live.
 provision, live and cleanup require --authorization ABS_PATH for that exact action.
@@ -24,6 +27,12 @@ apple  -> mac-model-venus / LIVE-L6, selected existing rootless libkrun machine
 apple-cpu -> mac-model-cpu / LIVE-L7, same selected machine without GPU exposure
 nvidia -> apparatus-model-nvidia / LIVE-L4, native Linux CUDA without MPS
 cpu    -> apparatus-model-cpu / LIVE-L5, native Linux without GPU exposure
+amd-apu -> linux-model-amd-apu / LIVE-L13,LIVE-L9,LIVE-L11,LIVE-L12, experimental AMD integrated Vulkan
+amd-apu-pressure -> linux-model-amd-apu-pressure / LIVE-L10, pinned raised guard floor
+amd-apu-cpu -> linux-model-amd-apu-cpu / LIVE-L8, same AMD host without GPU exposure
+
+AMD runs require separately selected host pins and fresh cohorts. LIVE-L12 remains
+pending until generation-cancellation observation is implemented and verified.
 
 The fixed sibling ploinky/tests/hardware-limits/verify.mjs owns execution,
 authorization, provenance, evidence and cleanup. No approval is created here.
@@ -42,7 +51,7 @@ function parseOptions(argv) {
         if (typeof value !== 'string' || !value.trim() || value.startsWith('--')) throw new Error(`--${key} requires a value.`);
         options[key] = value;
     }
-    if (!Object.hasOwn(blocks, options.profile || '')) throw new Error('--profile must be apple, apple-cpu, nvidia or cpu.');
+    if (!Object.hasOwn(blocks, options.profile || '')) throw new Error('--profile must be apple, apple-cpu, nvidia, cpu, amd-apu, amd-apu-pressure or amd-apu-cpu.');
     if (!['prepare', 'provision', 'live', 'cleanup'].includes(options.action)) throw new Error('--action must be prepare, provision, live or cleanup.');
     const paths = options.action === 'prepare' ? ['run', 'config', 'pins'] : ['run', 'authorization'];
     for (const key of paths) {

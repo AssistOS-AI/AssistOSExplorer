@@ -14,6 +14,9 @@ Run `npm run test:local-llm -- --help` for the explicit interface. This Node dis
 | `apple-cpu` | `mac-model-cpu` / `LIVE-L7` | Same selected rootless libkrun machine, fresh workspace with GPU withdrawal before first startup |
 | `nvidia` | `apparatus-model-nvidia` / `LIVE-L4` | Native Linux CUDA, no MPS |
 | `cpu` | `apparatus-model-cpu` / `LIVE-L5` | Native Linux with workspace-wide GPU withdrawal before startup |
+| `amd-apu` | `linux-model-amd-apu` / `LIVE-L13`, `LIVE-L9`, `LIVE-L11`, `LIVE-L12` | Separately selected Linux AMD integrated GPU host with the experimental switch |
+| `amd-apu-pressure` | `linux-model-amd-apu-pressure` / `LIVE-L10` | Same AMD host, fresh cohort with a pinned raised runtime guard floor |
+| `amd-apu-cpu` | `linux-model-amd-apu-cpu` / `LIVE-L8` | Same AMD host, fresh cohort with workspace-wide GPU withdrawal |
 
 Every invocation requires `--profile`, `--action` and an absolute `--run` manifest file path. Prepare also requires absolute config and observed-pins paths. For example, using operator-selected paths:
 
@@ -26,7 +29,9 @@ npm run test:local-llm -- --profile cpu --action cleanup --run /absolute/evidenc
 
 Prepare maps to `prepare-live` and checks the resulting manifest's profile and block. The other actions check that binding before invocation and require the canonical execution-time authorization for that action and exact manifest. The dispatcher creates no approval. It propagates canonical exit codes; an interrupted runner, binding mismatch or missing proof cannot establish a pass.
 
-Use separate fresh sequential NVIDIA and CPU cohorts. The Apple suite uses the selected machine and its reviewed setup/restoration envelope; it never installs, creates, switches, stops or deletes machines. A passing case needs canonical backend, model/image/source and nonempty inference evidence, positive generation rate, successful owned-resource cleanup and, for Apple, restoration evidence. Failed cleanup or missing retrieved artifacts keeps recovery evidence and remains non-PASS. These optional checks do not replace broader release gates.
+Use separate fresh sequential NVIDIA and CPU cohorts. The Apple suite uses the selected machine and its reviewed setup/restoration envelope; it never installs, creates, switches, stops or deletes machines. A passing functional case needs canonical backend, model/image/source and nonempty inference evidence, positive generation rate, successful owned-resource cleanup and, for Apple, restoration evidence. Failed cleanup or missing retrieved artifacts keeps recovery evidence and remains non-PASS. These optional checks do not replace broader release gates.
+
+AMD APU runs are experimental and require separately selected host pins and authorization. Run the three profiles as separate fresh sequential cohorts. The canonical runner supplies the experimental switch through exact manifest defaults and adds the pinned runtime guard floor only for the pressure cohort. Admission refusal, guard termination and cancellation each require their own case evidence. Load cancellation must observe the current runner's tensor-load marker and a continuous event sequence through idle; a missed window cannot pass. Generation cancellation (`LIVE-L12`) remains pending until its observation and settlement proof is implemented and verified. Pending or not-exercised cases prevent a passing block even when cleanup succeeds. These runs do not establish APU hardware qualification.
 
 For a same-Mac comparison, run `apple` and `apple-cpu` in separate fresh sequential workspaces under the reviewed Apple envelope. The Linux `cpu` profile remains Linux-only. Prepare may freeze `pins.model.measurement` with the canonical scenario, comparison ID, cohort and baseline context. Later actions consume that manifest; the dispatcher accepts no scenario or parameter overrides. Without measurement pins, the single functional smoke case remains unchanged. A selected measurement case that is refused, blocked, failed or not exercised cannot count as a benchmark pass. Complete comparison evidence requires both baseline pairs, owned-action settlement, cleanup and recorded machine restoration.
 
