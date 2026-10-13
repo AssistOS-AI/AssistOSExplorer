@@ -115,7 +115,9 @@ export function createGitCommitUI(ctx) {
             ? draftInterval
             : Number(autocommit.intervalMinutes || 15);
         const autocommitSelected = savedRepos !== null ? savedRepos : null;
-        const showAgentRepos = Boolean(state.showAgentRepos ?? getShowAgentReposSetting());
+        const showAgentRepos = useDraft && typeof autocommitDraft.showAgentRepos === 'boolean'
+            ? autocommitDraft.showAgentRepos
+            : Boolean(state.showAgentRepos ?? getShowAgentReposSetting());
         const autoresolveConflicts = useAutoresolveDraft
             ? Boolean(autoresolveDraft.enabled)
             : Boolean(autoresolveSaved);

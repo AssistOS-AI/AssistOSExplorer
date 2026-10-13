@@ -127,6 +127,8 @@ For manual Commit and Commit & Push, no selected changes means no commit and no 
 
 The plugin follows the Explorer presenter model and uses WebSkel as the UI framework.
 
+Repository Visibility is a settings draft confined to the credentials dialog. Toggling Show agent repositories changes the checkbox and dialog's repository choices without changing the Git changes list, persisting the preference or notifying other panels. The Git changes list, including background refreshes, uses the saved visibility until Save persists the preference and applies it to the panel. Cancel restores the saved checkbox and leaves the Git changes list unchanged, including when the saved preference is enabled. An unsuccessful Save leaves the saved preference and Git changes list unchanged.
+
 - Click actions are declared with `data-local-action` and dispatched through presenter methods.
 - Form-oriented events that WebSkel does not dispatch natively, such as `input`, `change`, and selected `keydown` flows, are handled through delegated listeners attached once at component root level.
 - The plugin must not bind listeners repeatedly to individual controls during rerender cycles.

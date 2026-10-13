@@ -18,8 +18,7 @@ import {
     setRememberedGithubConnection,
     clearRememberedGithubConnection,
     normalizeGitAuthMethod,
-    setGitErrorFlag,
-    setShowAgentReposSetting
+    setGitErrorFlag
 } from "./git-panel-utils.js";
 import { FILE_EXP_REFRESH_EVENT } from "/explorer/utils/appEvents.js";
 import { GIT_PANEL_CLOSED_EVENT } from "../../git-tool-button-events.js";
@@ -198,7 +197,7 @@ export class GitPanel {
         const prevEmail = String(this.state.identityPrompt?.email ?? '');
         const prevToken = String(this.state.authPrompt?.token ?? '');
         const prevAuthMethod = this.getEffectiveCredentialsAuthMethod();
-        const prevShowAgentRepos = Boolean(this.state.showAgentRepos);
+        const prevShowAgentRepos = Boolean(this.state.autocommitDraft?.showAgentRepos ?? this.state.showAgentRepos);
         const authMethodChanged = Object.prototype.hasOwnProperty.call(detail, 'authMethod')
             && normalizeGitAuthMethod(detail.authMethod) !== prevAuthMethod;
         const nextName = String(detail.name ?? prevName);
@@ -212,11 +211,8 @@ export class GitPanel {
             patch.autocommitDraft = {
                 intervalMinutes: detail.autocommitIntervalMinutes,
                 repos: Array.isArray(detail.autocommitRepos) ? detail.autocommitRepos : null,
-                showAgentRepos: typeof detail.showAgentRepos === 'boolean' ? detail.showAgentRepos : undefined
+                showAgentRepos: nextShowAgentRepos
             };
-        }
-        if (typeof detail.showAgentRepos === 'boolean') {
-            patch.showAgentRepos = detail.showAgentRepos;
         }
         if (detail.autoresolveDirty) {
             patch.autoresolveDirty = true;
@@ -248,10 +244,7 @@ export class GitPanel {
         };
         this.setState(patch, { silent: true });
         if (typeof detail.showAgentRepos === 'boolean' && prevShowAgentRepos !== nextShowAgentRepos) {
-            setShowAgentReposSetting(nextShowAgentRepos);
-            this.applyDefaultRepoTreeExpansion();
             this.ui.updateCredentialsPrompt?.({ refreshAutocommitRepos: true });
-            this.ui.updateRepoTree?.();
         }
         if (authMethodChanged) {
             this.updateIdentityPrompt();

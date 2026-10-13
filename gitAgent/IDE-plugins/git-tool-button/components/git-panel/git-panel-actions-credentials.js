@@ -370,7 +370,7 @@ export function createCredentialsActions(ctx) {
             token: String(payload.token ?? state.authPrompt?.token ?? '').trim(),
             showAgentRepos: typeof payload.showAgentRepos === 'boolean'
                 ? payload.showAgentRepos
-                : Boolean(state.showAgentRepos),
+                : Boolean(state.autocommitDraft?.showAgentRepos ?? state.showAgentRepos),
             usingGithub: authMethod === 'github',
             validateOnly: Boolean(payload.validateOnly),
             autocommitIntervalMinutes: payload.autocommitIntervalMinutes,
