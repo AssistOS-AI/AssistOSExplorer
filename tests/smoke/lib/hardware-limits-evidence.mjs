@@ -899,7 +899,8 @@ export function createEvidenceWriter({ dir }) {
 
 // Only variables the plan documents (C2 common environment): SMOKE_DEPLOYMENT_MODE, SMOKE_BASE_URL and
 // SMOKE_PLOINKY_BOX_CONTAINER. The E2E deployment is the fresh fixture of ploinky/AGENTS.md (normally
-// ~/work/testExplorerFresh on Router port 8080); SMOKE_WORKSPACE_ROOT, when a spec needs it, names that same workspace.
+// ~/work/testExplorerFresh on Router port 8080). A spec that needs SMOKE_WORKSPACE_ROOT expects that same workspace;
+// this function does not check it.
 export function requireHardwareEnvironment(env = process.env) {
   const problems = [];
   if (String(env.SMOKE_DEPLOYMENT_MODE || '').trim() !== 'box') problems.push('SMOKE_DEPLOYMENT_MODE must be "box"');
