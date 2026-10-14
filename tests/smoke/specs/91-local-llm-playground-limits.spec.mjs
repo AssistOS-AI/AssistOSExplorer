@@ -142,9 +142,11 @@ test.describe('Local LLM Playground under hardware limits @hardware-limits', () 
       await button.click();
     } catch {
       via = 'expanded-modal';
-      await page.evaluate(() => globalThis.assistOS.UI.openExpandedModal({ mode: 'component', component: 'local-llm-dashboard', title: 'Local LLMs' }));
+      // Not awaited inside the page: the expanded-modal promise settles only when the modal closes.
+      await page.evaluate(() => { globalThis.assistOS.UI.openExpandedModal({ mode: 'component', component: 'local-llm-dashboard', title: 'Local LLMs' }); });
     }
-    const dashboard = page.locator('.local-llm-dashboard');
+    // WebSkel also injects <style class="local-llm-dashboard">; only the div is the dashboard.
+    const dashboard = page.locator('div.local-llm-dashboard');
     await expect(dashboard).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
     await expect(dashboard.locator(`tr[data-model-id="${SMALL_MODEL_ID}"]`)).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
     return { dashboard, via };
