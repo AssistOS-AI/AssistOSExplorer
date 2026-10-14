@@ -207,6 +207,8 @@ test.describe('DGX Spark vLLM on the GB10 @dgx-spark', () => {
     expect(deleted.ok, deleted.text).toBe(true);
     const removed = await callTool(page, { tool: 'local_llm_model_remove', args: { modelId: MODEL_ID } });
     expect(removed.ok, removed.text).toBe(true);
+    // The model is gone: a later failure must not make the afterAll retry its removal and skip the uninstall.
+    state.modelAdded = false;
     if (state.installedBySpec) {
       const uninstalled = await callTool(page, { tool: 'local_llm_runner_uninstall', args: { runnerId: VLLM } });
       expect(uninstalled.ok, uninstalled.text).toBe(true);
