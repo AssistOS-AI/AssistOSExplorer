@@ -7,7 +7,9 @@
 //   3 the model runs on vLLM with a 0.1 share, the host sees the vLLM engine as this Box's only GPU compute process,
 //     and three test prompts answer;
 //   4 Stop frees the GPU, and the weights, the model, the vLLM install this spec made and the switch are removed.
-// The afterAll undoes whatever a failed test left behind. vLLM downloads about 3.9 GB and the model about 1 GB.
+// The switch's earlier value is read first and put back at the end (an operator's `experimental` survives; anything
+// else ends as `off`, because ploinky var has no unset). The afterAll undoes whatever a failed test left behind.
+// vLLM downloads about 3.9 GB and the model about 1 GB.
 import path from 'node:path';
 
 import { test, expect } from '../lib/fixtures.mjs';
@@ -40,6 +42,11 @@ test.describe('DGX Spark vLLM on the GB10 @dgx-spark', () => {
     state.env = requireDgxSparkEnvironment();
     state.ploinky = createPloinky(state.env);
     state.box = await resolveBox({ ploinky: state.ploinky, workspaceRoot: state.env.workspaceRoot });
+    const echoed = await state.ploinky(['echo', SWITCH], { timeoutMs: 60_000 });
+    const found = new RegExp(`^${SWITCH}=(.*)$`, 'm').exec(echoed.stdout);
+    if (echoed.status !== 0 || !found) throw new Error(`ploinky echo ${SWITCH} gave no value line (exit ${echoed.status}).`);
+    state.priorSwitch = found[1].trim();
+    state.restoreSwitch = state.priorSwitch === 'experimental' ? 'experimental' : 'off';
   });
 
   // Sets the operator switch and restarts only local-llm, which reads it at start.
@@ -64,30 +71,38 @@ test.describe('DGX Spark vLLM on the GB10 @dgx-spark', () => {
   // A failed test skips the rest of this serial block: stop the model and remove what this spec created.
   test.afterAll(async ({ browser }) => {
     if (state.cleaned || !(state.modelStarted || state.modelAdded || state.switchOn || state.installedBySpec)) return;
-    test.setTimeout(20 * 60_000);
+    test.setTimeout(30 * 60_000);
+    const must = async (page, tool, args) => {
+      const reply = await callTool(page, { tool, args });
+      if (!reply.ok) throw new Error(`${tool} failed: ${reply.text.slice(0, 300)}`);
+      return tool;
+    };
     const steps = [];
     steps.push(['stop, delete weights, remove model and vLLM', () => withAdminPage(browser, smokeConfig.baseURL, async (page) => {
       await stopModelIfActive(page);
       const done = [];
       if (state.modelAdded) {
-        done.push((await callTool(page, { tool: 'local_llm_weights_delete', args: { modelId: MODEL_ID, runnerId: VLLM } })).ok);
-        done.push((await callTool(page, { tool: 'local_llm_model_remove', args: { modelId: MODEL_ID } })).ok);
+        done.push(await must(page, 'local_llm_weights_delete', { modelId: MODEL_ID, runnerId: VLLM }));
+        done.push(await must(page, 'local_llm_model_remove', { modelId: MODEL_ID }));
       }
-      if (state.installedBySpec) done.push((await callTool(page, { tool: 'local_llm_runner_uninstall', args: { runnerId: VLLM } })).ok);
+      if (state.installedBySpec) done.push(await must(page, 'local_llm_runner_uninstall', { runnerId: VLLM }));
       return done;
     })]);
-    if (state.switchOn) steps.push(['turn the switch off', () => setSwitch('off').then(() => 'off')]);
+    if (state.switchOn) steps.push([`put the switch back to ${state.restoreSwitch}`, () => setSwitch(state.restoreSwitch).then(() => state.restoreSwitch)]);
     writeEvidence(evidenceDir, '97-restore.json', await restoreSteps(steps));
   });
 
   test('a pinned Hugging Face model is added and vLLM is refused while the switch is off', async ({ page }) => {
     test.setTimeout(15 * 60_000);
     await ensureExplorer(page);
-    await stopModelIfActive(page);
-    await setSwitch('off');
+    // Fail before changing anything when an earlier, interrupted run left its model behind.
     const before = await overview(page);
+    expect(modelOf(before), `${MODEL_ID} is left over from an interrupted run: delete its weights (local_llm_weights_delete `
+      + `with runnerId vllm) and remove it (local_llm_model_remove), and uninstall vLLM if that run installed it`).toBeNull();
     expect(before.profile, 'the GPU must be attached (unified profile)').toBe('unified');
-    expect(modelOf(before), `${MODEL_ID} must not exist before this spec adds it`).toBeNull();
+    await stopModelIfActive(page);
+    state.switchOn = true;
+    await setSwitch('off');
 
     const lookup = await callToolOk(page, 'local_llm_model_lookup', { repo: REPO, revision: COMMIT, format: 'hf' });
     expect(lookup).toMatchObject({ provider: 'huggingface', repo: REPO, commit: COMMIT, format: 'hf', gated: false });
@@ -114,15 +129,15 @@ test.describe('DGX Spark vLLM on the GB10 @dgx-spark', () => {
   test('the experimental switch enables vLLM, which installs from the image runner lock', async ({ page }) => {
     test.setTimeout(INSTALL_MS + 15 * 60_000);
     expect(state.modelAdded, 'test 1 must have added the model').toBe(true);
-    await setSwitch('experimental');
     state.switchOn = true;
+    await setSwitch('experimental');
     await ensureExplorer(page);
     let value = await overview(page);
     expect(runnerOf(value)).toMatchObject({ supported: true, enabled: true, pinnedVersion: VLLM_VERSION });
     const started = Date.now();
     if (!runnerOf(value).installed) {
-      const install = await callToolOk(page, 'local_llm_runner_install', { runnerId: VLLM });
       state.installedBySpec = true;
+      const install = await callToolOk(page, 'local_llm_runner_install', { runnerId: VLLM });
       expect(install).toMatchObject({ accepted: true, install: { version: VLLM_VERSION } });
       value = await waitFor(async () => {
         const current = await overview(page);
@@ -137,7 +152,10 @@ test.describe('DGX Spark vLLM on the GB10 @dgx-spark', () => {
     expect(sized.admission.status).toBe('ok');
     const estimate = sized.admission.estimate;
     expect(estimate).toMatchObject({ experimental: true, gpuMemoryUtilization: SHARE, poolBytes: value.hardware.memory.totalBytes });
-    expect(estimate.budgetBytes, 'vLLM gets exactly the requested share of the unified pool').toBe(Math.floor(SHARE * estimate.poolBytes));
+    // admitUnifiedVllm: Math.round(share x the physical pool), whatever container budget caps poolBytes.
+    const memory = value.hardware.memory;
+    const denominator = Number.isFinite(memory.physicalTotalBytes) && memory.physicalTotalBytes > 0 ? memory.physicalTotalBytes : memory.totalBytes;
+    expect(estimate.budgetBytes, 'vLLM gets exactly the requested share of the unified pool').toBe(Math.round(SHARE * denominator));
     // Recorded, not asserted: without a share vLLM takes what is free now (up to 0.9 of the pool) for any model.
     const unbounded = await preview(page, { maxModelLen: PARAMS.maxModelLen });
     writeEvidence(evidenceDir, '97-install.json', { installedBySpec: Boolean(state.installedBySpec), installMs: Date.now() - started, runner: runnerOf(value), sharedEstimate: estimate, defaultShare: { status: unbounded.admission.status, gpuMemoryUtilization: unbounded.admission.estimate?.gpuMemoryUtilization ?? null, budgetBytes: unbounded.admission.estimate?.budgetBytes ?? null } });
@@ -154,14 +172,18 @@ test.describe('DGX Spark vLLM on the GB10 @dgx-spark', () => {
     expect(started.deployment.admission.status).toBe('ok');
     const ready = await waitForPhase(page, (status) => status.phase === 'ready' && status.deployment?.phase === 'ready', { timeoutMs: MODEL_READY_MS, label: `${MODEL_ID} on vLLM to be ready` });
     expect(ready.deployment.runnerId).toBe(VLLM);
+    expect(ready.deployment.params.gpuMemoryUtilization, 'the run keeps the requested share').toBe(SHARE);
+    expect(ready.deployment.admission.estimate.gpuMemoryUtilization).toBe(SHARE);
     expect(ready.runnerReport.modelMiB, 'vLLM reports the loaded weights').toBeGreaterThan(0);
     expect(ready.runnerReport.kvMiB, 'vLLM reports its KV cache').toBeGreaterThan(0);
     expect(ready.memoryGuard.minAvailableBytes).toBeGreaterThan(ready.memoryGuard.floorBytes);
     const apps = classifyComputeApps(await readComputeApps({}), state.box.id);
     expect(apps.foreign).toEqual([]);
     expect(apps.owned.length, 'the vLLM engine is the Box\'s one GPU compute process').toBe(1);
-    expect(apps.owned[0].name).toMatch(/vllm|python/i);
+    expect(apps.owned[0].name).toMatch(/vllm/i);
     expect(apps.owned[0].usedMiB).toBeGreaterThan(0);
+    const budgetMiB = ready.deployment.admission.estimate.budgetBytes / (1024 * 1024);
+    expect(apps.owned[0].usedMiB, 'the engine stays within its share (5 % margin for CUDA context)').toBeLessThanOrEqual(budgetMiB * 1.05);
 
     const prompts = [];
     for (const prompt of ['Name three uses of a GPU.', 'Explain unified memory in two sentences.', 'Write a haiku about a datacenter.']) {
@@ -189,12 +211,13 @@ test.describe('DGX Spark vLLM on the GB10 @dgx-spark', () => {
       const uninstalled = await callTool(page, { tool: 'local_llm_runner_uninstall', args: { runnerId: VLLM } });
       expect(uninstalled.ok, uninstalled.text).toBe(true);
     }
-    await setSwitch('off');
+    await setSwitch(state.restoreSwitch);
     const after = await overview(page);
     expect(modelOf(after), 'the model must be gone').toBeNull();
-    expect(runnerOf(after).enabled, 'vLLM is disabled again on unified memory').toBe(false);
+    expect(runnerOf(after).enabled, `vLLM is ${state.restoreSwitch === 'experimental' ? 'enabled again, as before' : 'disabled again'} on unified memory`).toBe(state.restoreSwitch === 'experimental');
     if (state.installedBySpec) expect(runnerOf(after).installed).toBe(false);
     state.cleaned = true;
-    writeEvidence(evidenceDir, '97-cleaned.json', { runner: runnerOf(after), modelPresent: Boolean(modelOf(after)) });
+    const { paramSchema, ...runner } = runnerOf(after);
+    writeEvidence(evidenceDir, '97-cleaned.json', { priorSwitch: state.priorSwitch, restoredSwitch: state.restoreSwitch, runner, modelPresent: Boolean(modelOf(after)) });
   });
 });
