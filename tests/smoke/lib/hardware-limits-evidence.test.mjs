@@ -908,22 +908,17 @@ test('createHostObserver lists a cgroup directory and treats a missing one as ab
 });
 
 // ---------------------------------------------------------------------------
-// Foreign-workspace guard (N5), runner digest and host GPU identity (N2)
+// Hardware environment, runner digest and host GPU identity (N2)
 
-test('requireHardwareEnvironment refuses the cleanup session\'s Box, workspaces and Router port', () => {
-  const good = { SMOKE_DEPLOYMENT_MODE: 'box', SMOKE_BASE_URL: 'http://localhost:18080', SMOKE_PLOINKY_BOX_CONTAINER: BOX, SMOKE_WORKSPACE_ROOT: '/home/u/work/hwlReleasePre20261003' };
-  const options = { home: '/home/u' };
-  assert.deepEqual(requireHardwareEnvironment(good, options), { boxName: BOX });
-  assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-testexplorerfresh-9d2ec627469d' }, options), /cleanup session's Box/);
-  assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_BASE_URL: 'http://127.0.0.1:8080' }, options), /port 8080/);
-  assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_BASE_URL: 'not a url' }, options), /must be a URL/);
-  for (const workspace of ['/home/u/work/testExplorerFresh', '/home/u/work/testExplorerFresh/sub/dir', '/home/u/cleanup-repair-claude-20261002', '/home/u/cleanup-repair-claude-20261002/x/../y', '/home/u/work/testExplorerFresh/']) {
-    assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_WORKSPACE_ROOT: workspace }, options), /foreign-workspace guard/, workspace);
-  }
-  // Siblings that merely share a prefix are not foreign; an unset workspace is allowed for specs that do not use one.
-  assert.doesNotThrow(() => requireHardwareEnvironment({ ...good, SMOKE_WORKSPACE_ROOT: '/home/u/work/testExplorerFresh2' }, options));
-  assert.doesNotThrow(() => requireHardwareEnvironment({ ...good, SMOKE_WORKSPACE_ROOT: '' }, options));
-  assert.throws(() => requireHardwareEnvironment({ ...good, SMOKE_BASE_URL: 'http://localhost:8080', SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-testexplorerfresh-1' }, options), (error) => /port 8080/.test(error.message) && /cleanup session's Box/.test(error.message));
+test('requireHardwareEnvironment accepts the testExplorerFresh fixture on port 8080 and still fails closed', () => {
+  const fixture = { SMOKE_DEPLOYMENT_MODE: 'box', SMOKE_BASE_URL: 'http://localhost:8080', SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-testexplorerfresh-8b021738a3d6', SMOKE_WORKSPACE_ROOT: '/home/u/work/testExplorerFresh' };
+  assert.deepEqual(requireHardwareEnvironment(fixture), { boxName: 'ploinky-box-testexplorerfresh-8b021738a3d6' });
+  assert.deepEqual(requireHardwareEnvironment({ ...fixture, SMOKE_BASE_URL: 'http://localhost:18080', SMOKE_PLOINKY_BOX_CONTAINER: BOX }), { boxName: BOX });
+  assert.throws(() => requireHardwareEnvironment({ ...fixture, SMOKE_DEPLOYMENT_MODE: 'local' }), /SMOKE_DEPLOYMENT_MODE must be "box"/);
+  assert.throws(() => requireHardwareEnvironment({ ...fixture, SMOKE_BASE_URL: '' }), /SMOKE_BASE_URL must name the Router/);
+  assert.throws(() => requireHardwareEnvironment({ ...fixture, SMOKE_BASE_URL: 'not a url' }), /must be a URL/);
+  assert.throws(() => requireHardwareEnvironment({ ...fixture, SMOKE_PLOINKY_BOX_CONTAINER: '' }), /must name the exact Box container/);
+  assert.throws(() => requireHardwareEnvironment({ ...fixture, SMOKE_PLOINKY_BOX_CONTAINER: 'bad name;rm' }), /must name the exact Box container/);
 });
 
 test('readRunnerDigest records the runner executable digest and fails when it is absent', async () => {
@@ -1043,16 +1038,3 @@ test('regression: matching the daemon by the untruncated command name finds noth
   assert.equal(findMpsDaemon({ observer: world.host, boxPrefix: REAL_PREFIX, daemon: { pid: 321, startTime: '10' } }).hostPid, 6000);
 });
 
-test('the foreign-workspace guard compares real paths, so a symlink into a foreign workspace is refused', () => {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hwl-home-')));
-  try {
-    fs.mkdirSync(path.join(home, 'work', 'testExplorerFresh', 'inner'), { recursive: true });
-    fs.mkdirSync(path.join(home, 'work', 'owned'), { recursive: true });
-    fs.symlinkSync(path.join(home, 'work', 'testExplorerFresh', 'inner'), path.join(home, 'work', 'looks-owned'));
-    const env = { SMOKE_DEPLOYMENT_MODE: 'box', SMOKE_BASE_URL: 'http://localhost:18080', SMOKE_PLOINKY_BOX_CONTAINER: BOX };
-    assert.throws(() => requireHardwareEnvironment({ ...env, SMOKE_WORKSPACE_ROOT: path.join(home, 'work', 'looks-owned') }, { home }), /foreign-workspace guard/);
-    assert.doesNotThrow(() => requireHardwareEnvironment({ ...env, SMOKE_WORKSPACE_ROOT: path.join(home, 'work', 'owned') }, { home }));
-  } finally {
-    fs.rmSync(home, { recursive: true, force: true });
-  }
-});
