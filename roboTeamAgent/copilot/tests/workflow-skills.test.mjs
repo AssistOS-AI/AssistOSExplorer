@@ -10,6 +10,10 @@ test('launch-workflow takes only a workflow name and an optional prompt', () => 
     assert.deepEqual(normalizeLaunch('{"workflow":"default","prompt":"Do it"}'), { workflow: 'default', prompt: 'Do it' });
     assert.deepEqual(normalizeLaunch('{"workflow":"default","prompt":"Do it","executionType":"browser"}'), { workflow: 'default', prompt: 'Do it', executionType: 'browser' });
     assert.throws(() => normalizeLaunch(''), /workflow name is required/);
+    // Another request format is named, with the expected one.
+    assert.throws(() => normalizeLaunch('{"action":"start","workflowTypeId":"default","objective":"Do it"}'),
+        /unknown field action, workflowTypeId, objective; the JSON request is \{"workflow":"<id from list-workflows>","prompt":/);
+    assert.throws(() => normalizeLaunch('{"prompt":"Do it"}'), /workflow name is required; the JSON request is/);
 });
 
 test('launch-workflow accepts executionType only for the default workflow', async () => {

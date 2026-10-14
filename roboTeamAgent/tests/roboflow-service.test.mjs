@@ -450,7 +450,14 @@ test('workflow skillset discovery reads only skills/ by folder name and never pa
     assert.ok(catalog.skillsets.some(set => set.kind === 'skill' && set.repositoryName === 'project' && set.name === 'review'));
     assert.equal(catalog.skillsets.some(set => set.name === 'Review Extra'), false);
     assert.equal(catalog.skillsets.some(set => set.name === 'achilles_specs'), false);
-    assert.ok(catalog.skillsets.some(set => set.repositoryName === 'mixed-repo' && set.name === 'review'), 'mixed repositories contribute their skills/ folder');
+    const mixedSkill = catalog.skillsets.find(set => set.repositoryName === 'mixed-repo' && set.name === 'review');
+    assert.ok(mixedSkill, 'mixed repositories contribute their skills/ folder');
+    // A robot records a mixed repository by its skills/ folder, so it covers the workflow's id for the skill.
+    const mixedRoot = path.join(await fs.realpath(mixedSource), 'skills');
+    assert.equal(mixedSkill.id, canonicalSkill(mixedRoot, 'review'));
+    const robot = { id: 'scout', name: 'scout', skillsets: [{ name: 'mixed-repo', source: mixedRoot,
+        skills: [{ name: 'review', description: 'Review code.', directory: 'review' }], definitions: [] }] };
+    assert.equal(matchRobot(robot, { skillsets: [mixedSkill.id] }), true);
     assert.equal(catalog.skillsets.some(set => set.repositoryName === 'agent-repo'), false);
 });
 

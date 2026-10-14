@@ -69,10 +69,13 @@ export async function discoverWorkflowSkillsets(client) {
             if (!definitions.length && path.resolve(source) !== path.resolve(skillsRoot)) {
                 definitions.push(...await readSkillsetDefinitions(skillsRoot, skillNames));
             }
-            if (definitions.length) for (const set of definitions) skillsets.push({ id: canonicalSkillset(source, set.name), kind: 'skillset',
-                name: set.name, description: set.description, repositoryId: source, repositoryName: repository.name });
-            else for (const name of skillNames) skillsets.push({ id: canonicalSkill(source, name), kind: 'skill', name,
-                description: '', repositoryId: source, repositoryName: repository.name });
+            // A robot records a mixed repository by its skills/ folder (RobotSkillsets.skillRoot), so the
+            // workflow ids of its skills start there too; a skills repository is recorded by its root.
+            const base = repository.kind === 'mixed' ? skillsRoot : source;
+            if (definitions.length) for (const set of definitions) skillsets.push({ id: canonicalSkillset(base, set.name), kind: 'skillset',
+                name: set.name, description: set.description, repositoryId: base, repositoryName: repository.name });
+            else for (const name of skillNames) skillsets.push({ id: canonicalSkill(base, name), kind: 'skill', name,
+                description: '', repositoryId: base, repositoryName: repository.name });
         } catch (error) { diagnostics.push({ repository: repository.name, message: error.message }); }
     }
     const copilotSkills = await listSkillNames(copilotSkillsRoot);

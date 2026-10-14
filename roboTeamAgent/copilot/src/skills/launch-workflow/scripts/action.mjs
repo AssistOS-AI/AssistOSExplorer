@@ -4,6 +4,8 @@ import { createRoboTeamClient } from './roboTeamClient.mjs';
 const DEFAULT_WORKFLOW_ID = 'default';
 const EXECUTION_TYPES = ['terminal', 'desktop', 'browser'];
 const REQUIRES_PROMPT = ['default', 'code-development'];
+const FIELDS = ['workflow', 'prompt', 'executionType'];
+const JSON_FORMAT = '{"workflow":"<id from list-workflows>","prompt":"<self-contained task>"}';
 
 function trim(value) {
     return typeof value === 'string' ? value.trim() : '';
@@ -18,6 +20,10 @@ export function normalizeRequest(promptText) {
         try { parsed = JSON.parse(text); }
         catch { throw new Error('the JSON workflow request is invalid'); }
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('the JSON workflow request must be an object');
+        // Name the expected fields, so a caller using another format (action, workflowTypeId, objective) can correct it.
+        const unknown = Object.keys(parsed).filter((key) => !FIELDS.includes(key));
+        if (unknown.length) throw new Error(`unknown field ${unknown.join(', ')}; the JSON request is ${JSON_FORMAT}`);
+        if (!trim(parsed.workflow)) throw new Error(`a workflow name is required; the JSON request is ${JSON_FORMAT}`);
         if (parsed.prompt !== undefined && typeof parsed.prompt !== 'string') throw new Error('prompt must be text');
         if (parsed.executionType !== undefined && typeof parsed.executionType !== 'string') throw new Error('executionType must be text');
         return { workflow: trim(parsed.workflow), prompt: trim(parsed.prompt),
