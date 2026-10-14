@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { createHardwareLimitsApi, hardwareAccessDenied, HardwareLimitsError } from '../../services/infrastructure/hardwareLimitsApi.js';
 import { HardwareLimitsPanel, renderHardwareLimits } from '../../web-components/components/hardware-limits-panel/hardware-limits-panel.js';
@@ -144,7 +145,7 @@ test('X.gpu-best-effort-help', () => {
     const value = snapshot();
     let html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token));
     assert.match(html, /data-hardware-field="smPercent"[^>]* disabled/);
-    for (const sentence of GPU_HELP) assert.ok(html.includes(sentence));
+    for (const sentence of GPU_HELP) assert.ok(html.includes(sentence.replace(/'/g, '&#39;')));
     value.gpu.eligible = true;
     html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token));
     assert.doesNotMatch(html, /data-hardware-field="smPercent"[^>]* disabled/);
@@ -157,6 +158,60 @@ test('X.gpu-best-effort-help', () => {
     assert.throws(() => draftLimits({ memoryPercent: '12.5' }), /whole number/);
     assert.throws(() => draftLimits({ cpus: '0.01' }), /cpus/);
     assert.throws(() => draftLimits({ cpus: '1.234' }), /two decimal/);
+});
+
+const UNIFIED_SENTENCE = "On unified-memory NVIDIA GPUs (GB10 / DGX Spark) a RAM limit does not cap the GPU memory an agent allocates (measured for llama.cpp's CUDA buffers); only the agent's own admission check keeps that memory within the budget, and an overrun takes memory from the whole host, which has no separate GPU memory.";
+const escapedSentence = (sentence) => sentence.replace(/'/g, '&#39;');
+
+test('X.unified-disclosure', () => {
+    assert.ok(GPU_HELP.includes(UNIFIED_SENTENCE));
+    const value = snapshot();
+    value.gpu = { eligible: false, mode: 'unavailable', assurance: 'none', memoryModel: 'unified', unifiedMemory: { ramLimitCoversGpuAllocations: false, gpuMemoryBound: 'admission-only', assurance: 'advisory' } };
+    const html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token));
+    assert.ok(html.includes(escapedSentence(UNIFIED_SENTENCE)));
+    assert.ok(html.includes('RAM limits on this Box do not cover GPU allocations (advisory)'));
+    assert.match(html, /data-hardware-field="smPercent"[^>]* disabled/);
+    assert.match(html, /data-hardware-field="vramPercent"[^>]* disabled/);
+    // Absent unifiedMemory still discloses, labelled advisory.
+    delete value.gpu.unifiedMemory;
+    assert.ok(renderHardwareLimits(value, reconcileDrafts(value.agents, value.token)).includes('RAM limits on this Box do not cover GPU allocations (advisory)'));
+    // The assurance label comes from the server value.
+    const line = (unifiedMemory) => { value.gpu.unifiedMemory = unifiedMemory; return renderHardwareLimits(value, reconcileDrafts(value.agents, value.token)); };
+    assert.ok(line({ ramLimitCoversGpuAllocations: false, assurance: 'advisory' }).includes('do not cover GPU allocations (advisory)'));
+    // The assurance label passes through from the server value.
+    assert.ok(line({ ramLimitCoversGpuAllocations: false, assurance: 'test-label' }).includes('do not cover GPU allocations (test-label)'));
+    // Fail safe: a partial or malformed unifiedMemory still shows the line, labelled advisory.
+    assert.ok(line({ assurance: 'advisory' }).includes('do not cover GPU allocations (advisory)'));
+    for (const malformed of [{}, null, 'x', { assurance: '' }, { assurance: 7 }]) assert.ok(line(malformed).includes('do not cover GPU allocations (advisory)'));
+    // Hidden only when the server states a RAM limit does cover GPU allocations.
+    assert.doesNotMatch(line({ ramLimitCoversGpuAllocations: true, assurance: 'advisory' }), /do not cover GPU allocations/);
+    // The assurance value is escaped.
+    const hostile = line({ ramLimitCoversGpuAllocations: false, assurance: '<img src=x onerror=alert(1)>' });
+    assert.ok(hostile.includes('(&lt;img src=x onerror=alert(1)&gt;)'));
+    assert.ok(!hostile.includes('<img'));
+    // No per-Box line for a dedicated or unspecified memory model.
+    for (const memoryModel of ['dedicated', undefined]) {
+        value.gpu = { eligible: false, mode: 'unavailable', assurance: 'none', memoryModel };
+        assert.doesNotMatch(renderHardwareLimits(value, reconcileDrafts(value.agents, value.token)), /do not cover GPU allocations/);
+    }
+});
+
+test('X.dedicated-labels-unchanged', () => {
+    const agent = { ref, configured: { cpus: 1.5, gpu: { smPercent: 25, vramPercent: 50 } }, declared: { memory: '1g' }, effective: { cpus: 1.5, memoryBytes: 1024 ** 3, gpu: { smPercent: 25, vramPercent: 50, vramMiB: 3072 } }, containers: [] };
+    const value = { ok: true, token: { epoch: '1'.repeat(32), revision: 1 }, gate: { state: 'on', prepared: true, controllers: ['cpu', 'memory'] }, envelope: { cpus: 8, memoryBytes: 8 * 1024 ** 3 },
+        gpu: { eligible: true, mode: 'mps-shared', assurance: 'best-effort', memoryModel: 'dedicated', name: 'NVIDIA GeForce RTX 3060 Laptop GPU', deviceMemoryBytes: 6442450944, daemonStatus: 'stopped', serverDefault: null }, agents: [agent] };
+    const html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token));
+    assert.ok(html.includes('GPU VRAM %'));
+    assert.ok(html.includes('% of physical VRAM'));
+    assert.deepEqual([...html.matchAll(/<label class="hardware-limit-field">([^<]*)</g)].map((match) => match[1]), ['CPU cores', 'RAM %', 'GPU SM %', 'GPU VRAM %']);
+    assert.doesNotMatch(html, /do not cover GPU allocations|GPU memory %/);
+    // R8: the panel at the base revision rendered this snapshot to 4203 bytes with this digest. The only permitted
+    // difference is the appended unified-memory help paragraph inside the GPU help list.
+    const appended = `<p>${escapedSentence(UNIFIED_SENTENCE)}</p>`;
+    assert.equal(html.split(appended).length, 2);
+    const base = html.replace(appended, '');
+    assert.equal(base.length, 4203);
+    assert.equal(crypto.createHash('sha256').update(base).digest('hex'), '73460c7efd66296c27049bcab40eaa3c66cb2592a710d7fa1906bb4f34ff2365');
 });
 
 test('X.u13-disclosure', () => {
