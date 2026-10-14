@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { startService } from '../service/index.mjs';
 import { resetStoreForTests } from '../lib/store.mjs';
-import { ensureSeedData } from '../lib/bootstrap.mjs';
+import { ensureExplorerSeedData as ensureSeedData } from './helpers/product-permissions.mjs';
 import { createProvider, resolveProviderConfig } from '../runtime/index.mjs';
 import { getUserById, getUserRoles } from '../lib/users.mjs';
 import { issueAuthCode } from '../lib/sso.mjs';

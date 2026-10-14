@@ -7,7 +7,7 @@ import { join } from 'node:path';
 process.env.PERSISTENCE_FOLDER = mkdtempSync(join(tmpdir(), 'userpersisto-registration-'));
 process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
 
-const { ensureSeedData } = await import('../lib/bootstrap.mjs');
+const { ensureExplorerSeedData: ensureSeedData } = await import('./helpers/product-permissions.mjs');
 const { createUser, getUserByEmail, getUserById, getUserRoles, updateUser, listUsers } = await import('../lib/users.mjs');
 const { updateAuthPolicy } = await import('../lib/policy.mjs');
 const { getUserCapabilities } = await import('../lib/authorization.mjs');

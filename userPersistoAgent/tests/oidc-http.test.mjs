@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import * as client from 'openid-client';
 import { startService } from '../service/index.mjs';
-import { ensureSeedData } from '../lib/bootstrap.mjs';
+import { ensureExplorerSeedData as ensureSeedData } from './helpers/product-permissions.mjs';
 import { updateUser, setUserRoles, getUserByEmail, getUserRoles } from '../lib/users.mjs';
 import { getInstallationSetup } from '../lib/setup.mjs';
 import * as setup from './helpers/setup.mjs';

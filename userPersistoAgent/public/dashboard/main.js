@@ -91,11 +91,6 @@ export function mountDashboard(document) {
         select('account-role').textContent = (profile.roles || []).map((role) => role === 'selfRegistered' ? 'Member' : role).join(', ');
         select('account-methods').textContent = [...new Set((profile.authMethods || []).filter((method) => Object.hasOwn(METHOD_LABELS, method.type)).map((method) => METHOD_LABELS[method.type]))].join(' · ') || 'No sign-in methods configured';
         if (updateFields) { username.value = profile.user.username || ''; displayName.value = profile.user.displayName || ''; }
-        const hasExplorerAccess = profile.capabilities?.includes('explorer.access') === true;
-        select('open-explorer').hidden = !hasExplorerAccess;
-        select('workspace-access-message').textContent = hasExplorerAccess
-            ? 'Your account has access to Explorer.'
-            : 'Your account is ready. Ask your workspace administrator to grant access to Explorer.';
         enrollment.updateProfile(profile);
         content.hidden = false;
     }

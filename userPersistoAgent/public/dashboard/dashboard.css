@@ -27,15 +27,12 @@ h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.3px; }
 .account-details { border-top: 1px solid #e6eaf1; margin-top: 26px; padding-top: 20px; color: #657185; font-size: 13px; }
 .detail-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .7px; }
 .account-details p { line-height: 1.6; margin-bottom: 0; }
-.account-access { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px 28px; background: #eaf0fc; border: 1px solid #dbe4f6; border-radius: 12px; }
-.account-access h2 { font-size: 15px; }
-.account-access p { color: #536381; font-size: 13px; line-height: 1.6; margin: 8px 0 0; }
 .button-link { flex-shrink: 0; font-size: 13px; font-weight: 550; }
 .account-status { font-size: 13px; min-height: 20px; color: #1c6d4b; margin: 12px 0 16px; }
 .account-status.error { color: #b42318; }
 footer { padding: 28px 0 40px; font-size: 12px; color: #778396; }
 :focus-visible { outline: 3px solid #a0b6f8; outline-offset: 3px; }
-@media (max-width: 740px) { .account-grid { grid-template-columns: 1fr; } .account-shell { width: min(560px, calc(100% - 32px)); } .account-header { padding-top: 16px; } .page-heading { padding-top: 20px; } .account-card { padding: 22px; } .account-access { align-items: flex-start; flex-direction: column; padding: 22px; } }
+@media (max-width: 740px) { .account-grid { grid-template-columns: 1fr; } .account-shell { width: min(560px, calc(100% - 32px)); } .account-header { padding-top: 16px; } .page-heading { padding-top: 20px; } .account-card { padding: 22px; } }
 
 .account-navigation { display: flex; flex-wrap: wrap; gap: 8px; }
 .account-navigation a { padding: 7px 12px; border: 1px solid #dce3ec; border-radius: 8px; background: white; color: #1c2938; font-size: 14px; font-weight: 500; line-height: 1.4; }

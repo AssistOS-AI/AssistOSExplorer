@@ -83,6 +83,10 @@
           "required": false,
           "default": ""
         },
+        "USERPERSISTO_PRODUCT_PERMISSIONS": {
+          "required": false,
+          "default": "[]"
+        },
         "USERPERSISTO_AUTH_METHODS": {
           "required": false,
           "default": ""
@@ -123,6 +127,14 @@
         "USERPERSISTO_GOOGLE_REDIRECT_URI": {
           "required": false,
           "default": ""
+        }
+      }
+    },
+    "explorer": {
+      "env": {
+        "USERPERSISTO_PRODUCT_PERMISSIONS": {
+          "required": false,
+          "value": "[{\"capability\":\"explorer.access\",\"description\":\"Access the Explorer workspace\",\"roles\":[\"admin\",\"user\"]}]"
         }
       }
     },

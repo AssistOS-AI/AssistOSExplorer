@@ -33,7 +33,7 @@
         {
             "name": "userpersisto_authorize_capability",
             "title": "Authorize capability",
-            "description": "Agent-to-agent authorization decision for a user capability on an optional resource.",
+            "description": "Agent-to-agent authorization decision for a user capability on an optional resource. Allowed decisions include the user's current role names for consumers with an explicit role requirement.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",

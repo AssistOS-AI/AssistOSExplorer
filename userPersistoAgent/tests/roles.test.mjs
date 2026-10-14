@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureSeedData } from '../lib/bootstrap.mjs';
+import { ensureExplorerSeedData as ensureSeedData } from './helpers/product-permissions.mjs';
 import { getStore, flush, resetStoreForTests, setStoreFaultInjectorForTests } from '../lib/store.mjs';
 import { createUser, getUserRoles, setUserRoles, updateUser } from '../lib/users.mjs';
 import { getUserCapabilities } from '../lib/authorization.mjs';

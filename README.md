@@ -27,6 +27,10 @@ ploinky status
 curl -I http://127.0.0.1:8080/dashboard
 ```
 
+### Account provider
+
+UserPersisto owns authentication and account administration independently of Explorer. Its My Account page manages profile and sign-in security without application launch links. Explorer explicitly selects the provider's `explorer` dependency profile, which declares `explorer.access` for its existing `admin` and `user` roles. Other applications use the neutral provider profile without acquiring Explorer permissions. See [the account provider contract](docs/specsLoader.html?spec=DS012-user-persisto.md) for configuration and access rules.
+
 ### Default language models
 
 A fresh `ploinky start explorer` does not download or start a local model. The workspace's local Soul Gateway seeds a restricted free OpenRouter provider on first start, with the tiers `fast`, `code`, `plan`, `write`, `deep`, `ultra`, and `web-assist`. The provider uses a bundled credential guarded to free models only. Its daily quota is shared by every installation that uses that bundled credential, so the free service is not unlimited. It requires internet access and is not available offline. An administrator can replace the credential through the existing admin-only Soul Gateway settings dashboard.

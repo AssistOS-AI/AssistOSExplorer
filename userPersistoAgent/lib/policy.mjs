@@ -105,8 +105,8 @@ function normalizePolicy(input = {}) {
     };
 }
 
-// Public signup always receives exactly `selfRegistered`. This fails closed if
-// that role was ever changed to grant administration or Explorer access.
+// Public signup always receives exactly `selfRegistered`. Only its account
+// dashboard permission is allowed; extra application or admin grants fail closed.
 export async function assertRegistrationRoleAllowed(roleName = REGISTRATION_ROLE, store = null) {
     const persisto = store || await getStore();
     const normalizedRole = String(roleName || '').trim();
@@ -115,10 +115,10 @@ export async function assertRegistrationRoleAllowed(roleName = REGISTRATION_ROLE
     const links = await persisto.getRolePermsObjectsByRoleId(role.id) || [];
     for (const link of links) {
         const capability = String((await persisto.getPermission(link.permissionId))?.capability || '');
-        if (capability.startsWith('admin.') || capability === 'explorer.access') {
+        if (capability !== 'selfregistered.dashboard.access') {
             throw Object.assign(policyError(
                 'registration_role_must_be_restricted',
-                'The registration role must not grant administrative or Explorer access.',
+                'The registration role must not grant administrative or application access.',
             ), { statusCode: 503 });
         }
     }

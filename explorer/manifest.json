@@ -13,7 +13,10 @@
             "agent": "gitAgent global",
             "profile": "embedded"
         },
-        "userPersistoAgent",
+        {
+            "agent": "userPersistoAgent",
+            "profile": "explorer"
+        },
         "dpuAgent global",
         "soplangAgent global no-wait",
         "tasksAgent global",
