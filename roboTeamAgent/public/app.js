@@ -19,6 +19,7 @@ const workflowsList = document.querySelector('#workflowsList');
 const workflowTemplate = document.querySelector('#workflowTemplate');
 const workflowCount = document.querySelector('#workflowCount');
 const workflowListMessage = document.querySelector('#workflowListMessage');
+const workflowFileErrors = document.querySelector('#workflowFileErrors');
 const addWorkflowButton = document.querySelector('#addWorkflowButton');
 const launchingWorkflows = new Set();
 
@@ -288,6 +289,10 @@ function renderWorkflows(workflows, canAdmin) {
         const description = card.querySelector('.workflow-description');
         description.textContent = workflow.description;
         description.hidden = !workflow.description;
+        // Only workflows from workspace files show where they come from.
+        const source = card.querySelector('.workflow-source');
+        source.textContent = workflow.source?.path || '';
+        source.hidden = !workflow.source?.path;
         if (workflow.coverage?.warning) {
             const warning = card.querySelector('.workflow-coverage-warning');
             warning.hidden = false;
@@ -321,7 +326,8 @@ function renderWorkflows(workflows, canAdmin) {
             runNow.addEventListener('click', () => runWorkflowNow(workflow, runNow, remove, toggle));
             remove.setAttribute('aria-label', `Delete workflow type ${workflow.name}`);
             remove.addEventListener('click', async () => {
-                if (remove.disabled || !confirm(`Delete workflow type "${workflow.name}"? Existing runs and their history will be kept.`)) return;
+                const file = workflow.source?.path ? ` This deletes its file ${workflow.source.path}.` : '';
+                if (remove.disabled || !confirm(`Delete workflow type "${workflow.name}"?${file} Existing runs and their history will be kept.`)) return;
                 remove.disabled = true;
                 remove.textContent = 'Deleting…';
                 workflowListMessage.textContent = '';
@@ -340,13 +346,27 @@ function renderWorkflows(workflows, canAdmin) {
     }
 }
 
+// Files found in flows folders that are not workflows: they do not validate or reuse an id.
+function renderWorkflowFileErrors(errors) {
+    const list = workflowFileErrors.querySelector('ul');
+    list.replaceChildren(...errors.map(({ path, message }) => {
+        const item = document.createElement('li');
+        const file = document.createElement('code');
+        file.textContent = path;
+        item.append(file, `: ${message}`);
+        return item;
+    }));
+    workflowFileErrors.hidden = !errors.length;
+}
+
 async function loadWorkflows(canAdmin) {
     addWorkflowButton.hidden = !canAdmin;
     try {
-        const { workflows } = await api('api/roboflow/workflows');
+        const { workflows, workflowFileErrors: fileErrors = [] } = await api('api/roboflow/workflows');
         cronJobs.setContext(workflows, canAdmin);
         workflowListMessage.textContent = '';
         renderWorkflows(workflows, canAdmin);
+        renderWorkflowFileErrors(fileErrors);
     } catch (error) {
         workflowListMessage.textContent = error.message;
     }

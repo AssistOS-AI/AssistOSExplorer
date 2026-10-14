@@ -37,10 +37,11 @@ export class RoboFlowService {
         this.runtimeManager = options.runtimeManager;
         this.skillsets = options.skillsets || this.runtimeManager?.skillsets;
         this.database = options.database || new RoboFlowDatabase(options.databaseFile || (options.workflowsDirectory ? path.join(options.workflowsDirectory, 'roboflow.sqlite') : undefined));
-        this.registry = new WorkflowRegistry({ database: this.database, legacyDirectory: options.workflowsDirectory || WORKFLOWS_DIR });
-        this.store = new TaskFlowStore({ database: this.database });
         this.workspaceRoot = options.workspaceRoot || this.runtimeManager?.workspaceRoot || path.dirname(this.database.file);
         this.scheduleFolders = new ScheduleFolders(this.workspaceRoot);
+        this.registry = new WorkflowRegistry({ database: this.database, legacyDirectory: options.workflowsDirectory || WORKFLOWS_DIR,
+            workspaceRoot: this.workspaceRoot, folders: this.scheduleFolders });
+        this.store = new TaskFlowStore({ database: this.database });
         this.runFolders = new RunFolders({ folders: this.scheduleFolders,
             resolveCwd: folder => this.runtimeManager.resolveCwd(folder), now: options.scheduleNow });
         this.schedules = new ScheduleStore({ database: this.database, registry: this.registry,
@@ -145,7 +146,9 @@ export class RoboFlowService {
         return (await this.registry.list()).map(graph => ({ ...graph, coverage: coverage(graph, robots), diagnostics: graphDiagnostics(graph) }));
     }
     async refreshCoverage() { return this.listWorkflows(); }
-    async createWorkflow(input) { const graph = await this.registry.create(input); return { ...graph, coverage: coverage(graph, await this.robotStore.list()) }; }
+    // Workflow files that were found but are not workflows: invalid, or with an id already in use.
+    workflowFileErrors() { return this.registry.fileErrors; }
+    async createWorkflow({ location, ...input }) { const graph = await this.registry.create(input, false, { location: location || undefined }); return { ...graph, coverage: coverage(graph, await this.robotStore.list()) }; }
     async updateWorkflow(id, input) {
         const graph = await this.registry.update(id, input);
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
@@ -688,5 +691,5 @@ export class RoboFlowService {
         this.generationTasks.delete(id);
         return info;
     }
-    async close() { this.closed = true; this.store.closeObservers(); await this.scheduler.close(); clearTimeout(this.presetTimer); this.presetWake?.(); this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
+    async close() { this.closed = true; this.store.closeObservers(); await this.scheduler.close(); clearTimeout(this.presetTimer); this.presetWake?.(); await this.presetReady?.catch(() => {}); this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
 }

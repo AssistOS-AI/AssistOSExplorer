@@ -101,6 +101,10 @@
                 selects matching robots when each task runs.</p>
             <p id="workflowListMessage" class="message" role="status"></p>
             <div id="workflowsList" class="workflow-list" aria-live="polite"></div>
+            <section id="workflowFileErrors" class="workflow-file-errors" aria-labelledby="workflowFileErrorsTitle" hidden>
+                <h3 id="workflowFileErrorsTitle">Workflow files not loaded</h3>
+                <ul></ul>
+            </section>
         </section>
     </div>
 
@@ -242,6 +246,7 @@
                 <div class="robot-info">
                     <div class="robot-title-row"><h3></h3><span class="robot-id"></span></div>
                     <p class="workflow-description"></p>
+                    <p class="workflow-source" hidden></p>
                     <div class="robot-meta">
                         <span class="workflow-counts"></span>
                         <span class="workflow-coverage-warning" hidden></span>

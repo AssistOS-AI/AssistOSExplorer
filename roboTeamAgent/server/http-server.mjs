@@ -361,7 +361,8 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         return true;
     }
     if (pathname === '/api/roboflow/workflows' && req.method === 'GET') {
-        sendJson(res, 200, { ok: true, workflows: await roboflow.listWorkflows() });
+        const workflows = await roboflow.listWorkflows();
+        sendJson(res, 200, { ok: true, workflows, workflowFileErrors: roboflow.workflowFileErrors() });
         return true;
     }
     if (pathname === '/api/roboflow/workflows' && req.method === 'POST') {

@@ -1,6 +1,7 @@
 import { drawBoard, workflowNodeRole, workflowRoleIcons } from './workflow-board.js';
 import { reviseGraph } from './workflow-generator.js';
 import { createDescriptionRevision } from './workflow-description-revision.js';
+import { initScheduleFolderPicker } from './schedule-folder-picker.js';
 const warningText = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
 const node = (tag, text, className) => { const element = document.createElement(tag); if (text) element.textContent = text; if (className) element.className = className; return element; };
 const button = (text, action) => { const element = node('button', text, 'button'); element.type = 'button'; element.onclick = action; return element; };
@@ -32,6 +33,14 @@ export function taskIcon({ label, path }, className = 'task-type-icon', ownerDoc
     return icon;
 }
 
+// Save as on an existing workflow saves a new workflow from the current draft: its id gains
+// -copy (within the 64-character id limit) and its name " copy". The original is unchanged.
+export function workflowCopy(graph) {
+    const { id, revision, createdAt, updatedAt, source, readOnly, coverage, diagnostics, ...definition } = graph;
+    if (!id) return definition;
+    return { ...definition, id: `${id.slice(0, 59).replace(/-+$/, '')}-copy`, name: `${graph.name.trim().slice(0, 115)} copy` };
+}
+
 function appUrl(relative = '') {
     const basePath = globalThis.ROBOTEAM_CONFIG?.publicBasePath || './';
     return new URL(relative.replace(/^\/+/, ''), new URL(basePath, location.origin)).toString();
@@ -58,6 +67,14 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const review = document.querySelector('#descriptionReview');
     const reviewText = document.querySelector('#descriptionReviewText');
     const reviewRetry = document.querySelector('#descriptionReviewRetry');
+    // Save stores a new workflow internally, or an existing one in its own source. Save as opens the
+    // folder selector and stores the draft as a JSON file in that folder's flows folder: a new workflow
+    // as itself, an existing one as a copy (workflowCopy). A workflow from a file shows its path.
+    const saveAsButton = document.querySelector('#workflowSaveAsButton');
+    const source = document.querySelector('#workflowSource');
+    const fileLocation = document.querySelector('#flowLocation');
+    const folderPicker = saveAsButton && initScheduleFolderPicker({ api, input: fileLocation, prefix: 'flow', relative: true,
+        returnFocus: saveAsButton, onSelect: location => save(location) });
     let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, version = 0, coverageRequest = 0, nameBeforeEditing = '';
     let warningTaskIds = new Set();
     let draggedTaskId = null;
@@ -78,7 +95,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             reviewRetry.hidden = state !== 'failed';
             reviewText.textContent = ({ edited: 'Description changed — leave the field to check the workflow.',
                 checking: 'Checking requirements and updating the graph if needed…',
-                regenerated: 'Graph updated. Review the changes, then Save workflow.',
+                regenerated: 'Graph updated. Review the changes, then save again.',
                 unchanged: 'No workflow change needed. The graph is unchanged.' }[state] || reason);
             if (['regenerated', 'unchanged'].includes(state) && reason) reviewText.textContent += ` ${reason}`;
             form.setAttribute('aria-busy', String(state === 'checking'));
@@ -494,6 +511,15 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         addTaskButton.disabled = readonly();
         const createButton = document.querySelector('#workflowCreateButton');
         if (createButton) createButton.hidden = readonly();
+        if (saveAsButton) {
+            saveAsButton.hidden = readonly();
+            saveAsButton.title = graph.id ? 'Save a copy as a JSON file in a workspace folder' : 'Save as a JSON file in a workspace folder';
+            folderPicker.setFolder('');
+        }
+        if (source) {
+            source.hidden = !graph.source?.path;
+            source.textContent = graph.source?.path ? `Source: ${graph.source.path}` : '';
+        }
         showTaskEditor(false); render();
         try { const result = await api('api/roboflow/skillsets'); catalog = result.skillsets; render(); if (result.diagnostics.length) message.textContent = result.diagnostics.map(item => item.message).join('\n'); } catch (error) { showError(error); }
     }
@@ -523,30 +549,40 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         event.preventDefault(); graph.edges = graph.edges.filter(edge => edge.id !== selectedEdgeId); selectedEdgeId = null; changed(); render();
     });
     let saving = false;
-    form.onsubmit = async event => {
-        event.preventDefault(); if (readonly()) return;
-        if (saving) return;
-        if (!graph.name.trim()) { message.textContent = 'Enter a workflow name before saving.'; nameControl.setAttribute('aria-invalid', 'true'); nameControl.focus(); return; }
-        if (!graph.tasks.length) { message.textContent = 'Add at least one task before saving.'; addTaskButton.focus(); return; }
+    // Reports the first draft problem and focuses its field; returns whether the draft can be saved.
+    function draftReady() {
+        if (!graph.name.trim()) { message.textContent = 'Enter a workflow name before saving.'; nameControl.setAttribute('aria-invalid', 'true'); nameControl.focus(); return false; }
+        if (!graph.tasks.length) { message.textContent = 'Add at least one task before saving.'; addTaskButton.focus(); return false; }
         const invalidTask = graph.tasks.find(task => !task.name?.trim() || !task.prompt?.trim());
         if (invalidTask) {
             select(invalidTask.id);
             message.textContent = 'Enter a name and prompt for this task before saving.';
             taskPanel.querySelector(!invalidTask.name?.trim() ? 'input' : 'textarea')?.focus();
-            return;
+            return false;
         }
+        return true;
+    }
+    // location, when given, is the workspace folder that receives the new workflow's JSON file;
+    // the folder dialog that supplied it shows a failure, so the error is rethrown to it.
+    async function save(location) {
+        if (readonly() || saving || !draftReady()) return;
         saving = true;
         try {
             const beforeReview = JSON.stringify({ tasks: graph.tasks, edges: graph.edges, entryTaskId: graph.entryTaskId, layout: graph.layout });
             if (!await descriptionRevision.check()) return;
             if (beforeReview !== JSON.stringify({ tasks: graph.tasks, edges: graph.edges, entryTaskId: graph.entryTaskId, layout: graph.layout })) {
-                reviewText.textContent = 'Graph updated. Review the changes, then choose Save workflow again.';
+                reviewText.textContent = `Graph updated. Review the changes, then choose ${location ? 'Save as' : 'Save'} again.`;
                 return;
             }
-            await api(graph.id ? `api/roboflow/workflows/${graph.id}` : 'api/roboflow/workflows', { method: graph.id ? 'PUT' : 'POST', body: graph });
+            if (location) await api('api/roboflow/workflows', { method: 'POST', body: { ...workflowCopy(graph), location } });
+            else await api(graph.id ? `api/roboflow/workflows/${graph.id}` : 'api/roboflow/workflows', { method: graph.id ? 'PUT' : 'POST', body: graph });
             descriptionRevision.dispose(); onClose();
-        } catch (error) { showError(error); }
-        finally { saving = false; }
-    };
+        } catch (error) {
+            if (location) throw error;
+            showError(error);
+        } finally { saving = false; }
+    }
+    form.onsubmit = event => { event.preventDefault(); void save(); };
+    if (saveAsButton) saveAsButton.onclick = () => { if (!readonly() && !saving && draftReady()) folderPicker.open(); };
     return { open };
 }

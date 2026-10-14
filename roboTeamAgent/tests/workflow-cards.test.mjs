@@ -25,6 +25,7 @@ function fixture() {
             const nodes = new Map(['.avatar', 'h3', '.robot-id', '.workflow-kind', '.workflow-description',
                 '.workflow-counts', '.workflow-open', '.manage-toggle', '.workflow-run-now', '.delete-workflow'].map(selector => [selector, element()]));
             nodes.set('.workflow-coverage-warning', element(true));
+            nodes.set('.workflow-source', element(true));
             nodes.set('.robot-manage', element(true));
             const classes = new Set();
             return { querySelector: selector => nodes.get(selector), classes, classList: { add: value => classes.add(value) } };
@@ -160,6 +161,19 @@ test('workflow deletion retains confirmation, duplicate protection, history prom
     await remove.listeners.click();
     assert.equal(context.workflowListMessage.textContent, 'Delete rejected');
     assert.equal(remove.disabled, false);
+});
+
+test('only workflows from workspace files show their source path, and deleting one names its file', async () => {
+    const { context, cards } = fixture();
+    context.render([workflow(), workflow({ id: 'file-flow', name: 'From file', source: { kind: 'file', path: 'Repo/flows/file-flow.json' } })], true);
+    const [internal, file] = cards.map(card => card.querySelector('.workflow-source'));
+    assert.deepEqual([internal.hidden, internal.textContent], [true, '']);
+    assert.deepEqual([file.hidden, file.textContent], [false, 'Repo/flows/file-flow.json']);
+    const messages = [];
+    context.confirm = message => { messages.push(message); return false; };
+    for (const card of cards) await card.querySelector('.delete-workflow').listeners.click();
+    assert.doesNotMatch(messages[0], /deletes its file/);
+    assert.match(messages[1], /This deletes its file Repo\/flows\/file-flow\.json\. Existing runs/);
 });
 
 test('empty workflow catalogs use the shared empty state', () => {
