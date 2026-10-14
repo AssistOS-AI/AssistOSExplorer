@@ -97,6 +97,7 @@ export const smokeConfig = Object.freeze({
     codexDelegation: readBool('SMOKE_CODEX_DELEGATION', false),
     gptResearcher: readBool('SMOKE_GPT_RESEARCHER', false),
     hardwareLimits: readBool('SMOKE_HARDWARE_LIMITS', false),
+    localLlmRegistries: readBool('SMOKE_LOCAL_LLM_REGISTRIES', false),
     onlyoffice: readBool('SMOKE_ONLYOFFICE', false),
     openInterpreter: readBool('SMOKE_OPEN_INTERPRETER', false),
     qaAcceptance,
