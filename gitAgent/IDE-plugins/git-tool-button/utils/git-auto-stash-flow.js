@@ -123,10 +123,10 @@ export async function pullWithAutoStashFlow({
     }
 
     if (!branch) {
-        return { ok: true, reason: 'no_commits', message: 'No commits yet. Nothing to pull.' };
+        return { ok: true, pulled: false, reason: 'no_commits', message: 'No commits yet. Nothing to pull.' };
     }
     if (!upstream) {
-        return { ok: true, reason: 'no_upstream', message: 'No upstream branch configured. Nothing to pull.' };
+        return { ok: true, pulled: false, reason: 'no_upstream', message: 'No upstream branch configured. Nothing to pull.' };
     }
 
     try {
@@ -151,7 +151,7 @@ export async function pullWithAutoStashFlow({
     }
     if (!isActive()) return { ok: false, reason: 'aborted', message: 'Pull aborted.' };
     if (behind === 0) {
-        return { ok: true, reason: 'up_to_date', message: 'No incoming remote commits. Local files left unchanged.' };
+        return { ok: true, pulled: false, reason: 'up_to_date', message: 'No incoming remote commits. Local files left unchanged.' };
     }
 
     if (hasLocalChanges) {
@@ -287,5 +287,5 @@ export async function pullWithAutoStashFlow({
         }
     }
 
-    return { ok: true, repoPath, repoPaths };
+    return { ok: true, pulled: true, repoPath, repoPaths };
 }

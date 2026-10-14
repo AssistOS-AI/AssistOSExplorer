@@ -83,7 +83,7 @@ function changeCommentIndicator(element, commentMessages) {
             return;
         }
         commentIndicator = `<div class="comment-icon-container pointer" data-local-action="showComments">
-                                            <img class="comment-indicator" src="./assets/icons/comment-indicator.svg">
+                                            <img class="comment-indicator" src="/explorer/assets/icons/comment-indicator.svg">
                                         </div>`;
         previewIcons.insertAdjacentHTML("afterbegin", commentIndicator);
     } else {
@@ -115,21 +115,21 @@ function renderInfoIcons(element, info = {}) {
     const iconConfigs = [
         {
             className: "has-media",
-            src: "./assets/icons/attachment.svg",
+            src: "/explorer/assets/icons/attachment.svg",
             alt: "media",
             title: "Media attachments",
             count: info.mediaCount
         },
         {
             className: "has-variables",
-            src: "./assets/icons/variable.svg",
+            src: "/explorer/assets/icons/variable.svg",
             alt: "variables",
             title: "Variables",
             count: info.variableCount
         },
         {
             className: "has-commands",
-            src: "./assets/icons/variable.svg",
+            src: "/explorer/assets/icons/variable.svg",
             alt: "commands",
             title: "Variables (commands)",
             count: info.commandCount
@@ -179,7 +179,7 @@ function displayCurrentStatus(element, comments, level) {
     if(comments.status === "error"){
         let errorStatus = "error";
         let plugin = assistOS.workspace.plugins[`${level}`].find(plugin => plugin.component === comments.plugin);
-        previewIcons.insertAdjacentHTML("beforeend", `<img class="status-icon ${errorStatus} pointer" data-local-action="openPlugin ${level} ${comments.plugin} ${plugin.autoPin || false}" src="./assets/icons/${errorStatus}.svg">`);
+        previewIcons.insertAdjacentHTML("beforeend", `<img class="status-icon ${errorStatus} pointer" data-local-action="openPlugin ${level} ${comments.plugin} ${plugin.autoPin || false}" src="/explorer/assets/icons/${errorStatus}.svg">`);
     }
 }
 function changeStatusIcon(element, status, level, pluginName, autoPin = false) {
@@ -192,7 +192,7 @@ function changeStatusIcon(element, status, level, pluginName, autoPin = false) {
         statusIcon.remove();
     }
     if(status !== "ok"){
-        previewIcons.insertAdjacentHTML("beforeend", `<img class="status-icon ${status} pointer" data-local-action="openPlugin ${level} ${pluginName} ${autoPin}" src="./assets/icons/${status}.svg">`);
+        previewIcons.insertAdjacentHTML("beforeend", `<img class="status-icon ${status} pointer" data-local-action="openPlugin ${level} ${pluginName} ${autoPin}" src="/explorer/assets/icons/${status}.svg">`);
     }
 }
 export default {

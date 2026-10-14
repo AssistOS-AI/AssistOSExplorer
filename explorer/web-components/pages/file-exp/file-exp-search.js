@@ -5,6 +5,8 @@ import { FILE_EXP_REPLACE_COMPLETE_EVENT } from "../../../utils/appEvents.js";
 import { withTimeout } from "../../utils/workspace-search-utils.js";
 import { callExplorerTool } from "../../../services/infrastructure/explorerApi.js";
 import { buildFileExpHash } from "./file-exp-utils.js";
+import { openExpandedModal } from "../../../shared/ui/expanded-modal.js";
+import { normalizeSettingsTab, readSettingsTab, updateSettingsLocation } from "../../../shared/ui/settings-navigation.js";
 export function attachSearchController(fileExp) {
     const getState = () => fileExp.state;
     const defaultExclude = 'node_modules,.git';
@@ -56,6 +58,11 @@ export function attachSearchController(fileExp) {
         setDocumentListener('search-global-keydown', 'keydown', fileExp.boundGlobalKeydown);
         if (!fileExp.boundOutsideSearchMenuClick) {
             fileExp.boundOutsideSearchMenuClick = handleOutsideSearchMenuClick;
+        }
+        if (!fileExp.settingsLocationChecked) {
+            fileExp.settingsLocationChecked = true;
+            const tab = readSettingsTab(window.location);
+            if (tab !== null) void openSettingsModal(null, tab);
         }
     }
 
@@ -193,18 +200,26 @@ export function attachSearchController(fileExp) {
 
     async function openSettingsModal(_target, tab = 'agents') {
         const state = getState();
-        const normalizedTab = ['agents', 'plugins', 'keymap', 'editor', 'theme', 'avatar', 'users'].includes(tab) ? tab : 'agents';
+        const normalizedTab = normalizeSettingsTab(tab);
         fileExp.setSearchMenuOpen(false);
         updateSearchUI();
-        const result = await assistOS.UI.createReactiveModal('settings-modal', {
-            tab: normalizedTab,
-            keymap: state.keymap || getKeymap(),
-            theme: getCurrentTheme(),
-            editorAutoSaveEnabled: Boolean(state.editorAutoSaveEnabled),
-            editorAutoSaveIntervalSeconds: Number.isFinite(state.editorAutoSaveIntervalSeconds)
-                ? state.editorAutoSaveIntervalSeconds
-                : 10
-        }, true);
+        const result = await openExpandedModal({
+            title: 'Settings',
+            mode: 'component',
+            component: 'settings-modal',
+            fullscreen: true,
+            props: {
+                tab: normalizedTab,
+                keymap: state.keymap || getKeymap(),
+                theme: getCurrentTheme(),
+                editorAutoSaveEnabled: Boolean(state.editorAutoSaveEnabled),
+                editorAutoSaveIntervalSeconds: Number.isFinite(state.editorAutoSaveIntervalSeconds)
+                    ? state.editorAutoSaveIntervalSeconds
+                    : 10
+            }
+        });
+        if (fileExp.element?.isConnected === false) return;
+        updateSettingsLocation(window.location, window.history, null);
         if (result?.keymap) {
             state.keymap = result.keymap;
         }
@@ -222,6 +237,7 @@ export function attachSearchController(fileExp) {
     }
 
     function handleGlobalKeydown(event) {
+        if (event.target?.closest?.('dialog[open]')) return;
         const keymap = getState().keymap || getKeymap();
         if (keymap.findFile && matchesShortcut(event, keymap.findFile)) {
             event.preventDefault();

@@ -55,7 +55,7 @@ export class CommentsSection{
                                             ${emailHtml}
                                         </div>
                                     </div>
-                                    <img data-local-action="deleteComment ${escapeHtml(comment.id)}" src="./assets/icons/check.svg" class="check-icon pointer">
+                                    <img data-local-action="deleteComment ${escapeHtml(comment.id)}" src="/explorer/assets/icons/check.svg" class="check-icon pointer">
                                 </div>
                                 <div class="comment-message">${escapeHtml(comment.message)}</div>
                              </div>`;

@@ -17,7 +17,7 @@ import {
 import { createMediaClient } from './media/mediaClient.js';
 
 const DEFAULT_EMAIL = 'local@example.com';
-const DEFAULT_AGENT_IMAGE = './assets/icons/person.svg';
+const DEFAULT_AGENT_IMAGE = '/explorer/assets/icons/person.svg';
 const DEFAULT_TOAST_TIMEOUT_MS = 5000;
 const EXPLORER_AGENT_ID = 'explorer';
 const SOPLANG_AGENT_ID = 'soplangAgent';

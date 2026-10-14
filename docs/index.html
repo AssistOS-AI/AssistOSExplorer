@@ -80,7 +80,7 @@
         <h2>Core workspace capabilities</h2>
         <div class="agent-grid">
             <a class="agent-card" href="workspace-operations.html#file-management"><h3>Files and folders</h3>
-                <p>Create, rename, copy, cut, paste, upload, and delete supported workspace entries.</p></a>
+                <p>Create, rename, copy, cut, paste, upload, download, and delete supported workspace entries.</p></a>
             <a class="agent-card" href="workspace-operations.html#search-replace"><h3>Find and replace</h3>
                 <p>Find paths by name, search file content, select matches, and replace within a workspace scope.</p>
             </a>
@@ -93,8 +93,8 @@
         <section id="agents-and-plugins">
             <h2>Agents and Plugins</h2>
             <p><a href="wiki.html#definition-explorer">Explorer</a> provides the shared workspace shell. The integrations below are declared by <code>explorer/manifest.json</code> or discovered from verified <code>IDE-plugins</code> manifests. Each owning agent remains responsible for its domain behavior, authorization, and protected state. Runtime-owned workspace data volumes live below <code>.data/</code>; <code>.ploinky/repos</code> is the single named source-state volume exception.</p>
-            <p>Fresh deployments require an <code>AdvancedLanguageAgent</code> checkout at the workspace root with its selected <code>achillesAgentLib</code> dependency available. <a href="wiki.html#definition-explorer">Explorer</a> enables RoboTeam globally so its default robot can use that workspace checkout for Copilot.</p>
-            <p>The QA workflow installs ALA from its default branch, verifies its exact clean revision, and binds it to the same Ploinky-selected AgentLib used by the agents. Its preflight exercises the ALA loader and required CLI options before starting the <a href="wiki.html#definition-explorer">Explorer</a> runtime graph.</p>
+            <p>Fresh deployments require an <code>AdvancedLanguageAgent</code> checkout at the workspace root with its dependency-free CLI supporting <code>--home</code>, <code>--cwd</code>, and <code>--MCPServers</code>. <a href="wiki.html#definition-explorer">Explorer</a> enables RoboTeam globally so its default robot can use that workspace checkout for Copilot.</p>
+            <p>The QA workflow installs ALA from its default branch, verifies its exact clean revision, and checks its dependency-free package and executable CLI. Its preflight verifies the required help options before starting the <a href="wiki.html#definition-explorer">Explorer</a> runtime graph.</p>
 
             <p>OnlyOffice, WebMeet Scribe (Meeting Secretary), and WebMeet STT are disabled by default. An administrator can enable each from Marketplace. Office editing requires OnlyOffice; automatic meeting notes require Scribe. The current Secretary uses browser SpeechRecognition and does not require the separate STT service.</p>
 

@@ -31,7 +31,7 @@ export class DocumentSnapshotsModal{
                                             <div class="snapshot-date">${formatTimeAgo(snapshot.timestamp)}</div>
                                           <div class="snapshot-user">${snapshot.email}</div>
                                             <div class="action-box-snapshots" data-local-action="showSnapshotsOptions ${snapshot.id} ${snapshot.documentId}">
-                                                <img class="action-icon" loading="lazy" src="./assets/icons/action-dots.svg" alt="">
+                                                <img class="action-icon" loading="lazy" src="/explorer/assets/icons/action-dots.svg" alt="">
                                             </div>
                                      </div>`;
             }

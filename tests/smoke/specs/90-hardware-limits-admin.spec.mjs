@@ -57,7 +57,7 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
     await openExplorer(page, { account });
     await page.locator('#accountMenuButton').click();
     await page.getByRole('menuitem', { name: 'Settings' }).click();
-    const dialog = page.locator('dialog.settings-modal-dialog');
+    const dialog = page.locator('dialog.expanded-modal-dialog:has(settings-modal)');
     await expect(dialog).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
     return dialog;
   }
@@ -131,7 +131,7 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
         { timeout: smokeConfig.timeouts.navigation });
       await other.locator('#accountMenuButton').click();
       await other.getByRole('menuitem', { name: 'Settings' }).click();
-      const otherDialog = other.locator('dialog.settings-modal-dialog');
+      const otherDialog = other.locator('dialog.expanded-modal-dialog:has(settings-modal)');
       await expect(otherDialog).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
       expect([401, 403], 'the panel read of a non-administrator must be refused').toContain((await denied).status());
       await expect(otherDialog.getByRole('tab', { name: 'Hardware limits' })).toHaveCount(0);

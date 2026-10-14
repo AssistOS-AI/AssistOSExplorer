@@ -136,7 +136,7 @@ test('a late component registration cannot mount after close', async () => {
     let mounts = 0;
     const pending = new Promise(resolve => { registered = resolve; });
     const p = presenter({
-        document: { createElement: () => ({ isConnected: true }) },
+        document: { createElement: () => ({ isConnected: true, remove() { this.isConnected = false; } }) },
         assistOS: { UI: {
             ensureComponentRegistered: () => pending,
             createElement: () => { mounts++; }

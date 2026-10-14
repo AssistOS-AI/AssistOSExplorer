@@ -10,7 +10,7 @@ export function getContext(presenterElement) {
     return JSON.parse(decodeURIComponent(presenterElement.getAttribute("data-context")));
 }
 export function renderPluginDefaultOptions(pluginElement){
-    const closeIconUrl = new URL("./assets/icons/x-mark.svg", import.meta.url).href;
+    const closeIconUrl = new URL("/explorer/shared/assets/icons/x-mark.svg", import.meta.url).href;
     let defaultOptions = `
             <div class="options-container">
                 <div class="pointer pin" data-local-action="pinPlugin" title="Pin plugin" aria-label="Pin plugin">

@@ -32,10 +32,8 @@ dialog marketplace-modal {
 
 dialog marketplace-modal .marketplace-modal-body {
     flex: 0 0 auto;
-  min-width: min(760px, calc(100vw - 24px));
-  width: min(900px, calc(100vw - 48px));
-  height: min(620px, calc(100vh - 130px));
-  max-width: 900px;
+  width:calc(100vw - 24px);
+  height:calc(100vh - 24px);
 }
 
 marketplace-modal .marketplace-modal {

@@ -37,7 +37,7 @@ export async function openAdminUsers(page) {
   await page.locator('#accountMenuButton').click();
   await page.getByRole('menuitem', { name: 'Settings' }).click();
 
-  const dialog = page.locator('dialog.settings-modal-dialog');
+  const dialog = page.locator('dialog.expanded-modal-dialog:has(settings-modal)');
   await expect(dialog).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
   const administrationTab = dialog.getByRole('tab', { name: 'Administration' });
   await expect(administrationTab).toBeVisible({ timeout: smokeConfig.timeouts.navigation });

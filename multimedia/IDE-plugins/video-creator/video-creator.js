@@ -80,7 +80,7 @@ export class VideoCreator {
     showLipSyncWarning(message){
         let warning = `
                 <div class="paragraph-warning">
-                    <img loading="lazy" src="./assets/icons/warning.svg" class="video-warning-icon" alt="warn">
+                    <img loading="lazy" src="/explorer/assets/icons/warning.svg" class="video-warning-icon" alt="warn">
                     <div class="warning-text">${message}</div>
                 </div>`;
         let lipSyncSection = this.element.querySelector(".lip-sync-section");

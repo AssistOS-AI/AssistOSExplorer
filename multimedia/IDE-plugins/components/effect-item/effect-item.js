@@ -31,7 +31,7 @@ export class EffectItem{
     }
 
     async playEffect(button){
-        button.src = "./assets/icons/pause.svg";
+        button.src = "/explorer/assets/icons/pause.svg";
         button.setAttribute("data-local-action", `pauseEffect`);
         if(!this.audioElement.hasHandlers){
             this.audioElement.hasHandlers = true;
@@ -45,7 +45,7 @@ export class EffectItem{
     }
     pauseEffect(button){
         this.audioElement.pause();
-        button.src = "./assets/icons/play.svg";
+        button.src = "/explorer/assets/icons/play.svg";
         button.setAttribute("data-local-action", `playEffect`);
     }
     handlePlay(event){
@@ -56,7 +56,7 @@ export class EffectItem{
     }
     handleEnd(button, event){
         if (this.currentTime >= this.endTime) {
-            button.src = "./assets/icons/play.svg";
+            button.src = "/explorer/assets/icons/play.svg";
             this.pause();
         }
     }

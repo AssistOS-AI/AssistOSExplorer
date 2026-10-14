@@ -67,9 +67,9 @@ export class EditVariables {
     getStatusImg(status) {
         let statusImg = "";
         if (status === "ok") {
-            statusImg = `<img src="./assets/icons/success.svg" class="success-icon">`;
+            statusImg = `<img src="/explorer/assets/icons/success.svg" class="success-icon">`;
         } else if (status === "error") {
-            statusImg = `<img src="./assets/icons/error.svg" class="error-icon">`
+            statusImg = `<img src="/explorer/assets/icons/error.svg" class="error-icon">`
         }
         return statusImg;
     }
@@ -134,10 +134,10 @@ export class EditVariables {
                     ${valueCell}
                     <div class="cell actions-cell">
                         <div class="open-editor" data-local-action="openEditor ${variable.varName}">
-                            <img src="./assets/icons/eye-edit.svg" class="pointer variable-icon" alt="edit">
+                            <img src="/explorer/assets/icons/eye-edit.svg" class="pointer variable-icon" alt="edit">
                         </div>
                         <div class="delete-button-container" data-local-action="deleteVariable ${variable.varName}">
-                            <img src="./assets/icons/trash-can.svg" class="pointer variable-icon" alt="delete">
+                            <img src="/explorer/assets/icons/trash-can.svg" class="pointer variable-icon" alt="delete">
                         </div>
                     </div>
                 `;

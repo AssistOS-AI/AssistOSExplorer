@@ -37,6 +37,8 @@ OpenCode's free models are available through the optional `proxies/opencode-free
 
 Use Explorer to browse workspace files and virtual DPU resources. Normal Markdown uses source editing by default. Select Advanced edit only when the document requires SOPLang-aware structure such as metadata, commands, variables, or references.
 
+Choose **Download** from an ordinary file or folder's context menu to save it locally. A file retains its original bytes and name; a folder downloads as a recursive ZIP, including empty directories. Progress appears in your browser's downloads. Private agent data, runtime metadata, secret files and recursive symbolic links are not included. This requires the download-capable Ploinky Router as well as the updated Explorer assets.
+
 Confidential resources appear below `/Confidential`. Explorer displays these resources but delegates storage, permissions, secrets, research-data operations, audit, and provenance to dpuAgent. Configure DPU sources from the administrative Data Sources settings surface; source configurations reference a DPU secret and do not expose its value.
 
 Repository documentation is available through the mounted path `/.ploinky/repos/AchillesIDE/docs/development.html` in a running workspace.

@@ -86,16 +86,16 @@ export class ParagraphVideoPreview {
         let nextMode = targetElement.getAttribute("data-next-mode");
         if (nextMode === "play") {
             targetElement.setAttribute("data-next-mode", "pause");
-            targetElement.src = "./assets/icons/pause.svg";
+            targetElement.src = "/explorer/assets/icons/pause.svg";
             await this.playVideoPreview();
         }
         if (nextMode === "resume") {
             targetElement.setAttribute("data-next-mode", "pause");
-            targetElement.src = "./assets/icons/pause.svg";
+            targetElement.src = "/explorer/assets/icons/pause.svg";
             await this.resumeVideo();
         } else if (nextMode === "pause") {
             targetElement.setAttribute("data-next-mode", "resume");
-            targetElement.src = "./assets/icons/play.svg";
+            targetElement.src = "/explorer/assets/icons/play.svg";
             this.pauseVideoPreview();
         }
     }
@@ -147,7 +147,7 @@ export class ParagraphVideoPreview {
             setTimeout(async () => {
                 stopTimeUpdateController.abort();
                 this.playPauseIcon.setAttribute("data-next-mode", "play");
-                this.playPauseIcon.src = "./assets/icons/play.svg";
+                this.playPauseIcon.src = "/explorer/assets/icons/play.svg";
                 this.currentTimeElement.innerHTML = videoUtils.formatTime(0);
                 this.videoElement.classList.add("hidden");
                 await this.setVideoThumbnail();
@@ -326,7 +326,7 @@ export class ParagraphVideoPreview {
                     delete this.silenceInterval;
                     delete this.silenceElapsedTime;
                     this.playPauseIcon.setAttribute("data-next-mode", "play");
-                    this.playPauseIcon.src = "./assets/icons/play.svg";
+                    this.playPauseIcon.src = "/explorer/assets/icons/play.svg";
                     this.currentTimeElement.innerHTML = videoUtils.formatTime(0);
                 }, 1000);
             }

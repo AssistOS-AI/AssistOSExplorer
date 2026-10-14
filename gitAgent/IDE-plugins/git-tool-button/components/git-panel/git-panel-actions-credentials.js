@@ -12,6 +12,7 @@ import {
     normalizeGitAuthMethod,
     setRememberedGitIdentity,
     setRememberedGitAuthMethod,
+    clearRememberedGithubConnection,
     setAutocommitSettings,
     setShowAgentReposSetting,
     getConflictAutoresolveSetting,
@@ -76,20 +77,7 @@ export function createCredentialsActions(ctx) {
     };
 
     const getDisplayedAuthMethod = (state = getState()) => {
-        const rawAuthMethod = normalizeGitAuthMethod(state.authPrompt?.authMethod || getRememberedGitAuthMethod());
-        const currentToken = String(state.authPrompt?.token || '').trim();
-        const githubConnected = Boolean(
-            state.githubAuth?.connected
-            && state.githubAuth?.connection?.source === 'github'
-        );
-        const tokenStored = Boolean(state.githubAuth?.tokenStored);
-        if (githubConnected && !currentToken && !state.credentialsDirty) {
-            return 'github';
-        }
-        if (tokenStored && !currentToken && !state.credentialsDirty && rawAuthMethod === 'token') {
-            return 'token';
-        }
-        return rawAuthMethod;
+        return normalizeGitAuthMethod(state.authPrompt?.authMethod || getRememberedGitAuthMethod());
     };
 
     const getAuthMethod = (state = getState()) => {
@@ -241,6 +229,7 @@ export function createCredentialsActions(ctx) {
             credentialsGate: false,
             pendingAction: null,
             credentialsDirty: false,
+            credentialsAuthAction: null,
             showAgentRepos,
             autocommitDirty: false,
             autocommitDraft: {
@@ -370,7 +359,7 @@ export function createCredentialsActions(ctx) {
             token: String(payload.token ?? state.authPrompt?.token ?? '').trim(),
             showAgentRepos: typeof payload.showAgentRepos === 'boolean'
                 ? payload.showAgentRepos
-                : Boolean(state.showAgentRepos),
+                : Boolean(state.autocommitDraft?.showAgentRepos ?? state.showAgentRepos),
             usingGithub: authMethod === 'github',
             validateOnly: Boolean(payload.validateOnly),
             autocommitIntervalMinutes: payload.autocommitIntervalMinutes,
@@ -399,9 +388,10 @@ export function createCredentialsActions(ctx) {
     };
 
     const getCredentialsRuntimeState = (state, draft) => {
-        const tokenStored = Boolean(state.githubAuth?.tokenStored);
+        const clearingCredentials = Boolean(state.credentialsAuthAction);
+        const tokenStored = !clearingCredentials && Boolean(state.githubAuth?.tokenStored);
         const githubConnected = Boolean(
-            state.githubAuth?.connected
+            !clearingCredentials && state.githubAuth?.connected
             && state.githubAuth?.connection?.source === 'github'
         );
         const githubConfigured = Boolean(state.githubAuth?.configured || githubConnected);
@@ -428,12 +418,12 @@ export function createCredentialsActions(ctx) {
             identityValid,
             hasInputToken,
             authValid,
+            clearingCredentials,
             canSaveGithubSetup
         };
     };
 
     const applyCredentialsDraft = (state, draft) => {
-        setRememberedGitAuthMethod(draft.authMethod);
         applyState({
             identityPrompt: {
                 ...state.identityPrompt,
@@ -484,7 +474,7 @@ export function createCredentialsActions(ctx) {
     };
 
     const ensureAuthIsReady = (state, draft, runtimeState) => {
-        if (runtimeState.authValid || runtimeState.canSaveGithubSetup) {
+        if (runtimeState.authValid || runtimeState.canSaveGithubSetup || runtimeState.clearingCredentials) {
             return true;
         }
         applyState({
@@ -590,9 +580,15 @@ export function createCredentialsActions(ctx) {
     const persistCredentialsDraft = async (state, draft, runtimeState) => {
         let identitySaved = false;
         let tokenSaved = false;
-        if (runtimeState.identityValid) {
-            setRememberedGitIdentity({ name: draft.name, email: draft.email });
-            identitySaved = true;
+        if (runtimeState.clearingCredentials && (draft.usingGithub || !runtimeState.hasInputToken)) {
+            const response = await service.disconnectGithubAuth();
+            clearRememberedGithubConnection();
+            applyState({
+                githubAuth: response?.github || {
+                    ...state.githubAuth, connected: false, tokenStored: false, connection: null, pending: null
+                },
+                credentialsAuthAction: null
+            }, { silent: true });
         }
 
         if (!draft.usingGithub && runtimeState.authValid) {
@@ -612,11 +608,21 @@ export function createCredentialsActions(ctx) {
                         }
                     }, { silent: true });
                 }
+                if (runtimeState.clearingCredentials) {
+                    clearRememberedGithubConnection();
+                    applyState({ credentialsAuthAction: null }, { silent: true });
+                }
             }
             tokenSaved = true;
         } else if (draft.usingGithub && runtimeState.authValid) {
             tokenSaved = true;
         }
+
+        if (runtimeState.identityValid) {
+            setRememberedGitIdentity({ name: draft.name, email: draft.email });
+            identitySaved = true;
+        }
+        setRememberedGitAuthMethod(draft.authMethod);
 
         setAutocommitSettings({
             intervalMinutes: draft.autocommitIntervalMinutes,
@@ -726,6 +732,7 @@ export function createCredentialsActions(ctx) {
         try {
             const state = getState();
             const draft = collectCredentialsDraft(state, payload);
+            if (payload.preferencesOnly) return persistSettingsOnly(draft);
             const baselineState = getCredentialsBaselineState(state, draft);
             const runtimeState = getCredentialsRuntimeState(state, draft);
 
@@ -750,11 +757,11 @@ export function createCredentialsActions(ctx) {
                 return false;
             }
 
-            if (!state.credentialsValidated && !state.credentialsDirty && (state.autocommitDirty || state.autoresolveDirty) && !draft.validateOnly) {
+            if (!state.credentialsValidated && !state.credentialsDirty && !baselineState.hasPersistableChanges && (state.autocommitDirty || state.autoresolveDirty) && !draft.validateOnly) {
                 return persistSettingsOnly(draft);
             }
 
-            if (!runtimeState.pending?.type && !draft.validateOnly) {
+            if ((!runtimeState.pending?.type || (runtimeState.clearingCredentials && !runtimeState.authValid)) && !draft.validateOnly) {
                 const persisted = await persistCredentialsDraft(state, draft, runtimeState);
                 if (!persisted) {
                     return false;
@@ -907,7 +914,34 @@ export function createCredentialsActions(ctx) {
         }
     };
 
+    const completeGithubAuthentication = async () => {
+        const state = getState();
+        if (normalizeGitAuthMethod(state.authPrompt?.authMethod) !== 'github'
+            || !state.githubAuth?.connected || state.githubAuth?.connection?.source !== 'github') return false;
+        // OAuth is already active server-side; never save a manual token or preferences here.
+        setRememberedGitAuthMethod('github');
+        const draft = collectCredentialsDraft(state, { authMethod: 'github' });
+        const runtimeState = getCredentialsRuntimeState(state, draft);
+        if (!ensureIdentityIsValid(state, draft, runtimeState)) return false;
+        setRememberedGitIdentity({ name: draft.name, email: draft.email });
+        applyState({
+            credentialsBaseline: { name: draft.name, email: draft.email, authMethod: 'github' },
+            credentialsOpen: true,
+            credentialsDirty: false,
+            credentialsAuthAction: null,
+            credentialsGate: false,
+            pendingAction: null,
+            identityPrompt: { ...state.identityPrompt, visible: false, pendingAction: null },
+            authPrompt: { ...state.authPrompt, visible: false, pendingAction: null, token: '' },
+        });
+        updateAuthPrompt();
+        updateCommitButtons();
+        await resumePendingGitAction(runtimeState.pending);
+        return true;
+    };
+
     return {
+        completeGithubAuthentication,
         showGitAuthPrompt,
         openGitTokenPrompt,
         openGitIdentityPrompt,

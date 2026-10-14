@@ -30,6 +30,7 @@ import {
 import { createFileExpTooling } from "./file-exp-tooling.js";
 import { attachSearchController } from "./file-exp-search.js";
 import { attachFsActions } from "./file-exp-fs-actions.js";
+import { attachDownloadActions } from "./file-exp-download.js";
 import { attachApplicationPluginHost } from "./file-exp-application-plugins.js";
 import {
     FILE_EXP_MENU_SLOTS,
@@ -189,6 +190,7 @@ export class FileExp {
 
         attachSearchController(this);
         attachFsActions(this);
+        attachDownloadActions(this);
         attachApplicationPluginHost(this);
 
         this.initialLocationRouteApplied = false;
@@ -683,6 +685,8 @@ export class FileExp {
                 return this.renameEntry(element);
             case 'openEntryInNewTab':
                 return this.openEntryInNewTab(element);
+            case 'downloadEntry':
+                return this.downloadEntry(element);
             case 'openTerminalHere':
                 return this.openTerminalHere(element);
             case 'copyEntry':

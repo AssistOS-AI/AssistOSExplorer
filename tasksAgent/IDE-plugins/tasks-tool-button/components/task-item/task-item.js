@@ -32,7 +32,7 @@ export class TaskItem{
         this.paragraphItem = document.querySelector(`paragraph-item[data-paragraph-id="${this.task.configs.paragraphId}"]`);
         const sourceCommand = (this.task.configs?.sourceCommand || this.task.name || "task").toString();
         this.taskAgent = sourceCommand.charAt(0).toUpperCase() + sourceCommand.slice(1);
-        this.taskIconSrc = "./assets/icons/task.svg";
+        this.taskIconSrc = "/explorer/assets/icons/task.svg";
         if(!this.paragraphItem){
             this.paragraphText = "...........";
             return;

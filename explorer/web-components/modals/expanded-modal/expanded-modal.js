@@ -50,6 +50,7 @@ export class ExpandedModal {
         if (this.dialog) {
             this.dialog.dataset.expandedKey = this.attr("key");
             this.dialog.setAttribute("aria-labelledby", "expandedModalTitle");
+            this.dialog.addEventListener("keydown", this.handleComponentEscape);
         }
         this.body = this.element.querySelector("#expandedModalBody");
         this.stateNode = this.element.querySelector("#expandedModalState");
@@ -171,8 +172,18 @@ export class ExpandedModal {
 
     afterUnload() {
         this.closed = true;
+        this.dialog?.removeEventListener("keydown", this.handleComponentEscape);
         this.cancelLoading();
     }
+
+    handleComponentEscape = (event) => {
+        if (event.key !== 'Escape' || event.defaultPrevented || this.mode !== 'component') return;
+        if (event.target?.closest?.('dialog') !== this.dialog) return;
+        if (typeof this.componentPresenter()?.confirmDiscardChanges !== 'function') return;
+        event.preventDefault();
+        event.stopPropagation();
+        void this.closeModal();
+    };
 
     cancelLoading() {
         this.loadController.abort();
@@ -183,6 +194,9 @@ export class ExpandedModal {
             this.frame.remove();
             this.frame = null;
         }
+        this.componentHost?.remove();
+        this.componentHost = null;
+        this.contentProxy = null;
         this.runId += 1;
         this.stopResize?.();
         this.stopDrag?.();
@@ -474,6 +488,7 @@ export class ExpandedModal {
         const props = this.componentProps();
         const host = document.createElement("div");
         host.className = "expanded-modal-component";
+        this.componentHost = host;
         this.body.appendChild(host);
         this.setState("Loading…");
         try {
@@ -492,12 +507,14 @@ export class ExpandedModal {
             const node = element.element?.deref?.();
             if (node) {
                 await node.presenterReadyPromise;
-                if (this.closed) return;
+                if (this.closed || !host.isConnected) return;
                 await node.renderCompletePromise;
-                if (this.closed) return;
+                if (this.closed || !host.isConnected) return;
                 await node.webSkelPresenter?.initialLoad;
-                if (this.closed) return;
+                if (this.closed || !host.isConnected) return;
             }
+            const reloadButton = this.element.querySelector("#expandedModalReload");
+            if (reloadButton) reloadButton.hidden = typeof this.componentPresenter()?.getReloadProps !== "function";
             this.setState("");
         } catch (error) {
             if (this.closed) return;
@@ -549,7 +566,29 @@ export class ExpandedModal {
         }
     }
 
-    reloadContent() {
+    componentPresenter() {
+        return this.contentProxy?.element?.deref?.()?.webSkelPresenter;
+    }
+
+    async reloadContent() {
+        if (this.closed || this.reloading) return;
+        if (this.mode === "component") {
+            const presenter = this.componentPresenter();
+            if (typeof presenter?.getReloadProps !== "function") return;
+            if (presenter.confirmDiscardChanges?.('reload') === false) return;
+            const props = presenter.getReloadProps();
+            this.reloading = true;
+            try {
+                this.componentHost?.remove();
+                this.contentProxy = null;
+                this.element.setAttribute('data-props', JSON.stringify(props));
+                this.contentReady = this.mountComponentContent();
+                await this.contentReady;
+            } finally {
+                this.reloading = false;
+            }
+            return;
+        }
         if (this.mode !== "iframe") return;
         this.cancelLoading();
         this.loadController = new AbortController();
@@ -564,6 +603,13 @@ export class ExpandedModal {
 
     openInNewTab() {
         if (typeof window === "undefined") return;
+        if (this.mode === "component") {
+            const url = this.componentPresenter()?.getOpenInNewTabUrl?.();
+            if (url) {
+                window.open(url, "_blank", "noopener,noreferrer");
+                return;
+            }
+        }
         let url = "";
         try { if (this.mode === "iframe" && this.frame?.contentWindow) url = this.frame.contentWindow.location.href; }
         catch (_) { url = ""; }
@@ -585,10 +631,19 @@ export class ExpandedModal {
     }
 
     async closeModal() {
+        if (this.closed) return;
+        if (this.mode === "component" && this.componentPresenter()?.confirmDiscardChanges?.('close') === false) return;
         // Disconnect and release embedded content (room, tracks) before the frame is removed.
         await this.notifyFrameUserClose();
         this.closed = true;
         this.cancelLoading();
         assistOS.UI.closeModal(this.element);
+    }
+
+    completeComponent(payload) {
+        if (this.closed) return;
+        this.closed = true;
+        this.cancelLoading();
+        assistOS.UI.closeModal(this.element, payload);
     }
 }
