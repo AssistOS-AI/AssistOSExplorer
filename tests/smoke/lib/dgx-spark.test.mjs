@@ -111,6 +111,8 @@ test('the DGX wrapper selects specs by number and refuses anything else', async 
   assert.deepEqual(parseDgxArgs([]).specs, DGX_SPECS);
   assert.deepEqual(parseDgxArgs(['--spec', '95', '--spec', '93']).specs, ['specs/93-dgx-spark-platform.spec.mjs', 'specs/95-dgx-spark-hardware-limits.spec.mjs']);
   assert.equal(parseDgxArgs(['--list']).list, true);
+  assert.deepEqual(parseDgxArgs(['--spec', '97']).specs, ['specs/97-dgx-spark-vllm.spec.mjs']);
+  assert.equal(DGX_SPECS.length, 5);
   assert.throws(() => parseDgxArgs(['--spec', '91']), /--spec must be one of/);
   assert.throws(() => parseDgxArgs(['--grep', 'x']), /Unknown option/);
   assert.throws(() => parseDgxArgs(['--retries=1']), /Unknown option/);

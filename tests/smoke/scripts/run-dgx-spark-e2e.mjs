@@ -18,16 +18,18 @@ export const DGX_SPECS = Object.freeze([
   'specs/94-dgx-spark-local-llm.spec.mjs',
   'specs/95-dgx-spark-hardware-limits.spec.mjs',
   'specs/96-dgx-spark-gpu-grant.spec.mjs',
+  'specs/97-dgx-spark-vllm.spec.mjs',
 ]);
 
 export const dgxHelp = `DGX Spark E2E suite
-Usage: npm run test:dgx-spark -- [--spec 93|94|95|96]... [--list]
+Usage: npm run test:dgx-spark -- [--spec 93|94|95|96|97]... [--list]
 
 Requires SMOKE_WORKSPACE_ROOT (the deployment's workspace), SMOKE_PLOINKY_BIN (bin/ploinky of the checkout that
 created it), SMOKE_BASE_URL and the administrator sign-in inputs (SMOKE_LOGIN_EMAIL, SMOKE_SIGN_IN_METHOD,
 SMOKE_ACCOUNT_PASSWORD or its alternatives). The Box is derived from the workspace; SMOKE_PLOINKY_BOX_CONTAINER is
 refused. Spec 95 turns the hardware-limits gate on (PLOINKY_BOX_HARDWARE_LIMITS=on ploinky restart) when it is off,
-and spec 96 revokes and grants local-llm's GPU; both restart the workspace graph.
+spec 96 revokes and grants local-llm's GPU (both restart the workspace graph), and spec 97 turns on
+the experimental vLLM switch, installs vLLM (about 3.9 GB) and removes it again.
 `;
 
 export function parseDgxArgs(argv) {
