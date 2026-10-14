@@ -9,7 +9,7 @@ import path from 'node:path';
 import { test, expect } from '../lib/fixtures.mjs';
 import { smokeArtifactPath, smokeConfig } from '../lib/config.mjs';
 import {
-  RUNNER_EXECUTABLE, SMALL_MODEL_COMMIT, SMALL_MODEL_ID, SMALL_MODEL_SHA256, SMALL_MODEL_SIZE, readRunnerProcesses,
+  RUNNER_EXECUTABLE, SMALL_MODEL_COMMIT, SMALL_MODEL_ID, SMALL_MODEL_SHA256, SMALL_MODEL_SIZE, agentByRef, createHardwareApi, readRunnerProcesses,
 } from '../lib/hardware-limits-evidence.mjs';
 import {
   ACTIVE_PHASES, DGX_GPU, LOCAL_LLM_REF, UNIFIED_RUNNER,
@@ -71,11 +71,17 @@ test.describe('DGX Spark local-llm inference on the GB10 @dgx-spark', () => {
     expect(ready.memoryGuard?.samples, 'the unified memory guard samples while the model runs').toBeGreaterThan(0);
     expect(ready.memoryGuard.minAvailableBytes).toBeGreaterThan(ready.memoryGuard.floorBytes);
 
+    // No GPU share is stored for local-llm, so the runner has no MPS environment (a share left by another spec would add one).
+    const hardware = createHardwareApi({ request: page.request });
+    const stored = agentByRef(await hardware.readOk(), LOCAL_LLM_REF);
+    expect(stored, `${LOCAL_LLM_REF} must be in the hardware snapshot`).toBeTruthy();
+    expect(stored.configured?.gpu, 'no GPU share may be stored for local-llm').toBeUndefined();
+
     const processes = await readRunnerProcesses({ boxName: state.box.name, agentName: state.localLlm });
     expect(processes.length, 'exactly one llama-server runs').toBe(1);
     expect(processes[0].exe).toBe(RUNNER_EXECUTABLE);
     expect(processes[0].uid, 'the runner runs as the Box user, never root').toEqual([1000, 1000, 1000, 1000]);
-    expect(Object.keys(processes[0].cuda).filter((name) => name.startsWith('CUDA_MPS_')), 'no MPS share applies on a unified GPU').toEqual([]);
+    expect(Object.keys(processes[0].cuda).filter((name) => name.startsWith('CUDA_MPS_')), 'no MPS share is stored, so none applies').toEqual([]);
 
     const apps = classifyComputeApps(await readComputeApps({}), state.box.id);
     expect(apps.foreign).toEqual([]);

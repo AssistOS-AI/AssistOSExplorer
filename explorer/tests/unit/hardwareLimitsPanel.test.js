@@ -161,6 +161,7 @@ test('X.gpu-best-effort-help', () => {
 });
 
 const UNIFIED_SENTENCE = "On unified-memory NVIDIA GPUs (GB10 / DGX Spark) a RAM limit does not cap the GPU device memory (cudaMalloc) an agent allocates, such as llama.cpp's model buffers; only the agent's own admission check keeps that memory within the budget, and an overrun takes memory from the whole host, which has no separate GPU memory. Managed, pinned-host and ATS allocations are charged to the RAM limit (measured on driver 580.178.04).";
+const QUALIFIED_SHARE_SENTENCE = 'On the qualified GB10 (driver 580.178.04) a GPU memory share is a best-effort, per-CUDA-process MPS limit on cudaMalloc and managed memory, measured at a 1 GiB limit; managed memory also counts against the RAM limit, and pinned-host and ATS memory count only against the RAM limit.';
 const escapedSentence = (sentence) => sentence.replace(/'/g, '&#39;');
 
 test('X.unified-disclosure', () => {
@@ -206,12 +207,59 @@ test('X.dedicated-labels-unchanged', () => {
     assert.deepEqual([...html.matchAll(/<label class="hardware-limit-field">([^<]*)</g)].map((match) => match[1]), ['CPU cores', 'RAM %', 'GPU SM %', 'GPU VRAM %']);
     assert.doesNotMatch(html, /do not cover GPU device memory|GPU memory %/);
     // R8: the panel at the base revision rendered this snapshot to 4203 bytes with this digest. The only permitted
-    // difference is the appended unified-memory help paragraph inside the GPU help list.
+    // differences are the appended unified-memory and qualified-share help paragraphs inside the GPU help list.
     const appended = `<p>${escapedSentence(UNIFIED_SENTENCE)}</p>`;
+    const shareAppended = `<p>${escapedSentence(QUALIFIED_SHARE_SENTENCE)}</p>`;
     assert.equal(html.split(appended).length, 2);
-    const base = html.replace(appended, '');
+    assert.equal(html.split(shareAppended).length, 2);
+    const base = html.replace(appended, '').replace(shareAppended, '');
     assert.equal(base.length, 4203);
     assert.equal(crypto.createHash('sha256').update(base).digest('hex'), '73460c7efd66296c27049bcab40eaa3c66cb2592a710d7fa1906bb4f34ff2365');
+});
+
+test('X.unified-labels', () => {
+    // The Phase 1 sentence stays and the qualified-share sentence is appended after it.
+    assert.equal(GPU_HELP.at(-2), UNIFIED_SENTENCE);
+    assert.equal(GPU_HELP.at(-1), QUALIFIED_SHARE_SENTENCE);
+    const kinds = [
+        { kind: 'device', apis: ['cudaMalloc', 'cuMemAlloc'], ramLimit: false, gpuShare: true },
+        { kind: 'managed', apis: ['cudaMallocManaged'], ramLimit: true, gpuShare: true },
+        { kind: 'pinned-host', apis: ['cudaHostAlloc', 'cuMemHostAlloc'], ramLimit: true, gpuShare: false },
+        { kind: 'pageable', apis: ['malloc'], ramLimit: true, gpuShare: false },
+    ];
+    const value = snapshot();
+    value.agents[0].configured = { cpus: 1.5, gpu: { smPercent: 50, vramPercent: 25 } };
+    value.agents[0].effective = { cpus: 1.5, gpu: { smPercent: 50, vramPercent: 25, vramMiB: 30625 } };
+    value.gpu = { eligible: true, mode: 'mps-shared', assurance: 'best-effort', memoryModel: 'unified', deviceMemoryBytes: null, daemonStatus: 'ready',
+        shareBasis: { kind: 'unified-pool', bytes: 122500 * 1024 ** 2, source: 'box-envelope' },
+        unifiedMemory: { ramLimitCoversGpuAllocations: false, gpuMemoryBound: 'mps-per-process', assurance: 'best-effort', enforcement: 'cooperative', allocationKinds: kinds } };
+    let html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token));
+    assert.deepEqual([...html.matchAll(/<label class="hardware-limit-field">([^<]*)</g)].map((match) => match[1]), ['CPU cores', 'RAM %', 'GPU SM %', 'GPU memory % (unified pool)']);
+    assert.doesNotMatch(html, /GPU VRAM %|physical VRAM|physical device memory/);
+    assert.doesNotMatch(html, /data-hardware-field="(?:smPercent|vramPercent)"[^>]* disabled/);
+    assert.ok(html.includes('50% GPU SM / 25% of the unified memory pool'));
+    assert.ok(html.includes('GPU memory percentage uses the unified memory pool (the Box memory envelope); applied rows show the resolved bytes per CUDA process.'));
+    assert.ok(html.includes('GPU memory share: best-effort, per CUDA process (MPS); cooperative: a process that drops the MPS environment is not limited'));
+    assert.deepEqual([...html.matchAll(/<li data-kind="([^"]*)">([^<]*)<\/li>/g)].map((match) => [match[1], match[2]]), [
+        ['device', 'cudaMalloc device memory: GPU share only'],
+        ['managed', 'Managed memory: RAM limit and GPU share (counted against both)'],
+        ['pinned-host', 'Pinned host memory: RAM limit only'],
+        ['pageable', 'ATS (pageable) memory used by the GPU: RAM limit only'],
+    ]);
+    assert.doesNotMatch(html, /do not cover GPU device memory/);
+    assert.ok(html.includes(escapedSentence(QUALIFIED_SHARE_SENTENCE)));
+    // Unknown or malformed kinds render no row, and hostile text is not echoed.
+    value.gpu.unifiedMemory.allocationKinds = [{ kind: '<img src=x>' }, null, { kind: 'managed' }];
+    html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token));
+    assert.equal([...html.matchAll(/<li data-kind=/g)].length, 1);
+    assert.ok(!html.includes('<img'));
+    // Ineligible unified keeps the Phase 1 line, label and disabled inputs.
+    value.gpu = { eligible: false, mode: 'unavailable', assurance: 'none', memoryModel: 'unified', unifiedMemory: { ramLimitCoversGpuAllocations: false, gpuMemoryBound: 'admission-only', assurance: 'advisory', allocationKinds: kinds } };
+    html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token));
+    assert.ok(html.includes('RAM limits on this Box do not cover GPU device memory (advisory)'));
+    assert.ok(html.includes('GPU VRAM %'));
+    assert.doesNotMatch(html, /GPU memory % \(unified pool\)|unified memory pool|data-kind=/);
+    assert.match(html, /data-hardware-field="vramPercent"[^>]* disabled/);
 });
 
 test('X.u13-disclosure', () => {

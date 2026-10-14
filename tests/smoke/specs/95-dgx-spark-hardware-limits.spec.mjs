@@ -3,12 +3,15 @@
 //
 //   1 the hardware-limits gate is on and prepared (turned on with PLOINKY_BOX_HARDWARE_LIMITS=on ploinky restart when it
 //     is off), the Box keeps its GPU wiring and local-llm keeps the unified profile;
-//   2 a GPU share is refused for the unified GB10 by the API (policy unchanged) and the panel disables the GPU fields;
+//   2 a GPU share is refused for the unified GB10 by the API (policy unchanged) and the panel disables the GPU fields; on
+//     the qualified GB10 (PCI 0x2E1210DE, driver 580.178.04) the share is instead accepted, applied and visible in the
+//     runner's MPS environment (a cooperative, best-effort share), and clearing restores the unlimited agent;
 //   3 a 4 CPU budget with the smallest RAM percentage the unified admission accepts is saved and applied through the
 //     panel, and the agent's cgroup leaf and local-llm's own budget agree with it;
 //   4 admission sizes the small model against that budget (pool = memory.max) and it runs on the GB10 with no OOM kill
 //     since before the Run; whether the runner's GPU memory is charged to the agent's cgroup is recorded, not asserted
-//     (on the GB10 cudaMalloc device memory is not charged, so the RAM budget does not bound it);
+//     (on the GB10 cudaMalloc device memory is not charged, so the RAM budget does not bound it); on the qualified GB10
+//     the guard's GPU samples are paired with host nvidia-smi samples and must agree;
 //   5 a RAM budget below the unified need is refused before launch with admission_incompatible;
 //   6 clearing the limits restores the unlimited agent, and the weights are deleted.
 import fs from 'node:fs';
@@ -17,13 +20,13 @@ import path from 'node:path';
 import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig, smokeArtifactPath } from '../lib/config.mjs';
 import {
-  SMALL_MODEL_ID, agentByRef, checked, cpuMaxMatches, createHardwareApi, instanceByKey, readLeaf, readRunnerProcesses, readRunningSet,
+  MPS_PIPE_DIRECTORY, SMALL_MODEL_ID, agentByRef, checked, cpuMaxMatches, createHardwareApi, instanceByKey, readLeaf, readRunnerProcesses, readRunningSet,
   resolveMemoryPercent, sameToken, tokenOf, waitFor,
 } from '../lib/hardware-limits-evidence.mjs';
 import {
   ACTIVE_PHASES, DGX_GPU, LOCAL_LLM_REF, UNIFIED_RUNNER,
   callTool, callToolOk, classifyComputeApps, createPloinky, dgxSparkEnabled, errorCodeOf, hostCgroupOf, listNested,
-  nestedNameOf, openLocalLlmDashboard, parseGpuStatus, parseLimitsStatus, readComputeApps, readMemTotalBytes, requestId, requireDgxSparkEnvironment,
+  nestedNameOf, openLocalLlmDashboard, parseGpuStatus, parseLimitsStatus, readComputeApps, readHostGpu, readMemTotalBytes, requestId, requireDgxSparkEnvironment,
   reserveInBudgetFitPercent, resolveBox, restoreSteps, stopModelIfActive, unifiedFitPercent, unifiedRefusePercent, waitForGraph, waitForPhase, withAdminPage, writeEvidence,
   ensureExplorer,
 } from '../lib/dgx-spark.mjs';
@@ -35,6 +38,13 @@ const GATE_RESTART_MS = 30 * 60_000;
 const APPLY_BOUND_MS = 5 * 60_000;
 const MODEL_READY_MS = 30 * 60_000;
 const CPUS = 4;
+const MIB = 1024 * 1024;
+const QUALIFIED_PCI_DEVICE_ID = '0x2E1210DE';
+const QUALIFIED_DRIVER = '580.178.04';
+// The expected tuple comes from the host driver (nvidia-smi), never from the payload under test, so a missing field or a
+// wrong refusal in the API fails instead of selecting the other branch.
+const qualifiedTuple = (gpu) => gpu?.pciDeviceId === QUALIFIED_PCI_DEVICE_ID && gpu?.driverVersion === QUALIFIED_DRIVER;
+const QUALIFIED_SHARE_HELP = 'On the qualified GB10 (driver 580.178.04) a GPU memory share is a best-effort, per-CUDA-process MPS limit on cudaMalloc and managed memory, measured at a 1 GiB limit; managed memory also counts against the RAM limit, and pinned-host and ATS memory count only against the RAM limit.';
 const state = {};
 
 test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
@@ -137,6 +147,80 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     } catch { return null; }
   }
 
+  // A-L2-4: on the qualified GB10 a GPU share is accepted, applied and reaches the runner as a cooperative, best-effort
+  // MPS limit. The share is cleared again before the test ends, so the later tests and spec 94 see no stored share.
+  async function qualifiedShare(page, api, before) {
+    const SM = 50;
+    const VRAM = 25;
+    // The host reports the qualified tuple, so the API must say so too: a missing field or a refusal fails here.
+    expect(before.gpu.eligible, `GPU sharing must be offered on the qualified GB10: ${String(before.gpu.reason || 'no reason').slice(0, 200)}`).toBe(true);
+    expect(before.gpu.pciDeviceId).toBe(QUALIFIED_PCI_DEVICE_ID);
+    expect(before.gpu.driverVersion).toBe(QUALIFIED_DRIVER);
+    expect(before.help.gpu, 'the server help carries the qualified-share sentence').toContain(QUALIFIED_SHARE_HELP);
+    expect(before.gpu.memoryModel).toBe('unified');
+    expect(before.gpu.unifiedMemory).toMatchObject({ ramLimitCoversGpuAllocations: false, assurance: 'best-effort', enforcement: 'cooperative' });
+    expect(before.gpu.unifiedMemory.allocationKinds.map((entry) => entry.kind)).toEqual(['device', 'managed', 'pinned-host', 'pageable']);
+    const poolBytes = before.gpu.shareBasis?.bytes;
+    expect(before.gpu.shareBasis?.kind, 'the share basis is the unified pool').toBe('unified-pool');
+    expect(Number.isSafeInteger(poolBytes) && poolBytes > 0).toBe(true);
+    expect(before.gpu.shareBasis.source).toBe('box-envelope');
+    expect(poolBytes, 'the pool is the Box memory envelope in whole MiB').toBe(Math.floor(before.envelope.memoryBytes / MIB) * MIB);
+    const shareMiB = Math.floor((VRAM * poolBytes) / 100 / MIB);
+    const defaultMiB = Math.ceil(shareMiB / 1024) * 1024;
+    const { instance } = localLlmInstance(before);
+    const key = instance.key;
+    await stopModelIfActive(page);
+
+    let section = await openHardwareTab(page);
+    let article = policyArticle(page, section);
+    await expect(article.locator('[data-hardware-field="smPercent"]')).toBeEnabled();
+    await expect(article.locator('[data-hardware-field="vramPercent"]')).toBeEnabled();
+    await expect(article.getByText('GPU memory % (unified pool)')).toBeVisible();
+    await expect(section).toContainText('GPU memory share: best-effort, per CUDA process (MPS); cooperative: a process that drops the MPS environment is not limited');
+    for (const text of ['cudaMalloc device memory: GPU share only', 'Managed memory: RAM limit and GPU share (counted against both)', 'Pinned host memory: RAM limit only', 'ATS (pageable) memory used by the GPU: RAM limit only']) await expect(section).toContainText(text);
+    for (const sentence of before.help.gpu) await expect(section.locator('details.hardware-limit-help')).toContainText(sentence);
+
+    state.key = key;
+    state.limitsSaved = true;
+    state.limitsCleared = false;
+    await saveAndApply(page, { smPercent: SM, vramPercent: VRAM }, key);
+    const applied = await appliedSnapshot(api, key);
+    expect(agentByRef(applied, LOCAL_LLM_REF).configured.gpu).toEqual({ smPercent: SM, vramPercent: VRAM });
+    expect(applied.gpu.daemonStatus).toBe('ready');
+    expect(applied.gpu.serverDefault).toEqual({ smPercent: SM, vramMiB: defaultMiB, shareMemoryMiB: shareMiB });
+    await localLlmOverview(page);
+
+    state.modelStarted = true;
+    const started = await callToolOk(page, 'local_llm_run', { requestId: requestId('share-run'), modelId: SMALL_MODEL_ID, runnerId: UNIFIED_RUNNER });
+    expect(started.accepted).toBe(true);
+    await waitForPhase(page, (status) => status.phase === 'ready' && status.deployment?.phase === 'ready', { timeoutMs: MODEL_READY_MS, label: 'the model to be ready under the GPU share' });
+    const processes = await readRunnerProcesses({ boxName: state.box.name, agentName: key });
+    expect(processes.length, 'exactly one llama-server runs').toBe(1);
+    const mps = Object.fromEntries(Object.entries(processes[0].cuda).filter(([name]) => name.startsWith('CUDA_MPS_')));
+    expect(mps, 'the runner carries exactly the three share variables').toEqual({
+      CUDA_MPS_PIPE_DIRECTORY: MPS_PIPE_DIRECTORY,
+      CUDA_MPS_ACTIVE_THREAD_PERCENTAGE: String(SM),
+      CUDA_MPS_PINNED_DEVICE_MEM_LIMIT: `0=${shareMiB}M`,
+    });
+    const reply = await callToolOk(page, 'local_llm_test_prompt', { prompt: 'Name three uses of a GPU.', maxTokens: 64 });
+    expect(reply.text.trim().length).toBeGreaterThan(0);
+    const guard = (await callToolOk(page, 'local_llm_status', {})).memoryGuard;
+    expect(guard?.gpuBudgetSignal, 'the GPU budget stop does not apply under a known share').toBe('not-applicable');
+
+    await stopModelIfActive(page);
+    const cleared = await api.post({ action: 'clear_agent_limits', expectedToken: tokenOf(await api.readOk()), agentRef: LOCAL_LLM_REF });
+    expect(cleared.status, JSON.stringify(cleared.body).slice(0, 300)).toBe(200);
+    const applyCleared = await api.post({ action: 'apply', expectedToken: tokenOf(await api.readOk()), containers: [key] });
+    expect(applyCleared.status, JSON.stringify(applyCleared.body).slice(0, 300)).toBe(200);
+    const restored = await appliedSnapshot(api, key);
+    expect(agentByRef(restored, LOCAL_LLM_REF).configured, 'clearing leaves no stored share').toEqual({});
+    state.limitsSaved = false;
+    state.limitsCleared = false;
+    await localLlmOverview(page);
+    await screenshot(page, '95-gpu-share-qualified.png');
+    writeEvidence(evidenceDir, '95-gpu-share-qualified.json', { gpu: before.gpu, helpGpu: before.help.gpu, share: { smPercent: SM, vramPercent: VRAM, shareMiB, defaultMiB, r5Literal: { shareMiB: 30625, defaultMiB: 30720, matchesR5Literal: shareMiB === 30625 && defaultMiB === 30720 } }, serverDefault: applied.gpu.serverDefault, runnerMps: mps, memoryGuard: guard });
+  }
+
   // ---- 1 ------------------------------------------------------------------
 
   test('the hardware-limits gate is on and prepared, and the Box keeps its GB10 wiring', async ({ page }) => {
@@ -182,11 +266,15 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
 
   // ---- 2 ------------------------------------------------------------------
 
-  test('a GPU share is refused for the unified GB10 by the API and the panel', async ({ page }) => {
+  test('a GPU share is refused for the unified GB10 by the API and the panel unless the driver is qualified', async ({ page }) => {
+    test.setTimeout(MODEL_READY_MS + 3 * APPLY_BOUND_MS + 15 * 60_000);
     await ensureExplorer(page);
     const api = createHardwareApi({ request: page.request });
     const before = await api.readOk();
-    expect(before.gpu.eligible, 'GPU sharing must not be offered on a unified GPU').toBe(false);
+    state.hostGpu = await readHostGpu({});
+    state.qualified = qualifiedTuple(state.hostGpu);
+    if (state.qualified) return qualifiedShare(page, api, before);
+    expect(before.gpu.eligible, 'GPU sharing must not be offered on a unified GPU whose driver is not qualified').toBe(false);
     expect(String(before.gpu.reason || '')).toMatch(/unified|not qualified|unsupported/i);
     const refused = await api.post({ action: 'set_agent_limits', expectedToken: tokenOf(before), agentRef: LOCAL_LLM_REF, limits: { gpu: { smPercent: 50, vramPercent: 50 } } });
     expect(refused.status, JSON.stringify(refused.body).slice(0, 400)).toBeGreaterThanOrEqual(400);
@@ -273,6 +361,8 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     test.setTimeout(MODEL_READY_MS + 15 * 60_000);
     expect(state.containerId, 'test 3 must have applied the budget').toBeTruthy();
     await ensureExplorer(page);
+    expect(state.hostGpu, 'test 2 must have read the host GPU tuple').toBeTruthy();
+    const qualified = state.qualified === true;
     const baseline = await readLeaf({ boxName: state.box.name, containerId: state.containerId });
     state.modelStarted = true;
     const started = await callToolOk(page, 'local_llm_run', { requestId: requestId('budget-run'), modelId: SMALL_MODEL_ID, runnerId: UNIFIED_RUNNER });
@@ -287,11 +377,20 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     const sample = async (label) => {
       const leaf = await readLeaf({ boxName: state.box.name, containerId: state.containerId });
       const apps = classifyComputeApps(await readComputeApps({}), state.box.id);
+      const hostReadAt = Date.now();
       const runner = apps.owned.find((app) => app.name.endsWith('/llama-server')) || null;
       samples.push({ label, at: Date.now(), memoryCurrent: leaf.memoryCurrent, memoryPeak: leaf.memoryPeak, memoryMax: leaf.memoryMax, swapCurrent: leaf.swapCurrent, oomKill: leaf.oomKill, nrThrottled: leaf.nrThrottled, usageUsec: leaf.usageUsec, runnerGpuMiB: runner?.usedMiB ?? null, runnerHost: runner ? hostStatus(runner.pid) : null, runnerCgroup: runner ? hostCgroupOf(runner.pid) : null, foreign: apps.foreign.length });
+      // A-L2-5: the guard's own GPU view, read next to the host sample. gpuSampleAt is the epoch ms of the guard's cached sample.
+      const guard = (await callToolOk(page, 'local_llm_status', {})).memoryGuard ?? {};
+      samples.at(-1).hostReadAt = hostReadAt;
+      samples.at(-1).guard = { readAt: Date.now(), gpuSampleAt: guard.gpuSampleAt ?? null, gpuHeldBytes: guard.gpuHeldBytes ?? null, gpuBudgetSignal: guard.gpuBudgetSignal ?? null, gpuSampleExecMsMedian: guard.gpuSampleExecMsMedian ?? null };
       return leaf;
     };
     await sample('ready');
+    // The share cleared in test 2 must not leave MPS variables on this budget-only run.
+    const runnerEnv = await readRunnerProcesses({ boxName: state.box.name, agentName: state.key });
+    expect(runnerEnv.length, 'exactly one llama-server runs').toBe(1);
+    expect(Object.keys(runnerEnv[0].cuda).filter((name) => name.startsWith('CUDA_MPS_')), 'no GPU share is stored, so none applies').toEqual([]);
     const prompts = [];
     for (let index = 0; index < 3; index += 1) {
       const reply = await callToolOk(page, 'local_llm_test_prompt', { prompt: 'Write a numbered list of twenty short facts about memory.', maxTokens: 512 });
@@ -316,7 +415,27 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
       // RAM budget does not bound it.
       gpuMemoryChargedToLeaf: last.memoryCurrent >= (last.runnerHost?.vmRssBytes ?? 0) + runnerGpuBytes,
     };
-    writeEvidence(evidenceDir, '95-budget-run.json', { threads, prompts, samples, unifiedAccounting, memoryGuard: (await callToolOk(page, 'local_llm_status', {})).memoryGuard });
+    const finalGuard = (await callToolOk(page, 'local_llm_status', {})).memoryGuard;
+    // A-L2-5: the guard's GPU budget view against the host driver, only on the qualified tuple.
+    let gpuBudget = `not applicable: driver ${state.hostGpu.driverVersion}`;
+    if (!qualified) expect(finalGuard?.gpuBudgetSignal, 'local-llm must not qualify a tuple the host reports as unqualified').toBe('unqualified');
+    if (qualified) {
+      expect(finalGuard?.gpuBudgetSignal, 'the guard observes the runner GPU memory under a budget').toBe('observed');
+      const pairs = samples.filter((entry) => entry.runnerGpuMiB != null && Number.isFinite(entry.guard?.gpuSampleAt) && Number.isFinite(entry.guard?.gpuHeldBytes)
+        && Math.abs(entry.guard.gpuSampleAt - entry.hostReadAt) <= 3000);
+      expect(pairs.length, 'no paired GPU samples').toBeGreaterThanOrEqual(1);
+      for (const pair of pairs) {
+        const hostBytes = pair.runnerGpuMiB * MIB;
+        const tolerance = Math.max(0.1 * hostBytes, 64 * MIB);
+        expect(Math.abs(pair.guard.gpuHeldBytes - hostBytes), `guard ${pair.guard.gpuHeldBytes} B against host ${hostBytes} B at ${pair.label}`).toBeLessThanOrEqual(tolerance);
+      }
+      expect(finalGuard.gpuSampleExecMsMedian, 'the median GPU sample exec time').toBeLessThanOrEqual(200);
+      expect(last.runnerGpuMiB, 'the final host sample sees the runner').not.toBeNull();
+      expect(Number.isFinite(last.runnerHost?.vmRssBytes), 'the runner resident size is readable').toBe(true);
+      expect(unifiedAccounting.gpuMemoryChargedToLeaf, 'cudaMalloc device memory is not charged to the leaf').toBe(false);
+      gpuBudget = { pairs: pairs.map((pair) => ({ label: pair.label, runnerGpuMiB: pair.runnerGpuMiB, gpuHeldBytes: pair.guard.gpuHeldBytes, skewMs: pair.guard.gpuSampleAt - pair.hostReadAt })) };
+    }
+    writeEvidence(evidenceDir, '95-budget-run.json', { threads, prompts, samples, unifiedAccounting, gpuBudget, memoryGuard: finalGuard });
     expect(prompts.every((entry) => entry.generationTokensPerSecond > 0)).toBe(true);
   });
 

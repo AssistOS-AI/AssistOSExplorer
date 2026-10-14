@@ -13,7 +13,24 @@ function unifiedMemoryNotice(gpu) {
     return `<p class="hardware-limits-facts" data-role="unified-memory">RAM limits on this Box do not cover GPU device memory (${escapeHtml(assurance)})</p>`;
 }
 
-function policyDescription(limits = {}) {
+const UNIFIED_KIND_LABELS = {
+    device: 'cudaMalloc device memory: GPU share only',
+    managed: 'Managed memory: RAM limit and GPU share (counted against both)',
+    'pinned-host': 'Pinned host memory: RAM limit only',
+    pageable: 'ATS (pageable) memory used by the GPU: RAM limit only',
+};
+
+function eligibleUnified(gpu) {
+    return gpu?.eligible === true && gpu?.memoryModel === 'unified';
+}
+
+function unifiedShareNotice(gpu) {
+    const kinds = Array.isArray(gpu.unifiedMemory?.allocationKinds) ? gpu.unifiedMemory.allocationKinds : [];
+    const rows = kinds.filter((entry) => Object.hasOwn(UNIFIED_KIND_LABELS, entry?.kind)).map((entry) => `<li data-kind="${escapeHtml(entry.kind)}">${escapeHtml(UNIFIED_KIND_LABELS[entry.kind])}</li>`).join('');
+    return `<p class="hardware-limits-facts" data-role="unified-memory">GPU memory share: best-effort, per CUDA process (MPS); cooperative: a process that drops the MPS environment is not limited</p>${rows ? `<ul class="hardware-limits-facts" data-role="unified-kinds">${rows}</ul>` : ''}`;
+}
+
+function policyDescription(limits = {}, unified = false) {
     const values = [];
     if (limits.cpus != null) values.push(`${limits.cpus} CPU cores`);
     if (limits.memoryPercent != null) values.push(`${limits.memoryPercent}% of Box RAM`);
@@ -21,7 +38,7 @@ function policyDescription(limits = {}) {
     if (limits.memory != null) values.push(`${limits.memory} RAM`);
     if (limits.pidsLimit != null) values.push(`${limits.pidsLimit} processes`);
     const gpu = limits.gpu || limits.gpuShare;
-    if (gpu?.vramPercent != null) values.push(`${gpu.smPercent}% GPU SM / ${gpu.vramPercent}% of physical VRAM`);
+    if (gpu?.vramPercent != null) values.push(`${gpu.smPercent}% GPU SM / ${gpu.vramPercent}% of ${unified ? 'the unified memory pool' : 'physical VRAM'}`);
     else if (gpu?.vramMiB != null) values.push(`${gpu.smPercent}% GPU SM / ${gpu.vramMiB} MiB per CUDA process`);
     return values.join(', ') || 'no limits';
 }
@@ -31,21 +48,22 @@ export function renderHardwareLimits(snapshot, drafts, { busy = false, error = '
     const agents = Array.isArray(snapshot.agents) ? snapshot.agents : [];
     const gpuEnabled = snapshot.gpu?.eligible === true;
     const disabled = busy ? ' disabled' : '';
-    const fields = [['cpus', 'CPU cores', '0.01'], ['memoryPercent', 'RAM %', '1'], ['smPercent', 'GPU SM %', '1'], ['vramPercent', 'GPU VRAM %', '1']];
+    const unified = eligibleUnified(snapshot.gpu);
+    const fields = [['cpus', 'CPU cores', '0.01'], ['memoryPercent', 'RAM %', '1'], ['smPercent', 'GPU SM %', '1'], ['vramPercent', unified ? 'GPU memory % (unified pool)' : 'GPU VRAM %', '1']];
     return `<div class="hardware-limits-toolbar"><div><strong>Hardware limits</strong><p class="hardware-limits-facts">Gate ${escapeHtml(snapshot.gate?.state || 'unknown')}; ${snapshot.gate?.prepared === true ? 'prepared' : 'preparation unverified'}. Envelope ${escapeHtml(snapshot.envelope?.cpus ?? 'unknown')} CPU cores / ${escapeHtml(formatBytes(snapshot.envelope?.memoryBytes))}. Controllers: ${escapeHtml((snapshot.gate?.controllers || []).join(', ') || 'none observed')}.</p></div><div class="hardware-policy-actions"><button class="gray-button" type="button" data-hardware-action="refresh"${disabled}>Refresh</button><button class="general-button" type="button" data-hardware-action="apply-all"${disabled}>Apply all pending</button></div></div>
-        <p>Saving changes desired policy. Apply recreates exact instances. CPU and RAM limits use kernel controllers. RAM and GPU percentages are whole numbers from 1 to 100. GPU VRAM percentage uses physical device memory; applied rows show the resolved bytes per CUDA process. Empty fields inherit declared limits; Clear override restores all declared values.</p>
-        <p class="hardware-limits-facts">GPU ${escapeHtml(snapshot.gpu?.mode || 'unavailable')} (${escapeHtml(snapshot.gpu?.assurance || 'none')}). ${gpuEnabled ? '' : escapeHtml(snapshot.gpu?.fix || snapshot.gpu?.reason || 'GPU editing requires a verified eligible NVIDIA backend.')}</p>${unifiedMemoryNotice(snapshot.gpu)}
+        <p>Saving changes desired policy. Apply recreates exact instances. CPU and RAM limits use kernel controllers. RAM and GPU percentages are whole numbers from 1 to 100. ${unified ? 'GPU memory percentage uses the unified memory pool (the Box memory envelope)' : 'GPU VRAM percentage uses physical device memory'}; applied rows show the resolved bytes per CUDA process. Empty fields inherit declared limits; Clear override restores all declared values.</p>
+        <p class="hardware-limits-facts">GPU ${escapeHtml(snapshot.gpu?.mode || 'unavailable')} (${escapeHtml(snapshot.gpu?.assurance || 'none')}). ${gpuEnabled ? '' : escapeHtml(snapshot.gpu?.fix || snapshot.gpu?.reason || 'GPU editing requires a verified eligible NVIDIA backend.')}</p>${unified ? unifiedShareNotice(snapshot.gpu) : unifiedMemoryNotice(snapshot.gpu)}
         <p class="hardware-limits-error" data-role="hardware-error" role="status"${error ? '' : ' hidden'}>${escapeHtml(error)}</p>
         ${results ? `<div role="status"><strong>Apply results</strong>${results.length ? results.map((result) => `<p>${escapeHtml(result.key || result.containerName || '')}${result.observedKey && result.observedKey !== result.key ? ` (observed ${escapeHtml(result.observedKey)})` : ''}: ${escapeHtml(result.state || result.status || (result.ok ? 'completed' : 'unavailable'))} ${escapeHtml(result.message || describeProblem({ availability: result.state, problem: result.problem }))} ${escapeHtml(result.fix || '')}</p>`).join('') : '<p>No instances changed.</p>'}${expandedContainers.length ? `<p>Coordinated instances: ${expandedContainers.map(escapeHtml).join(', ')}</p>` : ''}${pendingContainers.length ? `<p>Still pending: ${pendingContainers.map(escapeHtml).join(', ')}</p>` : ''}</div>` : ''}
         ${agents.length ? agents.map((agent, index) => {
         const draft = drafts.get(agent.ref);
         const containers = Array.isArray(agent.containers) ? agent.containers : [];
         return `<article class="hardware-policy" data-agent-index="${index}"><h3>${escapeHtml(agent.ref)}</h3>
-            <p class="hardware-instance-detail">Stored ${escapeHtml(policyDescription(agent.configured))}; declared ${escapeHtml(policyDescription(agent.declared))}; effective ${escapeHtml(policyDescription(agent.effective))}.</p>
+            <p class="hardware-instance-detail">Stored ${escapeHtml(policyDescription(agent.configured, unified))}; declared ${escapeHtml(policyDescription(agent.declared, unified))}; effective ${escapeHtml(policyDescription(agent.effective, unified))}.</p>
             ${draft?.conflict ? '<p class="hardware-limits-conflict" role="status">Policy changed elsewhere. Your unsaved values remain below. Review the refreshed stored and effective values before saving again.</p>' : ''}
             <div class="hardware-limit-fields">${fields.map(([field, label, step]) => `<label class="hardware-limit-field">${label}<input class="form-input" type="number" step="${step}" min="${field === 'cpus' ? '0.05' : '1'}"${field !== 'cpus' ? ' max="100"' : ''} data-hardware-field="${field}" data-agent-index="${index}" value="${escapeHtml(draft?.[field] || '')}"${disabled}${!gpuEnabled && ['smPercent', 'vramPercent'].includes(field) ? ' disabled' : ''}></label>`).join('')}</div>
             <div class="hardware-policy-actions"><button class="general-button" type="button" data-hardware-action="save" data-agent-index="${index}"${disabled}>${draft?.conflict ? 'Review and save' : 'Save desired limits'}</button><button class="gray-button" type="button" data-hardware-action="clear" data-agent-index="${index}"${disabled}>Clear override</button>${draft?.dirty ? '<span class="hardware-instance-detail">Unsaved edits</span>' : ''}</div>
-            ${containers.length ? `<table class="hardware-instances"><thead><tr><th>Exact instance</th><th>Availability / limits</th><th>Desired / applied / usage</th><th>Action</th></tr></thead><tbody>${containers.map((instance, instanceIndex) => `<tr><td>${escapeHtml(instance.alias == null ? 'Canonical instance' : `Alias: ${instance.alias}`)}<code>${escapeHtml(instance.key)}</code></td><td><span class="hardware-instance-state">${escapeHtml(instance.availability || 'stopped')}</span> / ${escapeHtml(instance.limitsState || 'unavailable')}<p class="hardware-instance-problem">${escapeHtml(describeProblem(instance))}</p></td><td><p class="hardware-instance-detail">Desired ${escapeHtml(policyDescription(instance.effective))}</p>Applied ${escapeHtml(describeApplied(instance.limits))}<p class="hardware-instance-detail">${escapeHtml(describeUsage(instance))}</p></td><td><button class="general-button" type="button" data-hardware-action="apply" data-agent-index="${index}" data-instance-index="${instanceIndex}"${disabled}>Apply instance</button></td></tr>`).join('')}</tbody></table>` : '<p class="hardware-instance-detail">Not enabled. Saved policy will apply when this agent starts.</p>'}
+            ${containers.length ? `<table class="hardware-instances"><thead><tr><th>Exact instance</th><th>Availability / limits</th><th>Desired / applied / usage</th><th>Action</th></tr></thead><tbody>${containers.map((instance, instanceIndex) => `<tr><td>${escapeHtml(instance.alias == null ? 'Canonical instance' : `Alias: ${instance.alias}`)}<code>${escapeHtml(instance.key)}</code></td><td><span class="hardware-instance-state">${escapeHtml(instance.availability || 'stopped')}</span> / ${escapeHtml(instance.limitsState || 'unavailable')}<p class="hardware-instance-problem">${escapeHtml(describeProblem(instance))}</p></td><td><p class="hardware-instance-detail">Desired ${escapeHtml(policyDescription(instance.effective, unified))}</p>Applied ${escapeHtml(describeApplied(instance.limits))}<p class="hardware-instance-detail">${escapeHtml(describeUsage(instance))}</p></td><td><button class="general-button" type="button" data-hardware-action="apply" data-agent-index="${index}" data-instance-index="${instanceIndex}"${disabled}>Apply instance</button></td></tr>`).join('')}</tbody></table>` : '<p class="hardware-instance-detail">Not enabled. Saved policy will apply when this agent starts.</p>'}
             </article>`;
     }).join('') : '<p>No installed agents are available.</p>'}
         <details class="hardware-limit-help"><summary>GPU assurance and administrator authority</summary>${GPU_HELP.map((sentence) => `<p>${escapeHtml(sentence)}</p>`).join('')}<p>Host operator commands: <code>sudo nvidia-smi -i 0 -c EXCLUSIVE_PROCESS</code>; undo with <code>sudo nvidia-smi -i 0 -c DEFAULT</code>.</p><p>${escapeHtml(AUTHORITY_HELP)}</p><p>An optional no-wait child refusal does not block its parent. A required refused dependency blocks its consumers; those consumers are never ready. If Explorer itself is blocked, host <code>ploinky limits status</code>, <code>ploinky limits clear</code> and Router administration provide recovery.</p></details>`;

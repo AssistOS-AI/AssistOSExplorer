@@ -8,6 +8,7 @@ export const GPU_HELP = [
     'On AMD integrated GPUs a RAM limit is not verified to cap GPU memory, so local-llm does not use such a GPU under a RAM limit.',
     'Only the host operator may choose EXCLUSIVE_PROCESS. It affects other CUDA users and workspaces. Ploinky never changes compute mode.',
     "On unified-memory NVIDIA GPUs (GB10 / DGX Spark) a RAM limit does not cap the GPU device memory (cudaMalloc) an agent allocates, such as llama.cpp's model buffers; only the agent's own admission check keeps that memory within the budget, and an overrun takes memory from the whole host, which has no separate GPU memory. Managed, pinned-host and ATS allocations are charged to the RAM limit (measured on driver 580.178.04).",
+    'On the qualified GB10 (driver 580.178.04) a GPU memory share is a best-effort, per-CUDA-process MPS limit on cudaMalloc and managed memory, measured at a 1 GiB limit; managed memory also counts against the RAM limit, and pinned-host and ATS memory count only against the RAM limit.',
 ];
 
 export const AUTHORITY_HELP = 'Store files are outside agent-visible workspace mounts, but eligible workspace-capable agents may read the workspace master key and forge administrator cookie/CSRF requests. This exposure is accepted for v1. Bearer rejection and direct store isolation do not remove it.';

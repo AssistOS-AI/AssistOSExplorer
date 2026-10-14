@@ -32,6 +32,7 @@ import {
   tokenOf,
   waitFor,
 } from '../lib/hardware-limits-evidence.mjs';
+import { readHostGpu } from '../lib/dgx-spark.mjs';
 
 const TARGET = 'tasksAgent';
 const GPU_TARGET_REF = 'local-llms/local-llm';
@@ -307,13 +308,32 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
     const gpuAgent = agentByRef(base, GPU_TARGET_REF);
     expect(gpuAgent, `${GPU_TARGET_REF} must be installed for the GPU share probe`).toBeTruthy();
     if (base.gpu?.memoryModel === 'unified') {
-      // A unified-memory GPU (NVIDIA GB10) cannot take an MPS share at all: the probe is that refusal.
-      expect(base.gpu.eligible, 'GPU sharing must not be offered on a unified GPU').toBe(false);
-      const unified = record('P-BND-2 unified GPU share', await api.post({ action: 'set_agent_limits', expectedToken: token, agentRef: GPU_TARGET_REF, limits: { gpu: { smPercent: 50, vramPercent: 50 } } }));
-      expect(`${unified.status} ${unified.body.error}`, String(unified.body.message || '').slice(0, 200)).toBe('409 gpu_sharing_unavailable');
-      expect(String(unified.body.message), 'the refusal must name the unified memory model').toMatch(/unified or unverified GPU memory model/);
-      expect(unified.body.ok).toBe(false);
-      expect(unified.body.committed).not.toBe(true);
+      // The expected tuple comes from the host driver, not from the payload under test, so a missing field or a wrong
+      // refusal fails instead of selecting the other branch.
+      const hostGpu = await readHostGpu({});
+      const qualified = hostGpu.pciDeviceId === '0x2E1210DE' && hostGpu.driverVersion === '580.178.04';
+      if (qualified) {
+        expect(base.gpu.pciDeviceId).toBe('0x2E1210DE');
+        expect(base.gpu.driverVersion).toBe('580.178.04');
+        // The qualified GB10 takes a unified-pool share: the boundary probe is the invalid percentage (1 is accepted in units only).
+        expect(base.gpu.eligible, `GPU sharing must be offered on the qualified GB10: ${String(base.gpu.reason || 'no reason').slice(0, 200)}`).toBe(true);
+        for (const vramPercent of [0, 101]) {
+          const invalid = record(`P-BND-2 qualified unified vramPercent ${vramPercent}`, await api.post({ action: 'set_agent_limits', expectedToken: token, agentRef: GPU_TARGET_REF, limits: { gpu: { smPercent: 50, vramPercent } } }));
+          expect(`${invalid.status} ${invalid.body.error}`, String(invalid.body.message || '').slice(0, 200)).toBe('409 gpu_sharing_unavailable');
+          expect(String(invalid.body.message), 'the refusal must name the valid percentage range').toMatch(/integers in 1\.\.100/);
+          expect(invalid.body.ok).toBe(false);
+          expect(invalid.body.committed).not.toBe(true);
+          await expectNoMutation(api, base, GPU_TARGET_REF);
+        }
+      } else {
+        // An unqualified unified-memory GPU cannot take an MPS share at all: the probe is that refusal.
+        expect(base.gpu.eligible, 'GPU sharing must not be offered on an unqualified unified GPU').toBe(false);
+        const unified = record('P-BND-2 unified GPU share', await api.post({ action: 'set_agent_limits', expectedToken: token, agentRef: GPU_TARGET_REF, limits: { gpu: { smPercent: 50, vramPercent: 50 } } }));
+        expect(`${unified.status} ${unified.body.error}`, String(unified.body.message || '').slice(0, 200)).toBe('409 gpu_sharing_unavailable');
+        expect(String(unified.body.message), 'the refusal must name the unified memory model or the unqualified driver').toMatch(/unified or unverified GPU memory model|not qualified on this GB10 driver/);
+        expect(unified.body.ok).toBe(false);
+        expect(unified.body.committed).not.toBe(true);
+      }
     } else {
       expect(base.gpu?.eligible, `MPS sharing must be eligible for the VRAM probe: ${String(base.gpu?.reason || 'no reason').slice(0, 200)}`).toBe(true);
       // The largest whole percentage of this device that stays below the 512 MiB minimum (8 % of a 6144 MiB device).
