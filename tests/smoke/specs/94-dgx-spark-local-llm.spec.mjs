@@ -7,14 +7,14 @@
 import path from 'node:path';
 
 import { test, expect } from '../lib/fixtures.mjs';
-import { smokeArtifactPath } from '../lib/config.mjs';
+import { smokeArtifactPath, smokeConfig } from '../lib/config.mjs';
 import {
   RUNNER_EXECUTABLE, SMALL_MODEL_COMMIT, SMALL_MODEL_ID, SMALL_MODEL_SHA256, SMALL_MODEL_SIZE, readRunnerProcesses,
 } from '../lib/hardware-limits-evidence.mjs';
 import {
   ACTIVE_PHASES, DGX_GPU, LOCAL_LLM_REF, UNIFIED_RUNNER,
   callTool, callToolOk, classifyComputeApps, createPloinky, dgxSparkEnabled, listNested, nestedNameOf, readComputeApps,
-  requestId, requireDgxSparkEnvironment, resolveBox, stopModelIfActive, waitForPhase, writeEvidence,
+  requestId, requireDgxSparkEnvironment, resolveBox, restoreSteps, stopModelIfActive, waitForPhase, withAdminPage, writeEvidence,
   ensureExplorer,
 } from '../lib/dgx-spark.mjs';
 
@@ -34,8 +34,18 @@ test.describe('DGX Spark local-llm inference on the GB10 @dgx-spark', () => {
   test.beforeAll(async () => {
     state.env = requireDgxSparkEnvironment();
     state.ploinky = createPloinky(state.env);
-    state.box = await resolveBox({ ploinky: state.ploinky });
+    state.box = await resolveBox({ ploinky: state.ploinky, workspaceRoot: state.env.workspaceRoot });
     state.localLlm = nestedNameOf(await listNested({ boxName: state.box.name }), LOCAL_LLM_REF);
+  });
+
+  // A failed test skips the rest of this serial block: stop the model and delete the weights it downloaded.
+  test.afterAll(async ({ browser }) => {
+    if (!state.modelStarted || state.cleaned) return;
+    const restored = await withAdminPage(browser, smokeConfig.baseURL, (page) => restoreSteps([
+      ['stop the model', () => stopModelIfActive(page).then((status) => status.phase)],
+      ['delete the weights', () => callTool(page, { tool: 'local_llm_weights_delete', args: { modelId: SMALL_MODEL_ID, runnerId: UNIFIED_RUNNER } }).then((reply) => reply.ok || reply.text)],
+    ]));
+    writeEvidence(evidenceDir, '94-restore.json', restored);
   });
 
   test('the small model runs on CUDA llama.cpp with every layer on the GB10', async ({ page }) => {
@@ -46,6 +56,7 @@ test.describe('DGX Spark local-llm inference on the GB10 @dgx-spark', () => {
     const foreign = classifyComputeApps(await readComputeApps({}), state.box.id).foreign;
     expect(foreign, `foreign GPU compute processes: ${JSON.stringify(foreign)}`).toEqual([]);
 
+    state.modelStarted = true;
     const started = await callToolOk(page, 'local_llm_run', { requestId: requestId('run'), modelId: SMALL_MODEL_ID, runnerId: UNIFIED_RUNNER });
     expect(started.accepted).toBe(true);
     expect(started.deployment).toMatchObject({ modelId: SMALL_MODEL_ID, runnerId: UNIFIED_RUNNER, profile: 'unified' });
@@ -106,6 +117,7 @@ test.describe('DGX Spark local-llm inference on the GB10 @dgx-spark', () => {
     const overview = await callToolOk(page, 'local_llm_overview', {});
     const model = overview.models.find((entry) => entry.id === SMALL_MODEL_ID);
     expect(model.weights.gguf.download.state, 'the weights must be gone').toBe('absent');
+    state.cleaned = true;
     writeEvidence(evidenceDir, '94-stopped.json', { phase: stopped.phase, stopObservation: stopped.stopObservation, gpuProcesses: apps, weights: model.weights.gguf.download });
   });
 });

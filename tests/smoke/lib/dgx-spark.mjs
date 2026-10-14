@@ -4,11 +4,13 @@
 // created it (SMOKE_PLOINKY_BIN). The Box is resolved from that workspace through `ploinky gpu status` and proved with the
 // outer engine, never taken from a free-form name. Every prerequisite that is missing fails; nothing is skipped. This is
 // a hardware E2E profile, not a release-acceptance gate: it records its own provenance instead of a release bundle.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 
+import { inspectBoxWorkspace } from './box-workspace.mjs';
 import { openExplorer } from './explorer.mjs';
 import { MIB, checked, checkedJson, coreArgs, nestedArgs, validateBoxName } from './hardware-limits-evidence.mjs';
 
@@ -28,12 +30,12 @@ const NESTED_PREFIX = 'ploinky_';
 // ---------------------------------------------------------------------------
 // Commands
 
-// Like hardware-limits-evidence defaultRun, plus an explicit environment overlay (for PLOINKY_BOX_HARDWARE_LIMITS).
+// Like hardware-limits-evidence defaultRun, plus an explicit complete environment (`env` replaces process.env).
 export function runCommand(command, args, { timeoutMs = 20_000, cwd, env } = {}) {
   return new Promise((resolve) => {
     const child = execFile(command, args, {
       cwd,
-      env: env ? { ...process.env, ...env } : process.env,
+      env: env || process.env,
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
       timeout: timeoutMs,
@@ -64,6 +66,8 @@ export function requireDgxSparkEnvironment(env = process.env) {
   const workspaceRoot = String(env.SMOKE_WORKSPACE_ROOT || '').trim();
   if (!path.isAbsolute(workspaceRoot)) problems.push('SMOKE_WORKSPACE_ROOT must be the absolute workspace directory of the deployment');
   else if (!fs.existsSync(path.join(workspaceRoot, '.ploinky'))) problems.push(`SMOKE_WORKSPACE_ROOT (${workspaceRoot}) holds no .ploinky workspace`);
+  // Ploinky derives the Box identity from path.resolve of the root, so a symlinked spelling would name another Box.
+  else if (fs.realpathSync(workspaceRoot) !== path.resolve(workspaceRoot)) problems.push(`SMOKE_WORKSPACE_ROOT (${workspaceRoot}) must be its own real path, not a symlink`);
   const ploinkyBin = String(env.SMOKE_PLOINKY_BIN || '').trim();
   if (!path.isAbsolute(ploinkyBin)) problems.push('SMOKE_PLOINKY_BIN must be the absolute bin/ploinky of the checkout that created the deployment');
   else {
@@ -72,12 +76,22 @@ export function requireDgxSparkEnvironment(env = process.env) {
   if (String(env.SMOKE_PLOINKY_BOX_CONTAINER || '').trim()) problems.push('unset SMOKE_PLOINKY_BOX_CONTAINER: the DGX Spark suite derives the Box from SMOKE_WORKSPACE_ROOT');
   if (process.platform !== 'linux' || os.arch() !== 'arm64') problems.push(`the DGX Spark suite runs on the Spark itself (linux/arm64), not ${process.platform}/${os.arch()}`);
   if (problems.length) throw new Error(`The DGX Spark suite cannot run: ${problems.join('; ')}.`);
-  return Object.freeze({ workspaceRoot: fs.realpathSync(workspaceRoot), ploinkyBin });
+  return Object.freeze({ workspaceRoot: path.resolve(workspaceRoot), ploinkyBin });
+}
+
+// The environment of every ploinky call: the workspace pinned through PLOINKY_WORKSPACE_ROOT (which Ploinky prefers over
+// the cwd, and which an operator shell may inherit for another workspace), and no inherited hardware-limits gate request.
+// Only `overrides` (spec 95's explicit PLOINKY_BOX_HARDWARE_LIMITS=on) may add one.
+export function ploinkyEnvironment(workspaceRoot, overrides = {}, base = process.env) {
+  const env = { ...base };
+  delete env.PLOINKY_BOX_HARDWARE_LIMITS;
+  env.PLOINKY_WORKSPACE_ROOT = workspaceRoot;
+  return { ...env, ...overrides };
 }
 
 export function createPloinky({ workspaceRoot, ploinkyBin, run = runCommand }) {
   return async function ploinky(args, { timeoutMs = 120_000, env } = {}) {
-    const result = await run(ploinkyBin, args, { cwd: workspaceRoot, timeoutMs, env });
+    const result = await run(ploinkyBin, args, { cwd: workspaceRoot, timeoutMs, env: ploinkyEnvironment(workspaceRoot, env) });
     return { ...result, args };
   };
 }
@@ -124,9 +138,14 @@ export function parseLimitsStatus(text) {
 
 const BOX_INSTANCE = /^ploinky-box-[a-z0-9-]+-[a-f0-9]{12}$/;
 
-// The exact owned Box of the workspace: the instance `ploinky gpu status` names, running, with the role label and the
-// path hash of that instance.
-export async function resolveBox({ ploinky, run = runCommand }) {
+// The 12-hex path hash Ploinky puts in the Box instance name and label (ploinky-box/identity.mjs workspacePathHash).
+export const workspacePathHash = (workspaceRoot) => crypto.createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 12);
+
+// The exact owned Box of the workspace: the instance `ploinky gpu status` names must carry the path hash of
+// SMOKE_WORKSPACE_ROOT in its name and label, run, and bind exactly that workspace (inspectBoxWorkspace).
+export async function resolveBox({ ploinky, workspaceRoot, run = runCommand }) {
+  if (!path.isAbsolute(String(workspaceRoot || ''))) throw new Error('resolveBox needs the absolute workspace root.');
+  const pathHash = workspacePathHash(workspaceRoot);
   const status = await ploinky(['gpu', 'status'], { timeoutMs: 60_000 });
   const gpu = parseGpuStatus(checked(status, 'ploinky gpu status'));
   if (!BOX_INSTANCE.test(gpu.instance)) throw new Error(`ploinky gpu status named no exact workspace identity (${gpu.instance || 'none'}).`);
@@ -135,9 +154,11 @@ export async function resolveBox({ ploinky, run = runCommand }) {
   const record = inspected[0];
   const labels = record?.Config?.Labels || {};
   if (record?.State?.Running !== true) throw new Error(`The Box ${gpu.instance} is not running.`);
-  if (labels['io.assistos.ploinky-box.role'] !== 'box' || !gpu.instance.endsWith(`-${labels['io.assistos.ploinky-box.path-hash']}`)) {
-    throw new Error(`The container ${gpu.instance} does not carry the Box role and path-hash labels of this workspace.`);
+  if (!gpu.instance.endsWith(`-${pathHash}`) || labels['io.assistos.ploinky-box.role'] !== 'box' || labels['io.assistos.ploinky-box.path-hash'] !== pathHash) {
+    throw new Error(`The container ${gpu.instance} is not the Box of ${workspaceRoot} (path hash ${pathHash}).`);
   }
+  const mount = inspectBoxWorkspace(record);
+  if (mount.source !== workspaceRoot) throw new Error(`The Box ${gpu.instance} binds ${mount.source}, not ${workspaceRoot}.`);
   return Object.freeze({ name: gpu.instance, id: record.Id, imageId: record.Image, startedAt: record.State.StartedAt, labels, record, gpu });
 }
 
@@ -379,6 +400,27 @@ export async function openLocalLlmDashboard(page, { timeout = 45_000 } = {}) {
   const dashboard = page.locator('div.local-llm-dashboard');
   await dashboard.waitFor({ state: 'visible', timeout });
   return { dashboard, via };
+}
+
+// A fresh administrator page for afterAll restores, where the per-test page fixture is unavailable.
+export async function withAdminPage(browser, baseURL, fn) {
+  const context = await browser.newContext({ baseURL, ignoreHTTPSErrors: true });
+  try {
+    const page = await context.newPage();
+    await openExplorer(page);
+    return await fn(page);
+  } finally {
+    await context.close();
+  }
+}
+
+// Runs every restore step, keeps going after a failure, and reports what failed.
+export async function restoreSteps(steps) {
+  const results = [];
+  for (const [label, step] of steps) {
+    try { results.push({ label, ok: true, detail: (await step()) ?? null }); } catch (error) { results.push({ label, ok: false, detail: String(error?.message || error).slice(0, 400) }); }
+  }
+  return results;
 }
 
 export const requestId = (label) => `dgx-${label}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;

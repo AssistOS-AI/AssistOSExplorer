@@ -6,8 +6,9 @@
 //   2 a GPU share is refused for the unified GB10 by the API (policy unchanged) and the panel disables the GPU fields;
 //   3 a 4 CPU budget with the smallest RAM percentage the unified admission accepts is saved and applied through the
 //     panel, and the agent's cgroup leaf and local-llm's own budget agree with it;
-//   4 the small model runs on the GB10 inside that budget: no OOM, no swap, the peak stays under memory.max; the unified
-//     accounting (cgroup memory against the runner's GPU memory) is recorded;
+//   4 admission sizes the small model against that budget (pool = memory.max) and it runs on the GB10 with no OOM kill
+//     since before the Run; whether the runner's GPU memory is charged to the agent's cgroup is recorded, not asserted
+//     (on the GB10 it is not, so the RAM budget does not bound CUDA allocations);
 //   5 a RAM budget below the unified need is refused before launch with admission_incompatible;
 //   6 clearing the limits restores the unlimited agent, and the weights are deleted.
 import fs from 'node:fs';
@@ -16,14 +17,14 @@ import path from 'node:path';
 import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig, smokeArtifactPath } from '../lib/config.mjs';
 import {
-  SMALL_MODEL_ID, agentByRef, cpuMaxMatches, createHardwareApi, instanceByKey, readLeaf, readRunnerProcesses, readRunningSet,
+  SMALL_MODEL_ID, agentByRef, checked, cpuMaxMatches, createHardwareApi, instanceByKey, readLeaf, readRunnerProcesses, readRunningSet,
   resolveMemoryPercent, sameToken, tokenOf, waitFor,
 } from '../lib/hardware-limits-evidence.mjs';
 import {
   ACTIVE_PHASES, DGX_GPU, LOCAL_LLM_REF, UNIFIED_RUNNER,
   callTool, callToolOk, classifyComputeApps, createPloinky, dgxSparkEnabled, errorCodeOf, hostCgroupOf, listNested,
   nestedNameOf, openLocalLlmDashboard, parseGpuStatus, parseLimitsStatus, readComputeApps, readMemTotalBytes, requestId, requireDgxSparkEnvironment,
-  resolveBox, stopModelIfActive, unifiedFitPercent, unifiedRefusePercent, waitForGraph, waitForPhase, writeEvidence,
+  resolveBox, restoreSteps, stopModelIfActive, unifiedFitPercent, unifiedRefusePercent, waitForGraph, waitForPhase, withAdminPage, writeEvidence,
   ensureExplorer,
 } from '../lib/dgx-spark.mjs';
 
@@ -43,7 +44,30 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
   test.beforeAll(async () => {
     state.env = requireDgxSparkEnvironment();
     state.ploinky = createPloinky(state.env);
-    state.box = await resolveBox({ ploinky: state.ploinky });
+    state.box = await resolveBox({ ploinky: state.ploinky, workspaceRoot: state.env.workspaceRoot });
+  });
+
+  // A failed test skips the rest of this serial block: never leave local-llm under a test budget, a model running, or
+  // its weights. The gate stays on; it is the deployment's own setting once this spec turned it on.
+  test.afterAll(async ({ browser }) => {
+    if (!(state.limitsSaved && !state.limitsCleared) && !(state.modelStarted && !state.weightsDeleted)) return;
+    const restored = await withAdminPage(browser, smokeConfig.baseURL, (page) => {
+      const steps = [['stop the model', () => stopModelIfActive(page).then((status) => status.phase)]];
+      if (state.limitsSaved && !state.limitsCleared) {
+        steps.push(['clear and apply local-llm limits', async () => {
+          const api = createHardwareApi({ request: page.request });
+          const before = await api.readOk();
+          const cleared = await api.post({ action: 'clear_agent_limits', expectedToken: tokenOf(before), agentRef: LOCAL_LLM_REF });
+          if (cleared.status !== 200) throw new Error(`clear answered ${cleared.status}`);
+          const applied = await api.post({ action: 'apply', expectedToken: tokenOf(await api.readOk()), containers: [state.key] });
+          if (applied.status !== 200) throw new Error(`apply answered ${applied.status}`);
+          return 'cleared';
+        }]);
+      }
+      steps.push(['delete the weights', () => callTool(page, { tool: 'local_llm_weights_delete', args: { modelId: SMALL_MODEL_ID, runnerId: UNIFIED_RUNNER } }).then((reply) => reply.ok || reply.text)]);
+      return restoreSteps(steps);
+    });
+    writeEvidence(evidenceDir, '95-restore.json', restored);
   });
 
   // ---- helpers ------------------------------------------------------------
@@ -115,17 +139,19 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
   // ---- 1 ------------------------------------------------------------------
 
   test('the hardware-limits gate is on and prepared, and the Box keeps its GB10 wiring', async ({ page }) => {
-    test.setTimeout(GATE_RESTART_MS + 25 * 60_000);
+    test.setTimeout(GATE_RESTART_MS + 35 * 60_000);
     const graphBefore = (await listNested({ boxName: state.box.name })).filter((entry) => entry.state === 'running').length;
-    let limits = parseLimitsStatus((await state.ploinky(['limits', 'status'], { timeoutMs: 60_000 })).stdout);
+    let limits = parseLimitsStatus(checked(await state.ploinky(['limits', 'status'], { timeoutMs: 60_000 }), 'ploinky limits status'));
     state.gateTransition = null;
-    if (limits.gate !== 'on') {
+    // Only a read that says exactly "off" restarts the workspace; an unreadable or unknown gate fails instead.
+    if (!['on', 'off'].includes(limits.gate)) throw new Error(`The hardware-limits gate is neither on nor off: ${limits.gateText || 'unreadable'}.`);
+    if (limits.gate === 'off') {
       const started = Date.now();
       const restart = await state.ploinky(['restart'], { timeoutMs: GATE_RESTART_MS, env: { PLOINKY_BOX_HARDWARE_LIMITS: 'on' } });
       state.gateTransition = { from: limits.gate, exit: restart.status, ms: Date.now() - started, tail: restart.stdout.split('\n').slice(-8).join('\n') };
       expect(restart.status, `PLOINKY_BOX_HARDWARE_LIMITS=on ploinky restart failed: ${restart.stderr.slice(-800)}`).toBe(0);
-      state.box = await resolveBox({ ploinky: state.ploinky });
-      limits = parseLimitsStatus((await state.ploinky(['limits', 'status'], { timeoutMs: 60_000 })).stdout);
+      state.box = await resolveBox({ ploinky: state.ploinky, workspaceRoot: state.env.workspaceRoot });
+      limits = parseLimitsStatus(checked(await state.ploinky(['limits', 'status'], { timeoutMs: 60_000 }), 'ploinky limits status'));
     }
     expect(limits.gate, `ploinky limits status: ${limits.gateText}`).toBe('on');
     expect(limits.hostDelegation).toMatch(/controllers cpu memory pids/);
@@ -198,6 +224,7 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     Object.assign(state, { needBytes, fitPercent, refusePercent, key: instance.key });
 
     const runningBefore = await readRunningSet({ boxName: state.box.name });
+    state.limitsSaved = true;
     await saveAndApply(page, { cpus: CPUS, memoryPercent: fitPercent }, instance.key);
     const applied = await appliedSnapshot(api, instance.key);
     const memoryBytes = resolveMemoryPercent(fitPercent, applied.envelope.memoryBytes);
@@ -227,10 +254,12 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
 
   // ---- 4 ------------------------------------------------------------------
 
-  test('the small model runs on the GB10 inside the budget', async ({ page }) => {
+  test('admission sizes the model against the budget and it runs on the GB10 without an OOM kill', async ({ page }) => {
     test.setTimeout(MODEL_READY_MS + 15 * 60_000);
     expect(state.containerId, 'test 3 must have applied the budget').toBeTruthy();
     await ensureExplorer(page);
+    const baseline = await readLeaf({ boxName: state.box.name, containerId: state.containerId });
+    state.modelStarted = true;
     const started = await callToolOk(page, 'local_llm_run', { requestId: requestId('budget-run'), modelId: SMALL_MODEL_ID, runnerId: UNIFIED_RUNNER });
     expect(started.deployment.admission.status).toBe('ok');
     expect(started.deployment.admission.estimate.poolBytes, 'admission sizes the model against the budget, not the host').toBe(state.memoryBytes);
@@ -247,7 +276,7 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
       samples.push({ label, at: Date.now(), memoryCurrent: leaf.memoryCurrent, memoryPeak: leaf.memoryPeak, memoryMax: leaf.memoryMax, swapCurrent: leaf.swapCurrent, oomKill: leaf.oomKill, nrThrottled: leaf.nrThrottled, usageUsec: leaf.usageUsec, runnerGpuMiB: runner?.usedMiB ?? null, runnerHost: runner ? hostStatus(runner.pid) : null, runnerCgroup: runner ? hostCgroupOf(runner.pid) : null, foreign: apps.foreign.length });
       return leaf;
     };
-    const first = await sample('ready');
+    await sample('ready');
     const prompts = [];
     for (let index = 0; index < 3; index += 1) {
       const reply = await callToolOk(page, 'local_llm_test_prompt', { prompt: 'Write a numbered list of twenty short facts about memory.', maxTokens: 512 });
@@ -257,7 +286,8 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     }
     const last = samples.at(-1);
     expect(samples.every((entry) => entry.foreign === 0), 'no foreign GPU compute during the window').toBe(true);
-    expect(last.oomKill ?? 0, 'no OOM kill under the budget').toBe(first.oomKill ?? 0);
+    expect(baseline.oomKill, 'the leaf reports memory.events').not.toBeNull();
+    expect(last.oomKill, 'no OOM kill since before the Run (loading included)').toBe(baseline.oomKill);
     expect(last.swapCurrent ?? 0, 'no swap under the budget').toBe(0);
     expect(last.memoryPeak, 'the leaf peak stays under memory.max').toBeLessThanOrEqual(state.memoryBytes);
     expect(last.runnerCgroup, 'the runner runs inside the agent leaf').toContain(`libpod-${state.containerId}`);
@@ -312,6 +342,7 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     expect(applied.status, JSON.stringify(applied.body).slice(0, 300)).toBe(200);
     const done = await appliedSnapshot(api, state.key);
     expect(agentByRef(done, LOCAL_LLM_REF).configured).toEqual({});
+    state.limitsCleared = true;
     const { leaf } = await leafOfLocalLlm(state.key);
     expect(leaf.memoryMax).toBe('max');
     expect(leaf.cpuMax).toMatch(/^max /);
@@ -322,6 +353,7 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     expect(deleted.ok, deleted.text).toBe(true);
     const after = await callToolOk(page, 'local_llm_overview', {});
     expect(after.models.find((model) => model.id === SMALL_MODEL_ID).weights.gguf.download.state).toBe('absent');
+    state.weightsDeleted = true;
     writeEvidence(evidenceDir, '95-cleared.json', { leaf: { cpuMax: leaf.cpuMax, memoryMax: leaf.memoryMax }, budget: overview.limits.budget ?? null });
   });
 });

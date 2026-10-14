@@ -30,7 +30,7 @@ test.describe('DGX Spark platform and GPU wiring @dgx-spark', () => {
   test.beforeAll(async () => {
     state.env = requireDgxSparkEnvironment();
     state.ploinky = createPloinky(state.env);
-    state.box = await resolveBox({ ploinky: state.ploinky });
+    state.box = await resolveBox({ ploinky: state.ploinky, workspaceRoot: state.env.workspaceRoot });
     state.nested = await listNested({ boxName: state.box.name });
     state.localLlm = nestedNameOf(state.nested, LOCAL_LLM_REF);
   });

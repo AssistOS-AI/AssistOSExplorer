@@ -124,3 +124,31 @@ test('the DGX wrapper passes only when every discovered test passed', async () =
   assert.deepEqual(judgeResults({ stats: { expected: 0, skipped: 0, unexpected: 0, flaky: 0 } }).problems, ['no test passed']);
   assert.equal(judgeResults(null).ok, false);
 });
+
+test('every ploinky call pins the workspace and drops an inherited gate request', async () => {
+  const { ploinkyEnvironment, workspacePathHash } = await import('./dgx-spark.mjs');
+  const base = { PATH: '/usr/bin', PLOINKY_WORKSPACE_ROOT: '/home/u/other', PLOINKY_BOX_HARDWARE_LIMITS: 'off' };
+  const plain = ploinkyEnvironment('/home/u/work/testExplorerFresh', {}, base);
+  assert.equal(plain.PLOINKY_WORKSPACE_ROOT, '/home/u/work/testExplorerFresh');
+  assert.equal('PLOINKY_BOX_HARDWARE_LIMITS' in plain, false);
+  assert.equal(plain.PATH, '/usr/bin');
+  assert.equal(ploinkyEnvironment('/w', { PLOINKY_BOX_HARDWARE_LIMITS: 'on' }, base).PLOINKY_BOX_HARDWARE_LIMITS, 'on');
+  assert.equal(base.PLOINKY_BOX_HARDWARE_LIMITS, 'off', 'the inherited environment is not mutated');
+  // The Box instance suffix observed for /home/daniel/work/testExplorerFresh on the Spark.
+  assert.equal(workspacePathHash('/home/daniel/work/testExplorerFresh'), '8b021738a3d6');
+});
+
+test('requireDgxSparkEnvironment refuses a symlinked workspace spelling', async (t) => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dgx-env-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'real', '.ploinky'), { recursive: true });
+  fs.symlinkSync(path.join(dir, 'real'), path.join(dir, 'alias'));
+  const env = { SMOKE_PLOINKY_BIN: '/bin/true' };
+  if (process.platform === 'linux' && process.arch === 'arm64') {
+    assert.equal(requireDgxSparkEnvironment({ ...env, SMOKE_WORKSPACE_ROOT: path.join(fs.realpathSync(dir), 'real') }).workspaceRoot, path.join(fs.realpathSync(dir), 'real'));
+  }
+  assert.throws(() => requireDgxSparkEnvironment({ ...env, SMOKE_WORKSPACE_ROOT: path.join(fs.realpathSync(dir), 'alias') }), /must be its own real path/);
+});

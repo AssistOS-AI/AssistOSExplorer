@@ -80,7 +80,7 @@ async function main(argv) {
   for (const name of ['SMOKE_DEPLOYMENT_MODE', 'SMOKE_PREFLIGHT_ACCOUNT_REQUIREMENTS', 'PLAYWRIGHT_HTML_REPORT', 'PW_TEST_REPORTER']) delete childEnv[name];
 
   if (!list) {
-    const box = await resolveBox({ ploinky: createPloinky(env), run: runCommand });
+    const box = await resolveBox({ ploinky: createPloinky(env), workspaceRoot: env.workspaceRoot, run: runCommand });
     const ploinkyRoot = path.resolve(path.dirname(env.ploinkyBin), '..');
     fs.writeFileSync(path.join(artifactDir, 'provenance.json'), `${JSON.stringify({
       runId, startedAt: new Date().toISOString(), specs, workspaceRoot: env.workspaceRoot,
@@ -88,7 +88,7 @@ async function main(argv) {
       box: { name: box.name, id: box.id, imageId: box.imageId, imageRef: box.labels['io.assistos.ploinky-box.image-ref'] || null, startedAt: box.startedAt, gpuWiring: box.gpu.wiringFingerprint },
     }, null, 2)}\n`, { flag: 'wx' });
   }
-  const args = [cliPath, 'test', '--project=chromium', '--workers=1', '--retries=0', ...(list ? ['--list'] : []), ...specs];
+  const args = [cliPath, 'test', '--project=chromium', '--workers=1', '--retries=0', '--forbid-only', ...(list ? ['--list'] : []), ...specs];
   const result = spawnSync(process.execPath, args, { cwd: smokeRoot, env: childEnv, stdio: 'inherit' });
   if (result.error) throw result.error;
   if (list) return result.status ?? 1;
