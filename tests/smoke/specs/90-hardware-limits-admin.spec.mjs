@@ -21,6 +21,7 @@ import {
   diffRunningSets,
   findSingleInstanceAgent,
   HARDWARE_ENDPOINT,
+  MIB,
   instanceByKey,
   onlyExpectedChanged,
   readLeaf,
@@ -189,13 +190,14 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
 
   test('saving desired limits shows pending, and Apply recreates only the exact instance and reads back the kernel limits', async ({ page }) => {
     test.setTimeout(2 * APPLY_BOUND_MS);
+    // Opening the tab signs in; the API reads below use that session.
+    const { section } = await openHardwareTab(page);
     const api = createHardwareApi({ request: page.request });
     const before = await api.readOk();
     const { agent, instance } = findSingleInstanceAgent(before, TARGET);
     const runningBefore = await readRunningSet({ boxName });
     expect(runningBefore.some((entry) => entry.name === instance.key), 'the target is in the nested running set').toBe(true);
 
-    const { section } = await openHardwareTab(page);
     const article = policyArticle(page, section, agent.ref);
     await expect(article).toBeVisible();
     await article.locator('[data-hardware-field="cpus"]').fill(String(LIMITS.cpus));
@@ -241,12 +243,13 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
   });
 
   test('usage and the Workspace Monitor show the applied limits read-only', async ({ page }) => {
+    // Opening the tab signs in; the API reads below use that session.
+    const { section } = await openHardwareTab(page);
     const api = createHardwareApi({ request: page.request });
     const snapshot = await applied(api, (findSingleInstanceAgent(await api.readOk(), TARGET)).instance.key);
     const { agent, instance } = findSingleInstanceAgent(snapshot, TARGET);
     expect(agentByRef(snapshot, agent.ref).configured, 'test 3 must have stored the override').toMatchObject(LIMITS);
 
-    const { section } = await openHardwareTab(page);
     const row = instanceRow(page, policyArticle(page, section, agent.ref), instance.key);
     await expect(row).toContainText(/Applied CPU 0\.5 cores \(kernel\); RAM [0-9.]+ (?:MiB|GiB|TiB) \(kernel\)/);
     await expect(row).toContainText(/Desired 0\.5 CPU cores/);
@@ -274,6 +277,7 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
   });
 
   test('API probes: boundary values, orphans, malformed input and refused callers leave the policy unchanged', async ({ page }) => {
+    await openExplorer(page);
     const api = createHardwareApi({ request: page.request });
     const base = await api.readOk();
     const token = tokenOf(base);
@@ -300,18 +304,33 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
     }
     // The VRAM probe needs a GPU-eligible target: tasksAgent has no GPU grant, so its answer would be the
     // generic gpu_sharing_unavailable and would never reach the 512 MiB minimum. local-llm is the GPU agent of the graph.
-    expect(base.gpu?.eligible, `MPS sharing must be eligible for the VRAM probe: ${String(base.gpu?.reason || 'no reason').slice(0, 200)}`).toBe(true);
     const gpuAgent = agentByRef(base, GPU_TARGET_REF);
-    expect(gpuAgent, `${GPU_TARGET_REF} must be installed for the VRAM probe`).toBeTruthy();
-    const vram = record('P-BND-2 vramPercent 8', await api.post({ action: 'set_agent_limits', expectedToken: token, agentRef: GPU_TARGET_REF, limits: { gpu: { smPercent: 50, vramPercent: 8 } } }));
-    // 8 % of the 6144 MiB device is 491 MiB. The route's GPU qualification (409 gpu_sharing_unavailable) and the store
-    // (422 exceeds_envelope) both word the refusal "below the 512 MiB minimum"; any other message (no current GPU
-    // access, image not prepared, store busy) means the minimum was not reached and the probe fails.
-    expect(['409 gpu_sharing_unavailable', '422 exceeds_envelope'], `vramPercent 8 answered ${vram.status} ${vram.body.error}: ${String(vram.body.message || '').slice(0, 200)}`)
-      .toContain(`${vram.status} ${vram.body.error}`);
-    expect(String(vram.body.message), 'the refusal must name the 512 MiB minimum').toMatch(/below the 512 MiB minimum/);
-    expect(vram.body.ok).toBe(false);
-    expect(vram.body.committed).not.toBe(true);
+    expect(gpuAgent, `${GPU_TARGET_REF} must be installed for the GPU share probe`).toBeTruthy();
+    if (base.gpu?.memoryModel === 'unified') {
+      // A unified-memory GPU (NVIDIA GB10) cannot take an MPS share at all: the probe is that refusal.
+      expect(base.gpu.eligible, 'GPU sharing must not be offered on a unified GPU').toBe(false);
+      const unified = record('P-BND-2 unified GPU share', await api.post({ action: 'set_agent_limits', expectedToken: token, agentRef: GPU_TARGET_REF, limits: { gpu: { smPercent: 50, vramPercent: 50 } } }));
+      expect(`${unified.status} ${unified.body.error}`, String(unified.body.message || '').slice(0, 200)).toBe('409 gpu_sharing_unavailable');
+      expect(String(unified.body.message), 'the refusal must name the unified memory model').toMatch(/unified or unverified GPU memory model/);
+      expect(unified.body.ok).toBe(false);
+      expect(unified.body.committed).not.toBe(true);
+    } else {
+      expect(base.gpu?.eligible, `MPS sharing must be eligible for the VRAM probe: ${String(base.gpu?.reason || 'no reason').slice(0, 200)}`).toBe(true);
+      // The largest whole percentage of this device that stays below the 512 MiB minimum (8 % of a 6144 MiB device).
+      const deviceMiB = Math.floor(Number(base.gpu.deviceMemoryBytes) / MIB);
+      const vramPercent = Math.ceil((512 * 100) / deviceMiB) - 1;
+      expect(vramPercent, `no whole percentage of the ${deviceMiB} MiB device is below the 512 MiB minimum`).toBeGreaterThanOrEqual(1);
+      expect(Math.floor((vramPercent * deviceMiB) / 100)).toBeLessThan(512);
+      const vram = record(`P-BND-2 vramPercent ${vramPercent}`, await api.post({ action: 'set_agent_limits', expectedToken: token, agentRef: GPU_TARGET_REF, limits: { gpu: { smPercent: 50, vramPercent } } }));
+      // The route's GPU qualification (409 gpu_sharing_unavailable) and the store (422 exceeds_envelope) both word the
+      // refusal "below the 512 MiB minimum"; any other message (no current GPU access, image not prepared, store busy)
+      // means the minimum was not reached and the probe fails.
+      expect(['409 gpu_sharing_unavailable', '422 exceeds_envelope'], `vramPercent ${vramPercent} answered ${vram.status} ${vram.body.error}: ${String(vram.body.message || '').slice(0, 200)}`)
+        .toContain(`${vram.status} ${vram.body.error}`);
+      expect(String(vram.body.message), 'the refusal must name the 512 MiB minimum').toMatch(/below the 512 MiB minimum/);
+      expect(vram.body.ok).toBe(false);
+      expect(vram.body.committed).not.toBe(true);
+    }
     await expectNoMutation(api, base, GPU_TARGET_REF);
     await expectNoMutation(api, base, ref);
 
@@ -354,6 +373,7 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
 
   test('API probes: parallel setters, parallel Apply and a repeated Apply are serialized and idempotent', async ({ page }) => {
     test.setTimeout(2 * APPLY_BOUND_MS);
+    await openExplorer(page);
     const api = createHardwareApi({ request: page.request });
     const start = await api.readOk();
     const { agent, instance } = findSingleInstanceAgent(start, TARGET);
