@@ -189,13 +189,14 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
 
   test('saving desired limits shows pending, and Apply recreates only the exact instance and reads back the kernel limits', async ({ page }) => {
     test.setTimeout(2 * APPLY_BOUND_MS);
+    // Opening the tab signs in; the API reads below use that session.
+    const { section } = await openHardwareTab(page);
     const api = createHardwareApi({ request: page.request });
     const before = await api.readOk();
     const { agent, instance } = findSingleInstanceAgent(before, TARGET);
     const runningBefore = await readRunningSet({ boxName });
     expect(runningBefore.some((entry) => entry.name === instance.key), 'the target is in the nested running set').toBe(true);
 
-    const { section } = await openHardwareTab(page);
     const article = policyArticle(page, section, agent.ref);
     await expect(article).toBeVisible();
     await article.locator('[data-hardware-field="cpus"]').fill(String(LIMITS.cpus));
@@ -241,12 +242,13 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
   });
 
   test('usage and the Workspace Monitor show the applied limits read-only', async ({ page }) => {
+    // Opening the tab signs in; the API reads below use that session.
+    const { section } = await openHardwareTab(page);
     const api = createHardwareApi({ request: page.request });
     const snapshot = await applied(api, (findSingleInstanceAgent(await api.readOk(), TARGET)).instance.key);
     const { agent, instance } = findSingleInstanceAgent(snapshot, TARGET);
     expect(agentByRef(snapshot, agent.ref).configured, 'test 3 must have stored the override').toMatchObject(LIMITS);
 
-    const { section } = await openHardwareTab(page);
     const row = instanceRow(page, policyArticle(page, section, agent.ref), instance.key);
     await expect(row).toContainText(/Applied CPU 0\.5 cores \(kernel\); RAM [0-9.]+ (?:MiB|GiB|TiB) \(kernel\)/);
     await expect(row).toContainText(/Desired 0\.5 CPU cores/);
@@ -274,6 +276,7 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
   });
 
   test('API probes: boundary values, orphans, malformed input and refused callers leave the policy unchanged', async ({ page }) => {
+    await openExplorer(page);
     const api = createHardwareApi({ request: page.request });
     const base = await api.readOk();
     const token = tokenOf(base);
@@ -354,6 +357,7 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
 
   test('API probes: parallel setters, parallel Apply and a repeated Apply are serialized and idempotent', async ({ page }) => {
     test.setTimeout(2 * APPLY_BOUND_MS);
+    await openExplorer(page);
     const api = createHardwareApi({ request: page.request });
     const start = await api.readOk();
     const { agent, instance } = findSingleInstanceAgent(start, TARGET);
