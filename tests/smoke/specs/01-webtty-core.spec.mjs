@@ -878,8 +878,10 @@ test.describe('Ploinky core WebTTY release gate', () => {
       });
       const legacyNavigation = await legacyPage.goto(legacyUrl.toString(), { waitUntil: 'load' });
       expect(legacyNavigation?.status()).toBe(200);
-      await expect(legacyPage.locator('#status')).toHaveText('Invalid launch');
-      await expect(legacyPage.locator('#message')).toContainText('missing, invalid, expired, or already used');
+      // A page without a launch or attach handoff (a legacy ?dir= URL, or a reload after the fragment was
+      // consumed) only points back to Live Sessions.
+      await expect(legacyPage.locator('#status')).toHaveText('Reopen terminal');
+      await expect(legacyPage.locator('#message')).toContainText('Reopen this terminal from Live Sessions');
       expect(legacyCreationRequests, 'a legacy ?dir= URL must never create a terminal session').toBe(0);
       await legacyPage.close();
 
