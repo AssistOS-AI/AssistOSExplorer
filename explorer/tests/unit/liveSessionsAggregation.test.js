@@ -56,6 +56,7 @@ test('componentless sources survive the real server and browser pipeline; unsafe
             assert.equal(isOwnedLiveSessionUrl(base, 'roboTeamAgent'), false, base);
             assert.equal(normalizeRuntimePlugins({ application: { 'live-sessions:source': [{ ...entries[0], liveSessions: { version: 1, base } }] } }).application['live-sessions:source'].length, 0, base);
         }
+        assert.equal(normalizeRuntimePlugins({ application: { 'live-sessions:source': [{ ...entries[0], id: ['runs'] }] } }).application['live-sessions:source'].length, 0, 'array id must not coerce through the id pattern');
         assert.equal(discoverLiveSessionSources({ 'live-sessions:source': [...entries, entries[0]] }).length, 2);
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });

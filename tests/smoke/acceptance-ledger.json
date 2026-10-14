@@ -98,7 +98,9 @@
         "SMOKE_WEBTTY_CORE": "1"
       },
       "privateInputNamesOrCategories": [
-        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+        "Profile-specific account/sign-in inputs where used; no values in the ledger",
+        "SMOKE_WEBTTY_WATCHER_USERNAME",
+        "Optional by sign-in method, no values in the ledger: SMOKE_WEBTTY_WATCHER_SIGN_IN_METHOD, SMOKE_WEBTTY_WATCHER_LOGIN_EMAIL, SMOKE_WEBTTY_WATCHER_PASSWORD, SMOKE_WEBTTY_WATCHER_ACCOUNT_PASSWORD, SMOKE_WEBTTY_WATCHER_TOTP_SECRET"
       ],
       "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
       "disposition": "required-local-acceptance",

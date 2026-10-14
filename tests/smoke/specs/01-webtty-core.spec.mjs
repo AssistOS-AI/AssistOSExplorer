@@ -14,7 +14,7 @@ import {
 } from '../lib/fixtures.mjs';
 import { assertDistinctAuthenticatedPrincipals, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
 import { captureRouterRecoveryAuthentication, expectedRouterRecoveryDiagnostics, recoveryConsoleText } from '../lib/webtty-router-recovery.mjs';
-import { cleanupWebttyTerminals, requireDetachedShell } from '../lib/webtty-terminal-cleanup.mjs';
+import { cleanupWebttyTerminals, requireDetachedShell, registerCreatedTerminal } from '../lib/webtty-terminal-cleanup.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { diagnosticEventSignature } from '../lib/diagnostic-ledger.mjs';
 import { createReadinessDiagnostics, withFailureArtifact } from '../lib/readiness-diagnostics.mjs';
@@ -308,9 +308,7 @@ async function readTargetDiscovery(response, expectedDirectory) {
   return payload.discovery;
 }
 
-async function readSessionCreation(response) {
-  expect(response.status()).toBe(201);
-  const payload = await response.json();
+function assertSessionCreation(payload) {
   expect(Object.keys(payload).sort()).toEqual(['ok', 'session']);
   expect(Object.keys(payload.session).sort()).toEqual(['cols', 'cwd', 'id', 'role', 'rows', 'state', 'target']);
   expect(Object.keys(payload.session.target).sort()).toEqual([
@@ -382,7 +380,7 @@ async function openTerminalChooser(page, directoryPath) {
   return { page, chooser, discovery, context };
 }
 
-async function selectTerminalTarget(chooserState, predicate) {
+async function selectTerminalTarget(chooserState, predicate, terminals) {
   const selectedTarget = chooserState.discovery.targets.find(predicate);
   expect(selectedTarget, 'the requested terminal target must be present in the current discovery').toBeTruthy();
   const selectedButton = chooserState.chooser.locator(
@@ -400,26 +398,29 @@ async function selectTerminalTarget(chooserState, predicate) {
     timeout: smokeConfig.timeouts.navigation,
   });
   await selectedButton.click();
-  const terminalPage = await popupPromise;
-  const navigationRequest = await navigationPromise;
   const createResponse = await createPromise;
-  await terminalPage.waitForURL((url) => url.pathname === '/webtty/' && !url.hash, {
-    timeout: smokeConfig.timeouts.navigation,
+  // Register the shell for DELETE cleanup before any later wait or assertion can fail; shells survive detach.
+  // A 201 body is registered by its raw session id first; the strict shape checks run afterwards.
+  const createStatus = createResponse.status();
+  const createPayload = createStatus === 201 ? await createResponse.json().catch(() => null) : null;
+  if (createStatus !== 201) expect(createStatus).toBe(201);
+  return registerCreatedTerminal(terminals, createPayload, async (terminal) => {
+    terminal.session = assertSessionCreation(createPayload);
+    terminal.terminalPage = await popupPromise;
+    terminal.navigationRequest = await navigationPromise;
+    terminal.discovery = chooserState.discovery;
+    terminal.launch = selectedTarget.launch;
+    terminal.selectedTarget = selectedTarget;
+    await terminal.terminalPage.waitForURL((url) => url.pathname === '/webtty/' && !url.hash, {
+      timeout: smokeConfig.timeouts.navigation,
+    });
+    await terminal.terminalPage.waitForLoadState('load');
+    await expect(chooserState.chooser).toBeHidden();
   });
-  await terminalPage.waitForLoadState('load');
-  await expect(chooserState.chooser).toBeHidden();
-  return {
-    terminalPage,
-    session: await readSessionCreation(createResponse),
-    discovery: chooserState.discovery,
-    launch: selectedTarget.launch,
-    selectedTarget,
-    navigationRequest,
-  };
 }
 
-async function openTerminalFromExplorer(page, directoryPath, predicate = (target) => target.kind === 'box') {
-  return selectTerminalTarget(await openTerminalChooser(page, directoryPath), predicate);
+async function openTerminalFromExplorer(page, directoryPath, predicate = (target) => target.kind === 'box', terminals) {
+  return selectTerminalTarget(await openTerminalChooser(page, directoryPath), predicate, terminals);
 }
 
 async function refreshTerminalChooser(chooserState, expectedDirectory) {
@@ -461,7 +462,7 @@ async function closeTerminal(terminal, { closePage = true, requestPage = termina
     expect(result).toMatchObject({ status: 200, payload: { ok: true } });
   }
   terminal.cleaned = true;
-  if (closePage && !terminal.terminalPage.isClosed()) await terminal.terminalPage.close();
+  if (closePage && terminal.terminalPage && !terminal.terminalPage.isClosed()) await terminal.terminalPage.close();
 }
 
 function requireWatcherAccount() {
@@ -756,8 +757,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await foreignAdminContext.close();
       foreignAdminContext = null;
 
-      const first = await selectTerminalTarget(firstChooser, (target) => target.kind === 'box');
-      terminals.push(first);
+      const first = await selectTerminalTarget(firstChooser, (target) => target.kind === 'box', terminals);
       const firstDiagnostics = attachPageDiagnostics(first.terminalPage, testInfo, 'webtty-first-terminal');
       const firstUrl = new URL(first.terminalPage.url());
       expect(firstUrl.origin).toBe(new URL(smokeConfig.baseURL).origin);
@@ -883,8 +883,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(legacyCreationRequests, 'a legacy ?dir= URL must never create a terminal session').toBe(0);
       await legacyPage.close();
 
-      const second = await openTerminalFromExplorer(page, fixture.nestedDirectoryPath);
-      terminals.push(second);
+      const second = await openTerminalFromExplorer(page, fixture.nestedDirectoryPath, undefined, terminals);
       const secondDiagnostics = attachPageDiagnostics(second.terminalPage, testInfo, 'webtty-second-terminal');
       await waitForConnectedTerminal(second.terminalPage);
       expect(second.session.cwd).toBe(fixture.relativeDirectory);
@@ -904,8 +903,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
             && target.detail === `${readOnlyAgent.repoName}/${readOnlyAgent.agentName}`
             && target.access === 'ro'
             && target.cwdDisplay === readOnlyAgent.mapping.translatedCwd,
+          terminals,
         );
-        terminals.push(readOnlyTerminal);
         const readOnlyDiagnostics = attachPageDiagnostics(
           readOnlyTerminal.terminalPage,
           testInfo,
@@ -959,8 +958,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
         (target) => target.kind === 'agent'
           && target.label === initialGitAgent.agentName
           && target.detail === `${initialGitAgent.repoName}/${initialGitAgent.agentName}`,
+        terminals,
       );
-      terminals.push(agentTerminal);
       const agentDiagnostics = attachPageDiagnostics(agentTerminal.terminalPage, testInfo, 'webtty-agent-terminal');
       expect(agentTerminal.session.cwd).toBe(fixture.relativeDirectory);
       expect(agentTerminal.session.target).toEqual(publicTarget(agentTerminal.selectedTarget));
@@ -1056,8 +1055,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
         (target) => target.kind === 'agent'
           && target.label === initialGitAgent.agentName
           && target.detail === `${initialGitAgent.repoName}/${initialGitAgent.agentName}`,
+        terminals,
       );
-      terminals.push(replacementVictim);
       const replacementVictimDiagnostics = attachPageDiagnostics(
         replacementVictim.terminalPage,
         testInfo,
@@ -1262,8 +1261,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
       const replacementTerminal = await selectTerminalTarget(
         replacementChooser,
         (target) => target.launch === refreshedGitTarget.launch,
+        terminals,
       );
-      terminals.push(replacementTerminal);
       const replacementDiagnostics = attachPageDiagnostics(
         replacementTerminal.terminalPage,
         testInfo,
@@ -1400,8 +1399,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
         (target) => target.kind === 'agent'
           && target.label === replacementGitAgent.agentName
           && target.detail === `${replacementGitAgent.repoName}/${replacementGitAgent.agentName}`,
+        terminals,
       );
-      terminals.push(restartRecoveryTerminal);
       const recoveryDiagnostics = attachPageDiagnostics(
         restartRecoveryTerminal.terminalPage,
         testInfo,
@@ -1534,8 +1533,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         `${isolationHostMarker}\n`,
         { mode: 0o600 },
       );
-      const isolatedBox = await openTerminalFromExplorer(page, fixture.nestedDirectoryPath);
-      terminals.push(isolatedBox);
+      const isolatedBox = await openTerminalFromExplorer(page, fixture.nestedDirectoryPath, undefined, terminals);
       const isolatedBoxDiagnostics = attachPageDiagnostics(
         isolatedBox.terminalPage,
         testInfo,

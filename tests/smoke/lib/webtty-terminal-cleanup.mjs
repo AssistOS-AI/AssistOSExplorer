@@ -11,7 +11,10 @@ export function requireDetachedShell(payload, id) {
 
 export async function cleanupWebttyTerminals({ terminals, authenticate, closeTerminal, closeContexts, removeFixture, priorFailure }) {
   const failures = [];
-  const pending = [...terminals].reverse().filter((terminal) => !terminal.cleaned);
+  const pending = [...terminals].reverse().filter((terminal) => !terminal.cleaned && !terminal.unprovable);
+  if (terminals.some((terminal) => terminal.unprovable)) {
+    failures.push(new Error('A created terminal session id could not be read; its cleanup cannot be proven.'));
+  }
   let requestPage;
   if (pending.length) {
     try {
@@ -49,4 +52,18 @@ export async function cleanupWebttyTerminals({ terminals, authenticate, closeTer
     throw new AggregateError(priorFailure ? [priorFailure, ...failures] : failures,
       'WebTTY cleanup failed; the fixture is retained until terminal cleanup is confirmed.');
   }
+}
+
+const SESSION_ID = /^[A-Za-z0-9_-]{16,128}$/;
+
+// Registers a freshly created shell for DELETE cleanup from the raw 201 body, before any strict shape
+// assertion or later wait can throw. A body without a usable id leaves cleanup unprovable, which keeps the fixture.
+export async function registerCreatedTerminal(terminals, payload, finish = async () => {}) {
+  const id = payload?.session?.id;
+  const terminal = typeof id === 'string' && SESSION_ID.test(id)
+    ? { session: { id }, cleaned: false, terminalPage: null }
+    : { session: null, cleaned: false, terminalPage: null, unprovable: true };
+  terminals.push(terminal);
+  await finish(terminal);
+  return terminal;
 }

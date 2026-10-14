@@ -115,6 +115,11 @@ selected account sign-in inputs. Supply `SMOKE_LOGIN_EMAIL` and
 `SMOKE_SIGN_IN_METHOD`, with `SMOKE_ACCOUNT_PASSWORD` for `password`,
 `SMOKE_TOTP_SECRET` for `totp`, or `SMOKE_EMAIL_CODE_COMMAND` for `emailCode`.
 Profiles using two users require the corresponding `SMOKE_SECONDARY_*` inputs.
+The WebTTY core gate (`npm run test:webtty`) also needs a third, distinct administrator that watches a
+shell in Live Sessions. `SMOKE_WEBTTY_WATCHER_USERNAME` is required. `SMOKE_WEBTTY_WATCHER_SIGN_IN_METHOD`
+(`password`, `emailCode` or `totp`, default `emailCode`), `SMOKE_WEBTTY_WATCHER_LOGIN_EMAIL` (default: the
+username), `SMOKE_WEBTTY_WATCHER_PASSWORD`, `SMOKE_WEBTTY_WATCHER_ACCOUNT_PASSWORD` and
+`SMOKE_WEBTTY_WATCHER_TOTP_SECRET` are supplied as the chosen sign-in method needs them. Never commit their values.
 Browser setup verifies the configured administrator and a distinct ordinary user
 through the authenticated identity endpoint. It does not print private values.
 Spec04 additionally requires the installed `proxies/searchAgent` catalog fixture;

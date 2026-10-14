@@ -29,7 +29,8 @@ test('npm WebTTY core profile owns the exact Chromium release gate', () => {
   assert.match(webttySpec, /assertDistinctAuthenticatedPrincipals\(admin, ordinaryUser\)/);
   assert.match(webttySpec, /expect\(ordinaryUser\.roles\)\.not\.toContain\('admin'\)/);
   assert.match(webttySpec, /assertExplorerDirectory\(page, fixture\.parentDirectoryPath\)/);
-  assert.match(webttySpec, /openTerminalFromExplorer\(page, fixture\.nestedDirectoryPath\)/);
+  assert.match(webttySpec, /openTerminalFromExplorer\(page, fixture\.nestedDirectoryPath, undefined, terminals\)/);
+  assert.doesNotMatch(webttySpec, /terminals\.push\(/, 'sessions register inside selectTerminalTarget as soon as the create response is parsed');
   assert.match(webttySpec, /normalCloseKeptWebttyAvailable: true/);
   assert.match(webttySpec, /collectWebttyRuntimeEvidence/);
   assert.match(webttySpec, /resolveWebttyBoxEndpoint\(\{\s*baseURL: smokeConfig\.baseURL,\s*boxBaseURL: process\.env\.SMOKE_BOX_BASE_URL \|\| smokeConfig\.baseURL,/);
@@ -54,7 +55,14 @@ test('npm WebTTY core profile owns the exact Chromium release gate', () => {
   assert.match(webttySpec, /runWhileObservingNoAgentShell/);
   assert.match(webttySpec, /collectNestedContainerEvents/);
   assert.match(webttySpec, /WEBTTY_AGENT_HOSTNAME/);
-  assert.match(webttySpec, /authRevocationRemovedExecAndForegroundProcess/);
+  assert.match(webttySpec, /logoutKeptExecAndForegroundProcess: true/);
+  assert.match(webttySpec, /ownerReloginReplayedAndExecutedMarker: true/);
+  assert.match(webttySpec, /foreignAdminWatchOnlyAndKill: true/);
+  assert.match(webttySpec, /tabCloseKeptShellAndSentNoDelete: true/);
+  assert.doesNotMatch(webttySpec, /authRevocationRemovedExecAndForegroundProcess/);
+  assert.match(webttySpec, /requireDetachedShell\(detachedRows, first\.session\.id\)/);
+  assert.match(webttySpec, /attachFromLiveSessions\(page, first\.session\.id, 'owner'\)/);
+  assert.match(webttySpec, /attachFromLiveSessions\(watcherPage, replacementTerminal\.session\.id, 'watcher'\)/);
   assert.match(webttySpec, /defaultRouterCrashRecoveryRemovedAgentExecAndForegroundProcess/);
   assert.match(webttySpec, /single-use launch replay rejection/);
   assert.match(webttySpec, /stale predecessor launch rejection/);

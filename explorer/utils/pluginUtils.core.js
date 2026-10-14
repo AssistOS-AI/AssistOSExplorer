@@ -290,7 +290,7 @@ export function normalizeRuntimePlugins(runtimePlugins) {
         if (entry.contributionType === 'live-sessions-source') {
             const liveSessions = normalizeLiveSessionSource(entry.liveSessions, agent);
             if (category !== APPLICATION_PLUGIN_CATEGORY || location !== 'live-sessions:source' || !liveSessions
-                || !/^[a-z][a-z0-9-]*$/i.test(entry.id) || !isNonEmptyString(entry.label)) return;
+                || typeof entry.id !== 'string' || !/^[a-z][a-z0-9-]*$/i.test(entry.id) || !isNonEmptyString(entry.label)) return;
             bucket.push({
                 pluginCategory: category, contributionType: 'live-sessions-source', location,
                 agent, id: entry.id, label: entry.label || agent, liveSessions, runtime: true,

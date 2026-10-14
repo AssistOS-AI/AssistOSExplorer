@@ -231,7 +231,7 @@ export async function mintLiveSessionAttach(id, options = {}) {
     const payload = await request(`${LIST_PATH}/${sessionId(id)}/attach-tokens`, 'POST', options);
     if (!exactKeys(payload, ['ok', 'attach', 'expiresAt']) || payload.ok !== true
         || typeof payload.attach !== 'string' || !ATTACH_TOKEN.test(payload.attach)
-        || !timestamp(payload.expiresAt) || payload.expiresAt <= Date.now()) {
+        || !timestamp(payload.expiresAt)) {
         throw new Error('Invalid live session attachment response.');
     }
     return payload.attach;

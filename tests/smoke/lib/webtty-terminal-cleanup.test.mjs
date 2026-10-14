@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanupWebttyTerminals, requireDetachedShell } from './webtty-terminal-cleanup.mjs';
+import { cleanupWebttyTerminals, registerCreatedTerminal, requireDetachedShell } from './webtty-terminal-cleanup.mjs';
 
 test('tab-close negative control rejects an exited tombstone with the same id', () => {
   const id = 'S'.repeat(32);
@@ -69,4 +69,73 @@ test('failed fallback login retains the fixture and reports the cleanup failure'
   }), (error) => error instanceof AggregateError && error.errors[0].message === 'login unavailable');
   assert.equal(deleted, false);
   assert.equal(removed, false);
+});
+
+test('a session registered before a thrown wait is still deleted and keeps the fixture until confirmed', async () => {
+  const terminals = [];
+  const failure = new Error('terminal page never reached the connected state');
+  await assert.rejects(
+    registerCreatedTerminal(terminals, { session: { id: 'S'.repeat(32) } }, async () => { throw failure; }),
+    failure,
+  );
+  assert.equal(terminals.length, 1);
+  const deleted = [];
+  let removed = false;
+  await cleanupWebttyTerminals({
+    terminals,
+    priorFailure: failure,
+    authenticate: async () => ({}),
+    closeTerminal: async (terminal) => { deleted.push(terminal.session.id); terminal.cleaned = true; },
+    closeContexts: async () => {},
+    removeFixture: async () => { removed = true; },
+  });
+  assert.deepEqual(deleted, ['S'.repeat(32)]);
+  assert.equal(removed, true);
+
+  const stuck = [];
+  await assert.rejects(registerCreatedTerminal(stuck, { session: { id: 'X'.repeat(32) } }, async () => { throw failure; }));
+  let removedStuck = false;
+  await assert.rejects(cleanupWebttyTerminals({
+    terminals: stuck,
+    authenticate: async () => ({}),
+    closeTerminal: async () => {},
+    closeContexts: async () => {},
+    removeFixture: async () => { removedStuck = true; },
+  }), /fixture is retained/);
+  assert.equal(removedStuck, false);
+});
+
+test('a 201 with an invalid shape is still deleted by its parsed id and an unreadable id keeps the fixture', async () => {
+  const shapeFailure = new Error('strict session shape check failed');
+  const terminals = [];
+  await assert.rejects(registerCreatedTerminal(terminals, { ok: true, session: { id: 'P'.repeat(24), role: 'viewer' }, extra: 1 },
+    async () => { throw shapeFailure; }), shapeFailure);
+  const deleted = [];
+  let removed = false;
+  await cleanupWebttyTerminals({
+    terminals,
+    priorFailure: shapeFailure,
+    authenticate: async () => ({}),
+    closeTerminal: async (terminal) => { deleted.push(terminal.session.id); terminal.cleaned = true; },
+    closeContexts: async () => {},
+    removeFixture: async () => { removed = true; },
+  }).catch(() => {});
+  assert.deepEqual(deleted, ['P'.repeat(24)]);
+  assert.equal(removed, true);
+
+  for (const payload of [{ ok: true }, { session: { id: 7 } }, { session: { id: '../x' } }, null]) {
+    const unreadable = [];
+    await assert.rejects(registerCreatedTerminal(unreadable, payload, async () => { throw shapeFailure; }));
+    let attempts = 0;
+    let fixtureRemoved = false;
+    await assert.rejects(cleanupWebttyTerminals({
+      terminals: unreadable,
+      authenticate: async () => ({}),
+      closeTerminal: async () => { attempts += 1; },
+      closeContexts: async () => {},
+      removeFixture: async () => { fixtureRemoved = true; },
+    }), /fixture is retained/);
+    assert.equal(attempts, 0);
+    assert.equal(fixtureRemoved, false);
+  }
 });

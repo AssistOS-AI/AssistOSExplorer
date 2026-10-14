@@ -19,6 +19,7 @@ const baseEnv = {
     SMOKE_PLOINKY_BOX_CONTAINER: 'fixture-box', SMOKE_EXPECT_BOX_IMAGE_ID: digest,
     SMOKE_EXPECT_BOX_IMAGE_REF: 'localhost/fixture:exact', SMOKE_RELEASE_MANIFEST: '/fixture/manifest.json',
     SMOKE_LOGIN_EMAIL: 'admin@example.test', SMOKE_SIGN_IN_METHOD: 'password', SMOKE_ACCOUNT_PASSWORD: 'fabricated-password',
+    SMOKE_WEBTTY_WATCHER_USERNAME: 'watcher@example.test',
     SMOKE_SECONDARY_LOGIN_EMAIL: 'user@example.test', SMOKE_SECONDARY_SIGN_IN_METHOD: 'password', SMOKE_SECONDARY_ACCOUNT_PASSWORD: 'fabricated-secondary',
     SMOKE_WEBTTY_CORE: '1',
 };
@@ -37,7 +38,7 @@ test('ledger retains all 44 identities and the 25 previously executed required c
 });
 
 test('missing image pins, profile flags and private sign-in inputs fail before collectors', () => {
-    for (const name of ['SMOKE_EXPECT_BOX_IMAGE_ID', 'SMOKE_EXPECT_BOX_IMAGE_REF', 'SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_RELEASE_MANIFEST', 'SMOKE_BOX_BASE_URL', 'SMOKE_WORKSPACE_ROOT', 'SMOKE_ACCOUNT_PASSWORD', 'SMOKE_SECONDARY_LOGIN_EMAIL', 'SMOKE_WEBTTY_CORE']) {
+    for (const name of ['SMOKE_EXPECT_BOX_IMAGE_ID', 'SMOKE_EXPECT_BOX_IMAGE_REF', 'SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_RELEASE_MANIFEST', 'SMOKE_BOX_BASE_URL', 'SMOKE_WORKSPACE_ROOT', 'SMOKE_ACCOUNT_PASSWORD', 'SMOKE_SECONDARY_LOGIN_EMAIL', 'SMOKE_WEBTTY_WATCHER_USERNAME', 'SMOKE_WEBTTY_CORE']) {
         const env = { ...baseEnv }; delete env[name];
         assert.throws(() => validateAcceptanceProfile(args, env), error => error.message.includes(name) && !error.message.includes('fabricated-password'));
     }

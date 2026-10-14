@@ -112,8 +112,19 @@ test('API keeps attach tokens in exact response bodies and mutation requests on 
     assert.equal(calls[1].request.body, '{}');
     assert.equal(calls[2].request.body, undefined);
     assert.ok(calls.every((call) => call.request.credentials === 'same-origin' && call.request.cache === 'no-store'));
-    for (const body of [{ ok: true, attach: 'bad', expiresAt: Date.now() + 1000 }, { ok: true, attach: TOKEN, expiresAt: 1 }, { ok: true, attach: TOKEN, expiresAt: Date.now() + 1000, extra: true }]) {
+    for (const body of [{ ok: true, attach: 'bad', expiresAt: Date.now() + 1000 }, { ok: true, attach: TOKEN, expiresAt: 0 }, { ok: true, attach: TOKEN, expiresAt: 1.5 }, { ok: true, attach: TOKEN, expiresAt: '5' }, { ok: true, attach: TOKEN, expiresAt: Date.now() + 1000, extra: true }]) {
         await assert.rejects(mintLiveSessionAttach(ID, { fetchImpl: async () => response(body, 201) }), /Invalid/);
+    }
+});
+
+test('attach token acceptance does not compare expiresAt with the browser clock', async () => {
+    const realNow = Date.now;
+    Date.now = () => realNow() + 10 * 24 * 3600 * 1000;
+    try {
+        const stale = realNow() + 60000;
+        assert.equal(await mintLiveSessionAttach(ID, { fetchImpl: async () => response({ ok: true, attach: TOKEN, expiresAt: stale }, 201) }), TOKEN);
+    } finally {
+        Date.now = realNow;
     }
 });
 
@@ -232,8 +243,84 @@ test('transient source polls preserve an attached agent view; authoritative remo
     modal.streamPresenter = presenter;
     body = payload([{ ...agent, status: 'stopped', exit: { reason: 'owner_stop' }, capabilities: { ...agent.capabilities, message: false, stop: false } }]);
     await modal.refresh();
+    assert.equal(modal.viewerId, key);
+    assert.equal(modal.streamPresenter, presenter);
+    assert.equal(unloads, 2);
+    body = payload([]);
+    await modal.refresh();
     assert.equal(modal.viewerId, '');
     assert.equal(unloads, 3);
+});
+
+function endedAgentEnvironment(t, status) {
+    const { modal, elements } = environment(t, { admin: false });
+    const source = { agent: 'roboTeamAgent', id: 'runs', label: 'Runs', contributionType: 'live-sessions-source', liveSessions: { version: 1, base: '/roboTeamAgent/runs' } };
+    globalThis.assistOS.workspace = { appPlugins: { 'live-sessions:source': [source] } };
+    const agent = { ...row(), id: 'ls_task', source: 'roboTeamAgent', kind: 'robot-task', status,
+        attach: { mode: 'event-stream' }, ownerState: 'verified',
+        exit: status === 'running' ? null : { reason: 'completed', code: 0 },
+        capabilities: { watch: true, input: false, stop: status === 'running', message: false } };
+    let unloads = 0;
+    let mounts = 0;
+    const presenter = { form: {}, updateSession(updated) { this.row = updated; }, afterUnload() { unloads += 1; } };
+    globalThis.assistOS.UI = {
+        createElement() {
+            mounts += 1;
+            return { element: { deref: () => ({ presenterReadyPromise: Promise.resolve(), renderCompletePromise: Promise.resolve(), webSkelPresenter: presenter }) } };
+        },
+    };
+    return { modal, elements, agent, presenter, counts: () => ({ unloads, mounts }) };
+}
+
+test('a finished agent row stays watchable and a later poll keeps the stream view', async (t) => {
+    const { modal, agent, presenter, counts } = endedAgentEnvironment(t, 'finished');
+    let body = payload([agent]);
+    globalThis.fetch = async () => response(body);
+    modal.afterRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    const key = '/roboTeamAgent/runs:ls_task';
+    await modal.performAction(key, 'attach');
+    assert.equal(counts().mounts, 1);
+    assert.equal(modal.viewerId, key);
+    await modal.refresh();
+    assert.equal(modal.viewerId, key);
+    assert.equal(modal.streamPresenter, presenter);
+    assert.equal(counts().unloads, 0);
+    body = payload([]);
+    await modal.refresh();
+    assert.equal(modal.viewerId, '');
+    assert.equal(counts().unloads, 1);
+});
+
+test('a watched running agent row that finishes keeps its stream view with the final exit line', async (t) => {
+    const { modal, agent, presenter, counts } = endedAgentEnvironment(t, 'running');
+    let body = payload([agent]);
+    globalThis.fetch = async () => response(body);
+    modal.afterRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    const key = '/roboTeamAgent/runs:ls_task';
+    await modal.performAction(key, 'attach');
+    assert.equal(modal.viewerId, key);
+    body = payload([{ ...agent, status: 'finished', exit: { reason: 'completed', code: 0 }, capabilities: { ...agent.capabilities, stop: false } }]);
+    await modal.refresh();
+    assert.equal(modal.viewerId, key);
+    assert.equal(modal.streamPresenter, presenter);
+    assert.equal(presenter.row.status, 'finished');
+    assert.equal(counts().unloads, 0);
+});
+
+test('a viewed shell still detaches when it exits and exited shell rows offer no Attach', async (t) => {
+    const { modal, elements } = environment(t);
+    let body = payload();
+    globalThis.fetch = async () => response(body);
+    modal.afterRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    modal.viewerId = ID;
+    body = payload([row({ status: 'exited', endedAt: 3000, exitReason: 'idle_timeout' })]);
+    await modal.refresh();
+    assert.equal(modal.viewerId, '');
+    const item = elements.get('#liveSessionsList').children[0];
+    assert.equal(item.children.some((child) => child.dataset?.sessionAction === 'attach' || child.children?.some?.((b) => b.dataset?.sessionAction === 'attach')), false);
 });
 
 test('temporary shell-list errors preserve its iframe while authorization refusal detaches it', async (t) => {
@@ -437,4 +524,28 @@ test('foreign administrators get text-only watch rows and exited rows cannot att
     await modal.performAction(endedId, 'attach');
     await modal.performAction(endedId, 'pop-out');
     assert.equal(mutations, 0);
+});
+
+test('confirm-stop on a watched agent row keeps the stream view while confirm-kill on a watched shell detaches', async (t) => {
+    const { modal, agent, presenter, counts } = endedAgentEnvironment(t, 'running');
+    let body = payload([agent]);
+    globalThis.fetch = async (_url, options) => options?.method === 'POST' ? response({ ok: true }) : response(body);
+    modal.afterRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    const key = '/roboTeamAgent/runs:ls_task';
+    await modal.performAction(key, 'attach');
+    modal.confirmId = key;
+    await modal.performAction(key, 'confirm-kill');
+    assert.equal(modal.viewerId, key);
+    assert.equal(modal.streamPresenter, presenter);
+    assert.equal(counts().unloads, 0);
+
+    const shell = environment(t);
+    globalThis.fetch = async (_url, options) => options?.method === 'DELETE' ? response({ ok: true }) : response(payload());
+    shell.modal.afterRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    shell.modal.viewerId = ID;
+    shell.modal.confirmId = ID;
+    await shell.modal.performAction(ID, 'confirm-kill');
+    assert.equal(shell.modal.viewerId, '');
 });

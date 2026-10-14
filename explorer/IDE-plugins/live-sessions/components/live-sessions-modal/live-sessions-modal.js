@@ -124,8 +124,8 @@ export class LiveSessionsModal {
                 this.renderRows();
             } }));
             if (this.closed) return;
-            if (this.viewerId && (!this.rows.has(this.viewerId)
-                || ['exited', ...ENDED_STATUSES].includes(this.rows.get(this.viewerId).status))) {
+            // Ended agent rows stay replayable with their final exit line; only a shell that exited or a vanished row detaches.
+            if (this.viewerId && (!this.rows.has(this.viewerId) || this.rows.get(this.viewerId).status === 'exited')) {
                 this.detachViewer();
             }
             if (this.streamPresenter && this.rows.has(this.viewerId)) {
@@ -245,7 +245,8 @@ export class LiveSessionsModal {
                 await this.withRequest((options) => row.kind === 'shell' ? killLiveSession(row.id, options) : stopAgentSession(row.sessionSource, row, options));
                 if (this.closed) return;
                 this.confirmId = '';
-                if (this.viewerId === id) this.detachViewer();
+                // An agent view stays so its final stopped exit line arrives; a killed shell has nothing left to show.
+                if (this.viewerId === id && row.kind === 'shell') this.detachViewer();
             } else if (row.kind !== 'shell') {
                 if (popup) {
                     if (!navigateLiveSessionWindow(popup, action === 'transcript' ? row.transcriptUrl : row.viewUrl, row.sessionSource.agent)) throw new Error('The tab could not be opened.');
