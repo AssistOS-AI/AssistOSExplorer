@@ -40,6 +40,14 @@ test.describe('DGX Spark GPU revoke and grant for local-llm @dgx-spark', () => {
   // runner this spec installed.
   test.afterAll(async ({ browser }) => {
     const steps = [];
+    // The GPU first: it is the restore that matters most, and replacing the Box also stops any CPU model.
+    if (state.revoked && !state.granted) {
+      steps.push(['grant local-llm its GPU again', async () => {
+        const result = await state.ploinky(['gpu', 'grant', '--agent', LOCAL_LLM_REF], { timeoutMs: BOX_CHANGE_MS });
+        if (result.status !== 0) throw new Error(`ploinky gpu grant exited ${result.status}: ${result.stderr.slice(-300)}`);
+        return 'granted';
+      }]);
+    }
     if (state.modelStarted && !state.cpuCleaned) {
       steps.push(['stop the CPU model and delete its weights', () => withAdminPage(browser, smokeConfig.baseURL, async (page) => {
         await stopModelIfActive(page);
@@ -48,20 +56,18 @@ test.describe('DGX Spark GPU revoke and grant for local-llm @dgx-spark', () => {
         return deleted.ok || deleted.text;
       })]);
     }
-    if (state.revoked && !state.granted) {
-      steps.push(['grant local-llm its GPU again', async () => {
-        const result = await state.ploinky(['gpu', 'grant', '--agent', LOCAL_LLM_REF], { timeoutMs: BOX_CHANGE_MS });
-        if (result.status !== 0) throw new Error(`ploinky gpu grant exited ${result.status}: ${result.stderr.slice(-300)}`);
-        return 'granted';
-      }]);
-    }
-    if (steps.length) writeEvidence(evidenceDir, '96-restore.json', await restoreSteps(steps));
+    if (!steps.length) return;
+    test.setTimeout(BOX_CHANGE_MS + 15 * 60_000);
+    writeEvidence(evidenceDir, '96-restore.json', await restoreSteps(steps));
   });
 
   async function changeGpu(verb) {
     const started = Date.now();
     const result = await state.ploinky(['gpu', verb, '--agent', LOCAL_LLM_REF], { timeoutMs: BOX_CHANGE_MS });
     expect(result.status, `ploinky gpu ${verb} failed: ${result.stderr.slice(-800)}`).toBe(0);
+    // A failed change is rolled back by Ploinky; only a completed one needs undoing.
+    if (verb === 'revoke') state.revoked = true;
+    if (verb === 'grant') state.granted = true;
     state.box = await resolveBox({ ploinky: state.ploinky, workspaceRoot: state.env.workspaceRoot });
     const running = await waitForGraph({ boxName: state.box.name, minimum: Math.max(state.graph, 16) });
     const nested = await listNested({ boxName: state.box.name });
@@ -84,7 +90,6 @@ test.describe('DGX Spark GPU revoke and grant for local-llm @dgx-spark', () => {
     await ensureExplorer(page);
     await stopModelIfActive(page);
     state.initialGrant = parseGpuStatus((await state.ploinky(['gpu', 'status'], { timeoutMs: 60_000 })).stdout).grant;
-    state.revoked = true;
     const change = await changeGpu('revoke');
     expect(change.gpu.agents, 'no agent may hold the GPU after the revoke').toEqual([]);
     expect(change.gpu.raw['GPU grant'] || '', 'the revoke is recorded for local-llm').toMatch(/local-llms\/local-llm/);
@@ -148,7 +153,6 @@ test.describe('DGX Spark GPU revoke and grant for local-llm @dgx-spark', () => {
   test('granting the GPU back restores the GB10 and the unified profile', async ({ page }) => {
     test.setTimeout(BOX_CHANGE_MS + 15 * 60_000);
     const change = await changeGpu('grant');
-    state.granted = true;
     expect(change.gpu.agents.map((agent) => agent.ref)).toEqual([LOCAL_LLM_REF]);
     // `gpu grant --agent` lifts the deny by recording an operator grant; plain `gpu grant` keeps a per-agent deny, so the
     // CLI cannot return to a manifest-only record. The end state is therefore always the explicit operator grant.

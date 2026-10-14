@@ -41,6 +41,7 @@ test.describe('DGX Spark local-llm inference on the GB10 @dgx-spark', () => {
   // A failed test skips the rest of this serial block: stop the model and delete the weights it downloaded.
   test.afterAll(async ({ browser }) => {
     if (!state.modelStarted || state.cleaned) return;
+    test.setTimeout(15 * 60_000);
     const restored = await withAdminPage(browser, smokeConfig.baseURL, (page) => restoreSteps([
       ['stop the model', () => stopModelIfActive(page).then((status) => status.phase)],
       ['delete the weights', () => callTool(page, { tool: 'local_llm_weights_delete', args: { modelId: SMALL_MODEL_ID, runnerId: UNIFIED_RUNNER } }).then((reply) => reply.ok || reply.text)],

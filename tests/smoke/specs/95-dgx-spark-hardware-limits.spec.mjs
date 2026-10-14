@@ -51,6 +51,7 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
   // its weights. The gate stays on; it is the deployment's own setting once this spec turned it on.
   test.afterAll(async ({ browser }) => {
     if (!(state.limitsSaved && !state.limitsCleared) && !(state.modelStarted && !state.weightsDeleted)) return;
+    test.setTimeout(10 * 60_000 + 3 * APPLY_BOUND_MS);
     const restored = await withAdminPage(browser, smokeConfig.baseURL, (page) => {
       const steps = [['stop the model', () => stopModelIfActive(page).then((status) => status.phase)]];
       if (state.limitsSaved && !state.limitsCleared) {
