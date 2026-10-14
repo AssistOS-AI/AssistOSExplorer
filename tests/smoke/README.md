@@ -4,6 +4,53 @@ This package contains the maintainable Playwright smoke suite for Explorer, WebC
 
 ## Quick Start
 
+### Optional local-llm model suite
+
+Run `npm run test:local-llm -- --help` for the explicit interface. This Node dispatcher calls the fixed sibling `ploinky/tests/hardware-limits/verify.mjs`. The canonical runner owns authorization, staging, model inference, evidence and owned-resource cleanup. The command is opt-in; it adds no Playwright specs or default/full-suite selection.
+
+| Profile | Canonical block / case | Required target |
+| --- | --- | --- |
+| `apple` | `mac-model-venus` / `LIVE-L6` | Already selected rootless libkrun machine with Venus |
+| `apple-cpu` | `mac-model-cpu` / `LIVE-L7` | Same selected rootless libkrun machine, fresh workspace with GPU withdrawal before first startup |
+| `nvidia` | `apparatus-model-nvidia` / `LIVE-L4` | Native Linux CUDA, no MPS |
+| `cpu` | `apparatus-model-cpu` / `LIVE-L5` | Native Linux with workspace-wide GPU withdrawal before startup |
+| `amd-apu` | `linux-model-amd-apu` / `LIVE-L13`, `LIVE-L9`, `LIVE-L11`, `LIVE-L12` | Separately selected Linux AMD integrated GPU host with the experimental switch |
+| `amd-apu-pressure` | `linux-model-amd-apu-pressure` / `LIVE-L10` | Same AMD host, fresh cohort with a pinned raised runtime guard floor |
+| `amd-apu-cpu` | `linux-model-amd-apu-cpu` / `LIVE-L8` | Same AMD host, fresh cohort with workspace-wide GPU withdrawal |
+
+Every invocation requires `--profile`, `--action` and an absolute `--run` manifest file path. Prepare also requires absolute config and observed-pins paths. For example, using operator-selected paths:
+
+```bash
+npm run test:local-llm -- --profile cpu --action prepare --run /absolute/evidence/cpu-run.json --config /absolute/config.json --pins /absolute/cpu-pins.json
+npm run test:local-llm -- --profile cpu --action provision --run /absolute/evidence/cpu-run.json --authorization /absolute/authorization-provision.json
+npm run test:local-llm -- --profile cpu --action live --run /absolute/evidence/cpu-run.json --authorization /absolute/authorization-live.json
+npm run test:local-llm -- --profile cpu --action cleanup --run /absolute/evidence/cpu-run.json --authorization /absolute/authorization-cleanup.json
+```
+
+Prepare maps to `prepare-live` and checks the resulting manifest's profile and block. The other actions check that binding before invocation and require the canonical execution-time authorization for that action and exact manifest. The dispatcher creates no approval. It propagates canonical exit codes; an interrupted runner, binding mismatch or missing proof cannot establish a pass.
+
+Use separate fresh sequential NVIDIA and CPU cohorts. The Apple suite uses the selected machine and its reviewed setup/restoration envelope; it never installs, creates, switches, stops or deletes machines. A passing functional case needs canonical backend, model/image/source and nonempty inference evidence, positive generation rate, successful owned-resource cleanup and, for Apple, restoration evidence. Failed cleanup or missing retrieved artifacts keeps recovery evidence and remains non-PASS. These optional checks do not replace broader release gates.
+
+AMD APU runs are experimental and require separately selected host pins and authorization. Run the three profiles as separate fresh sequential cohorts. The canonical runner supplies the experimental switch through exact manifest defaults and adds the pinned runtime guard floor only for the pressure cohort. Admission refusal, guard termination and cancellation each require their own case evidence. Load cancellation must observe the current runner's tensor-load marker and a continuous event sequence through idle; a missed window cannot pass. Generation cancellation (`LIVE-L12`) remains pending until its observation and settlement proof is implemented and verified. Pending or not-exercised cases prevent a passing block even when cleanup succeeds. These runs do not establish APU hardware qualification.
+
+For a same-Mac comparison, run `apple` and `apple-cpu` in separate fresh sequential workspaces under the reviewed Apple envelope. The Linux `cpu` profile remains Linux-only. Prepare may freeze `pins.model.measurement` with the canonical scenario, comparison ID, cohort and baseline context. Later actions consume that manifest; the dispatcher accepts no scenario or parameter overrides. Without measurement pins, the single functional smoke case remains unchanged. A selected measurement case that is refused, blocked, failed or not exercised cannot count as a benchmark pass. Complete comparison evidence requires both baseline pairs, owned-action settlement, cleanup and recorded machine restoration.
+
+Offline dispatcher checks use `node --test lib/local-llm-e2e.test.mjs` from this directory. Injected runner results prove argument binding and error handling only; they do not prove model execution.
+
+### DGX Spark suite
+
+`npm run test:dgx-spark` runs specs 93-97 on an NVIDIA DGX Spark (GB10, unified memory) against the Explorer deployment of one workspace, normally `~/work/testExplorerFresh` after `ploinky start explorer`. It runs on the Spark itself, through `scripts/run-dgx-spark-e2e.mjs`, with Chromium headless, one worker and no retries. It is a hardware E2E profile, not a Box release-acceptance gate, so it is not in `acceptance-ledger.json`. The wrapper records `provenance.json` (Ploinky and test checkouts, Box name, ID, image and start time) and `verdict.json`, and fails unless every discovered test passed with no skip.
+
+| Spec | What it proves | Changes the deployment |
+| --- | --- | --- |
+| 93 | GB10 host facts and no foreign GPU compute; the Box gets only `/dev/nvidia0`, `/dev/nvidiactl`, `/dev/nvidia-uvm` and read-only driver binds, no privilege and the two publications; local-llm is the only agent with `ploinky.local/gpu=all` and sees the host GB10; the `unified` profile with the host pool, 16 GiB host reserve and 8 GiB floor; admission previews; the dashboard's unified-memory card | No |
+| 94 | qwen2.5-0.5b on CUDA llama.cpp reaches ready with every layer on `CUDA0 (NVIDIA GB10)`, as uid 1000 with no MPS variables; three admin test prompts generate text; Stop frees the GPU and the weights are deleted | Runs and deletes a model |
+| 95 | The hardware-limits gate is on and prepared (turned on with `PLOINKY_BOX_HARDWARE_LIMITS=on ploinky restart` when off) and keeps the GPU wiring; a GPU share is refused for the unified GB10 (`gpu_sharing_unavailable`, policy unchanged, panel fields disabled); a 4 CPU budget with the smallest RAM percentage unified admission accepts is applied and read back from the agent's cgroup leaf and local-llm's own budget; admission sizes the model against that budget and it runs on the GB10 without an OOM kill (whether its GPU memory is charged to the agent's cgroup is recorded, not asserted: on the GB10 it is not, so a RAM budget does not bound CUDA allocations); a smaller RAM budget refuses the Run before launch with `admission_incompatible`; clearing restores the unlimited agent | Restarts the graph once if the gate is exactly off (an unreadable gate fails); recreates local-llm; the gate stays on |
+| 96 | `ploinky gpu revoke --agent local-llms/local-llm` leaves no GPU agent and local-llm falls back to the CPU profile and still answers; `ploinky gpu grant --agent local-llms/local-llm` restores the GB10 and the unified profile | Replaces the Box twice; ends with an explicit operator grant (`GPU grant: nvidia for local-llms/local-llm`), because the CLI lifts a per-agent deny only by granting |
+| 97 | vLLM, experimental on unified memory: a Hugging Face model pinned to one commit is added through `local_llm_model_lookup`/`local_llm_model_add`; with `LOCAL_LLM_VLLM_UNIFIED` off vLLM is refused with the switch's instructions; `ploinky var LOCAL_LLM_VLLM_UNIFIED experimental` plus `ploinky restart local-llm` enables it, it installs from the image's runner lock, admission sizes it from the requested 0.1 GPU memory share of the unified pool, the model runs with the vLLM engine as the Box's only GPU process, and three test prompts answer; Stop, then the weights, the model, the install and the switch are removed | Sets the `LOCAL_LLM_VLLM_UNIFIED` workspace variable and puts its earlier value back (an existing `experimental` stays; anything else ends as `off`, because there is no unset), restarts local-llm, downloads about 3.9 GB of vLLM and 1 GB of weights; refuses to start when its model is left over from an interrupted run |
+
+Inputs: `SMOKE_WORKSPACE_ROOT` (absolute workspace), `SMOKE_PLOINKY_BIN` (the `bin/ploinky` of the checkout that created the deployment), `SMOKE_BASE_URL=http://localhost:8080`, and the claimed installation's administrator sign-in inputs (`SMOKE_LOGIN_EMAIL`, `SMOKE_SIGN_IN_METHOD`, `SMOKE_ACCOUNT_PASSWORD` or its alternatives). The Box is derived from the workspace through `ploinky gpu status` and proved with its role and path-hash labels; `SMOKE_PLOINKY_BOX_CONTAINER` is refused. Select specs with `--spec 93` (repeatable); `--list` only discovers. The RAM percentages of spec 95 are computed from local-llm's own admission estimate, so they follow model or reserve changes. Spec 95 also records, in `dgx-spark/95-budget-run.json`, whether the runner's GPU memory is charged to the agent's memory cgroup on the unified GB10. Every `ploinky` call pins `PLOINKY_WORKSPACE_ROOT` to `SMOKE_WORKSPACE_ROOT` and drops an inherited `PLOINKY_BOX_HARDWARE_LIMITS`; `SMOKE_WORKSPACE_ROOT` must be its own real path. When a test fails, each spec's `afterAll` undoes only what that spec recorded (stops the model, deletes its weights, clears its limits, uninstalls a runner it installed, grants the GPU back) and writes `dgx-spark/9x-restore.json`. Offline checks: `node --test lib/dgx-spark.test.mjs`.
+
 Run `npm run test:optional-agents` in a separate fresh cohort to prove the unchanged
 three-agent default/activation workflow. This opt-in gate requires OnlyOffice, WebMeet Scribe, and
 WebMeet STT to be disabled in both Marketplace and the real runtime snapshot.

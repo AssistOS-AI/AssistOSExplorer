@@ -809,7 +809,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "prerequisite": "Dedicated hardware apparatus. Administrator/ordinary-user accounts and exact hardware policy fixture.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -834,7 +834,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "prerequisite": "Dedicated hardware apparatus. Administrator/ordinary-user accounts and exact hardware policy fixture.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -859,7 +859,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "prerequisite": "Dedicated hardware apparatus. Administrator/ordinary-user accounts and exact hardware policy fixture.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -884,7 +884,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "prerequisite": "Dedicated hardware apparatus. Administrator/ordinary-user accounts and exact hardware policy fixture.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -909,7 +909,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "prerequisite": "Dedicated hardware apparatus. Administrator/ordinary-user accounts and exact hardware policy fixture.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -934,7 +934,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Administrator/ordinary-user accounts and exact hardware policy fixture.",
+      "prerequisite": "Dedicated hardware apparatus. Administrator/ordinary-user accounts and exact hardware policy fixture.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -959,7 +959,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Supported GPU/model/MPS fixture.",
+      "prerequisite": "Dedicated hardware apparatus. Supported GPU/model/MPS fixture.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -984,7 +984,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Supported GPU/model/MPS fixture.",
+      "prerequisite": "Dedicated hardware apparatus. Supported GPU/model/MPS fixture.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -1009,7 +1009,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Supported GPU/model/MPS fixture.",
+      "prerequisite": "Dedicated hardware apparatus. Supported GPU/model/MPS fixture.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -1034,7 +1034,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Installed exact fixture graph and teardown proof.",
+      "prerequisite": "Dedicated hardware apparatus. Installed exact fixture graph and teardown proof.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -1059,7 +1059,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Installed exact fixture graph and teardown proof.",
+      "prerequisite": "Dedicated hardware apparatus. Installed exact fixture graph and teardown proof.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -1084,7 +1084,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Installed exact fixture graph and teardown proof.",
+      "prerequisite": "Dedicated hardware apparatus. Installed exact fixture graph and teardown proof.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -1109,7 +1109,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Dedicated hardware apparatus; testExplorerFresh/8080 is forbidden. Installed exact fixture graph and teardown proof.",
+      "prerequisite": "Dedicated hardware apparatus. Installed exact fixture graph and teardown proof.",
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,

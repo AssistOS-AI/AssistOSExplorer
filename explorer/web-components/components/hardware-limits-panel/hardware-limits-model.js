@@ -1,9 +1,11 @@
 export const GPU_HELP = [
     'GPU shares use NVIDIA MPS and are best-effort, not a security boundary.',
+    'GPU shares are NVIDIA-only; AMD and Apple GPUs used through Vulkan cannot be shared.',
     'Share clients use the same Box user as the MPS daemon. They can issue control commands, widen settings, stop the daemon and alter its writable pipe-directory entries.',
     'A process that drops the MPS environment can use the GPU outside MPS in DEFAULT compute mode.',
     'The MPS device-memory limit applies to each CUDA process, not to the sum of every process in an agent.',
     'A RAM cgroup limit does not cap dedicated GPU memory.',
+    'On AMD integrated GPUs a RAM limit is not verified to cap GPU memory, so local-llm does not use such a GPU under a RAM limit.',
     'Only the host operator may choose EXCLUSIVE_PROCESS. It affects other CUDA users and workspaces. Ploinky never changes compute mode.',
 ];
 

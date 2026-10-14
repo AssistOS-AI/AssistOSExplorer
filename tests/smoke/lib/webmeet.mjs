@@ -82,6 +82,32 @@ export async function joinStandaloneGuestRoom(page, { roomId, displayName, url =
   });
 }
 
+export async function leaveWebMeetRoomIfJoined(page) {
+    const captured = await page.evaluateHandle(() => {
+        const presenter = document.querySelector('webmeet-dashboard')?.webSkelPresenter;
+        return {
+            presenter,
+            joined: Boolean(presenter?.state?.session?.participantIdentity),
+            room: presenter?.roomLiveKit?.getRoom?.() || presenter?.room || null,
+        };
+    });
+    try {
+        if (!await captured.evaluate(({joined}) => joined)) return;
+        expect(await captured.evaluate(({room}) => Boolean(room)), 'joined guest must have a LiveKit room').toBe(true);
+        await page.locator('#webmeetLeaveButton').click();
+        await expect.poll(() => captured.evaluate(({presenter, room}) => (
+            presenter.state.session === null
+            && !presenter.state.leavingMeeting
+            && room.state === 'disconnected'
+        )), {
+            message: 'guest UI leave must complete session cleanup and LiveKit disconnect before room deletion',
+            timeout: smokeConfig.timeouts.media,
+        }).toBe(true);
+    } finally {
+        await captured.dispose();
+    }
+}
+
 // Reads the room link from the admin "Room settings" dialog, which shows the
 // exact text its Copy button copies.
 export async function readRoomShareLink(page, title) {
