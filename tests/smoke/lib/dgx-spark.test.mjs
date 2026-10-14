@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { resolveMemoryPercent } from './hardware-limits-evidence.mjs';
 import {
   GIB, classifyComputeApps, createCommandDevices, createCommandFlags, errorCodeOf, nestedNameOf, parseComputeApps, parseGpuQuery,
   parseGpuStatus, parseLimitsStatus, requireDgxSparkEnvironment, unifiedFitPercent, unifiedRefusePercent,
+  reserveInBudgetFitPercent,
 } from './dgx-spark.mjs';
 
 const GPU_STATUS = `Workspace identity: ploinky-box-testexplorerfresh-8b021738a3d6
@@ -88,17 +90,70 @@ test('errorCodeOf prefers the structured code and falls back to the message', ()
   assert.equal(errorCodeOf({ value: null, text: 'nothing typed' }), '');
 });
 
-test('the unified fit and refusal percentages bracket the host-reserve threshold', () => {
+test('the unified fit and refusal percentages bracket the need', () => {
   const envelopeBytes = 128450985984;
   const needBytes = 11579755688;
-  const fit = unifiedFitPercent({ needBytes, envelopeBytes, usedBytes: GIB });
+  const usedBytes = GIB;
+  const fit = unifiedFitPercent({ needBytes, envelopeBytes, usedBytes });
   const refuse = unifiedRefusePercent({ needBytes, envelopeBytes });
-  const budget = (percent) => Math.floor((percent * envelopeBytes) / 100);
-  assert.ok(budget(fit) - 16 * GIB >= needBytes, 'the fit budget clears the host reserve');
-  assert.ok(budget(fit) - 8 * GIB - GIB >= needBytes, 'the fit budget clears the floor and the agent\'s use');
-  assert.ok(budget(refuse) - 16 * GIB < needBytes, 'the refusal budget stays under the host reserve threshold');
+  const budget = (percent) => resolveMemoryPercent(percent, envelopeBytes);
+  assert.ok(budget(fit) - usedBytes >= needBytes, 'the fit budget holds the need beside the agent\'s use');
+  assert.ok(budget(fit - 1) - usedBytes < needBytes + 2 * GIB, 'the fit percentage is the smallest that keeps the margin');
+  assert.ok(budget(refuse) < needBytes, 'the refusal budget is below the need');
+  assert.ok(budget(refuse) <= needBytes - GIB, 'the refusal budget is at least 1 GiB below the need');
+  assert.ok(budget(refuse + 1) > needBytes - GIB, 'the refusal percentage is the largest that stays 1 GiB below the need');
   assert.ok(refuse < fit);
   assert.throws(() => unifiedFitPercent({ needBytes: envelopeBytes, envelopeBytes }), /cannot fit/);
+  assert.throws(() => unifiedRefusePercent({ needBytes: GIB, envelopeBytes }), /No RAM percentage/);
+});
+
+test('the unified brackets move by one percent across need +/- 1 MiB at an exact percentage boundary', () => {
+  const MIB = 1024 * 1024;
+  const envelopeBytes = 200 * GIB;
+  // need + used + margin = 60 GiB is exactly 30% of the envelope.
+  const fitNeed = 58 * GIB;
+  assert.equal(unifiedFitPercent({ needBytes: fitNeed, envelopeBytes }), 30);
+  assert.equal(unifiedFitPercent({ needBytes: fitNeed - MIB, envelopeBytes }), 30);
+  assert.equal(unifiedFitPercent({ needBytes: fitNeed + MIB, envelopeBytes }), 31);
+  assert.equal(unifiedFitPercent({ needBytes: fitNeed - 1 * GIB, usedBytes: GIB, envelopeBytes }), 30);
+  assert.equal(unifiedFitPercent({ needBytes: fitNeed - 1 * GIB + MIB, usedBytes: GIB, envelopeBytes }), 31);
+  // need - 1 GiB = 60 GiB is exactly 30%.
+  const refuseNeed = 61 * GIB;
+  assert.equal(unifiedRefusePercent({ needBytes: refuseNeed, envelopeBytes }), 30);
+  assert.equal(unifiedRefusePercent({ needBytes: refuseNeed + MIB, envelopeBytes }), 30);
+  assert.equal(unifiedRefusePercent({ needBytes: refuseNeed - MIB, envelopeBytes }), 29);
+  for (const needBytes of [refuseNeed - MIB, refuseNeed, refuseNeed + MIB]) {
+    const budget = resolveMemoryPercent(unifiedRefusePercent({ needBytes, envelopeBytes }), envelopeBytes);
+    assert.ok(budget < needBytes, `budget ${budget} refuses need ${needBytes}`);
+  }
+  for (const needBytes of [fitNeed - MIB, fitNeed, fitNeed + MIB]) {
+    const budget = resolveMemoryPercent(unifiedFitPercent({ needBytes, envelopeBytes }), envelopeBytes);
+    assert.ok(budget >= needBytes, `budget ${budget} holds need ${needBytes}`);
+  }
+});
+
+test('the unified brackets hold with MiB-floored budgets on the non-MiB-aligned GB10 envelope', () => {
+  const envelopeBytes = 128450985984;
+  assert.notEqual(envelopeBytes % (1024 * 1024), 0);
+  for (const needBytes of [11579755688 - 1024 * 1024, 11579755688, 11579755688 + 1024 * 1024]) {
+    for (const usedBytes of [0, GIB]) {
+      const fit = resolveMemoryPercent(unifiedFitPercent({ needBytes, envelopeBytes, usedBytes }), envelopeBytes);
+      assert.ok(fit - usedBytes >= needBytes, `fit budget ${fit} holds need ${needBytes} and use ${usedBytes}`);
+    }
+    const refuse = resolveMemoryPercent(unifiedRefusePercent({ needBytes, envelopeBytes }), envelopeBytes);
+    assert.ok(refuse <= needBytes - GIB, `refusal budget ${refuse} is 1 GiB below need ${needBytes}`);
+  }
+});
+
+test('reserveInBudgetFitPercent keeps the pre-change rule, which charged the host reserve inside the budget', () => {
+  const envelopeBytes = 128450985984;
+  const needBytes = 11579755688;
+  const old = reserveInBudgetFitPercent({ needBytes, envelopeBytes, usedBytes: GIB });
+  const budget = (percent) => resolveMemoryPercent(percent, envelopeBytes);
+  assert.ok(budget(old) - 16 * GIB >= needBytes, 'the old budget clears the host reserve');
+  assert.ok(budget(old) - 8 * GIB - GIB >= needBytes, 'the old budget clears the floor and the agent\'s use');
+  assert.ok(unifiedFitPercent({ needBytes, envelopeBytes, usedBytes: GIB }) < old, 'the current fit percentage is below the old rule');
+  assert.throws(() => reserveInBudgetFitPercent({ needBytes: envelopeBytes, envelopeBytes }), /cannot fit/);
 });
 
 test('requireDgxSparkEnvironment fails closed without a workspace or with a named Box', () => {

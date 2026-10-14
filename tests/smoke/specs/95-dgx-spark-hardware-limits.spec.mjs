@@ -24,7 +24,7 @@ import {
   ACTIVE_PHASES, DGX_GPU, LOCAL_LLM_REF, UNIFIED_RUNNER,
   callTool, callToolOk, classifyComputeApps, createPloinky, dgxSparkEnabled, errorCodeOf, hostCgroupOf, listNested,
   nestedNameOf, openLocalLlmDashboard, parseGpuStatus, parseLimitsStatus, readComputeApps, readMemTotalBytes, requestId, requireDgxSparkEnvironment,
-  resolveBox, restoreSteps, stopModelIfActive, unifiedFitPercent, unifiedRefusePercent, waitForGraph, waitForPhase, withAdminPage, writeEvidence,
+  reserveInBudgetFitPercent, resolveBox, restoreSteps, stopModelIfActive, unifiedFitPercent, unifiedRefusePercent, waitForGraph, waitForPhase, withAdminPage, writeEvidence,
   ensureExplorer,
 } from '../lib/dgx-spark.mjs';
 
@@ -203,8 +203,19 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     await expect(article.locator('[data-hardware-field="vramPercent"]')).toBeDisabled();
     await expect(article.locator('[data-hardware-field="cpus"]')).toBeEnabled();
     await expect(article.locator('[data-hardware-field="memoryPercent"]')).toBeEnabled();
+    // A-L2-2: the unified disclosure. The API says the RAM limit does not cover GPU allocations, and the panel shows the
+    // server's help sentences (including the unified one) and the per-Box advisory line.
+    expect(before.gpu.memoryModel).toBe('unified');
+    expect(before.gpu.unifiedMemory?.ramLimitCoversGpuAllocations).toBe(false);
+    expect(before.gpu.unifiedMemory?.assurance).toBe('advisory');
+    await expect(section).toContainText('RAM limits on this Box do not cover GPU allocations (advisory)');
+    // Drift check between the server's help.gpu and the panel's own GPU_HELP copy (the panel does not render the server's
+    // list). toContainText reads textContent, so the <details> may stay closed; the panel's 5 s re-render collapses an open one.
+    const help = section.locator('details.hardware-limit-help');
+    expect(before.help.gpu.some((sentence) => /unified-memory NVIDIA GPUs \(GB10 \/ DGX Spark\) a RAM limit does not cap the GPU memory/.test(sentence)), 'the server help carries the unified sentence').toBe(true);
+    for (const sentence of before.help.gpu) await expect(help).toContainText(sentence);
     await screenshot(page, '95-gpu-share-disabled.png');
-    writeEvidence(evidenceDir, '95-gpu-share-refusal.json', { gpu: before.gpu, refusal: { status: refused.status, error: refused.body.error, message: String(refused.body.message || refused.body.reason || '').slice(0, 400) } });
+    writeEvidence(evidenceDir, '95-gpu-share-refusal.json', { gpu: before.gpu, helpGpu: before.help.gpu, refusal: { status: refused.status, error: refused.body.error, message: String(refused.body.message || refused.body.reason || '').slice(0, 400) } });
   });
 
   // ---- 3 ------------------------------------------------------------------
@@ -219,9 +230,12 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     const before = await api.readOk();
     const { instance } = localLlmInstance(before);
     const needBytes = preview.admission.estimate.unifiedBytes;
-    const fitPercent = unifiedFitPercent({ needBytes, envelopeBytes: before.envelope.memoryBytes, usedBytes: instance.usage?.memoryBytes || 0 });
+    const usedBytes = instance.usage?.memoryBytes || 0;
+    const fitPercent = unifiedFitPercent({ needBytes, envelopeBytes: before.envelope.memoryBytes, usedBytes });
     const refusePercent = unifiedRefusePercent({ needBytes, envelopeBytes: before.envelope.memoryBytes });
     expect(refusePercent, 'the refusal budget must sit below the fit budget').toBeLessThan(fitPercent);
+    // n5 (G3 fix): the budget now only has to hold local-llm's estimate, so it is below the pre-change rule that charged the host reserve inside it.
+    expect(fitPercent, 'the fit percentage must be below the pre-change reserve-in-budget rule').toBeLessThan(reserveInBudgetFitPercent({ needBytes, envelopeBytes: before.envelope.memoryBytes, usedBytes }));
     Object.assign(state, { needBytes, fitPercent, refusePercent, key: instance.key });
 
     const runningBefore = await readRunningSet({ boxName: state.box.name });
@@ -321,7 +335,7 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     const reply = await callTool(page, { tool: 'local_llm_run', args: { requestId: requestId('refused-run'), modelId: SMALL_MODEL_ID, runnerId: UNIFIED_RUNNER } });
     expect(reply.ok, 'the Run must be refused').toBe(false);
     expect(errorCodeOf(reply)).toBe('admission_incompatible');
-    expect(reply.text).toMatch(/must keep 16\.0 GiB for the host/);
+    expect(reply.text).toMatch(/this agent's Ploinky RAM budget is/);
     const status = await callToolOk(page, 'local_llm_status', {});
     expect(ACTIVE_PHASES.has(String(status.phase || 'idle')), `no deployment may be active (phase ${status.phase})`).toBe(false);
     expect(await readRunnerProcesses({ boxName: state.box.name, agentName: state.key })).toEqual([]);

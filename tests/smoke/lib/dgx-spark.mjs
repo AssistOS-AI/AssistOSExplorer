@@ -428,21 +428,30 @@ export const requestId = (label) => `dgx-${label}-${Date.now().toString(36)}-${M
 // ---------------------------------------------------------------------------
 // Unified admission arithmetic (local-llm profiles.mjs poolVerdict, ploinkyBudget.mjs effectiveMemory)
 //
-// Under a finite budget the pool total is min(MemTotal, memory.max); a Run fits only when
-// need <= total - hostReserve and need <= available - floor, where available <= budget - memory.current.
+// local-llm's unifiedVerdict sizes the pool as the capped total min(Pt, B), where Pt is the host's physical total and B the
+// agent's budget. A Run fits only when need <= B (U2) and need <= B - the agent's current use (U4). The host reserve and
+// floor apply to the host's physical memory Pt, not to the budget.
 
-export function unifiedFitPercent({ needBytes, envelopeBytes, hostReserveBytes = UNIFIED_HOST_RESERVE_BYTES, floorBytes = UNIFIED_FLOOR_BYTES, usedBytes = 0, marginBytes = 2 * GIB }) {
-  const required = Math.max(needBytes + hostReserveBytes, needBytes + floorBytes + usedBytes) + marginBytes;
-  const percent = Math.ceil((required / envelopeBytes) * 100);
+// The smallest percentage whose budget holds the need, the agent's current use and a margin.
+export function unifiedFitPercent({ needBytes, envelopeBytes, usedBytes = 0, marginBytes = 2 * GIB }) {
+  const percent = Math.ceil(((needBytes + usedBytes + marginBytes) / envelopeBytes) * 100);
   if (percent > 100) throw new Error(`The unified need ${needBytes} B cannot fit any RAM budget of this ${envelopeBytes} B envelope.`);
   return percent;
 }
 
-// The largest percentage whose budget is still at least 1 GiB below the host-reserve threshold: a certain refusal.
-export function unifiedRefusePercent({ needBytes, envelopeBytes, hostReserveBytes = UNIFIED_HOST_RESERVE_BYTES, marginBytes = GIB }) {
-  const ceiling = needBytes + hostReserveBytes - marginBytes;
-  const percent = Math.floor((ceiling / envelopeBytes) * 100);
-  if (percent < 1) throw new Error('No RAM percentage refuses the model below the host reserve threshold.');
+// The largest percentage whose budget is at least 1 GiB below the need: a certain U2 refusal.
+export function unifiedRefusePercent({ needBytes, envelopeBytes, marginBytes = GIB }) {
+  const percent = Math.floor(((needBytes - marginBytes) / envelopeBytes) * 100);
+  if (percent < 1) throw new Error('No RAM percentage refuses the model below its unified need.');
+  return percent;
+}
+
+// The pre-change rule, where the physical host reserve and floor were charged inside the budget. Kept only so spec 95
+// can show that the current fit percentage is below it, and for its unit test. Do not use it to size a budget.
+export function reserveInBudgetFitPercent({ needBytes, envelopeBytes, hostReserveBytes = UNIFIED_HOST_RESERVE_BYTES, floorBytes = UNIFIED_FLOOR_BYTES, usedBytes = 0, marginBytes = 2 * GIB }) {
+  const required = Math.max(needBytes + hostReserveBytes, needBytes + floorBytes + usedBytes) + marginBytes;
+  const percent = Math.ceil((required / envelopeBytes) * 100);
+  if (percent > 100) throw new Error(`The unified need ${needBytes} B cannot fit any RAM budget of this ${envelopeBytes} B envelope.`);
   return percent;
 }
 
