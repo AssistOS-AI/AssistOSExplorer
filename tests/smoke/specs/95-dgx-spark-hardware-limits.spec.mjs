@@ -8,7 +8,7 @@
 //     panel, and the agent's cgroup leaf and local-llm's own budget agree with it;
 //   4 admission sizes the small model against that budget (pool = memory.max) and it runs on the GB10 with no OOM kill
 //     since before the Run; whether the runner's GPU memory is charged to the agent's cgroup is recorded, not asserted
-//     (on the GB10 it is not, so the RAM budget does not bound CUDA allocations);
+//     (on the GB10 cudaMalloc device memory is not charged, so the RAM budget does not bound it);
 //   5 a RAM budget below the unified need is refused before launch with admission_incompatible;
 //   6 clearing the limits restores the unlimited agent, and the weights are deleted.
 import fs from 'node:fs';
@@ -203,16 +203,16 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
     await expect(article.locator('[data-hardware-field="vramPercent"]')).toBeDisabled();
     await expect(article.locator('[data-hardware-field="cpus"]')).toBeEnabled();
     await expect(article.locator('[data-hardware-field="memoryPercent"]')).toBeEnabled();
-    // A-L2-2: the unified disclosure. The API says the RAM limit does not cover GPU allocations, and the panel shows the
+    // A-L2-2: the unified disclosure. The API says the RAM limit does not cover GPU device memory (cudaMalloc), and the panel shows the
     // server's help sentences (including the unified one) and the per-Box advisory line.
     expect(before.gpu.memoryModel).toBe('unified');
     expect(before.gpu.unifiedMemory?.ramLimitCoversGpuAllocations).toBe(false);
     expect(before.gpu.unifiedMemory?.assurance).toBe('advisory');
-    await expect(section).toContainText('RAM limits on this Box do not cover GPU allocations (advisory)');
+    await expect(section).toContainText('RAM limits on this Box do not cover GPU device memory (advisory)');
     // Drift check between the server's help.gpu and the panel's own GPU_HELP copy (the panel does not render the server's
     // list). toContainText reads textContent, so the <details> may stay closed; the panel's 5 s re-render collapses an open one.
     const help = section.locator('details.hardware-limit-help');
-    expect(before.help.gpu.some((sentence) => /unified-memory NVIDIA GPUs \(GB10 \/ DGX Spark\) a RAM limit does not cap the GPU memory/.test(sentence)), 'the server help carries the unified sentence').toBe(true);
+    expect(before.help.gpu.some((sentence) => /unified-memory NVIDIA GPUs \(GB10 \/ DGX Spark\) a RAM limit does not cap the GPU device memory \(cudaMalloc\)/.test(sentence)), 'the server help carries the unified sentence').toBe(true);
     for (const sentence of before.help.gpu) await expect(help).toContainText(sentence);
     await screenshot(page, '95-gpu-share-disabled.png');
     writeEvidence(evidenceDir, '95-gpu-share-refusal.json', { gpu: before.gpu, helpGpu: before.help.gpu, refusal: { status: refused.status, error: refused.body.error, message: String(refused.body.message || refused.body.reason || '').slice(0, 400) } });
@@ -311,8 +311,9 @@ test.describe('DGX Spark hardware limits for local-llm @dgx-spark', () => {
       runnerGpuBytes,
       leafMemoryCurrent: last.memoryCurrent,
       runnerVmRssBytes: last.runnerHost?.vmRssBytes ?? null,
-      // When the leaf holds less than the runner's resident memory plus its GPU memory, CUDA allocations on the unified
-      // GB10 are not charged to the agent's memory cgroup, and the RAM budget does not bound them.
+      // When the leaf holds less than the runner's resident memory plus its GPU memory, cudaMalloc device memory on the
+      // unified GB10 is not charged to the agent's memory cgroup (managed, pinned-host and ATS memory are charged), so the
+      // RAM budget does not bound it.
       gpuMemoryChargedToLeaf: last.memoryCurrent >= (last.runnerHost?.vmRssBytes ?? 0) + runnerGpuBytes,
     };
     writeEvidence(evidenceDir, '95-budget-run.json', { threads, prompts, samples, unifiedAccounting, memoryGuard: (await callToolOk(page, 'local_llm_status', {})).memoryGuard });

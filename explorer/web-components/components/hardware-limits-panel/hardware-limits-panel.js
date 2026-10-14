@@ -10,7 +10,7 @@ function unifiedMemoryNotice(gpu) {
     const unified = gpu.unifiedMemory;
     if (unified?.ramLimitCoversGpuAllocations === true) return '';
     const assurance = typeof unified?.assurance === 'string' && unified.assurance ? unified.assurance : 'advisory';
-    return `<p class="hardware-limits-facts" data-role="unified-memory">RAM limits on this Box do not cover GPU allocations (${escapeHtml(assurance)})</p>`;
+    return `<p class="hardware-limits-facts" data-role="unified-memory">RAM limits on this Box do not cover GPU device memory (${escapeHtml(assurance)})</p>`;
 }
 
 function policyDescription(limits = {}) {
