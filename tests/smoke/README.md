@@ -553,7 +553,12 @@ cleanup, default Router restart recovery, and Box availability after agent and
 Router lifecycle events. It also proves that an ordinary user does not receive
 the launcher and gets `403` from the page, discovery, and exact launch-record
 session mutation. A direct `?dir=` URL is required to fail closed without
-creating a session. Missing workspace root, non-loopback target, missing exact
+creating a session. The browser mutation proof cookie is bound to the edge
+generation and re-issued only by an authenticated request, so after the
+targeted agent restart the gate refreshes it with one `GET
+/webtty/live-sessions` before its single DELETE, as the WebTTY client's
+confirmed Kill does; every other mutation must succeed or be refused on its
+first attempt. Missing workspace root, non-loopback target, missing exact
 fresh graph runtime, softened assertion, or skipped target state is a hard
 failure while this gate is selected.
 The Box generation must be fresh, but its prebuilt image may be older only when

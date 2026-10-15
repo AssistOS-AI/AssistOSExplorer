@@ -169,8 +169,11 @@ function requirePinnedRuntimeBinding() {
   });
 }
 
-async function browserMutation(page, pathname, { method = 'POST', body } = {}) {
-  return page.evaluate(async ({ requestPath, requestMethod, requestBody }) => {
+async function browserMutation(page, pathname, { method = 'POST', body, refreshProof = false } = {}) {
+  return page.evaluate(async ({ requestPath, requestMethod, requestBody, refreshFirst }) => {
+    // The proof cookie is bound to the edge generation and is re-issued only by an authenticated request.
+    // Like the WebTTY client's confirmed Kill, a caller that follows a restart refreshes it first.
+    if (refreshFirst) await fetch('/webtty/live-sessions', { credentials: 'same-origin', cache: 'no-store' });
     const csrf = document.cookie
       .split(';')
       .map((part) => part.trim())
@@ -190,7 +193,7 @@ async function browserMutation(page, pathname, { method = 'POST', body } = {}) {
     let payload = null;
     try { payload = JSON.parse(text); } catch {}
     return { status: response.status, payload, text };
-  }, { requestPath: pathname, requestMethod: method, requestBody: body });
+  }, { requestPath: pathname, requestMethod: method, requestBody: body, refreshFirst: refreshProof });
 }
 
 function expectedHttpFailureDiagnostics(pathname, { method = 'POST', status } = {}) {
@@ -449,12 +452,14 @@ function sortedTargets(targets) {
   return targets.map(publicTarget).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
 }
 
-async function closeTerminal(terminal, { closePage = true, requestPage = terminal.terminalPage, allowMissing = false } = {}) {
+async function closeTerminal(terminal, {
+  closePage = true, requestPage = terminal.terminalPage, allowMissing = false, refreshProof = false,
+} = {}) {
   if (terminal.cleaned) return;
   const result = await browserMutation(
     requestPage,
     `/webtty/sessions/${encodeURIComponent(terminal.session.id)}`,
-    { method: 'DELETE' },
+    { method: 'DELETE', refreshProof },
   );
   if (allowMissing && result.status === 404) {
     expect(result.payload).toEqual({ ok: false, error: 'not_found' });
@@ -1104,7 +1109,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
         replacementVictimDiagnostics.actionableEvents(),
         'active target replacement may interrupt transport but must not produce an unhandled browser failure',
       ).toEqual([]);
-      await closeTerminal(replacementVictim);
+      // The restart changed the edge generation; refresh the browser proof before the one DELETE.
+      await closeTerminal(replacementVictim, { refreshProof: true });
       await replacementVictimDiagnostics.flush();
 
       const replacementRuntimeBeforeStale = collectWebttyRuntimeEvidence({
