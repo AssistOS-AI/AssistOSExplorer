@@ -15,7 +15,7 @@ function element() {
     };
 }
 
-function dialogFixture() {
+function dialogFixture({ withCancel = true } = {}) {
     const dialog = element();
     dialog.open = false;
     dialog.showModal = () => { dialog.open = true; };
@@ -23,7 +23,7 @@ function dialogFixture() {
     dialog.getBoundingClientRect = () => ({ left: 100, right: 300, top: 100, bottom: 300 });
     const trigger = element();
     const closeButton = element();
-    const cancelButton = element();
+    const cancelButton = withCancel ? element() : undefined;
     let openings = 0;
     const controller = initCreateRobotDialog({ dialog, trigger, closeButton, cancelButton, onOpen: () => { openings++; } });
     return { dialog, trigger, closeButton, cancelButton, controller, openings: () => openings };
@@ -41,6 +41,22 @@ test('creation dialog respects the disabled trigger, opens once and restores foc
     state.cancelButton.fire('click');
     assert.equal(state.dialog.open, false);
     assert.equal(state.trigger.focused, true);
+});
+
+test('a dialog without Cancel retains Close, Escape and pending submission guards', () => {
+    const state = dialogFixture({ withCancel: false });
+    state.trigger.fire('click');
+    state.controller.setBusy(true);
+    state.closeButton.fire('click');
+    state.dialog.fire('cancel', { preventDefault() {} });
+    assert.equal(state.dialog.open, true);
+    state.controller.setBusy(false);
+    state.closeButton.fire('click');
+    assert.equal(state.dialog.open, false);
+    assert.equal(state.trigger.focused, true);
+    state.trigger.fire('click');
+    state.dialog.fire('cancel', { preventDefault() {} });
+    assert.equal(state.dialog.open, false);
 });
 
 test('Logs link has understated styling without a button background on hover', async () => {

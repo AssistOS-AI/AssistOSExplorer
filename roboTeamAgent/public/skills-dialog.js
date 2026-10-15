@@ -1,3 +1,5 @@
+import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
+
 function normalizeRepositorySource(source) {
     const value = (source || '').trim().replace(/\/+$/, '');
     if (!value.startsWith('https://')) return value;
@@ -29,21 +31,59 @@ export async function loadSkillRecommendations(fetchImpl = globalThis.fetch) {
             source: repo.skillSource?.source || repo.url, origin: repo.skillSource?.origin || 'remote' }));
 }
 
+export function skillRepositoryLabel(repo, recommendations = []) {
+    if (repo.builtin) return 'Built-in copilot';
+    const preferred = recommendations.find(item => hasRecommendedRepository({ repositories: [repo] }, item));
+    if (preferred?.name) return preferred.name;
+    const source = normalizeRepositorySource(repo.source);
+    if (!source) return repo.id;
+    try { return new URL(source).pathname.split('/').filter(Boolean).at(-1) || repo.id; }
+    catch { return source.split('/').filter(Boolean).at(-1) || repo.id; }
+}
+
 export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
     const dialog = document.createElement('dialog');
-    dialog.className = 'skills-dialog';
+    dialog.className = 'skills-dialog skills-manager-dialog';
     dialog.setAttribute('aria-labelledby', 'skills-dialog-title');
-    dialog.innerHTML = `<header class="skills-dialog-heading"><h2 id="skills-dialog-title"></h2><button type="button" class="button secondary close-skills">Close</button></header>
-        <section class="required-skills"><h3>Required skills</h3><p class="muted">Loading…</p></section><div class="repository-list"></div>
-        <section class="skill-recommendations" aria-labelledby="skill-recommendations-title"><h3 id="skill-recommendations-title">Recommended repositories</h3><p class="muted">Detected in the workspace or registered in Ploinky. Workspace checkouts are preferred.</p><div class="recommendation-list" aria-live="polite"></div></section>
-        <form class="repository-form"><label>Repository URL<input name="source" type="url" required maxlength="2048" placeholder="https://github.com/owner/skills.git"></label><button class="button primary" type="submit">Add repo</button></form>
-        <p class="message" role="status" aria-live="polite"></p>`;
-    dialog.querySelector('h2').textContent = `Manage skills · ${robot.name}`;
+    dialog.innerHTML = `<header class="skills-dialog-heading"><div><h2 id="skills-dialog-title">Manage skills</h2><p class="muted skills-robot-context"></p></div><button type="button" class="button secondary close-skills">Close</button></header>
+        <div class="skills-manager-layout">
+            <nav class="skills-repository-nav" aria-label="Skill repositories">
+                <div class="skills-repository-nav-heading"><h3>Repositories</h3><button type="button" class="skills-add-option" data-skills-focus="add" aria-label="Add repository" aria-haspopup="dialog" aria-controls="skills-add-dialog" aria-expanded="false"><span aria-hidden="true">+</span> Add repo</button></div><div class="skills-repository-list"></div>
+                <button type="button" class="skills-repository-option skills-required-option" data-skills-view="required" data-skills-focus="required" aria-controls="skills-required-panel" aria-pressed="false">Required skills<span class="muted">Managed by RoboTeam · view only</span></button>
+            </nav>
+            <div class="skills-manager-content">
+                <section class="skills-repository-panel" id="skills-repository-panel" aria-labelledby="skills-repository-title"></section>
+                <section class="required-skills" id="skills-required-panel" aria-labelledby="skills-required-title" hidden><h3 id="skills-required-title">Required skills</h3><p class="muted">Managed by RoboTeam. These skills cannot be disabled.</p><div class="required-skills-list"><p class="muted">Loading…</p></div></section>
+            </div>
+        </div>
+        <footer class="skills-manager-footer"><p class="muted">Enabled skillsets are offered for selection. Existing task selections and continuations are unchanged.</p><p class="message" role="status" aria-live="polite" hidden></p></footer>`;
+    const addDialog = document.createElement('dialog');
+    addDialog.id = 'skills-add-dialog';
+    addDialog.className = 'skills-dialog skills-add-dialog';
+    addDialog.setAttribute('aria-labelledby', 'skills-add-title');
+    addDialog.innerHTML = `<header class="skills-dialog-heading"><h2 id="skills-add-title">Add repository</h2><button type="button" class="button secondary close-add-repository">Close</button></header>
+        <div class="skills-add-content">
+            <form class="repository-form"><label>Repository URL<input name="source" type="url" required maxlength="2048" placeholder="https://github.com/owner/skills.git" data-skills-focus="repository-url" autofocus></label><button class="button primary" type="submit">Add repo</button></form>
+            <section class="skill-recommendations" aria-labelledby="skill-recommendations-title"><h3 id="skill-recommendations-title">Recommended repositories</h3><p class="muted">Detected in the workspace or registered in Ploinky. Workspace checkouts are preferred.</p><div class="recommendation-list"></div></section>
+        </div>
+        <footer class="skills-add-footer"><p class="message" role="status" aria-live="polite" hidden></p></footer>`;
+    dialog.append(addDialog);
+    dialog.querySelector('.skills-robot-context').textContent = `Robot · ${robot.name}`;
     const message = dialog.querySelector('.message');
     const form = dialog.querySelector('form');
+    const contentPane = dialog.querySelector('.skills-manager-content');
+    const repositoryPanel = dialog.querySelector('.skills-repository-panel');
+    const requiredPanel = dialog.querySelector('.required-skills');
+    const addTrigger = dialog.querySelector('.skills-add-option');
+    const addMessage = addDialog.querySelector('.message');
+    const lifetime = new AbortController();
+    const opener = document.activeElement;
     form.hidden = !canAdmin;
+    addTrigger.hidden = !canAdmin;
     let busy = false;
     let current = robot;
+    let view = 'repository';
+    let selectedId = robot.repositories?.[0]?.id ?? null;
     let recommendations = [];
     let recommendationError = '';
     let loadingRecommendations = true;
@@ -53,55 +93,107 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         if (className) element.className = className;
         return element;
     };
-    function render() {
-        const list = dialog.querySelector('.repository-list');
-        list.replaceChildren();
-        for (const repo of current.repositories || []) {
-            const row = node('section', '', 'repository-row');
-            const details = document.createElement('details');
-            const preferred = recommendations.find(item => hasRecommendedRepository({ repositories: [repo] }, item));
-            const summary = node('summary', repo.builtin ? 'Built-in copilot' : preferred?.source || repo.source || repo.id);
-            details.append(summary);
-            const content = node('div', '', 'repository-content');
-            content.append(node('h3', `Skills (${repo.skills.length})`));
-            const skills = document.createElement('ul');
-            for (const skill of repo.skills) {
-                const item = document.createElement('li');
-                item.append(node('strong', skill.name));
-                skills.append(item);
-            }
-            content.append(skills, node('h3', 'Skillsets'));
-            if (!repo.skillsets.length) content.append(node('p', 'No skillsets defined in skillsets.md.', 'muted'));
-            for (const set of repo.skillsets) {
-                const item = node('article', '', 'skillset-item');
-                item.append(node('strong', set.name || set.id), node('p', set.description));
-                item.append(node('p', set.enabled === false ? 'Disabled' : 'Enabled', 'muted'));
-                if (canAdmin) {
-                    const toggle = node('button', set.enabled === false ? 'Enable' : 'Disable', 'button secondary');
-                    toggle.type = 'button';
-                    toggle.disabled = busy;
-                    toggle.setAttribute('aria-label', `${set.enabled === false ? 'Enable' : 'Disable'} ${set.name || set.id}`);
-                    toggle.addEventListener('click', () => mutate('PATCH', { id: set.id, enabled: set.enabled === false }));
-                    item.append(toggle);
-                }
-                const members = node('ul', '', 'skill-members');
-                for (const name of set.skills) members.append(node('li', name));
-                item.append(members);
-                content.append(item);
-            }
-            details.append(content);
-            row.append(details);
-            if (canAdmin && !repo.builtin) {
-                const remove = node('button', 'Remove', 'button danger');
-                remove.type = 'button';
-                remove.disabled = busy;
-                remove.setAttribute('aria-label', `Remove ${repo.source || repo.id}`);
-                remove.addEventListener('click', () => mutate('DELETE', { name: repo.id }));
-                row.append(remove);
-            }
-            list.append(row);
+    const labelFor = repo => skillRepositoryLabel(repo, recommendations);
+    function setMessage(text, error = false) {
+        const target = addDialog.open ? addMessage : message;
+        target.textContent = text;
+        target.className = error ? 'message error' : 'message';
+        target.hidden = !text;
+    }
+    function closeMenus() {
+        const toggle = dialog.querySelector('[data-robot-menu-toggle]');
+        if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        const options = dialog.querySelector('[data-robot-menu-options]');
+        if (options) options.hidden = true;
+    }
+    function showView(next, id = selectedId) {
+        if (busy) return;
+        view = next;
+        selectedId = id;
+        render();
+        contentPane.scrollTop = 0;
+    }
+    const addController = initCreateRobotDialog({
+        dialog: addDialog, trigger: addTrigger,
+        closeButton: addDialog.querySelector('.close-add-repository'),
+        onOpen: () => {
+            closeMenus();
+            addMessage.textContent = '';
+            addMessage.hidden = true;
+            addTrigger.setAttribute('aria-expanded', 'true');
+        },
+    });
+    addDialog.addEventListener('cancel', event => event.stopPropagation());
+    addDialog.addEventListener('close', () => addTrigger.setAttribute('aria-expanded', 'false'));
+    function skillList(names, label) {
+        const list = node('ul', '', 'skill-members');
+        list.setAttribute('aria-label', label);
+        for (const name of names) list.append(node('li', name));
+        return list;
+    }
+    function renderRepository(repo) {
+        repositoryPanel.replaceChildren();
+        const heading = node('div', '', 'skills-repository-heading');
+        const info = node('div');
+        const title = node('h3', repo ? labelFor(repo) : 'Repositories');
+        title.id = 'skills-repository-title';
+        info.append(title);
+        heading.append(info);
+        repositoryPanel.append(heading);
+        if (!repo) {
+            repositoryPanel.append(node('p', 'No repositories added yet. Choose Add repository to get started.', 'muted'));
+            if (!canAdmin) repositoryPanel.lastChild.textContent = 'No repositories added to this robot.';
+            return;
         }
-        if (!current.repositories?.length) list.append(node('p', 'No repositories added yet.'));
+        const preferred = recommendations.find(item => hasRecommendedRepository({ repositories: [repo] }, item));
+        const source = repo.builtin ? 'Bundled with RoboTeam · read-only source' : preferred?.source || repo.source || repo.id;
+        info.append(node('p', source, 'muted skills-repository-source'));
+        if (canAdmin && !repo.builtin) {
+            const menu = node('div', '', 'robot-manage');
+            menu.innerHTML = `<button type="button" class="button secondary icon-button manage-toggle" data-robot-menu-toggle aria-expanded="false" data-skills-focus="repository-menu"><span aria-hidden="true">⋮</span></button><div class="manage-options" data-robot-menu-options hidden></div>`;
+            menu.querySelector('button').disabled = busy;
+            const remove = node('button', 'Remove repository', 'button danger');
+            remove.type = 'button';
+            remove.disabled = busy;
+            remove.setAttribute('aria-label', `Remove ${repo.source || repo.id}`);
+            remove.addEventListener('click', () => void mutate('DELETE', { name: repo.id }));
+            menu.querySelector('.manage-options').append(remove);
+            heading.append(menu);
+            initRobotMenu({ menu, id: 'skills-repository-options', label: `More actions for ${labelFor(repo)}`, closeMenus });
+        }
+        const sets = repo.skillsets || [];
+        if (sets.length) repositoryPanel.append(node('h4', 'Skillsets', 'skills-section-label'));
+        for (const set of sets) {
+            const item = node('article', '', 'skillset-item');
+            item.classList.toggle('is-disabled', set.enabled === false);
+            const head = node('div', '', 'skillset-heading');
+            head.append(node('h5', set.name || set.id));
+            const toggle = node('label', '', 'skillset-toggle');
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.setAttribute('role', 'switch');
+            input.checked = set.enabled !== false;
+            input.disabled = busy || !canAdmin;
+            input.setAttribute('aria-label', `${set.name || set.id}: available in robot catalog`);
+            input.dataset.skillsFocus = `skillset:${set.id}`;
+            input.addEventListener('change', () => void mutate('PATCH', { id: set.id, enabled: input.checked }));
+            toggle.append(input, node('span', input.checked ? 'Enabled' : 'Disabled'));
+            head.append(toggle);
+            item.append(head);
+            if (set.description) item.append(node('p', set.description, 'skillset-description'));
+            item.append(skillList(set.skills, `Skills included in ${set.name || set.id}`));
+            repositoryPanel.append(item);
+        }
+        const grouped = new Set(sets.flatMap(set => set.skills));
+        const otherSkills = repo.skills.filter(skill => !grouped.has(skill.name)).map(skill => skill.name);
+        if (otherSkills.length || !sets.length) {
+            repositoryPanel.append(node('h4', sets.length ? 'Other skills' : 'Skills', 'skills-section-label'));
+            if (sets.length) repositoryPanel.append(node('p', 'Not included in the declared skillsets.', 'muted'));
+            if (otherSkills.length) repositoryPanel.append(skillList(otherSkills, 'Individual repository skills'));
+            else repositoryPanel.append(node('p', 'No skills available.', 'muted'));
+        }
+    }
+    function renderRecommendations() {
         const recommended = dialog.querySelector('.recommendation-list');
         recommended.replaceChildren();
         if (loadingRecommendations) recommended.append(node('p', 'Loading recommendations…', 'muted'));
@@ -120,40 +212,82 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
                 add.type = 'button';
                 add.disabled = busy || added;
                 add.setAttribute('aria-label', `Add ${repo.name}`);
-                add.addEventListener('click', () => mutate('POST', { source: repo.source, description: repo.description }));
+                add.dataset.skillsFocus = `recommendation:${repo.source}`;
+                add.addEventListener('click', () => void mutate('POST', { source: repo.source, description: repo.description }));
                 row.append(add);
             }
             recommended.append(row);
         }
     }
+    function render() {
+        if (lifetime.signal.aborted) return;
+        const focusKey = dialog.contains(document.activeElement) ? document.activeElement.dataset.skillsFocus : null;
+        const scrollTop = contentPane.scrollTop;
+        const repos = current.repositories || [];
+        if (!repos.some(repo => repo.id === selectedId)) selectedId = repos[0]?.id ?? null;
+        const list = dialog.querySelector('.skills-repository-list');
+        list.replaceChildren();
+        for (const repo of repos) {
+            const button = node('button', '', 'skills-repository-option');
+            button.type = 'button';
+            button.disabled = busy;
+            button.dataset.skillsFocus = `repository:${repo.id}`;
+            button.setAttribute('aria-controls', 'skills-repository-panel');
+            button.setAttribute('aria-pressed', String(view === 'repository' && selectedId === repo.id));
+            const setCount = repo.skillsets.length, skillCount = repo.skills.length;
+            button.append(node('span', labelFor(repo)), node('span', `${setCount} ${setCount === 1 ? 'skillset' : 'skillsets'} · ${skillCount} ${skillCount === 1 ? 'skill' : 'skills'}`, 'muted'));
+            button.addEventListener('click', () => showView('repository', repo.id));
+            list.append(button);
+        }
+        if (!repos.length) list.append(node('p', 'No repositories added yet.', 'muted'));
+        for (const button of dialog.querySelectorAll('[data-skills-view]')) {
+            button.disabled = busy;
+            button.setAttribute('aria-pressed', String(view === button.dataset.skillsView));
+        }
+        repositoryPanel.hidden = view !== 'repository';
+        requiredPanel.hidden = view !== 'required';
+        renderRepository(repos.find(repo => repo.id === selectedId));
+        renderRecommendations();
+        for (const control of form.querySelectorAll('input, button')) control.disabled = busy;
+        addTrigger.disabled = busy || !canAdmin;
+        addController.setBusy(busy);
+        dialog.setAttribute('aria-busy', String(busy));
+        if (focusKey) [...dialog.querySelectorAll('[data-skills-focus]')].find(element => element.dataset.skillsFocus === focusKey && !element.disabled)?.focus({ preventScroll: true });
+        contentPane.scrollTop = scrollTop;
+    }
     async function mutate(method, body) {
-        if (busy) return;
+        if (busy || !canAdmin || lifetime.signal.aborted) return;
         busy = true;
         const updating = method === 'PATCH';
-        const expanded = new Set([...dialog.querySelectorAll('.repository-row details[open]')].map(element => element.querySelector('summary').textContent));
-        message.textContent = updating ? 'Updating skillset…' : method === 'POST' ? 'Adding repository…' : 'Removing repository…';
-        message.className = 'message';
-        form.querySelector('button').disabled = true;
+        const idsBefore = new Set((current.repositories || []).map(repo => repo.id));
+        const focusKey = document.activeElement?.dataset.skillsFocus;
+        setMessage(updating ? 'Updating skillset…' : method === 'POST' ? 'Adding repository…' : 'Removing repository…');
         render();
         try {
             const route = `api/robots/${robot.id}/skillsets`;
             await api(method === 'DELETE' ? `${route}?name=${encodeURIComponent(body.name)}` : route,
                 method === 'DELETE' ? { method } : { method, body });
             const result = await api('api/robots');
-            current = result.robots.find(item => item.id === robot.id);
-            if (!current) throw new Error('Robot is no longer available.');
-            if (method === 'POST') form.reset();
-            message.textContent = updating ? `Skillset ${body.enabled ? 'enabled' : 'disabled'}.` : method === 'POST' ? 'Repository added.' : 'Repository removed. Removed skills will be omitted when tasks next start or resume.';
+            const updated = result.robots.find(item => item.id === robot.id);
+            if (!updated) throw new Error('Robot is no longer available.');
+            current = updated;
+            if (method === 'POST') {
+                form.reset();
+                const added = current.repositories?.find(repo => !idsBefore.has(repo.id));
+                if (added) { selectedId = added.id; view = 'repository'; contentPane.scrollTop = 0; }
+                addController.complete();
+            }
+            setMessage(updating ? `Skillset ${body.enabled ? 'enabled' : 'disabled'}.` : method === 'POST' ? 'Repository added.' : 'Repository removed. Selected skills from this source will be unavailable when tasks next start or resume.');
             await onChanged();
         } catch (error) {
-            message.textContent = error.message;
-            message.className = 'message error';
+            setMessage(error.message, true);
         } finally {
             busy = false;
-            form.querySelector('button').disabled = false;
             if (current) render();
-            for (const details of dialog.querySelectorAll('.repository-row details')) {
-                details.open = expanded.has(details.querySelector('summary').textContent);
+            if (!lifetime.signal.aborted) {
+                const target = updating || addDialog.open ? [...dialog.querySelectorAll('[data-skills-focus]')].find(element => element.dataset.skillsFocus === focusKey)
+                    : dialog.querySelector('.skills-repository-option[aria-pressed="true"]');
+                target?.focus({ preventScroll: true });
             }
         }
     }
@@ -161,38 +295,45 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         event.preventDefault();
         const source = new FormData(form).get('source').trim();
         if (!source.startsWith('https://')) {
-            message.textContent = 'Enter an HTTPS Git repository URL.';
-            message.className = 'message error';
+            setMessage('Enter an HTTPS Git repository URL.', true);
             return;
         }
         const recommended = recommendations.find(repo => normalizeRepositorySource(repo.url) === normalizeRepositorySource(source));
         if (recommended && hasRecommendedRepository(current, recommended)) {
-            message.textContent = 'This repository is already added to this robot.';
-            message.className = 'message error';
+            setMessage('This repository is already added to this robot.', true);
             return;
         }
         void mutate('POST', { source: recommended?.source || source });
     });
-    const close = () => { dialog.close(); dialog.remove(); };
+    for (const button of dialog.querySelectorAll('[data-skills-view]')) button.addEventListener('click', () => showView(button.dataset.skillsView));
+    dialog.addEventListener('click', event => { if (!event.target.closest('.robot-manage')) closeMenus(); });
+    dialog.addEventListener('keydown', event => {
+        const toggle = dialog.querySelector('[data-robot-menu-toggle][aria-expanded="true"]');
+        if (event.key === 'Escape' && toggle) { event.preventDefault(); event.stopPropagation(); closeMenus(); toggle.focus(); }
+    });
+    const cleanup = () => { lifetime.abort(); if (addDialog.open) addDialog.close(); dialog.remove(); };
+    const close = () => { dialog.close(); cleanup(); if (opener?.isConnected) opener.focus(); };
     dialog.querySelector('.close-skills').addEventListener('click', close);
     dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
-    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    dialog.addEventListener('close', cleanup, { once: true });
     document.body.append(dialog);
     render();
     dialog.showModal();
-    void api('api/required-skills').then(({ skills }) => {
-        const section = dialog.querySelector('.required-skills');
-        section.replaceChildren(node('h3', 'Required skills'));
+    void api('api/required-skills', { signal: lifetime.signal }).then(({ skills }) => {
+        if (lifetime.signal.aborted) return;
+        const section = dialog.querySelector('.required-skills-list');
+        section.replaceChildren();
+        if (!skills.length) section.append(node('p', 'No required skills.', 'muted'));
         for (const skill of skills) {
             const details = document.createElement('details');
             details.append(node('summary', `${skill.name} · Required · View only`));
             const content = node('pre', skill.content);
-            content.style.whiteSpace = 'pre-wrap';
-            content.style.overflowWrap = 'anywhere';
             details.append(content);
             section.append(details);
         }
-    }).catch(error => { dialog.querySelector('.required-skills p').textContent = error.message; });
+    }).catch(error => {
+        if (!lifetime.signal.aborted) dialog.querySelector('.required-skills-list').replaceChildren(node('p', error.message, 'message error'));
+    });
     void loadSkillRecommendations().then(repos => { recommendations = repos; })
         .catch(error => { recommendationError = error.message; })
         .finally(() => { loadingRecommendations = false; if (dialog.isConnected) render(); });

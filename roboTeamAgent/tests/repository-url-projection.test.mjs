@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { remoteUrlOrEmpty } from '../server/repository-url-projection.mjs';
 import { containedWorkspaceReference, projectRobotView } from '../server/robot-projection.mjs';
+import { skillRepositoryLabel } from '../public/skills-dialog.js';
 
 // Pinned display rule shared with Ploinky's marketplace projection.
 const VECTORS = [
@@ -91,7 +92,8 @@ test('the restricted view never mutates its input and only a strict true privile
 
 test('the skills dialog labels and removes repositories by id when the display source is blank', () => {
     const dialog = fs.readFileSync(fileURLToPath(new URL('../public/skills-dialog.js', import.meta.url)), 'utf8');
-    assert.match(dialog, /preferred\?\.source \|\| repo\.source \|\| repo\.id\)/);
+    assert.equal(skillRepositoryLabel({ id: 'repo-restricted', source: '' }), 'repo-restricted');
+    assert.match(dialog, /preferred\?\.source \|\| repo\.source \|\| repo\.id;/);
     assert.match(dialog, /`Remove \$\{repo\.source \|\| repo\.id\}`/);
     assert.match(dialog, /mutate\('DELETE', \{ name: repo\.id \}\)/, 'removal keys on the stable repository id, never the display URL');
 });

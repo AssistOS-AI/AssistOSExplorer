@@ -12,7 +12,7 @@ export function initCreateRobotDialog({ dialog, trigger, closeButton, cancelButt
     };
     trigger.addEventListener('click', open);
     closeButton.addEventListener('click', close);
-    cancelButton.addEventListener('click', close);
+    cancelButton?.addEventListener('click', close);
     dialog.addEventListener('cancel', event => {
         event.preventDefault();
         close();
@@ -27,7 +27,7 @@ export function initCreateRobotDialog({ dialog, trigger, closeButton, cancelButt
         busy = value;
         dialog.setAttribute('aria-busy', String(value));
         closeButton.disabled = value;
-        cancelButton.disabled = value;
+        if (cancelButton) cancelButton.disabled = value;
     };
     return {
         setBusy,
