@@ -7,10 +7,108 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { projectOrchestrationRecords, assertObserverWindow, assertOwnedSettlement, terminateOwnedFlow,
     snapshotWalFiles, assertWalFileFences, assertIdleWalReadmarkDelta, buildOrchestrationDiagnosticsBundle,
-    buildOrchestrationProgram, decodeOrchestrationProcessResult, createOrchestrationReader } from './live-sessions-orchestration.mjs';
+    buildOrchestrationProgram, decodeOrchestrationProcessResult, createOrchestrationReader,
+    inspectOuterOrchestrationBinding } from './live-sessions-orchestration.mjs';
 import { createLiveSessionFinalizer } from './live-sessions-diagnostics.mjs';
 import { createLiveSkillsRuntimeReader } from './copilot-live-skills-runtime.mjs';
 import { collectCopilotReleaseEvidence } from './copilot-release-evidence.mjs';
+
+const outerId = 'a'.repeat(64);
+function outerInspection() {
+    return { Id: outerId, State: { StartedAt: '2026-10-16T10:00:00.123456789Z', Running: true, Pid: 1234 },
+        Image: 'b'.repeat(64), Mounts: [
+            { Type: 'bind', Source: '/workspace', Destination: '/workspace', RW: true, Options: ['rbind'] },
+            { Type: 'volume', Name: 'runtime', Source: '/volumes/runtime', Destination: '/var/lib/containers', RW: true },
+        ], Config: { Env: ['PRIVATE_TOKEN=neutral-private-value'], Labels: { private: 'neutral-private-label' } } };
+}
+
+test('outer binding reads full container JSON without Podman templates and preserves only the frozen projection', async () => {
+    const inspected = outerInspection(), calls = [];
+    const binding = await inspectOuterOrchestrationBinding(outerId, { execute: async (command, args, limits) => {
+        calls.push({ command, args, limits });
+        if (args.includes('--format')) throw new Error("Error: template: inspect:1:24: executing inspect at <.Id>: can't evaluate field Id in type interface {}");
+        assert.equal(command, 'podman');
+        assert.deepEqual(args, ['container', 'inspect', outerId]);
+        return { stdout: JSON.stringify([inspected]) };
+    } });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].limits, { timeout: 8000, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL' });
+    assert.deepEqual(binding, { id: outerId, startedAt: inspected.State.StartedAt, running: true,
+        image: inspected.Image, mounts: inspected.Mounts });
+    assert.deepEqual(Object.keys(binding).sort(), ['id', 'image', 'mounts', 'running', 'startedAt']);
+    assert.ok(!JSON.stringify(binding).includes('neutral-private'));
+    assert.ok(!JSON.stringify(binding).includes('Pid'));
+});
+
+test('outer binding rejects malformed, ambiguous, foreign and incomplete container inspections with safe errors', async t => {
+    const safeError = error => {
+        assert.equal(error.message, 'Bounded outer orchestration binding could not be inspected.');
+        assert.equal(error.cause, undefined);
+        assert.deepEqual(Object.keys(error), []);
+        assert.ok(!error.stack.includes('neutral-private'));
+        return true;
+    };
+    const invalid = {
+        'malformed JSON': '{"Config":{"Env":["neutral-private-value"]}',
+        'truncated template output': '{"id":',
+        'object instead of array': JSON.stringify(outerInspection()),
+        'null result': 'null',
+        'empty array': '[]',
+        'multiple matches': JSON.stringify([outerInspection(), outerInspection()]),
+        'null row': '[null]',
+        'wrong kind': JSON.stringify([{ Id: outerId, RepoTags: ['neutral-private-image'] }]),
+        'wrong ID': JSON.stringify([{ ...outerInspection(), Id: 'c'.repeat(64) }]),
+        'short ID': JSON.stringify([{ ...outerInspection(), Id: outerId.slice(0, 12) }]),
+        'missing state': JSON.stringify([{ ...outerInspection(), State: undefined }]),
+        'missing start time': JSON.stringify([{ ...outerInspection(), State: { Running: true } }]),
+        'empty start time': JSON.stringify([{ ...outerInspection(), State: { StartedAt: '', Running: true } }]),
+        'missing running': JSON.stringify([{ ...outerInspection(), State: { StartedAt: 'neutral' } }]),
+        'coerced running': JSON.stringify([{ ...outerInspection(), State: { StartedAt: 'neutral', Running: 'true' } }]),
+        'missing image': JSON.stringify([{ ...outerInspection(), Image: undefined }]),
+        'empty image': JSON.stringify([{ ...outerInspection(), Image: '' }]),
+        'missing mounts': JSON.stringify([{ ...outerInspection(), Mounts: undefined }]),
+        'wrong mounts kind': JSON.stringify([{ ...outerInspection(), Mounts: {} }]),
+        'null mount': JSON.stringify([{ ...outerInspection(), Mounts: [null] }]),
+        'missing mount destination': JSON.stringify([{ ...outerInspection(), Mounts: [{ Type: 'bind' }] }]),
+        'oversized stdout': ' '.repeat(1024 * 1024 + 1),
+        'nontext stdout': Buffer.from('[]'),
+    };
+    for (const [name, stdout] of Object.entries(invalid)) await t.test(name, async () => {
+        await assert.rejects(inspectOuterOrchestrationBinding(outerId, { execute: async () => ({ stdout }) }), safeError);
+    });
+    await t.test('subprocess errors cannot expose stdout, stderr, command or causes', async () => {
+        const raw = Object.assign(new Error('neutral-private-command'), { stdout: 'neutral-private-stdout',
+            stderr: 'neutral-private-stderr', cause: new Error('neutral-private-cause') });
+        await assert.rejects(inspectOuterOrchestrationBinding(outerId, { execute: async () => { throw raw; } }), safeError);
+    });
+    await t.test('invalid selected IDs fail before invoking any command', async () => {
+        let calls = 0;
+        for (const id of [undefined, null, 123, '', 'box-name', outerId.slice(0, 12), 'A'.repeat(64), '--help', `${outerId}\n`]) {
+            await assert.rejects(inspectOuterOrchestrationBinding(id, { execute: async () => { calls += 1; } }), safeError);
+        }
+        assert.equal(calls, 0);
+    });
+});
+
+test('outer binding keeps stopped state and all generation and mount changes visible to the surrounding fences', async () => {
+    const read = record => inspectOuterOrchestrationBinding(outerId, { execute: async () => ({ stdout: JSON.stringify([record]) }) });
+    const baseline = await read(outerInspection());
+    for (const mutate of [
+        record => { record.State.StartedAt = '2026-10-16T10:01:00Z'; },
+        record => { record.State.Running = false; },
+        record => { record.Image = 'c'.repeat(64); },
+        record => { record.Mounts.push({ Type: 'bind', Source: '/foreign', Destination: '/workspace/selected', RW: true }); },
+        record => { record.Mounts[1].RW = false; },
+        record => { record.Mounts[0].Options = ['ro']; },
+    ]) {
+        const changed = outerInspection(); mutate(changed);
+        assert.notDeepEqual(await read(changed), baseline);
+    }
+    const stopped = outerInspection(); stopped.State.Running = false;
+    assert.equal((await read(stopped)).running, false);
+    const unmounted = outerInspection(); unmounted.Mounts = [];
+    assert.deepEqual((await read(unmounted)).mounts, []);
+});
 
 test('orchestration reader carries the verifier path across the actual runtime and release collector boundary', async t => {
     const fallback = fileURLToPath(new URL('../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs', import.meta.url));

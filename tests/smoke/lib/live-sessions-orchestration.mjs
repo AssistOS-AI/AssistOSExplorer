@@ -374,6 +374,29 @@ export async function readLiveSessionOrchestration(options, { fsApi, codeRoot = 
     emit({ ...result, codeHashes: hashes });
 }
 
+export async function inspectOuterOrchestrationBinding(containerId, { execute = promisify(execFile) } = {}) {
+    try {
+        assert.match(containerId, /^[a-f0-9]{64}$/);
+        const result = await execute('podman', ['container', 'inspect', containerId],
+            { timeout: 8000, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL' });
+        assert.equal(typeof result.stdout, 'string');
+        assert.ok(Buffer.byteLength(result.stdout) <= 1024 * 1024);
+        const rows = JSON.parse(result.stdout);
+        assert.ok(Array.isArray(rows) && rows.length === 1);
+        const inspected = rows[0];
+        assert.equal(inspected?.Id, containerId);
+        assert.ok(typeof inspected.State?.StartedAt === 'string' && inspected.State.StartedAt.length > 0);
+        assert.equal(typeof inspected.State?.Running, 'boolean');
+        assert.ok(typeof inspected.Image === 'string' && inspected.Image.length > 0);
+        assert.ok(Array.isArray(inspected.Mounts) && inspected.Mounts.every(mount => mount && typeof mount === 'object'
+            && !Array.isArray(mount) && typeof mount.Destination === 'string' && mount.Destination.length > 0));
+        // Keep every mount and its fields for the existing shadow/generation
+        // fences, while withholding unrelated inspect data such as Config.Env.
+        return { id: inspected.Id, startedAt: inspected.State.StartedAt, running: inspected.State.Running,
+            image: inspected.Image, mounts: inspected.Mounts };
+    } catch { throw new Error('Bounded outer orchestration binding could not be inspected.'); }
+}
+
 export async function createOrchestrationReader({ release, evidence, runtime, cwd, robotId, ownerPrincipal }, {
     env = process.env, createRuntimeReader = createLiveSkillsRuntimeReader,
 } = {}) {
@@ -389,14 +412,7 @@ export async function createOrchestrationReader({ release, evidence, runtime, cw
     const contractHashes = Object.fromEntries(contractFiles.map(file => [file, crypto.createHash('sha256')
         .update(fs.readFileSync(path.join(repository, 'roboTeamAgent', file))).digest('hex')]));
     const execute = promisify(execFile);
-    const inspectOuter = async () => {
-        try {
-            const result = await execute('podman', ['inspect', '--format',
-                '{"id":{{json .Id}},"startedAt":{{json .State.StartedAt}},"running":{{json .State.Running}},"image":{{json .Image}},"mounts":{{json .Mounts}}}',
-                evidence.outerContainerId], { timeout: 8000, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL' });
-            return JSON.parse(result.stdout);
-        } catch { throw new Error('Bounded outer orchestration binding could not be inspected.'); }
-    };
+    const inspectOuter = () => inspectOuterOrchestrationBinding(evidence.outerContainerId, { execute });
     const outerBinding = await inspectOuter();
     assert.equal(outerBinding.id, evidence.outerContainerId); assert.equal(outerBinding.running, true);
     rejectShadows(outerBinding.mounts, [cwd], outerBinding.mounts.filter(mount => mount.Destination === evidence.workspaceRoot), { subject: 'Live Sessions cwd' });

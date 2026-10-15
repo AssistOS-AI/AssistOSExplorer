@@ -175,6 +175,8 @@ Primary errors and every required cleanup failure are projected through own data
 
 The actual metadata subprocess wrapper uses an in-memory bundle of the four canonical diagnostic modules. The host reads their exact source bytes with hashes and validates the fixed relative/builtin import and export graph; no private redactor fork or additional runtime source mount is used. Generated programs must fit below Linux's 128 KiB single-argument bound. Child failures cross as bounded safe projected JSON, including query, connection-close and sidecar-fence children. The host reprojects that payload before throwing it into the fixture finalizer. Raw process error objects, commands and stderr are never substituted for this safe envelope.
 
+The outer orchestration binding uses bounded `podman container inspect <exact-id>` JSON rather than Go templates. It requires exactly one matching immutable container and the required state, image and mount fields, then retains only ID, start time, running state, image and the complete mounts array for the existing generation and shadow-mount fences. The command keeps its eight-second timeout, one-MiB output bound and `SIGKILL` timeout signal. Unrelated inspect fields such as environment values are excluded; command and decoding failures produce a generic error without raw stdout, stderr or causes.
+
 The observer's portable checks run from this package:
 
 ```sh
