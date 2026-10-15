@@ -79,13 +79,11 @@ test('workflow defaults reuse saved requirements, descriptions or task prompts w
     assert.throws(() => normalizeWorkflow({ ...graph(), defaultObjective: 4 }), /must be text/);
     assert.throws(() => normalizeWorkflow({ ...graph(), defaultObjective: 'x'.repeat(32769) }), /32768/);
 });
-test('legacy definitions inherit objectives without writes; new runs capture defaults and explicit overrides separately', async t => {
+test('derived objectives are not written to workflow files; new runs capture defaults and explicit overrides separately', async t => {
     const f = await fixture(t);
     const saved = await f.service.createWorkflow({ ...graph(), description: 'Write the saved report' });
-    const legacy = { ...saved }; delete legacy.defaultObjective;
-    f.service.database.db.prepare('UPDATE workflow_types SET record=? WHERE id=?').run(JSON.stringify(legacy), saved.id);
     assert.equal((await f.service.registry.get(saved.id)).defaultObjective, 'Write the saved report');
-    assert.equal(JSON.parse(f.service.database.db.prepare('SELECT record FROM workflow_types WHERE id=?').get(saved.id).record).defaultObjective, undefined);
+    assert.equal(JSON.parse(await fs.readFile(path.join(f.root, 'old', `${saved.id}.json`), 'utf8')).defaultObjective, undefined);
     const inherited = await f.service.startFlow({ workflowTypeId: saved.id });
     assert.equal(inherited.objective, 'Write the saved report'); assert.equal(JSON.parse(f.started[0].request.task).objective, inherited.objective);
     const explicit = await f.service.startFlow({ workflowTypeId: saved.id, objective: 'Different work' });
@@ -130,7 +128,7 @@ test('cycles create distinct tasks, preserve only final response history and bra
     assert.equal(completed.status, 'completed'); assert.equal(completed.result, 'Accepted');
     assert.deepEqual(completed.instances.map(instance => instance.taskId), ['a', 'b', 'a', 'c']);
     const tables = f.service.database.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name).sort();
-    assert.deepEqual(tables, ['task_instances', 'workflow_runs', 'workflow_schedules', 'workflow_types']);
+    assert.deepEqual(tables, ['task_instances', 'workflow_runs', 'workflow_schedules']);
     const stored = f.service.database.db.prepare('SELECT record FROM task_instances').all().map(row => row.record).join();
     assert.ok(!stored.includes('Revised')); assert.ok(!stored.includes('SECRET INTERMEDIATE'));
 });
@@ -351,22 +349,16 @@ test('a creator can choose an ordinary Markdown route without child fields', asy
     assert.equal((await f.service.getFlow(flow.id)).status, 'completed');
 });
 
-test('restart pauses unfinished runs without replay and removes legacy workflow definitions', async t => {
+test('restart pauses unfinished runs without replay and keeps saved workflow files', async t => {
     const f = await fixture(t);
     await f.service.createWorkflow(graph());
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
     await f.service.close();
-    const legacy = path.join(f.root, 'old');
-    await fs.mkdir(legacy); await fs.writeFile(path.join(legacy, 'legacy.json'), '{"members":[]}');
-    await fs.writeFile(path.join(legacy, 'keep.txt'), 'unrelated');
-    f.service.registry.legacyDirectory = legacy;
     await f.service.initialize();
     const recovered = await f.service.getFlow(flow.id);
     assert.equal(recovered.status, 'paused'); assert.equal(recovered.instances[0].state, 'paused');
     assert.equal(f.started.length, 1);
-    await assert.rejects(fs.stat(path.join(legacy, 'legacy.json')), { code: 'ENOENT' });
-    assert.equal(await fs.readFile(path.join(legacy, 'keep.txt'), 'utf8'), 'unrelated');
-    assert.equal((await f.service.registry.list()).length, 3);
+    assert.deepEqual((await f.service.registry.list()).map(workflow => workflow.id).sort(), ['code-development', 'default', 'example']);
 });
 
 test('generation rejects malformed and unknown skillset output and cancellation stops only its runtime task', async t => {

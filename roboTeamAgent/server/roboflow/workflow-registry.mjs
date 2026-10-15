@@ -1,19 +1,21 @@
+import fsSync from 'node:fs';
 import path from 'node:path';
-import fs from 'node:fs/promises';
-import { RoboFlowDatabase } from './database.mjs';
+import { WORKFLOW_ID_PATTERN } from './constants.mjs';
+import { ensureDirectory } from './storage.mjs';
 import { WorkflowFiles } from './workflow-files.mjs';
 import { normalizeWorkflow, invalid, slugifyWorkflow, workflowCatalogEntry, workflowDefaultObjective } from './graph.mjs';
 export { normalizeWorkflow, slugifyWorkflow, workflowCatalogEntry };
 
-const protectedIds = new Set(['default', 'code-development']);
-const presentWorkflow = graph => graph ? { ...graph, defaultObjective: workflowDefaultObjective(graph), readOnly: protectedIds.has(graph.id) } : null;
-// A workflow from a workspace file carries its workspace-relative path; internal ones carry no source.
-const presentFile = entry => ({ ...presentWorkflow(entry.graph), revision: entry.revision, source: { kind: 'file', path: entry.path } });
+const present = (graph, extra) => ({ ...graph, defaultObjective: workflowDefaultObjective(graph), readOnly: false, ...extra });
 const conflict = message => Object.assign(invalid(message), { statusCode: 409 });
 
-// Workflow types live in SQLite (internal) or, with a workspace root, also as JSON files in
-// the workspace (see WorkflowFiles). Ids are unique across both: a file whose id is already
-// taken, or that does not validate, is reported in fileErrors and never becomes a workflow.
+// Workflow types are JSON files, never database records; runs and Cron jobs refer to them by id.
+// Three sources share one id space:
+// - built-in presets (see workflow-presets.mjs), read-only and loaded by the service;
+// - internal workflows, one <id>.json in the agent's data folder, written by Save;
+// - workspace files in <repository>/flows/ or <repository>/<folder>/flows/, written by Save as.
+// A file whose id is reserved by a preset, already used by an internal workflow, defined twice
+// in the workspace or that does not validate is reported in fileErrors and is not a workflow.
 
 // Definition-derived defaults follow edits; captured generation requirements remain intact.
 function editedObjective(input, previous) {
@@ -23,116 +25,98 @@ function editedObjective(input, previous) {
 
 export class WorkflowRegistry {
     constructor(options = {}) {
-        this.database = options.database || new RoboFlowDatabase(options.databaseFile || (options.directory ? path.join(options.directory, 'roboflow.sqlite') : undefined));
-        this.legacyDirectory = options.legacyDirectory;
-        this.files = options.files || (options.workspaceRoot ? new WorkflowFiles({ workspaceRoot: options.workspaceRoot, folders: options.folders }) : null);
+        if (!options.directory) throw new Error('WorkflowRegistry requires the internal workflows directory');
+        this.directory = options.directory;
+        this.workspace = Boolean(options.workspaceRoot);
+        this.files = new WorkflowFiles({ workspaceRoot: options.workspaceRoot || options.directory, folders: options.folders });
+        this.presetIds = new Set(options.presetIds || []);
+        this.presets = new Map();
+        this.internalIndex = new Map();
         this.fileIndex = new Map();
         this.fileErrors = [];
     }
-    async refreshFiles() {
-        if (!this.files) return;
-        const internal = new Set(this.database.db.prepare('SELECT id FROM workflow_types').all().map(row => row.id));
-        const entries = await this.files.scan(), counts = new Map();
-        for (const entry of entries) if (!entry.error) counts.set(entry.id, (counts.get(entry.id) || 0) + 1);
+    async initialize() { await ensureDirectory(this.directory); }
+    addPreset(graph) {
+        this.presetIds.add(graph.id);
+        this.presets.set(graph.id, present(graph, { readOnly: true }));
+    }
+    async refresh() {
+        await this.initialize();
+        const internal = (await this.files.scanFolder(this.directory)).map(entry => ({ ...entry, path: entry.file, internal: true }));
+        const workspace = this.workspace ? await this.files.scan() : [];
+        const counts = new Map();
+        for (const entry of workspace) if (!entry.error) counts.set(entry.id, (counts.get(entry.id) || 0) + 1);
+        this.internalIndex = new Map();
         this.fileIndex = new Map();
         this.fileErrors = [];
-        for (const entry of entries) {
-            const error = entry.error || (internal.has(entry.id) ? `workflow id "${entry.id}" is already used by an internal workflow`
-                : counts.get(entry.id) > 1 ? `workflow id "${entry.id}" is defined by more than one file` : null);
+        for (const entry of [...internal, ...workspace]) {
+            const error = entry.error || (this.presetIds.has(entry.id) ? `workflow id "${entry.id}" is reserved by a built-in workflow`
+                : !entry.internal && this.internalIndex.has(entry.id) ? `workflow id "${entry.id}" is already used by an internal workflow`
+                : !entry.internal && counts.get(entry.id) > 1 ? `workflow id "${entry.id}" is defined by more than one file` : null);
             if (error) this.fileErrors.push({ path: entry.path, message: error });
-            else this.fileIndex.set(entry.id, entry);
+            else (entry.internal ? this.internalIndex : this.fileIndex).set(entry.id, entry);
         }
     }
-    // Rereads the indexed file, so a running service sees edits made on disk.
-    fileSync(id) {
+    presentEntry(entry) {
+        return present(entry.graph, { revision: entry.revision, source: entry.internal ? { kind: 'internal' } : { kind: 'file', path: entry.path } });
+    }
+    // Reads the file again, so a running service sees edits made on disk.
+    entrySync(id) {
+        if (this.presetIds.has(id) || !WORKFLOW_ID_PATTERN.test(id)) return null;
+        const file = path.join(this.directory, `${id}.json`);
+        if (fsSync.existsSync(file)) {
+            const entry = this.files.readSync(file);
+            return entry.error ? null : { ...entry, path: file, internal: true };
+        }
         const indexed = this.fileIndex.get(id);
         if (!indexed) return null;
         const entry = this.files.readSync(indexed.file);
         return entry.error ? null : entry;
     }
-    async initialize() {
-        this.database.initialize();
-        if (this.legacyDirectory) {
-            const entries = await fs.readdir(this.legacyDirectory, { withFileTypes: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
-            for (const entry of entries) if (entry.isFile() && entry.name.endsWith('.json')) await fs.unlink(path.join(this.legacyDirectory, entry.name));
-            this.legacyDirectory = null;
-        }
-    }
-    internalSync(id) { const row = this.database.db.prepare('SELECT record FROM workflow_types WHERE id=?').get(id); return row ? presentWorkflow(JSON.parse(row.record)) : null; }
     getSync(id) {
-        const internal = this.internalSync(id);
-        if (internal) return internal;
-        const entry = this.fileSync(id);
-        return entry ? presentFile(entry) : null;
+        if (this.presets.has(id)) return this.presets.get(id);
+        const entry = this.entrySync(id);
+        return entry ? this.presentEntry(entry) : null;
     }
-    async get(id) { await this.initialize(); await this.refreshFiles(); return this.getSync(id); }
+    async get(id) { await this.refresh(); return this.getSync(id); }
     async list() {
-        await this.initialize();
-        await this.refreshFiles();
-        const internal = this.database.db.prepare('SELECT record FROM workflow_types').all().map(row => presentWorkflow(JSON.parse(row.record)));
-        return [...internal, ...[...this.fileIndex.values()].map(presentFile)].sort((a, b) => a.name.localeCompare(b.name));
+        await this.refresh();
+        return [...this.presets.values(), ...[...this.internalIndex.values(), ...this.fileIndex.values()].map(entry => this.presentEntry(entry))]
+            .sort((a, b) => a.name.localeCompare(b.name));
     }
-    // With a location (a workspace folder), the workflow is created as <location>/flows/<id>.json.
-    async create(input, builtin = false, { system = false, location } = {}) {
-        await this.initialize();
-        const graph = normalizeWorkflow(input, { builtin });
-        if (graph.id === 'code-development' && !system) throw conflict('Code Development is a reserved workflow');
-        await this.refreshFiles();
-        if (this.fileIndex.has(graph.id)) throw conflict('workflow id already exists');
-        if (location !== undefined) {
-            if (!this.files) throw invalid('workflow files need a workspace');
-            if (builtin || this.internalSync(graph.id)) throw conflict('workflow id already exists');
-            const entry = await this.files.create(location, graph);
-            if (entry.error) throw invalid(entry.error);
-            this.fileIndex.set(entry.id, entry);
-            return presentFile(entry);
-        }
-        return this.database.transaction(() => {
-            if (this.getSync(graph.id)) throw conflict('workflow id already exists');
-            const now = new Date().toISOString();
-            const record = { ...presentWorkflow(graph), revision: 1, createdAt: now, updatedAt: now };
-            this.database.db.prepare('INSERT INTO workflow_types VALUES (?, ?)').run(record.id, JSON.stringify(record));
-            return record;
-        });
+    // Without a location the workflow is internal; with one (a workspace folder) it is created as <location>/flows/<id>.json.
+    async create(input, { location } = {}) {
+        const graph = normalizeWorkflow(input);
+        await this.refresh();
+        if (this.presetIds.has(graph.id) || this.internalIndex.has(graph.id) || this.fileIndex.has(graph.id)) throw conflict('workflow id already exists');
+        if (location !== undefined && !this.workspace) throw invalid('workflow files need a workspace');
+        const created = location !== undefined ? await this.files.create(location, graph) : await this.files.createIn(this.directory, graph);
+        if (created.error) throw invalid(created.error);
+        const entry = location !== undefined ? created : { ...created, path: created.file, internal: true };
+        (entry.internal ? this.internalIndex : this.fileIndex).set(entry.id, entry);
+        return this.presentEntry(entry);
     }
-    async ensure(input, { builtin = true, system = false } = {}) { return await this.get(input.id) || this.create(input, builtin, { system }); }
     async update(id, input) {
-        if (protectedIds.has(id)) throw Object.assign(invalid('built-in workflows cannot be edited'), { statusCode: 409 });
-        await this.initialize();
-        if (!this.internalSync(id)) {
-            await this.refreshFiles();
-            const entry = this.fileSync(id);
-            if (!entry) return null;
-            const previous = presentFile(entry);
-            if (input.revision !== previous.revision) throw conflict('workflow changed; reload before saving');
-            const written = await this.files.write(entry, normalizeWorkflow({ ...input, defaultObjective: editedObjective(input, previous) }, { id }));
-            if (written.error) throw invalid(written.error);
-            this.fileIndex.set(id, written);
-            return presentFile(written);
-        }
-        return this.database.transaction(() => {
-            const previous = this.internalSync(id);
-            if (!previous) return null;
-            if (input.revision !== previous.revision) throw conflict('workflow changed; reload before saving');
-            const graph = normalizeWorkflow({ ...input, defaultObjective: editedObjective(input, previous) }, { id });
-            const record = { ...graph, revision: previous.revision + 1, createdAt: previous.createdAt, updatedAt: new Date().toISOString() };
-            this.database.db.prepare('UPDATE workflow_types SET record=? WHERE id=?').run(JSON.stringify(record), id);
-            return record;
-        });
+        if (this.presetIds.has(id)) throw conflict('built-in workflows cannot be edited');
+        await this.refresh();
+        const entry = this.entrySync(id);
+        if (!entry) return null;
+        const previous = this.presentEntry(entry);
+        if (input.revision !== previous.revision) throw conflict('workflow changed; reload before saving');
+        const written = await this.files.write(entry, normalizeWorkflow({ ...input, defaultObjective: editedObjective(input, previous) }, { id }));
+        if (written.error) throw invalid(written.error);
+        const updated = entry.internal ? { ...written, path: written.file, internal: true } : written;
+        (updated.internal ? this.internalIndex : this.fileIndex).set(id, updated);
+        return this.presentEntry(updated);
     }
     async remove(id, { beforeRemove = () => {} } = {}) {
-        if (protectedIds.has(id)) throw Object.assign(invalid('built-in workflows cannot be deleted'), { statusCode: 409 });
-        await this.initialize();
-        if (!this.internalSync(id)) {
-            await this.refreshFiles();
-            const entry = this.fileIndex.get(id);
-            if (!entry) return false;
-            beforeRemove(id);
-            this.fileIndex.delete(id);
-            return this.files.remove(entry);
-        }
+        if (this.presetIds.has(id)) throw conflict('built-in workflows cannot be deleted');
+        await this.refresh();
+        const entry = this.internalIndex.get(id) || this.fileIndex.get(id);
+        if (!entry) return false;
         beforeRemove(id);
-        return this.database.db.prepare('DELETE FROM workflow_types WHERE id=?').run(id).changes > 0;
+        (entry.internal ? this.internalIndex : this.fileIndex).delete(id);
+        return this.files.remove(entry);
     }
 }
 export const workflowRegistryInternals = { normalizeWorkflow, slugifyWorkflow, invalid };

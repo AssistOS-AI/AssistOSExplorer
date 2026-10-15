@@ -2,7 +2,6 @@ import path from 'node:path';
 import { DATA_DIR } from '../constants.mjs';
 
 export const ROBOFLOW_DIR = path.join(DATA_DIR, 'roboflow');
-export const WORKFLOWS_DIR = path.join(ROBOFLOW_DIR, 'workflows');
 
 export const EXECUTION_TYPES = Object.freeze(['terminal', 'desktop', 'browser']);
 export const WORKFLOW_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;

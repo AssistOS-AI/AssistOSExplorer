@@ -35,10 +35,13 @@ export function taskIcon({ label, path }, className = 'task-type-icon', ownerDoc
 
 // Save as on an existing workflow saves a new workflow from the current draft: its id gains
 // -copy (within the 64-character id limit) and its name " copy". The original is unchanged.
+// A copy of the generic built-in workflow, whose mode is chosen at launch, runs its tasks in
+// the terminal; the copy can then be edited like any other workflow.
 export function workflowCopy(graph) {
-    const { id, revision, createdAt, updatedAt, source, readOnly, coverage, diagnostics, ...definition } = graph;
+    const { id, revision, createdAt, updatedAt, source, readOnly, coverage, diagnostics, kind, ...definition } = graph;
     if (!id) return definition;
-    return { ...definition, id: `${id.slice(0, 59).replace(/-+$/, '')}-copy`, name: `${graph.name.trim().slice(0, 115)} copy` };
+    const tasks = kind === 'default' ? definition.tasks.map(({ supportedExecutionTypes, ...task }) => ({ ...task, executionType: task.executionType || 'terminal' })) : definition.tasks;
+    return { ...definition, tasks, id: `${id.slice(0, 59).replace(/-+$/, '')}-copy`, name: `${graph.name.trim().slice(0, 115)} copy` };
 }
 
 function appUrl(relative = '') {
@@ -69,7 +72,8 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const reviewRetry = document.querySelector('#descriptionReviewRetry');
     // Save stores a new workflow internally, or an existing one in its own source. Save as opens the
     // folder selector and stores the draft as a JSON file in that folder's flows folder: a new workflow
-    // as itself, an existing one as a copy (workflowCopy). A workflow from a file shows its path.
+    // as itself, an existing one as a copy (workflowCopy). Built-in workflows are read-only, but an
+    // administrator can still copy them with Save as. A workflow from a workspace file shows its path.
     const saveAsButton = document.querySelector('#workflowSaveAsButton');
     const source = document.querySelector('#workflowSource');
     const fileLocation = document.querySelector('#flowLocation');
@@ -512,7 +516,8 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         const createButton = document.querySelector('#workflowCreateButton');
         if (createButton) createButton.hidden = readonly();
         if (saveAsButton) {
-            saveAsButton.hidden = readonly();
+            saveAsButton.hidden = !canAdmin;
+            saveAsButton.disabled = !canAdmin;
             saveAsButton.title = graph.id ? 'Save a copy as a JSON file in a workspace folder' : 'Save as a JSON file in a workspace folder';
             folderPicker.setFolder('');
         }
@@ -553,7 +558,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     function draftReady() {
         if (!graph.name.trim()) { message.textContent = 'Enter a workflow name before saving.'; nameControl.setAttribute('aria-invalid', 'true'); nameControl.focus(); return false; }
         if (!graph.tasks.length) { message.textContent = 'Add at least one task before saving.'; addTaskButton.focus(); return false; }
-        const invalidTask = graph.tasks.find(task => !task.name?.trim() || !task.prompt?.trim());
+        const invalidTask = graph.tasks.find(task => task.kind !== 'run-workflows' && (!task.name?.trim() || !task.prompt?.trim()));
         if (invalidTask) {
             select(invalidTask.id);
             message.textContent = 'Enter a name and prompt for this task before saving.';
@@ -565,7 +570,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     // location, when given, is the workspace folder that receives the new workflow's JSON file;
     // the folder dialog that supplied it shows a failure, so the error is rethrown to it.
     async function save(location) {
-        if (readonly() || saving || !draftReady()) return;
+        if ((location ? !canAdmin : readonly()) || saving || !draftReady()) return;
         saving = true;
         try {
             const beforeReview = JSON.stringify({ tasks: graph.tasks, edges: graph.edges, entryTaskId: graph.entryTaskId, layout: graph.layout });
@@ -583,6 +588,6 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         } finally { saving = false; }
     }
     form.onsubmit = event => { event.preventDefault(); void save(); };
-    if (saveAsButton) saveAsButton.onclick = () => { if (!readonly() && !saving && draftReady()) folderPicker.open(); };
+    if (saveAsButton) saveAsButton.onclick = () => { if (canAdmin && !saving && draftReady()) folderPicker.open(); };
     return { open };
 }

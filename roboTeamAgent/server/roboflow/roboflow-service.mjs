@@ -1,10 +1,10 @@
-import { ensureCodeDevelopmentWorkflow } from './code-development-workflow.mjs';
 import { Subflows, CONTINUE_PROMPT } from './subflows.mjs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { RoboFlowDatabase } from './database.mjs';
 import { WorkflowRegistry } from './workflow-registry.mjs';
+import { FLOWS_FOLDER } from './workflow-files.mjs';
 import { TaskFlowStore } from './task-flow-store.mjs';
 import { ScheduleStore } from './schedule-store.mjs';
 import { ScheduleFolders } from './schedule-folders.mjs';
@@ -14,8 +14,9 @@ import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator,
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
 import { parseRoute, parseWorkflowResponse, workflowResponseContext } from './result-parser.mjs';
 import { generationPrompt, descriptionRevisionPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
-import { ensureDefaultWorkflow } from './default-workflow.mjs';
-import { EXECUTION_TASK_TYPES, EXECUTION_TYPES, WORKFLOWS_DIR } from './constants.mjs';
+import { presetGraph, readPresets } from './workflow-presets.mjs';
+import { requiredDocumentationRepository } from '../required-skills.mjs';
+import { EXECUTION_TASK_TYPES, EXECUTION_TYPES } from './constants.mjs';
 import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
 
 const terminal = state => ['completed', 'failed', 'paused', 'terminated'].includes(state);
@@ -36,11 +37,14 @@ export class RoboFlowService {
         this.robotStore = options.robotStore;
         this.runtimeManager = options.runtimeManager;
         this.skillsets = options.skillsets || this.runtimeManager?.skillsets;
-        this.database = options.database || new RoboFlowDatabase(options.databaseFile || (options.workflowsDirectory ? path.join(options.workflowsDirectory, 'roboflow.sqlite') : undefined));
+        this.database = options.database || new RoboFlowDatabase(options.databaseFile);
         this.workspaceRoot = options.workspaceRoot || this.runtimeManager?.workspaceRoot || path.dirname(this.database.file);
         this.scheduleFolders = new ScheduleFolders(this.workspaceRoot);
-        this.registry = new WorkflowRegistry({ database: this.database, legacyDirectory: options.workflowsDirectory || WORKFLOWS_DIR,
-            workspaceRoot: this.workspaceRoot, folders: this.scheduleFolders });
+        // Saved workflow types are JSON files in a flows folder next to the database (/data/roboflow/flows), like workspace
+        // workflow files; built-in ones ship with the agent.
+        this.presets = options.presets || readPresets();
+        this.registry = new WorkflowRegistry({ directory: options.workflowsDirectory || path.join(path.dirname(this.database.file), FLOWS_FOLDER),
+            presetIds: this.presets.map(preset => preset.id), workspaceRoot: this.workspaceRoot, folders: this.scheduleFolders });
         this.store = new TaskFlowStore({ database: this.database });
         this.runFolders = new RunFolders({ folders: this.scheduleFolders,
             resolveCwd: folder => this.runtimeManager.resolveCwd(folder), now: options.scheduleNow });
@@ -77,12 +81,12 @@ export class RoboFlowService {
     }
     async initialize() {
         await this.registry.initialize();
-        await this.store.clearLegacyOnce();
-        await ensureDefaultWorkflow(this.registry);
-        // The preset needs the Ploinky marketplace, which may not route to this
-        // agent until it is ready (for example during a reinstall). It is created
-        // in the background so startup never waits for or fails on it.
-        this.presetReady = this._ensureCodeDevelopmentPreset();
+        await this.store.initialize();
+        for (const preset of this.presets) if (!preset.repositories.length) this.registry.addPreset(presetGraph(preset));
+        // Presets that name a repository need the Ploinky marketplace, which may not route to
+        // this agent until it is ready (for example during a reinstall). They are loaded in the
+        // background so startup never waits for or fails on them.
+        this.presetReady = this._loadPresets();
         for (const flow of await this.store.list()) if (flow.status !== 'pending' && !terminal(flow.status)) await this.store.update(flow.id, current => {
             current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
             for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'paused'; instance.error = current.error; instance.endedAt = current.finishedAt; }
@@ -102,18 +106,30 @@ export class RoboFlowService {
         };
         this.scheduler.initialize();
     }
-    async _ensureCodeDevelopmentPreset() {
-        let reported = false;
+    async _repositoryRoots(preset) {
+        const roots = {};
+        for (const name of preset.repositories) {
+            if (name !== 'DocumentationSkills') throw new Error(`repository ${name} is not supported in built-in workflows`);
+            roots[name] = await requiredDocumentationRepository(this.skillsets);
+        }
+        return roots;
+    }
+    async _loadPresets() {
+        const reported = new Set();
         while (!this.closed) {
-            try {
-                await ensureCodeDevelopmentWorkflow(this.registry, this.skillsets);
-                if (reported) console.log('[roboflow] Code Development workflow is available.');
-                return true;
-            } catch (error) {
-                if (this.closed) return false;
-                if (!reported) console.error(`[roboflow] Code Development workflow is not available yet (${error.message}); retrying every ${this.presetRetryMs} ms.`);
-                reported = true;
+            const pending = this.presets.filter(preset => !this.registry.presets.has(preset.id));
+            if (!pending.length) return true;
+            for (const preset of pending) {
+                try {
+                    this.registry.addPreset(presetGraph(preset, await this._repositoryRoots(preset)));
+                    if (reported.has(preset.id)) console.log(`[roboflow] ${preset.name} workflow is available.`);
+                } catch (error) {
+                    if (this.closed) return false;
+                    if (!reported.has(preset.id)) console.error(`[roboflow] ${preset.name} workflow is not available yet (${error.message}); retrying every ${this.presetRetryMs} ms.`);
+                    reported.add(preset.id);
+                }
             }
+            if (this.presets.every(preset => this.registry.presets.has(preset.id))) return true;
             await new Promise((resolve) => {
                 this.presetWake = resolve;
                 this.presetTimer = setTimeout(resolve, this.presetRetryMs);
@@ -148,7 +164,7 @@ export class RoboFlowService {
     async refreshCoverage() { return this.listWorkflows(); }
     // Workflow files that were found but are not workflows: invalid, or with an id already in use.
     workflowFileErrors() { return this.registry.fileErrors; }
-    async createWorkflow({ location, ...input }) { const graph = await this.registry.create(input, false, { location: location || undefined }); return { ...graph, coverage: coverage(graph, await this.robotStore.list()) }; }
+    async createWorkflow({ location, ...input }) { const graph = await this.registry.create(input, { location: location || undefined }); return { ...graph, coverage: coverage(graph, await this.robotStore.list()) }; }
     async updateWorkflow(id, input) {
         const graph = await this.registry.update(id, input);
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });

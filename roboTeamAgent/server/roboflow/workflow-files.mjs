@@ -7,7 +7,6 @@ import { invalid, normalizeWorkflow, workflowDefaultObjective } from './graph.mj
 
 export const FLOWS_FOLDER = 'flows';
 const MAX_FILE_BYTES = 1024 * 1024;
-const RESERVED_IDS = new Set(['default', 'code-development']);
 const fail = (message, statusCode = 400) => Object.assign(invalid(message), { statusCode });
 const skipped = name => name.startsWith('.') || name === 'node_modules';
 const toPosix = value => value.split(path.sep).join('/');
@@ -21,8 +20,9 @@ async function ordinaryDirectories(directory) {
 }
 
 // Workflow types kept as JSON files in the workspace, in `<repository>/flows/` or
-// `<repository>/<folder>/flows/`. The file name is the workflow id. A file holds only
-// the definition; its revision is the hash of its content, so a change on disk makes
+// `<repository>/<folder>/flows/`, and in the agent's internal workflows folder (see
+// WorkflowRegistry). The file name is the workflow id. A file holds only the
+// definition; its revision is the hash of its content, so a change on disk makes
 // a stale editor save fail like a concurrent edit. Skill selections inside the
 // workspace are stored relative to it, so a file works in any workspace.
 export class WorkflowFiles {
@@ -46,14 +46,12 @@ export class WorkflowFiles {
     async scan() {
         const root = await fs.realpath(this.workspaceRoot);
         const entries = [];
-        for (const directory of await this.flowsDirectories(root)) {
-            const files = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
-            for (const file of files) {
-                if (!file.isFile() || !file.name.endsWith('.json')) continue;
-                entries.push(this.readSync(path.join(directory, file.name), root));
-            }
-        }
+        for (const directory of await this.flowsDirectories(root)) entries.push(...await this.scanFolder(directory, root));
         return entries.sort((a, b) => a.path.localeCompare(b.path));
+    }
+    async scanFolder(directory, root = this.rootSync()) {
+        const files = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+        return files.filter(file => file.isFile() && file.name.endsWith('.json')).map(file => this.readSync(path.join(directory, file.name), root));
     }
     readSync(file, root = this.rootSync()) {
         const entry = { id: path.basename(file, '.json'), file, path: toPosix(path.relative(root, file)) };
@@ -64,7 +62,6 @@ export class WorkflowFiles {
             const content = fsSync.readFileSync(file, 'utf8');
             entry.revision = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
             if (!WORKFLOW_ID_PATTERN.test(entry.id)) throw new Error('file name is not a valid workflow id (3 to 64 lowercase letters, digits or dashes)');
-            if (RESERVED_IDS.has(entry.id)) throw new Error('reserved workflow id');
             let data;
             try { data = JSON.parse(content); } catch { throw new Error('invalid JSON'); }
             if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('the file must hold a JSON object');
@@ -111,9 +108,11 @@ export class WorkflowFiles {
         if (!stat.isDirectory() || stat.isSymbolicLink()) throw fail('flows must be an ordinary folder');
         return directory;
     }
-    async create(location, graph) {
+    async create(location, graph) { return this.createIn(await this.flowsDirectory(location), graph); }
+    // Never overwrites: a file with the same id in the folder makes the create fail.
+    async createIn(directory, graph) {
         const root = await fs.realpath(this.workspaceRoot);
-        const file = path.join(await this.flowsDirectory(location), `${graph.id}.json`);
+        const file = path.join(directory, `${graph.id}.json`);
         const temporary = `${file}.${crypto.randomUUID()}.tmp`;
         await fs.writeFile(temporary, this.serialize(graph, root), { flag: 'wx' });
         try { await fs.link(temporary, file); }

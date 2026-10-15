@@ -12,7 +12,6 @@ export class RoboFlowDatabase {
         this.db = new DatabaseSync(this.file);
         fs.chmodSync(this.file, 0o600);
         this.db.exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS workflow_types (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS workflow_schedules (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS task_instances (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES workflow_runs(id), sequence INTEGER NOT NULL, record TEXT NOT NULL, UNIQUE(run_id, sequence));

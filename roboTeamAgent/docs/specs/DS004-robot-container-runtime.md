@@ -49,4 +49,4 @@ Only active sessions and task queues are retained in memory. A robot may retain 
 
 ### Global workflow storage
 
-RoboFlow uses embedded node:sqlite at /data/roboflow/roboflow.sqlite in the RoboTeam data volume. Installation probes SQLite support. Global workflow definitions and execution metadata are the exception to folder-scoped conversation storage; logs and final responses remain in the execution folder. See DS007 for run snapshots, matching, GUI queueing and restart recovery.
+RoboFlow uses embedded node:sqlite at /data/roboflow/roboflow.sqlite in the RoboTeam data volume. Installation probes SQLite support. Global execution metadata, and saved workflow definitions as JSON files in /data/roboflow/flows, are the exception to folder-scoped conversation storage; logs and final responses remain in the execution folder. See DS007 for run snapshots, matching, GUI queueing and restart recovery.

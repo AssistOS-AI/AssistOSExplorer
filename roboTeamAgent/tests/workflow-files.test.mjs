@@ -11,10 +11,9 @@ const definition = (name, extra = {}) => ({ name, description: '', entryTaskId: 
 
 async function workspace(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workflow-files-')));
-    const registry = new WorkflowRegistry({ databaseFile: path.join(root, '.data', 'roboflow.sqlite'),
+    const registry = new WorkflowRegistry({ directory: path.join(root, '.data', 'roboflow', 'flows'), presetIds: ['default', 'code-development'],
         workspaceRoot: root, folders: new ScheduleFolders(root) });
-    await fs.mkdir(path.join(root, '.data'));
-    t.after(async () => { registry.database.close(); await fs.rm(root, { recursive: true, force: true }); });
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
     const write = async (relative, value) => {
         await fs.mkdir(path.dirname(path.join(root, relative)), { recursive: true });
         await fs.writeFile(path.join(root, relative), typeof value === 'string' ? value : JSON.stringify(value));
@@ -36,7 +35,9 @@ test('workflow files in <repository>/flows and <repository>/<folder>/flows are l
     assert.deepEqual(workflows.map(workflow => workflow.id).sort(), ['add-topics', 'deep-flow', 'internal-one']);
     const file = workflows.find(workflow => workflow.id === 'add-topics');
     assert.deepEqual(file.source, { kind: 'file', path: 'Repo/flows/add-topics.json' });
-    assert.equal(workflows.find(workflow => workflow.id === 'internal-one').source, undefined, 'internal workflows carry no source');
+    assert.deepEqual(workflows.find(workflow => workflow.id === 'internal-one').source, { kind: 'internal' }, 'internal workflows carry no path');
+    // Save keeps an internal workflow as a JSON file in the agent's data folder, never in the database.
+    assert.equal(JSON.parse(await fs.readFile(path.join(root, '.data/roboflow/flows/internal-one.json'), 'utf8')).name, 'Internal one');
     // Workspace-relative skill paths resolve against the workspace; other identities stay unchanged.
     assert.deepEqual(file.tasks[0].skillsets, [path.join(root, 'Repo/skills/add-topic'), 'builtin:copilot/bash']);
     assert.equal(file.readOnly, false);
@@ -49,7 +50,7 @@ test('a workflow can be created as a file, edited with a stale-save check and de
     await fs.mkdir(path.join(root, 'Repo', 'agent'), { recursive: true });
     const skill = path.join(root, 'Repo/skills/add-topic');
     const created = await registry.create(definition('Add topics', { tasks: [{ id: 'one', name: 'One', prompt: 'Do one.',
-        executionType: 'terminal', skillsets: [skill, '/elsewhere/skill'] }] }), false, { location: 'Repo/agent' });
+        executionType: 'terminal', skillsets: [skill, '/elsewhere/skill'] }] }), { location: 'Repo/agent' });
     assert.deepEqual(created.source, { kind: 'file', path: 'Repo/agent/flows/add-topics.json' });
     const file = path.join(root, 'Repo/agent/flows/add-topics.json');
     const saved = JSON.parse(await fs.readFile(file, 'utf8'));
@@ -58,10 +59,10 @@ test('a workflow can be created as a file, edited with a stale-save check and de
     assert.deepEqual(saved.tasks[0].skillsets, ['Repo/skills/add-topic', '/elsewhere/skill']);
     assert.deepEqual(created.tasks[0].skillsets, [skill, '/elsewhere/skill']);
     // A flows folder location means the same folder; the id stays unique across both sources.
-    await assert.rejects(registry.create(definition('Add topics'), false, { location: 'Repo/flows' }), { statusCode: 409 });
+    await assert.rejects(registry.create(definition('Add topics'), { location: 'Repo/flows' }), { statusCode: 409 });
     await assert.rejects(registry.create(definition('Add topics')), { statusCode: 409 });
-    await assert.rejects(registry.create(definition('Other'), false, { location: 'Repo/agent/deeper' }), { statusCode: 400 });
-    await assert.rejects(registry.create(definition('Other'), false, { location: '../outside' }), { statusCode: 400 });
+    await assert.rejects(registry.create(definition('Other'), { location: 'Repo/agent/deeper' }), { statusCode: 400 });
+    await assert.rejects(registry.create(definition('Other'), { location: '../outside' }), { statusCode: 400 });
 
     const updated = await registry.update('add-topics', { ...created, description: 'Adds topics.' });
     assert.equal(updated.description, 'Adds topics.');
@@ -114,13 +115,13 @@ test('Save as on an existing workflow stores an external copy with -copy beside 
     assert.equal(copy.id, 'add-topics-copy');
     assert.equal(copy.name, 'Add topics copy');
     for (const field of ['revision', 'createdAt', 'updatedAt', 'readOnly', 'coverage', 'diagnostics', 'source']) assert.equal(field in copy, false, field);
-    const saved = await registry.create(copy, false, { location: 'Repo' });
+    const saved = await registry.create(copy, { location: 'Repo' });
     assert.deepEqual(saved.source, { kind: 'file', path: 'Repo/flows/add-topics-copy.json' });
     assert.equal(saved.description, 'Edited before Save as.');
     assert.equal((await registry.get('add-topics')).description, 'Original.');
-    assert.equal(registry.getSync('add-topics').source, undefined);
+    assert.deepEqual(registry.getSync('add-topics').source, { kind: 'internal' });
     // A second copy with the same id is refused instead of overwriting the first.
-    await assert.rejects(registry.create(workflowCopy(draft), false, { location: 'Repo' }), { statusCode: 409 });
+    await assert.rejects(registry.create(workflowCopy(draft), { location: 'Repo' }), { statusCode: 409 });
     // Long ids stay within the id limit; a new draft without an id keeps its own identity.
     assert.equal(workflowCopy({ ...original, id: 'a'.repeat(64) }).id, `${'a'.repeat(59)}-copy`);
     assert.equal(workflowCopy({ name: 'New', tasks: [] }).id, undefined);
