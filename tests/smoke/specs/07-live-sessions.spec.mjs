@@ -224,8 +224,14 @@ async function startTurn(fixture, { replacement = false } = {}) {
     fixture.chats.push(chat);
     await waitForWebchatIdle(chat);
     assertNoNativeRefusal(await chat.locator(BOT).allTextContents());
-    const href = await chat.locator('#sessionSettingsLink').getAttribute('href');
+    await chat.locator('#settingsBtn').click();
+    const conversationLink = chat.locator('#sessionSettingsLink');
+    await expect(conversationLink).toBeVisible();
+    await expect(conversationLink).toHaveText('Conversation skills');
+    await expect(conversationLink).toHaveAttribute('href', /\S/);
+    const href = await conversationLink.getAttribute('href');
     const frontSessionId = conversationFromSkillsURL(href, smokeConfig.baseURL, { robotId: fixture.robotId }).sessionId;
+    await chat.locator('#settingsBtn').click();
     const baseline = (await fixture.capture({})).census;
     const options = { frontSessionId, requestDigest: crypto.createHash('sha256').update(work.prompt).digest('hex'), baseline };
     const entry = { options, snapshot: null };

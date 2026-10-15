@@ -156,7 +156,7 @@ The suite rechecks the real executable hash, resolved path, cache descriptor and
 
 Set `SMOKE_ALA_COMMAND` to the exact selected deployed ALA `bin/ala.mjs`, under the admitted workspace. The orchestration reader binds its exported transcript implementation and command to the verified source hashes and uses the existing release/runtime mount guards.
 
-The supported workload asks the workspace copilot to list workflows and launch `default` exactly once with a bounded execution objective. The launcher finishes after delegation. Its workflow phase executes the marker command and stays active for owner and observer checks. No system prompt, workflow definition, native configuration or provider is changed.
+The supported workload asks the workspace copilot to list workflows and launch `default` exactly once with a bounded execution objective. Before enrollment and submission, the suite opens the WebChat menu and waits for the visible Conversation skills link and href within the existing expectation timeout. It validates that URL against the selected origin, robot and conversation UUID. The launcher finishes after delegation. Its workflow phase executes the marker command and stays active for owner and observer checks. No system prompt, workflow definition, native configuration or provider is changed.
 
 | Run kind | Required evidence |
 | --- | --- |
