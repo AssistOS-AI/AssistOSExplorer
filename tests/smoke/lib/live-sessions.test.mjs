@@ -206,16 +206,24 @@ test('observer execution oracle distinguishes turn workers from observer/read-on
 
 test('actual native process oracle rejects executable drift and incomplete/reused process identities', () => {
     const native = nativeFixture().record.native;
-    const identity = { ala: { pid: 20, startToken: '123' },
-        native: { pid: 21, startToken: '124', sha256: native.sha256, executable: native.realpath } };
-    assertNativeProcessIdentity(identity, native);
+    const context = { initPid: 10, cwd: '/fixture/selected', sessionId: 'session', turnId: 'turn' };
+    const row = (pid, ppid) => ({ pid, ppid, startToken: String(pid + 100), pidNamespace: 'pid:[100]' });
+    const identity = { containerInit: row(10, 1), ala: { ...row(20, 1), cwd: context.cwd,
+        sessionId: context.sessionId, turnId: context.turnId },
+        native: { ...row(21, 20), sha256: native.sha256, executable: native.realpath,
+            actualExecutable: native.realpath, scriptPath: null }, ancestry: [row(21, 20)] };
+    assertNativeProcessIdentity(identity, native, context);
     for (const mutate of [
         value => { value.native.sha256 = 'changed'; }, value => { value.native.executable = '/fixture/binary'; },
         value => { value.native.pid = value.ala.pid; }, value => { value.native.startToken = ''; },
         value => { value.ala.pid = -1; }, value => { delete value.ala; },
+        value => { value.containerInit.pid = 11; }, value => { value.ala.cwd = '/other/selected'; },
+        value => { value.ala.sessionId = ''; }, value => { value.ala.turnId = 'other'; },
+        value => { value.ala.pidNamespace = 'pid:[200]'; }, value => { value.ancestry = []; },
+        value => { value.ancestry[0].ppid = 1; }, value => { value.native.actualExecutable = '/other'; },
     ]) {
         const changed = structuredClone(identity); mutate(changed);
-        assert.throws(() => assertNativeProcessIdentity(changed, native));
+        assert.throws(() => assertNativeProcessIdentity(changed, native, context));
     }
 });
 

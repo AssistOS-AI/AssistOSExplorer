@@ -152,6 +152,18 @@ Set `SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE` to an absolute external JSON file coll
 
 The suite rechecks the real executable hash, resolved path, cache descriptor and generation stamp in the exact RoboTeam container before execution. After targeted restart it requires the same native executable identity in the replacement container. The initial runtime binding applies only before replacement.
 
+The process observer selects ALA by the exact inspected init PID namespace and the full workspace `--cwd`. Engine-exec processes can share the init's namespace without descending from init. The observer requires one `--control-stdin` and one valued `--cwd`, `--session-id` and `--turn-id`. It records the observed session and turn IDs, then proves that exactly one frozen native executable descends from that ALA. Bubblewrap wrappers are excluded. A native sandbox may have a different PID namespace. Init, ALA, native and every intermediate ancestor must retain their start token, parent, namespace and arguments through the snapshot. The runtime container ID, running state, init PID and start time must also remain unchanged.
+
+Public run rows do not expose native session or turn IDs. The deployed check correlates the new marker-bearing row with the exact workspace, real file and SSE execution proof, unique active ALA and repeated process identity. It never treats a public row ID or transcript URL as a native turn ID.
+
+The observer's portable checks run from this package:
+
+```sh
+node --test lib/live-sessions-process.test.mjs
+```
+
+On Linux, this executes the exported production observer program against neutral Node processes with a sibling init and a real descendant child. It checks executable hashes and two unchanged observations. These processes test only the observer contract and make no provider requests. Pure metadata cases cover malformed flags, wrong namespaces and workspaces, ambiguity, missing processes, hash drift and identity races on every proof member. macOS runs those cases and reports the real `/proc` case as skipped. Linux acceptance requires no skips. A verifier can set `LIVE_SESSIONS_BASELINE_SNAPSHOT` to the immutable, verbatim observer program extracted from the baseline revision to also require its original parent-selection failure on the same process topology. Routine unit tests need no historical checkout.
+
 ```sh
 SMOKE_LIVE_SESSIONS=1 npm test -- --project=chromium --workers=1 --retries=0 specs/07-live-sessions.spec.mjs --list
 npm run test:live-sessions
