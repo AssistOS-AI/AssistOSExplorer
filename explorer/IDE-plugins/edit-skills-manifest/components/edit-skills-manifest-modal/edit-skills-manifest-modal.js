@@ -69,41 +69,66 @@ export class EditSkillsManifestModal {
         this.folderPath = String(element.dataset.folderPath || element.getAttribute('data-folder-path') || '').trim();
         this.manifestPath = String(element.dataset.manifestPath || element.getAttribute('data-manifest-path') || '').trim() || buildSkillsManifestPath(this.folderPath);
         this.state = normalizeState({ manifestPath: this.manifestPath, folderPath: this.folderPath });
-        this.expandedRepos = new Set();
-        this.seenRepos = new Set();
+        this.selectedRepository = '';
         this.changed = false;
         this.busy = false;
+        this.unloaded = false;
         this.boundSubmit = (event) => {
             event.preventDefault();
             void this.addRepository();
         };
         this.boundClick = this.handleClick.bind(this);
+        this.boundChange = this.handleChange.bind(this);
+        this.boundKeydown = this.handleKeydown.bind(this);
+        this.boundAddCancel = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.closeAddRepository();
+        };
+        this.boundAddClose = (event) => {
+            event.stopPropagation();
+            this.addTrigger?.setAttribute('aria-expanded', 'false');
+        };
         this.invalidate();
     }
 
     beforeRender() {}
 
     async afterRender() {
+        this.unloaded = false;
         this.cacheElements();
         this.form?.removeEventListener('submit', this.boundSubmit);
         this.form?.addEventListener('submit', this.boundSubmit);
         if (!this.element.dataset.editSkillsManifestBound) {
             this.element.addEventListener('click', this.boundClick);
+            this.element.addEventListener('change', this.boundChange);
+            this.element.addEventListener('keydown', this.boundKeydown);
             this.element.dataset.editSkillsManifestBound = 'true';
         }
+        this.addDialog?.removeEventListener('cancel', this.boundAddCancel);
+        this.addDialog?.addEventListener('cancel', this.boundAddCancel);
+        this.addDialog?.removeEventListener('close', this.boundAddClose);
+        this.addDialog?.addEventListener('close', this.boundAddClose);
         await this.loadState();
-        this.urlInput?.focus();
+        if (!this.unloaded) this.listEl?.querySelector?.('[aria-pressed="true"]')?.focus();
     }
 
     afterUnload() {
+        this.unloaded = true;
+        if (this.addDialog?.open) this.addDialog.close();
+        this.addDialog?.removeEventListener('cancel', this.boundAddCancel);
+        this.addDialog?.removeEventListener('close', this.boundAddClose);
         this.form?.removeEventListener('submit', this.boundSubmit);
         this.element?.removeEventListener('click', this.boundClick);
+        this.element?.removeEventListener('change', this.boundChange);
+        this.element?.removeEventListener('keydown', this.boundKeydown);
         if (this.element?.dataset) {
             delete this.element.dataset.editSkillsManifestBound;
         }
     }
 
     cacheElements() {
+        this.element.closest?.('dialog')?.setAttribute('aria-labelledby', 'explorer-skills-manager-title');
         this.pathEl = this.element.querySelector('[data-manifest-path]');
         this.form = this.element.querySelector('[data-add-form]');
         this.urlInput = this.element.querySelector('#editSkillsManifestRepoInput');
@@ -112,6 +137,12 @@ export class EditSkillsManifestModal {
         this.statusEl = this.element.querySelector('[data-status]');
         this.listEl = this.element.querySelector('[data-repository-list]');
         this.presetListEl = this.element.querySelector('[data-preset-list]');
+        this.detailEl = this.element.querySelector('[data-repository-detail]');
+        this.contentEl = this.element.querySelector('[data-skills-content]');
+        this.folderContextEl = this.element.querySelector('[data-folder-context]');
+        this.addTrigger = this.element.querySelector('[data-add-repository]');
+        this.addDialog = this.element.querySelector('[data-add-dialog]');
+        this.addStatusEl = this.element.querySelector('[data-add-status]');
         if (this.pathEl) {
             this.pathEl.textContent = this.manifestPath || 'ploinky-skills-manifest.json';
         }
@@ -137,13 +168,6 @@ export class EditSkillsManifestModal {
         this.state = mergeSkillRepositories(nextState, this.state);
         this.manifestPath = this.state.manifestPath || this.manifestPath;
 
-        const currentRepoNames = new Set(this.state.repositories.map((repo) => repo.name).filter(Boolean));
-        for (const repoName of Array.from(this.expandedRepos)) {
-            if (!currentRepoNames.has(repoName)) this.expandedRepos.delete(repoName);
-        }
-        for (const repoName of Array.from(this.seenRepos)) {
-            if (!currentRepoNames.has(repoName)) this.seenRepos.delete(repoName);
-        }
     }
 
     async loadState() {
@@ -155,6 +179,7 @@ export class EditSkillsManifestModal {
         this.setStatus('Loading skills manifest...', 'info');
         try {
             this.state = mergeSkillRepositories(await this.readCurrentState(), this.state);
+            if (this.unloaded) return;
             if (!this.state.skillRepositories.length) {
                 this.state.skillRepositories = await this.loadMarketplaceSkillRepositories();
             }
@@ -164,7 +189,6 @@ export class EditSkillsManifestModal {
             this.setStatus(error?.message || 'Could not read skills manifest.', 'error');
         } finally {
             this.setBusy(false);
-            this.render();
         }
     }
 
@@ -206,11 +230,13 @@ export class EditSkillsManifestModal {
     }
 
     setStatus(message, type = '') {
-        if (!this.statusEl) return;
-        this.statusEl.textContent = message;
-        this.statusEl.hidden = !message;
-        this.statusEl.classList.toggle('is-error', type === 'error');
-        this.statusEl.classList.toggle('is-info', type === 'info');
+        if (this.unloaded) return;
+        const target = this.addDialog?.open ? this.addStatusEl : this.statusEl;
+        if (!target) return;
+        target.textContent = message;
+        target.hidden = !message;
+        target.classList.toggle('is-error', type === 'error');
+        target.classList.toggle('is-info', type === 'info');
     }
 
     showExportStatus(result, success) {
@@ -220,20 +246,27 @@ export class EditSkillsManifestModal {
     }
 
     render() {
-        for (const repo of this.state.repositories) {
-            if (repo.name && !this.seenRepos.has(repo.name)) {
-                this.seenRepos.add(repo.name);
-
-            }
-        }
+        if (this.unloaded) return;
+        const active = this.element.ownerDocument?.activeElement;
+        const focusKey = this.element.contains?.(active) ? active.dataset.skillsFocus : '';
+        const scrollTop = this.contentEl?.scrollTop || 0;
+        const popupScroll = this.addDialog?.querySelector('.skills-add-content')?.scrollTop || 0;
         this.renderPresets();
         this.renderList();
+        if (this.folderContextEl) this.folderContextEl.textContent = this.state.folderPath ? `Folder · ${this.state.folderPath}` : 'Folder skills';
         const disabled = this.busy;
         [this.urlInput, this.nameInput, this.branchInput].forEach((input) => {
             if (input) input.disabled = disabled;
         });
         const submit = this.form?.querySelector?.('button[type="submit"]');
         if (submit) submit.disabled = disabled;
+        if (this.addTrigger) this.addTrigger.disabled = disabled;
+        for (const button of this.element.querySelectorAll?.('[data-add-close], [data-close-manager]') || []) button.disabled = disabled;
+        this.addDialog?.setAttribute('aria-busy', String(disabled));
+        if (focusKey) [...(this.element.querySelectorAll?.('[data-skills-focus]') || [])].find(control => control.dataset.skillsFocus === focusKey && !control.disabled)?.focus({ preventScroll: true });
+        if (this.contentEl) this.contentEl.scrollTop = scrollTop;
+        const popupContent = this.addDialog?.querySelector('.skills-add-content');
+        if (popupContent) popupContent.scrollTop = popupScroll;
     }
 
     renderPresets() {
@@ -249,10 +282,10 @@ export class EditSkillsManifestModal {
                 <div class="recommended-repository ${alreadyAdded ? 'is-added' : ''}">
                     <div>
                         <div class="recommended-name">${escapeHtml(repository.name || repository.label || repository.url)}</div>
-                        <div class="muted">${escapeHtml(repository.label || '')}</div>
+                        ${repository.label && repository.label !== repository.name ? `<div class="muted">${escapeHtml(repository.label)}</div>` : ''}
                         ${(repository.warnings || []).map(warning => `<div class="skill-repository-warning">Warning: ${escapeHtml(warning)}</div>`).join('')}
                     </div>
-                    <button class="button secondary" type="button" data-preset-index="${index}" ${alreadyAdded || this.busy ? 'disabled' : ''}>${alreadyAdded ? 'Added' : 'Add repo'}</button>
+                    <button class="button secondary" type="button" data-preset-index="${index}" data-skills-focus="preset:${index}" ${alreadyAdded || this.busy ? 'disabled' : ''}>${alreadyAdded ? 'Added' : 'Add repo'}</button>
                 </div>
             `;
         }).join('');
@@ -260,34 +293,68 @@ export class EditSkillsManifestModal {
 
     renderList() {
         if (!this.listEl) return;
+        if (!this.state.repositories.some(repo => repo.name === this.selectedRepository)) this.selectedRepository = this.state.repositories[0]?.name || '';
         if (!this.state.repositories.length) {
             this.listEl.innerHTML = '<p>No repositories added yet.</p>';
+            if (this.detailEl) this.detailEl.innerHTML = '<h3 id="explorer-skills-repository-title">Repositories</h3><p class="muted">No repositories added yet. Choose + Add repo to get started.</p>';
             return;
         }
         this.listEl.innerHTML = this.state.repositories.map(repo => {
-            const selected = new Set(repo.skills);
             const skills = repo.availableSkills.length ? repo.availableSkills : repo.skills;
-            const sets = repo.skillsets || [];
-            const skillList = sets.length
-                ? '<ul>' + skills.map(skill => '<li><strong>' + escapeHtml(skill) + '</strong></li>').join('') + '</ul>'
-                : skills.map(skill => '<div class="individual-skill"><strong>' + escapeHtml(skill) + '</strong><button class="button secondary" type="button" data-repo-name="' + escapeHtml(repo.name) + '" data-skill-name="' + escapeHtml(skill) + '" data-skill-enabled="' + !selected.has(skill) + '" ' + (this.busy ? 'disabled' : '') + '>' + (selected.has(skill) ? 'Disable' : 'Enable') + '</button></div>').join('');
-            const combinations = sets.map(set => '<article class="skillset-item"><strong>' + escapeHtml(set.name) + '</strong><p>' + escapeHtml(set.description) + '</p><p class="muted">' + (set.partial ? 'Partially enabled' : set.enabled ? 'Enabled' : 'Disabled') + '</p><button class="button secondary" type="button" data-repo-name="' + escapeHtml(repo.name) + '" data-skillset-name="' + escapeHtml(set.name) + '" data-skill-enabled="' + !set.enabled + '" ' + (this.busy ? 'disabled' : '') + '>' + (set.enabled ? 'Disable' : 'Enable') + '</button><ul class="skill-members">' + set.skills.map(skill => '<li>' + escapeHtml(skill) + '</li>').join('') + '</ul></article>').join('');
-            return '<section class="repository-row"><details ' + (this.expandedRepos.has(repo.name) ? 'open' : '') + '><summary data-repo-toggle="' + escapeHtml(repo.name) + '">' + escapeHtml(repo.cached && repo.repoPath ? repo.repoPath : repo.url || repo.name) + '</summary><div class="repository-content"><h3>Skills (' + skills.length + ')</h3>' + skillList + '<h3>Skillsets</h3>' + (combinations || '<p class="muted">No skillsets defined in skillsets.md.</p>') + (repo.cacheError ? '<p class="error">' + escapeHtml(repo.cacheError) + '</p>' : '') + '</div></details><button class="button danger" type="button" data-remove-repo="' + escapeHtml(repo.name) + '" ' + (this.busy ? 'disabled' : '') + '>Remove</button></section>';
+            const count = repo.skillsets.length;
+            return `<button class="skills-repository-option" type="button" data-repo-select="${escapeHtml(repo.name)}" data-skills-focus="repository:${escapeHtml(repo.name)}" aria-controls="explorer-skills-repository-detail" aria-pressed="${repo.name === this.selectedRepository}" ${this.busy ? 'disabled' : ''}><span>${escapeHtml(repo.name)}</span><span class="muted">${count} ${count === 1 ? 'skillset' : 'skillsets'} · ${skills.length} ${skills.length === 1 ? 'skill' : 'skills'}</span></button>`;
         }).join('');
+        this.renderRepository(this.state.repositories.find(repo => repo.name === this.selectedRepository));
     }
 
-    toggleRepository(repoName) {
-        if (!repoName) return;
-        if (this.expandedRepos.has(repoName)) {
-            this.expandedRepos.delete(repoName);
+    renderRepository(repo) {
+        if (!this.detailEl || !repo) return;
+        const selected = new Set(repo.skills);
+        const skills = repo.availableSkills.length ? repo.availableSkills : repo.skills;
+        const sets = repo.skillsets || [];
+        const members = names => '<ul class="skill-members">' + names.map(name => `<li>${escapeHtml(name)}</li>`).join('') + '</ul>';
+        const toggle = (name, enabled, isSet, partial = false) => `<label class="skill-toggle"><input type="checkbox" data-repo-name="${escapeHtml(repo.name)}" ${isSet ? 'data-skillset-name' : 'data-skill-name'}="${escapeHtml(name)}" data-skills-focus="${isSet ? 'set' : 'skill'}:${escapeHtml(repo.name)}:${escapeHtml(name)}" aria-label="${escapeHtml(name)}: selected for folder export" aria-checked="${partial ? 'mixed' : Boolean(enabled)}" ${partial ? 'data-partial="true"' : ''} ${enabled ? 'checked' : ''} ${this.busy ? 'disabled' : ''}><span>${partial ? 'Partially enabled' : enabled ? 'Enabled' : 'Disabled'}</span></label>`;
+        this.detailEl.id = 'explorer-skills-repository-detail';
+        this.detailEl.innerHTML = `<div class="skills-repository-heading"><div><h3 id="explorer-skills-repository-title">${escapeHtml(repo.name)}</h3><p class="muted skills-repository-source">${escapeHtml(repo.cached && repo.repoPath ? repo.repoPath : repo.url || repo.name)}</p></div><details class="skills-repository-menu"><summary class="button secondary icon-button" aria-label="More actions for ${escapeHtml(repo.name)}"><span aria-hidden="true">⋮</span></summary><div class="skills-menu-options"><button class="button danger" type="button" data-remove-repo="${escapeHtml(repo.name)}" ${this.busy ? 'disabled' : ''}>Remove repository</button></div></details></div>`;
+        if (sets.length) {
+            this.detailEl.innerHTML += '<h4 class="skills-section-label">Skillsets</h4>' + sets.map(set => `<article class="skillset-item ${set.enabled ? '' : 'is-disabled'}"><div class="skillset-heading"><h5>${escapeHtml(set.name)}</h5>${toggle(set.name, set.enabled, true, set.partial)}</div><p class="skillset-description">${escapeHtml(set.description)}</p>${members(set.skills)}</article>`).join('');
+            const grouped = new Set(sets.flatMap(set => set.skills));
+            const ungrouped = skills.filter(name => !grouped.has(name));
+            if (ungrouped.length) this.detailEl.innerHTML += '<h4 class="skills-section-label">Other skills</h4><p class="muted">Not included in the declared skillsets.</p>' + members(ungrouped);
         } else {
-            this.expandedRepos.add(repoName);
+            this.detailEl.innerHTML += '<h4 class="skills-section-label">Skills</h4>' + (skills.map(name => `<div class="individual-skill"><span>${escapeHtml(name)}</span>${toggle(name, selected.has(name), false)}</div>`).join('') || '<p class="muted">No skills available.</p>');
         }
-        this.renderList();
+        if (repo.cacheError) this.detailEl.innerHTML += `<p class="message is-error">${escapeHtml(repo.cacheError)}</p>`;
+        for (const input of this.detailEl.querySelectorAll?.('[data-partial]') || []) input.indeterminate = true;
+    }
+
+    selectRepository(repoName) {
+        if (this.busy || !this.state.repositories.some(repo => repo.name === repoName)) return;
+        this.selectedRepository = repoName;
+        this.render();
+        if (this.contentEl) this.contentEl.scrollTop = 0;
+    }
+
+    openAddRepository() {
+        if (this.busy || this.unloaded || !this.addDialog || this.addDialog.open) return;
+        const menu = this.detailEl?.querySelector?.('.skills-repository-menu[open]');
+        if (menu) menu.open = false;
+        if (this.addStatusEl) { this.addStatusEl.textContent = ''; this.addStatusEl.hidden = true; }
+        this.addDialog.showModal();
+        this.addTrigger?.setAttribute('aria-expanded', 'true');
+        this.urlInput?.focus();
+    }
+
+    closeAddRepository(force = false) {
+        if ((!force && this.busy) || !this.addDialog?.open) return;
+        this.addDialog.close();
+        this.addTrigger?.setAttribute('aria-expanded', 'false');
+        this.addTrigger?.focus();
     }
 
     async addRepository(preset = null) {
         if (this.busy) return;
+        const previousNames = new Set(this.state.repositories.map(repo => repo.name));
         // A known repository is submitted by its name, which the server resolves
         // to its internal source; display URLs are never clone inputs.
         const presetName = String(preset?.name || '').trim();
@@ -312,16 +379,17 @@ export class EditSkillsManifestModal {
                 return;
             }
             await this.refreshStateAfterMutation();
+            this.selectedRepository = this.state.repositories.find(repo => !previousNames.has(repo.name))?.name || this.selectedRepository;
             this.changed = true;
             if (this.urlInput) this.urlInput.value = '';
             if (this.nameInput) this.nameInput.value = '';
             if (this.branchInput) this.branchInput.value = '';
+            this.closeAddRepository(true);
             this.showExportStatus(result, result?.message || `${name || url} added.`);
         } catch (error) {
             this.setStatus(error?.message || 'Could not add repository.', 'error');
         } finally {
             this.setBusy(false);
-            this.render();
         }
     }
 
@@ -337,6 +405,7 @@ export class EditSkillsManifestModal {
 
     async setSkillEnabled(repoName, skill, enabled, isSkillset = false) {
         if (this.busy) return;
+        const focusKey = this.element.ownerDocument?.activeElement?.dataset.skillsFocus;
         this.setBusy(true);
         this.setStatus(`${enabled ? 'Adding' : 'Removing'} ${skill}...`, 'info');
         try {
@@ -353,7 +422,7 @@ export class EditSkillsManifestModal {
             this.setStatus(error?.message || 'Could not update skill.', 'error');
         } finally {
             this.setBusy(false);
-            this.render();
+            if (!this.unloaded && focusKey) [...(this.element.querySelectorAll?.('[data-skills-focus]') || [])].find(control => control.dataset.skillsFocus === focusKey)?.focus({ preventScroll: true });
         }
     }
 
@@ -373,11 +442,31 @@ export class EditSkillsManifestModal {
             this.setStatus(error?.message || 'Could not remove repository.', 'error');
         } finally {
             this.setBusy(false);
-            this.render();
         }
     }
 
     handleClick(event) {
+        const add = event.target?.closest?.('[data-add-repository]');
+        if (add && this.element.contains(add)) {
+            event.preventDefault();
+            this.openAddRepository();
+            return;
+        }
+        const closeAdd = event.target?.closest?.('[data-add-close]');
+        if (closeAdd && this.element.contains(closeAdd)) {
+            event.preventDefault();
+            this.closeAddRepository();
+            return;
+        }
+        if (event.target === this.addDialog) {
+            const bounds = this.addDialog.getBoundingClientRect();
+            if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) this.closeAddRepository();
+            return;
+        }
+        if (!event.target?.closest?.('.skills-repository-menu')) {
+            const menu = this.detailEl?.querySelector?.('.skills-repository-menu[open]');
+            if (menu) menu.open = false;
+        }
         const presetButton = event.target?.closest?.('[data-preset-index]');
         if (presetButton && this.element.contains(presetButton)) {
             event.preventDefault();
@@ -385,11 +474,10 @@ export class EditSkillsManifestModal {
             return;
         }
 
-        const toggleRepoTarget = event.target?.closest?.('[data-repo-toggle]');
-        const isRemoveRepoClick = Boolean(event.target?.closest?.('[data-remove-repo]'));
-        if (toggleRepoTarget && this.element.contains(toggleRepoTarget) && !isRemoveRepoClick) {
+        const selectRepoTarget = event.target?.closest?.('[data-repo-select]');
+        if (selectRepoTarget && this.element.contains(selectRepoTarget)) {
             event.preventDefault();
-            if (!this.busy) this.toggleRepository(toggleRepoTarget.dataset.repoToggle || '');
+            this.selectRepository(selectRepoTarget.dataset.repoSelect || '');
             return;
         }
 
@@ -400,21 +488,35 @@ export class EditSkillsManifestModal {
             return;
         }
 
-        const skillButton = event.target?.closest?.('[data-skill-name], [data-skillset-name]');
-        if (skillButton && this.element.contains(skillButton)) {
+    }
+
+    handleChange(event) {
+        const input = event.target?.closest?.('input[data-skill-name], input[data-skillset-name]');
+        if (input && this.element.contains(input) && !input.disabled) {
+            void this.setSkillEnabled(input.dataset.repoName || '', input.dataset.skillsetName || input.dataset.skillName || '', input.checked, input.hasAttribute('data-skillset-name'));
+        }
+    }
+
+    handleKeydown(event) {
+        if (event.key !== 'Escape') return;
+        if (this.addDialog?.open && this.addDialog.contains(event.target)) {
+            // WebSkel suppresses Escape on the parent modal; the child owns it.
+            event.stopPropagation();
+            if (this.busy) event.preventDefault();
+            return;
+        }
+        const menu = this.detailEl?.querySelector?.('.skills-repository-menu[open]');
+        if (menu) {
             event.preventDefault();
-            if (!skillButton.disabled) {
-                void this.setSkillEnabled(
-                    skillButton.dataset.repoName || '',
-                    skillButton.dataset.skillsetName || skillButton.dataset.skillName || '',
-                    skillButton.dataset.skillEnabled === 'true',
-                    skillButton.hasAttribute('data-skillset-name')
-                );
-            }
+            event.stopPropagation();
+            menu.open = false;
+            menu.querySelector('summary')?.focus();
         }
     }
 
     closeModal() {
+        if (this.busy) return;
+        this.closeAddRepository();
         assistOS.UI.closeModal(this.element, {
             changed: this.changed,
             count: this.state.installedSkills.length

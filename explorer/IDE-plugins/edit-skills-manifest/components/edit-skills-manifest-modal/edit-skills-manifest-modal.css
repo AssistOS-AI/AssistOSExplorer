@@ -1,73 +1,101 @@
-/* RoboTeam popup rules, scoped to the Explorer WebSkel component. */
+/* Folder skills manager, using the existing Explorer/RoboTeam theme tokens. */
 edit-skills-manifest-modal .button { display: inline-flex; justify-content: center; align-items: center; gap: 6px; min-height: 36px; padding: 8px 14px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); font-size: var(--font-sm); font-weight: 500; line-height: 1.3; text-decoration: none; cursor: pointer; transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease; }
 edit-skills-manifest-modal .button:hover:not(:disabled) { background: var(--option-hover); border-color: var(--border-strong); }
-edit-skills-manifest-modal .button.primary { color: #fff; background: #2563eb; border-color: #2563eb; }
-edit-skills-manifest-modal .button.primary:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; box-shadow: 0 2px 6px rgba(var(--accent-rgb), .2); }
+edit-skills-manifest-modal .button.primary { color: var(--white-text); background: var(--accent); border-color: var(--accent); }
+edit-skills-manifest-modal .button.primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); box-shadow: var(--shadow-sm); }
 edit-skills-manifest-modal .button.danger { color: var(--danger); background: transparent; }
 edit-skills-manifest-modal .button.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 10%, var(--surface)); border-color: var(--danger); }
 edit-skills-manifest-modal .button:disabled { opacity: .45; cursor: not-allowed; }
 edit-skills-manifest-modal :where(button, a, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-dialog.edit-skills-manifest-modal-dialog { width: 80vw; height: 80dvh; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px); margin: auto; overflow: auto; padding: 24px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-xl); }
+dialog.edit-skills-manifest-modal-dialog { width: 80vw; min-width: 0; height: 80dvh; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px); margin: auto; overflow: hidden; padding: 0; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-xl); }
+dialog.edit-skills-manifest-modal-dialog[open] { display: flex; flex-direction: column; }
 dialog.edit-skills-manifest-modal-dialog::backdrop { background: rgba(15, 23, 42, .5); backdrop-filter: blur(4px); }
 .theme-dark dialog.edit-skills-manifest-modal-dialog::backdrop { background: rgba(2, 6, 23, .7); backdrop-filter: blur(6px); }
-edit-skills-manifest-modal .skills-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 12px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+edit-skills-manifest-modal .skills-dialog-heading { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 20px; margin: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); box-shadow: none; text-align: left; }
 dialog.edit-skills-manifest-modal-dialog h2 { font-size: 1.125rem; overflow-wrap: anywhere; }
 edit-skills-manifest-modal .skills-dialog-heading .button { flex-shrink: 0; }
 dialog.edit-skills-manifest-modal-dialog > p { color: var(--text-soft); font-size: var(--font-sm); }
-edit-skills-manifest-modal .repository-row { display: flex; align-items: flex-start; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--border); }
-edit-skills-manifest-modal .repository-row > .button { flex-shrink: 0; min-height: 30px; padding: 5px 10px; font-size: var(--font-xs); }
-edit-skills-manifest-modal .repository-row details { flex: 1; min-width: 0; }
-edit-skills-manifest-modal .repository-row summary { padding: 4px 0; cursor: pointer; overflow-wrap: anywhere; font-weight: 500; }
-edit-skills-manifest-modal .repository-row summary::marker { color: var(--text-soft); }
-edit-skills-manifest-modal .repository-content { padding: 12px 0 0 16px; }
-edit-skills-manifest-modal .repository-content h3 { margin: 12px 0 8px; color: var(--text-soft); font-size: var(--font-xs); font-weight: 600; }
-edit-skills-manifest-modal .repository-content > ul { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0 0 16px; }
-edit-skills-manifest-modal .repository-content > ul > li, edit-skills-manifest-modal .skill-members li { padding: 4px 8px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: var(--font-xs); overflow-wrap: anywhere; }
-edit-skills-manifest-modal .repository-content strong { font-weight: 500; }
-edit-skills-manifest-modal .skillset-item { margin: 8px 0; padding: 12px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-md); }
-edit-skills-manifest-modal .skillset-item > strong { display: block; margin-bottom: 6px; }
-edit-skills-manifest-modal .skillset-item p { margin: 0 0 12px; color: var(--text-soft); font-size: var(--font-sm); white-space: pre-line; }
-edit-skills-manifest-modal .skill-members { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
-edit-skills-manifest-modal .skill-members li { background: var(--surface); color: var(--text); }
+edit-skills-manifest-modal .skills-folder-context { margin: 4px 0 0; overflow-wrap: anywhere; }
+edit-skills-manifest-modal .skills-manager-layout { display: grid; grid-template-columns: minmax(180px, 26%) minmax(0, 1fr); flex: 1; min-height: 0; }
+edit-skills-manifest-modal .skills-repository-nav { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; padding: 16px 10px; background: var(--surface-soft); border-right: 1px solid var(--border); }
+edit-skills-manifest-modal .skills-repository-nav-heading { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 8px; padding: 0 6px 4px 10px; }
+edit-skills-manifest-modal .skills-repository-nav-heading h3 { color: var(--text-soft); font-size: var(--font-sm); font-weight: 500; }
+edit-skills-manifest-modal .skills-add-option { display: inline-flex; flex-shrink: 0; align-items: center; gap: 4px; min-height: 36px; padding: 4px; color: var(--text-soft); background: transparent; border: 0; border-radius: var(--radius-sm); font-size: var(--font-xs); cursor: pointer; white-space: nowrap; }
+edit-skills-manifest-modal .skills-add-option:hover:not(:disabled) { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+edit-skills-manifest-modal .skills-repository-list { display: flex; flex-direction: column; gap: 4px; }
+edit-skills-manifest-modal .skills-repository-list > p { padding: 0 10px; color: var(--text-soft); }
+edit-skills-manifest-modal .skills-repository-option { display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 0; padding: 10px; text-align: left; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: var(--radius-md); cursor: pointer; }
+edit-skills-manifest-modal .skills-repository-option > span { overflow-wrap: anywhere; }
+edit-skills-manifest-modal .skills-repository-option:hover:not(:disabled) { background: var(--option-hover); }
+edit-skills-manifest-modal .skills-repository-option[aria-pressed="true"] { color: var(--accent); background: var(--bg-active); }
+edit-skills-manifest-modal .skills-manager-content { min-width: 0; min-height: 0; overflow: auto; padding: 20px; }
+edit-skills-manifest-modal .skills-repository-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+edit-skills-manifest-modal .skills-repository-heading > div:first-child { min-width: 0; }
+edit-skills-manifest-modal .skills-repository-source { margin: 4px 0 0; overflow-wrap: anywhere; }
+edit-skills-manifest-modal .skills-repository-menu { position: relative; flex-shrink: 0; }
+edit-skills-manifest-modal .skills-repository-menu summary { list-style: none; }
+edit-skills-manifest-modal .skills-repository-menu summary::-webkit-details-marker { display: none; }
+edit-skills-manifest-modal .icon-button { width: 38px; height: 38px; padding: 0; font-size: 24px; line-height: 1; }
+edit-skills-manifest-modal .skills-menu-options { position: absolute; z-index: 10; top: calc(100% + 6px); right: 0; width: 180px; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-xl); }
+edit-skills-manifest-modal .skills-menu-options .button { width: 100%; justify-content: flex-start; background: transparent; border-color: transparent; }
+edit-skills-manifest-modal .skills-section-label { margin: 18px 0 8px; color: var(--text-soft); font-size: var(--font-xs); font-weight: 500; }
+edit-skills-manifest-modal .skillset-item { margin: 0 0 12px; padding: 14px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-md); }
+edit-skills-manifest-modal .skillset-item.is-disabled { background: var(--surface); }
+edit-skills-manifest-modal .skillset-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+edit-skills-manifest-modal .skillset-heading h5 { min-width: 0; margin: 0; font-size: var(--font-base); font-weight: 500; overflow-wrap: anywhere; }
+edit-skills-manifest-modal .skillset-description { margin: 6px 0 0; color: var(--text-soft); font-size: var(--font-sm); white-space: pre-line; }
+edit-skills-manifest-modal .skill-toggle { display: inline-flex; flex-shrink: 0; align-items: center; gap: 8px; color: var(--text-soft); font-size: var(--font-sm); cursor: pointer; }
+edit-skills-manifest-modal .skill-toggle input { display: inline-block; width: 18px; min-height: 0; height: 18px; margin: 0; padding: 0; accent-color: var(--accent); box-shadow: none; }
+edit-skills-manifest-modal .skill-members { display: flex; flex-wrap: wrap; gap: 4px 10px; list-style: none; margin: 0; padding: 0; color: var(--text-soft); font-size: var(--font-xs); }
+edit-skills-manifest-modal .skill-members li { overflow-wrap: anywhere; }
+edit-skills-manifest-modal .skill-members li + li::before { content: '·'; margin-right: 10px; }
+edit-skills-manifest-modal .skillset-item > .skill-members { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+edit-skills-manifest-modal .skills-manager-footer { flex-shrink: 0; padding: 12px 20px; background: var(--surface-soft); border-top: 1px solid var(--border); }
+edit-skills-manifest-modal .skills-manager-footer p { margin: 0; overflow-wrap: anywhere; }
+edit-skills-manifest-modal .skills-manager-footer .message:not([hidden]) { max-height: 6em; overflow: auto; margin-top: 8px; }
+edit-skills-manifest-modal .skills-add-dialog { width: min(640px, calc(100vw - 48px)); min-width: 0; height: auto; max-width: calc(100vw - 32px); max-height: min(720px, calc(100dvh - 48px)); margin: auto; padding: 0; overflow: hidden; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-xl); }
+edit-skills-manifest-modal .skills-add-dialog[open] { display: flex; flex-direction: column; }
+edit-skills-manifest-modal .skills-add-dialog::backdrop { background: rgba(15, 23, 42, .5); backdrop-filter: blur(4px); }
+.theme-dark edit-skills-manifest-modal .skills-add-dialog::backdrop { background: rgba(2, 6, 23, .7); backdrop-filter: blur(6px); }
+edit-skills-manifest-modal .skills-add-content { flex: 1; min-height: 0; overflow: auto; padding: 20px; }
+edit-skills-manifest-modal .skills-add-footer { display: flex; flex-shrink: 0; align-items: center; justify-content: flex-end; gap: 12px; padding: 12px 20px; background: var(--surface-soft); border-top: 1px solid var(--border); }
+edit-skills-manifest-modal .skills-add-footer .message { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
 edit-skills-manifest-modal .muted { color: var(--text-soft); font-size: var(--font-sm); }
-edit-skills-manifest-modal .repository-form { display: flex; align-items: end; gap: 12px; margin-top: 20px; }
+edit-skills-manifest-modal .repository-form { display: flex; align-items: end; gap: 12px; margin: 0; }
 edit-skills-manifest-modal .repository-form label { flex: 1; min-width: 0; }
 edit-skills-manifest-modal .skill-recommendations { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
 edit-skills-manifest-modal .recommended-repository { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 edit-skills-manifest-modal .recommended-repository-info { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 edit-skills-manifest-modal .recommended-repository p { margin: 4px 0 0; }
 edit-skills-manifest-modal .recommended-repository > button { flex-shrink: 0; }
-edit-skills-manifest-modal { display: block; font-family: var(--default-font), "Segoe UI", sans-serif; font-size: var(--font-base); font-weight: 400; line-height: var(--line-relaxed); }
+edit-skills-manifest-modal { display: flex; flex-direction: column; flex: 1; min-height: 0; font-family: var(--default-font), "Segoe UI", sans-serif; font-size: var(--font-base); font-weight: 400; line-height: var(--line-relaxed); }
 edit-skills-manifest-modal *, dialog.edit-skills-manifest-modal-dialog { box-sizing: border-box; }
 edit-skills-manifest-modal h2, edit-skills-manifest-modal h3 { margin: 0; }
 edit-skills-manifest-modal button, edit-skills-manifest-modal input { font-family: inherit; }
 edit-skills-manifest-modal input { display: block; width: 100%; min-height: 36px; margin-top: 6px; padding: 8px 10px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); font-size: var(--font-sm); }
-edit-skills-manifest-modal .recommended-name { font-weight: 700; }
+edit-skills-manifest-modal .recommended-name { font-weight: 600; }
 edit-skills-manifest-modal .recommended-repository > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-edit-skills-manifest-modal .individual-skill { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; }
+edit-skills-manifest-modal .individual-skill { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+edit-skills-manifest-modal .individual-skill > span { min-width: 0; overflow-wrap: anywhere; }
 edit-skills-manifest-modal .message { color: var(--text-soft); font-size: var(--font-sm); margin: 12px 0 0; }
 edit-skills-manifest-modal .is-error { color: var(--danger); }
-@media (max-width: 600px) {
-    dialog.edit-skills-manifest-modal-dialog { padding: 16px; }
+@media (max-width: 720px) {
+    dialog.edit-skills-manifest-modal-dialog { width: calc(100vw - 24px); height: calc(100dvh - 24px); }
+    edit-skills-manifest-modal .skills-dialog-heading { padding: 16px; }
+    edit-skills-manifest-modal .skills-manager-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    edit-skills-manifest-modal .skills-repository-nav { flex-direction: row; flex-wrap: wrap; gap: 8px; max-height: 30dvh; padding: 12px; border-right: 0; border-bottom: 1px solid var(--border); }
+    edit-skills-manifest-modal .skills-repository-nav-heading { width: 100%; padding: 0; }
+    edit-skills-manifest-modal .skills-repository-list { display: contents; }
+    edit-skills-manifest-modal .skills-repository-option { flex: 1 1 150px; width: auto; }
+    edit-skills-manifest-modal .skills-manager-content, edit-skills-manifest-modal .skills-add-content { padding: 16px; }
+    edit-skills-manifest-modal .skills-manager-footer, edit-skills-manifest-modal .skills-add-footer { padding: 12px 16px; }
+    edit-skills-manifest-modal .skills-add-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
+    edit-skills-manifest-modal .skillset-heading { flex-wrap: wrap; }
     edit-skills-manifest-modal .repository-form { flex-direction: column; align-items: stretch; }
-    edit-skills-manifest-modal .repository-content { padding-left: 0; }
-}
-
-/* Neutralize Explorer's global header styling inside this popup. */
-edit-skills-manifest-modal .skills-dialog-heading {
-    background: transparent;
-    color: var(--text);
-    box-shadow: none;
-    text-align: left;
-    padding: 0 0 12px;
+    edit-skills-manifest-modal .repository-form input { font-size: 16px; }
 }
 edit-skills-manifest-modal h2 { font-weight: 600; }
 edit-skills-manifest-modal h3 { font-size: 1rem; font-weight: 600; }
 edit-skills-manifest-modal p { margin-top: 0; }
 
-edit-skills-manifest-modal .skillset-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: start; }
-edit-skills-manifest-modal .skillset-item > strong { grid-column: 1; grid-row: 1; }
-edit-skills-manifest-modal .skillset-item > .button { grid-column: 2; grid-row: 1; justify-self: end; }
-edit-skills-manifest-modal .skillset-item > p, edit-skills-manifest-modal .skillset-item > .skill-members { grid-column: 1 / -1; }
-
-.skill-repository-warning { color: var(--warning, #b7791f); overflow-wrap: anywhere; }
+edit-skills-manifest-modal .skill-repository-warning { color: var(--warning); overflow-wrap: anywhere; }
