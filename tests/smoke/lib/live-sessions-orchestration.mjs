@@ -374,8 +374,12 @@ export async function readLiveSessionOrchestration(options, { fsApi, codeRoot = 
     emit({ ...result, codeHashes: hashes });
 }
 
-export async function createOrchestrationReader({ release, evidence, runtime, cwd, robotId, ownerPrincipal }) {
-    const guard = await createLiveSkillsRuntimeReader({ baseURL: release.applicationBaseURL });
+export async function createOrchestrationReader({ release, evidence, runtime, cwd, robotId, ownerPrincipal }, {
+    env = process.env, createRuntimeReader = createLiveSkillsRuntimeReader,
+} = {}) {
+    const guard = await createRuntimeReader({ env, baseURL: release.applicationBaseURL,
+        verifierPath: env.SMOKE_COPILOT_RELEASE_VERIFIER
+            || fileURLToPath(new URL('../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs', import.meta.url)) });
     const initial = await guard.finish();
     assert.equal(initial.runtime.containerId, runtime.containerId);
     const initialInspection = inspectNestedContainer(evidence.outerContainerId, runtime.containerId);

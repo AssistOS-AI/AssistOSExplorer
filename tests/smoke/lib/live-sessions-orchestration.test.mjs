@@ -3,11 +3,41 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { projectOrchestrationRecords, assertObserverWindow, assertOwnedSettlement, terminateOwnedFlow,
     snapshotWalFiles, assertWalFileFences, assertIdleWalReadmarkDelta, buildOrchestrationDiagnosticsBundle,
-    buildOrchestrationProgram, decodeOrchestrationProcessResult } from './live-sessions-orchestration.mjs';
+    buildOrchestrationProgram, decodeOrchestrationProcessResult, createOrchestrationReader } from './live-sessions-orchestration.mjs';
 import { createLiveSessionFinalizer } from './live-sessions-diagnostics.mjs';
+import { createLiveSkillsRuntimeReader } from './copilot-live-skills-runtime.mjs';
+import { collectCopilotReleaseEvidence } from './copilot-release-evidence.mjs';
+
+test('orchestration reader carries the verifier path across the actual runtime and release collector boundary', async t => {
+    const fallback = fileURLToPath(new URL('../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs', import.meta.url));
+    for (const override of [undefined, '/neutral/pinned/verify-release.mjs', 'relative-verifier.mjs']) {
+        await t.test(override || 'canonical fallback', async () => {
+            const stopped = new Error('neutral verifier load reached');
+            let loaded;
+            const env = { SMOKE_PLOINKY_BOX_CONTAINER: 'neutral-box', SMOKE_BOX_BASE_URL: 'http://localhost:19082',
+                SMOKE_WORKSPACE_ROOT: '/neutral/fixture', SMOKE_RELEASE_MANIFEST: '/neutral/release.json',
+                ...(override ? { SMOKE_COPILOT_RELEASE_VERIFIER: override } : {}) };
+            const input = { release: { applicationBaseURL: env.SMOKE_BOX_BASE_URL } };
+            const createRuntimeReader = options => createLiveSkillsRuntimeReader(options, {
+                fsApi: { realpathSync: value => value },
+                collectRelease: options => collectCopilotReleaseEvidence({ ...options,
+                    loadVerifier: async filename => { loaded = filename; throw stopped; } }),
+                runCommand: async () => { throw new Error('No container command is allowed at this boundary.'); },
+            });
+            if (override && !path.isAbsolute(override)) {
+                await assert.rejects(createOrchestrationReader(input, { env, createRuntimeReader }), /requires an absolute release verifier path/);
+                assert.equal(loaded, undefined);
+            } else {
+                await assert.rejects(createOrchestrationReader(input, { env, createRuntimeReader }), error => error === stopped);
+                assert.equal(loaded, override || fallback);
+            }
+        });
+    }
+});
 
 const cwd = '/workspace/selected', robotId = 'default-123456', ownerPrincipal = 'user:owner';
 const options = { cwd, robotId, ownerPrincipal, frontSessionId: 'front', requestDigest: 'request-digest', requirePhase: true,
