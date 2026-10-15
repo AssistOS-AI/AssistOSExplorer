@@ -83,6 +83,77 @@ test('same namespace selects a non-init-descendant ALA and preserves the entire 
     assert.equal(fixture.rows.size, 5, 'observation creates no execution');
 });
 
+test('observed IDs select distinct same-cwd workers with exact producer ancestry and scoped census', async () => {
+    const fixture = snapshotFixture();
+    fixture.rows.get(20).ppid = 40;
+    fixture.add(40, 1, ['node', '/code/server/robot-cli.mjs', '--dir', cwd]);
+    const otherArgs = [...turnArgs]; otherArgs[5] = 'worker-session'; otherArgs[7] = 'worker-turn';
+    fixture.add(50, 60, otherArgs);
+    fixture.add(51, 50, [native.realpath], { executable: native.realpath });
+    fixture.add(60, 1, ['node', '/source/roboTeamAgent/server/robot-task.mjs', '--cwd', cwd, '--session-id', 'worker-session']);
+    const select = (kind, sessionId, turnId) => ({ kind, sessionId, turnId, codeRoot: '/code', workflowCodeRoot: '/source/roboTeamAgent' });
+    const observe = selection => collectNativeProcessSnapshot(10, native, cwd, fixture.io, selection);
+    await assert.rejects(fixture.observe(), /exactly one selected/, 'verbatim baseline selection cannot distinguish legitimate workers');
+    const front = await observe(select('copilot', 'session', 'turn'));
+    const worker = await observe(select('workflow', 'worker-session', 'worker-turn'));
+    assert.equal(front.ala.pid, 20); assert.equal(worker.ala.pid, 50);
+    assert.equal(front.producer.pid, 40); assert.equal(worker.producer.pid, 60);
+    assertNativeProcessIdentity(worker, native, { initPid: 10, cwd, ...select('workflow', 'worker-session', 'worker-turn') });
+    assert.equal((await observe({ kind: 'census', codeRoot: '/code', workflowCodeRoot: '/source/roboTeamAgent' })).length, 2);
+    for (const selection of [select('copilot', '../invalid', 'turn'), select('copilot', 'absent', 'turn'),
+        select('workflow', 'session', 'turn')]) await assert.rejects(observe(selection));
+    fixture.add(70, 40, [...turnArgs]);
+    await assert.rejects(observe(select('copilot', 'session', 'turn')), /exactly one selected/);
+    fixture.rows.delete(70);
+    for (const args of [['node', '/other/robot-cli.mjs', '--dir', cwd], ['node', '--eval', '/code/server/robot-cli.mjs', '--dir', cwd],
+        ['node', '/code/server/robot-cli.mjs', '--dir', '/other/selected']]) {
+        fixture.rows.get(40).args = args;
+        await assert.rejects(observe(select('copilot', 'session', 'turn')));
+    }
+});
+
+test('producer replacement and argv/namespace races fail the final observer fence', async () => {
+    for (const field of ['startToken', 'ppid', 'pidNamespace', 'args']) {
+        const fixture = snapshotFixture();
+        fixture.rows.get(20).ppid = 40;
+        fixture.add(40, 1, ['node', '/code/server/robot-cli.mjs', '--dir', cwd]);
+        let armed = false;
+        fixture.hook = file => {
+            if (file === '/proc/22/root/public/native') armed = true;
+            if (!armed || file !== '/proc/40/stat') return;
+            armed = false;
+            const producer = fixture.rows.get(40);
+            if (field === 'startToken') producer.startToken += '1';
+            if (field === 'ppid') producer.ppid = 999;
+            if (field === 'pidNamespace') producer.pidNamespace = 'pid:[999]';
+            if (field === 'args') producer.args.push('--changed');
+        };
+        await assert.rejects(collectNativeProcessSnapshot(10, native, cwd, fixture.io,
+            { kind: 'copilot', sessionId: 'session', turnId: 'turn', codeRoot: '/code' }));
+    }
+    const empty = snapshotFixture(); empty.rows.delete(20);
+    assert.deepEqual(await collectNativeProcessSnapshot(10, native, cwd, empty.io, { kind: 'census', codeRoot: '/code' }), []);
+});
+
+test('native file replacement between selection and final hash fence cannot pass', async () => {
+    const fixture = snapshotFixture();
+    fixture.hook = (file, count) => {
+        if (file === '/proc/22/root/public/native' && count === 2) fixture.fileBytes = Buffer.from('replaced public executable');
+    };
+    await assert.rejects(fixture.observe(), /hash drift/);
+});
+
+test('producer interpreter replacement cannot preserve an otherwise unchanged identity', async () => {
+    const fixture = snapshotFixture();
+    fixture.rows.get(20).ppid = 40;
+    fixture.add(40, 1, ['node', '/code/server/robot-cli.mjs', '--dir', cwd]);
+    fixture.hook = (file, count) => {
+        if (file === '/proc/40/exe' && count === 2) fixture.rows.get(40).executable = '/usr/bin/untrusted';
+    };
+    await assert.rejects(collectNativeProcessSnapshot(10, native, cwd, fixture.io,
+        { kind: 'copilot', sessionId: 'session', turnId: 'turn', codeRoot: '/code' }), /producer executable changed/);
+});
+
 test('native script matching accepts only the exact script position of a supported interpreter', async () => {
     const fixture = snapshotFixture();
     const row = fixture.rows.get(22);
@@ -251,15 +322,64 @@ child.on('exit', () => process.exit(0));\n`);
     assert.notEqual(first.ala.ppid, init.pid, 'the selected init is a sibling, never an ancestor');
     assert.equal(first.native.pid, message.pid);
     assert.deepEqual(JSON.parse((await run(NATIVE_PROCESS_SNAPSHOT_SOURCE)).stdout), first);
+    t.diagnostic(`observer-only topology init=${init.pid} ala=${ala.pid} native=${message.pid}; no provider or coding-agent execution`);
+});
+
+test('Linux selects two observed same-cwd workers by exact deployed producer and IDs using the exported program', {
+    skip: process.platform !== 'linux' ? 'requires Linux /proc and neutral subprocess ancestry' : false,
+    timeout: 30000,
+}, async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'live-process-workers-'));
+    const selectedCwd = path.join(root, 'selected'), codeRoot = path.join(root, 'code'), workflowCodeRoot = path.join(root, 'source', 'roboTeamAgent');
+    fs.mkdirSync(selectedCwd); fs.mkdirSync(path.join(codeRoot, 'server'), { recursive: true });
+    fs.mkdirSync(path.join(workflowCodeRoot, 'server'), { recursive: true });
+    const script = path.join(root, 'native.mjs'), alaScript = path.join(root, 'ala.mjs');
+    fs.writeFileSync(script, 'setInterval(() => {}, 1000);\n');
+    fs.writeFileSync(alaScript, `import {spawn} from 'node:child_process';
+const child=spawn(process.execPath,[${JSON.stringify(script)}],{stdio:'ignore'});
+process.send({ala:process.pid,native:child.pid});
+const stop=()=>child.kill('SIGTERM'); process.on('message',stop); process.on('SIGTERM',stop);
+child.on('exit',()=>process.exit(0));`);
+    for (const [kind, filename] of [['copilot', 'robot-cli.mjs'], ['workflow', 'robot-task.mjs']]) {
+        fs.writeFileSync(path.join(kind === 'copilot' ? codeRoot : workflowCodeRoot, 'server', filename), `import {spawn} from 'node:child_process';
+const child=spawn(process.execPath,[${JSON.stringify(alaScript)},'--cwd',${JSON.stringify(selectedCwd)},'--session-id','${kind}-session','--turn-id','${kind}-turn','--control-stdin'],{stdio:['ignore','ignore','ignore','ipc']});
+child.on('message',message=>process.send(message));
+const stop=()=>child.send('stop'); process.on('message',stop); process.on('SIGTERM',stop);
+child.on('exit',()=>process.exit(0));`);
+    }
+    const children = [];
+    t.after(async () => {
+        for (const child of children) if (child.connected) child.send('stop');
+        await Promise.all(children.map(async child => {
+            if (child.exitCode !== null || child.signalCode !== null) return;
+            const exited = once(child, 'exit'); child.kill('SIGTERM'); await exited;
+        }));
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+    const init = spawn(process.execPath, [script], { stdio: 'ignore' }); children.push(init);
+    const observed = {};
+    for (const [kind, filename, args] of [['copilot', 'robot-cli.mjs', ['--dir', selectedCwd]],
+        ['workflow', 'robot-task.mjs', ['--cwd', selectedCwd, '--session-id', 'workflow-session']]]) {
+        const producer = spawn(process.execPath, [path.join(kind === 'copilot' ? codeRoot : workflowCodeRoot, 'server', filename), ...args], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+        children.push(producer);
+        const [message] = await once(producer, 'message'); observed[kind] = { ...message, producer: producer.pid };
+    }
+    const frozen = { realpath: script, sha256: crypto.createHash('sha256').update(fs.readFileSync(script)).digest('hex') };
+    const run = (source, selection) => execute(process.execPath, ['--input-type=module', '--eval', source,
+        String(init.pid), JSON.stringify(frozen), selectedCwd, JSON.stringify(selection)], { timeout: 10000, maxBuffer: 65536 });
+    for (const kind of ['copilot', 'workflow']) {
+        const selection = { kind, sessionId: `${kind}-session`, turnId: `${kind}-turn`, codeRoot, workflowCodeRoot };
+        const first = JSON.parse((await run(NATIVE_PROCESS_SNAPSHOT_SOURCE, selection)).stdout);
+        assertNativeProcessIdentity(first, frozen, { initPid: init.pid, cwd: selectedCwd, ...selection });
+        assert.equal(first.ala.pid, observed[kind].ala); assert.equal(first.native.pid, observed[kind].native);
+        assert.equal(first.producer.pid, observed[kind].producer);
+        assert.deepEqual(JSON.parse((await run(NATIVE_PROCESS_SNAPSHOT_SOURCE, selection)).stdout), first);
+    }
+    assert.equal(JSON.parse((await run(NATIVE_PROCESS_SNAPSHOT_SOURCE, { kind: 'census', codeRoot, workflowCodeRoot })).stdout).length, 2);
     const baselinePath = process.env.LIVE_SESSIONS_BASELINE_SNAPSHOT;
     if (baselinePath) {
-        // Optional verifier evidence only. Routine unit tests have no Git or
-        // historical-source dependency; the extracted program is run verbatim.
         const baseline = fs.readFileSync(baselinePath, 'utf8');
-        await assert.rejects(execute(process.execPath, ['--input-type=module', '--eval', baseline,
-            String(init.pid), JSON.stringify(frozen), path.basename(selectedCwd)], { timeout: 10_000, maxBuffer: 65536 }),
-        error => error.stderr.includes('expected exactly one selected native-turn parent'));
-        t.diagnostic(`baseline sha256=${crypto.createHash('sha256').update(baseline).digest('hex')} rejected its actual parent-selection error`);
+        await assert.rejects(run(baseline, null), error => error.stderr.includes('expected exactly one selected native-turn parent'));
+        t.diagnostic(`verbatim baseline sha256=${crypto.createHash('sha256').update(baseline).digest('hex')} rejects actual same-cwd multiplicity`);
     }
-    t.diagnostic(`observer-only topology init=${init.pid} ala=${ala.pid} native=${message.pid}; no provider or coding-agent execution`);
 });

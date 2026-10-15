@@ -69,7 +69,7 @@ export function workload(id = crypto.randomUUID()) {
     return {
         id, first, second, firstFile, secondFile,
         initialCommand, ownerCommand,
-        prompt: `Live Sessions execution ${id}. Work only in this selected folder. Use your real native command tool to execute this command exactly: ${initialCommand}. Read that file and emit its text value verbatim as an assistant message, not a promise. Keep this same turn active for at most 180 seconds by executing separate five-second sleep commands and checking incoming owner instructions between commands. Do not finish while waiting. When an owner instruction arrives, execute it, emit the produced text value, and continue the bounded wait. Do not launch background jobs. Stop promptly when interrupted.`,
+        prompt: `Live Sessions execution ${id}. List the available workflows, then launch the default workflow exactly once in this selected folder with this objective: Work only in this selected folder. Use your real native command tool to execute this command exactly: ${initialCommand}. Read that file and emit its text value verbatim as an assistant message. Keep this same workflow phase active for at most 180 seconds by executing separate five-second sleep commands and checking incoming owner instructions between commands. Do not finish while waiting. When an owner instruction arrives, execute it, emit the produced text value, and continue the bounded wait. Do not launch background jobs or additional workflows. Stop promptly when interrupted. After launching, report the workflow link and finish the launcher turn.`,
         message: `Execute this command with the native command tool now, then read its file and emit its text value verbatim as an assistant message: ${ownerCommand}. Continue the bounded wait from the original instruction.`,
         initial, followup,
     };
@@ -303,7 +303,7 @@ export function activeTurnProcesses(rows) {
 
 // The injectable I/O boundary is for observer-contract tests only. The exported
 // program below always supplies Node's real fs and the canonical /proc root.
-export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd, io = fs) {
+export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd, io = fs, selection = null) {
     if (!Number.isSafeInteger(rootPid) || rootPid <= 1
         || typeof expectedCwd !== 'string' || !expectedCwd.startsWith('/')
         || expectedCwd === '/' || /[\u0000-\u001f\u007f]/.test(expectedCwd)
@@ -314,6 +314,17 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
         || /[\u0000-\u001f\u007f]/.test(native.realpath)
         || native.realpath.split('/').some((part, index) => index > 0 && ['', '.', '..'].includes(part))
         || !/^[a-f0-9]{64}$/.test(native.sha256 || '')) throw new Error('invalid frozen native identity');
+    if (selection) {
+        if (!['copilot', 'workflow', 'census'].includes(selection.kind)) throw new Error('invalid selected producer kind');
+        if (selection.kind !== 'census') for (const key of ['sessionId', 'turnId']) {
+            if (!/^[A-Za-z0-9_-]{1,128}$/.test(selection[key] || '')) throw new Error('invalid selected native ID');
+        }
+        for (const root of [selection.codeRoot, ...(selection.workflowCodeRoot ? [selection.workflowCodeRoot] : [])]) {
+            if (typeof root !== 'string' || !root.startsWith('/')
+                || root.split('/').some((part, index) => index > 0 && ['', '.', '..'].includes(part))
+                || /[\u0000-\u001f\u007f]/.test(root)) throw new Error('invalid deployed producer root');
+        }
+    }
     const entries = io.readdirSync('/proc').filter(value => /^[1-9][0-9]*$/.test(value));
     if (entries.length > 8192) throw new Error('bounded process inventory exceeded');
     function readBounded(file, limit = 65536) {
@@ -364,6 +375,25 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
     function identity(row) {
         return { pid: row.pid, ppid: row.ppid, startToken: row.startToken, pidNamespace: row.pidNamespace };
     }
+    function hashExecutable(pid) {
+        const fd = io.openSync('/proc/' + pid + '/root' + native.realpath, 'r');
+        try {
+            const before = io.fstatSync(fd);
+            if (!before.isFile() || before.size <= 0 || before.size > 256 * 1024 * 1024) throw new Error('invalid selected process executable');
+            const hash = crypto.createHash('sha256'), buffer = Buffer.alloc(65536);
+            let count, size = 0;
+            while ((count = io.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+                size += count;
+                if (size > 256 * 1024 * 1024) throw new Error('bounded native executable exceeded');
+                hash.update(buffer.subarray(0, count));
+            }
+            const after = io.fstatSync(fd);
+            if (size !== before.size || ['size', 'ino', 'dev', 'mtimeMs', 'ctimeMs'].some(key => before[key] !== after[key])) throw new Error('native executable changed during snapshot');
+            const sha256 = hash.digest('hex');
+            if (sha256 !== native.sha256) throw new Error('frozen native executable hash drift');
+            return sha256;
+        } finally { io.closeSync(fd); }
+    }
     function turnContext(args) {
         if (!args.includes('--control-stdin')) return null;
         const result = {};
@@ -401,8 +431,46 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
         const context = turnContext(observed.argv);
         if (context?.cwd === expectedCwd) candidates.push({ ...observed, context });
     }
-    if (candidates.length !== 1) throw new Error('expected exactly one selected native-turn parent');
-    const ala = candidates[0];
+    function producerProof(candidate) {
+        const chain = [], seen = new Set([candidate.pid]);
+        let pid = candidate.ppid;
+        while (rows.has(pid) && !seen.has(pid) && chain.length < 256) {
+            seen.add(pid);
+            const row = readProcess(pid), prior = rows.get(pid);
+            if (row.startToken !== prior.startToken || row.ppid !== prior.ppid || row.pidNamespace !== init.pidNamespace) throw new Error('producer ancestry changed');
+            chain.push(row);
+            for (const kind of ['copilot', 'workflow']) {
+                const root = kind === 'workflow' ? selection.workflowCodeRoot || selection.codeRoot : selection.codeRoot;
+                const script = root + '/server/' + (kind === 'copilot' ? 'robot-cli.mjs' : 'robot-task.mjs');
+                if (row.argv[1] !== script) continue;
+                const executable = io.readlinkSync('/proc/' + row.pid + '/exe');
+                if (!/(?:^|\/)(?:node|nodejs|bun)$/.test(executable)) throw new Error('invalid deployed producer interpreter');
+                const value = flag => {
+                    if (row.argv.filter(argument => argument === flag || argument.startsWith(flag + '=')).length !== 1) throw new Error('invalid producer arguments');
+                    const offset = row.argv.indexOf(flag);
+                    if (offset < 0 || !row.argv[offset + 1] || row.argv[offset + 1].startsWith('--')) throw new Error('invalid producer value');
+                    return row.argv[offset + 1];
+                };
+                if (value(kind === 'copilot' ? '--dir' : '--cwd') !== expectedCwd
+                    || kind === 'workflow' && value('--session-id') !== candidate.context.sessionId) throw new Error('producer context mismatch');
+                if (selection.kind !== 'census' && kind !== selection.kind) throw new Error('selected producer kind mismatch');
+                return { kind, script, row, chain, executable };
+            }
+            pid = row.ppid;
+        }
+        throw new Error('missing exact deployed producer ancestry');
+    }
+    if (selection?.kind === 'census') {
+        return candidates.map(candidate => {
+            const producer = producerProof(candidate);
+            for (const row of [init, candidate, ...producer.chain]) if (!same(row, readProcess(row.pid))) throw new Error('census identity changed during final fence');
+            return { ...identity(candidate), ...candidate.context, producerKind: producer.kind };
+        }).sort((a, b) => a.pid - b.pid);
+    }
+    const selectedCandidates = selection ? candidates.filter(row => row.context.sessionId === selection.sessionId && row.context.turnId === selection.turnId) : candidates;
+    if (selectedCandidates.length !== 1) throw new Error('expected exactly one selected native-turn parent');
+    const ala = selectedCandidates[0];
+    const producer = selection ? producerProof(ala) : null;
     if (ala.pid === init.pid) throw new Error('native-turn parent cannot be container init');
     function ancestry(pid) {
         const chain = [], seen = new Set();
@@ -437,32 +505,19 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
             if (member.pid === row.pid && !same(observed, stable)) throw new Error('native argv changed during snapshot');
             return stable;
         });
-        const file = '/proc/' + row.pid + '/root' + native.realpath;
-        const fd = io.openSync(file, 'r');
-        let sha256;
-        try {
-            const metadata = io.fstatSync(fd);
-            if (!metadata.isFile() || metadata.size <= 0 || metadata.size > 256 * 1024 * 1024) throw new Error('invalid selected process executable');
-            const hash = crypto.createHash('sha256'), buffer = Buffer.alloc(65536);
-            let count, size = 0;
-            while ((count = io.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
-                size += count;
-                if (size > 256 * 1024 * 1024) throw new Error('bounded native executable exceeded');
-                hash.update(buffer.subarray(0, count));
-            }
-            if (size !== metadata.size) throw new Error('native executable changed during snapshot');
-            sha256 = hash.digest('hex');
-            if (sha256 !== native.sha256) throw new Error('frozen native executable hash drift');
-        } finally { io.closeSync(fd); }
+        const sha256 = hashExecutable(row.pid);
         matches.push({ row: observed, executable, scriptPath: script ? native.realpath : null, sha256, proof });
     }
     if (matches.length !== 1) throw new Error('expected exactly one frozen native CLI process');
     const selected = matches[0];
-    for (const row of [init, ala, ...selected.proof]) {
+    hashExecutable(selected.row.pid);
+    for (const row of [init, ala, ...selected.proof, ...(producer?.chain || [])]) {
         if (!same(row, readProcess(row.pid))) throw new Error('native identity changed during final fence');
     }
     if (io.readlinkSync('/proc/' + selected.row.pid + '/exe') !== selected.executable) throw new Error('native executable changed during final fence');
+    if (producer && io.readlinkSync('/proc/' + producer.row.pid + '/exe') !== producer.executable) throw new Error('producer executable changed during final fence');
     return { containerInit: identity(init), ala: { ...identity(ala), ...ala.context },
+        ...(producer ? { producer: { ...identity(producer.row), kind: producer.kind, script: producer.script }, producerAncestry: producer.chain.map(identity) } : {}),
         native: { ...identity(selected.row), executable: native.realpath, actualExecutable: selected.executable,
             scriptPath: selected.scriptPath, sha256: selected.sha256 }, ancestry: selected.proof.map(identity) };
 }
@@ -472,13 +527,13 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 ${collectNativeProcessSnapshot.toString()}
 if (!/^[1-9][0-9]*$/.test(process.argv[1] || '')) throw new Error('invalid exact init PID argument');
-const identity = await collectNativeProcessSnapshot(Number(process.argv[1]), JSON.parse(process.argv[2]), process.argv[3]);
+const identity = await collectNativeProcessSnapshot(Number(process.argv[1]), JSON.parse(process.argv[2]), process.argv[3], fs, process.argv[4] ? JSON.parse(process.argv[4]) : null);
 process.stdout.write(JSON.stringify(identity));
 `;
 
 // Inspect only process identity, argv and the selected public executable. Never
 // read process environments, homes, credential files, logs or managed sources.
-export async function nativeProcessIdentity(evidence, runtime, native, directoryName) {
+export async function nativeProcessIdentity(evidence, runtime, native, directoryName, selection) {
     assert.match(directoryName, /^[A-Za-z0-9_-]+$/);
     const workspaceRoot = assertBoxWorkspacePath(evidence?.workspaceRoot);
     assert.equal(evidence.workspaceHash, workspaceHash(workspaceRoot));
@@ -491,11 +546,11 @@ export async function nativeProcessIdentity(evidence, runtime, native, directory
     assert.ok(Number.isSafeInteger(before.State.Pid) && before.State.Pid > 1);
     assert.match(before.State.StartedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/);
     const result = await execute('podman', ['exec', evidence.outerContainerId, '/usr/local/bin/node', '--input-type=module', '--eval',
-        NATIVE_PROCESS_SNAPSHOT_SOURCE, String(before.State.Pid), JSON.stringify(native), cwd], {
+        NATIVE_PROCESS_SNAPSHOT_SOURCE, String(before.State.Pid), JSON.stringify(native), cwd, JSON.stringify(selection || null)], {
         timeout: 30_000, maxBuffer: 65536, killSignal: 'SIGKILL',
     });
     const identity = JSON.parse(result.stdout);
-    assertNativeProcessIdentity(identity, native, { initPid: before.State.Pid, cwd });
+    if (selection?.kind !== 'census') assertNativeProcessIdentity(identity, native, { initPid: before.State.Pid, cwd, ...selection });
     const after = inspectNestedContainer(evidence.outerContainerId, runtime.containerId);
     assert.equal(after?.Id, before.Id);
     assert.equal(after?.State?.Running, true);
@@ -524,6 +579,19 @@ export function assertNativeProcessIdentity(identity, native, expectedContext) {
             && identity.ala[key].length <= 4096 && !identity.ala[key].startsWith('--')
             && !/[\u0000-\u001f\u007f]/.test(identity.ala[key]));
         if (expectedContext[key] !== undefined) assert.equal(identity.ala[key], expectedContext[key]);
+    }
+    if (expectedContext.kind && expectedContext.kind !== 'census') {
+        processIdentity(identity.producer);
+        assert.equal(identity.producer.kind, expectedContext.kind);
+        const root = expectedContext.kind === 'workflow' ? expectedContext.workflowCodeRoot || expectedContext.codeRoot : expectedContext.codeRoot;
+        assert.equal(identity.producer.script, `${root}/server/${expectedContext.kind === 'copilot' ? 'robot-cli.mjs' : 'robot-task.mjs'}`);
+        assert.equal(identity.producer.pidNamespace, identity.containerInit.pidNamespace);
+        assert.ok(Array.isArray(identity.producerAncestry) && identity.producerAncestry.length > 0);
+        identity.producerAncestry.forEach((row, index) => {
+            processIdentity(row);
+            assert.equal(index ? identity.producerAncestry[index - 1].ppid : identity.ala.ppid, row.pid);
+        });
+        assert.equal(identity.producerAncestry.at(-1).pid, identity.producer.pid);
     }
     assert.notEqual(identity.ala.pid, identity.containerInit.pid);
     assert.notEqual(identity.ala.pid, identity.native.pid);

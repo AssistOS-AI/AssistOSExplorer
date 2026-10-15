@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import { test, expect, attachPageDiagnostics } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
@@ -8,19 +9,26 @@ import { readAuthenticatedPrincipal } from '../lib/auth.mjs';
 import { openExplorer } from '../lib/explorer.mjs';
 import { createDirectory, deleteDirectoryIfPresent, openCopilotForDirectory } from '../lib/copilot.mjs';
 import { setComposer, waitForWebchatIdle } from '../lib/webchat.mjs';
+import { conversationFromSkillsURL } from '../lib/conversation-skills.mjs';
+import { createLiveSessionFinalizer } from '../lib/live-sessions-diagnostics.mjs';
+import { createOrchestrationReader, assertObserverWindow, terminateOwnedFlow, assertOwnedSettlement } from '../lib/live-sessions-orchestration.mjs';
 import { resolvePloinkyExecutable } from '../lib/ploinky-executable.mjs';
-import { collectWebttyRuntimeEvidence, requireAgentEvidence, collectExactAgentState,
-    collectAgentProcessRows } from '../lib/webtty-runtime-evidence.mjs';
+import { collectWebttyRuntimeEvidence, requireAgentEvidence, collectExactAgentState } from '../lib/webtty-runtime-evidence.mjs';
 import { findSecretLeaks } from '../lib/security.mjs';
 import { redactTraceText, findTraceCredentialResidue } from '../lib/redacted-trace.mjs';
 import { ROBOTEAM_BASE, LIVE_BASE, ENDED, foreignAccount, assertLivePrincipals, assertNoNativeRefusal,
     workload, assertExecutionFile, openSse, executionText, assertOrderedFrames, liveRequest, inventory,
     discoverSource, openWatch, detachWatch, validateNativeEvidence, verifyNativeExecutable,
-    activeTurnProcesses, restartRoboTeam, observeFinitePageWork, nativeProcessIdentity,
+    restartRoboTeam, observeFinitePageWork, nativeProcessIdentity,
     replayApplicationMatches } from '../lib/live-sessions.mjs';
 
 const BOT = '#chatList > .wa-message.in:not(.wa-typing):not(.wa-task-item) .wa-message-bubble';
 const nativeTimeout = 120_000;
+
+function processSelection(fixture, kind = 'census', sessionId, turnId) {
+    return { kind, codeRoot: '/code', workflowCodeRoot: path.posix.join(fixture.release.repositories.achillesCLI.repositoryPath, 'roboTeamAgent'),
+        ...(sessionId ? { sessionId, turnId } : {}) };
+}
 
 function releaseBinding() {
     const release = JSON.parse(process.env.SMOKE_COPILOT_RELEASE_EVIDENCE || 'null');
@@ -64,7 +72,7 @@ async function configuredNative(admin, release, runtime, { initial = true } = {}
     expect(config.ok).toBe(true);
     const native = validateNativeEvidence(record, { release, runtime, workspaceRoot: smokeConfig.workspaceRoot, config, initial });
     await verifyNativeExecutable(runtimeEvidence(release), runtime, native);
-    return native;
+    return { ...native, robotId: record.robotId };
 }
 
 async function attachEvidence(testInfo, name, value) {
@@ -77,11 +85,12 @@ async function attachEvidence(testInfo, name, value) {
 
 async function withFixture(browser, testInfo, operation) {
     const release = releaseBinding();
-    const contexts = [], diagnostics = [], readers = [], runs = [], chats = [], markers = [];
+    const contexts = [], diagnostics = [], readers = [], runs = [], chats = [], owned = [];
     let owner, admin, foreign, directoryPath;
-    let primaryFailure;
-    const cleanupErrors = [];
-    const attempt = async action => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
+    let primaryFailure, hasPrimary = false;
+    const finalizer = createLiveSessionFinalizer();
+    let cleanupIndex = 0, settled = false;
+    const attempt = (label, action) => finalizer.required(label, action);
     async function accountPage(account, label) {
         const context = await browser.newContext({ baseURL: smokeConfig.baseURL, ignoreHTTPSErrors: true });
         contexts.push(context);
@@ -91,7 +100,7 @@ async function withFixture(browser, testInfo, operation) {
         await openExplorer(page, { account });
         return page;
     }
-    const fixture = { release, readers, runs, chats, markers,
+    const fixture = { release, readers, runs, chats, owned, testInfo,
         async reopen() {
             admin = await accountPage(smokeConfig.primaryUser, 'admin-reopened');
             owner = await accountPage(smokeConfig.secondaryUser, 'owner-reopened');
@@ -130,23 +139,21 @@ async function withFixture(browser, testInfo, operation) {
         const directoryName = `live-sessions-${smokeConfig.runId}-${testInfo.testId.replace(/[^A-Za-z0-9]/g, '').slice(-16)}`;
         directoryPath = `/${directoryName}`;
         await createDirectory(owner, directoryName, directoryPath);
-        Object.assign(fixture, { admin, owner, foreign, principals, evidence, runtime, native, directoryName, directoryPath });
+        Object.assign(fixture, { admin, owner, foreign, principals, evidence, runtime, native, robotId: native.robotId, directoryName, directoryPath });
+        fixture.cwd = path.join(smokeConfig.workspaceRoot, directoryName);
+        fixture.ownerPrincipal = `user:${principals[1].canonicalId}`;
+        fixture.capture = await createOrchestrationReader(fixture);
         await attachEvidence(testInfo, 'native-prerequisite.json', { native, runtime, sourceGraph: release.repositories,
             outerContainerId: release.liveBox.box.containerId, imageDigest: release.imageDigest });
         await operation(fixture);
     } catch (error) {
         primaryFailure = error;
-        throw error;
+        hasPrimary = true;
     } finally {
-        for (const reader of readers.splice(0)) await attempt(() => reader.close());
-        if (markers.length) await attempt(async () => {
-            if (!admin || admin.isClosed()) admin = await accountPage(smokeConfig.primaryUser, 'admin-recovery-cleanup');
-            for (const row of await inventory(admin)) {
-                if (markers.some(marker => row.title.includes(marker)) && !runs.some(run => run.id === row.id)) runs.push(row);
-            }
-        });
+        for (const reader of readers.splice(0)) await attempt(`close reader ${++cleanupIndex}`, () => reader.close());
+        for (const { page } of diagnostics) if (!page.isClosed()) await attempt(`detach viewer ${++cleanupIndex}`, () => detachWatch(page));
         for (const run of runs) {
-            await attempt(async () => {
+            await attempt(`stop owned public row ${run.id}`, async () => {
                 if (!admin || admin.isClosed()) {
                     admin = await accountPage(smokeConfig.primaryUser, 'admin-cleanup');
                 }
@@ -159,80 +166,174 @@ async function withFixture(browser, testInfo, operation) {
                 }
             });
         }
-        for (const { page } of diagnostics) if (!page.isClosed()) await attempt(() => detachWatch(page));
-        for (const chat of chats) if (!chat.isClosed()) await attempt(async () => {
+        for (const chat of chats) if (!chat.isClosed()) await attempt(`close launcher ${++cleanupIndex}`, async () => {
             await diagnostics.find(entry => entry.page === chat).finite.settle();
             await chat.close();
         });
-        if (admin && !admin.isClosed()) await attempt(async () => {
-            await expect.poll(async () => (await inventory(admin)).filter(row => runs.some(run => run.id === row.id))
+        for (const entry of owned) await attempt(`terminate exact owned workflow for ${entry.options.frontSessionId}`, async () => {
+                if (!owner || owner.isClosed()) owner = await accountPage(smokeConfig.secondaryUser, 'owner-flow-cleanup');
+                const snapshot = await fixture.capture(entry.options);
+                entry.snapshot = snapshot;
+                if (snapshot.flow) await terminateOwnedFlow(owner, snapshot, fixture);
+        });
+        if (admin && !admin.isClosed()) await attempt('settle public rows and scoped native census', async () => {
+            await expect.poll(async () => (await inventory(admin)).filter(row => runs.some(run => run.id === row.id)
+                || [fixture.cwd, fixture.directoryName].includes(row.cwdDisplay))
                 .every(row => ENDED.includes(row.status) && row.viewerCount === 0), { timeout: 30_000 }).toBe(true);
             const evidence = runtimeEvidence(release);
             const runtime = requireAgentEvidence(evidence, 'roboTeamAgent');
-            await expect.poll(() => activeTurnProcesses(collectAgentProcessRows(evidence, runtime)).length,
-                { timeout: 45_000 }).toBe(0);
+            let census;
+            await expect.poll(async () => {
+                census = await nativeProcessIdentity(evidence, runtime, fixture.native, fixture.directoryName, processSelection(fixture));
+                return census.length;
+            }, { timeout: 45_000 }).toBe(0);
+            for (const entry of owned) {
+                const snapshot = await fixture.capture(entry.options);
+                const ownedFlowIds = owned.map(value => value.snapshot?.flow?.id).filter(Boolean);
+                expect(snapshot.census.flows.filter(id => !ownedFlowIds.includes(id)), 'unowned scoped workflows retain the cwd').toEqual([]);
+                if (snapshot.flow) assertOwnedSettlement(snapshot, { ...fixture, flowId: snapshot.flow.id }, census,
+                    (await inventory(admin)).filter(row => runs.some(run => run.id === row.id)
+                        || [fixture.cwd, fixture.directoryName].includes(row.cwdDisplay)));
+                else expect(snapshot.task, 'an uncorrelated background task retains the directory').toBeNull();
+            }
+            settled = true;
         });
-        if (directoryPath) await attempt(async () => {
+        if (directoryPath) await attempt('delete settled owned cwd', async () => {
+            expect(settled, 'failed or ambiguous settlement retains the cwd and evidence').toBe(true);
             if (!owner || owner.isClosed()) owner = await accountPage(smokeConfig.secondaryUser, 'owner-cleanup');
             await deleteDirectoryIfPresent(owner, directoryPath);
         });
-        for (const { page, finite } of diagnostics) if (!page.isClosed()) await attempt(async () => {
+        for (const { page, finite } of diagnostics) if (!page.isClosed()) await attempt(`close page ${++cleanupIndex}`, async () => {
             await finite.settle();
             await page.close();
         });
-        for (const context of contexts) await attempt(() => context.close());
-        for (const { controller } of diagnostics) await attempt(async () => {
+        for (const context of contexts) await attempt(`close context ${++cleanupIndex}`, () => context.close());
+        for (const { controller } of diagnostics) await attempt(`browser diagnostics ${++cleanupIndex}`, async () => {
             await controller.flush();
             expect(controller.actionableEvents(), 'all observed browser pages retain strict diagnostics').toEqual([]);
         });
-        if (cleanupErrors.length) throw new AggregateError([...(primaryFailure ? [primaryFailure] : []), ...cleanupErrors],
-            'Live Sessions cleanup/diagnostics failed; preserve the original failure and all cleanup failures.');
+        await finalizer.finish(testInfo, primaryFailure, { hasPrimary });
     }
 }
 
 async function startTurn(fixture, { replacement = false } = {}) {
     const { owner, directoryPath } = fixture;
     const work = workload();
-    fixture.markers.push(work.id);
     const before = await inventory(owner);
     const chat = await openCopilotForDirectory(owner, directoryPath);
     fixture.chats.push(chat);
     await waitForWebchatIdle(chat);
     assertNoNativeRefusal(await chat.locator(BOT).allTextContents());
+    const href = await chat.locator('#sessionSettingsLink').getAttribute('href');
+    const frontSessionId = conversationFromSkillsURL(href, smokeConfig.baseURL, { robotId: fixture.robotId }).sessionId;
+    const baseline = (await fixture.capture({})).census;
+    const options = { frontSessionId, requestDigest: crypto.createHash('sha256').update(work.prompt).digest('hex'), baseline };
+    const entry = { options, snapshot: null };
+    fixture.owned.push(entry); // Enroll before the request, including partial launches.
+    let front, frontNative, frontFailure, stopCapture = false;
+    const selectionFor = (kind, sessionId, turnId) => processSelection(fixture, kind, sessionId, turnId);
+    // Start observation before the sole request. A missed short launcher is a
+    // failure, never permission for another provider attempt.
+    const frontCapture = (async () => {
+        const deadline = Date.now() + nativeTimeout;
+        while (!stopCapture && Date.now() < deadline) {
+            const snapshot = await fixture.capture({ ...options, frontOnly: true });
+            entry.snapshot = snapshot;
+            const rows = (await inventory(owner)).filter(candidate => candidate.kind === 'copilot-turn'
+                && candidate.title.includes(work.id) && candidate.cwdDisplay === fixture.cwd
+                && !before.some(old => old.id === candidate.id));
+            expect(rows.length).toBeLessThanOrEqual(1);
+            if (snapshot.front?.nativeObserved && rows[0]) {
+                expect(snapshot.front.status, 'front native capture must occur while active').toBe('running');
+                expect(rows[0]).toMatchObject({ isOwner: true, ownerState: 'verified', status: 'running', kind: 'copilot-turn' });
+                if (!fixture.runs.some(run => run.id === rows[0].id)) fixture.runs.push(rows[0]);
+                expect((await inventory(fixture.foreign)).some(row => row.id === rows[0].id)).toBe(false);
+                frontNative = await nativeProcessIdentity(fixture.evidence, fixture.runtime, fixture.native, fixture.directoryName,
+                    selectionFor('copilot', snapshot.front.sessionId, snapshot.front.turnId));
+                expect(snapshot.front.backend).toBe(fixture.native.backend);
+                front = { row: rows[0], metadata: snapshot.front, nativeProcess: frontNative };
+                return;
+            }
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        if (!stopCapture) throw new Error('Active front copilot metadata/native proof was missed; no provider retry is permitted.');
+    })().catch(error => { frontFailure = error; });
     const inputResponse = chat.waitForResponse(response => new URL(response.url()).pathname === '/webchat/input'
         && response.request().method() === 'POST' && (response.request().postData() || '').includes(work.id));
-    await setComposer(chat, work.prompt);
-    await chat.locator('#send').click();
-    expect((await inputResponse).status()).toBe(204);
+    try {
+        await setComposer(chat, work.prompt);
+        await chat.locator('#send').click();
+        expect((await inputResponse).status()).toBe(204);
+        await frontCapture;
+        if (frontFailure) throw frontFailure;
+        expect(front, 'separate front publication and native evidence is required').toBeTruthy();
+    } finally { stopCapture = true; await frontCapture; }
     let row;
     await expect.poll(async () => {
         assertNoNativeRefusal(await chat.locator(BOT).allTextContents());
-        const rows = (await inventory(owner)).filter(candidate => candidate.kind === 'copilot-turn'
-            && candidate.title.includes(work.id) && !before.some(old => old.id === candidate.id));
+        entry.snapshot = await fixture.capture(options);
+        const rows = (await inventory(owner)).filter(candidate => candidate.kind === 'workflow-phase'
+            && candidate.cwdDisplay === fixture.directoryName && !before.some(old => old.id === candidate.id));
         expect(rows.length).toBeLessThanOrEqual(1);
         row = rows[0];
-        return Boolean(row);
+        if (row && entry.snapshot.flow) {
+            expect(row).toMatchObject({ isOwner: true, ownerState: 'verified', kind: 'workflow-phase' });
+            if (!fixture.runs.some(run => run.id === row.id)) fixture.runs.push(row);
+        }
+        return Boolean(row && entry.snapshot.execution?.turns.length);
     }, { timeout: nativeTimeout, intervals: [250, 500, 1000] }).toBe(true);
-    fixture.runs.push(row);
+    entry.snapshot = await fixture.capture({ ...options, requirePhase: true });
     expect(row).toMatchObject({ isOwner: true, ownerState: 'verified', status: 'running',
         capabilities: { watch: true, input: false, stop: true, message: true }, attach: { mode: 'event-stream' } });
-    expect(row.cwdDisplay.endsWith(`/${fixture.directoryName}`)).toBe(true);
+    expect(row.cwdDisplay).toBe(fixture.directoryName);
+    expect(entry.snapshot.execution.state).toBe('running');
+    expect(entry.snapshot.execution.backend).toBe(fixture.native.backend);
+    const selection = selectionFor('workflow', entry.snapshot.execution.alaSessionId, entry.snapshot.execution.turns[0].turnId);
     const reader = await openSse(owner.context(), smokeConfig.baseURL, row.id);
     fixture.readers.push(reader);
     await expect.poll(async () => {
         reader.check();
         assertNoNativeRefusal(await chat.locator(BOT).allTextContents());
         if (ENDED.includes((await inventory(owner)).find(candidate => candidate.id === row.id)?.status)) {
-            throw new Error('Native turn ended before active execution proof; no fallback or retry is permitted.');
+            throw new Error('Workflow phase ended before active execution proof; no fallback or retry is permitted.');
         }
         return executionText(reader.frames);
     }, { timeout: nativeTimeout, intervals: [250, 500, 1000] }).toContain(work.first);
     assertExecutionFile(path.join(smokeConfig.workspaceRoot, fixture.directoryName, work.firstFile), work.initial, work.first);
-    const processes = activeTurnProcesses(collectAgentProcessRows(fixture.evidence, fixture.runtime));
-    expect(processes, 'one actual ALA native turn must be active before observer/restart checks').toHaveLength(1);
-    expect(processes[0]).toContain(fixture.directoryName);
-    const nativeProcess = await nativeProcessIdentity(fixture.evidence, fixture.runtime, fixture.native, fixture.directoryName);
-    return { row, reader, work, chat, processes, nativeProcess, replacement };
+    await expect.poll(async () => {
+        entry.snapshot = await fixture.capture({ ...options, requirePhase: true });
+        return entry.snapshot.front.status;
+    }, { timeout: nativeTimeout }).toMatch(/^(completed|cancelled|failed)$/);
+    expect(entry.snapshot.front.status, 'the supported launcher must finish successfully').toBe('completed');
+    let census;
+    await expect.poll(async () => {
+        census = await nativeProcessIdentity(fixture.evidence, fixture.runtime, fixture.native, fixture.directoryName, processSelection(fixture));
+        return census.length;
+    }, { timeout: 15000 }).toBe(1);
+    const nativeProcess = await nativeProcessIdentity(fixture.evidence, fixture.runtime, fixture.native, fixture.directoryName, selection);
+    const turn = { row, reader, work, chat, census, nativeProcess, selection, front, entry, snapshot: entry.snapshot, replacement };
+    await assertUnchanged(fixture, turn, { ownerProof: false });
+    return turn;
+}
+
+async function assertUnchanged(fixture, turn, { ownerProof = false } = {}) {
+    const snapshot = await fixture.capture({ ...turn.entry.options, requirePhase: true });
+    turn.entry.snapshot = snapshot;
+    assertObserverWindow(turn.snapshot, snapshot);
+    expect(await nativeProcessIdentity(fixture.evidence, fixture.runtime, fixture.native, fixture.directoryName, turn.selection)).toEqual(turn.nativeProcess);
+    expect(await nativeProcessIdentity(fixture.evidence, fixture.runtime, fixture.native, fixture.directoryName, processSelection(fixture))).toEqual(turn.census);
+    const rows = (await inventory(fixture.owner)).filter(row => [fixture.directoryName, fixture.cwd].includes(row.cwdDisplay));
+    expect(rows.filter(row => !fixture.runs.some(run => run.id === row.id)), 'no unexplained scoped public row').toEqual([]);
+    assertExecutionFile(path.join(fixture.cwd, turn.work.firstFile), turn.work.initial, turn.work.first);
+    const digests = snapshot.execution.turns[0].followUpDigests;
+    if (ownerProof) {
+        expect(digests).toEqual([crypto.createHash('sha256').update(turn.work.message).digest('hex')]);
+        assertExecutionFile(path.join(fixture.cwd, turn.work.secondFile), turn.work.followup, turn.work.second);
+    } else {
+        expect(digests, 'negative probes/observers cannot reach native input').toEqual([]);
+        expect(fs.existsSync(path.join(fixture.cwd, turn.work.secondFile))).toBe(false);
+    }
+    return snapshot;
 }
 
 async function assertStopped(fixture, turn, observer) {
@@ -240,15 +341,24 @@ async function assertStopped(fixture, turn, observer) {
         && response.request().method() === 'POST');
     const key = `${LIVE_BASE}:${turn.row.id}`;
     const panel = observer.getByRole('dialog', { name: 'Live Sessions', exact: true });
-    await panel.locator(`[data-session-id="${key}"][data-session-action="kill"]`).click();
-    await panel.locator(`[data-session-id="${key}"][data-session-action="confirm-kill"]`).click();
+    const pause = panel.locator(`[data-session-id="${key}"][data-session-action="kill"]`);
+    await expect(pause).toHaveText('Pause workflow');
+    await pause.click();
+    const confirm = panel.locator(`[data-session-id="${key}"][data-session-action="confirm-kill"]`);
+    await expect(confirm).toHaveText('Confirm pause');
+    await confirm.click();
     expect((await stopResponse).status()).toBe(200);
     await expect.poll(() => {
         turn.reader.check();
         return turn.reader.frames.filter(frame => frame.event === 'exit').map(frame => frame.data.status);
     }, { timeout: 45_000 }).toEqual(['stopped']);
-    await expect.poll(() => activeTurnProcesses(collectAgentProcessRows(fixture.evidence, fixture.runtime)).length,
-        { timeout: 45_000 }).toBe(0);
+    await expect.poll(async () => {
+        const snapshot = await fixture.capture({ ...turn.entry.options, requirePhase: true });
+        turn.entry.snapshot = snapshot;
+        return [snapshot.flow.status, snapshot.phase.state];
+    }, { timeout: 45_000 }).toEqual(['paused', 'paused']);
+    await expect.poll(async () => (await nativeProcessIdentity(fixture.evidence, fixture.runtime, fixture.native,
+        fixture.directoryName, processSelection(fixture))).length, { timeout: 45_000 }).toBe(0);
     const again = await liveRequest(fixture.owner, turn.row.id, 'stop', { method: 'POST', body: {} });
     expect(again.status()).toBe(409);
     const transcript = await liveRequest(fixture.owner, turn.row.id, 'transcript');
@@ -298,7 +408,8 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
             }
             const malformed = await liveRequest(owner, turn.row.id, 'messages', { method: 'POST', raw: '{' });
             expect(malformed.status()).toBe(400);
-            expect(turn.reader.frames.filter(frame => frame.event === 'output' && frame.data.style === 'user')).toHaveLength(0);
+            await assertUnchanged(fixture, turn, { ownerProof: false });
+            expect(messageAcceptances(turn.reader.frames)).toHaveLength(0);
 
             const ownerWatch = await openWatch(owner, turn.row.id);
             const adminWatch = await openWatch(admin, turn.row.id);
@@ -307,8 +418,7 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
             await expect(ownerWatch.form).toBeVisible();
             await expect(adminWatch.form).toBeHidden();
             await expect.poll(async () => (await inventory(owner)).find(row => row.id === turn.row.id)?.viewerCount).toBe(3);
-            expect(activeTurnProcesses(collectAgentProcessRows(fixture.evidence, fixture.runtime))).toEqual(turn.processes);
-            expect(await nativeProcessIdentity(fixture.evidence, fixture.runtime, fixture.native, fixture.directoryName)).toEqual(turn.nativeProcess);
+            await assertUnchanged(fixture, turn, { ownerProof: false });
 
             assertOrderedFrames(turn.reader.frames);
             const cursor = Number(turn.reader.frames.filter(frame => frame.event === 'output').at(-1).id);
@@ -333,6 +443,8 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
             expect(cursorReader.frames.filter(frame => frame.event === 'output').every(frame => Number(frame.id) > cursor)).toBe(true);
             expect(executionText(cursorReader.frames)).not.toContain(turn.work.first);
             assertOrderedFrames(cursorReader.frames);
+            await assertUnchanged(fixture, turn, { ownerProof: true });
+            expect(messageAcceptances(turn.reader.frames), 'exactly one actual workflow native acceptance').toHaveLength(1);
             for (const watched of [ownerWatch, adminWatch]) {
                 expect(await watched.output.locator('img, script, [data-ls-canary]').count()).toBe(0);
             }
@@ -343,7 +455,7 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
             await expect.poll(async () => (await inventory(admin)).find(row => row.id === turn.row.id)?.viewerCount).toBe(3);
             await expect(adminWatch.output).toContainText(turn.work.second);
             expect((await inventory(admin)).find(row => row.id === turn.row.id)?.status).toBe('running');
-            expect(activeTurnProcesses(collectAgentProcessRows(fixture.evidence, fixture.runtime))).toEqual(turn.processes);
+            await assertUnchanged(fixture, turn, { ownerProof: true });
             const reopened = await openWatch(owner, turn.row.id);
             await expect.poll(async () => {
                 turn.reader.check();
@@ -372,12 +484,14 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
                 await resync.close();
                 fixture.readers.splice(fixture.readers.indexOf(resync), 1);
             }
-            expect(activeTurnProcesses(collectAgentProcessRows(fixture.evidence, fixture.runtime))).toEqual(turn.processes);
+            await assertUnchanged(fixture, turn, { ownerProof: true });
             await assertStopped(fixture, turn, admin);
-            expect(turn.reader.frames.filter(frame => frame.event === 'output' && frame.data.style === 'user')).toHaveLength(1);
+            expect(messageAcceptances(turn.reader.frames)).toHaveLength(1);
             await attachEvidence(testInfo, 'live-session-observations.json', { id: turn.row.id, negative,
                 ownerState: turn.row.ownerState, initialMarker: turn.work.first, ownerExecutionMarker: turn.work.second,
                 receiptOnlyInsufficient: true, initialCursor: cursor, observerAddedExecutions: 0,
+                coverage: { copilotTurn: 'launch/publication/authorization/native identity', workflowPhase: 'owner controls/observers/replay/pause/transcript' },
+                front: turn.front, orchestration: turn.snapshot, paused: turn.entry.snapshot,
                 nativeProcess: turn.nativeProcess, frames: turn.reader.frames, cursorFrames: cursorReader.frames });
         });
     });
@@ -385,12 +499,14 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
     test('RoboTeam restart retires old Live Sessions and admits a newly verified run', async ({ browser }, testInfo) => {
         await withFixture(browser, testInfo, async fixture => {
             const old = await startTurn(fixture);
-            const oldIds = (await inventory(fixture.admin)).map(row => row.id);
+            const oldRows = await inventory(fixture.admin);
+            const oldIds = oldRows.map(row => row.id);
             expect(oldIds).toContain(old.row.id);
             await openWatch(fixture.admin, old.row.id);
             const oldRuntime = fixture.runtime;
+            await assertUnchanged(fixture, old);
             await fixture.closePages();
-            expect(activeTurnProcesses(collectAgentProcessRows(fixture.evidence, oldRuntime))).toEqual(old.processes);
+            expect(await nativeProcessIdentity(fixture.evidence, oldRuntime, fixture.native, fixture.directoryName, old.selection)).toEqual(old.nativeProcess);
             await restartRoboTeam({ executable: resolvePloinkyExecutable(), workspaceRoot: smokeConfig.workspaceRoot });
             await expect.poll(() => collectExactAgentState(fixture.evidence, oldRuntime).present,
                 { timeout: 60_000 }).toBe(false);
@@ -402,13 +518,20 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
             }, { timeout: 90_000 }).toBe(true);
             expect(replacementEvidence.outerContainerId).toBe(fixture.evidence.outerContainerId);
             expect(replacement.instanceId).not.toBe(oldRuntime.instanceId);
+            expect(replacement.enableGeneration).not.toBe(oldRuntime.enableGeneration);
             Object.assign(fixture, { evidence: replacementEvidence, runtime: replacement });
+            fixture.capture = await createOrchestrationReader(fixture);
             await fixture.reopen();
             expect(await configuredNative(fixture.admin, fixture.release, replacement, { initial: false })).toEqual(fixture.native);
             const health = await fixture.admin.request.get(`${ROBOTEAM_BASE}/status`);
             expect(health.status()).toBe(200);
             expect(await health.json()).toMatchObject({ ok: true, service: 'RoboTeamAgent' });
             expect((await inventory(fixture.admin)).some(row => oldIds.includes(row.id))).toBe(false);
+            const interrupted = await fixture.capture({ ...old.entry.options, requirePhase: true });
+            assertObserverWindow(old.snapshot, interrupted);
+            expect([interrupted.flow.status, interrupted.phase.state]).toEqual(['paused', 'paused']);
+            expect(await nativeProcessIdentity(fixture.evidence, replacement, fixture.native, fixture.directoryName,
+                processSelection(fixture))).toEqual([]);
             for (const id of oldIds) {
                 for (const action of ['stream', 'messages', 'stop', 'transcript']) {
                     const response = await liveRequest(fixture.owner, id, action, {
@@ -417,6 +540,7 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
                     });
                     expect(response.status()).toBe(404);
                 }
+                expect((await fixture.owner.request.get(oldRows.find(row => row.id === id).viewUrl, { maxRedirects: 0 })).status()).toBe(404);
             }
             const fresh = await startTurn(fixture, { replacement: true });
             expect(oldIds).not.toContain(fresh.row.id);
@@ -426,8 +550,13 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
             await attachEvidence(testInfo, 'restart-observations.json', { oldRuntime, replacement,
                 outerContainerId: replacementEvidence.outerContainerId, imageDigest: fixture.release.imageDigest,
                 oldIds, newId: fresh.row.id, newOwnerState: fresh.row.ownerState,
+                oldOwnedFlowAfterRestart: interrupted, oldFront: old.front, newFront: fresh.front,
                 nativeExecutableUnchanged: true, oldNativeProcess: old.nativeProcess,
                 newNativeProcess: fresh.nativeProcess, newFrames: fresh.reader.frames });
         });
     });
 });
+
+function messageAcceptances(frames) {
+    return [...executionText(frames).matchAll(/\nMessage [0-9a-f-]{36}: (?:delivered|queued)\n/g)].map(match => match[0]);
+}

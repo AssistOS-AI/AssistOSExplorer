@@ -116,6 +116,9 @@ test('real workload commands produce independently computed files, Unicode and l
     fs.chmodSync(root, 0o700);
     try {
         const work = workload('fixture_safe');
+        assert.match(work.prompt, /List the available workflows, then launch the default workflow exactly once/);
+        assert.match(work.prompt, /finish the launcher turn/);
+        assert.match(work.prompt, /same workflow phase active for at most 180 seconds/);
         assert.ok(!work.prompt.includes(work.first), 'the expected execution digest is absent from the prompt');
         assert.ok(!work.message.includes(work.second), 'receipt echo cannot contain the expected computed marker');
         for (const [command, filename, challenge, expected] of [
