@@ -10,7 +10,8 @@ import { projectOrchestrationRecords, assertObserverWindow, assertOwnedSettlemen
     buildOrchestrationProgram, decodeOrchestrationProcessResult, createOrchestrationReader,
     inspectOuterOrchestrationBinding } from './live-sessions-orchestration.mjs';
 import { createLiveSessionFinalizer } from './live-sessions-diagnostics.mjs';
-import { createLiveSkillsRuntimeReader } from './copilot-live-skills-runtime.mjs';
+import { createLiveSkillsRuntimeReader, readLiveSkillsCodeHashes, readLiveSkillsSnapshot, program } from './copilot-live-skills-runtime.mjs';
+import { delegationProgram, readDelegationSnapshot } from './copilot-workflow-delegation-runtime.mjs';
 import { collectCopilotReleaseEvidence } from './copilot-release-evidence.mjs';
 
 const outerId = 'a'.repeat(64);
@@ -272,6 +273,20 @@ test('fixed canonical diagnostics bundle preserves its graph and generates a bou
     assert.throws(() => buildOrchestrationProgram({ overlong: 'x'.repeat(128 * 1024) }), /single-argument capacity/);
     const invalidSource = { ...fs, readFileSync(fd) { return Buffer.from(fs.readFileSync(fd).toString().replace("import { collectSecrets } from './security.mjs';", "import { collectSecrets } from './wrongmod.mjs';")); } };
     assert.throws(() => buildOrchestrationDiagnosticsBundle({ fsApi: invalidSource }), /relative import|dependency/);
+});
+
+test('all three serialized collectors embed the exact self-contained hash helper and preserve runtime imports', () => {
+    const helper = `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};`;
+    for (const source of [program(readLiveSkillsSnapshot, {}), buildOrchestrationProgram({}), delegationProgram(readDelegationSnapshot, {})]) {
+        assert.ok(source.includes(helper), 'The collector must embed the exact shared helper.');
+        assert.equal(source.split(helper).length, 2, 'Embed the helper exactly once.');
+        assert.ok(Buffer.byteLength(source) < 128 * 1024);
+        assert.match(source, /codeRoot = '\/code'/);
+        assert.match(source, /import\(pathToFileURL\(`\$\{codeRoot\}\//);
+        assert.doesNotMatch(helper, /import\(['"](?:\/code|\.\/)/);
+        const syntax = spawnSync(process.execPath, ['--input-type=module', '--check'], { input: source, encoding: 'utf8' });
+        assert.equal(syntax.status, 0, syntax.stderr);
+    }
 });
 
 test('actual generated subprocess wrapper preserves safe primary and settlement children through host finalization', async () => {

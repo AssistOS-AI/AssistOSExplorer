@@ -21,7 +21,7 @@ function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'Achill
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
     const repository = path.join(directory, repositoryRelative);
     const source = path.join(repository, 'roboTeamAgent');
-    const code = path.join(directory, 'code');
+    const code = source;
     const expected = {};
     for (const file of files) {
         fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
@@ -29,9 +29,6 @@ function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'Achill
         fs.writeFileSync(path.join(source, file), data);
         expected[file] = createHash('sha256').update(data).digest('hex');
     }
-    fs.mkdirSync(code);
-    // Match stageSourceTreeWithOverrides: directory entries link into the selected agent mount.
-    for (const name of ['server', 'copilot']) fs.symlinkSync(path.join(source, name), path.join(code, name), 'dir');
     const descriptors = new Map();
     // macOS has no /proc. Map only its descriptor observation; actual files, symlinks,
     // O_NOFOLLOW reads, inode metadata, and mutations all use the real filesystem.
@@ -43,8 +40,9 @@ function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'Achill
             return fs.realpathSync(file);
         },
     };
-    return { directory, repository, source, code, expected, fsApi,
-        read: (overrides = {}) => readLiveSkillsCodeHashes({ expectedRepository: repository, contractFiles: files }, { codeRoot: code, fsApi, ...overrides }) };
+    const result = { directory, repository, source, code, expected, fsApi };
+    result.read = (overrides = {}) => readLiveSkillsCodeHashes({ expectedRepository: repository, contractFiles: files }, { codeRoot: result.code, fsApi, ...overrides });
+    return result;
 }
 
 test('image identity accepts only the full raw Podman and normalized forms', () => {
@@ -275,22 +273,24 @@ test('serialized collector validates a real canonical object, projects only admi
     assert.equal(execute().status, 1);
 });
 
-test('code symlink tree hashes every exact selected source file', async t => {
+test('code observer rejects obsolete staged symlink trees and accepts the canonical source', async t => {
     const f = fixture(t);
-    assert.notEqual(fs.realpathSync(path.join(f.code, files[0])), path.join(f.code, files[0]), 'Fixture reproduces the rejected legitimate /code layout.');
     assert.deepEqual(await f.read(), f.expected);
+    f.code = path.join(f.directory, 'staged-code'); fs.mkdirSync(f.code);
+    for (const name of ['server', 'copilot']) fs.symlinkSync(path.join(f.source, name), path.join(f.code, name), 'dir');
+    await assert.rejects(f.read(), /verified source directory object/);
 });
 
 for (const [name, mutate] of Object.entries({
     'copied runtime bytes': f => {
-        fs.unlinkSync(path.join(f.code, 'server')); fs.cpSync(path.join(f.source, 'server'), path.join(f.code, 'server'), { recursive: true });
+        f.code = path.join(f.directory, 'copied-code'); fs.cpSync(f.source, f.code, { recursive: true });
     },
     'different repository with identical bytes': f => {
         fs.cpSync(path.join(f.source, 'server'), path.join(f.directory, 'other-server'), { recursive: true });
-        fs.unlinkSync(path.join(f.code, 'server')); fs.symlinkSync(path.join(f.directory, 'other-server'), path.join(f.code, 'server'));
+        f.code = path.join(f.directory, 'other-server');
     },
     'another contract file in the same repository': f => {
-        fs.unlinkSync(path.join(f.code, 'server')); fs.mkdirSync(path.join(f.code, 'server'));
+        fs.unlinkSync(path.join(f.code, files[0]));
         fs.symlinkSync(path.join(f.source, files[1]), path.join(f.code, files[0]));
     },
     'symlinked source file': f => {
@@ -311,10 +311,10 @@ test('code observer rejects a link retargeted during the open file read', async 
     f.fsApi.readFileSync = fd => {
         const data = original(fd);
         fs.cpSync(path.join(f.source, 'server'), path.join(f.directory, 'other-server'), { recursive: true });
-        fs.unlinkSync(path.join(f.code, 'server')); fs.symlinkSync(path.join(f.directory, 'other-server'), path.join(f.code, 'server'));
+        fs.renameSync(path.join(f.code, 'server'), path.join(f.code, 'saved-server')); fs.symlinkSync(path.join(f.directory, 'other-server'), path.join(f.code, 'server'));
         return data;
     };
-    await assert.rejects(f.read(), /Runtime contract link changed/);
+    await assert.rejects(f.read(), /canonical without symlinks/);
 });
 
 test('code observer rejects source mutation during the read', async t => {
