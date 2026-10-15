@@ -86,6 +86,13 @@ async function startedAtOf() {
   return startedAt;
 }
 
+// How often `needle` occurs in the stdout and stderr of the current local-llm container. Only the count leaves here.
+async function countInContainerLogs(needle) {
+  const logs = await runCommand('podman', [...nestedArgs(state.box.name), 'container', 'logs', state.localLlm], { timeoutMs: 60_000 });
+  if (logs.status !== 0) throw new Error(`reading the agent stdout exited ${logs.status}: the scan proves nothing`);
+  return `${logs.stdout}\n${logs.stderr}`.split(needle).length - 1;
+}
+
 async function localLlmAnswers(page) {
   return waitFor(async () => {
     const reply = await callTool(page, { tool: 'local_llm_overview', args: {} }).catch(() => null);
@@ -353,6 +360,8 @@ test.describe('credentials', () => {
     const set = await callToolOk(page, 'local_llm_registry_credential_set', { id: registryId(), token: state.dummy });
     group.credentials.push(registryId());
     expect(set).toMatchObject({ id: registryId(), credential: 'set' });
+    // The restart in the next test recreates the container, so what it logged while the credential was set is scanned now.
+    state.logCountBeforeRestart = await countInContainerLogs(state.dummy);
     const list = await registryList(page);
     expect(credentialOf(list, registryId())).toBe('set');
     // A built-in huggingface shows `set` when the agent has HF_TOKEN; the initial record says whether it did.
@@ -397,9 +406,9 @@ test.describe('credentials', () => {
       if (logs.status !== 0) throw new Error(`listing /data/logs exited ${logs.status}`);
       for (const file of logs.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) counts[file] = await countIn(file);
     }
-    const stdout = await runCommand('podman', [...nestedArgs(state.box.name), 'container', 'logs', state.localLlm], { timeoutMs: 60_000 });
-    if (stdout.status !== 0) throw new Error(`reading the agent stdout exited ${stdout.status}`);
-    counts['container stdout and stderr'] = `${stdout.stdout}\n${stdout.stderr}`.split(state.dummy).length - 1;
+    expect(Number.isInteger(state.logCountBeforeRestart), 'the container logs were scanned right after the credential was set').toBe(true);
+    counts['container logs before restart'] = state.logCountBeforeRestart;
+    counts['container logs after restart'] = await countInContainerLogs(state.dummy);
     // Positive control: the scan finds something that is there.
     const control = await exec(['grep', '-cF', '--', registryId(), STATE_FILES.registries]);
     evidence('leak-scan.json', { logsDirectory: logsPresent ? 'present' : 'absent', counts, positiveControl: { needle: 'the registry id', exit: control.status, count: control.status === 0 ? Number.parseInt(control.stdout.trim(), 10) : 0 } });
@@ -488,9 +497,11 @@ test.describe('GGUF', () => {
       const file = `${dir}/${GGUF_FILE}`;
       const sum = (await exec(['sha256sum', file])).stdout.split(/\s+/)[0];
       expect(sum, 'the file stored under the self-registered registry is the pinned file, byte for byte').toBe(pinned.sha256);
-      const seedAfter = seed.present ? (await exec(['sha256sum', seed.path])).stdout.split(/\s+/)[0] : null;
+      const presentAfter = await exists(seed.path);
+      expect(presentAfter, 'the seed location is in the same state after the self-registered download').toBe(seed.present);
+      const seedAfter = presentAfter ? (await exec(['sha256sum', seed.path])).stdout.split(/\s+/)[0] : null;
       expect(seedAfter, 'the seed location is untouched by the self-registered download').toBe(seed.sha256);
-      separation = { file, sha256: sum, pinned: pinned.sha256, seed, seedShaAfter: seedAfter };
+      separation = { file, sha256: sum, pinned: pinned.sha256, seed, seedPresentAfter: presentAfter, seedShaAfter: seedAfter };
     }
     const finished = await finishModel(page, def, { pinned, model });
     evidence(`${def.slug}-run.json`, {
@@ -527,7 +538,12 @@ test.describe('snapshot', () => {
     state.vllmVersion = runner.pinnedVersion;
     const { paramSchema, ...runnerView } = runner;
     evidence('vllm.json', { pinnedVersion: runner.pinnedVersion, alreadyInstalled: Boolean(runner.installed), installedVersion: runner.version ?? null, runner: runnerView });
-    if (runner.installed) return;
+    if (runner.installed) {
+      if (runner.version !== runner.pinnedVersion) {
+        notePartial({ modelId: 'vllm', phase: 'runner version', reason: `vLLM ${runner.version ?? 'unknown'} is installed, not the pinned ${runner.pinnedVersion}` });
+      }
+      return;
+    }
     // A failure at or after the runner install is unrelated to the registries: a partial verdict, never a pass.
     try {
       const install = await callToolOk(page, 'local_llm_runner_install', { runnerId: VLLM });

@@ -114,7 +114,7 @@ async function main(argv) {
   if (a32Files.length > 1) verdict = { ...verdict, ok: false, case: 'failed', problems: [...verdict.problems, `found ${a32Files.length} a32.json files, expected at most one`] };
   fs.writeFileSync(path.join(artifactDir, 'verdict.json'), `${JSON.stringify({
     ok: verdict.ok, case: verdict.case, problems: verdict.problems, stats: verdict.stats, exit: result.status, signal: result.signal, keyProbe: verdict.keyProbe,
-  }, null, 2)}\n`);
+  }, null, 2)}\n`, { flag: 'wx' });
 
   if (verdict.case === 'passed') console.log(`local-llm registries E2E PASSED: ${JSON.stringify(verdict.stats)}`);
   else if (verdict.case === 'partial') console.log(`local-llm registries E2E FAILED (partial: ${verdict.problems.join('; ')})`);
