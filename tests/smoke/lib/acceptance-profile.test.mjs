@@ -26,10 +26,45 @@ const baseEnv = {
 const args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/01-webtty-core.spec.mjs'];
 const record = entry => ({ identity: entry.identity, expectedStatus: 'passed', outcome: 'expected', results: [{ status: 'passed', retry: 0 }] });
 
+const liveArgs = ['--project=chromium', '--workers=1', '--retries=0', 'specs/07-live-sessions.spec.mjs'];
+const liveEnv = { ...baseEnv, SMOKE_LIVE_SESSIONS: '1', SMOKE_PLOINKY_BIN: '/fixture/ploinky/bin/ploinky',
+    SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL: 'foreign@example.test', SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD: 'password',
+    SMOKE_LIVE_SESSIONS_FOREIGN_ACCOUNT_PASSWORD: 'fabricated-foreign', SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE: '/private/native-evidence.json' };
+
+test('fresh Live Sessions profile selects exactly two additive identities with strict private prerequisites', () => {
+    const profile = validateAcceptanceProfile(liveArgs, liveEnv);
+    assert.equal(profile.box, true);
+    assert.equal(profile.accounts.secondary, true);
+    assert.equal(profile.cases.length, 2);
+    assert.ok(profile.cases.every(entry => entry.cohort === 'fresh-live-sessions'));
+    for (const name of ['SMOKE_LIVE_SESSIONS', 'SMOKE_PLOINKY_BIN', 'SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE',
+        'SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL', 'SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD',
+        'SMOKE_LIVE_SESSIONS_FOREIGN_ACCOUNT_PASSWORD', 'SMOKE_SECONDARY_ACCOUNT_PASSWORD']) {
+        const env = { ...liveEnv }; delete env[name];
+        assert.throws(() => validateAcceptanceProfile(liveArgs, env), error => !error.message.includes('fabricated-foreign'));
+    }
+    for (const email of [liveEnv.SMOKE_LOGIN_EMAIL, liveEnv.SMOKE_SECONDARY_LOGIN_EMAIL.toUpperCase()]) {
+        assert.throws(() => validateAcceptanceProfile(liveArgs, { ...liveEnv, SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL: email }), /distinct/);
+    }
+    assert.throws(() => validateAcceptanceProfile(liveArgs, { ...liveEnv, SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE: 'relative' }), /absolute/);
+    assert.throws(() => validateAcceptanceProfile(liveArgs, { ...liveEnv, SMOKE_ALLOW_BROWSER_ERRORS: '1' }), /browser errors/);
+    assert.throws(() => validateAcceptanceProfile([...liveArgs, '--grep', '^RoboTeam restart'], liveEnv), /both complete feature identities/);
+    assert.throws(() => validateAcceptanceProfile([...liveArgs, 'specs/01-webtty-core.spec.mjs'], liveEnv), /own separate two-test cohort/);
+    assertLedgerResults(profile.cases, profile.cases.map(record), { terminal: true });
+    for (const status of ['skipped', 'interrupted', 'timedOut', 'failed']) {
+        const records = profile.cases.map(record); records[1].results[0].status = status;
+        assert.throws(() => assertLedgerResults(profile.cases, records, { terminal: true }));
+    }
+    assert.throws(() => assertLedgerResults(profile.cases, [], { terminal: true }));
+    assert.throws(() => assertLedgerResults(profile.cases, [record(profile.cases[0])], { terminal: true }));
+    assert.doesNotThrow(() => validateAcceptanceProfile([...liveArgs, '--list'], { SMOKE_LIVE_SESSIONS: '1' }));
+});
+
 test('ledger retains all 44 identities and the 25 previously executed required cases', () => {
-    assert.equal(acceptanceLedger.identities.length, 44);
+    assert.equal(acceptanceLedger.identities.filter(entry => entry.cohort !== 'fresh-live-sessions').length, 44);
+    assert.equal(acceptanceLedger.identities.length, 46);
     assert.equal(acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance').length, 25);
-    assert.equal(new Set(acceptanceLedger.identities.map(entry => entry.identity)).size, 44);
+    assert.equal(new Set(acceptanceLedger.identities.map(entry => entry.identity)).size, 46);
     for (const entry of acceptanceLedger.identities) {
         const escaped = entry.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const selection = selectAcceptanceCases([entry.selection.spec, '--grep', `^${escaped}$`]);
@@ -283,7 +318,7 @@ test('canonical discovery finds exactly the 25 required identities without start
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('source inventory discovers all 44 ledger identities while keeping 19 separate/blocked dispositions intact', () => {
+test('source inventory discovers 44 historical and two additive identities while preserving historical dispositions', () => {
     const cases = acceptanceLedger.identities;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-all-discovery-'));
     try {
@@ -299,7 +334,7 @@ test('source inventory discovers all 44 ledger identities while keeping 19 separ
         const report = JSON.parse(fs.readFileSync(path.join(root, 'ledger-discovery_codex.json')));
         assertLedgerResults(cases, report.records);
         assert.ok(report.records.every(entry => entry.results.length === 0));
-        assert.equal(cases.filter(entry => entry.disposition !== 'required-local-acceptance').length, 19);
+        assert.equal(cases.filter(entry => entry.disposition !== 'required-local-acceptance' && entry.cohort !== 'fresh-live-sessions').length, 19);
         assert.ok(cases.every(entry => entry.executionAllowedByThisPlan === false));
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

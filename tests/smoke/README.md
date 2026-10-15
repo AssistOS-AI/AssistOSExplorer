@@ -130,6 +130,39 @@ synthetic tokens and needs no real GitHub PAT. Unused optional secrets are not
 required. The official meeting identity requires `SMOKE_WEBMEET_HEADLESS=1`,
 `SMOKE_WEBMEET_MEDIA=1`, and `SMOKE_MEDIA_TIMEOUT_MS=60000`.
 
+### Deployed RoboTeam Live Sessions
+
+Run `npm run test:live-sessions` from this package on a fresh, owned Box. This is the separate `fresh-live-sessions` cohort. It adds two ledger identities and preserves the historical 44 identities and 25 required outcomes. Both browser and inspected Box origins must equal the selected loopback origin, including any custom port. Supply the existing Box/image/source-manifest inputs and an absolute `SMOKE_PLOINKY_BIN` from that exact source candidate.
+
+The primary account is the administrator observer. The secondary account is the ordinary `user` who creates the Explorer folder and starts the native WebChat turn. Supply a third ordinary account through `SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL` and `SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD`. The supported methods are `password`, `totp` and `emailCode`. They require `SMOKE_LIVE_SESSIONS_FOREIGN_ACCOUNT_PASSWORD`, `SMOKE_LIVE_SESSIONS_FOREIGN_TOTP_SECRET`, or the existing `SMOKE_EMAIL_CODE_COMMAND`, respectively. Optional `SMOKE_LIVE_SESSIONS_FOREIGN_USERNAME` identifies the configured account name. All three verified IDs and account names must differ. Prepare accounts through supported password signup and authenticated role grants before running the suite. Do not place private values in commands, source, or evidence.
+
+Set `SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE` to an absolute external JSON file collected by the operator from the selected deployment before browser execution. It records the real configured provider-backed native CLI and its cache generation. The suite never changes backend, model, effort, executable, or version. No fixture coding-agent binary or provider fallback is supported. Missing authentication, a first provider refusal, or changed native identity fails the cohort. The serial tests prevent a failed first case from launching another native attempt. A skipped remainder still fails acceptance.
+
+| Native evidence field | Required value |
+| --- | --- |
+| `schemaVersion` | `1` |
+| `robotId` | Actual persistent ID of the single robot named `default`, read from the authenticated robot inventory |
+| `workspaceRoot`, `outerContainerId`, `imageDigest` | Exact selected workspace and inspected immutable Box identity |
+| `repositories` | Complete verified source graph, identical to the canonical runner's `SMOKE_COPILOT_RELEASE_EVIDENCE.repositories` |
+| `initialRoboTeam` | Initial `containerId`, `containerName`, `instanceId`, and `enableGeneration` from exact runtime inspection |
+| `native.backend`, `native.model`, `native.effort` | Selected backend and configured model/effort; use JSON null for unconfigured values |
+| `native.version`, `native.cliVersion` | Canonical cache version and actual bounded `--version` output from that executable |
+| `native.executablePath`, `native.realpath`, `native.sha256` | Absolute selected executable, resolved file, and SHA-256 digest |
+| `native.cacheRoot`, `native.generation` | Absolute tool-cache root and 64-hex generation |
+
+The suite rechecks the real executable hash, resolved path, cache descriptor and generation stamp in the exact RoboTeam container before execution. After targeted restart it requires the same native executable identity in the replacement container. The initial runtime binding applies only before replacement.
+
+```sh
+SMOKE_LIVE_SESSIONS=1 npm test -- --project=chromium --workers=1 --retries=0 specs/07-live-sessions.spec.mjs --list
+npm run test:live-sessions
+```
+
+The first case launches an ordinary owner's real Copilot through Explorer. The native turn computes unpredictable digest markers, writes bounded run-owned proof files, emits their values, and stays active for a bounded wait. An owner message must produce a second file and native assistant/output correlation; a delivery receipt or echoed message cannot satisfy that check. Owner and administrator Watch views receive the same output. The case checks private scope, denied mutations, cursor replay and resync, reopen ordering, literal HTML and Unicode, standalone viewing, administrator Stop, transcript, and reader cleanup. Exact active ALA turn process snapshots show that adding observers creates no additional execution. The suite makes no CPU-zero claim.
+
+The second case closes readers and browser pages before restarting only RoboTeam. It verifies that the old runtime is absent, old run IDs do not reappear, and a newly opened WebChat turn has a new ID and verified ordinary owner on the same outer Box/source generation. Cleanup stops remaining marker-owned runs, waits for terminal state and zero viewers/native turn workers, removes the run folder, and closes every context. Browser diagnostics remain strict throughout.
+
+Acceptance requires exactly two discovered identities and two passed terminal outcomes on attempt zero, with zero skips, retries, or errors. Source discovery and helper checks do not prove deployed behavior. Provider readiness and all deployed observations remain pending until the actual run. This cohort complements the existing terminal WebTTY suite and does not cover every task/workflow producer or resolve the documented ALA socket limitations.
+
 The official release cohort has a second WebMeet gate, the public-room gate, which
 proves that anyone with the URL of a public room can join that room. It is
 `specs/30-webmeet-room-chat.spec.mjs` with the title grep

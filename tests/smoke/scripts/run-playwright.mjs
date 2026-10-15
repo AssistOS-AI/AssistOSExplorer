@@ -15,6 +15,7 @@ import {
   sameCopilotReleaseGeneration,
 } from '../lib/copilot-release-evidence.mjs';
 import { validateQaAcceptanceProfile } from '../lib/qa-acceptance-profile.mjs';
+import { requiresCopilotSourceVerification } from '../lib/live-sessions.mjs';
 import { validateHeadlessWebMeetProfile } from '../lib/webmeet-headless-profile.mjs';
 import {
   validateAcceptanceProfile, collectAcceptancePreflight, assertAcceptanceGeneration, assertLedgerResults,
@@ -31,10 +32,7 @@ const forbiddenOutputOptions = new Set([
 const selectedSpecFiles = playwrightArgs.filter((argument) => (
   /(?:^|\/)specs\/[^/]+\.spec\.mjs$/i.test(String(argument).replaceAll('\\', '/'))
 ));
-const ordinaryCopilotGate = selectedSpecFiles.length === 0
-  || selectedSpecFiles.some((argument) => (
-    String(argument).replaceAll('\\', '/').endsWith('specs/05-copilot-folder-launch.spec.mjs')
-  ));
+const ordinaryCopilotGate = requiresCopilotSourceVerification(selectedSpecFiles);
 for (let index = 0; index < playwrightArgs.length; index += 1) {
   const argument = playwrightArgs[index];
   const optionName = String(argument).split('=', 1)[0];
