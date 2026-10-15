@@ -64,7 +64,7 @@ export function normalizeLiveSkillsImageId(value) {
     return value.replace(/^sha256:/, '');
 }
 
-// Ploinky links /code entries into this already verified repository mount.
+// Ploinky binds /code directly from this already verified repository mount.
 // This helper is serialized with the snapshot reader; keep its imports local.
 export async function readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot = '/code', fsApi } = {}) {
     const assert = (await import('node:assert/strict')).default;
@@ -105,11 +105,15 @@ export async function readLiveSkillsCodeHashes({ expectedRepository, contractFil
 export async function readRegistryAndRuntime({ workspaceRoot }) {
     const assert = (await import('node:assert/strict')).default;
     const path = await import('node:path');
+    const fs = await import('node:fs');
     const { execFileSync } = await import('node:child_process');
     const { readAgentRegistrySnapshot } = await import('/opt/ploinky/cli/utils/agentRegistrySnapshot.js');
+    const { admittedDependencyRecord } = await import('/opt/ploinky/cli/utils/dependencies/store/runtimeDependencies.mjs');
+    const { createCacheStore } = await import('/opt/ploinky/cli/utils/dependencies/store/objectStore.mjs');
     // The Box mounts the workspace at its own host path; the admitted root is never the retired /workspace alias.
     assert.ok(typeof workspaceRoot === 'string' && path.isAbsolute(workspaceRoot) && path.normalize(workspaceRoot) === workspaceRoot
         && workspaceRoot !== '/' && !workspaceRoot.endsWith('/'));
+    assert.equal(fs.realpathSync(workspaceRoot), workspaceRoot);
     const rows = Object.entries(readAgentRegistrySnapshot({ workspaceRoot }))
         .filter(([, row]) => row.type === 'agent' && row.repoName === 'AchillesCLI' && row.agentName === 'roboTeamAgent');
     assert.equal(rows.length, 1);
@@ -119,8 +123,25 @@ export async function readRegistryAndRuntime({ workspaceRoot }) {
     const [runtime] = JSON.parse(execFileSync('podman', ['inspect', row.containerId], { encoding: 'utf8', timeout: 8_000, stdio: ['ignore', 'pipe', 'pipe'] }));
     assert.equal(runtime.Id, row.containerId);
     assert.equal(runtime.State.Running, true);
+    const admitted = admittedDependencyRecord(row);
+    assert.equal(admitted.mode, 'store');
+    const dependencies = Object.fromEntries(['schema', 'mode', 'family', 'runtimeKey', 'imageId', 'inputKey',
+        'generationId', 'objectId', 'payloadPath', 'nodeModulesPath'].map(field => [field, admitted[field]]));
+    const store = createCacheStore({ workspaceRoot, depsDir: path.join(workspaceRoot, '.ploinky/deps') });
+    const validated = store.validateObject(dependencies.objectId, { inputKey: dependencies.inputKey });
+    assert.equal(validated.valid, true, 'Invalid admitted dependency object.');
+    assert.equal(validated.payloadPath, dependencies.payloadPath);
+    assert.equal(validated.generationId, dependencies.generationId);
+    assert.equal(path.join(validated.payloadPath, 'node_modules'), dependencies.nodeModulesPath);
+    assert.equal(validated.manifest.contract.runtime.family, dependencies.family);
+    assert.equal(validated.manifest.contract.runtime.key, dependencies.runtimeKey);
+    assert.equal(validated.manifest.contract.toolchain.imageId, dependencies.imageId);
+    // Fence a registry admission change while validating the immutable object.
+    const after = readAgentRegistrySnapshot({ workspaceRoot })[key];
+    assert.deepEqual(after, row, 'Runtime admission changed during dependency validation.');
     console.log(JSON.stringify({ key, containerId: row.containerId, instanceId: row.instanceId,
         enableGeneration: row.enableGeneration, startedAt: runtime.State.StartedAt, imageId: runtime.Image,
+        dependencies,
         mounts: runtime.Mounts.map(({ Type, Source, Destination, RW }) => ({ Type, Source, Destination, RW })) }));
 }
 
@@ -299,11 +320,12 @@ const SUBJECT = 'Live skills runtime';
 // The RoboTeam runtime is a managed, global Podman agent. Ploinky's production mount builder
 // (cli/sandbox/docker/agentServiceManager.js) gives it these binds, and only these may overlap a path the
 // evidence reads. Everything else a runtime mounts (/shared, the probe control root, the edge topology,
-// /root, dependency trees, linked repositories) lies outside those paths and is not part of the proof.
+// /root, unrelated dependency trees, linked repositories) lies outside those paths and is not part of the proof.
 //   - the project bind: the workspace root at its own path, writable (buildPersistentAgentRunArgs, homeLayout.binds)
 //   - the persistent storage `.data/roboTeamAgent` at /data (manifest volume)
-//   - the staged agent source at its own path (buildPodmanStagedTargetMounts: setPodmanTargetMount(agentCodePath))
-//   - /code and /Agent from `<root>/.ploinky/container-runtime/<key>/` (ensurePodmanStagedCodeDir, StagedAgentLibDir)
+//   - the writable agent source at its own path and that exact source read-only at /code
+//   - the admitted dependency node_modules read-only at /code/node_modules and at its own path
+//   - /Agent from `<root>/.ploinky/container-runtime/<key>/` (StagedAgentLibDir)
 //   - the read-only AgentLib grant: Source and Destination are both /opt/ploinky-agentlib (agentLibGrant)
 //   - the read-only self pin of the controller root `<root>/.ploinky` (controllerGuardMounts.pinAncestors). Production
 //     emits it for every runtime that has the root project bind; it needs allow-listing only when the verified
@@ -336,21 +358,37 @@ export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository, { 
     };
     const sourceRoot = `${expectedRepository}/roboTeamAgent`;
     const stagingRoot = `${root}/.ploinky/container-runtime/${runtime.key}/`;
+    const dependency = runtime.dependencies;
+    assert.ok(dependency && dependency.schema === 1 && dependency.mode === 'store' && dependency.family === 'container',
+        'Runtime needs its admitted store dependency record.');
+    assert.match(dependency.runtimeKey, /^container-[a-z0-9]+-[a-z0-9_]+(?:-[a-z0-9_]+)?-node[1-9][0-9]*$/, 'Invalid dependency toolchain identity.');
+    assert.equal(normalizeLiveSkillsImageId(dependency.imageId), normalizeLiveSkillsImageId(runtime.imageId), 'Dependency image identity differs.');
+    for (const field of ['inputKey', 'generationId']) assert.match(dependency[field], /^[a-f0-9]{64}$/, 'Invalid dependency identity.');
+    assert.match(dependency.objectId, UUID, 'Invalid dependency object identity.');
+    const payload = `${root}/.ploinky/deps/store/objects/${dependency.objectId}/payload`;
+    assert.equal(dependency.payloadPath, payload, 'Dependency payload differs from its exact workspace object.');
+    assert.equal(dependency.nodeModulesPath, `${payload}/node_modules`, 'Dependency node_modules path differs.');
+    if (fsApi) {
+        assert.equal(fsApi.realpathSync(root), root, 'Dependency workspace must be canonical.');
+        assert.equal(fsApi.realpathSync(payload), payload, 'Dependency payload must be canonical.');
+    }
     const allowed = [
         writable(root, root),
         writable('/data', `${root}/.data/roboTeamAgent`),
         writable(sourceRoot, sourceRoot),
-        staged('/code', `${stagingRoot}code-`),
+        requireMount(runtime.mounts, '/code', sourceRoot, { ...options, readOnly: true }),
+        requireMount(runtime.mounts, '/code/node_modules', dependency.nodeModulesPath, { ...options, readOnly: true }),
+        requireMount(runtime.mounts, dependency.nodeModulesPath, dependency.nodeModulesPath, { ...options, readOnly: true }),
     ];
-    const protectedPaths = ['/data', '/code', '/Agent', '/opt/ploinky-agentlib', sourceRoot];
+    const protectedPaths = ['/data', '/code', '/Agent', '/opt/ploinky-agentlib', sourceRoot, dependency.nodeModulesPath];
     const agent = staged('/Agent', `${stagingRoot}Agent-`);
     assert.equal(agent.RW, false, 'Runtime /Agent must be read-only.');
     allowed.push(agent);
     // The AgentLib source lives in the Box namespace, so only its mount tuple is checked, never a host realpath.
     allowed.push(requireMount(runtime.mounts, '/opt/ploinky-agentlib', '/opt/ploinky-agentlib', { readOnly: true, lexical: true, subject: SUBJECT }));
-    // The controller root is pinned read-only by a self bind when the verified source lives below it.
+    // The controller pin overlaps the admitted dependency source even when code lives outside it.
     const pin = `${root}/.ploinky`;
-    if (inside(pin, sourceRoot) && runtime.mounts.some(item => item.Destination === pin)) {
+    if (runtime.mounts.some(item => item.Destination === pin)) {
         allowed.push(requireMount(runtime.mounts, pin, pin, { ...options, readOnly: true }));
     }
     if (fixtureWorkspace !== null) {
@@ -377,7 +415,7 @@ export function liveSkillsProtectedSources(runtime, expectedRepository, workspac
     const root = assertBoxWorkspacePath(workspaceRoot);
     const sourceRoot = `${expectedRepository}/roboTeamAgent`;
     const sources = [sourceRoot];
-    for (const destination of ['/data', '/code', '/Agent']) {
+    for (const destination of ['/data', '/code', '/Agent', '/code/node_modules']) {
         for (const mount of runtime.mounts.filter(item => item.Destination === destination)) sources.push(mount.Source);
     }
     const pin = `${root}/.ploinky`;
