@@ -221,8 +221,12 @@ async function finishModel(page, def, { pinned, model, partial = false }) {
   const hadDirectory = await exists(dir);
   const deleted = await callToolOk(page, 'local_llm_weights_delete', { modelId: model.id, runnerId: model.runnerId });
   model.weightsDeleted = true;
-  if (def.format === 'gguf') expect(deleted.freedBytes, 'Delete weights frees exactly the pinned size').toBe(pinned.size);
-  else if (!partial) expect(deleted.freedBytes, 'Delete weights frees at least the pinned size').toBeGreaterThanOrEqual(pinned.size);
+  // The candidate's removal also counts the records beside the files (downloader.mjs removePinned, weightStores.mjs
+  // remove), so the freed bytes are the pinned size plus a few small records, never less.
+  if (!partial) {
+    expect(deleted.freedBytes, 'Delete weights frees at least the pinned size').toBeGreaterThanOrEqual(pinned.size);
+    expect(deleted.freedBytes - pinned.size, 'the records beside the weights are small').toBeLessThan(1024 * 1024);
+  }
   const gone = !(await exists(dir));
   if (!partial || hadDirectory) expect({ hadDirectory, gone }, `the store directory ${dir} existed before Delete weights and is gone after`).toEqual({ hadDirectory: true, gone: true });
   await callToolOk(page, 'local_llm_model_remove', { modelId: model.id });
@@ -386,15 +390,19 @@ test.describe('credentials', () => {
       throw new Error(`grep over ${file} exited ${result.status}: the file is missing or unreadable, so the scan proves nothing`);
     };
     for (const file of ['/data/state/controller.json', STATE_FILES.registries, STATE_FILES.credentials]) counts[file] = await countIn(file);
-    const logs = await exec(['find', '/data/logs', '-type', 'f']);
-    if (logs.status !== 0) throw new Error(`listing /data/logs exited ${logs.status}`);
-    for (const file of logs.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) counts[file] = await countIn(file);
+    // The runner log is created by the first Run, so the directory may not exist yet: absent is recorded apart from 0 matches.
+    const logsPresent = await exists('/data/logs', '-d');
+    if (logsPresent) {
+      const logs = await exec(['find', '/data/logs', '-type', 'f']);
+      if (logs.status !== 0) throw new Error(`listing /data/logs exited ${logs.status}`);
+      for (const file of logs.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) counts[file] = await countIn(file);
+    }
     const stdout = await runCommand('podman', [...nestedArgs(state.box.name), 'container', 'logs', state.localLlm], { timeoutMs: 60_000 });
     if (stdout.status !== 0) throw new Error(`reading the agent stdout exited ${stdout.status}`);
     counts['container stdout and stderr'] = `${stdout.stdout}\n${stdout.stderr}`.split(state.dummy).length - 1;
     // Positive control: the scan finds something that is there.
     const control = await exec(['grep', '-cF', '--', registryId(), STATE_FILES.registries]);
-    evidence('leak-scan.json', { counts, positiveControl: { needle: 'the registry id', exit: control.status, count: control.status === 0 ? Number.parseInt(control.stdout.trim(), 10) : 0 } });
+    evidence('leak-scan.json', { logsDirectory: logsPresent ? 'present' : 'absent', counts, positiveControl: { needle: 'the registry id', exit: control.status, count: control.status === 0 ? Number.parseInt(control.stdout.trim(), 10) : 0 } });
     expect(control.status, 'the scan can find the registry id it is looking for in registries.json').toBe(0);
     expect(Object.values(counts).filter((count) => count !== 0), `matches of the dummy credential by file: ${JSON.stringify(counts)}`).toEqual([]);
   });

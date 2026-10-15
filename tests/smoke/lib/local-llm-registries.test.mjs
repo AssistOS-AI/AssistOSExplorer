@@ -322,3 +322,38 @@ test('judge: a report whose counters say passed but whose tests do not is not pa
   report.suites[0].suites[2].specs[0].tests[0].status = 'unexpected';
   assert.notEqual(judgeRegistriesResults(report, { exitStatus: 0, signal: null }).case, 'passed');
 });
+
+// ---------------------------------------------------------------------------
+// Imports
+
+// The names a module imports, by specifier, read from its source.
+function importsOf(file) {
+  const source = fs.readFileSync(new URL(file, import.meta.url), 'utf8');
+  const found = {};
+  for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*'([^']+)'/g)) {
+    found[match[2]] = [...(found[match[2]] || []), ...match[1].split(',').map((name) => name.trim()).filter(Boolean)];
+  }
+  return found;
+}
+
+test('the lib imports exactly the helpers the plan names, from the modules the plan names', () => {
+  const imports = importsOf('./local-llm-registries.mjs');
+  assert.deepEqual([...imports['./dgx-spark.mjs']].sort(), ['boxPublications', 'resolveBox', 'runCommand', 'workspacePathHash']);
+  assert.deepEqual(imports['./box-workspace.mjs'], ['inspectBoxWorkspace']);
+  assert.deepEqual(imports['../scripts/run-dgx-spark-e2e.mjs'], ['judgeResults']);
+  assert.deepEqual(Object.keys(imports).sort(), ['../scripts/run-dgx-spark-e2e.mjs', './box-workspace.mjs', './dgx-spark.mjs']);
+});
+
+test('the spec and the runner import their lib names and none of the DGX gate helpers', () => {
+  const spec = importsOf('../specs/98-local-llm-model-registries.spec.mjs');
+  assert.deepEqual([...spec['../lib/local-llm-registries.mjs']].sort(), [
+    'SPEC98_INVENTORY', 'assertBaseUrlBindsBox', 'classifyKeyProbe', 'locateBox', 'requireLocalLlmRegistriesEnvironment', 'stateFileRestoreStep', 'toolErrorCode',
+  ]);
+  const runner = importsOf('../scripts/run-local-llm-registries-e2e.mjs');
+  assert.deepEqual([...runner['../lib/local-llm-registries.mjs']].sort(), ['assertBaseUrlBindsBox', 'judgeRegistriesResults', 'locateBox', 'requireLocalLlmRegistriesEnvironment']);
+  assert.deepEqual(runner['../lib/dgx-spark.mjs'], ['createPloinky']);
+  for (const file of ['./local-llm-registries.mjs', '../specs/98-local-llm-model-registries.spec.mjs', '../scripts/run-local-llm-registries-e2e.mjs']) {
+    const names = Object.values(importsOf(file)).flat();
+    for (const forbidden of ['dgxSparkEnabled', 'requireDgxSparkEnvironment', 'errorCodeOf']) assert.equal(names.includes(forbidden), false, `${file} must not import ${forbidden}`);
+  }
+});

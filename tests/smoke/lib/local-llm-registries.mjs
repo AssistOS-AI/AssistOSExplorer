@@ -7,7 +7,6 @@ import path from 'node:path';
 
 import { boxPublications, resolveBox, runCommand, workspacePathHash } from './dgx-spark.mjs';
 import { inspectBoxWorkspace } from './box-workspace.mjs';
-import { checked, checkedJson } from './hardware-limits-evidence.mjs';
 import { judgeResults } from '../scripts/run-dgx-spark-e2e.mjs';
 
 // The five groups of spec 98 in run order, and every test of each. The spec declares its tests from this list.
@@ -36,6 +35,20 @@ const inventoryKey = (group, title) => `${group}\u0000${title}`;
 
 // ---------------------------------------------------------------------------
 // Environment, Box and base URL
+
+// The stdout of a command that must have exited 0, and its JSON.
+function checked(result, label) {
+  if (!result || result.error || result.status !== 0) {
+    const detail = result?.error ? result.error.message : `exit ${result?.status ?? 'unknown'}${result?.signal ? ` signal ${result.signal}` : ''}: ${String(result?.stderr || '').trim().slice(0, 300)}`;
+    throw new Error(`${label} failed (${detail}).`);
+  }
+  return result.stdout;
+}
+
+function checkedJson(result, label) {
+  const text = checked(result, label);
+  try { return JSON.parse(text); } catch (error) { throw new Error(`${label} returned invalid JSON: ${error.message}`); }
+}
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
 const BOX_INSTANCE = /^ploinky-box-[a-z0-9-]+-[a-f0-9]{12}$/;
