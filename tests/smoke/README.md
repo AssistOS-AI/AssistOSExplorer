@@ -52,9 +52,9 @@ Offline dispatcher checks use `node --test lib/local-llm-e2e.test.mjs` from this
 Inputs: `SMOKE_WORKSPACE_ROOT` (absolute workspace), `SMOKE_PLOINKY_BIN` (the `bin/ploinky` of the checkout that created the deployment), `SMOKE_BASE_URL=http://localhost:8080`, and the claimed installation's administrator sign-in inputs (`SMOKE_LOGIN_EMAIL`, `SMOKE_SIGN_IN_METHOD`, `SMOKE_ACCOUNT_PASSWORD` or its alternatives). The Box is derived from the workspace through `ploinky gpu status` and proved with its role and path-hash labels; `SMOKE_PLOINKY_BOX_CONTAINER` is refused. Select specs with `--spec 93` (repeatable); `--list` only discovers. The RAM percentages of spec 95 are computed from local-llm's own admission estimate, so they follow model or reserve changes. Spec 95 also records, in `dgx-spark/95-budget-run.json`, whether the runner's GPU memory is charged to the agent's memory cgroup on the unified GB10. Every `ploinky` call pins `PLOINKY_WORKSPACE_ROOT` to `SMOKE_WORKSPACE_ROOT` and drops an inherited `PLOINKY_BOX_HARDWARE_LIMITS`; `SMOKE_WORKSPACE_ROOT` must be its own real path. When a test fails, each spec's `afterAll` undoes only what that spec recorded (stops the model, deletes its weights, clears its limits, uninstalls a runner it installed, grants the GPU back) and writes `dgx-spark/9x-restore.json`. Offline checks: `node --test lib/dgx-spark.test.mjs`.
 
 Run `npm run test:optional-agents` in a separate fresh cohort to prove the unchanged
-three-agent default/activation workflow. This opt-in gate requires OnlyOffice, WebMeet Scribe, and
-WebMeet STT to be disabled in both Marketplace and the real runtime snapshot.
-It enables all three through the actual Marketplace UI (OnlyOffice in global
+four-agent default/activation workflow. This opt-in gate requires OnlyOffice, WebMeet Scribe,
+WebMeet STT, and Umami to be disabled in both Marketplace and the real runtime snapshot.
+It enables all four through the actual Marketplace UI (OnlyOffice in global
 mode), waits for Running in the UI and independent runtime evidence, and leaves
 them enabled for subsequent editor and meeting gates. It fails if any agent is
 already enabled; rerunning it requires another fresh deployment. Each service
@@ -131,7 +131,7 @@ selected account sign-in inputs. Supply `SMOKE_LOGIN_EMAIL` and
 Profiles using two users require the corresponding `SMOKE_SECONDARY_*` inputs.
 Browser setup verifies the configured administrator and a distinct ordinary user
 through the authenticated identity endpoint. It does not print private values.
-Spec04 additionally requires the installed `proxies/searchAgent` catalog fixture;
+Spec04 additionally requires the installed `legacy-agents/searchAgent` catalog fixture;
 its lifecycle interception proves UI gating, not real-agent startup.
 Umami requires both `SMOKE_UMAMI_USERNAME` and `SMOKE_UMAMI_PASSWORD`. OnlyOffice
 requires absolute `SMOKE_PLOINKY_BIN` for targeted restarts. Spec61 generates
@@ -1030,11 +1030,18 @@ SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
 `lib/explorer-graph.mjs` walks every manifest reachable from
 `explorer/manifest.json`. Qualified enable refs (`repo/agent`) resolve to
 checkouts placed **next to** this repository, except `AchillesIDE/...`, which
-names this repository itself. The known siblings are `AchillesCLI`, `proxies`,
-`UmamiAgent` and `local-llms` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
+names this repository itself. The known siblings are `legacy-agents`, `webmeet`,
+`UmamiAgent` (installed, not enabled, so the walk does not reach it) and `local-llms` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
 repository's parent directory. `lib/deploy-qa-userpersisto.test.mjs` and
 `explorer/tests/unit/retiredLocalModelGraph.test.js` (which runs under
 `cd explorer && npm test`) both use the helper.
+
+Tests that read the sources of moved agents (`direct-router-consumer-safety.test.mjs`, and the
+Explorer unit tests listed in the root `AGENTS.md`) locate the `legacy-agents`, `webmeet` and
+`ploinky` checkouts through `tests/helpers/sibling-roots.mjs`. It honors `LEGACY_AGENTS_ROOT`,
+`WEBMEET_ROOT` and `PLOINKY_ROOT`, defaults to the sibling directories, and throws when a checkout
+is missing instead of skipping. No `MINIMUM_REVISIONS` entry is recorded for the `legacy-agents`
+and `webmeet` agents yet: add them with the final merge commits of those repositories.
 
 Minimum revisions are recorded per enabled agent ref (`MINIMUM_REVISIONS` in
 the helper). One is recorded: `local-llms/local-llm` needs a local-llms
@@ -1048,10 +1055,10 @@ three groups:
 
 | Finding | Group |
 | --- | --- |
-| A qualified ref whose repository is not a known sibling (and not `AchillesIDE`), for example the typo `proxy/soul-gateway` | defect |
+| A qualified ref whose repository is not a known sibling (and not `AchillesIDE`), for example the typo `webmee/webmeetAgent` | defect |
 | A known sibling absent from the parent directory | environment gap |
 | A present sibling lacking the manifest of an agent whose recorded minimum revision the checkout provably does not contain: the checkout is not shallow (`git -C <sibling> rev-parse --is-shallow-repository` prints `false`), and `git -C <sibling> merge-base --is-ancestor <revision> HEAD` exits 1 or the checkout does not have the revision object | environment gap |
-| A present sibling lacking the manifest in any other case: no minimum recorded for that ref (for example the typo `proxies/soul-gatewy`, or an agent renamed or removed in its sibling), the checkout contains the recorded revision, or containment cannot be determined (the sibling is not the top level of a git checkout, the checkout is shallow or `--is-shallow-repository` fails, or git fails). A shallow checkout cannot prove that a revision is absent: a missing object or a failed ancestry check may only mean the revision lies beyond the shallow boundary | defect |
+| A present sibling lacking the manifest in any other case: no minimum recorded for that ref (for example the typo `webmeet/webmeetAgnt`, or an agent renamed or removed in its sibling), the checkout contains the recorded revision, or containment cannot be determined (the sibling is not the top level of a git checkout, the checkout is shallow or `--is-shallow-repository` fails, or git fails). A shallow checkout cannot prove that a revision is absent: a missing object or a failed ancestry check may only mean the revision lies beyond the shallow boundary | defect |
 | A manifest missing inside the Explorer repository, an unsupported ref, an empty enable entry or an unreadable manifest | defect |
 | An enable edge to a retired runtime (for the retired-runtime test, `proxies/default-local-llm`) | retired-runtime violation |
 

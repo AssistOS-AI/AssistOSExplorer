@@ -179,15 +179,15 @@ test('a running marketplace entry is the first runtime read, so open performs on
     const runtimeReads = { count: 0 };
     const order = [];
     const p = waitHarness({
-        marketplaceEntry: { ref: 'AchillesIDE/webmeetAgent', running: true },
+        marketplaceEntry: { ref: 'webmeet/webmeetAgent', running: true },
         runtimeReads, order,
         target: async () => { order.push('target'); },
         mcp: async () => { order.push('mcp'); }
     });
     const controller = new AbortController();
-    const entry = await p.ensureAgentRuntime('AchillesIDE/webmeetAgent', controller.signal);
+    const entry = await p.ensureAgentRuntime('webmeet/webmeetAgent', controller.signal);
     assert.equal(entry.running, true);
-    assert.equal(await p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, controller.signal, entry), true);
+    assert.equal(await p.waitForAgent('webmeet/webmeetAgent', p.runId, controller.signal, entry), true);
     assert.equal(runtimeReads.count, 0);
     assert.equal(order[0], 'stability');
 });
@@ -195,13 +195,13 @@ test('a running marketplace entry is the first runtime read, so open performs on
 test('a starting marketplace entry still triggers a runtime re-read', async () => {
     const runtimeReads = { count: 0 };
     const p = waitHarness({
-        marketplaceEntry: { ref: 'AchillesIDE/webmeetAgent', running: false },
+        marketplaceEntry: { ref: 'webmeet/webmeetAgent', running: false },
         runtimeReads, order: [],
         target: async () => {}, mcp: async () => {}
     });
     const controller = new AbortController();
-    const entry = await p.ensureAgentRuntime('AchillesIDE/webmeetAgent', controller.signal);
-    assert.equal(await p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, controller.signal, entry), true);
+    const entry = await p.ensureAgentRuntime('webmeet/webmeetAgent', controller.signal);
+    assert.equal(await p.waitForAgent('webmeet/webmeetAgent', p.runId, controller.signal, entry), true);
     assert.equal(runtimeReads.count, 1);
 });
 
@@ -214,7 +214,7 @@ test('target and MCP probes overlap after the stability probe', async () => {
         mcp: async () => { order.push('mcp-start'); }
     });
     const controller = new AbortController();
-    const waiting = p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, controller.signal, { running: true });
+    const waiting = p.waitForAgent('webmeet/webmeetAgent', p.runId, controller.signal, { running: true });
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(order, ['stability', 'target-start', 'mcp-start'], 'MCP starts while the target probe is still pending');
     releaseTarget();
@@ -233,12 +233,12 @@ test('a failing concurrent probe fails fast despite a hung sibling and maps to t
     console.error = () => {};
     try {
         const controller = new AbortController();
-        assert.equal(await p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, controller.signal, { running: true }), false);
+        assert.equal(await p.waitForAgent('webmeet/webmeetAgent', p.runId, controller.signal, { running: true }), false);
         assert.deepEqual(states.slice(-1), ['Target rejected']);
         states.length = 0;
         const aborted = new AbortController();
         aborted.abort();
-        await p.waitForAgent('AchillesIDE/webmeetAgent', p.runId, aborted.signal, { running: true });
+        await p.waitForAgent('webmeet/webmeetAgent', p.runId, aborted.signal, { running: true });
         assert.equal(states.includes('Target rejected'), false);
     } finally {
         console.error = originalError;

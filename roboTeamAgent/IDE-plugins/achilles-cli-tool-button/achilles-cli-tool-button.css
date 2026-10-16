@@ -1,0 +1,40 @@
+achilles-cli-tool-button {
+    display: inline-flex;
+    align-items: stretch;
+    justify-content: center;
+    min-width: 0;
+}
+
+achilles-cli-tool-button .achilles-cli-tool-button-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+}
+
+achilles-cli-tool-button .achilles-cli-tool-button-icon-image {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
+
+achilles-cli-tool-button .achilles-cli-tool-button-label {
+    display: inline-block;
+    min-width: 0;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+achilles-cli-tool-button[data-host-orientation="vertical"] .achilles-cli-tool-button {
+    flex-direction: column;
+    width: 100%;
+    padding: 8px 6px;
+    gap: 6px;
+}
+
+achilles-cli-tool-button[data-host-orientation="vertical"] .achilles-cli-tool-button-label {
+    text-align: center;
+}

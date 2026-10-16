@@ -449,7 +449,8 @@ jobs:
             'OnlyOfficeAgent|https://github.com/AssistOS-AI/OnlyOfficeAgent.git'
             'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'
             'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'
-            'proxies|https://github.com/AssistOS-AI/proxies.git'
+            'legacy-agents|https://github.com/AssistOS-AI/legacy-agents.git'
+            'webmeet|https://github.com/AssistOS-AI/webmeet.git'
           )
           BRANCH_ARGS=(
             --branch-fallback fail

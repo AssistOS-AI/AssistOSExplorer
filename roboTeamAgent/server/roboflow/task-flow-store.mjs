@@ -1,0 +1,152 @@
+import { executionTiming, transitionTiming } from '../../shared/execution-timing.mjs';
+import { withLock } from './storage.mjs';
+import { advanceSummaryFile } from '../../shared/summary-file-index.mjs';
+import { scanSummaryLines } from '../../shared/impact-summary.mjs';
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { RoboFlowDatabase } from './database.mjs';
+import { FLOW_ID_PATTERN, INVOCATION_ID_PATTERN } from './constants.mjs';
+import { invalid, resolveWorkflowObjective } from './graph.mjs';
+
+const activePhase = phase => ['starting', 'running', 'pausing'].includes(phase.state);
+const flowTiming = flow => executionTiming(flow, flow.status === 'running', flow.createdAt, flow.finishedAt);
+const phaseTiming = phase => executionTiming(phase, activePhase(phase), phase.startedAt, phase.endedAt);
+
+export class TaskFlowStore {
+    constructor(options = {}) {
+        this.database = options.database || new RoboFlowDatabase(options.databaseFile);
+        this.subscribers = new Set();
+    }
+    subscribe(listener) { this.subscribers.add(listener); return () => this.subscribers.delete(listener); }
+    publish(event) {
+        for (const listener of this.subscribers) {
+            try { listener(event); } catch (error) { console.error('[roboflow] observation failed:', error.message); }
+        }
+    }
+    closeObservers() { this.publish({ kind: 'close' }); this.subscribers.clear(); }
+    async initialize() { this.database.initialize(); }
+    static newFlowId() { return `flow_${crypto.randomBytes(12).toString('hex')}`; }
+    static newInvocationId() { return `inv_${crypto.randomBytes(12).toString('hex')}`; }
+    getSync(id) {
+        const row = this.database.db.prepare('SELECT record FROM workflow_runs WHERE id=?').get(id);
+        if (!row) return null;
+        return { ...JSON.parse(row.record), instances: this.database.db.prepare('SELECT record FROM task_instances WHERE run_id=? ORDER BY sequence').all(id).map(entry => JSON.parse(entry.record)) };
+    }
+    saveSync(flow) {
+        const { instances, result, ...record } = flow;
+        this.database.db.prepare('INSERT INTO workflow_runs VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record=excluded.record').run(flow.id, JSON.stringify(record));
+        for (const instance of instances || []) this.database.db.prepare('INSERT INTO task_instances VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET record=excluded.record').run(instance.id, flow.id, instance.sequence, JSON.stringify(instance));
+        return flow;
+    }
+    createRecord(graph, input = {}) {
+        const now = new Date().toISOString();
+        return { id: TaskFlowStore.newFlowId(), workflowTypeId: graph.id, workflowName: graph.name, graph,
+            ...input, revision: 0, elapsedMs: 0, activeSince: now, status: 'running', currentInstanceId: null,
+            createdAt: now, updatedAt: now, finishedAt: null, error: null, instances: [] };
+    }
+    async createFromWorkflow(registry, workflowId, input, onCreated = () => {}) {
+        await this.initialize();
+        return this.database.transaction(() => {
+            const graph = registry.getSync(workflowId);
+            if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
+            const flow = this.saveSync(this.createRecord(graph, { ...input, objective: resolveWorkflowObjective(graph, input.objective) }));
+            onCreated(flow);
+            return flow;
+        });
+    }
+    async get(id) { await this.initialize(); return this.getSync(id); }
+    async list() { await this.initialize(); return this.database.db.prepare('SELECT id FROM workflow_runs ORDER BY rowid DESC').all().map(row => this.getSync(row.id)); }
+    async update(id, operation, { notify = true } = {}) {
+        await this.initialize();
+        let previousStatus;
+        const updated = this.database.transaction(() => {
+            const flow = this.getSync(id);
+            if (!flow) throw Object.assign(invalid('workflow run not found'), { statusCode: 404 });
+            previousStatus = flow.status;
+            const timing = flowTiming(flow);
+            const phases = new Map(flow.instances.map(phase => [phase.id, phaseTiming(phase)]));
+            operation(flow);
+            flow.revision = (flow.revision || 0) + 1;
+            flow.updatedAt = new Date().toISOString();
+            Object.assign(flow, transitionTiming(timing, flow.status === 'running', flow.updatedAt));
+            for (const phase of flow.instances) {
+                Object.assign(phase, transitionTiming(phases.get(phase.id) || { elapsedMs: 0, activeSince: null }, activePhase(phase), flow.updatedAt));
+            }
+            return this.saveSync(flow);
+        });
+        if (previousStatus !== updated.status) this.onStatusChange?.(updated);
+        if (notify) this.publish({ kind: 'flow', flowId: id, parentFlowId: updated.parentFlowId });
+        return updated;
+    }
+    async outputPath(flowId, instanceId, suffix, create = false) {
+        if (!FLOW_ID_PATTERN.test(flowId) || !INVOCATION_ID_PATTERN.test(instanceId) || !['log', 'result'].includes(suffix)) throw invalid('invalid task output reference');
+        const flow = await this.get(flowId);
+        if (!flow?.instances.some(instance => instance.id === instanceId)) throw invalid('task instance not found');
+        const root = await fs.realpath(flow.folder);
+        if (root !== path.resolve(flow.folder)) throw new Error('Workflow output folder was replaced by a symlink');
+        let directory = root;
+        for (const part of ['.roboteam', 'roboflow', flowId]) {
+            directory = path.join(directory, part);
+            if (create) await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+            const stat = await fs.lstat(directory);
+            if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe workflow output directory');
+        }
+        return path.join(directory, `${instanceId}.${suffix}`);
+    }
+    async writeOutput(flowId, instanceId, value, suffix = 'log', { assistant = suffix === 'result', complete = suffix === 'result', outputId = '' } = {}) {
+        return withLock(`summary-output:${flowId}:${instanceId}`, async () => {
+            const file = await this.outputPath(flowId, instanceId, suffix, true);
+            const handle = await fs.open(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW | fs.constants.O_APPEND, 0o600);
+            let start;
+            const text = String(value || '');
+            const output = complete && !text.endsWith('\n') ? `${text}\n` : text;
+            try {
+                start = (await handle.stat()).size;
+                await handle.writeFile(output);
+            } finally { await handle.close(); }
+            const flow = await this.get(flowId);
+            const instance = flow.instances.find(entry => entry.id === instanceId);
+            const index = structuredClone(instance.summaryOutputs?.[suffix] || { version: 1, ranges: [], state: {} });
+            if (suffix === 'result' && !instance.summaryOutputs?.[suffix] && start) {
+                const previous = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+                let existing;
+                try { existing = await previous.readFile(); } finally { await previous.close(); }
+                index.ranges = scanSummaryLines(existing.subarray(0, start).toString('utf8'), { bytes: true }).ranges
+                    .map(range => ({ ...range, attempt: 'legacy' }));
+            }
+            if (suffix === 'result' || index.attempt !== instance.runtimeTaskId) index.state = {};
+            const ranges = await advanceSummaryFile(file, index, { start, end: start + Buffer.byteLength(output), assistant, complete, outputId });
+            let sequence = instance.summarySequence || 0;
+            for (const range of ranges) index.ranges.push({ ...range, attempt: instance.runtimeTaskId, sequence: ++sequence });
+            index.attempt = instance.runtimeTaskId;
+            await this.update(flowId, record => {
+                const current = record.instances.find(entry => entry.id === instanceId);
+                current.summaryOutputs ||= {};
+                current.summaryOutputs[suffix] = index;
+                current.summarySequence = sequence;
+                if (suffix === 'result') current.latestResult = { start, end: start + Buffer.byteLength(text) };
+            }, { notify: false });
+            this.publish({ kind: 'output', flowId, instanceId, suffix, start, end: start + Buffer.byteLength(output), chunk: output });
+        });
+    }
+    async readOutput(flowId, instanceId, suffix = 'log') {
+        const file = await this.outputPath(flowId, instanceId, suffix);
+        const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        try {
+            const flow = suffix === 'result' ? await this.get(flowId) : null;
+            const range = flow?.instances.find(entry => entry.id === instanceId)?.latestResult;
+            if (!range) return await handle.readFile('utf8');
+            if (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end)
+                || range.start < 0 || range.end < range.start || range.end > (await handle.stat()).size) throw new Error('Invalid workflow result reference');
+            const buffer = Buffer.alloc(range.end - range.start);
+            let read = 0;
+            while (read < buffer.length) {
+                const chunk = await handle.read(buffer, read, buffer.length - read, range.start + read);
+                if (!chunk.bytesRead) throw new Error('Workflow result changed while reading');
+                read += chunk.bytesRead;
+            }
+            return buffer.toString('utf8');
+        } finally { await handle.close(); }
+    }
+}

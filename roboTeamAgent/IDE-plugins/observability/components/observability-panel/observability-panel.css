@@ -1,0 +1,39 @@
+observability-panel { display: flex; width: 100%; height: 100%; min-height: 0; color: var(--text); }
+observability-panel [hidden] { display: none !important; }
+observability-panel .observability-body { display: flex; flex-direction: column; flex: 1; min-width: 0; max-width: none; min-height: 0; padding: 0; overflow: hidden; }
+observability-panel .observability-tabs { display: flex; gap: var(--space-sm); padding: var(--space-sm) var(--space-lg) 0; border-bottom: 1px solid var(--border); overflow-x: auto; flex-shrink: 0; }
+observability-panel [role="tab"] { flex-shrink: 0; padding: var(--space-md); border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--text-soft); font: inherit; cursor: pointer; }
+observability-panel [role="tab"][aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: var(--font-semibold); }
+observability-panel [data-count] { padding: 2px 6px; margin-left: 6px; background: var(--surface-soft); border-radius: var(--radius-md); font-size: var(--font-xs); }
+observability-panel button:focus-visible, observability-panel a:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+observability-panel .observability-error { padding: var(--space-sm) var(--space-lg); color: var(--file-exp-error); border-bottom: 1px solid var(--border); }
+observability-panel .observability-layout { display: grid; grid-template-columns: minmax(240px, 32%) minmax(0, 1fr); flex: 1; min-height: 0; }
+observability-panel .observability-sidebar { overflow-y: auto; min-width: 0; padding: var(--space-md); border-right: 1px solid var(--border); }
+observability-panel .observability-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-sm); }
+observability-panel .observability-card { width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: var(--space-sm); text-align: left; cursor: pointer; font: inherit; }
+observability-panel .observability-card[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+observability-panel .observability-card-heading, observability-panel .observability-card-meta { display: flex; justify-content: space-between; align-items: center; gap: var(--space-sm); }
+observability-panel .observability-card-heading .settings-card-title { overflow-wrap: anywhere; }
+observability-panel .observability-card-meta { flex-wrap: wrap; }
+observability-panel .observability-card-prompt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+observability-panel .observability-content { min-width: 0; overflow-y: auto; padding: var(--space-xl); }
+observability-panel .observability-detail-heading { display: flex; align-items: center; gap: var(--space-md); flex-wrap: wrap; }
+observability-panel .observability-detail-heading h2 { margin: 0; overflow-wrap: anywhere; }
+observability-panel .observability-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-lg); padding: var(--space-lg) 0; border-bottom: 1px solid var(--border); }
+observability-panel dt, observability-panel .observability-hint { color: var(--text-soft); font-size: var(--font-sm); }
+observability-panel dd { margin: var(--space-xs) 0 0; font-weight: var(--font-semibold); overflow-wrap: anywhere; }
+observability-panel .observability-prompt { white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--line-normal); }
+observability-panel .observability-open { display: inline-flex; margin-top: var(--space-lg); text-decoration: none; }
+@media (max-width: 700px) {
+    observability-panel .observability-layout { grid-template-columns: 1fr; grid-template-rows: minmax(120px, 38%) minmax(0, 1fr); }
+    observability-panel .observability-sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
+    observability-panel .observability-content { padding: var(--space-md); }
+    observability-panel .observability-metrics { grid-template-columns: 1fr; gap: var(--space-sm); }
+}
+
+observability-panel .observability-question { margin: var(--space-lg) 0; padding: var(--space-lg); border: 1px solid var(--border); border-radius: var(--radius-md); }
+observability-panel .observability-question fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+observability-panel .observability-question legend { font-weight: var(--font-semibold); margin-bottom: var(--space-md); overflow-wrap: anywhere; }
+observability-panel .observability-answer-option { display: flex; gap: var(--space-sm); align-items: baseline; margin: var(--space-sm) 0; overflow-wrap: anywhere; }
+observability-panel .observability-answer-option input { flex-shrink: 0; }
+observability-panel [data-custom-answer] { margin-top: var(--space-sm); resize: vertical; }

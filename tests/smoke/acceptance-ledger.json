@@ -107,16 +107,16 @@
       "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."
     },
     {
-      "identity": "03-optional-agents.spec.mjs::OnlyOffice, Scribe, and STT start disabled and can be enabled through Marketplace",
+      "identity": "03-optional-agents.spec.mjs::OnlyOffice, Scribe, STT, and Umami start disabled and can be enabled through Marketplace",
       "file": "03-optional-agents.spec.mjs",
       "sourceLine": 31,
-      "title": "OnlyOffice, Scribe, and STT start disabled and can be enabled through Marketplace",
+      "title": "OnlyOffice, Scribe, STT, and Umami start disabled and can be enabled through Marketplace",
       "observedStatus": "failed",
       "cohort": "optional-defaults-and-activation",
       "runner": "npm test -- --project=chromium --workers=1 --retries=0",
       "selection": {
         "spec": "specs/03-optional-agents.spec.mjs",
-        "title": "OnlyOffice, Scribe, and STT start disabled and can be enabled through Marketplace",
+        "title": "OnlyOffice, Scribe, STT, and Umami start disabled and can be enabled through Marketplace",
         "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
       },
       "requiredFlags": {
@@ -148,7 +148,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest. Installed proxies/searchAgent catalog fixture; this spec uses intercepted lifecycle responses.",
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest. Installed legacy-agents/searchAgent catalog fixture; this spec uses intercepted lifecycle responses.",
       "disposition": "required-local-acceptance",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,

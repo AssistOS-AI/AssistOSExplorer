@@ -38,7 +38,7 @@
 </section>
 
 <h2>Workspace copilot</h2>
-        <p>Open Copilot here in a directory context menu opens the selected directory in RoboTeam's ordinary robot named <code>default</code>. <a href="wiki.html#definition-explorer">Explorer</a> enables <code>AchillesCLI/roboTeamAgent global no-wait</code>; there is no separate AchillesCLI agent. Other robots have their own Open Chat action in RoboTeam. Independent CLI conversations can run concurrently, while Desktop and Browser retain one shared GUI container per robot.</p>
+        <p>Open Copilot here in a directory context menu opens the selected directory in RoboTeam's ordinary robot named <code>default</code>. <a href="wiki.html#definition-explorer">Explorer</a> enables <code>roboTeamAgent global no-wait</code>, an agent of this repository (Ploinky identity <code>AchillesIDE/roboTeamAgent</code>); there is no separate AchillesCLI agent. Other robots have their own Open Chat action in RoboTeam. Independent CLI conversations can run concurrently, while Desktop and Browser retain one shared GUI container per robot.</p>
         <p>Robot skills and skillsets are managed in RoboTeam. <a href="wiki.html#definition-explorer">Explorer</a> Settings does not provide Copilot skill controls.</p>
         <h2>How the workspace fits together</h2>
         <figure class="diagram"><pre class="mermaid">flowchart TB
@@ -98,7 +98,7 @@
             <p>Fresh deployments require an <code>AdvancedLanguageAgent</code> checkout at the workspace root with its dependency-free CLI supporting <code>--home</code>, <code>--cwd</code>, and <code>--MCPServers</code>. <a href="wiki.html#definition-explorer">Explorer</a> enables RoboTeam globally so its default robot can use that workspace checkout for Copilot.</p>
             <p>The QA workflow installs ALA from its default branch, verifies its exact clean revision, and checks its dependency-free package and executable CLI. Its preflight verifies the required help options before starting the <a href="wiki.html#definition-explorer">Explorer</a> runtime graph.</p>
 
-            <p>OnlyOffice, WebMeet Scribe (Meeting Secretary), and WebMeet STT are disabled by default. An administrator can enable each from Marketplace. Office editing requires OnlyOffice; automatic meeting notes require Scribe. The current Secretary uses browser SpeechRecognition and does not require the separate STT service.</p>
+            <p>OnlyOffice, WebMeet Scribe (Meeting Secretary), WebMeet STT, and Umami analytics are disabled by default; Umami is installed so Marketplace can offer it. An administrator can enable each from Marketplace. Office editing requires OnlyOffice; automatic meeting notes require Scribe. The current Secretary uses browser SpeechRecognition and does not require the separate STT service.</p>
 
             <h3>Application Agents and Plugins</h3>
             <div class="agent-grid">
@@ -108,13 +108,13 @@
                 <a class="agent-card" href="../dpuAgent/docs/index.html"><span class="agent-card__key">dpu-runtime-support</span>
                     <h3>DPU</h3>
                     <p>Confidential resources, permissions, secrets, research data, and jobs.</p></a>
-                <a class="agent-card" href="../soplangAgent/docs/index.html"><span class="agent-card__key">soplang-builder</span>
+                <a class="agent-card" href="https://github.com/AssistOS-AI/legacy-agents/tree/main/soplangAgent/docs"><span class="agent-card__key">soplang-builder</span>
                     <h3>SOPLang</h3>
                     <p>Structured document actions, variables, build, and execution workflows.</p></a>
-                <a class="agent-card" href="../tasksAgent/docs/index.html"><span class="agent-card__key">tasks</span>
+                <a class="agent-card" href="https://github.com/AssistOS-AI/legacy-agents/tree/main/tasksAgent/docs"><span class="agent-card__key">tasks</span>
                     <h3>Tasks</h3>
                     <p>Backlog navigation, task creation, updates, and document task actions.</p></a>
-                <a class="agent-card" href="../webmeetAgent/docs/index.html"><span
+                <a class="agent-card" href="https://github.com/AssistOS-AI/webmeet/tree/main/webmeetAgent/docs"><span
                         class="agent-card__key">webmeet</span>
                     <h3>WebMeet</h3>
                     <p>Meeting rooms, participants, media, Blackboard resources, and settings.</p></a>
@@ -125,23 +125,23 @@
 
             <h3>Document and Supporting Agents</h3>
             <div class="agent-grid">
-                <a class="agent-card" href="../multimedia/docs/index.html"><h3>Multimedia</h3>
+                <a class="agent-card" href="https://github.com/AssistOS-AI/legacy-agents/tree/main/multimedia/docs"><h3>Multimedia</h3>
                     <p>Document-level audio, image, video, preview, and FFmpeg integrations.</p></a>
-                <a class="agent-card" href="../webAssist/docs/index.html"><h3>WebAssist</h3>
+                <a class="agent-card" href="https://github.com/AssistOS-AI/legacy-agents/tree/main/webAssist/docs"><h3>WebAssist</h3>
                     <p>Workspace and guest-facing assistant chat integration.</p></a>
-                <a class="agent-card" href="../webmeetStt/docs/index.html"><h3>WebMeet STT</h3>
+                <a class="agent-card" href="https://github.com/AssistOS-AI/webmeet/tree/main/webmeetStt/docs"><h3>WebMeet STT</h3>
                     <p>Optional private speech-to-text service, disabled by default.</p></a>
-                <a class="agent-card" href="../webmeetScribeAgent/docs/index.html"><h3>WebMeet Scribe</h3>
+                <a class="agent-card" href="https://github.com/AssistOS-AI/webmeet/tree/main/webmeetScribeAgent/docs"><h3>WebMeet Scribe</h3>
                     <p>Optional Meeting Secretary transcript journal and notes worker, disabled by default.</p></a>
                 <a class="agent-card" href="https://assistos-ai.github.io/OnlyOfficeAgent/onlyOffice/docs/index.html"><h3>OnlyOffice</h3>
                     <p>Optional Office editor sessions, authenticated transport, callbacks, and persistence; disabled by default.</p></a>
             </div>
 
             <h3>Live Media Runtime</h3>
-            <p><a href="../liveKitServerAgent/docs/index.html">LiveKit Server</a> runs as <code>AchillesIDE/liveKitServerAgent</code> from this repository. <a href="wiki.html#definition-explorer">Explorer</a> and WebMeet enable the same runtime, which owns Redis, LiveKit Server, Egress, and private health. Its pinned image, readiness checks, <code>.data/liveKitServerAgent/</code> storage, Router routes, and fixed UDP <code>7882</code> media mux define its runtime boundary. The default stack requires no separate media-runtime repository or <code>basic</code> installation. Skills <a href="wiki.html#definition-explorer">Explorer</a> deployment retires existing media registrations through <a href="wiki.html#definition-ploinky">Ploinky</a> before source update, verifies old runtime absence inside the owning Box, and preserves agent data. Failed migration evidence remains available for recovery and retry.</p>
+            <p><a href="https://github.com/AssistOS-AI/webmeet/tree/main/liveKitServerAgent/docs">LiveKit Server</a> runs as <code>webmeet/liveKitServerAgent</code> from the <code>webmeet</code> repository. <a href="wiki.html#definition-explorer">Explorer</a> and WebMeet enable the same runtime, which owns Redis, LiveKit Server, Egress, and private health. Its pinned image, readiness checks, <code>.data/liveKitServerAgent/</code> storage, Router routes, and fixed UDP <code>7882</code> media mux define its runtime boundary. The default stack requires no separate media-runtime repository or <code>basic</code> installation. Skills <a href="wiki.html#definition-explorer">Explorer</a> deployment retires existing media registrations through <a href="wiki.html#definition-ploinky">Ploinky</a> before source update, verifies old runtime absence inside the owning Box, and preserves agent data. Failed migration evidence remains available for recovery and retry.</p>
 
             <h3>Explorer-Owned and External Entries</h3>
-            <p>The <code>help</code> plugin is owned by <a href="wiki.html#definition-explorer">Explorer</a> and is covered by the <a href="plugins.html">runtime plugins guide</a>. The manifest also enables RoboTeam, Soul Gateway, and Umami as supporting dependencies. A fresh <code>ploinky start explorer</code> does not download or start a local model: the local Soul Gateway seeds a restricted free OpenRouter provider with the tiers <code>fast</code>, <code>code</code>, <code>plan</code>, <code>write</code>, <code>deep</code>, <code>ultra</code>, and <code>web-assist</code>. It uses a bundled free-only credential whose daily quota is shared by every installation using it, requires internet access, and is not available offline. Administrators can replace the credential in the admin-only Soul Gateway settings dashboard. OpenCode's free models are available through the optional <code>proxies/opencode-free</code> agent, which <code>ploinky start explorer</code> does not enable; to add it to a workspace, run <code>ploinky enable agent proxies/opencode-free</code> from the workspace root. The agent wraps the unmodified OpenCode CLI; once enabled, Soul Gateway discovers it like any other agent and adds it to no tier by default: plain-text chat only, no tool calls and no images, one answer per request delivered as a single chunk after several seconds, a free quota shared by every installation that uses the bundled key, and prompts subject to the free models' data-use terms. Native OpenCode execution through RoboTeam's installed OpenCode CLI is unchanged. <a href="wiki.html#definition-ploinky">Ploinky</a> core supplies the administrator-only WebTTY surface through the selected <a href="wiki.html#definition-explorer">Explorer</a> host. <a href="wiki.html#definition-explorer">Explorer</a> owns its folder target chooser, while <a href="wiki.html#definition-ploinky">Ploinky</a> supplies safe Box and live-agent choices and remains authoritative for runtime identity, mount access, translated working directory, and launch authorization. Those dependencies own their documentation and runtime contracts.</p>
+            <p>The <code>help</code> plugin is owned by <a href="wiki.html#definition-explorer">Explorer</a> and is covered by the <a href="plugins.html">runtime plugins guide</a>. The manifest also enables RoboTeam and Soul Gateway, both held in this repository, as supporting dependencies; Umami is installed but not enabled. A fresh <code>ploinky start explorer</code> does not download or start a local model: the local Soul Gateway seeds a restricted free OpenRouter provider with the tiers <code>fast</code>, <code>code</code>, <code>plan</code>, <code>write</code>, <code>deep</code>, <code>ultra</code>, and <code>web-assist</code>. It uses a bundled free-only credential whose daily quota is shared by every installation using it, requires internet access, and is not available offline. Administrators can replace the credential in the admin-only Soul Gateway settings dashboard. OpenCode's free models are available through the optional <code>legacy-agents/opencode-free</code> agent, which <code>ploinky start explorer</code> does not enable; to add it to a workspace, run <code>ploinky enable agent legacy-agents/opencode-free</code> from the workspace root. The agent wraps the unmodified OpenCode CLI; once enabled, Soul Gateway discovers it like any other agent and adds it to no tier by default: plain-text chat only, no tool calls and no images, one answer per request delivered as a single chunk after several seconds, a free quota shared by every installation that uses the bundled key, and prompts subject to the free models' data-use terms. Native OpenCode execution through RoboTeam's installed OpenCode CLI is unchanged. <a href="wiki.html#definition-ploinky">Ploinky</a> core supplies the administrator-only WebTTY surface through the selected <a href="wiki.html#definition-explorer">Explorer</a> host. <a href="wiki.html#definition-explorer">Explorer</a> owns its folder target chooser, while <a href="wiki.html#definition-ploinky">Ploinky</a> supplies safe Box and live-agent choices and remains authoritative for runtime identity, mount access, translated working directory, and launch authorization. Those dependencies own their documentation and runtime contracts.</p>
         </section>
     </div>
 </main>

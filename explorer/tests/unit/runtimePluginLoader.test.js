@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createComponentRegistry } from '../../services/runtime/componentRegistry.js';
 import { createRuntimePluginLoader } from '../../services/runtime/runtimePluginLoader.js';
 import { toolbarComponentRegistrationOptions } from '../../web-components/pages/file-exp/file-exp-application-plugins.js';
+import { siblingRoot } from '../../../tests/helpers/sibling-roots.mjs';
 
 test('runtime plugin discovery retries a transient Router generation change', async () => {
     let attempts = 0;
@@ -359,8 +360,8 @@ test('the default and room-entry style calls still register every dependency', a
 });
 
 const repoRoot = path.resolve(explorerRoot, '..');
-const readPluginConfig = (agent, plugin) => ({
-    ...JSON.parse(fs.readFileSync(path.join(repoRoot, agent, 'IDE-plugins', plugin, 'config.json'), 'utf8')),
+const readPluginConfig = (agent, plugin, base = repoRoot) => ({
+    ...JSON.parse(fs.readFileSync(path.join(base, agent, 'IDE-plugins', plugin, 'config.json'), 'utf8')),
     agent
 });
 const toolbarPlugins = (config) => ({ application: { 'file-exp:toolbar': [config] } });
@@ -370,7 +371,7 @@ test('toolbar registration options skip dependencies for iframe-mode modals only
     assert.equal(toolbarComponentRegistrationOptions({ toolbarModal: { mode: 'component', component: 'git-panel' } }), undefined);
     assert.equal(toolbarComponentRegistrationOptions({}), undefined);
     assert.equal(toolbarComponentRegistrationOptions(readPluginConfig('gitAgent', 'git-tool-button')), undefined);
-    assert.deepEqual(toolbarComponentRegistrationOptions(readPluginConfig('webmeetAgent', 'webmeet-tool-button')), { includeDependencies: false });
+    assert.deepEqual(toolbarComponentRegistrationOptions(readPluginConfig('webmeetAgent', 'webmeet-tool-button', siblingRoot('webmeet'))), { includeDependencies: false });
 });
 
 test('the real Git config registers all nested panel dependencies in component mode', async () => {
@@ -389,7 +390,7 @@ test('the real Git config registers all nested panel dependencies in component m
 });
 
 test('the real WebMeet config registers only its presenter for the iframe-mode modal', async () => {
-    const config = readPluginConfig('webmeetAgent', 'webmeet-tool-button');
+    const config = readPluginConfig('webmeetAgent', 'webmeet-tool-button', siblingRoot('webmeet'));
     assert.ok(config.dependencies.length > 1, 'WebMeet declares dependencies that the iframe loads itself');
     const loaded = [];
     await webmeetLoader(loaded).ensureComponentRegistered('webmeet-tool-button', toolbarPlugins(config), toolbarComponentRegistrationOptions(config));

@@ -14,7 +14,7 @@ test('ensureMarketplaceAgentRunning enables a stopped agent with the CSRF proof'
         if (String(url) === '/api/marketplace/agents' && !options.method) {
             return Response.json({
                 ok: true,
-                marketplace: { agents: [{ ref: 'AchillesIDE/webmeetAgent', name: 'webmeetAgent', running: false }] }
+                marketplace: { agents: [{ ref: 'webmeet/webmeetAgent', name: 'webmeetAgent', running: false }] }
             });
         }
         if (String(url) === '/auth/token') {
@@ -26,7 +26,7 @@ test('ensureMarketplaceAgentRunning enables a stopped agent with the CSRF proof'
         if (String(url) === '/api/marketplace/agents' && options.method === 'POST') {
             return Response.json({
                 ok: true,
-                marketplace: { agents: [{ ref: 'AchillesIDE/webmeetAgent', name: 'webmeetAgent', running: true }] }
+                marketplace: { agents: [{ ref: 'webmeet/webmeetAgent', name: 'webmeetAgent', running: true }] }
             });
         }
         return new Response('', { status: 404 });
@@ -41,7 +41,7 @@ test('ensureMarketplaceAgentRunning enables a stopped agent with the CSRF proof'
         assert.equal(post.options.headers['x-ploinky-csrf-token'], 'csrf-1');
         assert.deepEqual(JSON.parse(post.options.body), {
             action: 'enable_agent',
-            agentRef: 'AchillesIDE/webmeetAgent'
+            agentRef: 'webmeet/webmeetAgent'
         });
     } finally {
         globalThis.fetch = previousFetch;
@@ -57,7 +57,7 @@ test('ensureMarketplaceAgentRunning does not POST when the agent is already runn
         calls.push({ url: String(url), options });
         return Response.json({
             ok: true,
-            marketplace: { agents: [{ ref: 'AchillesIDE/webmeetAgent', name: 'webmeetAgent', running: true }] }
+            marketplace: { agents: [{ ref: 'webmeet/webmeetAgent', name: 'webmeetAgent', running: true }] }
         });
     };
 

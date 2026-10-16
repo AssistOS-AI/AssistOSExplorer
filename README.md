@@ -27,6 +27,10 @@ ploinky status
 curl -I http://127.0.0.1:8080/dashboard
 ```
 
+### Agent repositories
+
+This repository holds Explorer and the agents `dpuAgent`, `gitAgent`, `emailAgent`, `userPersistoAgent`, `workspaceMonitorAgent`, `soul-gateway` and `roboTeamAgent`. The manifest's `repos` map installs two further repositories for the rest of the default graph: `legacy-agents` (`soplangAgent`, `tasksAgent`, `multimedia`, `webAssist`) and `webmeet` (`webmeetAgent`, `liveKitServerAgent`; `webmeetScribeAgent` and `webmeetStt` stay optional). `UmamiAgent` and `OnlyOfficeAgent` are installed for Marketplace but not enabled by default, and `local-llms` supplies the local model agent. Ploinky names this repository `AchillesIDE`, so its agents run as `AchillesIDE/<agent>`.
+
 ### Account provider
 
 UserPersisto owns authentication and account administration independently of Explorer. Its My Account page manages profile and sign-in security without application launch links. Explorer explicitly selects the provider's `explorer` dependency profile, which declares `explorer.access` for its existing `admin` and `user` roles. Other applications use the neutral provider profile without acquiring Explorer permissions. See [the account provider contract](docs/specsLoader.html?spec=DS012-user-persisto.md) for configuration and access rules.
@@ -35,7 +39,7 @@ UserPersisto owns authentication and account administration independently of Exp
 
 A fresh `ploinky start explorer` does not download or start a local model. The workspace's local Soul Gateway seeds a restricted free OpenRouter provider on first start, with the tiers `fast`, `code`, `plan`, `write`, `deep`, `ultra`, and `web-assist`. The provider uses a bundled credential guarded to free models only. Its daily quota is shared by every installation that uses that bundled credential, so the free service is not unlimited. It requires internet access and is not available offline. An administrator can replace the credential through the existing admin-only Soul Gateway settings dashboard.
 
-OpenCode's free models are available through the optional `proxies/opencode-free` agent, which `ploinky start explorer` does not enable; to add it to a workspace, run `ploinky enable agent proxies/opencode-free` from the workspace root. The agent wraps the unmodified OpenCode CLI; once enabled, Soul Gateway discovers it like any other agent and adds it to no tier by default: plain-text chat only, no tool calls and no images, one answer per request delivered as a single chunk after several seconds, a free quota shared by every installation that uses the bundled key, and prompts subject to the free models' data-use terms. Native OpenCode execution through RoboTeam's installed OpenCode CLI is unchanged.
+OpenCode's free models are available through the optional `legacy-agents/opencode-free` agent, which `ploinky start explorer` does not enable; to add it to a workspace, run `ploinky enable agent legacy-agents/opencode-free` from the workspace root. The agent wraps the unmodified OpenCode CLI; once enabled, Soul Gateway discovers it like any other agent and adds it to no tier by default: plain-text chat only, no tool calls and no images, one answer per request delivered as a single chunk after several seconds, a free quota shared by every installation that uses the bundled key, and prompts subject to the free models' data-use terms. Native OpenCode execution through RoboTeam's installed OpenCode CLI is unchanged.
 
 ## Use Explorer
 

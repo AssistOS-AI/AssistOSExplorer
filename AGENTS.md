@@ -17,13 +17,17 @@ AchillesIDE provides the Explorer workspace shell and its coupled domain agents.
 - `explorer/` — routing, filesystem access, preview, editing, plugin hosting, Explorer MCP.
 - `dpuAgent/` — confidential data, secret storage, research data, provenance, ACL behavior.
 - `gitAgent/` — workspace Git operations, MCP tooling, auth integration.
-- `soplangAgent/` — SOPLang build and execution orchestration.
-- `tasksAgent/` — backlog file operations.
-- `emailAgent/`, `userPersistoAgent/`, `workspaceMonitorAgent/`, `multimedia/`, `webmeetAgent/`, `webmeetScribeAgent/`, `webmeetStt/`, `liveKitServerAgent/`, `webAssist/` — domain-specific workflows.
+- `emailAgent/`, `userPersistoAgent/`, `workspaceMonitorAgent/` — domain-specific workflows.
+- `roboTeamAgent/` — RoboTeam, the workspace robot and Copilot agent (moved here from AchillesCLI, with history). Its tests are `roboTeamAgent/tests/`, `roboTeamAgent/copilot/tests/` and the former AchillesCLI root tests in `roboTeamAgent/tests/cli/`.
+- `soul-gateway/` — Soul Gateway, the local LLM hub (moved here from `proxies`, with history). Its MIT `LICENSE` is in the folder.
 - `shared/` — shared runtime utilities.
 - `docs/index.html` (documentation entry point), `docs/wiki.html` (canonical terminology), `docs/specs/` (normative design specifications), and each agent's `docs/specs/`.
 - `explorer/tests/` and `<agent>/tests/` — agent-owned tests.
-- RoboTeam, the workspace robot and copilot agent, is the sibling repository `../AchillesCLI/`; see its `AGENTS.md` and `roboTeamAgent/docs/`.
+- Agents that moved out of this repository, with history:
+  - `legacy-agents` (`https://github.com/AssistOS-AI/legacy-agents.git`) holds `soplangAgent`, `tasksAgent`, `multimedia` and `webAssist` (all enabled by the Explorer manifest) plus `GPTResearcher`, `searchAgent` and `opencode-free` (enabled elsewhere or opt-in).
+  - `webmeet` (`https://github.com/AssistOS-AI/webmeet.git`) holds `webmeetAgent`, `webmeetScribeAgent`, `webmeetStt` and `liveKitServerAgent`.
+  - Ploinky installs both through the `repos` map of `explorer/manifest.json`. Tests here that read their sources resolve the sibling checkouts through `tests/helpers/sibling-roots.mjs` (`LEGACY_AGENTS_ROOT`, `WEBMEET_ROOT`, `PLOINKY_ROOT`; default `../legacy-agents`, `../webmeet`, `../ploinky`) and fail when a sibling is missing.
+- Ploinky names this repository `AchillesIDE`, so the identities of the agents it holds are `agent:AchillesIDE/<agent>`, for example `agent:AchillesIDE/soul-gateway` and `agent:AchillesIDE/roboTeamAgent`; container names use the `ploinky_AchillesIDE_<agent>_` prefix.
 
 ## Current Skill Catalog
 
@@ -57,7 +61,7 @@ This repository consumes local authoring skills from `.agents/skills/`. They gui
 - Tool and internal logs are not visitor-facing. Final answers are clean conversational text unless an endpoint expects JSON.
 - All agents use the one `achillesAgentLib` source selected and mounted by Ploinky from the active workspace or its managed GitHub fallback. Agents must not declare, install, or clone private copies.
 - Request-time LLM access must go through Achilles runtime helpers, not ad-hoc vendor HTTP, unless a local spec defines an exception.
-- Soul Gateway runs as a sibling Ploinky agent providing LLM routing for Explorer and workspace agents. Gateway consumers receive a generated `PLOINKY_AGENT_API_KEY` signed-subject credential and resolve the gateway URL through the Ploinky router. The local Soul Gateway is the LLM hub; it does not delegate to a remote gateway. See `proxies/soul-gateway/docs/specs/DS012-ploinky-deployment.md` for the unified contract.
+- Soul Gateway runs as a sibling Ploinky agent providing LLM routing for Explorer and workspace agents. Gateway consumers receive a generated `PLOINKY_AGENT_API_KEY` signed-subject credential and resolve the gateway URL through the Ploinky router. The local Soul Gateway is the LLM hub; it does not delegate to a remote gateway. See `soul-gateway/docs/specs/DS012-ploinky-deployment.md` for the unified contract.
 
 ## Skills Contract
 
@@ -75,7 +79,8 @@ This repository consumes local authoring skills from `.agents/skills/`. They gui
 ## Testing
 
 - Run the narrowest meaningful tests first, then broaden.
-- `explorer/`: `npm test` — `dpuAgent/`: `npm test` — `soplangAgent/`: `npm test` — `gitAgent/`: `node --test gitAgent/tests/unit/*.test.mjs`.
+- `explorer/`: `npm test` — `dpuAgent/`: `npm test` — `gitAgent/`: `node --test gitAgent/tests/unit/*.test.mjs` — `soul-gateway/`: `npm ci && npm test` — `roboTeamAgent/`: `node --test 'roboTeamAgent/tests/*.test.mjs'`, `cd roboTeamAgent/copilot && npm test` and `node roboTeamAgent/tests/cli/run-all.mjs`. `soplangAgent` tests now run in the `legacy-agents` repository.
+- Repository-level smoke library tests: `node --test 'tests/smoke/lib/*.test.mjs'` (needs the sibling checkouts described above).
 - For startup, restart, routing, or container lifecycle changes, also run the relevant Ploinky workflow or smoke path.
 - For cross-agent browser regressions, follow `docs/regression/headless-browser-regression.md`. Keep browser traces, OAuth state, generated workspaces, media captures, and regression artifacts out of tracked source — use `.ploinky/test-artifacts/...`.
 

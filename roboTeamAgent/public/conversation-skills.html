@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTeam · Conversation skills</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .conversation-skills-list { display: grid; gap: 12px; margin: 16px 0 0; padding: 0; list-style: none; }
+    .conversation-skill-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+    .conversation-skill-text { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+    .conversation-skill-name { font-weight: 600; }
+    .conversation-skill-identity, .conversation-skill-description, .conversation-skill-state { margin: 0; color: var(--text-soft); font-size: var(--font-sm); }
+    .conversation-skill-diagnostic { margin: 0; font-size: var(--font-sm); }
+    .conversation-skill-toggle[aria-pressed="true"] { color: #fff; background: #2563eb; border-color: #2563eb; }
+    .conversation-skills-summary { display: grid; gap: 2px; color: var(--text-soft); font-size: var(--font-sm); overflow-wrap: anywhere; }
+    .conversation-skills-summary:empty { display: none; }
+  </style>
+  <script>
+    (() => {
+      const keys = ['assistosExplorerTheme', 'webchat_theme'];
+      const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      const syncTheme = () => {
+        let preference;
+        try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
+        catch { /* Browser settings may disable storage. */ }
+        const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+        const root = document.documentElement;
+        root.classList.toggle('theme-dark', dark);
+        root.classList.toggle('theme-light', !dark);
+        root.setAttribute('theme', dark ? 'dark' : 'light');
+      };
+      syncTheme();
+      browserTheme.addEventListener('change', syncTheme);
+      window.addEventListener('storage', event => {
+        if (event.key === null || keys.includes(event.key)) syncTheme();
+      });
+      window.addEventListener('focus', syncTheme);
+      window.addEventListener('pageshow', syncTheme);
+    })();
+  </script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <h1>Conversation skills</h1>
+        <p class="lede">The skills selected for this conversation only. Robot defaults are not changed here.</p>
+      </div>
+      <button id="conversationSkillsRefresh" class="button" type="button">Refresh skills</button>
+    </header>
+    <section class="panel" aria-labelledby="conversationSkillsHeading">
+      <div class="section-heading"><h2 id="conversationSkillsHeading">Selection</h2></div>
+      <p id="conversationSkillsStatus" class="message" role="status" aria-live="polite"></p>
+      <div id="conversationSkillsSummary" class="conversation-skills-summary"></div>
+      <ul id="conversationSkillsList" class="conversation-skills-list" data-loaded="false" aria-label="Skills"></ul>
+    </section>
+  </main>
+  <script src="config.js"></script>
+  <script type="module" src="conversation-skills.js"></script>
+</body>
+</html>

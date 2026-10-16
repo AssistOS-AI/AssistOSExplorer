@@ -21,7 +21,7 @@ test.describe('Marketplace lifecycle controls', () => {
       const payload = await response.json();
       const agents = payload?.marketplace?.agents;
       const searchAgent = Array.isArray(agents)
-        ? agents.find((agent) => agent?.ref === 'proxies/searchAgent')
+        ? agents.find((agent) => agent?.ref === 'legacy-agents/searchAgent')
         : null;
       if (!searchAgent) {
         await route.fulfill({
@@ -43,14 +43,14 @@ test.describe('Marketplace lifecycle controls', () => {
     const marketplace = page.locator('marketplace-modal');
     await expect(marketplace).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
 
-    const proxiesToggle = marketplace.locator('[data-repo-tree-toggle][data-repo-name="proxies"]');
-    await expect(proxiesToggle).toBeVisible();
-    if (await proxiesToggle.getAttribute('aria-expanded') !== 'true') await proxiesToggle.click();
+    const legacyAgentsToggle = marketplace.locator('[data-repo-tree-toggle][data-repo-name="legacy-agents"]');
+    await expect(legacyAgentsToggle).toBeVisible();
+    if (await legacyAgentsToggle.getAttribute('aria-expanded') !== 'true') await legacyAgentsToggle.click();
 
-    const row = marketplace.locator('[data-marketplace-agent-ref="proxies/searchAgent"]');
+    const row = marketplace.locator('[data-marketplace-agent-ref="legacy-agents/searchAgent"]');
     const status = row.locator('.marketplace-agent-status');
     const configure = row.getByRole('button', { name: 'Configure' });
-    const mode = row.locator('[data-enable-mode-for="proxies/searchAgent"]');
+    const mode = row.locator('[data-enable-mode-for="legacy-agents/searchAgent"]');
 
     await expect(status).toHaveText('Starting up');
     await expect(status).toHaveAttribute('title', 'Background startup is in progress.');
@@ -92,7 +92,7 @@ test.describe('Marketplace lifecycle controls', () => {
     await expect.poll(() => marketplaceReads).toBeGreaterThan(disabledReads);
     await expect(mode).toHaveValue('global');
     await expect(mode).toBeFocused();
-    await expect(proxiesToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(legacyAgentsToggle).toHaveAttribute('aria-expanded', 'true');
     expect(privateStatusRequests).toEqual([]);
   });
 });

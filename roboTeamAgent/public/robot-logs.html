@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RoboTeam · Container logs</title>
+    <link rel="stylesheet" href="styles.css">
+    <script>
+        (() => {
+            const keys = ['assistosExplorerTheme', 'webchat_theme'];
+            const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+            const syncTheme = () => {
+                let preference;
+                try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
+                catch { /* Browser settings may disable storage. */ }
+                const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+                const root = document.documentElement;
+                root.classList.toggle('theme-dark', dark);
+                root.classList.toggle('theme-light', !dark);
+                root.setAttribute('theme', dark ? 'dark' : 'light');
+            };
+            syncTheme();
+            browserTheme.addEventListener('change', syncTheme);
+            window.addEventListener('storage', event => { if (event.key === null || keys.includes(event.key)) syncTheme(); });
+            window.addEventListener('focus', syncTheme);
+            window.addEventListener('pageshow', syncTheme);
+        })();
+    </script>
+</head>
+<body>
+    <main class="robot-logs-page">
+        <header class="robot-logs-toolbar">
+            <div>
+                <h1 id="robotLogsTitle">Container logs</h1>
+                <p id="robotLogsId"></p>
+            </div>
+            <nav class="heading-actions" aria-label="Log controls">
+                <a id="robotsLink" class="button secondary" href="./">Robots</a>
+                <button id="refreshLogsButton" class="button secondary" type="button">Refresh</button>
+                <button id="closeLogsButton" class="button secondary" type="button">Close</button>
+            </nav>
+        </header>
+        <p id="robotLogsStatus" class="robot-logs-status" role="status">Loading container logs…</p>
+        <pre id="robotLogsOutput" class="robot-log-output" tabindex="0" aria-label="Container log output">Loading container logs…</pre>
+    </main>
+    <script src="config.js"></script>
+    <script type="module" src="robot-logs.js"></script>
+</body>
+</html>

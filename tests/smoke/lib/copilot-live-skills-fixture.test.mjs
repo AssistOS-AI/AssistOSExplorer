@@ -15,7 +15,7 @@ async function harness(t) {
     assert.ok(process.env.SET2_ACHILLES_SOURCE && process.env.SET2_PLOINKY_SOURCE && process.env.SET2_ALA_COMMAND);
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'set2 owned ü ')));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const repository = `${root}/AchillesCLI`, codeRoot = `${repository}/roboTeamAgent`, dataRoot = `${root}/_data`;
+    const repository = `${root}/AchillesIDE`, codeRoot = `${repository}/roboTeamAgent`, dataRoot = `${root}/_data`;
     fs.mkdirSync(repository);
     fs.cpSync(`${process.env.SET2_ACHILLES_SOURCE}/roboTeamAgent`, codeRoot, { recursive: true,
         filter: from => !from.split(path.sep).some(part => ['node_modules', '.git'].includes(part)) });

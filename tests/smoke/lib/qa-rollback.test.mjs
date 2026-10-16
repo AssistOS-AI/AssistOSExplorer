@@ -524,8 +524,8 @@ test('aliases use the supported CLI grammar and keep the prior auth policy', () 
         ['enable', 'agent', 'OnlyOfficeAgent/onlyOffice', 'isolated', '--auth', 'pwd', 'as', 'documents']);
     assert.deepEqual(enableArguments({ repo: 'OnlyOfficeAgent', agent: 'onlyOffice', alias: '', auth: 'none' }),
         ['enable', 'agent', 'OnlyOfficeAgent/onlyOffice', 'isolated', '--auth', 'none']);
-    assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'webmeetAgent', alias: '', auth: 'guest', runMode: 'global' }),
-        ['enable', 'agent', 'AchillesIDE/webmeetAgent', 'global', '--auth', 'guest']);
+    assert.deepEqual(enableArguments({ repo: 'webmeet', agent: 'webmeetAgent', alias: '', auth: 'guest', runMode: 'global' }),
+        ['enable', 'agent', 'webmeet/webmeetAgent', 'global', '--auth', 'guest']);
     assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'gitAgent', alias: '', auth: 'none', runMode: 'devel', develRepo: 'work' }),
         ['enable', 'agent', 'AchillesIDE/gitAgent', 'devel', 'work', '--auth', 'none']);
 });
@@ -533,7 +533,7 @@ test('aliases use the supported CLI grammar and keep the prior auth policy', () 
 test('capture retains actual global, guest, embedded-profile and devel selection shapes', t => {
     const f = fixture(t);
     const records = {
-        webmeet: { type: 'agent', runtime: 'podman', containerId: OLD, repoName: 'AchillesIDE', agentName: 'webmeetAgent',
+        webmeet: { type: 'agent', runtime: 'podman', containerId: OLD, repoName: 'webmeet', agentName: 'webmeetAgent',
             auth: { mode: 'guest' }, profile: 'default', runMode: 'global' },
         git: { type: 'agent', runtime: 'podman', containerId: FAILED, repoName: 'AchillesIDE', agentName: 'gitAgent',
             auth: { mode: 'none' }, profile: 'embedded', runMode: 'global' },

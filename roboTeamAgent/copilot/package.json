@@ -1,0 +1,6 @@
+{
+  "name": "roboteam-copilot-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test tests/*.test.mjs" }
+}

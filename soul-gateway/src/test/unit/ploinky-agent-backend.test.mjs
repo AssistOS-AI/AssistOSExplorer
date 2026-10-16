@@ -1,0 +1,890 @@
+/**
+ * Ploinky agent OpenAI backend tests.
+ *
+ * Cover the signed surface of the router-mediated agent-to-agent OpenAI call:
+ *   - the backend signs an HTTP Agent Assertion bound to the EXACT outbound bytes
+ *   - the assertion payload matches the surface the Ploinky router recomputes
+ *     (`ploinky/cli/server/agentOpenAiDelegation.js#verifyAndMintAgentOpenAiCall`)
+ *   - the request targets `<router>/<routeKey>/v1/chat/completions` with
+ *     `Authorization: Bearer <assertion>`
+ *   - NO legacy identity headers are sent
+ *   - `rch` is bound to the bytes actually sent (mutating the body changes `rch`)
+ *   - the copied `canonicalJson`/`computeRchHttp` match hardcoded golden vectors
+ *     derived from ploinky's `Agent/lib/requestHash.mjs`, so drift is caught
+ *     locally without importing across the container boundary.
+ */
+
+import { describe, it, before } from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+
+import { backendModule, buildModelsUrl, buildRouterUrl } from '../../runtime/backends/builtin/ploinky-agent-openai.backend.mjs';
+import {
+    canonicalJson,
+    computeRchHttp,
+    sha256RawBodyHash,
+} from '../../runtime/backends/ploinky/request-hash.mjs';
+import {
+    signOpenAiAgentAssertion,
+    signOpenAiModelsAssertion,
+    readAgentSecretBuffer,
+} from '../../runtime/backends/ploinky/agent-assertion.mjs';
+import { fakeRouterDescriptorOptions } from '../helpers/fake-router-descriptor.mjs';
+
+// A deterministic 32-byte hex secret (matches the golden-vector computation).
+const SECRET_HEX =
+    '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+const AGENT_ID = 'agent:test/soulgateway';
+const ROUTE_KEY = 'routekey1';
+const SUBJECT_ID = 'agent:somerepo/someagent';
+
+// ── A capturing OpenAI-compatible upstream ──────────────────────────
+
+/**
+ * Start a one-shot HTTP server that records the inbound request (method, url,
+ * headers, raw body bytes) and replies with a minimal OpenAI JSON completion so
+ * the backend's stream consumer terminates cleanly.
+ */
+async function startCaptureServer(options = {}) {
+    const captured = {};
+    const server = createServer((req, res) => {
+        if (req.method === 'GET' && req.url === `/${ROUTE_KEY}/v1/models`) {
+            captured.method = req.method;
+            captured.url = req.url;
+            captured.headers = req.headers;
+            const body = Buffer.from(JSON.stringify(options.modelsResponse || {
+                object: 'list',
+                data: [],
+            }));
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Content-Length': body.length,
+            });
+            res.end(body);
+            return;
+        }
+        const chunks = [];
+        req.on('data', (c) => chunks.push(c));
+        req.on('end', () => {
+            captured.method = req.method;
+            captured.url = req.url;
+            captured.headers = req.headers;
+            captured.bodyBytes = Buffer.concat(chunks);
+            if (typeof options.reply === 'function') {
+                options.reply(res);
+                return;
+            }
+            const body = Buffer.from(JSON.stringify({
+                id: 'x',
+                object: 'chat.completion',
+                model: 'm',
+                choices: [
+                    {
+                        index: 0,
+                        message: { role: 'assistant', content: 'hi' },
+                        finish_reason: 'stop',
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    total_tokens: 2,
+                },
+            }));
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Content-Length': body.length,
+            });
+            res.end(body);
+        });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const { port } = server.address();
+    return { server, captured, baseUrl: `http://127.0.0.1:${port}` };
+}
+
+function makeCtx({ baseUrl, messages, env, supportsStreaming = false }) {
+    const descriptor = fakeRouterDescriptorOptions({
+        physicalOrigin: baseUrl,
+        requestAuthority: `router.test:${new URL(baseUrl).port}`,
+        agentPrincipal: AGENT_ID,
+    });
+    return {
+        requestId: 'req-1',
+        request: { messages },
+        resolvedModel: {
+            providerModelId: 'agent-model',
+            modelKey: 'agent-model',
+            capabilities: { supportsStreaming },
+        },
+        providerRecord: {
+            baseUrl,
+            authStrategy: 'none',
+            settings: {},
+            metadata: {
+                routeKey: ROUTE_KEY,
+                subjectId: SUBJECT_ID,
+                discoverySource: 'ploinky-agent-discovery',
+            },
+        },
+        env,
+        routerDescriptorEnv: descriptor.descriptorEnv,
+        loadDescriptorVerifier: descriptor.loadDescriptorVerifier,
+        signal: undefined,
+    };
+}
+
+async function drain(stream) {
+    const events = [];
+    for await (const ev of stream) {
+        events.push(ev);
+    }
+    return events;
+}
+
+function decodeJwtPayload(jwt) {
+    const part = String(jwt).split('.')[1];
+    return JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+}
+
+// ── Golden vectors (computed from ploinky/Agent/lib/requestHash.mjs) ─
+
+describe('ploinky request-hash copy — golden vectors', () => {
+    it('canonicalJson sorts keys and is strict (matches ploinky)', () => {
+        assert.equal(
+            canonicalJson({ b: 1, a: 'x', c: [3, 2, 1] }),
+            '{"a":"x","b":1,"c":[3,2,1]}'
+        );
+    });
+
+    it('canonicalJson rejects undefined/function/symbol/bigint/non-finite', () => {
+        assert.throws(() => canonicalJson(undefined), /not allowed/);
+        assert.throws(() => canonicalJson(() => {}), /not allowed/);
+        assert.throws(() => canonicalJson(Symbol('s')), /not allowed/);
+        assert.throws(() => canonicalJson(10n), /not allowed/);
+        assert.throws(() => canonicalJson(Number.POSITIVE_INFINITY), /not allowed/);
+    });
+
+    it('computeRchHttp matches a hardcoded golden value for a fixed bodyHash', () => {
+        // Golden: computeRchHttp({POST,/v1/chat/completions,"",bodyHash:"AAAA"})
+        assert.equal(
+            computeRchHttp({
+                method: 'POST',
+                path: '/v1/chat/completions',
+                query: '',
+                bodyHash: 'AAAA',
+            }),
+            'imJw5TXWB7_btcZNWussLfS7eret4hGxojUkB6BuWkk'
+        );
+    });
+
+    it('sha256RawBodyHash + computeRchHttp match golden for a fixed body', () => {
+        const body = Buffer.from(
+            JSON.stringify({
+                model: 'm',
+                messages: [{ role: 'user', content: 'hi' }],
+                stream: true,
+            })
+        );
+        const bodyHash = sha256RawBodyHash(body);
+        assert.equal(bodyHash, 'r5gY-zjL6Ki7xnB85nInlEPB0hYRKdfWeJ0jgI-Eah4');
+        const rch = computeRchHttp({
+            method: 'POST',
+            path: '/v1/chat/completions',
+            query: '',
+            bodyHash,
+        });
+        assert.equal(rch, '3Ah5OLAXhAZnrTO6pDFtKlmVptjv_g6F6s5JmAxIYOI');
+    });
+});
+
+// ── Signer surface ──────────────────────────────────────────────────
+
+describe('ploinky agent-assertion signer', () => {
+    it('produces a golden HS256 JWT for a fixed payload (secret hex→Buffer)', () => {
+        // The Ploinky router verifies with Buffer.from(hex,"hex"); this golden
+        // JWT was produced by ploinky's own signHmacJwt with the same secret,
+        // so equality proves the secret-byte encoding and HMAC match.
+        const body = Buffer.from(
+            JSON.stringify({
+                model: 'm',
+                messages: [{ role: 'user', content: 'hi' }],
+                stream: true,
+            })
+        );
+        // jti is random; assert the deterministic header + payload-minus-jti and
+        // recompute rch over the exact body.
+        const { assertion, bodyHash, rch } = signOpenAiAgentAssertion({
+            body,
+            targetAgent: ROUTE_KEY,
+            secret: readAgentSecretBuffer(SECRET_HEX),
+            self: AGENT_ID,
+            nowSeconds: 1700000000,
+        });
+        const header = JSON.parse(
+            Buffer.from(assertion.split('.')[0], 'base64url').toString('utf8')
+        );
+        assert.deepEqual(header, { alg: 'HS256', typ: 'JWT' });
+
+        const payload = decodeJwtPayload(assertion);
+        assert.equal(payload.typ, 'agent-assertion');
+        assert.equal(payload.iss, AGENT_ID);
+        assert.equal(payload.sub, AGENT_ID);
+        assert.equal(payload.aud, 'ploinky-router');
+        assert.equal(payload.targetAgent, ROUTE_KEY);
+        assert.equal(payload.method, 'POST');
+        assert.equal(payload.path, '/v1/chat/completions');
+        assert.equal(payload.tool, '__openai_chat_completions__');
+        assert.equal(payload.iat, 1700000000);
+        assert.equal(payload.exp, 1700000060);
+        assert.equal(payload.rch, rch);
+        assert.equal(rch, computeRchHttp({
+            method: 'POST',
+            path: '/v1/chat/completions',
+            query: '',
+            bodyHash,
+        }));
+    });
+
+    it('readAgentSecretBuffer rejects non-hex / odd-length / empty', () => {
+        assert.equal(readAgentSecretBuffer(''), null);
+        assert.equal(readAgentSecretBuffer('not-hex!!'), null);
+        assert.equal(readAgentSecretBuffer('abc'), null); // odd length
+        assert.ok(Buffer.isBuffer(readAgentSecretBuffer('00ff')));
+    });
+
+    it('signs the GET /v1/models surface with an empty body hash', () => {
+        const { assertion, bodyHash, rch } = signOpenAiModelsAssertion({
+            targetAgent: ROUTE_KEY,
+            secret: readAgentSecretBuffer(SECRET_HEX),
+            self: AGENT_ID,
+            nowSeconds: 1700000000,
+        });
+        const payload = decodeJwtPayload(assertion);
+        assert.equal(payload.typ, 'agent-assertion');
+        assert.equal(payload.iss, AGENT_ID);
+        assert.equal(payload.sub, AGENT_ID);
+        assert.equal(payload.aud, 'ploinky-router');
+        assert.equal(payload.targetAgent, ROUTE_KEY);
+        assert.equal(payload.method, 'GET');
+        assert.equal(payload.path, '/v1/models');
+        assert.equal(payload.tool, '__openai_models__');
+        assert.equal(payload.rch, rch);
+        assert.equal(rch, computeRchHttp({
+            method: 'GET',
+            path: '/v1/models',
+            query: '',
+            bodyHash,
+        }));
+    });
+});
+
+// ── buildRouterUrl ──────────────────────────────────────────────────
+
+describe('buildRouterUrl', () => {
+    it('joins origin + routeKey + /v1/chat/completions', () => {
+        assert.equal(
+            buildRouterUrl('https://router.example', 'foo').href,
+            'https://router.example/foo/v1/chat/completions'
+        );
+    });
+    it('tolerates trailing slash on origin and slashes on routeKey', () => {
+        assert.equal(
+            buildRouterUrl('https://router.example/', '/foo/').href,
+            'https://router.example/foo/v1/chat/completions'
+        );
+    });
+});
+
+describe('buildModelsUrl', () => {
+    it('joins origin + routeKey + /v1/models', () => {
+        assert.equal(
+            buildModelsUrl('https://router.example', 'foo').href,
+            'https://router.example/foo/v1/models'
+        );
+    });
+});
+
+// ── execute(): end-to-end signed transport (capturing server) ───────
+
+describe('ploinky-agent-openai backend execute()', () => {
+    let ctxEnv;
+
+    before(() => {
+        ctxEnv = {
+            PLOINKY_AGENT_ID: AGENT_ID,
+            PLOINKY_AGENT_SECRET: SECRET_HEX,
+            // PLOINKY_ROUTER_URL omitted on purpose — provider.baseUrl carries the
+            // capture server origin; the backend prefers it.
+        };
+    });
+
+    it('rejects an unverified descriptor before reading the agent secret', async () => {
+        let secretReads = 0;
+        const ctx = makeCtx({
+            baseUrl: 'http://127.0.0.1:1',
+            messages: [{ role: 'user', content: 'x' }],
+            env: {
+                PLOINKY_AGENT_ID: AGENT_ID,
+                get PLOINKY_AGENT_SECRET() {
+                    secretReads += 1;
+                    return SECRET_HEX;
+                },
+            },
+        });
+        ctx.loadDescriptorVerifier = async () => ({
+            loadVerifiedGeneratedRouterDescriptor() {
+                throw new Error('descriptor signature invalid');
+            },
+            resolveGeneratedRouterOperation() {
+                throw new Error('must not resolve');
+            },
+        });
+        await assert.rejects(() => backendModule.execute(ctx), /descriptor signature invalid/);
+        assert.equal(secretReads, 0);
+    });
+
+    it('rejects a principal mismatch before reading the agent secret', async () => {
+        let secretReads = 0;
+        const ctx = makeCtx({
+            baseUrl: 'http://127.0.0.1:1',
+            messages: [{ role: 'user', content: 'x' }],
+            env: {
+                PLOINKY_AGENT_ID: 'agent:wrong/principal',
+                get PLOINKY_AGENT_SECRET() {
+                    secretReads += 1;
+                    return SECRET_HEX;
+                },
+            },
+        });
+        await assert.rejects(() => backendModule.execute(ctx), /PLOINKY_AGENT_ID disagrees/);
+        assert.equal(secretReads, 0);
+    });
+
+    it('targets <base>/<routeKey>/v1/chat/completions and sends Bearer assertion', async () => {
+        const { server, captured, baseUrl } = await startCaptureServer();
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [{ role: 'user', content: 'hello' }],
+                env: ctxEnv,
+            });
+            const handle = await backendModule.execute(ctx);
+            await drain(handle.stream);
+
+            assert.equal(captured.method, 'POST');
+            assert.equal(captured.url, `/${ROUTE_KEY}/v1/chat/completions`);
+            assert.equal(captured.headers.host, `router.test:${new URL(baseUrl).port}`);
+            assert.ok(
+                /^Bearer\s+\S+\.\S+\.\S+$/.test(captured.headers.authorization),
+                `authorization header should be a Bearer JWT, got: ${captured.headers.authorization}`
+            );
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+    });
+
+    it('signs rch over the EXACT bytes it sends, with the verifier surface', async () => {
+        const { server, captured, baseUrl } = await startCaptureServer();
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [{ role: 'user', content: 'bind these bytes' }],
+                env: ctxEnv,
+            });
+            const handle = await backendModule.execute(ctx);
+            await drain(handle.stream);
+
+            const jwt = captured.headers.authorization.replace(/^Bearer\s+/, '');
+            const payload = decodeJwtPayload(jwt);
+
+            // Surface the router recomputes (agentOpenAiDelegation.js).
+            assert.equal(payload.typ, 'agent-assertion');
+            assert.equal(payload.aud, 'ploinky-router');
+            assert.equal(payload.targetAgent, ROUTE_KEY);
+            assert.equal(payload.tool, '__openai_chat_completions__');
+            assert.equal(payload.method, 'POST');
+            assert.equal(payload.path, '/v1/chat/completions');
+            assert.equal(payload.iss, AGENT_ID);
+            assert.equal(payload.sub, AGENT_ID);
+
+            // rch MUST equal computeRchHttp over the bytes actually received.
+            const expectedBodyHash = sha256RawBodyHash(captured.bodyBytes);
+            const expectedRch = computeRchHttp({
+                method: 'POST',
+                path: '/v1/chat/completions',
+                query: '',
+                bodyHash: expectedBodyHash,
+            });
+            assert.equal(payload.rch, expectedRch);
+
+            // And the body really is the OpenAI payload we expect (non-stream + model).
+            const sent = JSON.parse(captured.bodyBytes.toString('utf8'));
+            assert.equal(sent.model, 'agent-model');
+            assert.equal(sent.stream, false);
+            assert.deepEqual(sent.messages, [
+                { role: 'user', content: 'bind these bytes' },
+            ]);
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+    });
+
+    it('sends stream=true when the discovered agent model supports streaming', async () => {
+        const { server, captured, baseUrl } = await startCaptureServer();
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [{ role: 'user', content: 'stream upstream' }],
+                env: ctxEnv,
+                supportsStreaming: true,
+            });
+            const handle = await backendModule.execute(ctx);
+            await drain(handle.stream);
+
+            const sent = JSON.parse(captured.bodyBytes.toString('utf8'));
+            assert.equal(sent.stream, true);
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+    });
+
+    it('different request body → different rch (binding is content-sensitive)', async () => {
+        const rchFor = async (content) => {
+            const { server, captured, baseUrl } = await startCaptureServer();
+            try {
+                const ctx = makeCtx({
+                    baseUrl,
+                    messages: [{ role: 'user', content }],
+                    env: ctxEnv,
+                });
+                const handle = await backendModule.execute(ctx);
+                await drain(handle.stream);
+                const jwt = captured.headers.authorization.replace(
+                    /^Bearer\s+/,
+                    ''
+                );
+                return decodeJwtPayload(jwt).rch;
+            } finally {
+                server.close();
+                await once(server, 'close');
+            }
+        };
+        const rchA = await rchFor('message A');
+        const rchB = await rchFor('message B totally different');
+        assert.notEqual(rchA, rchB);
+    });
+
+    it('does NOT send x-soul-id / x-agent-name / x-soul-agent', async () => {
+        const { server, captured, baseUrl } = await startCaptureServer();
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [{ role: 'user', content: 'no legacy headers' }],
+                env: ctxEnv,
+            });
+            const handle = await backendModule.execute(ctx);
+            await drain(handle.stream);
+
+            assert.equal(captured.headers['x-soul-id'], undefined);
+            assert.equal(captured.headers['x-agent-name'], undefined);
+            assert.equal(captured.headers['x-soul-agent'], undefined);
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+    });
+
+    it('emits a normalized stream from a non-streaming JSON completion', async () => {
+        const { server, baseUrl } = await startCaptureServer();
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [{ role: 'user', content: 'hi' }],
+                env: ctxEnv,
+            });
+            const handle = await backendModule.execute(ctx);
+            const events = await drain(handle.stream);
+            const types = events.map((e) => e.type);
+            assert.ok(types.includes('message_start'));
+            assert.ok(types.includes('text_delta'));
+            assert.ok(types.includes('usage'));
+            assert.equal(types[types.length - 1], 'done');
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+    });
+
+    // ── Failures an agent can only report after HTTP 200 ─────────────
+    //
+    // AgentServer flushes the SSE headers before a command handler starts and
+    // reports a handler failure as `data: {"error":…}` followed by `[DONE]`.
+
+    const sseReply = (frames) => (res) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+        for (const frame of frames) res.write(`data: ${frame}\n\n`);
+        res.end();
+    };
+    const jsonReply = (payload) => (res) => {
+        const body = Buffer.from(JSON.stringify(payload));
+        res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Content-Length': body.length,
+        });
+        res.end(body);
+    };
+    const textChunk = (text, finishReason = null) => JSON.stringify({
+        id: 'c1',
+        object: 'chat.completion.chunk',
+        model: 'm',
+        choices: [{
+            index: 0,
+            delta: text === null ? {} : { content: text },
+            finish_reason: finishReason,
+        }],
+    });
+
+    async function runAgainst(reply, { supportsStreaming = true } = {}) {
+        const { server, baseUrl } = await startCaptureServer({ reply });
+        const events = [];
+        let error = null;
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [{ role: 'user', content: 'hi' }],
+                env: ctxEnv,
+                supportsStreaming,
+            });
+            const handle = await backendModule.execute(ctx);
+            try {
+                for await (const event of handle.stream) events.push(event);
+            } catch (err) {
+                error = err;
+            }
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+        return { events, error, types: events.map((e) => e.type) };
+    }
+
+    it('throws on an in-band SSE error frame instead of completing without content', async () => {
+        const { error, types } = await runAgainst(sseReply([
+            JSON.stringify({ error: { message: 'handler failed: upstream refused', type: 'server_error' } }),
+            '[DONE]',
+        ]));
+        assert.ok(error, 'the stream must reject');
+        assert.match(error.message, /in-band error: handler failed: upstream refused/);
+        assert.equal(error.status, 502);
+        assert.equal(error.body.error.type, 'server_error');
+        assert.deepEqual(types, [], 'no message_start and no done for an error frame');
+        const classified = backendModule.classifyError(error, {});
+        assert.equal(classified.constructor.name, 'ProviderServerError');
+    });
+
+    it('honours a numeric status carried by an in-band error', async () => {
+        const { error } = await runAgainst(sseReply([
+            JSON.stringify({ error: { message: 'busy', type: 'rate_limit_error', status: 429 } }),
+            '[DONE]',
+        ]));
+        assert.equal(error.status, 429);
+        assert.equal(backendModule.classifyError(error, {}).constructor.name, 'ProviderRateLimitError');
+    });
+
+    it('ignores a non-numeric or out-of-range in-band status', async () => {
+        for (const status of ['429', 200, 700, null]) {
+            const { error } = await runAgainst(sseReply([
+                JSON.stringify({ error: { message: 'odd', status } }),
+                '[DONE]',
+            ]));
+            assert.equal(error.status, 502, `status ${JSON.stringify(status)} must fall back to 502`);
+        }
+    });
+
+    it('throws on an HTTP 200 JSON body that carries only an error', async () => {
+        const { error, types } = await runAgainst(
+            jsonReply({ error: { message: 'no model loaded', type: 'server_error' } }),
+            { supportsStreaming: false }
+        );
+        assert.ok(error, 'the stream must reject');
+        assert.match(error.message, /in-band error: no model loaded/);
+        assert.equal(error.status, 502);
+        assert.deepEqual(types, []);
+    });
+
+    it('accepts a string-valued in-band error', async () => {
+        const { error } = await runAgainst(jsonReply({ error: 'plain failure' }), { supportsStreaming: false });
+        assert.match(error.message, /in-band error: plain failure/);
+        assert.equal(error.body.error.message, 'plain failure');
+    });
+
+    it('throws after partial text when the stream ends without [DONE] or a finish_reason', async () => {
+        const { error, events, types } = await runAgainst(sseReply([textChunk('partial ans')]));
+        assert.deepEqual(types, ['message_start', 'text_delta']);
+        assert.equal(events[1].data.text, 'partial ans');
+        assert.ok(error, 'a truncated stream must reject');
+        assert.equal(error.status, 502);
+        assert.equal(error.body.error.type, 'stream_truncated');
+    });
+
+    it('throws on an SSE response with no events at all', async () => {
+        const { error, types } = await runAgainst(sseReply([]));
+        assert.deepEqual(types, []);
+        assert.equal(error?.body?.error?.type, 'stream_truncated');
+    });
+
+    it('completes when [DONE] is missing but a finish_reason was received', async () => {
+        const { error, events, types } = await runAgainst(sseReply([
+            textChunk('whole answer'),
+            textChunk(null, 'length'),
+        ]));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[2].data.finish_reason, 'length');
+    });
+
+    // SSE lines may end with CRLF, and the space after `data:` is optional,
+    // so a stream that does end with [DONE] in either form is complete.
+    const rawSseReply = (body) => (res) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+        res.end(body);
+    };
+
+    it('completes a CRLF stream that ends with [DONE] and no finish_reason', async () => {
+        const { error, events, types } = await runAgainst(rawSseReply(
+            `data: ${textChunk('crlf answer')}\r\n\r\ndata: [DONE]\r\n\r\n`
+        ));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[1].data.text, 'crlf answer');
+    });
+
+    it('completes a stream whose data fields omit the optional space', async () => {
+        const { error, events, types } = await runAgainst(rawSseReply(
+            `data:${textChunk('no space')}\n\ndata:[DONE]\n\n`
+        ));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[1].data.text, 'no space');
+    });
+
+    it('keeps a multi-byte character that arrives split across two network chunks', async () => {
+        const text = 'ăîșț ok';
+        const body = Buffer.from(`data: ${textChunk(text)}\n\ndata: [DONE]\n\n`, 'utf8');
+        // Split inside the two bytes of the first character.
+        const splitAt = body.indexOf(Buffer.from('ă', 'utf8')) + 1;
+        const { error, events } = await runAgainst(async (res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+            res.write(body.subarray(0, splitAt));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            res.end(body.subarray(splitAt));
+        });
+        assert.equal(error, null);
+        assert.equal(events[1].data.text, text);
+    });
+
+    it('completes when the final [DONE] line ends with CR and no newline', async () => {
+        // Without a closing LF, only the end-of-response path reads this line.
+        const { error, types } = await runAgainst(rawSseReply(
+            `data: ${textChunk('last line')}\r\n\r\ndata: [DONE]\r`
+        ));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+    });
+
+    it('completes a CRLF stream whose CR and LF arrive in different chunks', async () => {
+        const body = `data: ${textChunk('split crlf')}\r\n\r\ndata: [DONE]\r\n\r\n`;
+        const splitAt = body.indexOf('[DONE]\r') + '[DONE]\r'.length;
+        const { error, events, types } = await runAgainst(async (res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+            res.write(body.slice(0, splitAt));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            res.end(body.slice(splitAt));
+        });
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[1].data.text, 'split crlf');
+    });
+
+    it('keeps a four-byte character whose bytes arrive in separate chunks', async () => {
+        const text = 'smile 😀 done';
+        const body = Buffer.from(`data: ${textChunk(text)}\n\ndata: [DONE]\n\n`, 'utf8');
+        const start = body.indexOf(Buffer.from('😀', 'utf8'));
+        const { error, events } = await runAgainst(async (res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+            // A chunk ends after each of the character's first three bytes.
+            let from = 0;
+            for (const cut of [start + 1, start + 2, start + 3]) {
+                res.write(body.subarray(from, cut));
+                from = cut;
+                await new Promise((resolve) => setTimeout(resolve, 30));
+            }
+            res.end(body.subarray(from));
+        });
+        assert.equal(error, null);
+        assert.equal(events[1].data.text, text);
+    });
+
+    it('does not treat a completion that also carries choices as an in-band error', async () => {
+        const { error, types } = await runAgainst(jsonReply({
+            id: 'x',
+            model: 'm',
+            error: null,
+            choices: [{ index: 0, message: { role: 'assistant', content: 'fine' }, finish_reason: 'stop' }],
+        }), { supportsStreaming: false });
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+    });
+
+    it('throws a clear error when PLOINKY_AGENT_SECRET is missing/non-hex', async () => {
+        const ctx = makeCtx({
+            baseUrl: 'http://127.0.0.1:1',
+            messages: [{ role: 'user', content: 'x' }],
+            env: { PLOINKY_AGENT_ID: AGENT_ID, PLOINKY_AGENT_SECRET: '' },
+        });
+        await assert.rejects(
+            () => backendModule.execute(ctx),
+            /hex PLOINKY_AGENT_SECRET/
+        );
+    });
+});
+
+describe('ploinky-agent-openai backend discoverModels()', () => {
+    it('rejects a principal mismatch before reading the agent secret', async () => {
+        let secretReads = 0;
+        const ctx = makeCtx({
+            baseUrl: 'http://127.0.0.1:1',
+            messages: [],
+            env: {
+                PLOINKY_AGENT_ID: 'agent:wrong/principal',
+                get PLOINKY_AGENT_SECRET() {
+                    secretReads += 1;
+                    return SECRET_HEX;
+                },
+            },
+        });
+        await assert.rejects(() => backendModule.discoverModels(ctx), /PLOINKY_AGENT_ID disagrees/);
+        assert.equal(secretReads, 0);
+    });
+
+    it('targets <base>/<routeKey>/v1/models and normalizes Soul model descriptors', async () => {
+        const { server, captured, baseUrl } = await startCaptureServer({
+            modelsResponse: {
+                object: 'list',
+                data: [
+                    {
+                        modelId: 'fast',
+                        displayName: 'Fast Agent',
+                        contextWindow: 128000,
+                        maxOutputTokens: 8192,
+                        supportsTools: true,
+                        supportsStreaming: true,
+                        supportsVision: false,
+                        pricing: {
+                            mode: 'token',
+                            inputPricePerMillion: 0.15,
+                            outputPricePerMillion: 0.60,
+                        },
+                        tags: ['fast', 'chat'],
+                    },
+                ],
+            },
+        });
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [],
+                env: {
+                    PLOINKY_AGENT_ID: AGENT_ID,
+                    PLOINKY_AGENT_SECRET: SECRET_HEX,
+                },
+            });
+            const models = await backendModule.discoverModels(ctx);
+            assert.equal(captured.method, 'GET');
+            assert.equal(captured.url, `/${ROUTE_KEY}/v1/models`);
+            assert.equal(captured.headers.host, `router.test:${new URL(baseUrl).port}`);
+            assert.ok(/^Bearer\s+\S+\.\S+\.\S+$/.test(captured.headers.authorization));
+            const payload = decodeJwtPayload(captured.headers.authorization.replace(/^Bearer\s+/, ''));
+            assert.equal(payload.method, 'GET');
+            assert.equal(payload.path, '/v1/models');
+            assert.equal(payload.tool, '__openai_models__');
+
+            assert.deepEqual(models, [
+                {
+                    modelId: 'fast',
+                    providerModelId: 'fast',
+                    modelKey: 'somerepo/someagent/fast',
+                    displayName: 'Fast Agent',
+                    contextWindow: 128000,
+                    maxOutputTokens: 8192,
+                    supportsTools: true,
+                    supportsStreaming: true,
+                    supportsVision: false,
+                    pricing: {
+                        mode: 'token',
+                        inputPricePerMillion: 0.15,
+                        outputPricePerMillion: 0.60,
+                    },
+                    pricingMode: undefined,
+                    inputPricePerMillion: undefined,
+                    outputPricePerMillion: undefined,
+                    requestPriceUsd: undefined,
+                    isFree: undefined,
+                    capabilities: {},
+                    tags: ['fast', 'chat'],
+                    metadata: {
+                        discoverySource: 'ploinky-agent-discovery',
+                        subjectId: SUBJECT_ID,
+                        routeKey: ROUTE_KEY,
+                        repo: null,
+                        agent: null,
+                    },
+                },
+            ]);
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+    });
+});
+
+// ── validateProviderRecord ──────────────────────────────────────────
+
+describe('ploinky-agent-openai validateProviderRecord', () => {
+    it('accepts the reconciled provider shape (auth_strategy none + routeKey)', () => {
+        assert.doesNotThrow(() =>
+            backendModule.validateProviderRecord({
+                provider_key: `ploinky:${SUBJECT_ID}`,
+                display_name: `Ploinky agent ${SUBJECT_ID}`,
+                kind: 'external_api',
+                provider_mode: 'external_api',
+                adapter_key: 'ploinky-agent-openai',
+                auth_strategy: 'none',
+                base_url: 'https://router.example',
+                metadata: {
+                    routeKey: ROUTE_KEY,
+                    subjectId: SUBJECT_ID,
+                    discoverySource: 'ploinky-agent-discovery',
+                },
+            })
+        );
+    });
+
+    it('rejects a provider missing metadata.routeKey', () => {
+        assert.throws(
+            () =>
+                backendModule.validateProviderRecord({
+                    adapter_key: 'ploinky-agent-openai',
+                    auth_strategy: 'none',
+                    metadata: { subjectId: SUBJECT_ID },
+                }),
+            /routeKey/
+        );
+    });
+});

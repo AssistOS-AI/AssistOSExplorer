@@ -1,0 +1,818 @@
+/**
+ * OpenAI Chat Completions API backend module.
+ *
+ * Communicates with any OpenAI-compatible API (OpenAI, OpenRouter,
+ * Together, Groq, etc.) via POST /chat/completions with bearer token.
+ */
+
+import { request as httpsRequest } from 'node:https';
+import { request as httpRequest } from 'node:http';
+import {
+    ProviderAuthError,
+    ProviderBadRequestError,
+} from '../../../core/errors.mjs';
+import { classifyOpenAiCompatibleError } from '../openai-compatible-errors.mjs';
+import { applyModelRequestParams } from '../model-request-params.mjs';
+import * as achillesOpenAI from 'achillesAgentLib/utils/LLMProviders/providers/openai.mjs';
+import * as achillesResponses from 'achillesAgentLib/utils/LLMProviders/providers/openaiResponses.mjs';
+import {
+    createAchillesExecutionHandle,
+    getCredentialToken,
+} from '../achilles/bridge.mjs';
+import {
+    assertFreeOnlyExecution,
+    hardenFreeOnlyParams,
+    isFreeOnlyProvider,
+    isStrictlyFreeCatalogEntry,
+} from '../../providers/free-model-policy.mjs';
+
+// ── Manifest ────────────────────────────────────────────────────────
+
+const manifest = {
+    key: 'openai-api',
+    kind: 'external_api',
+    authStrategy: 'api_key',
+    supportsStreaming: true,
+    supportsTools: true,
+    supportedFormats: ['openai_chat', 'openai_embeddings'],
+    displayName: 'OpenAI-Compatible API',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    // Dispatcher backend: every OpenAI-compatible vendor (NVIDIA, Groq,
+    // OpenRouter, Fireworks, …) is configured through its own preset in
+    // provider-presets.mjs. Hide the raw `openai-api` key from the
+    // dropdown so users always pick a vendor preset that fills in the
+    // base_url and display name.
+    hidden: true,
+};
+
+const STREAM_OPTIONS_DISABLED_PROVIDER_KEYS = new Set(['nvidia']);
+const STREAM_OPTIONS_DISABLED_BASE_URL_PREFIXES = [
+    'https://integrate.api.nvidia.com/',
+];
+
+function parseOptionalNumber(value) {
+    if (value === undefined || value === null || value === '') {
+        return null;
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+}
+
+function parsePerMillionPrice(value) {
+    const numeric = parseOptionalNumber(value);
+    return numeric === null ? null : Number((numeric * 1_000_000).toFixed(12));
+}
+
+function buildDiscoveredPricing(pricing = {}) {
+    const inputPricePerMillion = parsePerMillionPrice(pricing.prompt);
+    const outputPricePerMillion = parsePerMillionPrice(pricing.completion);
+    const requestPriceUsd = parseOptionalNumber(pricing.request);
+
+    const hasTokenPricing =
+        inputPricePerMillion !== null || outputPricePerMillion !== null;
+    const hasRequestPricing = requestPriceUsd !== null;
+    const tokenPricesZero =
+        (inputPricePerMillion === null || inputPricePerMillion === 0) &&
+        (outputPricePerMillion === null || outputPricePerMillion === 0);
+    const requestPriceZero =
+        requestPriceUsd === null || requestPriceUsd === 0;
+
+    if (!hasTokenPricing && !hasRequestPricing) {
+        return null;
+    }
+
+    let mode = 'external_directory';
+    if (tokenPricesZero && requestPriceZero) {
+        mode = 'free';
+    } else if (hasTokenPricing) {
+        mode = 'token';
+    } else if (hasRequestPricing) {
+        mode = 'request';
+    }
+
+    return {
+        mode,
+        inputPricePerMillion,
+        outputPricePerMillion,
+        requestPriceUsd,
+    };
+}
+
+function buildDiscoveredTags(model, pricingMode) {
+    const tags = new Set();
+    const architecture = model?.architecture || {};
+    const inputModalities = Array.isArray(architecture.input_modalities)
+        ? architecture.input_modalities
+        : [];
+    const outputModalities = Array.isArray(architecture.output_modalities)
+        ? architecture.output_modalities
+        : [];
+    const supportedParameters = Array.isArray(model?.supported_parameters)
+        ? model.supported_parameters
+        : [];
+
+    if (
+        inputModalities.includes('image') ||
+        outputModalities.includes('image')
+    ) {
+        tags.add('vision');
+    }
+    if (
+        supportedParameters.includes('tools') ||
+        supportedParameters.includes('tool_choice')
+    ) {
+        tags.add('tool-calling');
+    }
+    if (
+        supportedParameters.includes('structured_outputs') ||
+        supportedParameters.includes('response_format')
+    ) {
+        tags.add('structured-outputs');
+    }
+    if (pricingMode === 'free') {
+        tags.add('free');
+    }
+
+    return [...tags].sort();
+}
+
+function allowsNoAuth(providerRecord) {
+    return String(providerRecord?.authStrategy || '').trim().toLowerCase() === 'none';
+}
+
+function buildOptionalAuthHeaders(token, allowNoAuth) {
+    if (token) {
+        return { Authorization: `Bearer ${token}` };
+    }
+    if (allowNoAuth) {
+        return {};
+    }
+    return null;
+}
+
+function normalizeDiscoveredModel(model) {
+    const architecture = model?.architecture || {};
+    const inputModalities = Array.isArray(architecture.input_modalities)
+        ? architecture.input_modalities
+        : [];
+    const outputModalities = Array.isArray(architecture.output_modalities)
+        ? architecture.output_modalities
+        : [];
+    const supportedParameters = Array.isArray(model?.supported_parameters)
+        ? model.supported_parameters
+        : [];
+    const pricing = buildDiscoveredPricing(model?.pricing || {});
+
+    return {
+        modelId: model.id,
+        displayName: model.name || model.id,
+        contextWindow:
+            parseOptionalNumber(model.context_length) ??
+            parseOptionalNumber(model.contextWindow) ??
+            parseOptionalNumber(model.max_context_tokens) ??
+            parseOptionalNumber(model?.top_provider?.context_length),
+        maxOutputTokens:
+            parseOptionalNumber(model?.top_provider?.max_completion_tokens) ??
+            parseOptionalNumber(model.max_completion_tokens) ??
+            parseOptionalNumber(model.max_output_tokens) ??
+            parseOptionalNumber(model.max_tokens),
+        supportsTools:
+            supportedParameters.length > 0
+                ? supportedParameters.includes('tools') ||
+                  supportedParameters.includes('tool_choice')
+                : true,
+        supportsStreaming: true,
+        supportsVision:
+            inputModalities.includes('image') ||
+            outputModalities.includes('image'),
+        pricing,
+        isFree: pricing?.mode === 'free',
+        tags: buildDiscoveredTags(model, pricing?.mode || null),
+    };
+}
+
+export function providerSupportsOpenAiStreamOptions(providerRecord) {
+    const settings = providerRecord?.settings || {};
+
+    if (typeof settings.supports_stream_options === 'boolean') {
+        return settings.supports_stream_options;
+    }
+    if (typeof settings.supportsStreamOptions === 'boolean') {
+        return settings.supportsStreamOptions;
+    }
+
+    const providerKey = String(providerRecord?.providerKey || '').trim();
+    if (providerKey && STREAM_OPTIONS_DISABLED_PROVIDER_KEYS.has(providerKey)) {
+        return false;
+    }
+
+    const baseUrl = String(providerRecord?.baseUrl || '').trim();
+    if (!baseUrl) {
+        return true;
+    }
+
+    const normalizedBaseUrl = baseUrl.endsWith('/')
+        ? baseUrl
+        : `${baseUrl}/`;
+    for (const prefix of STREAM_OPTIONS_DISABLED_BASE_URL_PREFIXES) {
+        if (normalizedBaseUrl.startsWith(prefix)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+export function providerUsesOpenAiResponsesApi(providerRecord) {
+    return Boolean(
+        providerRecord?.supportsResponsesApi ??
+            providerRecord?.supports_responses_api ??
+            false
+    );
+}
+
+export function buildOpenAiResponsesParams(normalizedReq, settings = {}) {
+    const params = { store: false };
+
+    if (normalizedReq.max_tokens != null)
+        params.max_output_tokens = normalizedReq.max_tokens;
+    if (normalizedReq.temperature != null)
+        params.temperature = normalizedReq.temperature;
+    if (normalizedReq.top_p != null) params.top_p = normalizedReq.top_p;
+    if (normalizedReq.tools && normalizedReq.tools.length > 0)
+        params.tools = normalizedReq.tools;
+    if (normalizedReq.tool_choice != null) {
+        const choice = normalizedReq.tool_choice;
+        params.tool_choice =
+            choice?.type === 'function' && choice.function?.name
+                ? { type: 'function', name: choice.function.name }
+                : choice;
+    }
+    if (settings.extra_body) Object.assign(params, settings.extra_body);
+
+    return params;
+}
+
+function buildOpenAiChatParams(normalizedReq, providerRecord, settings) {
+    const params = { stream: true };
+    if (providerSupportsOpenAiStreamOptions(providerRecord)) {
+        params.stream_options = { include_usage: true };
+    }
+
+    if (normalizedReq.max_tokens != null)
+        params.max_tokens = normalizedReq.max_tokens;
+    if (normalizedReq.temperature != null)
+        params.temperature = normalizedReq.temperature;
+    if (normalizedReq.top_p != null) params.top_p = normalizedReq.top_p;
+    if (normalizedReq.stop != null) params.stop = normalizedReq.stop;
+    if (normalizedReq.tools && normalizedReq.tools.length > 0)
+        params.tools = normalizedReq.tools;
+    if (normalizedReq.tool_choice != null)
+        params.tool_choice = normalizedReq.tool_choice;
+    if (normalizedReq.response_format != null)
+        params.response_format = normalizedReq.response_format;
+    if (settings.extra_body) Object.assign(params, settings.extra_body);
+
+    return params;
+}
+
+// ── Backend module ──────────────────────────────────────────────────
+
+export const backendModule = {
+    manifest,
+
+    async init() {
+        // No shared resources to warm
+    },
+
+    async shutdown() {
+        // No resources to release
+    },
+
+    validateProviderRecord(providerRecord) {
+        if (!providerRecord.baseUrl) {
+            throw new Error('OpenAI provider requires a baseUrl');
+        }
+    },
+
+    validateModelRecord(modelRecord) {
+        if (!modelRecord.providerModelId && !modelRecord.modelKey) {
+            throw new Error('OpenAI model requires providerModelId or modelKey');
+        }
+    },
+
+    async discoverModels(ctx) {
+        const baseUrl =
+            ctx?.providerRecord?.baseUrl || 'https://api.openai.com/v1';
+        const token =
+            ctx?.credentialLease?.secret ||
+            ctx?.credentialLease?.oauth?.accessToken;
+        const authHeaders = buildOptionalAuthHeaders(
+            token,
+            allowsNoAuth(ctx?.providerRecord)
+        );
+        if (!authHeaders) {
+            throw new Error(
+                'OpenAI discoverModels requires configured credentials'
+            );
+        }
+
+        const freeOnly = isFreeOnlyProvider(ctx?.providerRecord);
+        const discoveryPath =
+            ctx?.providerRecord?.settings?.discovery_path || '/models';
+        try {
+            const body = await httpGet(baseUrl + discoveryPath, authHeaders, {
+                signal: ctx?.signal,
+            });
+            const parsed = JSON.parse(body);
+            const entries = (parsed.data || []).filter((model) =>
+                Boolean(model?.id)
+            );
+            if (!freeOnly) return entries.map(normalizeDiscoveredModel);
+            const admitted = entries
+                .filter((model) => isStrictlyFreeCatalogEntry(model).ok)
+                .map(normalizeDiscoveredModel);
+            // An upstream catalog that lists models but none that pass the
+            // free-only policy must disable previously synced models, unlike
+            // an empty (possibly failed) upstream response.
+            if (admitted.length === 0 && entries.length > 0) {
+                Object.defineProperty(admitted, 'policyFiltered', {
+                    value: true,
+                    enumerable: false,
+                });
+            }
+            return admitted;
+        } catch (err) {
+            // A free-only provider's catalog is its admission source, so a
+            // missing discovery path is a failure, not an empty catalog.
+            if (err.status !== 404 || freeOnly) {
+                throw err;
+            }
+
+            const status = await httpProbeStatus(
+                baseUrl + '/chat/completions',
+                {
+                    ...authHeaders,
+                    'Content-Type': 'application/json',
+                },
+                '{}',
+                { signal: ctx?.signal }
+            );
+
+            if (status === 401 || status === 403) {
+                throw new Error(`HTTP ${status}`);
+            }
+
+            if (status === 404) {
+                throw new Error(
+                    'Provider base URL does not expose /models or /chat/completions'
+                );
+            }
+
+            return [];
+        }
+    },
+
+    async testConnection(ctx) {
+        const baseUrl =
+            ctx.providerRecord?.baseUrl || 'https://api.openai.com/v1';
+        const token =
+            ctx.credentialLease?.secret ||
+            ctx.credentialLease?.oauth?.accessToken;
+        const authHeaders = buildOptionalAuthHeaders(
+            token,
+            allowsNoAuth(ctx?.providerRecord)
+        );
+        if (!authHeaders) return { ok: false, detail: 'No credentials configured' };
+
+        // Most OpenAI-compatible vendors expose GET /models, so try that
+        // first — a 200 is the strongest signal we can get ("auth works,
+        // base URL is right, and the vendor speaks the listing dialect").
+        try {
+            await httpGet(baseUrl + '/models', authHeaders, {
+                signal: ctx?.signal,
+            });
+            return { ok: true, detail: 'Connected to OpenAI API' };
+        } catch (modelsErr) {
+            // 401/403 → credential is wrong. Falling back here would just
+            // hit the same wall and waste a request, so surface immediately.
+            if (modelsErr.status === 401 || modelsErr.status === 403) {
+                return { ok: false, detail: modelsErr.message };
+            }
+            // Anything other than a missing endpoint (5xx, network, …)
+            // also propagates as-is — the user needs to know what failed.
+            if (modelsErr.status !== 404) {
+                return { ok: false, detail: modelsErr.message };
+            }
+
+            // 404 specifically: this base URL does not host /models. The
+            // canonical example is Mistral's Codestral subdomain, which
+            // restricts the surface to /chat/completions and /fim/completions.
+            // Probe the chat-completions route with a deliberately empty
+            // body — we only care whether the route exists and the credential
+            // is recognised, not whether the payload is valid:
+            //   200 / 4xx (other than 401/403/404) → endpoint is reachable
+            //                                        and auth was at least
+            //                                        read → success
+            //   401 / 403 → credential rejected → fail
+            //   404       → base URL has no /chat/completions either →
+            //               wrong base URL → fail
+            let probeStatus;
+            try {
+                probeStatus = await httpProbeStatus(
+                    baseUrl + '/chat/completions',
+                    { ...authHeaders, 'Content-Type': 'application/json' },
+                    '{}',
+                    { signal: ctx?.signal }
+                );
+            } catch (probeErr) {
+                return { ok: false, detail: probeErr.message };
+            }
+
+            if (probeStatus === 401 || probeStatus === 403) {
+                return { ok: false, detail: `HTTP ${probeStatus}` };
+            }
+            if (probeStatus === 404) {
+                return {
+                    ok: false,
+                    detail: 'HTTP 404 (no /models or /chat/completions at base URL)',
+                };
+            }
+            return {
+                ok: true,
+                detail: 'Connected (model listing not exposed at this base URL)',
+            };
+        }
+    },
+
+    async execute(ctx) {
+        const {
+            request: normalizedReq,
+            resolvedModel,
+            providerRecord,
+            credentialLease,
+            signal,
+            logger,
+        } = ctx;
+        const baseUrl = providerRecord.baseUrl || 'https://api.openai.com/v1';
+        const modelId = resolvedModel.providerModelId || resolvedModel.modelKey;
+        const settings = providerRecord.settings || {};
+        const useResponsesApi = providerUsesOpenAiResponsesApi(providerRecord);
+        assertFreeOnlyExecution(providerRecord, modelId);
+        const builtParams = useResponsesApi
+            ? buildOpenAiResponsesParams(normalizedReq, settings)
+            : buildOpenAiChatParams(normalizedReq, providerRecord, settings);
+        const tunedParams = applyModelRequestParams(
+            builtParams,
+            resolvedModel.requestParams
+        );
+        const params = isFreeOnlyProvider(providerRecord)
+            ? hardenFreeOnlyParams(tunedParams)
+            : tunedParams;
+
+        const headers = {};
+        // OpenRouter-specific headers
+        if (settings.openrouter_referer)
+            headers['HTTP-Referer'] = settings.openrouter_referer;
+        if (settings.openrouter_title)
+            headers['X-Title'] = settings.openrouter_title;
+        if (settings.extra_headers)
+            Object.assign(headers, settings.extra_headers);
+
+        if (useResponsesApi) {
+            return createAchillesExecutionHandle(ctx, achillesResponses, {
+                model: modelId,
+                apiKey: getCredentialToken(credentialLease),
+                baseURL: baseUrl,
+                signal,
+                params,
+                headers,
+            });
+        }
+
+        return createAchillesExecutionHandle(ctx, achillesOpenAI, {
+            model: modelId,
+            apiKey: getCredentialToken(credentialLease),
+            allowNoAuth: allowsNoAuth(providerRecord),
+            baseURL: baseUrl,
+            signal,
+            params,
+            headers,
+        });
+    },
+
+    async embed(ctx) {
+        const {
+            request: normalizedReq,
+            resolvedModel,
+            providerRecord,
+            credentialLease,
+            signal,
+        } = ctx;
+        const baseUrl = providerRecord.baseUrl || 'https://api.openai.com/v1';
+        const modelId = resolvedModel.providerModelId || resolvedModel.modelKey;
+        const settings = providerRecord.settings || {};
+        if (isFreeOnlyProvider(providerRecord)) {
+            throw new ProviderBadRequestError(
+                providerRecord.providerKey || 'free-only',
+                'Free-only providers do not serve embeddings'
+            );
+        }
+        const token = getCredentialToken(credentialLease);
+        const authHeaders = buildOptionalAuthHeaders(
+            token,
+            allowsNoAuth(providerRecord)
+        );
+        if (!authHeaders) {
+            throw new ProviderAuthError(
+                providerRecord.providerKey || 'openai',
+                'OpenAI embeddings require configured credentials'
+            );
+        }
+
+        const params = {};
+        if (normalizedReq.encoding_format != null) {
+            params.encoding_format = normalizedReq.encoding_format;
+        }
+        if (normalizedReq.dimensions != null) {
+            params.dimensions = normalizedReq.dimensions;
+        }
+        if (normalizedReq.user != null) {
+            params.user = normalizedReq.user;
+        }
+
+        const headers = {
+            ...authHeaders,
+            'Content-Type': 'application/json',
+        };
+        if (settings.openrouter_referer) {
+            headers['HTTP-Referer'] = settings.openrouter_referer;
+        }
+        if (settings.openrouter_title) {
+            headers['X-Title'] = settings.openrouter_title;
+        }
+        if (settings.extra_headers) {
+            Object.assign(headers, settings.extra_headers);
+        }
+
+        const parsed = await achillesOpenAI.callEmbeddings(
+            normalizedReq.input,
+            {
+                model: modelId,
+                apiKey: token,
+                allowNoAuth: allowsNoAuth(providerRecord),
+                baseURL: baseUrl,
+                signal,
+                params,
+                headers,
+            }
+        );
+        if (parsed && typeof parsed === 'object' && !parsed.model) {
+            parsed.model = normalizedReq.model;
+        }
+        return parsed;
+    },
+
+    classifyError(error, ctx) {
+        return classifyOpenAiCompatibleError(error, ctx);
+    },
+};
+
+// ── SSE streaming ───────────────────────────────────────────────────
+
+async function* makeSSEStream(url, headers, payload, signal, logger) {
+    const response = await doRequest(url, 'POST', headers, payload, signal);
+
+    if (response.statusCode >= 400) {
+        const body = await collectBody(response);
+        let parsed = {};
+        try {
+            parsed = JSON.parse(body);
+        } catch {
+            /* not JSON */
+        }
+        const err = new Error(`OpenAI API error: ${response.statusCode}`);
+        err.status = response.statusCode;
+        err.body = parsed;
+        throw err;
+    }
+
+    const state = {};
+
+    for await (const event of parseSSE(response)) {
+        if (event.data === '[DONE]') {
+            yield {
+                type: 'done',
+                data: {
+                    finish_reason: state.lastFinishReason || 'stop',
+                    model: state.model,
+                },
+            };
+            return;
+        }
+
+        let parsed;
+        try {
+            parsed = JSON.parse(event.data);
+        } catch {
+            continue;
+        }
+
+        if (!state.started) {
+            state.started = true;
+            state.model = parsed.model;
+            yield {
+                type: 'message_start',
+                data: { id: parsed.id, model: parsed.model, role: 'assistant' },
+            };
+        }
+
+        for (const choice of parsed.choices || []) {
+            const delta = choice.delta || {};
+
+            if (delta.content) {
+                yield { type: 'text_delta', data: { text: delta.content } };
+            }
+
+            if (delta.tool_calls) {
+                for (const tc of delta.tool_calls) {
+                    yield {
+                        type: 'tool_call_delta',
+                        data: {
+                            index: tc.index ?? 0,
+                            id: tc.id || undefined,
+                            name: tc.function?.name || undefined,
+                            arguments: tc.function?.arguments || undefined,
+                        },
+                    };
+                }
+            }
+
+            if (choice.finish_reason) {
+                state.lastFinishReason = choice.finish_reason;
+            }
+        }
+
+        // Usage (available when stream_options.include_usage is set)
+        if (parsed.usage) {
+            yield {
+                type: 'usage',
+                data: {
+                    input_tokens: parsed.usage.prompt_tokens || 0,
+                    output_tokens: parsed.usage.completion_tokens || 0,
+                    total_tokens: parsed.usage.total_tokens || 0,
+                },
+            };
+        }
+    }
+}
+
+// ── HTTP helpers (node:http / node:https only) ──────────────────────
+
+function doRequest(url, method, headers, body, signal) {
+    return new Promise((resolve, reject) => {
+        const isHttps = url.protocol === 'https:';
+        const reqFn = isHttps ? httpsRequest : httpRequest;
+
+        const opts = {
+            hostname: url.hostname,
+            port: url.port || (isHttps ? 443 : 80),
+            path: url.pathname + url.search,
+            method,
+            headers: { ...headers, 'Content-Length': Buffer.byteLength(body) },
+            signal,
+        };
+
+        const req = reqFn(opts, (res) => resolve(res));
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+function collectBody(res) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        res.on('error', reject);
+    });
+}
+
+async function* parseSSE(res) {
+    let buffer = '';
+
+    for await (const chunk of res) {
+        buffer += chunk.toString('utf8');
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete line
+
+        let currentEvent = {};
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                currentEvent.data = line.slice(6);
+                yield currentEvent;
+                currentEvent = {};
+            } else if (line.startsWith('event: ')) {
+                currentEvent.event = line.slice(7);
+            } else if (line === '') {
+                // Empty line — event separator
+                if (currentEvent.data != null) {
+                    yield currentEvent;
+                    currentEvent = {};
+                }
+            }
+        }
+    }
+
+    // Flush remaining
+    if (buffer.startsWith('data: ')) {
+        yield { data: buffer.slice(6) };
+    }
+}
+
+function httpGet(urlStr, headers, { signal } = {}) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(signal.reason || new Error('Aborted'));
+            return;
+        }
+
+        const url = new URL(urlStr);
+        const isHttps = url.protocol === 'https:';
+        const reqFn = isHttps ? httpsRequest : httpRequest;
+
+        const opts = {
+            hostname: url.hostname,
+            port: url.port || (isHttps ? 443 : 80),
+            path: url.pathname + url.search,
+            method: 'GET',
+            headers,
+            signal,
+        };
+
+        const req = reqFn(opts, (res) => {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                const body = Buffer.concat(chunks).toString('utf8');
+                if (res.statusCode >= 400) {
+                    const err = new Error(`HTTP ${res.statusCode}`);
+                    err.status = res.statusCode;
+                    reject(err);
+                } else {
+                    resolve(body);
+                }
+            });
+            res.on('error', reject);
+        });
+        req.on('error', reject);
+        req.end();
+    });
+}
+
+/**
+ * POST `body` and resolve with the response status code, draining
+ * the body so the socket is released. Used by testConnection() as a
+ * fallback probe when /models is not available — unlike httpGet
+ * above, this resolves on every HTTP response (including 4xx/5xx)
+ * because the probe needs to inspect the status, not the body.
+ *
+ * @param {string} urlStr
+ * @param {object} headers
+ * @param {string} body
+ * @returns {Promise<number>} HTTP status code
+ */
+function httpProbeStatus(urlStr, headers, body, { signal } = {}) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(signal.reason || new Error('Aborted'));
+            return;
+        }
+
+        const url = new URL(urlStr);
+        const isHttps = url.protocol === 'https:';
+        const reqFn = isHttps ? httpsRequest : httpRequest;
+
+        const opts = {
+            hostname: url.hostname,
+            port: url.port || (isHttps ? 443 : 80),
+            path: url.pathname + url.search,
+            method: 'POST',
+            headers: { ...headers, 'Content-Length': Buffer.byteLength(body) },
+            signal,
+        };
+
+        const req = reqFn(opts, (res) => {
+            // Drain the body so the underlying socket can be released even
+            // though we only care about the status code.
+            res.on('data', () => {});
+            res.on('end', () => resolve(res.statusCode));
+            res.on('error', reject);
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+    });
+}

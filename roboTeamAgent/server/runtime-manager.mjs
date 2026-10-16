@@ -1,0 +1,887 @@
+import { createHumanInputChannel } from './human-input-channel.mjs';
+import { registerProject, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
+import { requireWorkspaceRoot } from './workspace-root.mjs';
+import { workspaceDataPath } from './workspace-paths.mjs';
+import { execFile, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
+import fs from 'node:fs/promises';
+import http from 'node:http';
+import net from 'node:net';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { ToolCache } from './tool-cache.mjs';
+import { resolveAlaCommand } from './ala-command.mjs';
+import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE } from './constants.mjs';
+import { prepareRobotShell } from './robot-shell.mjs';
+import { createSoulGatewayService } from './soul-gateway-service.mjs';
+import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
+import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
+import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
+
+const execFileAsync = promisify(execFile);
+const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
+const GUI_MODES = new Set(['desktop', 'browser']);
+const ALA_FAILURE_DETAIL_LIMIT = 4096;
+const TASK_LOG_TAIL_LIMIT = 1024 * 1024;
+const TASK_RESULT_LIMIT = 1024 * 1024;
+const ALA_EVENT_PREFIX = '@@ALA_EVENT@@';
+const ROBOT_AGENT_STATE_DIRECTORIES = Object.freeze([
+    '.codex',
+    '.config/opencode',
+    '.cache/opencode',
+    '.local/share/opencode',
+    '.local/state/opencode',
+    '.pi/agent',
+]);
+
+function appendTail(previous, chunk, limit) {
+    const next = `${previous}${chunk}`;
+    return next.length > limit ? next.slice(-limit) : next;
+}
+
+function createAlaProgressParser(onText, onEvent = () => {}) {
+    let buffered = '';
+    const decoder = new StringDecoder('utf8');
+    let pendingFinal = null;
+    const consumeLine = (line, terminated) => {
+        if (!line.startsWith(ALA_EVENT_PREFIX)) {
+            onText(`${line}${terminated ? '\n' : ''}`);
+            return;
+        }
+        try {
+            const event = JSON.parse(line.slice(ALA_EVENT_PREFIX.length));
+            onEvent(event);
+            if (event?.type === 'coding-agent-final' && typeof event.message === 'string') {
+                if (pendingFinal !== null) onText(pendingFinal, { outputKind: 'assistant', outputComplete: true });
+                pendingFinal = event.message;
+            }
+            if (event?.type === 'coding-agent-message' && typeof event.message === 'string') onText(event.message, event);
+        } catch {
+            onText(`${line}${terminated ? '\n' : ''}`);
+        }
+    };
+    return {
+        push(chunk) {
+            buffered += decoder.write(chunk);
+            let newline = buffered.indexOf('\n');
+            while (newline >= 0) {
+                consumeLine(buffered.slice(0, newline), true);
+                buffered = buffered.slice(newline + 1);
+                newline = buffered.indexOf('\n');
+            }
+        },
+        finish() {
+            buffered += decoder.end();
+            if (buffered) consumeLine(buffered, false);
+            buffered = '';
+        },
+    };
+}
+
+function alaFailureMessage(exit, output) {
+    const normalized = String(output || '').replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '').trim();
+    const detail = normalized.length > ALA_FAILURE_DETAIL_LIMIT
+        ? `…${normalized.slice(-ALA_FAILURE_DETAIL_LIMIT)}`
+        : normalized;
+    return detail ? `ALA exited with ${exit}: ${detail}` : `ALA exited with ${exit}`;
+}
+
+function normalizeBasePath(value) {
+    const raw = String(value || '/').trim();
+    const leading = raw.startsWith('/') ? raw : `/${raw}`;
+    return leading.endsWith('/') ? leading : `${leading}/`;
+}
+
+function robotSessionUrl(publicBasePath, robotId) {
+    return `${normalizeBasePath(publicBasePath)}api/robots/${robotId}/session/`;
+}
+
+function portIsOpen(port) {
+    return new Promise((resolve) => {
+        const socket = net.connect({ host: '127.0.0.1', port });
+        const finish = (value) => { socket.destroy(); resolve(value); };
+        socket.setTimeout(250).once('timeout', () => finish(false));
+        socket.once('connect', () => finish(true)).once('error', () => finish(false));
+    });
+}
+
+async function waitForPort(port, timeoutMs = 90000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (await portIsOpen(port)) return;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`service on loopback port ${port} did not become ready`);
+}
+
+function httpServiceIsReady(port, requestPath) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+        };
+        const request = http.get({ host: '127.0.0.1', port, path: requestPath }, (response) => {
+            response.resume();
+            finish(true);
+        });
+        request.setTimeout(500, () => { request.destroy(); finish(false); });
+        request.once('error', () => finish(false));
+    });
+}
+
+async function waitForHttpService(port, requestPath, timeoutMs = 90000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (await httpServiceIsReady(port, requestPath)) return;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`HTTP service on loopback port ${port} did not become ready`);
+}
+
+function mappedPort(output) {
+    const match = String(output || '').trim().match(/:(\d+)$/u);
+    if (!match) throw new Error('could not resolve nested container port');
+    return Number(match[1]);
+}
+
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, shellTools, workspaceRoot = requireWorkspaceRoot(), homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
+    if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
+    if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
+    const robotRoot = path.join(path.resolve(dataDir), 'robots', robot.id);
+    const containerName = `roboteam-${mode}-${robot.id}`;
+    const subfolder = robotSessionUrl(publicBasePath, robot.id);
+    return {
+        containerName,
+        image: images[mode],
+        subfolder,
+        args: [
+            'run', '-d', '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777', '--network', 'pasta',
+            '--name', containerName, '--label', MANAGED_LABEL,
+            '--label', `io.assistos.roboteam.robot-id=${robot.id}`,
+            '--label', `io.assistos.roboteam.mode=${mode}`,
+            '-p', '127.0.0.1::3000', '-p', '127.0.0.1::8100',
+            '-e', 'PUID=0', '-e', 'PGID=0', '-e', `TZ=${timezone}`,
+            '-e', `SUBFOLDER=${subfolder}`, '-e', `TITLE=${robot.name}`,
+            '-e', `ROBOTEAM_WORKING_DIRECTORY=${cwd}`,
+            '-e', 'START_DOCKER=false', '-e', 'DISABLE_IPV6=true', '-e', 'PELORUS=true',
+            ...(mode === 'browser' ? ['-e', 'CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility'] : []),
+            ...(shellTools ? [
+                '-e', `PATH=${shellTools.binPath}:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+                '-e', 'CODEX_HOME=/config/.codex',
+                '-e', 'HOME=/config',
+                '-e', 'XDG_CONFIG_HOME=/config/.config', '-e', 'XDG_CACHE_HOME=/config/.cache',
+                '-e', 'XDG_DATA_HOME=/config/.local/share', '-e', 'XDG_STATE_HOME=/config/.local/state',
+                '-e', 'PI_CODING_AGENT_DIR=/config/.pi/agent',
+                '-e', 'CLAUDE_CONFIG_DIR=/config/.claude',
+            ] : []),
+            '-v', `${homePath}:/config`,
+            // The opened folder may be the workspace root itself. Mounting the
+            // same path twice (read-only parent plus writable cwd) conflicts, so
+            // keep only the writable grant in that case.
+            ...(path.resolve(workspaceRoot) === path.resolve(cwd)
+                ? ['-v', `${cwd}:${cwd}:rw`]
+                : ['-v', `${workspaceRoot}:${workspaceRoot}:ro`, '-v', `${cwd}:${cwd}:rw`]),
+            '-w', cwd,
+            '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
+            ...(shellTools ? [
+                '-v', `${shellTools.path}:${path.dirname(shellTools.binPath)}:ro`,
+                ...Object.values(shellTools.agents).flatMap(agent => ['-v', `${agent.path}:${agent.path}:ro`]),
+            ] : []),
+            images[mode],
+        ],
+    };
+}
+
+export class RuntimeManager {
+    constructor(options = {}) {
+        this.dataDir = path.resolve(options.dataDir || DATA_DIR);
+        this.publicBasePath = normalizeBasePath(options.publicBasePath);
+        this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
+        this.alaCommand = resolveAlaCommand(options.alaCommand);
+        this.workspaceRoot = path.resolve(options.workspaceRoot ?? requireWorkspaceRoot());
+        this.hostWorkspaceRoot = options.hostWorkspaceRoot ? path.resolve(options.hostWorkspaceRoot) : null;
+        this.maxActive = Math.max(1, Math.min(32, Number(options.maxActive) || MAX_ACTIVE_GUI_ROBOTS));
+        this.images = {
+            desktop: options.desktopImage || DESKTOP_IMAGE,
+            browser: options.browserImage || BROWSER_IMAGE,
+        };
+        this.timezone = options.timezone || TIMEZONE;
+        this.execFileImpl = options.execFileImpl || execFileAsync;
+        this.spawnImpl = options.spawnImpl || spawn;
+        this.toolCache = options.toolCache || new ToolCache({
+            dataDir: this.dataDir,
+            root: options.toolCacheRoot,
+            refreshIntervalMs: options.toolRefreshIntervalMs,
+            podmanCommand: this.podmanCommand,
+            desktopImage: this.images.desktop,
+            browserImage: this.images.browser,
+        });
+        this.sessions = new Map();
+        this.tasks = new Map();
+        this.latestTask = new Map();
+        this.activeTasks = new Map();
+        this.taskQueues = new Map();
+        this.manualControl = new Map();
+        this.pending = new Map();
+        this.shuttingDown = false;
+        this.messageWaiters = new Map();
+        this.deletedRobots = new Set();
+        this.skillsets = options.skillsets || null;
+        this.soulGateway = options.soulGateway || createSoulGatewayService();
+        this.seedChain = new Map();
+        // Optional observational hook used by RoboFlow. It never changes task
+        // storage or semantics; it only forwards progress and lifecycle events.
+        this.taskObserver = typeof options.taskObserver === 'function' ? options.taskObserver : null;
+    }
+
+    setTaskObserver(observer) {
+        this.taskObserver = typeof observer === 'function' ? observer : null;
+    }
+
+    _emitTaskEvent(event) {
+        if (!this.taskObserver) return;
+        try { this.taskObserver(event); }
+        catch (error) { console.error('[roboTeamAgent] task observer failed:', error?.message || error); }
+    }
+
+    // Shell and Soul Gateway socket preparation, then (unless `seed` is false) the plugin seed.
+    // `prepare` lets the caller wait for the shared plugin template (one npm install per OpenCode
+    // version, coalesced across robots); without it only a ready template is used. Either way a
+    // missing template leaves OpenCode to install its own dependency as before.
+    async prepareOpenCode(robotId, { prepare = false, seed = true } = {}) {
+        if (!/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) throw new Error('Invalid robot ID.');
+        const home = path.join(this.dataDir, 'robots', robotId, 'home');
+        // The template wait (possibly an npm install) stays outside the per-robot lock so that a
+        // delete never waits for it.
+        const template = seed ? await this.openCodePluginTemplate({ prepare }) : null;
+        await this._withRobotFiles(robotId, async () => {
+            if (this.deletedRobots.has(robotId)) throw new Error('robot was deleted');
+            await prepareRobotShell(home);
+            if (seed) await this._copySeed(robotId, home, template);
+        });
+        if (!this.deletedRobots.has(robotId)) await this.soulGateway.prepare(home);
+    }
+
+    // One writer per robot home at a time, and deleteRobot waits for it: a seed or shell
+    // preparation never overlaps the removal of the robot's folder.
+    _withRobotFiles(robotId, operation) {
+        const previous = this.seedChain.get(robotId) || Promise.resolve();
+        const current = previous.catch(() => {}).then(operation);
+        this.seedChain.set(robotId, current);
+        return current.finally(() => { if (this.seedChain.get(robotId) === current) this.seedChain.delete(robotId); });
+    }
+
+    async _copySeed(robotId, home, template) {
+        const seeded = await seedOpenCodePlugin(home, template, { isCancelled: () => this.deletedRobots.has(robotId) });
+        if (seeded.status === 'failed') console.warn(`[roboTeamAgent] OpenCode plugin seeding failed for ${robotId}: ${seeded.error}`);
+        return seeded;
+    }
+
+    // A background seed and a task start on the same robot do not copy the template twice: the
+    // second finds the home current.
+    async seedOpenCode(robotId, { prepare = false } = {}) {
+        const home = path.join(this.dataDir, 'robots', robotId, 'home');
+        const template = await this.openCodePluginTemplate({ prepare });
+        return this._withRobotFiles(robotId, async () => this.deletedRobots.has(robotId)
+            ? { status: 'unavailable' } : this._copySeed(robotId, home, template));
+    }
+
+    // Robot creation answers first; the copy (seconds) finishes in the background, and a task that
+    // starts sooner waits for it through the same chain.
+    seedOpenCodeInBackground(robot) {
+        if (!robotCodingAgents(robot).includes('opencode')) return;
+        this.seedOpenCode(robot.id, { prepare: true }).catch(error => {
+            console.warn(`[roboTeamAgent] OpenCode seeding failed for ${robot.id}: ${error?.message || error}`);
+        });
+    }
+
+    async openCodePluginTemplate({ prepare = false } = {}) {
+        try {
+            const tools = prepare ? { agents: await this.toolCache.prepareCodingAgents?.(['opencode']) }
+                : await this.toolCache.peekShellTools?.();
+            const version = openCodeVersion(tools);
+            if (!version) return null;
+            return (prepare ? await this.toolCache.prepareOpenCodePlugin?.(version)
+                : await this.toolCache.peekOpenCodePlugin?.(version)) ?? null;
+        } catch (error) {
+            console.warn(`[roboTeamAgent] OpenCode plugin template unavailable: ${error?.message || error}`);
+            return null;
+        }
+    }
+
+    // After startup preparation: install the template once and seed every OpenCode robot,
+    // so no first turn or catalog call waits for OpenCode's dependency installation.
+    async warmOpenCodePlugins(robots) {
+        for (const robot of robots) {
+            if (!robotCodingAgents(robot).includes('opencode')) continue;
+            await this.prepareOpenCode(robot.id, { prepare: true }).catch(error => {
+                console.warn(`[roboTeamAgent] OpenCode preparation failed for ${robot.id}: ${error?.message || error}`);
+            });
+        }
+    }
+
+    async _podman(args, timeout = 120000) {
+        return this.execFileImpl(this.podmanCommand, args, { timeout, maxBuffer: 8 * 1024 * 1024, env: process.env });
+    }
+
+    async initialize() {
+        await this.execFileImpl('/usr/local/bin/roboteam-podman-init', [], {
+            timeout: 30000,
+            maxBuffer: 8 * 1024 * 1024,
+            env: process.env,
+        });
+        await this._podman(['info'], 30000);
+        const result = await this._podman(['ps', '-a', '--filter', `label=${MANAGED_LABEL}`, '--format', 'json']).catch(() => ({ stdout: '[]' }));
+        for (const record of JSON.parse(result.stdout || '[]')) {
+            const id = String(record?.Id || record?.ID || '').trim();
+            if (id) await this._podman(['rm', '-f', id]).catch(() => {});
+        }
+    }
+
+    _serialize(robotId, operation) {
+        const previous = this.pending.get(robotId) || Promise.resolve();
+        const current = previous.catch(() => {}).then(() => {
+            if (this.deletedRobots.has(robotId)) throw new Error('robot was deleted');
+            return operation();
+        });
+        this.pending.set(robotId, current);
+        return current.finally(() => { if (this.pending.get(robotId) === current) this.pending.delete(robotId); });
+    }
+
+    async resolveCwd(value) {
+        const requested = String(value || '').trim();
+        if (!requested || !path.isAbsolute(requested)) throw new Error('cwd must be an absolute workspace path');
+        let candidate = path.resolve(requested);
+        try { candidate = await fs.realpath(candidate); } catch (error) {
+            if (!this.hostWorkspaceRoot || !candidate.startsWith(`${this.hostWorkspaceRoot}${path.sep}`)) throw error;
+            candidate = await fs.realpath(path.join(this.workspaceRoot, path.relative(this.hostWorkspaceRoot, candidate)));
+        }
+        const root = await fs.realpath(this.workspaceRoot);
+        if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) throw new Error('cwd must stay inside the enabled Ploinky workspace');
+        if (!(await fs.stat(candidate)).isDirectory()) throw new Error('cwd must reference a directory');
+        return candidate;
+    }
+
+    status(robotId) {
+        const session = this.sessions.get(robotId);
+        const task = this.taskStatus(robotId);
+        const queueDepth = (this.taskQueues.get(robotId) || []).filter((id) => this.tasks.get(id)?.state === 'queued').length;
+        return session ? { state: session.state, mode: session.mode, startedAt: session.startedAt, sessionUrl: session.sessionUrl, task, queueDepth } : { state: 'stopped', task, queueDepth };
+    }
+
+    activePort(robotId) { return this.sessions.get(robotId)?.sessionPort || null; }
+
+    hasUnfinishedTasks(robotId) {
+        return Array.from(this.tasks.values()).some((task) => task.robotId === robotId
+            && ['queued', 'starting', 'running', 'pausing'].includes(task.state));
+    }
+
+    async ensureContainer(robot, mode, cwdValue, options = {}) {
+        return this._serialize(robot.id, async () => {
+            const defaultCwd = path.join(this.dataDir, 'robots', robot.id);
+            if (!cwdValue) await fs.mkdir(defaultCwd, { recursive: true });
+            const cwd = cwdValue ? await this.resolveCwd(cwdValue) : await workspaceDataPath(defaultCwd, this.workspaceRoot);
+            await fs.mkdir(cwd, { recursive: true });
+            const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
+            await this._prepareRobotAgentState(originalHome);
+            await this.prepareOpenCode(robot.id, { prepare: robotCodingAgents(robot).includes('opencode') });
+            const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
+            await this._prepareRobotAgentState(robotHome);
+            await prepareRobotShell(robotHome);
+            const existing = this.sessions.get(robot.id);
+            const codingAgents = robotCodingAgents(robot);
+            const codingAgentsKey = codingAgents.join(',');
+            if (existing) {
+                if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
+                if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey) return existing;
+                const activeTask = this.activeTaskStatus(robot.id);
+                const activeStates = ['queued', 'starting', 'running', 'pausing'];
+                if (activeTask && activeTask.taskId !== options.taskId && activeStates.includes(activeTask.state)) {
+                    throw new Error(`robot has an active ${activeTask.type} task; its container cwd cannot be changed`);
+                }
+                existing.state = 'stopping';
+                await this._podman(['rm', '-f', existing.containerName], 30000).catch(() => {});
+                this.sessions.delete(robot.id);
+            }
+            if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
+            const [tools, shellTools] = await Promise.all([
+                this.toolCache.prepareMode(mode),
+                this.toolCache.prepareShellTools(),
+            ]);
+            await prepareRobotShell(robotHome, { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
+            const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools });
+            const session = { robotId: robot.id, mode, cwd, codingAgentsKey, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
+            this.sessions.set(robot.id, session);
+            try {
+                await this._podman(plan.args, 10 * 60 * 1000);
+                session.sessionPort = mappedPort((await this._podman(['port', plan.containerName, '3000/tcp'])).stdout);
+                session.mcpPort = mappedPort((await this._podman(['port', plan.containerName, '8100/tcp'])).stdout);
+                await Promise.all([
+                    waitForPort(session.sessionPort),
+                    waitForHttpService(session.mcpPort, mode === 'desktop' ? '/health' : '/mcp'),
+                ]);
+                session.state = 'running';
+                return session;
+            } catch (error) {
+                await this._podman(['rm', '-f', plan.containerName]).catch(() => {});
+                this.sessions.delete(robot.id);
+                throw error;
+            }
+        });
+    }
+
+    async openDesktop(robot, cwd) {
+        const session = await this.ensureContainer(robot, 'desktop', cwd);
+        return { state: session.state, mode: session.mode, sessionUrl: session.sessionUrl };
+    }
+
+    start(robot, mode) { return this.ensureContainer(robot, mode, null).then(() => this.status(robot.id)); }
+    stop(robotId) {
+        const session = this.sessions.get(robotId);
+        return session ? this.stopContainer(robotId, session.mode) : Promise.resolve({ state: 'stopped' });
+    }
+
+    _newTask(robot, type, request, trackLatest = true) {
+        const task = {
+            taskId: request.runtimeTaskId || (!request.alaSessionId && request.skillSelection?.catalogId) || crypto.randomUUID(), robotId: robot.id, type, state: 'queued',
+            createdAt: new Date().toISOString(), request, logTail: '', logSeq: 0,
+            logTruncated: false, result: '', error: null,
+            child: null, cancelRequested: false,
+            ...(GUI_MODES.has(type) ? { sessionUrl: robotSessionUrl(this.publicBasePath, robot.id) } : {}),
+        };
+        task.alaSessionId = request.alaSessionId || task.taskId;
+        task.pendingMessages = [];
+        this.tasks.set(task.taskId, task);
+        if (trackLatest) this.latestTask.set(robot.id, task.taskId);
+        return task;
+    }
+
+    _enqueueTask(robot, type, request, { first = false } = {}) {
+        if (this.deletedRobots.has(robot.id)) throw new Error('robot was deleted');
+        request = structuredClone(request);
+        // A new GUI request after all previous GUI work was paused explicitly
+        // returns control to automation. Keep the pause while old work remains.
+        if (GUI_MODES.has(type) && this.manualControl.has(robot.id)
+            && ![...this.tasks.values()].some(task => task.robotId === robot.id
+                && GUI_MODES.has(task.type) && ['queued', 'starting', 'running', 'pausing'].includes(task.state))) {
+            this.manualControl.delete(robot.id);
+        }
+        const task = this._newTask(robot, type, request);
+        if (type === 'simple') {
+            queueMicrotask(() => { if (!this.shuttingDown) void this._runTask(robot, task); });
+            return { taskId: task.taskId, state: task.state, queuePosition: 0 };
+        }
+        const queue = this.taskQueues.get(robot.id) || [];
+        if (first) queue.unshift(task.taskId);
+        else queue.push(task.taskId);
+        this.taskQueues.set(robot.id, queue);
+        queueMicrotask(() => void this._drainTaskQueue(robot));
+        return {
+            taskId: task.taskId,
+            state: task.state,
+            queuePosition: this.taskQueuePosition(task),
+            ...(task.sessionUrl ? { sessionUrl: task.sessionUrl } : {}),
+        };
+    }
+
+    startTask(robot, type, request) {
+        return this._enqueueTask(robot, type, request);
+    }
+
+    async _prepareRobotAgentState(robotHome) {
+        await Promise.all(ROBOT_AGENT_STATE_DIRECTORIES.map(async (relativePath) => {
+            const directory = path.join(robotHome, relativePath);
+            await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+            await fs.chmod(directory, 0o700);
+        }));
+    }
+
+    async _drainTaskQueue(robot) {
+        if (this.shuttingDown || this.activeTasks.has(robot.id) || this.manualControl.has(robot.id)) return;
+        const queue = this.taskQueues.get(robot.id) || [];
+        let task = null;
+        while (queue.length > 0 && !task) {
+            const candidate = this.tasks.get(queue.shift());
+            if (candidate?.state === 'queued' && !candidate.cancelRequested) task = candidate;
+        }
+        if (queue.length === 0) this.taskQueues.delete(robot.id);
+        else this.taskQueues.set(robot.id, queue);
+        if (!task) return;
+        this.activeTasks.set(robot.id, task.taskId);
+        try {
+            await this._runTask(robot, task);
+        } finally {
+            if (this.activeTasks.get(robot.id) === task.taskId) this.activeTasks.delete(robot.id);
+            queueMicrotask(() => void this._drainTaskQueue(robot));
+        }
+    }
+
+    taskQueuePosition(task) {
+        if (!task || task.state !== 'queued') return 0;
+        const index = (this.taskQueues.get(task.robotId) || []).indexOf(task.taskId);
+        return index < 0 ? 0 : index + 1;
+    }
+
+    guiBusy(robotId) {
+        return this.manualControl.has(robotId) || [...this.tasks.values()].some(task => task.robotId === robotId && GUI_MODES.has(task.type) && ['queued', 'starting', 'running', 'pausing'].includes(task.state));
+    }
+
+    async _runTask(robot, task) {
+        if (task.cancelRequested || task.state !== 'queued') return;
+        let humanInputChannel, forcedFailure;
+        const appendProgress = (chunk, output = {}) => {
+            const previousLength = task.logTail.length;
+            task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
+            if (task.logTail.length < previousLength + String(chunk).length) task.logTruncated = true;
+            task.logSeq += 1;
+            this._emitTaskEvent({ kind: 'progress', robotId: robot.id, taskId: task.taskId, chunk: String(chunk), outputKind: output.outputKind, outputComplete: output.outputComplete === true, outputId: output.outputId });
+        };
+        try {
+            task.state = 'starting';
+            task.startedAt = new Date().toISOString();
+            this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'starting' });
+            const cwd = await this.resolveCwd(task.request.cwd);
+            task.request.cwd = registerProject(this, cwd);
+            if (task.cancelRequested) throw new Error('task was paused');
+            if (task.request.requiredWorkflowSkillsets && this.skillsets) {
+                const currentRobot = await this.skillsets.robotStore.get(robot.id);
+                const { matchRobot } = await import('./roboflow/skill-matching.mjs');
+                if (!currentRobot || !matchRobot(currentRobot, { skillsets: task.request.requiredWorkflowSkillsets })) throw new Error('Robot skillsets changed while queued');
+                robot = currentRobot;
+            }
+            const requestedAgent = task.request.ca || 'auto';
+            const selectedAgents = robotCodingAgents(robot);
+            if (requestedAgent !== 'auto' && !selectedAgents.includes(requestedAgent)) {
+                throw new Error(`Coding agent ${requestedAgent} is not enabled for this robot`);
+            }
+            const codingAgent = requestedAgent;
+            const codingAgentsPromise = this.toolCache.prepareCodingAgents(codingAgent === 'auto' ? selectedAgents : [codingAgent]);
+            let mcpAddress = null;
+            if (GUI_MODES.has(task.type)) {
+                const [, session] = await Promise.all([
+                    codingAgentsPromise,
+                    this.ensureContainer(robot, task.type, cwd, { taskId: task.taskId }),
+                ]);
+                mcpAddress = `${task.type}=http://127.0.0.1:${session.mcpPort}/mcp`;
+            } else {
+                await codingAgentsPromise;
+            }
+            if (task.cancelRequested) throw new Error('task was paused');
+            await fs.mkdir(cwd, { recursive: true });
+            const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
+            await this._prepareRobotAgentState(originalHome);
+            await this.prepareOpenCode(robot.id, { prepare: (codingAgent === 'auto' ? selectedAgents : [codingAgent]).includes('opencode') });
+            const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
+            await this._prepareRobotAgentState(robotHome);
+            await prepareRobotShell(robotHome);
+            await this._saveTask(task);
+            if (task.cancelRequested) throw new Error('task was paused');
+            const args = ['--home', robotHome, '--cwd', cwd];
+            if (codingAgent !== 'auto') args.push('--ca', codingAgent);
+            args.push('--session-id', task.alaSessionId, '--control-stdin');
+            if (task.request.resumeSession) args.push('--resume-session');
+            if (task.request.workflowRunId) args.push('--workflow-execution');
+            // Catalog capture belongs to the wrapper's actual execution boundary after queue/cache wait.
+            if (this.skillsets) {
+                const policyId = task.request.skillPolicyRef || task.alaSessionId;
+                await this.skillsets.policies.ensure(robot, policyId, { legacy: task.request.skillSelection });
+                task.request.skillPolicyRef = policyId;
+                if (task.request.skillSelection) task.legacySkillSelection = task.request.skillSelection;
+                delete task.request.skillSelection;
+                await this._saveTask(task);
+            }
+            if (task.request.model) args.push('--model', task.request.model);
+            const requestedMcp = Array.isArray(task.request.mcpServers)
+                ? task.request.mcpServers.join(',') : String(task.request.mcpServers || '');
+            const mcpServers = [requestedMcp, mcpAddress].filter(Boolean).join(',');
+            if (mcpServers) args.push('--MCPServers', mcpServers);
+            task.state = 'running';
+            this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'running' });
+            const codingAgents = await codingAgentsPromise;
+            const childEnv = {
+                ...codingAgentEnvironment(codingAgents, process.env, this.toolCache.root),
+                ALA_EVENT_STREAM: '1',
+            };
+            delete childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
+            if (task.request.allowsHumanInput) {
+                if (!this.requestHumanInput) throw new Error('Workflow human-input handler is unavailable');
+                humanInputChannel = await createHumanInputChannel({
+                    request: input => this.requestHumanInput(task.taskId, input),
+                    stop: () => this.stopTask(robot, task.type, task.taskId),
+                });
+                childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY = humanInputChannel.directory;
+            }
+            delete childEnv.ROBOTEAM_INTERNAL_TOKEN;
+            delete childEnv.ROBOTEAM_TASK_SKILL_SELECTION;
+            const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
+                '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+            task.child = child;
+            child.stdin?.on('error', () => {});
+            // The task prompt is the first control record. The copilot engine adds
+            // the caller's system instructions when it opens the native session.
+            child.stdin?.write(`${JSON.stringify({ type: 'prompt', prompt: task.request.task,
+                ...(task.request.systemPrompt ? { systemPrompt: task.request.systemPrompt } : {}) })}\n`);
+            const resultDecoder = new StringDecoder('utf8');
+            let resultBytes = 0;
+            child.stdout?.on('data', (chunk) => {
+                resultBytes += Buffer.byteLength(chunk);
+                if (resultBytes > TASK_RESULT_LIMIT) task.resultOverflow = true;
+                else task.result += resultDecoder.write(chunk);
+            });
+            const progressParser = createAlaProgressParser(appendProgress, (event) => {
+                if (event.type === 'task-failed' && typeof event.message === 'string') forcedFailure ||= new Error(event.message);
+                if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
+                if (event.type === 'messages-cancelled') appendProgress(`\nCancelled ${event.count} queued message(s).\n`);
+                if (event.type === 'session-ready') {
+                    task.controlReady = true;
+                    for (const message of task.pendingMessages.splice(0)) {
+                        child.stdin?.write(`${JSON.stringify(message)}\n`);
+                    }
+                }
+                if (event.type === 'message-accepted' || event.type === 'message-rejected') {
+                    const waiter = this.messageWaiters.get(event.id);
+                    if (waiter && waiter.taskId === task.taskId) {
+                        this.messageWaiters.delete(event.id);
+                        clearTimeout(waiter.timer);
+                        if (event.type === 'message-rejected') waiter.reject(new Error(event.error));
+                        else waiter.resolve({ delivery: event.delivery });
+                    }
+                    appendProgress(`\nMessage ${event.id}: ${event.delivery || event.error}\n`);
+                }
+            });
+            child.stderr?.on('data', (chunk) => progressParser.push(chunk));
+            await new Promise((resolve, reject) => {
+                child.once('error', reject);
+                child.once('close', (code, signal) => {
+                    progressParser.finish();
+                    task.result += resultDecoder.end();
+                    if (forcedFailure) return reject(forcedFailure);
+                    if (task.resultOverflow) return reject(new Error('Final response exceeds the 1 MiB limit'));
+                    if (code === 0) resolve();
+                    else reject(new Error(alaFailureMessage(signal || code, `${task.logTail}${task.result}`)));
+                });
+            });
+            if (!task.cancelRequested) task.state = 'completed';
+            task.completedAt = new Date().toISOString();
+        } catch (error) {
+            if (forcedFailure || task.state !== 'paused') {
+                error = forcedFailure || error;
+                task.state = 'failed'; task.error = String(error?.message || error); task.completedAt = new Date().toISOString();
+            }
+        } finally {
+            await humanInputChannel?.close().catch(() => {});
+            task.child = null;
+            task.controlReady = false;
+            for (const [id, waiter] of this.messageWaiters) {
+                if (waiter.taskId !== task.taskId) continue;
+                clearTimeout(waiter.timer);
+                waiter.reject(new Error('Task ended before the message was acknowledged.'));
+                this.messageWaiters.delete(id);
+            }
+            await this._saveTask(task).catch(() => {});
+            if (['completed', 'failed', 'paused'].includes(task.state)) {
+                this._emitTaskEvent({
+                    kind: 'terminal', robotId: robot.id, taskId: task.taskId, state: task.state,
+                    result: task.result, error: task.error || (task.resultOverflow ? 'Final response exceeds the 1 MiB limit' : null),
+                    ...(forcedFailure ? { forcedFailure: true } : {}),
+                });
+            }
+        }
+    }
+
+    async _saveTask(task) {
+        if (!['desktop', 'browser', 'simple'].includes(task.type)) return;
+        if (!task.request?.cwd) return;
+        const cwd = await this.resolveCwd(task.request.cwd);
+        registerProject(this, cwd);
+        saveTaskExecution(this, { ...task, request: { ...task.request, cwd } });
+    }
+
+    async sendTaskMessage(robot, taskId, prompt) {
+        const task = this.tasks.get(taskId);
+        if (!task || task.robotId !== robot.id || !['queued', 'starting', 'running'].includes(task.state)) {
+            throw new Error('Task is no longer running; continue it instead.');
+        }
+        const message = String(prompt || '').trim();
+        if (!message || message.length > 32768) throw new Error('Message must contain 1 to 32768 characters.');
+        const command = { type: 'message', id: crypto.randomUUID(), message };
+        if (!task.controlReady) {
+            if (task.pendingMessages.length >= 100) throw new Error('Task message queue is full.');
+            task.pendingMessages.push(command);
+            return { delivery: 'queued', messageId: command.id };
+        }
+        const response = new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.messageWaiters.delete(command.id);
+                reject(new Error('Message acknowledgement timed out; delivery is unknown.'));
+            }, 35000);
+            this.messageWaiters.set(command.id, { resolve, reject, timer, taskId });
+        });
+        task.child.stdin.write(`${JSON.stringify(command)}\n`);
+        return { ...await response, messageId: command.id };
+    }
+
+    taskStatus(robotId, taskId = null) {
+        const id = taskId || this.activeTasks.get(robotId) || this.latestTask.get(robotId);
+        const task = id ? this.tasks.get(id) : null;
+        if (!task || task.robotId !== robotId) return null;
+        const { child, request, cancelRequested, pendingMessages, controlReady, ...status } = task;
+        return { ...status, cwd: request.cwd,
+            skillPolicyRef: request.skillPolicyRef || null,
+            skillExecution: task.skillExecution ? structuredClone(task.skillExecution) : null,
+            skillSelection: request.skillSelection ? structuredClone(request.skillSelection) : null,
+            queuePosition: this.taskQueuePosition(task),
+            ...(task.state === 'queued' && GUI_MODES.has(task.type) && this.manualControl.has(robotId)
+                ? { blockedReason: 'manual-control' } : {}) };
+    }
+
+    activeTaskStatus(robotId) {
+        const id = this.activeTasks.get(robotId);
+        return id ? this.taskStatus(robotId, id) : null;
+    }
+
+    stopTask(robot, expectedType = null, taskId = null, { manualControl = false } = {}) {
+        if (!taskId && expectedType === 'simple') {
+            const candidates = [...this.tasks.values()].filter((task) => task.robotId === robot.id
+                && task.type === 'simple' && ['queued', 'starting', 'running'].includes(task.state));
+            if (candidates.length > 1) throw new Error('Multiple CLI tasks are running; specify taskId.');
+            taskId = candidates[0]?.taskId || null;
+        }
+        const target = taskId ? this.taskStatus(robot.id, taskId) : this.activeTaskStatus(robot.id);
+        if (target && expectedType && target.type !== expectedType
+            && ['queued', 'starting', 'running'].includes(target.state)) {
+            throw new Error(`robot has an active ${target.type} task, not a ${expectedType} task`);
+        }
+        const operation = this._newTask(robot, `stop-${expectedType || 'task'}`, {}, false);
+        operation.state = 'running';
+        queueMicrotask(() => {
+            const internal = target ? this.tasks.get(target.taskId) : null;
+            if (internal && (!expectedType || internal.type === expectedType)) {
+                if (manualControl && GUI_MODES.has(internal.type)
+                    && this.activeTasks.get(robot.id) === internal.taskId) {
+                    this.manualControl.set(robot.id, internal.taskId);
+                }
+                internal.cancelRequested = true;
+                internal.state = 'paused'; internal.completedAt = new Date().toISOString(); internal.child?.kill('SIGTERM');
+            }
+            operation.state = 'completed'; operation.completedAt = new Date().toISOString();
+        });
+        return { taskId: operation.taskId, state: operation.state };
+    }
+
+    takeControl(robot, taskId) {
+        return this.stopTask(robot, null, taskId, { manualControl: true });
+    }
+
+    async resumeTask(robot, taskId, prompt = '', { runtimeTaskId = null } = {}) {
+        if (!/^[0-9a-f-]{36}$/u.test(String(taskId))) throw new Error('Invalid task id.');
+        let internal = this.tasks.get(taskId);
+        if (!internal) {
+            const file = findProjectRecord(this, 'task', taskId);
+            if (!file) throw new Error('Task execution record is unavailable in registered projects.');
+            const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+            try { internal = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
+            if (internal.taskId !== taskId) throw new Error('Task execution record identity mismatch.');
+            if (['starting', 'running'].includes(internal.state)) internal.state = 'paused';
+        }
+        if (internal.robotId !== robot.id || !['desktop', 'browser', 'simple'].includes(internal.type)
+            || !['paused', 'completed', 'failed'].includes(internal.state)) {
+            throw new Error('Robot has no matching task to continue.');
+        }
+        await this.assertHumanInputAnswered?.(taskId, internal.request.workflowRunId);
+        const message = String(prompt || '').trim() || 'Continue.';
+        if (!/^[0-9a-f-]{36}$/u.test(internal.alaSessionId || '')) throw new Error('Task has no recoverable ALA session.');
+        if ([...this.tasks.values()].some((task) => task.robotId === robot.id
+            && task.alaSessionId === internal.alaSessionId && ['queued', 'starting', 'running'].includes(task.state))) {
+            throw new Error('This conversation already has an active execution.');
+        }
+        if (message.length > 32768) throw new Error('Continuation prompt is too long.');
+        if (this.manualControl.has(robot.id) && this.manualControl.get(robot.id) !== taskId) {
+            throw new Error('Resume the task currently under manual control before continuing another task.');
+        }
+        if (this.skillsets) {
+            const policyId = internal.request.skillPolicyRef || internal.alaSessionId;
+            // A current conversation policy always wins over a terminal task's old request.
+            await this.skillsets.policies.ensure(robot, policyId, { legacy: internal.request.skillSelection });
+            internal.request.skillPolicyRef = policyId;
+            internal.legacySkillSelection ||= internal.request.skillSelection;
+            delete internal.request.skillSelection;
+            await this._saveTask(internal);
+        }
+        const resumed = this._enqueueTask(robot, internal.type, {
+            ...internal.request,
+            alaSessionId: internal.alaSessionId, resumeSession: true,
+            ...(runtimeTaskId ? { runtimeTaskId } : {}),
+            task: GUI_MODES.has(internal.type) ? `${message}\n\n${RESUME_REOBSERVE_INSTRUCTION}` : message,
+        }, { first: this.manualControl.get(robot.id) === taskId });
+        if (this.manualControl.get(robot.id) === taskId) this.manualControl.delete(robot.id);
+        queueMicrotask(() => void this._drainTaskQueue(robot));
+        return resumed;
+    }
+
+    sessionUrl(robotId, mode) {
+        const session = this.sessions.get(robotId);
+        if (!session || session.mode !== mode || session.state !== 'running') throw new Error(`${mode} container is not running`);
+        return session.sessionUrl;
+    }
+
+    async stopContainer(robotId, mode) {
+        return this._serialize(robotId, async () => {
+            const session = this.sessions.get(robotId);
+            if (!session) return { state: 'stopped' };
+            if (session.mode !== mode) throw new Error(`robot slot is occupied by its ${session.mode} container`);
+            const active = this.activeTaskStatus(robotId);
+            if (active && active.type === mode && ['queued', 'starting', 'running'].includes(active.state)) throw new Error(`stop the ${mode} task before its container`);
+            session.state = 'stopping';
+            await this._podman(['rm', '-f', session.containerName], 30000).catch(() => {});
+            this.sessions.delete(robotId);
+            return { state: 'stopped' };
+        });
+    }
+
+    async logs(robotId, tail = 200) {
+        const session = this.sessions.get(robotId);
+        if (!session) return '';
+        const result = await this._podman(['logs', '--tail', String(Math.max(1, Math.min(1000, Number(tail) || 200))), session.containerName], 30000);
+        return `${result.stdout || ''}${result.stderr || ''}`.slice(-256 * 1024);
+    }
+
+    async deleteRobot(robotId, remove) {
+        if (this.pending.has(robotId) || this.sessions.has(robotId) || this.activeTasks.has(robotId)
+            || this.hasUnfinishedTasks(robotId)) throw new Error('stop the robot and its queued tasks before deleting it');
+        this.deletedRobots.add(robotId);
+        // A seed or shell preparation in flight finishes (or aborts) before the folder is removed;
+        // anything queued afterwards sees deletedRobots and does nothing.
+        await this.seedChain.get(robotId)?.catch(() => {});
+        try { await remove(); }
+        catch (error) { this.deletedRobots.delete(robotId); throw error; }
+        await this.soulGateway.remove(path.join(this.dataDir, 'robots', robotId, 'home'));
+        // Server-only model-list cache for this robot (never inside the robot's mounted folder).
+        if (/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) {
+            await fs.rm(path.join(this.dataDir, 'server-state', 'model-catalog', robotId), { recursive: true, force: true }).catch(() => {});
+        }
+        this.manualControl.delete(robotId);
+        this.taskQueues.delete(robotId);
+        this.latestTask.delete(robotId);
+        for (const [id, task] of this.tasks) if (task.robotId === robotId) this.tasks.delete(id);
+    }
+
+    async stopAll() {
+        this.shuttingDown = true;
+        for (const task of this.tasks.values()) {
+            if (!['queued', 'starting', 'running'].includes(task.state)) continue;
+            task.cancelRequested = true;
+            task.state = 'paused';
+            task.completedAt = new Date().toISOString();
+            task.child?.kill('SIGTERM');
+        }
+        await Promise.allSettled(Array.from(this.sessions.values()).map((session) => this.stopContainer(session.robotId, session.mode)));
+        await this.soulGateway.close();
+    }
+}
+
+export const runtimeManagerInternals = { alaFailureMessage, createAlaProgressParser, httpServiceIsReady, normalizeBasePath, robotSessionUrl, MANAGED_LABEL };

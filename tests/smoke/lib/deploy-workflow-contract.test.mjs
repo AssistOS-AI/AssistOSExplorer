@@ -50,7 +50,8 @@ const WORKFLOWS = [
       "'OnlyOfficeAgent|https://github.com/AssistOS-AI/OnlyOfficeAgent.git'",
       "'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'",
       "'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'",
-      "'proxies|https://github.com/AssistOS-AI/proxies.git'",
+      "'legacy-agents|https://github.com/AssistOS-AI/legacy-agents.git'",
+      "'webmeet|https://github.com/AssistOS-AI/webmeet.git'",
       "CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'",
       "CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'",
       "CLOUDFLARE_TUNNEL_SECRET_HANDLE: 'publication/explorer-qa-tunnel'",
@@ -93,16 +94,16 @@ const WORKFLOWS = [
       'Cloudflare management: api-managed',
       'Cloudflare publication: ready',
       'Cloudflare connector: running',
-      'Tracked agents: 16',
-      'Running agents: 16',
-      'EXPECTED_NO_WAIT_AGENTS=10',
+      'Tracked agents: 15',
+      'Running agents: 15',
+      'EXPECTED_NO_WAIT_AGENTS=9',
       'QA_DEPLOY_STARTED_AT_MS="$(node -p \'Date.now()\')"',
       'check-no-wait-readiness.mjs',
       'QA_READY_STREAK',
       'QA_TERMINAL_FAILURE',
       'for _ in $(seq 1 180); do',
       'current-run no-wait readiness evidence failed',
-      'timed out waiting for stable 16/16 process admission and 10/10 semantic readiness',
+      'timed out waiting for stable 15/15 process admission and 9/9 semantic readiness',
       'dedicated persistent `%s` tunnel `%s`, ingress, and DNS API-managed by Ploinky',
       '"${PUBLIC_URL%/}/auth/login?agent=explorer"',
       '"${PUBLIC_URL%/}/auth/login?agent=webAssist"',
@@ -149,7 +150,8 @@ const WORKFLOWS = [
       'Provision Skills Explorer Host workflow first',
       'https://github.com/AssistOS-AI/ploinky.git',
       'https://github.com/AssistOS-AI/AchillesAgentLib.git',
-      '--repo-branch "proxies=${PROXIES_BRANCH:-main}"',
+      '--repo-branch "legacy-agents=${LEGACY_AGENTS_BRANCH:-main}"',
+      '--repo-branch "webmeet=${WEBMEET_BRANCH:-main}"',
       '${PUBLIC_URL%/}/dashboard',
     ],
   },
@@ -187,6 +189,8 @@ for (const workflow of WORKFLOWS) {
     for (const staleEndpoint of STALE_COMPONENT_ENDPOINTS) {
       assert.doesNotMatch(source, staleEndpoint);
     }
+    // No Explorer graph agent lives in proxies any more, so Ploinky never installs it.
+    assert.doesNotMatch(source, /'proxies\|https:\/\/github\.com\/AssistOS-AI\/proxies\.git'/, `${workflow.file} must not require a proxies checkout`);
     if (workflow.file.endsWith('deploy-explorer-qa.yml')) {
       assert.doesNotMatch(source, /BRANCH_ARGS=\(--branch|--branch-fallback|--reset-repos/);
       assert.doesNotMatch(source, /deleteTunnelOnTeardown|create-managed-tunnel/);

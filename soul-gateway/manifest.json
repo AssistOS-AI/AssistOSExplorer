@@ -1,0 +1,138 @@
+{
+    "container": "docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669",
+    "agent": "bash /code/startup.sh",
+    "cli": "bash /code/cli.sh",
+    "about": "Soul Gateway \u2014 Ploinky-managed LLM proxy with Soul Family policies, full content logging, and AchillesIDE settings",
+    "volumes": {
+        ".data/soul-gateway": "/data"
+    },
+    "readiness": {
+        "protocol": "tcp"
+    },
+    "routerAccess": {
+        "httpRoutes": [
+            {
+                "path": "/base-agent-additional-server/soul-gateway/7000/v1/*",
+                "access": "guest"
+            },
+            {
+                "path": "/base-agent-additional-server/soul-gateway/7000/management/*",
+                "access": "authenticated"
+            },
+            {
+                "path": "/base-agent-additional-server/soul-gateway/7000/healthz/*",
+                "access": "public"
+            }
+        ]
+    },
+    "ideSettings": [
+        {
+            "key": "soul-gateway",
+            "label": "Soul Gateway",
+            "scope": "workspace",
+            "pluginKey": "soul-gateway/soul-gateway",
+            "settingsUrl": "/base-agent-additional-server/soul-gateway/7000/management/",
+            "adminOnly": true
+        }
+    ],
+    "profiles": {
+        "default": {
+            "env": {
+                "PORT": {
+                    "required": false,
+                    "default": "7000"
+                },
+                "UPSTREAM_URL": {
+                    "required": false,
+                    "default": "https://proxy.axiologic.dev",
+                    "description": "CLIProxyAPI upstream URL"
+                },
+                "SQLITE_PATH": {
+                    "required": false,
+                    "default": "/data/soul-gateway.sqlite3",
+                    "description": "SQLite database path inside the Soul Gateway agent container"
+                },
+                "DATA_DIR": {
+                    "required": false,
+                    "default": "/data",
+                    "description": "Persistent data directory inside the Soul Gateway agent container"
+                },
+                "CREDENTIALS_DIR": {
+                    "required": false,
+                    "default": "/data/credentials",
+                    "description": "Encrypted provider credential directory inside the Soul Gateway agent container"
+                },
+                "ENCRYPTION_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "AES-256 key for API key encryption (auto-generated if empty)"
+                },
+                "WORKSPACE_PATH": {
+                    "required": false,
+                    "default": ""
+                },
+                "DEFAULT_PROXY_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for authenticating with cliproxyapi upstream"
+                },
+                "ALLOW_UNAUTHENTICATED": {
+                    "required": false,
+                    "default": "false",
+                    "description": "Development-only switch that disables /v1/* API key auth"
+                },
+                "LLM_DEFAULT_TIERS": {
+                    "required": false,
+                    "default": "fast,code,plan,write,deep,ultra,web-assist",
+                    "description": "Comma-separated public tier names the first-start defaults create"
+                },
+                "FREE_MODELS_ENABLED": {
+                    "required": false,
+                    "default": "true",
+                    "description": "Seed the restricted free OpenRouter provider and tiers on first start"
+                },
+                "PRICING_DIRECTORY_TIMEOUT_MS": {
+                    "required": false,
+                    "default": "5000",
+                    "description": "Upper bound in milliseconds for one load of the external pricing directory"
+                },
+                "AXIOLOGIC_PROXY_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for axiologic proxy (CLIProxyAPI)"
+                },
+                "OPENROUTER_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for OpenRouter"
+                },
+                "COPILOT_API_KEY": {
+                    "required": false,
+                    "default": "no-auth-needed",
+                    "description": "Dummy key for copilot provider (copilot-gateway handles its own auth)"
+                },
+                "KIRO_PROXY_API_KEY": {
+                    "required": false,
+                    "default": "no-auth-needed",
+                    "description": "Dummy key for kiro provider (kiro-gateway handles its own auth)"
+                },
+                "OAUTH_ADAPTERS_ENABLED": {
+                    "required": false,
+                    "default": "",
+                    "description": "Comma-separated OAuth adapters to enable"
+                },
+                "TOKEN_REFRESH_INTERVAL_MS": {
+                    "required": false,
+                    "default": "0",
+                    "description": "Set a positive interval to enable token refresh scheduling"
+                },
+                "PRICING_REFRESH_INTERVAL_MS": {
+                    "required": false,
+                    "default": "0",
+                    "description": "Set a positive interval to enable pricing refresh scheduling"
+                }
+            },
+            "install": "bash /code/install.sh"
+        }
+    }
+}

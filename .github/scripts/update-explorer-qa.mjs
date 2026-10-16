@@ -97,7 +97,7 @@ export function classifyChanges(changes, agentRoots) {
             prove(agents.has(root), 'QA_UPDATE_UNKNOWN_RUNTIME_PATH');
             // These reviewed trees are browser modules/assets streamed directly
             // from the route's live hostPath by the Ploinky static handler.
-            const browser = /^(?:explorer|gitAgent|webmeetAgent)\/IDE-plugins\//.test(file)
+            const browser = /^(?:explorer|gitAgent)\/IDE-plugins\//.test(file)
                 || /^explorer\/(?:web-components\/|shared\/(?:ui|assets)\/|assets\/icons\/)/.test(file)
                 || file === 'explorer/services/infrastructure/explorerApi.js';
             if (browser) browserPaths.push({ path: file, deleted: change.newMode === '000000' });

@@ -25,7 +25,7 @@ function fixture(t) {
     const sourcePins = {
         '.runtime/ploinky': { commit: CORE, branch: 'main', origin: 'https://github.com/AssistOS-AI/ploinky.git' },
         [EXPLORER_SOURCE]: { commit: OLD, branch: 'main', origin: 'https://github.com/AssistOS-AI/AssistOSExplorer.git' },
-        '.ploinky/repos/AchillesCLI': { commit: LIB, branch: 'main', origin: 'https://github.com/AssistOS-AI/AchillesCLI.git' },
+        '.ploinky/repos/webmeet': { commit: LIB, branch: 'main', origin: 'https://github.com/AssistOS-AI/webmeet.git' },
     };
     for (const relative of Object.keys(sourcePins)) fs.mkdirSync(path.join(scope.workspace, relative), { recursive: true });
     write(path.join(scope.workspace, '.ploinky/edge-desired.json'), {
@@ -41,10 +41,10 @@ function fixture(t) {
             { Source: path.join(scope.workspace, '.runtime/ploinky'), Destination: '/opt/ploinky' },
         ] } }];
     const agents = ['explorer', 'gitAgent', 'webmeetAgent', 'roboTeamAgent'].map((agent, index) => ({
-        name: `runtime-${agent}`, repo: agent === 'roboTeamAgent' ? 'AchillesCLI' : 'AchillesIDE', agent,
+        name: `runtime-${agent}`, repo: agent === 'webmeetAgent' ? 'webmeet' : 'AchillesIDE', agent,
         alias: '', profile: 'default', auth: 'sso', runMode: 'isolated', instanceId: `instance-${index}`,
         enableGeneration: `generation-${index}`, id: String(index + 1).repeat(64), image: `sha256:${IMAGE}`, ready: true, running: true,
-        hostPath: path.join(scope.workspace, agent === 'roboTeamAgent' ? '.ploinky/repos/AchillesCLI' : EXPLORER_SOURCE, agent),
+        hostPath: path.join(scope.workspace, agent === 'webmeetAgent' ? '.ploinky/repos/webmeet' : EXPLORER_SOURCE, agent),
     }));
     for (const agent of agents) {
         agent.routeKey = agent.agent;
@@ -79,7 +79,7 @@ function fixture(t) {
         upstream: () => state.upstream,
         hasCommit: () => state.local,
         isAncestor: () => state.fastForward,
-        changes: () => structuredClone(state.changes), agentRoots: () => ['explorer', 'gitAgent', 'webmeetAgent'],
+        changes: () => structuredClone(state.changes), agentRoots: () => ['explorer', 'gitAgent', 'roboTeamAgent'],
         fetch(_repo, branch, commit) {
             assert.equal(held, true); assert.equal(branch, 'main'); assert.equal(commit, state.commit);
             events.push('fetch'); state.local = true;
@@ -149,7 +149,7 @@ test('the update verifies the image-supplied AgentLib without any Ploinky depend
 
 test('healthy update fast-forwards only Explorer and restarts only affected enabled agents', async t => {
     const f = fixture(t), prior = structuredClone(f.agents);
-    f.state.changes.push(change('gitAgent/src/index.mjs'), change('webmeetAgent/docs/readme.md'));
+    f.state.changes.push(change('gitAgent/src/index.mjs'), change('roboTeamAgent/docs/readme.md'));
     const result = await f.service.execute(f.receipt);
     assert.equal(result.status, 'updated'); assert.equal(result.boxId, BOX);
     assert.deepEqual(result.agents, ['AchillesIDE/explorer', 'AchillesIDE/gitAgent']);
@@ -177,13 +177,23 @@ test('reviewed browser assets update live sources without restarting any runtime
     const f = fixture(t), previous = structuredClone(f.agents);
     f.state.changes = [change('explorer/services/infrastructure/explorerApi.js'), change('explorer/shared/ui/ui-common.css'),
         change('gitAgent/IDE-plugins/git-tool-button/components/panel.js'),
-        change('webmeetAgent/IDE-plugins/webmeet-tool-button/components/panel.html'), change('docs/architecture.html')];
+        change('docs/architecture.html')];
     const result = await f.service.execute(f.receipt);
     assert.equal(result.status, 'updated'); assert.deepEqual(result.agents, []);
-    assert.deepEqual(result.browserAgents, ['explorer', 'gitAgent', 'webmeetAgent']);
-    assert.equal(result.browserPaths.length, 4); assert.deepEqual(result.browserVerification, { files: 4 });
+    assert.deepEqual(result.browserAgents, ['explorer', 'gitAgent']);
+    assert.equal(result.browserPaths.length, 3); assert.deepEqual(result.browserVerification, { files: 3 });
     assert.deepEqual(f.agents, previous); assert.deepEqual(f.events, ['lock', 'fetch', 'fast-forward', 'verify-browser', 'unlock']);
     f.unchangedData();
+});
+
+test('plugin assets of agents outside the reviewed browser set restart their owner, and a moved agent is not a runtime path', async t => {
+    const moved = fixture(t);
+    moved.state.changes = [change('roboTeamAgent/IDE-plugins/roboteam-tool-button/roboteam-tool-button.js')];
+    const result = await moved.service.execute(moved.receipt);
+    assert.deepEqual(result.agents, ['AchillesIDE/roboTeamAgent']); assert.deepEqual(result.browserAgents, []);
+    const unknown = fixture(t);
+    unknown.state.changes = [change('webmeetAgent/IDE-plugins/webmeet-tool-button/components/panel.html')];
+    await assert.rejects(unknown.service.execute(unknown.receipt), { code: 'QA_UPDATE_UNKNOWN_RUNTIME_PATH' });
 });
 
 test('mixed browser and server changes restart only the server owner', async t => {
@@ -224,7 +234,7 @@ test('browser-only update cannot silently change the active route generation', a
 test('shared code restarts all enabled same-repository agents and retains sibling repositories', async t => {
     const f = fixture(t); f.state.changes = [change('shared/network.mjs')];
     const result = await f.service.execute(f.receipt);
-    assert.deepEqual(result.agents, ['AchillesIDE/explorer', 'AchillesIDE/gitAgent', 'AchillesIDE/webmeetAgent']);
+    assert.deepEqual(result.agents, ['AchillesIDE/explorer', 'AchillesIDE/gitAgent', 'AchillesIDE/roboTeamAgent']);
 });
 
 for (const [name, changeFixture, code] of [
