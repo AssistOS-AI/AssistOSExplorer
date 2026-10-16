@@ -49,6 +49,12 @@ let logRequest = null;
 let liveUpdates = null;
 let flowRequest = null;
 let graphSignature = null;
+// The right side shows one view at a time: the selected phase or the execution graph. Choosing a phase, in the list
+// or in the graph, shows the phase; View execution graph shows the graph. Automatic selection keeps the current view.
+let rightView = 'phase';
+// The phase view's tabs: Logs shows only the log, Status the phase's name, state, prompt and settings. The chosen
+// tab stays open when another phase is selected.
+let phaseTabChoice = 'Logs';
 let flowControlPending = false;
 const phaseRows = new Map();
 
@@ -190,6 +196,17 @@ function renderGraph() {
     } });
 }
 
+function showRightView(view) {
+    rightView = view;
+    document.querySelector('.stage-pane').hidden = view !== 'phase';
+    document.querySelector('#executionGraph').hidden = view !== 'graph';
+    const button = document.querySelector('#graphButton');
+    button.classList.toggle('is-active', view === 'graph');
+    button.setAttribute('aria-pressed', String(view === 'graph'));
+    // The board measures its nodes, so it is drawn again once visible.
+    if (view === 'graph' && currentFlow) { graphSignature = null; renderGraph(); }
+}
+
 function scrollToPanel(panel) {
     const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
     panel.focus({ preventScroll: true });
@@ -224,24 +241,28 @@ function renderStage() {
         const composer = document.createElement('div');
         composer.className = 'phase-composer';
         logs.append(composer, log);
-        view.append(header, detail);
+        const status = document.createElement('div');
+        status.className = 'phase-status';
+        status.append(header, detail);
         const sessionUrl = ['browser', 'desktop'].includes(instance.executionType) ? instance.sessionUrl : null;
         const tabs = document.createElement('div');
         tabs.className = 'phase-tabs';
         const panels = [];
+        const open = entry => {
+            for (const other of panels) {
+                other.panel.hidden = other !== entry;
+                other.tab.classList.toggle('is-active', other === entry);
+            }
+            if (entry.href && !entry.panel.getAttribute('src')) entry.panel.src = entry.href;
+        };
         const addTab = (label, panel, href) => {
-            const tab = phaseTab(label, panels.length === 0, () => {
-                for (const entry of panels) {
-                    entry.panel.hidden = entry.panel !== panel;
-                    entry.tab.classList.toggle('is-active', entry.panel === panel);
-                }
-                if (href && !panel.getAttribute('src')) panel.src = href;
-            });
-            panel.hidden = panels.length > 0;
-            panels.push({ tab, panel });
-            tabs.append(tab);
+            const entry = { label, panel, href };
+            entry.tab = phaseTab(label, false, () => { phaseTabChoice = label; open(entry); });
+            panels.push(entry);
+            tabs.append(entry.tab);
         };
         addTab('Logs', logs);
+        addTab('Status', status);
         const definition = currentFlow.graph.tasks.find(task => task.id === instance.taskId);
         if (definition?.creator || definition?.kind === 'run-workflows') {
             const children = document.createElement('div'); children.className = 'phase-subflows';
@@ -257,6 +278,7 @@ function renderStage() {
             frame.title = `${instance.executionType} session`;
             addTab(instance.executionType === 'desktop' ? 'Desktop' : 'Browser', frame, sessionUrl);
         }
+        open(panels.find(entry => entry.label === phaseTabChoice) || panels[0]);
         view.append(tabs, ...panels.map(entry => entry.panel));
         body.append(view);
         renderPhaseHeader(header, instance);
@@ -538,7 +560,7 @@ function selectDefaultPhase() {
 function selectPhase(instanceId, { explicit = true } = {}) {
     const instance = currentFlow?.instances.find(item => item.id === instanceId);
     if (!instance) return;
-    if (explicit) phaseSelectionExplicit = true;
+    if (explicit) { phaseSelectionExplicit = true; showRightView('phase'); }
     selectedInstanceId = instanceId;
     selectedTaskId = instance.taskId;
     stageView = 'log';
@@ -549,7 +571,7 @@ function selectPhase(instanceId, { explicit = true } = {}) {
 
 function selectPending(taskId, { explicit = true } = {}) {
     if (!currentFlow?.graph.tasks.some(task => task.id === taskId)) return;
-    if (explicit) phaseSelectionExplicit = true;
+    if (explicit) { phaseSelectionExplicit = true; showRightView('phase'); }
     selectedInstanceId = null;
     selectedTaskId = taskId;
     stageView = 'pending';
@@ -559,6 +581,7 @@ function selectPending(taskId, { explicit = true } = {}) {
 }
 
 function showGraph() {
+    showRightView('graph');
     scrollToPanel(document.querySelector('#executionGraph'));
 }
 
@@ -693,6 +716,7 @@ document.querySelector('#toggleFlowObjective').onclick = () => {
 };
 new ResizeObserver(updateObjectiveToggle).observe(document.querySelector('#flowObjective'));
 document.querySelector('#graphButton').onclick = () => { if (currentFlow) showGraph(); };
+showRightView(rightView);
 const terminateDialog = document.querySelector('#terminateFlowDialog');
 const confirmTerminateButton = document.querySelector('#confirmTerminateButton');
 const cancelTerminateButton = document.querySelector('#cancelTerminateButton');

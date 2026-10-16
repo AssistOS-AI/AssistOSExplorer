@@ -206,8 +206,8 @@ test('execution workspace fills the available viewport with bounded panel scroll
     assert.match(css, /\.flow-execution-page \.flow-workspace \{ flex: 1; height: 100%; min-height: 0;[^}]*overflow: auto/);
     assert.match(css, /\.flow-execution-page \.stage-body \{ min-height: 0; overflow: auto/);
     assert.match(css, /\.flow-execution-page \.phase-list \{ flex: 1; min-height: 0/);
-    assert.match(css, /grid-template-rows: repeat\(2, minmax\(0, 1fr\)\)/);
-    assert.match(css, /grid-template-rows: auto 420px 420px/);
+    assert.match(css, /grid-template-columns: minmax\(260px, 310px\) minmax\(0, 1fr\); grid-template-rows: minmax\(0, 1fr\);/);
+    assert.match(css, /grid-template-rows: auto 420px;/);
     assert.doesNotMatch(css, /max-height: min\(35dvh/);
 });
 
@@ -263,26 +263,29 @@ test('execution graph shares the columns container and navigation preserves the 
     assert.match(html, /id="executionGraph"[^>]*tabindex="-1"/);
     const graphPanel = { focus(args) { this.focusArgs = args; }, scrollIntoView(args) { this.scrollArgs = args; } };
     const context = { selectedInstanceId: 'visit', selectedTaskId: 'start', stageView: 'log',
-        document: { querySelector: () => graphPanel }, window: { matchMedia: () => ({ matches: false }) } };
+        document: { querySelector: () => graphPanel }, window: { matchMedia: () => ({ matches: false }) },
+        showRightView(view) { context.rightView = view; } };
     vm.runInNewContext(js.slice(js.indexOf('function scrollToPanel('), js.indexOf('function renderStage(')), context);
     vm.runInNewContext(js.slice(js.indexOf('function showGraph('), js.indexOf('async function toggleFlowPause(')), context);
     context.showGraph();
+    assert.equal(context.rightView, 'graph');
     assert.equal(context.selectedInstanceId, 'visit'); assert.equal(context.selectedTaskId, 'start'); assert.equal(context.stageView, 'log');
     assert.equal(graphPanel.focusArgs.preventScroll, true); assert.equal(graphPanel.scrollArgs.behavior, 'smooth');
     context.window.matchMedia = () => ({ matches: true }); context.showGraph();
     assert.equal(graphPanel.scrollArgs.behavior, 'instant');
 });
 
-test('wide views split logs and graph equally beside phases; stacked phases use their content height', async () => {
+test('the phase view and the graph share the right column; stacked phases use their content height', async () => {
     const [css, js] = await Promise.all([read('workflow-execution.css'), read('roboflow.js')]);
     assert.match(css, /\.phase-pane \{ grid-column: 1; grid-row: 1 \/ -1/);
     assert.match(css, /\.stage-pane \{ grid-column: 2; grid-row: 1/);
-    assert.match(css, /\.execution-graph-pane \{ grid-column: 2; grid-row: 2/);
+    assert.match(css, /\.execution-graph-pane \{ grid-column: 2; grid-row: 1/);
+    assert.match(css, /\.stage-pane\[hidden\], \.flow-execution-page \.execution-graph-pane\[hidden\] \{ display: none; \}/);
     const stacked = css.slice(css.indexOf('@media (max-width: 720px)'));
     assert.match(stacked, /\.phase-pane \{ grid-column: 1; grid-row: 1; height: auto; max-height: none; overflow: visible/);
     assert.match(stacked, /\.phase-list \{ flex: 0 0 auto; max-height: none; overflow: visible/);
     assert.match(stacked, /\.stage-pane \{ grid-column: 1; grid-row: 2/);
-    assert.match(stacked, /\.execution-graph-pane \{ grid-column: 1; grid-row: 3/);
+    assert.match(stacked, /\.execution-graph-pane \{ grid-column: 1; grid-row: 2/);
     assert.doesNotMatch(js, /updatePhaseListHeight|--phase-list-height/);
 });
 
@@ -305,6 +308,7 @@ async function selectionFixture() {
     const context = { selected: 'flow', currentFlow: null, selectedInstanceId: null, selectedTaskId: null,
         phaseSelectionExplicit: false, stageView: 'empty', logRequest: null,
         document: { querySelector: () => null }, renderHeader() {}, renderPhases() {}, renderGraph() {},
+        showRightView(view) { context.rightView = view; },
         renderStage() { redraws++; }, liveUpdates: { reconnect() { reconnects++; } },
         invocationLogKey: instance => instance.id, loadLog(instance) { context.logRequest = { key: instance.id, finalResponse: instance.finalResponse }; } };
     context.instanceForTask = taskId => [...context.currentFlow.instances].reverse().find(instance => instance.taskId === taskId);
@@ -362,8 +366,10 @@ test('no running visit defaults to the actual start node and shows its pending d
 test('explicit selection from a phase or graph remains pinned while other phases run', async () => {
     const { context, apply } = await selectionFixture();
     const instances = [{ id: 'first', taskId: 'start', state: 'completed' }, { id: 'second', taskId: 'middle', state: 'running' }];
-    apply(instances); context.selectPhase('first');
-    assert.equal(context.phaseSelectionExplicit, true);
+    context.rightView = 'graph';
+    apply(instances); assert.equal(context.rightView, 'graph', 'automatic selection keeps the graph shown');
+    context.selectPhase('first');
+    assert.equal(context.phaseSelectionExplicit, true); assert.equal(context.rightView, 'phase');
     apply([...instances, { id: 'third', taskId: 'end', state: 'running' }]);
     assert.equal(context.selectedInstanceId, 'first');
     context.selectPending('end');
@@ -382,4 +388,59 @@ test('clicking the already-defaulted phase explicitly pins it and invalid clicks
     context.selectPhase('first');
     apply([{ id: 'first', taskId: 'start', state: 'completed' }, { id: 'second', taskId: 'middle', state: 'running' }]);
     assert.equal(context.selectedInstanceId, 'first'); assert.equal(context.phaseSelectionExplicit, true);
+});
+
+test('the right column shows either the phase view or the graph, and the graph is drawn again when shown', async () => {
+    const js = await read('roboflow.js');
+    const panes = { '.stage-pane': { hidden: false }, '#executionGraph': { hidden: true } };
+    const classes = new Set(), attributes = {};
+    const button = { classList: { toggle: (name, on) => on ? classes.add(name) : classes.delete(name) }, setAttribute: (name, value) => { attributes[name] = value; } };
+    let draws = 0;
+    const context = { currentFlow: { graph }, graphSignature: 'drawn', rightView: 'phase',
+        document: { querySelector: selector => selector === '#graphButton' ? button : panes[selector] },
+        renderGraph() { draws++; assert.equal(context.graphSignature, null); } };
+    vm.runInNewContext(js.slice(js.indexOf('function showRightView('), js.indexOf('function scrollToPanel(')), context);
+    context.showRightView('graph');
+    assert.deepEqual([panes['.stage-pane'].hidden, panes['#executionGraph'].hidden], [true, false]);
+    assert.ok(classes.has('is-active')); assert.equal(attributes['aria-pressed'], 'true'); assert.equal(draws, 1);
+    context.showRightView('phase');
+    assert.deepEqual([panes['.stage-pane'].hidden, panes['#executionGraph'].hidden], [false, true]);
+    assert.ok(!classes.has('is-active')); assert.equal(attributes['aria-pressed'], 'false'); assert.equal(draws, 1);
+});
+
+test('a phase opens on Logs with its name, state, prompt and settings in a Status tab, and keeps the chosen tab', async () => {
+    const js = await read('roboflow.js');
+    const make = tag => {
+        const node = { tag, children: [], attributes: {}, classes: new Set(), hidden: false, textContent: '',
+            set className(value) { this.classes = new Set(String(value).split(/\s+/).filter(Boolean)); },
+            get className() { return [...this.classes].join(' '); },
+            classList: null, append(...children) { this.children.push(...children); }, replaceChildren(...children) { this.children = children; },
+            setAttribute(name, value) { this.attributes[name] = value; }, getAttribute(name) { return this.attributes[name] ?? null; } };
+        node.classList = { toggle: (name, on) => on ? node.classes.add(name) : node.classes.delete(name) };
+        return node;
+    };
+    const body = make('div'), title = make('span');
+    const placed = {};
+    const context = { stageView: 'log', selectedInstanceId: 'visit', selected: 'flow', phaseTabChoice: 'Logs',
+        currentFlow: { graph: { tasks: [{ id: 'start' }] }, instances: [{ id: 'visit', taskId: 'start', executionType: 'terminal' }] },
+        document: { createElement: make, querySelector: selector => ({ '#stageBody': body, '#stageTitle': title })[selector] },
+        element: (tag, text) => Object.assign(make(tag), { textContent: text }), api: path => path,
+        renderPhaseHeader: header => { placed.header = header; }, renderPhaseDetail: detail => { placed.detail = detail; },
+        renderPhaseComposer() {}, loadLog() {}, renderSubflows() {} };
+    vm.runInNewContext(js.slice(js.indexOf('function renderStage('), js.indexOf('function renderSubflows(')), context);
+    vm.runInNewContext(js.slice(js.indexOf('function phaseTab('), js.indexOf('function renderPhaseHeader(')), context);
+    context.renderStage();
+    const view = body.children[0];
+    const [tabs, ...panels] = view.children;
+    assert.deepEqual(tabs.children.map(tab => tab.textContent), ['Logs', 'Status', 'human-report']);
+    const shown = () => panels.filter(panel => !panel.hidden).map(panel => panel.className);
+    assert.deepEqual(shown(), ['phase-logs-section'], 'Logs shows only the log');
+    const status = panels.find(panel => panel.className === 'phase-status');
+    assert.deepEqual(status.children, [placed.header, placed.detail]);
+    tabs.children[1].onclick();
+    assert.deepEqual(shown(), ['phase-status']);
+    assert.ok(tabs.children[1].classes.has('is-active') && !tabs.children[0].classes.has('is-active'));
+    // Selecting another phase renders it on the tab chosen last.
+    context.renderStage();
+    assert.deepEqual(body.children[0].children.slice(1).filter(panel => !panel.hidden).map(panel => panel.className), ['phase-status']);
 });

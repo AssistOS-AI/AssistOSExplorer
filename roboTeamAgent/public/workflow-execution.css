@@ -16,20 +16,23 @@
 .flow-execution-page .flow-actions { flex: 0 0 auto; }
 .flow-execution-page .status-badge, .flow-execution-page .phase-view-status { display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: var(--font-xs); text-transform: none; letter-spacing: normal; }
 .flow-execution-page .status-badge, .flow-execution-page .phase-view-status { color: var(--execution-text); padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--execution-color) 10%, var(--surface)); font-weight: 600; }
-.flow-execution-page .flow-columns { flex: 1; min-height: 0; grid-template-columns: minmax(260px, 310px) minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.flow-execution-page .flow-columns { flex: 1; min-height: 0; grid-template-columns: minmax(260px, 310px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 20px; }
+/* The right column holds either the phase view or the execution graph. */
+.flow-execution-page .stage-pane[hidden], .flow-execution-page .execution-graph-pane[hidden] { display: none; }
 .flow-execution-page .phase-pane, .flow-execution-page .stage-pane { min-width: 0; padding: 16px; border-radius: var(--radius-lg); overflow: auto; }
 .flow-execution-page .stage-body { min-height: 0; overflow: auto; }
 .flow-execution-page .stage-toolbar { flex-shrink: 0; }
 .flow-execution-page .phase-pane > :not(.phase-list) { flex-shrink: 0; }
 .flow-execution-page .phase-pane { grid-column: 1; grid-row: 1 / -1; gap: 14px; background: color-mix(in srgb, var(--bg) 45%, var(--surface)); }
 .flow-execution-page .stage-pane { grid-column: 2; grid-row: 1; }
+.flow-execution-page .phase-pane #graphButton.is-active { color: var(--accent); font-weight: 600; }
 .flow-execution-page .phase-pane .section-heading { justify-content: space-between; margin: 0; gap: 8px; }
 .flow-execution-page .phase-pane .section-heading h3 { font-size: var(--font-sm); font-weight: 600; }
 .flow-execution-page .phase-pane #graphButton { display: flex; align-items: center; gap: 8px; width: auto; margin: 0; padding: 6px 0 12px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text-soft); font: inherit; font-size: var(--font-sm); font-weight: 500; text-align: left; text-underline-offset: 3px; cursor: pointer; }
 .flow-execution-page .phase-pane #graphButton:hover { color: var(--accent); text-decoration: underline; background: transparent; }
 .graph-navigation svg { flex-shrink: 0; }
 .flow-execution-page .phase-list { flex: 1; min-height: 0; gap: 6px; }
-.execution-graph-pane { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); scroll-margin-top: 12px; }
+.execution-graph-pane { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); scroll-margin-top: 12px; }
 .execution-graph-pane .stage-title { margin: 0; font-weight: 600; }
 .graph-caption { margin: 6px 0 0; color: var(--text-soft); font-size: var(--font-xs); }
 .execution-graph-pane .stage-board { overflow: hidden; }
@@ -71,6 +74,8 @@
 .flow-execution-page .stage-toolbar { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .flow-execution-page .stage-title { font-size: var(--font-sm); }
 .flow-execution-page .phase-view-header { gap: 8px 12px; }
+.flow-execution-page .phase-status { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; }
+.flow-execution-page .phase-status[hidden] { display: none; }
 .flow-execution-page .phase-view-name { font-size: var(--font-sm); font-weight: 600; }
 .flow-execution-page .phase-tabs { gap: 16px; border-bottom: 1px solid var(--border); }
 .flow-execution-page .phase-tab { margin-bottom: -1px; padding: 8px 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--text-soft); font: inherit; font-size: var(--font-sm); }
@@ -82,11 +87,11 @@
 .flow-execution-page #message:empty { display: none; }
 
 @media (max-width: 720px) {
-    .flow-execution-page .flow-columns { flex: 0 0 auto; grid-template-columns: 1fr; grid-template-rows: auto 420px 420px; }
+    .flow-execution-page .flow-columns { flex: 0 0 auto; grid-template-columns: 1fr; grid-template-rows: auto 420px; }
     .flow-execution-page .phase-pane { grid-column: 1; grid-row: 1; height: auto; max-height: none; overflow: visible; }
     .flow-execution-page .phase-list { flex: 0 0 auto; max-height: none; overflow: visible; }
     .flow-execution-page .stage-pane { grid-column: 1; grid-row: 2; }
-    .flow-execution-page .execution-graph-pane { grid-column: 1; grid-row: 3; }
+    .flow-execution-page .execution-graph-pane { grid-column: 1; grid-row: 2; }
 }
 @media (max-width: 600px) {
     .flow-execution-page .flow-header { gap: 10px; }
