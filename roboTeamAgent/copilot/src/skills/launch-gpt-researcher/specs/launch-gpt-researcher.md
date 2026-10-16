@@ -33,8 +33,8 @@ JSON payload. Failed runs return the agent error text or an MCP failure message.
 
 The call path uses the runtime bridge backed by parent-process `AgentMcpClient` and invokes
 its `callToolWithoutWait` capability. Before invoking research, it checks Marketplace status
-and starts optional workers in dependency order: first `proxies/searchAgent`,
-then `AchillesCLI/GPTResearcher`. Each worker receives `enable_agent` only when
+and starts optional workers in dependency order: first `legacy-agents/searchAgent`,
+then `legacy-agents/GPTResearcher`. Each worker receives `enable_agent` only when
 it is not already running, each activation explicitly requests `global` mode,
 and the tool call waits for both runtimes to become
 ready. Async task metadata is offered to the process-local

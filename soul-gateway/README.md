@@ -6,7 +6,7 @@ The service runs as a Ploinky-managed agent behind the Ploinky Router. Public in
 
 ## Prerequisites
 
-- A Ploinky workspace that can enable the `proxies/soul-gateway` agent.
+- A Ploinky workspace that can enable the `AchillesIDE/soul-gateway` agent.
 - The Ploinky Node 24 agent image declared by `manifest.json`.
 - Ploinky-injected signed-subject authentication values: `PLOINKY_AGENT_API_PUBLIC_KEY`, `PLOINKY_ROUTER_URL`, `PLOINKY_AGENT_ID`, and `PLOINKY_AGENT_SECRET`.
 - Runtime dependencies supplied through the Ploinky agent dependency cache, including `achillesAgentLib`; Node supplies the built-in `node:sqlite` API used by `src/db/sqlite-db.mjs`.
@@ -18,7 +18,7 @@ The service runs as a Ploinky-managed agent behind the Ploinky Router. Public in
 Enable and start the agent from a Ploinky workspace:
 
 ```bash
-ploinky enable agent proxies/soul-gateway as soul-gateway
+ploinky enable agent AchillesIDE/soul-gateway as soul-gateway
 ploinky start soul-gateway
 ```
 

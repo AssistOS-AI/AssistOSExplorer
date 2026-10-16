@@ -81,12 +81,6 @@ For provider transport changes, also run the relevant `achillesAgentLib` tests f
 
 Soul Gateway is no longer deployed at `https://soul.axiologic.dev` (user confirmed 2026-10-11), and there is no remote production Soul Gateway. It runs as a local Ploinky agent and is the workspace's local LLM hub. The container database is `/data/soul-gateway.sqlite3` (embedded SQLite).
 
-The `deploy-soul-gateway.yml`, `destroy-soul-gateway.yml`, and `soul-gateway-admin.yml` workflows deploy over SSH to the repository's `REMOTE_HOST`, the host of the former deployment, which has since run other services. Do not run them unless the user selects a new target and confirms that host.
-
-Deployment and administration workflows live under `../.github/workflows/`:
-
-- `deploy-soul-gateway.yml` (`Deploy Soul Gateway`)
-- `destroy-soul-gateway.yml` (`Destroy Soul Gateway`)
-- `soul-gateway-admin.yml` (`Soul Gateway Admin`)
+This folder moved here from the `proxies` repository (history preserved). The `deploy-soul-gateway.yml`, `destroy-soul-gateway.yml`, `soul-gateway-admin.yml` and `deploy-search-gateway.yml` workflows deployed over SSH to the former host and were removed from `proxies` in the same change; its history keeps them. `deploy.sh` in this folder is the remaining manual script for that retired host. Do not run it unless the user selects a new target and confirms that host.
 
 Ploinky deploys and restarts the local Soul Gateway (Explorer enables it, so `ploinky start explorer` starts it). After a deployment or restart, verify the Router health path, container status, and the SQLite file named by the required `SQLITE_PATH` inside the container.

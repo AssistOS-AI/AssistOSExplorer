@@ -56,7 +56,7 @@
                 <div class="doc-section" id="path-safety">
                     <h2>Path Safety</h2>
                     <p>All <a href="wiki.html#definition-explorer">Explorer</a> <a href="wiki.html#definition-mcp">MCP</a> tools enforce the configured allowed roots. Relative paths are resolved inside the workspace context, absolute paths are accepted only if they stay inside allowed roots, and traversal outside those roots is rejected. That path model is the reason <a href="wiki.html#definition-explorer">Explorer</a> can expose reads, edits, copies, moves, and directory searches without giving callers unrestricted host filesystem access.</p>
-                    <p>For the broader backend boundary, see <a href="backend.html#filesystem-mcp">Backend → Filesystem MCP</a>. For domain operations owned by other agents, continue to the <a href="../gitAgent/docs/index.html">Git Agent</a> or <a href="../soplangAgent/docs/index.html">SOPLang Agent</a> documentation instead of treating <a href="wiki.html#definition-explorer">Explorer</a> as a shared tool dump.</p>
+                    <p>For the broader backend boundary, see <a href="backend.html#filesystem-mcp">Backend → Filesystem MCP</a>. For domain operations owned by other agents, continue to the <a href="../gitAgent/docs/index.html">Git Agent</a> or <a href="https://github.com/AssistOS-AI/legacy-agents/blob/main/soplangAgent/docs/index.html">SOPLang Agent</a> documentation instead of treating <a href="wiki.html#definition-explorer">Explorer</a> as a shared tool dump.</p>
                     <pre><code>{
   path: "/.ploinky/repos/AchillesIDE/docs/development.html",
   source: "/repo/fileA.txt",

@@ -9,7 +9,7 @@ summary: Defines Explorer-owned SCRIPTA identity, Markdown metadata, Automerge s
 
 SCRIPTA is [Explorer](wiki.html#definition-explorer)'s structured collaboration model for Markdown documents. [Explorer](wiki.html#definition-explorer) is the sole document authority. During editing, the canonical [Automerge](wiki.html#definition-automerge) document is the working state and Markdown is its durable, portable materialization. WebMeet, Advanced Editor, and other consumers use [Explorer](wiki.html#definition-explorer)'s semantic or collaboration APIs; they do not parse, overwrite, or independently reconcile SCRIPTA Markdown.
 
-This specification defines the Explorer-owned core. WebMeet board placement, room attachment, guest interaction, RoboTeam event mapping, Meeting Notes, and realtime presentation are integration concerns defined by WebMeet DS009.
+This specification defines the Explorer-owned core. WebMeet board placement, room attachment, guest interaction, RoboTeam event mapping, Meeting Notes, and realtime presentation are integration concerns defined by WebMeet DS009 in the `webmeet` repository.
 
 ## Core Content
 

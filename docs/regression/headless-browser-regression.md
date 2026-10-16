@@ -53,7 +53,7 @@ Prepare role-correct private sign-in inputs before execution. Umami needs userna
 and password, OnlyOffice an absolute selected Ploinky executable, and the official
 WebMeet case two distinct verified users plus the headless/media profile. The
 public-room WebMeet case needs only the primary account and no WebMeet flags. Spec04
-needs the installed searchAgent catalog fixture. Spec61 uses synthetic tokens.
+needs the installed `legacy-agents/searchAgent` catalog fixture. Spec61 uses synthetic tokens.
 The public-room case leaves the guest through the UI and waits for session cleanup and LiveKit disconnection before deleting its rooms. It closes browser contexts before flushing final diagnostics and rejects every console error and page error, including cleanup errors.
 Keep GPT Researcher excluded and browser errors strict. The explorer tool-worker pool is active (see DS002); the preflight no longer requires the opt-in to be absent.
 WebTTY retains the last collector/binding/eligibility/stability cause and rejects
@@ -279,7 +279,7 @@ Purpose: verify that WebMeet works end to end with two Explorer accounts, routed
 
 Preconditions:
 
-- `webmeetAgent` and `liveKitServerAgent` services are running from `ploinky start explorer`.
+- `webmeet/webmeetAgent` and `webmeet/liveKitServerAgent` services (from the `webmeet` repository) are running from `ploinky start explorer`.
 - Two Explorer accounts exist from the shared account steps.
 - Browser contexts are launched with fake camera and microphone devices.
 
@@ -341,7 +341,7 @@ Purpose: verify that WebChat and WebMeet keep workspace/file `@` references usab
 
 Preconditions:
 
-- `AchillesCLI/roboTeamAgent` and `webmeetAgent` are enabled in the workspace.
+- `AchillesIDE/roboTeamAgent` and `webmeet/webmeetAgent` are enabled in the workspace.
 - Create uploads, rooms, and chat text with `SMOKE_RUN_ID` names so repeated smoke runs do not collide.
 - Run Copilot semantic routing checks separately with `SMOKE_OPEN_INTERPRETER=1` when the external provider runtime is configured.
 
