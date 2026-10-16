@@ -613,20 +613,20 @@ test.describe('Ploinky core WebTTY release gate', () => {
           return candidate;
       }, candidate => {
           requireAgentEvidence(candidate, 'gitAgent', { eligible: true });
-          requireAgentEvidence(candidate, 'liveKitServerAgent', { eligible: false });
+          requireAgentEvidence(candidate, 'workspaceMonitorAgent', { eligible: false });
       }), {
-        message: 'the exact fresh gitAgent and isolated liveKitServerAgent runtimes must become ready',
+        message: 'the exact fresh gitAgent and isolated workspaceMonitorAgent runtimes must become ready',
         timeout: smokeConfig.timeouts.relay,
         intervals: [1_000, 2_000, 5_000],
       }).toBe(true), body => testInfo.attach('webtty-readiness_codex.json', {
           body, contentType: 'application/json',
       }), readiness.evidence);
       const initialGitAgent = requireAgentEvidence(initialRuntime, 'gitAgent', { eligible: true });
-      const isolatedLiveKit = requireAgentEvidence(initialRuntime, 'liveKitServerAgent', { eligible: false });
+      const isolatedMonitor = requireAgentEvidence(initialRuntime, 'workspaceMonitorAgent', { eligible: false });
       const readOnlyAgent = initialRuntime.agents.find((agent) => agent.projectedTarget?.access === 'ro') || null;
       let readOnlyTargetExercised = false;
       expect(initialRuntime.eligibleTargets.length, 'the fresh graph must expose at least one proven agent target').toBeGreaterThan(0);
-      expect(isolatedLiveKit.runMode).toBe('isolated');
+      expect(isolatedMonitor.runMode).toBe('isolated');
 
       const canonicalOrigin = new URL(smokeConfig.baseURL).origin;
       const missingCsrf = await directAuthenticatedMutation(page, '/webtty/sessions', {
@@ -661,8 +661,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
         .toEqual(sortedTargets(initialRuntime.eligibleTargets));
       expect(publicTarget(firstChooser.discovery.targets[0])).toEqual(expectedBoxTarget);
       expect(firstChooser.discovery.targets.some((target) => (
-        target.label === isolatedLiveKit.agentName
-        && target.detail === `${isolatedLiveKit.repoName}/${isolatedLiveKit.agentName}`
+        target.label === isolatedMonitor.agentName
+        && target.detail === `${isolatedMonitor.repoName}/${isolatedMonitor.agentName}`
       ))).toBe(false);
       await expect(firstChooser.chooser).toHaveAttribute('aria-labelledby', 'terminalTargetTitle');
       await expect(firstChooser.chooser.getByRole('button', { name: 'Refresh' })).toBeVisible();

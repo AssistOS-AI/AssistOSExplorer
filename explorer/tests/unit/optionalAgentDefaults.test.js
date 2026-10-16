@@ -13,7 +13,7 @@ const SIBLING_REPOS = {
     'legacy-agents': 'https://github.com/AssistOS-AI/legacy-agents.git',
     webmeet: 'https://github.com/AssistOS-AI/webmeet.git',
 };
-const localOptionalAgents = ['webmeetScribeAgent', 'webmeetStt'];
+const localOptionalAgents = ['webmeetAgent', 'liveKitServerAgent', 'webmeetScribeAgent', 'webmeetStt'];
 const refOf = (entry) => (typeof entry === 'string' ? entry : entry.agent).split(/\s+/)[0];
 
 // Canonical `repo/agent` identity of an enable ref. A bare ref belongs to the
@@ -56,8 +56,8 @@ test('Explorer local dependency graph excludes optional agents while retaining t
         }
     }
     await visit(identityOf('explorer'));
-    assert.ok(visited.has('webmeet/webmeetAgent'));
-    assert.ok(visited.has('webmeet/liveKitServerAgent'));
+    assert.equal(visited.has('webmeet/webmeetAgent'), false, 'WebMeet must stay off the default graph');
+    assert.equal(visited.has('webmeet/liveKitServerAgent'), false, 'LiveKit must stay off the default graph');
     assert.ok(visited.has('AchillesIDE/roboTeamAgent'));
     assert.ok(visited.has('AchillesIDE/soul-gateway'));
     for (const agent of localOptionalAgents) {
@@ -75,6 +75,8 @@ test('Explorer local dependency graph excludes optional agents while retaining t
         false,
         'OnlyOffice must stay disabled by default'
     );
+    assert.equal(explorer.repos?.webmeet, SIBLING_REPOS.webmeet, 'Explorer must install webmeet so Marketplace can offer WebMeet');
+    assert.equal(explorer.applicationPlugins?.webmeet, true, 'the WebMeet toolbar plugin stays admitted so it can enable the agent on demand');
     const scribe = await readManifest('webmeet/webmeetScribeAgent');
     assert.ok(scribe.enable.some((entry) => identityOf(refOf(entry), 'webmeet') === 'webmeet/liveKitServerAgent'));
 });
@@ -95,10 +97,10 @@ test('Explorer installs the legacy-agents and webmeet repositories and keeps Uma
     );
 });
 
-test('Explorer and WebMeet share the local LiveKit runtime without installing retired stack repositories', async () => {
+test('WebMeet and Scribe share the local LiveKit runtime, Explorer has no LiveKit edge, and retired stack repositories are not installed', async () => {
     const livekit = 'webmeet/liveKitServerAgent';
     const edges = {
-        [identityOf('explorer')]: `${livekit} no-wait`,
+        [identityOf('explorer')]: null,
         'webmeet/webmeetAgent': `${livekit} no-wait`,
         'webmeet/webmeetScribeAgent': livekit,
     };
@@ -109,7 +111,7 @@ test('Explorer and WebMeet share the local LiveKit runtime without installing re
             .map((entry) => (typeof entry === 'string' ? entry : entry.agent).trim())
             .filter((entry) => identityOf(entry.split(/\s+/)[0], repo) === livekit)
             .map((entry) => [identityOf(entry.split(/\s+/)[0], repo), ...entry.split(/\s+/).slice(1)].join(' '));
-        assert.deepEqual(livekitEdges, [expected], identity);
+        assert.deepEqual(livekitEdges, expected ? [expected] : [], identity);
         for (const retired of ['basic', ['webmeet', 'Infra'].join('')]) {
             assert.equal(Object.hasOwn(manifest.repos || {}, retired), false);
             assert.equal(manifest.enable.some((entry) => refOf(entry).startsWith(`${retired}/`)), false);

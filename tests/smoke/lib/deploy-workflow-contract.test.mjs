@@ -239,7 +239,7 @@ test('Explorer deployment workflows neither provision nor inspect the retired lo
     }
 });
 
-test('Skills Explorer retains the relocated LiveKit image override and readiness contract', () => {
+test('Skills Explorer keeps the LiveKit env plumbing but no longer pulls or gates on LiveKit by default', () => {
     const source = fs.readFileSync(path.join(ROOT, '.github/workflows/deploy-skills-explorer.yml'), 'utf8');
     for (const required of [
         "WEBMEET_INFRA_IMAGE_TAG: ${{ inputs.webmeet_infra_image_tag || vars.WEBMEET_INFRA_IMAGE_TAG || 'webmeet-infra' }}",
@@ -247,11 +247,15 @@ test('Skills Explorer retains the relocated LiveKit image override and readiness
         'write_env WEBMEET_INFRA_HEALTH_PORT',
         'set_var WEBMEET_INFRA_IMAGE_TAG "${WEBMEET_INFRA_IMAGE_TAG:-webmeet-infra}"',
         'set_var WEBMEET_INFRA_HEALTH_PORT "${WEBMEET_INFRA_HEALTH_PORT:-17000}"',
+    ]) {
+        assert.equal(source.includes(required), true, `missing LiveKit compatibility contract: ${required}`);
+    }
+    for (const retired of [
         'podman pull "docker.io/assistos/livekit-server-agent:${WEBMEET_INFRA_IMAGE_TAG}"',
         '"http://127.0.0.1:${WEBMEET_INFRA_HEALTH_PORT}/"',
         'liveKitServerAgent health did not respond and STRICT_INFRA_CHECKS=1.',
     ]) {
-        assert.equal(source.includes(required), true, `missing LiveKit compatibility contract: ${required}`);
+        assert.equal(source.includes(retired), false, `LiveKit is not started by default, so the deploy must not gate on it: ${retired}`);
     }
     assert.doesNotMatch(source, /cleanup_retired_webmeet_infra|retired_pattern|delete agents\[key\]|delete routing\.routes\[key\]/);
 });

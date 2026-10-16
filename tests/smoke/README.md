@@ -139,6 +139,8 @@ synthetic tokens and needs no real GitHub PAT. Unused optional secrets are not
 required. The official meeting identity requires `SMOKE_WEBMEET_HEADLESS=1`,
 `SMOKE_WEBMEET_MEDIA=1`, and `SMOKE_MEDIA_TIMEOUT_MS=60000`.
 
+The WebMeet specs open the WebMeet dashboard URL directly rather than through the Explorer toolbar, so the on-demand enablement does not apply. WebMeet is disabled in the default graph: enable `webmeet/webmeetAgent` in global mode (Marketplace or `ploinky enable agent webmeet/webmeetAgent global`) and wait for it and LiveKit to be Running before any WebMeet gate.
+
 The official release cohort has a second WebMeet gate, the public-room gate, which
 proves that anyone with the URL of a public room can join that room. It is
 `specs/30-webmeet-room-chat.spec.mjs` with the title grep
@@ -547,7 +549,7 @@ the administrator-only Explorer launcher, the native chooser's accessible
 name, Box-first ordering, and that the chooser renders exactly the bounded
 safe target rows independently derived from exact current registry, immutable
 container, ownership-label, and mount evidence. The fresh graph must include
-the global `gitAgent` and isolated `liveKitServerAgent`; the former must be
+the global `gitAgent` and isolated `workspaceMonitorAgent`; the former must be
 eligible and the latter must be absent for the selected folder. Any naturally
 present effective read-only or destination-shadowed mount is evaluated by the
 same independent physical inventory instead of being fabricated by the test.

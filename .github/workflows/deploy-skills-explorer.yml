@@ -471,9 +471,6 @@ jobs:
           echo "[deploy] Pulling Ploinky Node image docker.io/assistos/ploinky-node:${PLOINKY_NODE_IMAGE_TAG}..."
           podman pull "docker.io/assistos/ploinky-node:${PLOINKY_NODE_IMAGE_TAG}"
 
-          echo "[deploy] Pulling liveKitServerAgent image docker.io/assistos/livekit-server-agent:${WEBMEET_INFRA_IMAGE_TAG}..."
-          podman pull "docker.io/assistos/livekit-server-agent:${WEBMEET_INFRA_IMAGE_TAG}"
-
           echo "[deploy] Starting Explorer..."
           nohup env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" start AchillesIDE/explorer "$ROUTER_PORT" \
             --branch "${EXPLORER_BRANCH:-main}" \
@@ -497,30 +494,6 @@ jobs:
             fi
             sleep 2
           done
-
-          case "$(printf '%s' "${STRICT_INFRA_CHECKS:-0}" | tr '[:upper:]' '[:lower:]')" in
-            1|true|yes|on) INFRA_FATAL=1; INFRA_ATTEMPTS=120 ;;
-            *) INFRA_FATAL=0; INFRA_ATTEMPTS=15 ;;
-          esac
-          echo "[deploy] Verifying liveKitServerAgent health on 127.0.0.1:${WEBMEET_INFRA_HEALTH_PORT} (fatal=${INFRA_FATAL})..."
-          LK_OK=0
-          for i in $(seq 1 "$INFRA_ATTEMPTS"); do
-            code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEBMEET_INFRA_HEALTH_PORT}/" || true)"
-            if [ "$code" = "200" ]; then
-              LK_OK=1
-              echo "[deploy] liveKitServerAgent health responding with HTTP $code"
-              break
-            fi
-            sleep 2
-          done
-          if [ "$LK_OK" != "1" ]; then
-            if [ "$INFRA_FATAL" = "1" ]; then
-              echo "[deploy] ERROR: liveKitServerAgent health did not respond and STRICT_INFRA_CHECKS=1."
-              tail -120 "$WORK_DIR/logs/skills-explorer-start.log" || true
-              exit 1
-            fi
-            echo "[deploy] WARNING: liveKitServerAgent health not responding; continuing (non-strict)."
-          fi
 
           echo "[deploy] Containers:"
           podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | head -100

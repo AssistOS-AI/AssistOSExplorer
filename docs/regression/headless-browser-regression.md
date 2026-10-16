@@ -279,7 +279,7 @@ Purpose: verify that WebMeet works end to end with two Explorer accounts, routed
 
 Preconditions:
 
-- `webmeet/webmeetAgent` and `webmeet/liveKitServerAgent` services (from the `webmeet` repository) are running from `ploinky start explorer`.
+- `webmeet/webmeetAgent` (global mode) and its transitively enabled `webmeet/liveKitServerAgent` (from the `webmeet` repository) are running. `ploinky start explorer` does not start them: enable WebMeet first through Marketplace or `ploinky enable agent webmeet/webmeetAgent global`.
 - Two Explorer accounts exist from the shared account steps.
 - Browser contexts are launched with fake camera and microphone devices.
 
