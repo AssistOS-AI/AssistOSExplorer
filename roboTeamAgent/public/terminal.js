@@ -19,7 +19,7 @@ export async function discoverRobotTerminal(directory, { fetchImpl = fetch, cook
         method: 'DELETE', credentials: 'same-origin', headers, keepalive: true,
     }).catch(() => {});
     const matches = Array.isArray(discovery.targets) ? discovery.targets.filter(target =>
-        target.kind === 'agent' && target.detail === 'AchillesCLI/roboTeamAgent' && target.access === 'rw') : [];
+        target.kind === 'agent' && target.detail === 'AchillesIDE/roboTeamAgent' && target.access === 'rw') : [];
     if (discovery.directory !== directory || !Number.isSafeInteger(discovery.expiresAt) || discovery.expiresAt <= Date.now()
         || matches.length !== 1 || !IDENTIFIER.test(matches[0]?.launch || '')) {
         await cancel();

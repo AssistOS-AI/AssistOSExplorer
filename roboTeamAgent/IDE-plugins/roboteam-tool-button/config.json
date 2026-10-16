@@ -13,7 +13,7 @@
     "toolbarModal": {
         "mode": "iframe",
         "url": "/base-agent-additional-server/roboTeamAgent/3001/",
-        "agentRef": "AchillesCLI/roboTeamAgent",
+        "agentRef": "AchillesIDE/roboTeamAgent",
         "fullscreen": true
     },
     "dependencies": []

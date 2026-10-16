@@ -8,7 +8,7 @@ set -e
 
 WORKSPACE="$HOME/soulGateway"
 PLOINKY="$HOME/ploinky/bin/ploinky"
-PROXIES_REPO="https://github.com/AssistOS-AI/proxies.git"
+EXPLORER_REPO="https://github.com/AssistOS-AI/AssistOSExplorer.git"
 BASIC_REPO="https://github.com/AssistOS-AI/Basic.git"
 CODE_DIR="$HOME/code"
 ROUTER_URL="${PLOINKY_ROUTER_URL:-http://localhost:${ROUTER_PORT:-8080}}"
@@ -17,16 +17,16 @@ PLOINKY_ADMIN_USER="${PLOINKY_ADMIN_USER:-admin}"
 
 echo "=== Soul Gateway Deploy ==="
 
-# 1. Clone or pull the proxies repo
-if [ -d "$CODE_DIR/proxies/.git" ]; then
-    echo "Pulling latest proxies..."
-    cd "$CODE_DIR/proxies"
+# 1. Clone or pull the repo that holds soul-gateway (Ploinky names it AchillesIDE)
+if [ -d "$CODE_DIR/AssistOSExplorer/.git" ]; then
+    echo "Pulling latest AssistOSExplorer..."
+    cd "$CODE_DIR/AssistOSExplorer"
     git fetch origin main
     git reset --hard origin/main
 else
-    echo "Cloning proxies repo..."
+    echo "Cloning AssistOSExplorer repo..."
     mkdir -p "$CODE_DIR"
-    git clone "$PROXIES_REPO" "$CODE_DIR/proxies"
+    git clone "$EXPLORER_REPO" "$CODE_DIR/AssistOSExplorer"
 fi
 
 # 2. Clone or pull the basic repo
@@ -46,11 +46,11 @@ cd "$WORKSPACE"
 
 # 4. Register repos with ploinky (symlink to source)
 mkdir -p "$WORKSPACE/.ploinky/repos"
-ln -sfn "$CODE_DIR/proxies" "$WORKSPACE/.ploinky/repos/proxies"
+ln -sfn "$CODE_DIR/AssistOSExplorer" "$WORKSPACE/.ploinky/repos/AchillesIDE"
 ln -sfn "$CODE_DIR/basic" "$WORKSPACE/.ploinky/repos/basic"
 
 if [ ! -f "$WORKSPACE/.ploinky/enabled_repos.json" ]; then
-    echo '["basic","proxies"]' > "$WORKSPACE/.ploinky/enabled_repos.json"
+    echo '["basic","AchillesIDE"]' > "$WORKSPACE/.ploinky/enabled_repos.json"
 fi
 
 # 5. Set ploinky vars for soul-gateway
@@ -73,7 +73,7 @@ fi
 # 7. Ensure the gateway is protected by Ploinky local auth
 echo "Ensuring soul-gateway uses Ploinky local auth..."
 $PLOINKY disable soul-gateway 2>&1 || true
-$PLOINKY enable agent proxies/soul-gateway \
+$PLOINKY enable agent AchillesIDE/soul-gateway \
     --auth pwd \
     --user "$PLOINKY_ADMIN_USER" \
     --password "$PLOINKY_ADMIN_PASSWORD" \

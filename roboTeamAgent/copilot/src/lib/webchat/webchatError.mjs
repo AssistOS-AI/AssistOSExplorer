@@ -38,8 +38,8 @@ function mapSourceFrame(frame) {
         const relativeModulePath = frame.filePath.slice(codeIndex + codeMarker.length);
         return {
             ...frame,
-            label: `AchillesCLI/roboTeamAgent/${relativeModulePath}`,
-            workspacePath: `.ploinky/repos/AchillesCLI/roboTeamAgent/${relativeModulePath}`,
+            label: `AchillesIDE/roboTeamAgent/${relativeModulePath}`,
+            workspacePath: `.ploinky/repos/AchillesIDE/roboTeamAgent/${relativeModulePath}`,
         };
     }
 

@@ -54,7 +54,7 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(entry.name)) throw new Error('Invalid robot skill name');
         let source = await fs.realpath(entry.sourcePath);
         if (entry.builtin) {
-            const repository = repositories.find(repo => repo.name === 'AchillesCLI' && repo.origin !== 'remote');
+            const repository = repositories.find(repo => repo.name === 'AchillesIDE' && repo.origin !== 'remote');
             if (repository) source = await fs.realpath(path.join(repository.source, 'roboTeamAgent/copilot/src/skills',
                 path.relative(entry.owner || copilotSkillsRoot, source)));
         }

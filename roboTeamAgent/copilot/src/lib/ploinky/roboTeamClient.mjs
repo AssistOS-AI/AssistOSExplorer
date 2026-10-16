@@ -1,7 +1,7 @@
 import { callToolWhenReady, ensureAgentsRunning } from './ploinkyAgentRuntime.mjs';
 
 export const ROBOTEAM_AGENT = 'roboTeamAgent';
-export const ROBOTEAM_AGENT_REF = 'AchillesCLI/roboTeamAgent';
+export const ROBOTEAM_AGENT_REF = 'AchillesIDE/roboTeamAgent';
 
 function trim(value) {
     return typeof value === 'string' ? value.trim() : '';

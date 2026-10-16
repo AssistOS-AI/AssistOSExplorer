@@ -9,7 +9,7 @@
  * execution path by setting `adapter_key` to the module's manifest key.
  *
  * This is the new-gateway equivalent of the old
- * `proxies/soul-gateway/app/src/api/providers.mjs PROVIDER_TEMPLATES`
+ * `soul-gateway/app/src/api/providers.mjs PROVIDER_TEMPLATES` (former proxies path)
  * map, adapted to the backend-module architecture: the backend catalog
  * stays at one-module-per-protocol-family (so adding a new
  * OpenAI-compatible vendor is configuration, not code), while the

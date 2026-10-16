@@ -62,7 +62,7 @@ export class RoboTeamToolButton {
             return;
         }
         const parameters = new URLSearchParams({
-            agentRef: 'AchillesCLI/roboTeamAgent',
+            agentRef: 'AchillesIDE/roboTeamAgent',
             label: 'RoboTeam',
             target: ROBOTEAM_DASHBOARD_PATH,
         });

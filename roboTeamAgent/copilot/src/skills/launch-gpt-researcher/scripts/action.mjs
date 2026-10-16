@@ -85,8 +85,8 @@ async function callAgentTool(agentName, toolName, payload, invocation = {}) {
 }
 
 export const TARGET_AGENT = 'GPTResearcher';
-export const TARGET_AGENT_REF = 'AchillesCLI/GPTResearcher';
-export const SEARCH_AGENT_REF = 'proxies/searchAgent';
+export const TARGET_AGENT_REF = 'legacy-agents/GPTResearcher';
+export const SEARCH_AGENT_REF = 'legacy-agents/searchAgent';
 export const TOOL_NAME = 'start_research';
 
 function normalizeInput(invocation = {}) {

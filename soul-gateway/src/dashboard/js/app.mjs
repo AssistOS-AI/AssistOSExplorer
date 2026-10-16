@@ -790,11 +790,10 @@ function providersPage(lazyPage = null) {
         templates: {},
         providerFilter: '',
         providerTreeExpanded: new Set([
-            'AchillesCLI',
             'AchillesIDE',
-            'proxies',
+            'legacy-agents',
+            'webmeet',
             'basic',
-            'webmeetInfra',
             'UmamiAgent',
         ]),
         showProviderCreate: false,
@@ -2311,11 +2310,11 @@ function modelsPage(lazyPage = null) {
         billingFilter: '',
         tagFilter: '',
         modelTreeExpanded: new Set([
-            'AchillesCLI',
             'AchillesIDE',
             'axl-proxy',
             'axl-proxy/mistral',
-            'proxies',
+            'legacy-agents',
+            'webmeet',
         ]),
         // Model edit state
         showModelEdit: false,

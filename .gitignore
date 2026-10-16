@@ -13,14 +13,22 @@
 # one machine's deployment and must never be published.
 /.ploinky/e2e-egress/
 .idea
-/soplangAgent/.tasksQueue
 /data/
-/webAssist/data/
-/webAssist/package.json
-/webAssist/package-lock.json
-/webAssist/node_modules/
-/webmeetAgent/node_modules/
 /webmeetLivekitAiAgent/node_modules/
+# soul-gateway (from the former proxies repository)
+/soul-gateway/.tmp/
+/soul-gateway/.idea/
+/soul-gateway/.ploinky/
+/soul-gateway/logs/
+/soul-gateway/node_modules/
+# roboTeamAgent (from the former AchillesCLI repository)
+/roboTeamAgent/node_modules/
+/roboTeamAgent/copilot/node_modules/
+/roboTeamAgent/**/*.log
+/roboTeamAgent/**/temp_*
+/roboTeamAgent/.achilles-cli/
+/roboTeamAgent/.achilles-cli-history
+/roboTeamAgent/.history
 /.agents/
 /docs/prompts/*
 *.DS_Store
