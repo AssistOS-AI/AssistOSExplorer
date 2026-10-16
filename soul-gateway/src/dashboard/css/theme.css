@@ -1,0 +1,64 @@
+/*
+ * Maps Explorer's design tokens (loaded from /explorer/shared/ui/ui-common.css)
+ * onto DaisyUI theme variables so the dashboard uses the same palette in both
+ * light and dark modes. Values are the OKLCH components of Explorer's tokens.
+ */
+
+[data-theme="light"] {
+    color-scheme: light;
+    --b1: 100% 0 0;
+    --b2: 96.995% 0.0029 264.54;
+    --b3: 92.758% 0.0058 264.53;
+    --bc: 27.601% 0.0233 248.68;
+    --p: 54.615% 0.2152 262.88;
+    --pc: 100% 0 0;
+    --n: 27.601% 0.0233 248.68;
+    --nc: 100% 0 0;
+    --a: 80.907% 0.0956 251.81;
+    --ac: 27.601% 0.0233 248.68;
+    --in: 54.615% 0.2152 262.88;
+    --inc: 100% 0 0;
+    --su: 50.813% 0.1049 165.61;
+    --suc: 100% 0 0;
+    --wa: 76.859% 0.1647 70.08;
+    --wac: 27.601% 0.0233 248.68;
+    --er: 50.542% 0.1905 27.52;
+    --erc: 100% 0 0;
+}
+
+[data-theme="dark"] {
+    color-scheme: dark;
+    --b1: 21.754% 0.0042 264.48;
+    --b2: 27.643% 0.0079 264.44;
+    --b3: 35.309% 0.0124 273.05;
+    --bc: 86.060% 0.0072 268.54;
+    --p: 71.374% 0.1434 254.62;
+    --pc: 13% 0.02 260;
+    --n: 23.947% 0.0059 271.17;
+    --nc: 86.060% 0.0072 268.54;
+    --a: 71.374% 0.1434 254.62;
+    --ac: 13% 0.02 260;
+    --in: 71.374% 0.1434 254.62;
+    --inc: 13% 0.02 260;
+    --su: 77.294% 0.1535 163.22;
+    --suc: 19.100% 0.0043 264.47;
+    --wa: 83.686% 0.1644 84.43;
+    --wac: 19.100% 0.0043 264.47;
+    --er: 71.063% 0.1661 22.22;
+    --erc: 19.100% 0.0043 264.47;
+}
+
+html[data-theme] {
+    font-family: var(--default-font), "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+}
+
+body {
+    background: var(--bg);
+    color: var(--text);
+}
+
+body code,
+body pre,
+body .font-mono {
+    font-family: var(--mono-font);
+}

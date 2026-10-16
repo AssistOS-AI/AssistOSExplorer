@@ -1,0 +1,34 @@
+soul-gateway-tool-button {
+    display: block;
+    width: 100%;
+    text-align: center;
+}
+
+.app-toolbar-slot soul-gateway-tool-button,
+soul-gateway-tool-button[data-host-orientation="horizontal"] {
+    width: auto;
+    text-align: initial;
+}
+
+soul-gateway-tool-button .soul-gateway-tool {
+    display: inline-flex;
+    width: 100%;
+    justify-content: center;
+}
+
+.app-toolbar-slot soul-gateway-tool-button .soul-gateway-tool,
+soul-gateway-tool-button[data-host-orientation="horizontal"] .soul-gateway-tool {
+    width: auto;
+}
+
+soul-gateway-tool-button .soul-gateway-tool-button[hidden] {
+    display: none;
+}
+
+soul-gateway-tool-button .soul-gateway-tool-button.is-busy .soul-gateway-tool-button-icon {
+    opacity: 0.55;
+}
+
+soul-gateway-tool-button .soul-gateway-tool-button.is-busy {
+    cursor: progress;
+}
