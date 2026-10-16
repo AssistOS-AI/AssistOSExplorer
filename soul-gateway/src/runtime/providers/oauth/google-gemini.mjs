@@ -8,7 +8,15 @@ import {
 
 const CLIENT_ID =
     '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
-const CLIENT_SECRET = 'REDACTED-GEMINI-OAUTH-CLIENT-SECRET';
+// The Gemini installed-app OAuth client authenticates with its client ID alone.
+// A deployment that registers its own confidential client can supply the
+// secret through the environment; it is never embedded in source.
+const CLIENT_SECRET_ENV = 'SOUL_GATEWAY_GEMINI_OAUTH_CLIENT_SECRET';
+
+function clientSecretParams() {
+    const secret = String(process.env[CLIENT_SECRET_ENV] || '').trim();
+    return secret ? { client_secret: secret } : {};
+}
 const DEVICE_CODE_URL = 'https://oauth2.googleapis.com/device/code';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
@@ -59,9 +67,7 @@ export const oauthAdapter = {
             tokenUrl: TOKEN_URL,
             clientId: CLIENT_ID,
             deviceCode: flow.deviceCode,
-            extraParams: {
-                client_secret: CLIENT_SECRET,
-            },
+            extraParams: clientSecretParams(),
         });
 
         const user = await fetchGoogleUser(tokenData.access_token);
@@ -91,9 +97,7 @@ export const oauthAdapter = {
             tokenUrl: TOKEN_URL,
             clientId: CLIENT_ID,
             refreshToken: tokens.refreshToken,
-            extraParams: {
-                client_secret: CLIENT_SECRET,
-            },
+            extraParams: clientSecretParams(),
         });
 
         return {
