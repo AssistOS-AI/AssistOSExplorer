@@ -1,0 +1,27 @@
+{
+  "pluginCategory": "application",
+  "id": "observability",
+  "component": "observability-tool-button",
+  "location": [
+    "file-exp:toolbar"
+  ],
+  "locationOrder": 360,
+  "label": "Observability",
+  "tooltip": "Observe workflow executions",
+  "icon": "./icon.svg",
+  "presenter": "ObservabilityToolButton",
+  "type": "embedded",
+  "autoPin": false,
+  "toolbarModal": {
+    "mode": "component",
+    "component": "observability-panel",
+    "fullscreen": true
+  },
+  "dependencies": [
+    {
+      "component": "observability-panel",
+      "presenter": "ObservabilityPanel",
+      "type": "modal"
+    }
+  ]
+}

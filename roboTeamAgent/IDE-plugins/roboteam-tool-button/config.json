@@ -1,0 +1,20 @@
+{
+    "pluginCategory": "application",
+    "id": "roboteam",
+    "component": "roboteam-tool-button",
+    "location": ["file-exp:toolbar"],
+    "locationOrder": 350,
+    "label": "RoboTeam",
+    "tooltip": "Manage RoboTeam robots and runs",
+    "icon": "./icon.svg",
+    "presenter": "RoboTeamToolButton",
+    "type": "embedded",
+    "autoPin": false,
+    "toolbarModal": {
+        "mode": "iframe",
+        "url": "/base-agent-additional-server/roboTeamAgent/3001/",
+        "agentRef": "AchillesCLI/roboTeamAgent",
+        "fullscreen": true
+    },
+    "dependencies": []
+}

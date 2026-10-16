@@ -1,0 +1,161 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { access, readFile, readdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const AGENT_ROOT = join(TEST_DIR, '..');
+
+async function read(relativePath) {
+    return readFile(join(AGENT_ROOT, relativePath), 'utf8');
+}
+
+test('retired agents and their documentation links are absent', async () => {
+    for (const name of ['achilles-cli', 'codexAgent', 'opencodeAgent', 'piAgent']) {
+        await assert.rejects(access(join(AGENT_ROOT, '..', name)), { code: 'ENOENT' });
+    }
+    for (const file of ['../index.html', 'docs/index.html', 'docs/partials/header.html',
+        '../GPTResearcher/docs/index.html', '../GPTResearcher/docs/partials/header.html',
+        '../GPTResearcher/docs/specsLoader.html']) {
+        assert.doesNotMatch(await read(file), /(?:href|src)=["'][^"']*(?:achilles-cli|codexAgent|opencodeAgent|piAgent)\//u);
+    }
+});
+
+test('documentation records startup current-version tool caching', async () => {
+    const sources = [
+        await read('README.md'),
+        await read('docs/images.html'),
+        await read('docs/specs/DS004-robot-container-runtime.md'),
+    ];
+
+    for (const source of sources) {
+        const plainText = source.replaceAll(/<[^>]+>|`/g, '');
+        assert.match(plainText, /current/u);
+        assert.match(plainText, /cache/u);
+        assert.match(plainText, /startup/u);
+        assert.doesNotMatch(plainText, /(?:computer-use-linux 0\.5\.0|Playwright MCP 0\.0\.79|Supergateway 3\.4\.3|Codex 0\.152\.1)/u);
+    }
+});
+
+test('documentation explains executable placement and robot creation', async () => {
+    const readme = await read('README.md');
+    const images = await read('docs/images.html');
+
+    assert.match(readme, /Creating a robot creates metadata and persistent directories only/);
+    assert.match(readme, /Codex, OpenCode, and Pi packages/);
+    assert.match(readme, /mounts every coding-agent generation read-only/);
+    assert.match(readme, /instead of being baked into the images or declared in RoboTeam's `package\.json`/);
+    assert.match(images, /Codex is not baked in/);
+    assert.match(images, /does not copy an image or install an executable/);
+    assert.match(images, /manual Desktop or Browser mounts every coding-agent generation/);
+    assert.match(images, /last (?:valid|stamped) generation/i);
+});
+
+test('documentation exposes the image guide from shared navigation', async () => {
+    const header = await read('docs/partials/header.html');
+
+    assert.match(header, /href="images\.html"[^>]*>Images &amp; Dependencies</);
+});
+
+test('documentation explains the nested ALA sandbox fallback and its retained boundaries', async () => {
+    const sources = [
+        await read('README.md'),
+        await read('docs/security.html'),
+        await read('docs/specs/DS005-ploinky-security.md'),
+        await read('docs/specs/DS006-ala-task-boundary.md'),
+    ];
+
+    for (const source of sources) {
+        const plainText = source.replaceAll(/<[^>]+>|`/g, '');
+        assert.match(plainText, /private proc(?:fs| path)/iu);
+        assert.match(plainText, /capabilit/iu);
+        assert.match(plainText, /drop(?:s|ped)? all capabilities|cap-drop ALL/iu);
+    }
+    assert.match(sources.join('\n'), /unsandboxed fallback (?:is )?forbidden|not an unsandboxed fallback/iu);
+});
+
+test('overview begins with product vision and no separate vision page remains', async () => {
+    const overview = await read('docs/index.html');
+    const header = await read('docs/partials/header.html');
+    const firstSection = overview.match(/<h2>([^<]+)<\/h2>/u)?.[1];
+
+    assert.equal(firstSection, 'Product vision');
+    assert.doesNotMatch(header, /vision\.html/u);
+    await assert.rejects(access(join(AGENT_ROOT, 'docs/vision.html')), { code: 'ENOENT' });
+});
+
+test('operations documents every MCP tool in a two-column table', async () => {
+    const operations = await read('docs/operations.html');
+    const config = JSON.parse(await read('mcp-config.json'));
+    const toolTable = operations.match(/<h2>MCP tools<\/h2>\s*<table>([\s\S]*?)<\/table>/u)?.[1] || '';
+
+    assert.match(toolTable, /<th>Tool<\/th><th>What it does<\/th>/u);
+    assert.equal((toolTable.match(/<th>/gu) || []).length, 2);
+    for (const tool of config.tools) assert.match(toolTable, new RegExp(`<code>${tool.name}<\\/code>`, 'u'));
+});
+
+test('documentation introduces ALA execution and AchillesCLI integration', async () => {
+    const overview = await read('docs/index.html');
+    const operations = await read('docs/operations.html');
+    const combined = `${overview}\n${operations}`;
+
+    for (const backend of ['Codex', 'OpenCode', 'Pi']) assert.match(combined, new RegExp(backend, 'u'));
+    for (const option of ['--home', '--cwd', '--folder', '--control-stdin', '--ca', '--MCPServers', '--model']) {
+        assert.match(operations, new RegExp(option, 'u'));
+    }
+    assert.match(combined, /launch-workflow/u);
+    assert.match(combined, /roboflow_start_flow/u);
+    assert.match(combined, /Ploinky Router/u);
+});
+
+test('documentation explains native async progress and the per-robot FIFO queue', async () => {
+    const sources = [
+        await read('README.md'),
+        await read('docs/index.html'),
+        await read('docs/operations.html'),
+        await read('docs/specs/DS003-main-behavior.md'),
+        await read('docs/specs/DS006-ala-task-boundary.md'),
+    ];
+    const combined = sources.join('\n').replaceAll(/<[^>]+>|`/g, '');
+    assert.match(combined, /native asynchronous Ploinky/iu);
+    assert.match(combined, /FIFO queue/iu);
+    assert.match(combined, /one graphical ALA process/iu);
+    assert.match(combined, /CLI conversations run concurrently/iu);
+    assert.match(combined, /intermediate ALA messages|coding-agent-message/iu);
+    assert.match(combined, /standard error/iu);
+    assert.match(combined, /standard output/iu);
+});
+
+async function documentationFiles(relativeDirectory) {
+    const entries = await readdir(join(AGENT_ROOT, relativeDirectory), { withFileTypes: true });
+    const nested = await Promise.all(entries.map(async (entry) => entry.isDirectory()
+        ? documentationFiles(join(relativeDirectory, entry.name))
+        : /\.(?:html|md)$/u.test(entry.name) ? [join(relativeDirectory, entry.name)] : []));
+    return nested.flat();
+}
+
+test('conversation skill selection is documented on RoboTeam\'s page and API, never in Explorer', async () => {
+    const stale = /Explorer (?:Copilot Settings|Conversation skills)|(?:skills?|selection|conversation)(?: is managed)? in Explorer|adjusted in Explorer|existing Settings interface|Ordinary (?:Explorer )?Settings|Without a conversation context it edits/iu;
+    const files = ['README.md', '../README.md', ...await documentationFiles('docs')];
+    for (const file of files) assert.doesNotMatch(await read(file), stale, file);
+
+    const ds006 = await read('docs/specs/DS006-ala-task-boundary.md');
+    assert.match(ds006, /<publicBasePath>conversation-skills\/<robotId>\/<sessionId>/u);
+    assert.match(ds006, /`GET` and `PATCH` `?<publicBasePath>api\/robots\/<robotId>\/conversations\/<sessionId>\/skills/u);
+    assert.match(ds006, /never falls back to robot defaults/u);
+    assert.match(ds006, /stale version returns 409/u);
+    assert.match(ds006, /Explorer has no skill-settings surface/u);
+
+    assert.match(await read('docs/specs/DS003-main-behavior.md'), /Conversation skills page opened from the WebChat menu/u);
+    const ds005 = await read('docs/specs/DS005-ploinky-security.md');
+    assert.match(ds005, /### Conversation skill settings/u);
+    assert.match(ds005, /internal-token/u);
+    assert.match(ds005, /no query/iu);
+    for (const file of ['docs/local-skills.html', 'docs/operations.html']) {
+        const html = (await read(file)).replaceAll(/<[^>]+>/g, '');
+        assert.match(html, /Conversation skills page/u, file);
+    }
+    const operations = await read('docs/operations.html');
+    assert.match(operations, /conversations\/&lt;sessionId&gt;\/skills|conversations\/<sessionId>\/skills/u);
+});
