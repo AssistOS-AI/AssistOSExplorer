@@ -84,3 +84,62 @@ throw new AggregateError(children, 'Live Sessions cleanup/diagnostics failed; pr
         assert.ok(!baselineErrors.includes('baseline-cleanup-two'));
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('actual execFile exit stderr and status survive normalization into Playwright JSON and safe attachment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-process-diagnostics-'));
+    try {
+        const diagnostics = new URL('./live-sessions-diagnostics.mjs', import.meta.url).href;
+        const native = new URL('./live-sessions.mjs', import.meta.url).href;
+        const playwright = new URL('../node_modules/@playwright/test/index.mjs', import.meta.url).href;
+        const marker = 'NATIVE_TERMINAL_ASSERTION_17', sourceCanary = 'native-private-eval-source-canary';
+        const secret = 'native-private-stderr-secret-abcdefghijklmnopqrstuvwxyz';
+        const fixture = useNormalizer => `import { test } from ${JSON.stringify(playwright)};
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {createLiveSessionFinalizer} from ${JSON.stringify(diagnostics)};
+import {normalizeNativeProcessError} from ${JSON.stringify(native)};
+const secret=${JSON.stringify(secret)};
+const stderr='stderr-head\\n'+'h'.repeat(490)+secret+'\\n'+'m'.repeat(10000)+'\\n'+secret+'\\n'+${JSON.stringify(marker)};
+const source='/* '+${JSON.stringify(sourceCanary)}+' '+'x'.repeat(10000)+' */process.stderr.write('+JSON.stringify(stderr)+');process.exit(17);';
+test('native process stderr transport',async({},info)=>{
+ let failure;
+ try {await promisify(execFile)(process.execPath,['--input-type=module','--eval',source],{encoding:'utf8',timeout:3000,maxBuffer:65536});}
+ catch(error){failure=error;}
+ if(failure?.code!==17||!failure.stderr.includes(${JSON.stringify(marker)}))throw new Error('fixture did not reproduce controlled exit');
+ const env={FIXTURE_SECRET:secret};
+ const primary=${useNormalizer ? 'normalizeNativeProcessError(failure,{env})' : 'failure'};
+ const finalizer=createLiveSessionFinalizer({env});
+ await finalizer.finish(info,primary);
+});`;
+        const config = path.join(root, 'playwright.config.mjs');
+        fs.writeFileSync(config, `export default {testDir:${JSON.stringify(root)},outputDir:${JSON.stringify(path.join(root, 'results'))},reporter:'json',workers:1,retries:0};`);
+        const cli = new URL('../node_modules/@playwright/test/cli.js', import.meta.url);
+        const run = useNormalizer => {
+            fs.writeFileSync(path.join(root, 'fixture.spec.mjs'), fixture(useNormalizer));
+            const result = spawnSync(process.execPath, [cli.pathname, 'test', '--config', config], { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024 });
+            assert.equal(result.status, 1, result.stderr); assert.equal(result.error, undefined);
+            const report = JSON.parse(result.stdout), outcome = report.suites[0].specs[0].tests[0].results[0];
+            assert.equal(outcome.status, 'failed');
+            const attachments = outcome.attachments.filter(item => item.name === 'live-session-failures.json');
+            assert.equal(attachments.length, 1);
+            return { report, errors: JSON.stringify(outcome.errors), attachment: Buffer.from(attachments[0].body, 'base64').toString() };
+        };
+        const baseline = run(false);
+        assert.ok(!baseline.errors.includes(marker)); assert.ok(!baseline.attachment.includes(marker));
+        const candidate = run(true), text = JSON.stringify(candidate.report);
+        for (const value of [marker, 'code=17', 'signal=unavailable', 'killed=false', 'stderr middle omitted']) {
+            assert.ok(candidate.errors.includes(value), value); assert.ok(candidate.attachment.includes(value), value);
+        }
+        for (const value of [sourceCanary, secret, 'native-private-stderr-secret']) {
+            assert.ok(!text.includes(value), value); assert.ok(!candidate.attachment.includes(value), value);
+        }
+        const evidence = process.env.LIVE_SESSIONS_NATIVE_DIAGNOSTICS_EVIDENCE_DIR;
+        if (evidence) {
+            assert.ok(path.isAbsolute(evidence) && fs.statSync(evidence).isDirectory());
+            fs.writeFileSync(path.join(evidence, 'candidate-playwright-report.json'), JSON.stringify(candidate.report, null, 2));
+            fs.writeFileSync(path.join(evidence, 'candidate-playwright-attachment.json'), candidate.attachment);
+            fs.writeFileSync(path.join(evidence, 'actual-transport-summary.json'), JSON.stringify({ baselineMarkerLost: true, candidateMarkerRetained: true,
+                exit17Retained: true, sourceAndSecretCanariesAbsent: true, browserOrProviderUsed: false }, null, 2));
+        }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

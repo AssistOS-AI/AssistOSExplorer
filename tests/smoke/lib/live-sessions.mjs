@@ -6,8 +6,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { inspectNestedContainer, workspaceHash } from './webtty-runtime-evidence.mjs';
 import { assertBoxWorkspacePath } from './box-workspace.mjs';
-import { findSecretLeaks } from './security.mjs';
-import { findTraceCredentialResidue } from './redacted-trace.mjs';
+import { collectSecrets, createRedactor, findSecretLeaks } from './security.mjs';
+import { redactTraceText, findTraceCredentialResidue } from './redacted-trace.mjs';
 
 export const ROBOTEAM_BASE = '/base-agent-additional-server/roboTeamAgent/3001';
 export const LIVE_BASE = `${ROBOTEAM_BASE}/api/live-sessions`;
@@ -611,6 +611,66 @@ process.stdout.write(JSON.stringify(identity));
 
 // Inspect only process identity, argv and the selected public executable. Never
 // read process environments, homes, credential files, logs or managed sources.
+export function normalizeNativeProcessError(error, { env = process.env } = {}) {
+    const own = key => {
+        try {
+            const descriptor = Object.getOwnPropertyDescriptor(error, key);
+            return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+        } catch { return undefined; }
+    };
+    const rawCode = own('code'), rawSignal = own('signal'), rawKilled = own('killed');
+    let code = Number.isSafeInteger(rawCode) || typeof rawCode === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(rawCode) ? rawCode : 'unavailable';
+    let signal = typeof rawSignal === 'string' && /^SIG[A-Z0-9]{1,29}$/.test(rawSignal) ? rawSignal : 'unavailable';
+    const killed = typeof rawKilled === 'boolean' ? rawKilled : 'unavailable';
+    const rawStderr = own('stderr');
+    let stderr = '[stderr unavailable]';
+    try {
+        if (typeof rawStderr === 'string') {
+            stderr = rawStderr.length > 128 * 1024 || Buffer.byteLength(rawStderr) > 128 * 1024
+                ? '[stderr omitted: input exceeds 128 KiB]' : rawStderr || '[stderr empty]';
+        } else if (Buffer.isBuffer(rawStderr)) {
+            const byteLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'byteLength').get.call(rawStderr);
+            if (byteLength > 128 * 1024) stderr = '[stderr omitted: input exceeds 128 KiB]';
+            else {
+                const copy = Buffer.alloc(byteLength);
+                Uint8Array.prototype.set.call(copy, rawStderr);
+                stderr = copy.toString('utf8') || '[stderr empty]';
+            }
+        }
+        const safeEnv = Object.create(null);
+        for (const name of Object.getOwnPropertyNames(env)) {
+            const descriptor = Object.getOwnPropertyDescriptor(env, name);
+            if (descriptor && 'value' in descriptor && typeof descriptor.value === 'string') safeEnv[name] = descriptor.value;
+        }
+        const secrets = collectSecrets(safeEnv), redact = createRedactor(secrets);
+        if (typeof code === 'string' && redact(code) !== code) code = 'unavailable';
+        if (redact(signal) !== signal) signal = 'unavailable';
+        stderr = redactTraceText(redact(stderr));
+        const residue = text => findSecretLeaks(text, secrets).length || findTraceCredentialResidue(text).length;
+        if (residue(stderr)) stderr = '[REDACTED:RESIDUE]';
+        const bytes = Buffer.from(stderr, 'utf8');
+        if (bytes.length > 4096) {
+            const marker = '\n[stderr middle omitted]\n';
+            let head = 512;
+            while ((bytes[head] & 0xc0) === 0x80) head -= 1;
+            let tail = bytes.length - (4096 - head - Buffer.byteLength(marker));
+            while ((bytes[tail] & 0xc0) === 0x80) tail += 1;
+            stderr = bytes.subarray(0, head).toString('utf8') + marker + bytes.subarray(tail).toString('utf8');
+        } else stderr = bytes.toString('utf8');
+        if (residue(stderr)) stderr = '[REDACTED:RESIDUE]';
+    } catch {
+        stderr = '[REDACTED:RESIDUE]';
+        if (typeof code === 'string') code = 'unavailable';
+        signal = 'unavailable';
+    }
+    const status = `code=${code}; signal=${signal}; killed=${killed}`;
+    const safe = new Error(`Native process evidence subprocess failed (${status}).`);
+    delete safe.stack;
+    Object.assign(safe, { name: 'NativeProcessEvidenceError', code, signal, killed, stderr,
+        cause: Object.freeze({ name: 'NativeProcessExit', message: `${status}\nstderr:\n${stderr}` }) });
+    return safe;
+}
+
 export async function nativeProcessIdentity(evidence, runtime, native, directoryName, selection) {
     validateNativeAlaBinding(selection?.alaBinding);
     assert.match(directoryName, /^[A-Za-z0-9_-]+$/);
@@ -627,7 +687,7 @@ export async function nativeProcessIdentity(evidence, runtime, native, directory
     const result = await execute('podman', ['exec', evidence.outerContainerId, '/usr/local/bin/node', '--input-type=module', '--eval',
         NATIVE_PROCESS_SNAPSHOT_SOURCE, String(before.State.Pid), JSON.stringify(native), cwd, JSON.stringify(selection || null)], {
         timeout: 30_000, maxBuffer: 65536, killSignal: 'SIGKILL',
-    });
+    }).catch(error => { throw normalizeNativeProcessError(error); });
     const identity = JSON.parse(result.stdout);
     if (selection.kind === 'census') assertNativeProcessCensus(identity, { cwd, ...selection });
     else assertNativeProcessIdentity(identity, native, { initPid: before.State.Pid, cwd, ...selection });
