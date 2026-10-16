@@ -209,10 +209,11 @@ test('observer execution oracle distinguishes turn workers from observer/read-on
 
 test('actual native process oracle rejects executable drift and incomplete/reused process identities', () => {
     const native = nativeFixture().record.native;
-    const context = { initPid: 10, cwd: '/fixture/selected', sessionId: 'session', turnId: 'turn' };
+    const alaBinding = { root: '/fixture/ala', command: '/fixture/ala/bin/ala.mjs', hashes: { 'bin/ala.mjs': 'a'.repeat(64) } };
+    const context = { initPid: 10, cwd: '/fixture/selected', sessionId: 'session', turnId: 'turn', alaBinding };
     const row = (pid, ppid) => ({ pid, ppid, startToken: String(pid + 100), pidNamespace: 'pid:[100]' });
     const identity = { containerInit: row(10, 1), ala: { ...row(20, 1), cwd: context.cwd,
-        sessionId: context.sessionId, turnId: context.turnId },
+        sessionId: context.sessionId, turnId: context.turnId, entrypoint: alaBinding.command, sha256: alaBinding.hashes['bin/ala.mjs'] },
         native: { ...row(21, 20), sha256: native.sha256, executable: native.realpath,
             actualExecutable: native.realpath, scriptPath: null }, ancestry: [row(21, 20)] };
     assertNativeProcessIdentity(identity, native, context);
@@ -223,6 +224,7 @@ test('actual native process oracle rejects executable drift and incomplete/reuse
         value => { value.containerInit.pid = 11; }, value => { value.ala.cwd = '/other/selected'; },
         value => { value.ala.sessionId = ''; }, value => { value.ala.turnId = 'other'; },
         value => { value.ala.pidNamespace = 'pid:[200]'; }, value => { value.ancestry = []; },
+        value => { value.ala.entrypoint = '/other/ala.mjs'; }, value => { value.ala.sha256 = 'b'.repeat(64); },
         value => { value.ancestry[0].ppid = 1; }, value => { value.native.actualExecutable = '/other'; },
     ]) {
         const changed = structuredClone(identity); mutate(changed);

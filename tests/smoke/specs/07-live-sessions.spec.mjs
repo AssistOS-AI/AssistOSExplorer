@@ -27,6 +27,7 @@ const nativeTimeout = 120_000;
 
 function processSelection(fixture, kind = 'census', sessionId, turnId) {
     return { kind, codeRoot: '/code', workflowCodeRoot: path.posix.join(fixture.release.repositories.achillesCLI.repositoryPath, 'roboTeamAgent'),
+        alaBinding: fixture.capture.alaBinding,
         ...(sessionId ? { sessionId, turnId } : {}) };
 }
 

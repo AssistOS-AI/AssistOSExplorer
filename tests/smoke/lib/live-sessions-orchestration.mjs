@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { readLiveSkillsCodeHashes, createLiveSkillsRuntimeReader } from './copilot-live-skills-runtime.mjs';
@@ -57,7 +57,7 @@ export function buildOrchestrationDiagnosticsBundle({ fsApi = fs } = {}) {
 // serializes the exact exported metadata collector with its fixed defaults.
 export function buildOrchestrationProgram(options, { collector = readLiveSessionOrchestration,
     diagnostics = buildOrchestrationDiagnosticsBundle() } = {}) {
-    const source = `${diagnostics.source}\nconst readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\nconst projectOrchestrationRecords = ${projectOrchestrationRecords.toString()};\nconst snapshotWalFiles = ${snapshotWalFiles.toString()};\nconst assertWalFileFences = ${assertWalFileFences.toString()};\n(${collector.toString()})(${JSON.stringify(options)}).catch(error => {\nconst safe = projectLiveSessionError(error);\nprocess.stdout.write(JSON.stringify({ version: 1, kind: 'live-session-orchestration-error', error: safe }));\nprocess.exitCode = 1;\n});`;
+    const source = `${diagnostics.source}\nconst readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\nconst projectOrchestrationRecords = ${projectOrchestrationRecords.toString()};\nconst snapshotWalFiles = ${snapshotWalFiles.toString()};\nconst assertWalFileFences = ${assertWalFileFences.toString()};\nconst readOrchestrationTranscripts = ${readOrchestrationTranscripts.toString()};\n(${collector.toString()})(${JSON.stringify(options)}).catch(error => {\nconst safe = projectLiveSessionError(error);\nprocess.stdout.write(JSON.stringify({ version: 1, kind: 'live-session-orchestration-error', error: safe }));\nprocess.exitCode = 1;\n});`;
     assert.ok(Buffer.byteLength(source) < 128 * 1024, 'Bounded orchestration program exceeds Linux single-argument capacity.');
     return source;
 }
@@ -72,7 +72,7 @@ export function decodeOrchestrationProcessResult(result, { env = process.env } =
         throw Object.assign(new Error(`Read-only orchestration subprocess failed.\n${JSON.stringify(safe)}`, { cause: safe }), { name: 'OrchestrationEvidenceError' });
     }
     if (Object.getOwnPropertyDescriptor(result || {}, 'code')?.value !== undefined) throw new Error('Orchestration process failed without safe diagnostic evidence.');
-    return payload;
+    return validateOrchestrationObservation(payload);
 }
 
 export function snapshotWalFiles(databaseFile, io = fs) {
@@ -280,16 +280,25 @@ export async function readLiveSessionOrchestration(options, { fsApi, codeRoot = 
             }
             return metadata;
         });
-    const nativeSessions = new Map();
-    for (const entry of entries(`${alaSessionsRoot(cwd)}/sessions`)) {
-        assert.match(entry.name, /^[a-f0-9-]{36}\.jsonl$/);
-        if (options.frontOnly && entry.name !== `${options.frontSessionId}.jsonl`) continue;
-        const id = entry.name.slice(0, -6), file = alaTranscript.sessionTranscriptPath(alaSessionsRoot(cwd), id);
-        const records = read(file, cwd, 16 * 1024 * 1024, fd => alaTranscript.readTranscriptRecordsSync(fd));
-        assert.equal(records[0]?.type, 'session'); assert.equal(records[0]?.id, id);
-        const session = { id, ...alaTranscript.foldTranscript(records) };
-        assert.ok(session.turns.length <= 512);
-        nativeSessions.set(session.id, session);
+    const transcripts = readOrchestrationTranscripts({ directory: `${alaSessionsRoot(cwd)}/sessions`,
+        frontOnly: options.frontOnly, frontSessionId: options.frontSessionId }, {
+        fsApi: fs, hostname: (await import('node:os')).hostname(), uid: process.geteuid(),
+        transcriptPath: id => alaTranscript.sessionTranscriptPath(alaSessionsRoot(cwd), id),
+        readTranscript: file => read(file, cwd, 16 * 1024 * 1024, fd => alaTranscript.readTranscriptRecordsSync(fd)),
+        foldTranscript: records => alaTranscript.foldTranscript(records),
+    });
+    const { nativeSessions } = transcripts;
+    const emitObservation = result => {
+        const pendingSessionIds = transcripts.finish();
+        emit(pendingSessionIds.length ? { version: 1, kind: 'live-session-orchestration-incomplete', codeHashes: hashes,
+            pendingSessionIds, reason: 'transcript-publication-pending' }
+            : { ...result, codeHashes: hashes, transcriptObservation: { status: 'complete', sessionIds: [...nativeSessions.keys()].sort() } });
+    };
+    if (transcripts.pendingSessionIds.length) {
+        assert.deepEqual(await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi }), hashes);
+        for (const [file, sha256] of Object.entries(expectedAla.hashes)) assert.equal(digest(read(`${expectedAla.root}/${file}`, expectedAla.root)), sha256);
+        emitObservation();
+        return;
     }
     const sessions = metadataSessions.map(metadata => {
         const native = nativeSessions.get(metadata.sessionId);
@@ -307,7 +316,8 @@ export async function readLiveSessionOrchestration(options, { fsApi, codeRoot = 
     if (options.frontOnly) {
         const result = projectOrchestrationRecords({ sessions, tasks: [], flows: [], executions: [] }, options);
         assert.deepEqual(await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi }), hashes);
-        emit({ ...result, codeHashes: hashes });
+        for (const [file, sha256] of Object.entries(expectedAla.hashes)) assert.equal(digest(read(`${expectedAla.root}/${file}`, expectedAla.root)), sha256);
+        emitObservation(result);
         return;
     }
     // ALA can persist a turn before a conversation config is visible. Include
@@ -371,8 +381,212 @@ export async function readLiveSessionOrchestration(options, { fsApi, codeRoot = 
     const result = projectOrchestrationRecords({ sessions, tasks, flows, executions }, options);
     assert.deepEqual(await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi }), hashes);
     for (const [file, sha256] of Object.entries(expectedAla.hashes)) assert.equal(digest(read(`${expectedAla.root}/${file}`, expectedAla.root)), sha256);
-    emit({ ...result, codeHashes: hashes });
+    emitObservation(result);
 }
+
+// Locks are private auxiliary producer storage. Only transcripts authorize
+// sessions; unresolved publication cannot become an idle snapshot.
+export function readOrchestrationTranscripts({ directory, frontOnly, frontSessionId }, {
+    fsApi: io, hostname, uid, readTranscript, foldTranscript, transcriptPath = id => `${directory}/${id}.jsonl`,
+}) {
+    const fail = () => { throw new Error('Invalid private ALA transcript-lock observation.'); };
+    const same = (a, b, keys) => keys.every(key => a[key] === b[key]);
+    const identityKeys = ['dev', 'ino', 'mode', 'uid', 'gid'];
+    const fileKeys = [...identityKeys, 'nlink', 'size', 'mtimeNs', 'ctimeNs'];
+    const stat = file => io.lstatSync(file, { bigint: true });
+    const directoryStat = () => {
+        if (io.realpathSync(directory) !== directory) fail();
+        const value = stat(directory);
+        if (!value.isDirectory() || value.uid !== BigInt(uid)) fail();
+        return value;
+    };
+    let parent, leaves;
+    try {
+        if (!io.existsSync(directory)) return { nativeSessions: new Map(), pendingSessionIds: [], finish: () => [] };
+        parent = directoryStat();
+        leaves = io.readdirSync(directory, { withFileTypes: true });
+        if (leaves.length > 1024) fail();
+    } catch { fail(); }
+    const fenceParent = () => { if (!same(parent, directoryStat(), identityKeys)) fail(); };
+    const inventory = new Map();
+    for (const leaf of leaves) {
+        const match = /^([a-f0-9-]{36})\.jsonl(\.lock)?$/.exec(leaf.name);
+        if (!match || !leaf.isFile() || leaf.isSymbolicLink()) fail();
+        const kinds = inventory.get(match[1]) || new Set();
+        const kind = match[2] ? 'lock' : 'transcript';
+        if (kinds.has(kind)) fail();
+        kinds.add(kind); inventory.set(match[1], kinds);
+        if (inventory.size > 512) fail();
+    }
+    const nativeSessions = new Map(), transcripts = new Map(), locks = new Map(), pending = new Set();
+    const checkTranscript = (file, before, final = false) => {
+        if (io.realpathSync(file) !== file) fail();
+        const after = stat(file);
+        if (!after.isFile() || after.nlink !== 1n || after.uid !== parent.uid
+            || !same(before, after, final ? [...identityKeys, 'nlink'] : fileKeys)) fail();
+    };
+    try {
+        for (const [id, kinds] of inventory) {
+            if (frontOnly && id !== frontSessionId) continue;
+            const file = transcriptPath(id);
+            if (file !== `${directory}/${id}.jsonl`) fail();
+            if (kinds.has('transcript')) {
+                fenceParent();
+                const before = stat(file);
+                if (!before.isFile() || before.nlink !== 1n || before.uid !== parent.uid) fail();
+                const records = readTranscript(file);
+                if (records[0]?.type !== 'session' || records[0]?.id !== id) throw new Error('Invalid ALA transcript session header.');
+                checkTranscript(file, before);
+                const session = { id, ...foldTranscript(records) };
+                if (session.turns.length > 512) fail();
+                nativeSessions.set(id, session); transcripts.set(id, { file, before });
+            }
+            if (!kinds.has('lock')) continue;
+            const lock = `${file}.lock`;
+            let fd, before, missing = false, failure = false;
+            const confirmMissing = () => {
+                try { stat(lock); fail(); }
+                catch (error) { if (error.code !== 'ENOENT') throw error; }
+                missing = true;
+            };
+            const pathOrMissing = action => {
+                try { return action(); }
+                catch (error) {
+                    if (error.code !== 'ENOENT') throw error;
+                    confirmMissing();
+                }
+            };
+            try {
+                fenceParent();
+                try { before = stat(lock); } catch (error) { if (error.code !== 'ENOENT') throw error; missing = true; }
+                if (!missing) {
+                    const valid = value => value.isFile() && value.nlink === 1n && value.uid === BigInt(uid)
+                        && value.uid === parent.uid && (value.mode & 0o7777n) === 0o600n && value.size <= 4096n;
+                    if (!valid(before)) fail();
+                    const canonical = pathOrMissing(() => io.realpathSync(lock));
+                    if (!missing && canonical !== lock) fail();
+                    if (!missing) fd = pathOrMissing(() => io.openSync(lock, io.constants.O_RDONLY | io.constants.O_NOFOLLOW | io.constants.O_NONBLOCK));
+                }
+                if (fd !== undefined) {
+                    const opened = io.fstatSync(fd, { bigint: true });
+                    const unlinkedAtOpen = opened.nlink === 0n;
+                    // Unlink changes link count and ctime. Every other FD
+                    // identity stays pinned, and the pathname must be absent.
+                    const openKeys = unlinkedAtOpen ? fileKeys.filter(key => !['nlink', 'ctimeNs'].includes(key)) : fileKeys;
+                    if (!opened.isFile() || !same(before, opened, openKeys)) fail();
+                    if (unlinkedAtOpen) confirmMissing();
+                    if (!missing) {
+                        const actual = pathOrMissing(() => io.realpathSync(`/proc/self/fd/${fd}`));
+                        if (!missing && actual !== lock) fail();
+                    }
+                    const buffer = Buffer.alloc(4097);
+                    let length = 0;
+                    while (length < buffer.length) {
+                        const count = io.readSync(fd, buffer, length, buffer.length - length, null);
+                        if (count === 0) break;
+                        length += count;
+                    }
+                    if (length > 4096) fail();
+                    const bytes = buffer.subarray(0, length), after = io.fstatSync(fd, { bigint: true });
+                    const unlinked = after.nlink === 0n;
+                    const readKeys = unlinked ? fileKeys.filter(key => !['nlink', 'ctimeNs'].includes(key)) : fileKeys;
+                    if (!same(before, after, readKeys) || BigInt(bytes.length) !== before.size) fail();
+                    let owner;
+                    try { owner = JSON.parse(bytes.toString('utf8')); } catch { fail(); }
+                    if (!owner || Array.isArray(owner) || Object.keys(owner).sort().join(',') !== 'host,pid,start,token'
+                        || owner.host !== hostname || !Number.isSafeInteger(owner.pid) || owner.pid <= 0
+                        || typeof owner.start !== 'string' || !/^[0-9]+$/.test(owner.start)
+                        || typeof owner.token !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(owner.token)) fail();
+                    try {
+                        if (io.realpathSync(lock) !== lock || !same(before, stat(lock), fileKeys)) fail();
+                        if (io.realpathSync(`/proc/self/fd/${fd}`) !== lock) fail();
+                    } catch (error) { if (error.code !== 'ENOENT') throw error; confirmMissing(); }
+                    if (unlinked && !missing) fail();
+                }
+                locks.set(id, { file: lock, before });
+                fenceParent();
+            } catch { failure = true; }
+            finally { if (fd !== undefined) try { io.closeSync(fd); } catch { failure = true; } }
+            if (failure) fail();
+            if (!transcripts.has(id)) pending.add(id);
+            else if (missing) checkTranscript(file, transcripts.get(id).before, true);
+        }
+        fenceParent();
+    } catch (error) {
+        if (error.message === 'Invalid ALA transcript session header.') throw error;
+        fail();
+    }
+    return { nativeSessions, pendingSessionIds: [...pending].sort(), finish() {
+        try {
+            fenceParent();
+            for (const { file, before } of transcripts.values()) checkTranscript(file, before, true);
+            for (const [id, { file, before }] of locks) {
+                try { if (io.realpathSync(file) !== file || !before || !same(before, stat(file), fileKeys)) fail(); }
+                catch (error) {
+                    if (error.code !== 'ENOENT') throw error;
+                    const transcript = transcripts.get(id);
+                    if (transcript) checkTranscript(transcript.file, transcript.before, true);
+                    else pending.add(id);
+                }
+            }
+            fenceParent();
+            return [...pending].sort();
+        } catch { fail(); }
+    } };
+}
+
+export function validateOrchestrationObservation(payload) {
+    const fail = () => { throw new Error('Invalid bounded orchestration observation.'); };
+    const ids = values => {
+        if (!Array.isArray(values) || values.length > 512 || new Set(values).size !== values.length
+            || values.some(value => typeof value !== 'string' || !/^[a-f0-9-]{36}$/.test(value))) fail();
+    };
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail();
+    if (payload.kind === 'live-session-orchestration-incomplete') {
+        if (payload.version !== 1 || Object.keys(payload).sort().join(',') !== 'codeHashes,kind,pendingSessionIds,reason,version'
+            || payload.reason !== 'transcript-publication-pending') fail();
+        ids(payload.pendingSessionIds);
+        if (!payload.pendingSessionIds.length) fail();
+    } else {
+        if ('kind' in payload || 'version' in payload) fail();
+        if (!payload.transcriptObservation || Object.keys(payload.transcriptObservation).sort().join(',') !== 'sessionIds,status'
+            || payload.transcriptObservation.status !== 'complete') fail();
+        ids(payload.transcriptObservation.sessionIds);
+        for (const key of ['census', 'front', 'task', 'flow', 'phase', 'execution']) if (!(key in payload)) fail();
+    }
+    if (!payload.codeHashes || typeof payload.codeHashes !== 'object' || Array.isArray(payload.codeHashes)
+        || Object.values(payload.codeHashes).some(value => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value))) fail();
+    return payload;
+}
+
+export async function observeOrchestration(observe, {
+    now = () => performance.now(), wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
+} = {}) {
+    const started = now(), deadline = started + 12000, pending = new Set();
+    let observations = 0;
+    const remaining = () => {
+        const value = Math.floor(deadline - now());
+        if (!Number.isFinite(value) || value <= 0) throw new Error('Live Sessions orchestration observation deadline expired.');
+        return Math.min(12000, value);
+    };
+    while (observations < 128) {
+        remaining(); observations += 1;
+        const snapshot = validateOrchestrationObservation(await observe({ remaining, observation: observations }));
+        remaining();
+        if (snapshot.kind === 'live-session-orchestration-incomplete') {
+            for (const id of snapshot.pendingSessionIds) pending.add(id);
+            if (pending.size > 512) throw new Error('Live Sessions orchestration pending inventory exceeded its bound.');
+        } else {
+            if (![...pending].every(id => snapshot.transcriptObservation.sessionIds.includes(id))) {
+                throw new Error('Live Sessions orchestration remains incomplete after transcript disappearance.');
+            }
+            return { ...snapshot, observation: { count: observations, elapsedMs: now() - started, pendingSessionIds: [...pending].sort() } };
+        }
+        if (observations < 128) await wait(Math.min(100, remaining()));
+    }
+    throw new Error('Live Sessions orchestration observation count exhausted with incomplete transcripts.');
+}
+
 
 export async function inspectOuterOrchestrationBinding(containerId, { execute = promisify(execFile) } = {}) {
     try {
@@ -399,20 +613,20 @@ export async function inspectOuterOrchestrationBinding(containerId, { execute = 
 
 export async function createOrchestrationReader({ release, evidence, runtime, cwd, robotId, ownerPrincipal }, {
     env = process.env, createRuntimeReader = createLiveSkillsRuntimeReader,
+    execute = promisify(execFile), nestedCommand, inspectNested = inspectNestedContainer, now, wait,
 } = {}) {
     const guard = await createRuntimeReader({ env, baseURL: release.applicationBaseURL,
         verifierPath: env.SMOKE_COPILOT_RELEASE_VERIFIER
             || fileURLToPath(new URL('../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs', import.meta.url)) });
     const initial = await guard.finish();
     assert.equal(initial.runtime.containerId, runtime.containerId);
-    const initialInspection = inspectNestedContainer(evidence.outerContainerId, runtime.containerId);
+    const initialInspection = inspectNested(evidence.outerContainerId, runtime.containerId, nestedCommand);
     const repository = fs.realpathSync(release.repositories.achillesCLI.repositoryPath);
     assert.ok(!repository.includes(`${path.sep}.ploinky${path.sep}repos${path.sep}`));
     const contractFiles = delegationContractFiles(repository);
     const contractHashes = Object.fromEntries(contractFiles.map(file => [file, crypto.createHash('sha256')
         .update(fs.readFileSync(path.join(repository, 'roboTeamAgent', file))).digest('hex')]));
-    const execute = promisify(execFile);
-    const inspectOuter = () => inspectOuterOrchestrationBinding(evidence.outerContainerId, { execute });
+    const inspectOuter = (run = execute) => inspectOuterOrchestrationBinding(evidence.outerContainerId, { execute: run });
     const outerBinding = await inspectOuter();
     assert.equal(outerBinding.id, evidence.outerContainerId); assert.equal(outerBinding.running, true);
     rejectShadows(outerBinding.mounts, [cwd], outerBinding.mounts.filter(mount => mount.Destination === evidence.workspaceRoot), { subject: 'Live Sessions cwd' });
@@ -421,36 +635,73 @@ export async function createOrchestrationReader({ release, evidence, runtime, cw
         expectedAla: initial.alaBinding, robotId, ownerPrincipal };
     const diagnostics = buildOrchestrationDiagnosticsBundle();
     assert.equal(evidence.workspaceHash, workspaceHash(evidence.workspaceRoot));
-    return async options => {
+    const capture = async options => {
         // Full binding is frozen before the front observer starts. Its bounded
         // capture fences exact mounts/labels/PID and source hashes without
         // repeating the multi-process release verifier during a short turn.
         if (!options?.frontOnly) assert.deepEqual((await guard.finish()).runtime, initial.runtime);
-        assert.deepEqual(await inspectOuter(), outerBinding, 'Outer Box generation or mounts changed during observation.');
-        const before = inspectNestedContainer(evidence.outerContainerId, runtime.containerId);
-        assert.equal(before?.Id, runtime.containerId); assert.equal(before?.State?.Running, true);
-        assert.ok(JSON.stringify(before.Mounts) === JSON.stringify(initialInspection.Mounts), 'RoboTeam mounts changed during observation.');
-        assert.ok(JSON.stringify(before.Config?.Labels) === JSON.stringify(initialInspection.Config?.Labels), 'RoboTeam generation labels changed.');
-        for (const key of ['Pid', 'StartedAt']) assert.equal(before.State[key], initialInspection.State[key]);
-        const args = { ...fixed, ...options };
-        assert.deepEqual(buildOrchestrationDiagnosticsBundle().hashes, diagnostics.hashes, 'Canonical diagnostics source changed.');
-        const script = buildOrchestrationProgram(args, { diagnostics });
-        let result;
+        let snapshot, primary;
         try {
-            result = await execute('podman', ['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', runtime.containerId,
-                '/usr/local/bin/node', '--input-type=module', '--eval', script], { timeout: 15000, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL' });
-        } catch (error) { result = error; }
-        const snapshot = decodeOrchestrationProcessResult(result);
-        assert.deepEqual(snapshot.codeHashes, contractHashes);
-        const after = inspectNestedContainer(evidence.outerContainerId, runtime.containerId);
-        for (const key of ['Pid', 'StartedAt', 'Running']) assert.equal(after?.State?.[key], before.State[key]);
-        assert.ok(JSON.stringify(after.Mounts) === JSON.stringify(before.Mounts), 'RoboTeam mounts changed during read.');
-        assert.ok(JSON.stringify(after.Config?.Labels) === JSON.stringify(before.Config?.Labels), 'RoboTeam generation labels changed during read.');
-        assert.equal(after?.Id, before.Id);
-        assert.deepEqual(await inspectOuter(), outerBinding, 'Outer Box generation or mounts changed during read.');
-        if (!options?.frontOnly) assert.deepEqual((await guard.finish()).runtime, initial.runtime);
+            snapshot = await observeOrchestration(async ({ remaining }) => {
+                const boundedExecute = (command, args, limits) => execute(command, args, { ...limits, timeout: Math.min(limits.timeout, remaining()) });
+                const boundedNested = (command, args, limits) => {
+                    const timeout = remaining();
+                    let output;
+                    if (nestedCommand) output = nestedCommand(command, args, { ...limits, timeout });
+                    else {
+                        const result = spawnSync(command, args, { encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, killSignal: 'SIGKILL' });
+                        if (result.error) throw new Error('Bounded nested orchestration inspection failed.');
+                        if (result.status === 0) {
+                            try { output = JSON.parse(result.stdout); }
+                            catch { throw new Error('Bounded nested orchestration inspection returned invalid JSON.'); }
+                        } else output = { ok: false, status: result.status, stdout: result.stdout, stderr: result.stderr };
+                    }
+                    remaining();
+                    return output;
+                };
+                assert.deepEqual(await inspectOuter(boundedExecute), outerBinding, 'Outer Box generation or mounts changed during observation.');
+                remaining();
+                const before = inspectNested(evidence.outerContainerId, runtime.containerId, boundedNested);
+                assert.equal(before?.Id, runtime.containerId); assert.equal(before?.State?.Running, true);
+                assert.ok(JSON.stringify(before.Mounts) === JSON.stringify(initialInspection.Mounts), 'RoboTeam mounts changed during observation.');
+                assert.ok(JSON.stringify(before.Config?.Labels) === JSON.stringify(initialInspection.Config?.Labels), 'RoboTeam generation labels changed.');
+                for (const key of ['Pid', 'StartedAt']) assert.equal(before.State[key], initialInspection.State[key]);
+                const args = { ...fixed, ...options };
+                assert.deepEqual(buildOrchestrationDiagnosticsBundle().hashes, diagnostics.hashes, 'Canonical diagnostics source changed.');
+                const script = buildOrchestrationProgram(args, { diagnostics });
+                let result;
+                try {
+                    result = await boundedExecute('podman', ['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', runtime.containerId,
+                        '/usr/local/bin/node', '--input-type=module', '--eval', script], { timeout: 12000, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL' });
+                } catch (error) { result = error; }
+                remaining();
+                const observed = decodeOrchestrationProcessResult(result);
+                assert.deepEqual(observed.codeHashes, contractHashes);
+                const after = inspectNested(evidence.outerContainerId, runtime.containerId, boundedNested);
+                for (const key of ['Pid', 'StartedAt', 'Running']) assert.equal(after?.State?.[key], before.State[key]);
+                assert.ok(JSON.stringify(after.Mounts) === JSON.stringify(before.Mounts), 'RoboTeam mounts changed during read.');
+                assert.ok(JSON.stringify(after.Config?.Labels) === JSON.stringify(before.Config?.Labels), 'RoboTeam generation labels changed during read.');
+                assert.equal(after?.Id, before.Id);
+                assert.deepEqual(await inspectOuter(boundedExecute), outerBinding, 'Outer Box generation or mounts changed during read.');
+                remaining();
+                return observed;
+            }, { now, wait });
+        } catch (error) { primary = error; }
+        try { if (!options?.frontOnly) assert.deepEqual((await guard.finish()).runtime, initial.runtime); }
+        catch (error) {
+            if (primary) throw new AggregateError([primary, error], 'Orchestration observation and binding settlement failed.');
+            throw error;
+        }
+        if (primary) throw primary;
         return snapshot;
     };
+    const alaBinding = structuredClone(initial.alaBinding);
+    const freeze = value => {
+        if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
+        return value;
+    };
+    Object.defineProperty(capture, 'alaBinding', { value: freeze(alaBinding), writable: false, configurable: false });
+    return capture;
 }
 
 export async function terminateOwnedFlow(page, snapshot, expected) {

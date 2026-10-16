@@ -395,6 +395,11 @@ async function actualMetadataFixture({ root, repository, alaRoot, readerURL, has
         return result;
     }
     const shmFile = `${dataRoot}/roboflow/roboflow.sqlite-shm`;
+    const heldStates = [];
+    if (process.platform === 'linux') {
+        const { openSessionState } = await import(pathToFileURL(`${alaRoot}/src/session-state.mjs`).href);
+        for (const id of nativeTurns.keys()) heldStates.push(await openSessionState({ id, sessionsRoot: `${cwd}/.roboteam/.ala`, resume: true }));
+    }
     const before = tree(root), shmBefore = fs.readFileSync(shmFile);
     let first, second;
     await readLiveSessionOrchestration(options, { codeRoot, dataRoot, fsApi, emit: value => { first = value; } });
@@ -416,6 +421,12 @@ async function actualMetadataFixture({ root, repository, alaRoot, readerURL, has
     const afterFront = tree(root);
     assertIdleWalReadmarkDelta(shmBefore, fs.readFileSync(shmFile), endianness());
     assert.deepEqual(afterFront, { ...before, [shmFile]: { ...before[shmFile], hash: afterFront[shmFile].hash } });
+    for (const state of heldStates) await state.close();
+    if (heldStates.length) {
+        let lockFree;
+        await readLiveSessionOrchestration(options, { codeRoot, dataRoot, fsApi, emit(value) { lockFree = value; } });
+        assert.deepEqual(lockFree, first, 'Real canonical paired locks supply no authoritative chain fields.');
+    }
     const configFile = sessions.sessionPath(frontSessionId), originalConfig = fs.readFileSync(configFile, 'utf8');
     const foreignRoot = `${root}/foreign`, foreignTranscript = `${foreignRoot}/.roboteam/.ala/sessions/${frontSessionId}.jsonl`;
     fs.mkdirSync(path.dirname(foreignTranscript), { recursive: true });
@@ -470,8 +481,8 @@ async function actualMetadataFixture({ root, repository, alaRoot, readerURL, has
     const { DatabaseSync } = await import('node:sqlite');
     const getSync = TaskFlowStore.prototype.getSync, close = DatabaseSync.prototype.close;
     let sidecarReads = 0;
-    const fencedFs = { ...fsApi, lstatSync(file) {
-        const stat = fsApi.lstatSync(file);
+    const fencedFs = { ...fsApi, lstatSync(file, ...args) {
+        const stat = fsApi.lstatSync(file, ...args);
         if (file === shmFile && ++sidecarReads > 2) return { ...stat, ino: stat.ino + 1, isFile: () => true, isSymbolicLink: () => false };
         return stat;
     } };

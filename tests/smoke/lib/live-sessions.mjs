@@ -303,6 +303,14 @@ export function activeTurnProcesses(rows) {
 
 // The injectable I/O boundary is for observer-contract tests only. The exported
 // program below always supplies Node's real fs and the canonical /proc root.
+export function validateNativeAlaBinding(binding) {
+    const clean = value => typeof value === 'string' && value.startsWith('/') && value !== '/'
+        && !/[\u0000-\u001f\u007f]/.test(value) && !value.split('/').some((part, index) => index > 0 && ['', '.', '..'].includes(part));
+    if (!binding || !clean(binding.root) || !clean(binding.command) || binding.command !== `${binding.root}/bin/ala.mjs`
+        || !binding.hashes || !/^[a-f0-9]{64}$/.test(binding.hashes['bin/ala.mjs'] || '')) throw new Error('invalid frozen ALA binding');
+    return binding;
+}
+
 export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd, io = fs, selection = null) {
     if (!Number.isSafeInteger(rootPid) || rootPid <= 1
         || typeof expectedCwd !== 'string' || !expectedCwd.startsWith('/')
@@ -314,7 +322,8 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
         || /[\u0000-\u001f\u007f]/.test(native.realpath)
         || native.realpath.split('/').some((part, index) => index > 0 && ['', '.', '..'].includes(part))
         || !/^[a-f0-9]{64}$/.test(native.sha256 || '')) throw new Error('invalid frozen native identity');
-    if (selection) {
+    validateNativeAlaBinding(selection?.alaBinding);
+    {
         if (!['copilot', 'workflow', 'census'].includes(selection.kind)) throw new Error('invalid selected producer kind');
         if (selection.kind !== 'census') for (const key of ['sessionId', 'turnId']) {
             if (!/^[A-Za-z0-9_-]{1,128}$/.test(selection[key] || '')) throw new Error('invalid selected native ID');
@@ -394,10 +403,10 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
             return sha256;
         } finally { io.closeSync(fd); }
     }
-    function turnContext(args) {
-        if (!args.includes('--control-stdin')) return null;
+    function turnContext(args, wrapper = false) {
         const result = {};
-        for (const flag of ['--control-stdin', '--cwd', '--session-id', '--turn-id']) {
+        if (wrapper && args.some(value => value === '--turn-id' || value.startsWith('--turn-id='))) throw new Error('invalid workflow producer turn advertisement');
+        for (const flag of ['--control-stdin', '--cwd', '--session-id', ...(wrapper ? [] : ['--turn-id'])]) {
             if (args.filter(value => value === flag || value.startsWith(flag + '=')).length !== 1) throw new Error('invalid required native-turn arguments');
             const index = args.indexOf(flag);
             if (index < 0) throw new Error('invalid required native-turn arguments');
@@ -406,7 +415,36 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
             if (!value || value.startsWith('--') || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error('invalid required native-turn value');
             result[flag.slice(2)] = value;
         }
-        return { cwd: result.cwd, sessionId: result['session-id'], turnId: result['turn-id'] };
+        for (const key of ['session-id', ...(wrapper ? [] : ['turn-id'])]) {
+            if (!/^[A-Za-z0-9_-]{1,128}$/.test(result[key])) throw new Error('invalid required native-turn identity');
+        }
+        return { cwd: result.cwd, sessionId: result['session-id'], ...(wrapper ? {} : { turnId: result['turn-id'] }) };
+    }
+    const workflowScript = `${selection.workflowCodeRoot || selection.codeRoot}/server/robot-task.mjs`;
+    function interpreter(row) {
+        const executable = io.readlinkSync('/proc/' + row.pid + '/exe');
+        if (!/(?:^|\/)(?:node|nodejs|bun)$/.test(executable)) throw new Error('invalid deployed producer interpreter');
+        return executable;
+    }
+    function hashAlaEntrypoint(pid) {
+        const file = `/proc/${pid}/root${selection.alaBinding.command}`;
+        const fd = io.openSync(file, io.constants.O_RDONLY | io.constants.O_NOFOLLOW | io.constants.O_NONBLOCK);
+        try {
+            const before = io.fstatSync(fd, { bigint: true }), keys = ['dev', 'ino', 'mode', 'uid', 'gid', 'nlink', 'size', 'mtimeNs', 'ctimeNs'];
+            if (!before.isFile() || before.nlink !== 1n || before.size <= 0n || before.size > 4n * 1024n * 1024n) throw new Error('invalid pinned ALA entrypoint');
+            const hash = crypto.createHash('sha256'), buffer = Buffer.alloc(65536);
+            let count, length = 0;
+            while ((count = io.readSync(fd, buffer, 0, Math.min(buffer.length, 4 * 1024 * 1024 + 1 - length), null)) > 0) {
+                length += count;
+                if (length > 4 * 1024 * 1024) throw new Error('bounded ALA entrypoint exceeded');
+                hash.update(buffer.subarray(0, count));
+            }
+            const after = io.fstatSync(fd, { bigint: true }), bound = io.lstatSync(file, { bigint: true });
+            if (BigInt(length) !== before.size || !bound.isFile() || keys.some(key => before[key] !== after[key] || after[key] !== bound[key])) throw new Error('ALA entrypoint changed during snapshot');
+            const sha256 = hash.digest('hex');
+            if (sha256 !== selection.alaBinding.hashes['bin/ala.mjs']) throw new Error('frozen ALA entrypoint hash drift');
+            return { sha256, stat: Object.fromEntries(keys.map(key => [key, before[key]])) };
+        } finally { io.closeSync(fd); }
     }
     const init = readProcess(rootPid);
     const rows = new Map();
@@ -420,7 +458,7 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
             if (row.state !== 'Z') rows.set(pid, { ...row, pidNamespace: namespace(pid) });
         } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error; }
     }
-    const candidates = [];
+    const candidates = [], wrappers = [];
     for (const row of rows.values()) {
         if (row.pidNamespace !== init.pidNamespace) continue;
         let observed;
@@ -428,11 +466,20 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
         catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) continue; throw error; }
         if (observed.startToken !== row.startToken || observed.ppid !== row.ppid
             || observed.pidNamespace !== row.pidNamespace) throw new Error('inventory process changed during snapshot');
-        const context = turnContext(observed.argv);
-        if (context?.cwd === expectedCwd) candidates.push({ ...observed, context });
+        const exactAla = observed.argv[1] === selection.alaBinding.command;
+        const exactWrapper = observed.argv[1] === workflowScript;
+        const advertised = observed.argv.some(value => value === '--control-stdin' || value.startsWith('--control-stdin='));
+        if (!exactAla && !exactWrapper) {
+            if (advertised) throw new Error('unknown control-stdin producer advertisement');
+            continue;
+        }
+        const executable = interpreter(observed), context = turnContext(observed.argv, exactWrapper);
+        if (context.cwd !== expectedCwd) continue;
+        if (exactWrapper) wrappers.push({ ...observed, context, executable });
+        else candidates.push({ ...observed, context, executable, entrypoint: hashAlaEntrypoint(observed.pid) });
     }
     function producerProof(candidate) {
-        const chain = [], seen = new Set([candidate.pid]);
+        const chain = [], seen = new Set([candidate.pid]), proofs = [];
         let pid = candidate.ppid;
         while (rows.has(pid) && !seen.has(pid) && chain.length < 256) {
             seen.add(pid);
@@ -443,8 +490,7 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
                 const root = kind === 'workflow' ? selection.workflowCodeRoot || selection.codeRoot : selection.codeRoot;
                 const script = root + '/server/' + (kind === 'copilot' ? 'robot-cli.mjs' : 'robot-task.mjs');
                 if (row.argv[1] !== script) continue;
-                const executable = io.readlinkSync('/proc/' + row.pid + '/exe');
-                if (!/(?:^|\/)(?:node|nodejs|bun)$/.test(executable)) throw new Error('invalid deployed producer interpreter');
+                const executable = interpreter(row);
                 const value = flag => {
                     if (row.argv.filter(argument => argument === flag || argument.startsWith(flag + '=')).length !== 1) throw new Error('invalid producer arguments');
                     const offset = row.argv.indexOf(flag);
@@ -453,24 +499,53 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
                 };
                 if (value(kind === 'copilot' ? '--dir' : '--cwd') !== expectedCwd
                     || kind === 'workflow' && value('--session-id') !== candidate.context.sessionId) throw new Error('producer context mismatch');
-                if (selection.kind !== 'census' && kind !== selection.kind) throw new Error('selected producer kind mismatch');
-                return { kind, script, row, chain, executable };
+                if (kind === 'workflow' && !wrappers.some(wrapper => wrapper.pid === row.pid)) throw new Error('unqualified workflow producer');
+                proofs.push({ kind, script, row, chain: [...chain], executable });
             }
             pid = row.ppid;
         }
-        throw new Error('missing exact deployed producer ancestry');
+        if (proofs.length !== 1) throw new Error('missing or ambiguous exact deployed producer ancestry');
+        return proofs[0];
     }
-    if (selection?.kind === 'census') {
-        return candidates.map(candidate => {
-            const producer = producerProof(candidate);
+    const candidateSessions = new Set(), wrapperSessions = new Set(), associated = new Set();
+    for (const wrapper of wrappers) {
+        if (wrapperSessions.has(wrapper.context.sessionId)) throw new Error('ambiguous workflow producer session');
+        wrapperSessions.add(wrapper.context.sessionId);
+    }
+    for (const candidate of candidates) {
+        if (candidateSessions.has(candidate.context.sessionId)) throw new Error('expected exactly one selected native-turn parent per session');
+        candidateSessions.add(candidate.context.sessionId);
+        candidate.producer = producerProof(candidate);
+        if (candidate.producer.kind === 'workflow') associated.add(candidate.producer.row.pid);
+    }
+    function finalAla(candidate) {
+        const current = hashAlaEntrypoint(candidate.pid);
+        if (Object.keys(current.stat).some(key => current.stat[key] !== candidate.entrypoint.stat[key])
+            || interpreter(candidate) !== candidate.executable) throw new Error('ALA entrypoint or interpreter changed during final fence');
+    }
+    if (selection.kind === 'census') {
+        if (candidates.length + wrappers.filter(wrapper => !associated.has(wrapper.pid)).length > 512) throw new Error('bounded native census exceeded');
+        const census = candidates.map(candidate => {
+            const producer = candidate.producer;
             for (const row of [init, candidate, ...producer.chain]) if (!same(row, readProcess(row.pid))) throw new Error('census identity changed during final fence');
-            return { ...identity(candidate), ...candidate.context, producerKind: producer.kind };
-        }).sort((a, b) => a.pid - b.pid);
+            finalAla(candidate);
+            if (interpreter(producer.row) !== producer.executable) throw new Error('producer executable changed during final fence');
+            return { kind: 'ala-turn', ...identity(candidate), ...candidate.context, producerKind: producer.kind,
+                entrypoint: selection.alaBinding.command, sha256: candidate.entrypoint.sha256 };
+        });
+        for (const wrapper of wrappers) if (!associated.has(wrapper.pid)) {
+            if (!same(init, readProcess(init.pid)) || !same(wrapper, readProcess(wrapper.pid))
+                || interpreter(wrapper) !== wrapper.executable) throw new Error('pending producer changed during final fence');
+            census.push({ kind: 'producer-pending', ...identity(wrapper), script: workflowScript, ...wrapper.context });
+        }
+        if (!same(init, readProcess(init.pid))) throw new Error('census init changed during final fence');
+        return census.sort((a, b) => a.pid - b.pid);
     }
     const selectedCandidates = selection ? candidates.filter(row => row.context.sessionId === selection.sessionId && row.context.turnId === selection.turnId) : candidates;
     if (selectedCandidates.length !== 1) throw new Error('expected exactly one selected native-turn parent');
     const ala = selectedCandidates[0];
-    const producer = selection ? producerProof(ala) : null;
+    const producer = ala.producer;
+    if (producer.kind !== selection.kind) throw new Error('selected producer kind mismatch');
     if (ala.pid === init.pid) throw new Error('native-turn parent cannot be container init');
     function ancestry(pid) {
         const chain = [], seen = new Set();
@@ -516,7 +591,9 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
     }
     if (io.readlinkSync('/proc/' + selected.row.pid + '/exe') !== selected.executable) throw new Error('native executable changed during final fence');
     if (producer && io.readlinkSync('/proc/' + producer.row.pid + '/exe') !== producer.executable) throw new Error('producer executable changed during final fence');
-    return { containerInit: identity(init), ala: { ...identity(ala), ...ala.context },
+    finalAla(ala);
+    return { containerInit: identity(init), ala: { ...identity(ala), ...ala.context,
+        entrypoint: selection.alaBinding.command, sha256: ala.entrypoint.sha256 },
         ...(producer ? { producer: { ...identity(producer.row), kind: producer.kind, script: producer.script }, producerAncestry: producer.chain.map(identity) } : {}),
         native: { ...identity(selected.row), executable: native.realpath, actualExecutable: selected.executable,
             scriptPath: selected.scriptPath, sha256: selected.sha256 }, ancestry: selected.proof.map(identity) };
@@ -525,6 +602,7 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
 export const NATIVE_PROCESS_SNAPSHOT_SOURCE = `
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+${validateNativeAlaBinding.toString()}
 ${collectNativeProcessSnapshot.toString()}
 if (!/^[1-9][0-9]*$/.test(process.argv[1] || '')) throw new Error('invalid exact init PID argument');
 const identity = await collectNativeProcessSnapshot(Number(process.argv[1]), JSON.parse(process.argv[2]), process.argv[3], fs, process.argv[4] ? JSON.parse(process.argv[4]) : null);
@@ -534,6 +612,7 @@ process.stdout.write(JSON.stringify(identity));
 // Inspect only process identity, argv and the selected public executable. Never
 // read process environments, homes, credential files, logs or managed sources.
 export async function nativeProcessIdentity(evidence, runtime, native, directoryName, selection) {
+    validateNativeAlaBinding(selection?.alaBinding);
     assert.match(directoryName, /^[A-Za-z0-9_-]+$/);
     const workspaceRoot = assertBoxWorkspacePath(evidence?.workspaceRoot);
     assert.equal(evidence.workspaceHash, workspaceHash(workspaceRoot));
@@ -550,7 +629,8 @@ export async function nativeProcessIdentity(evidence, runtime, native, directory
         timeout: 30_000, maxBuffer: 65536, killSignal: 'SIGKILL',
     });
     const identity = JSON.parse(result.stdout);
-    if (selection?.kind !== 'census') assertNativeProcessIdentity(identity, native, { initPid: before.State.Pid, cwd, ...selection });
+    if (selection.kind === 'census') assertNativeProcessCensus(identity, { cwd, ...selection });
+    else assertNativeProcessIdentity(identity, native, { initPid: before.State.Pid, cwd, ...selection });
     const after = inspectNestedContainer(evidence.outerContainerId, runtime.containerId);
     assert.equal(after?.Id, before.Id);
     assert.equal(after?.State?.Running, true);
@@ -560,6 +640,7 @@ export async function nativeProcessIdentity(evidence, runtime, native, directory
 }
 
 export function assertNativeProcessIdentity(identity, native, expectedContext) {
+    const alaBinding = validateNativeAlaBinding(expectedContext?.alaBinding);
     assert.ok(Number.isSafeInteger(expectedContext?.initPid) && expectedContext.initPid > 1);
     assert.ok(typeof expectedContext.cwd === 'string' && path.posix.isAbsolute(expectedContext.cwd)
         && expectedContext.cwd !== '/' && path.posix.normalize(expectedContext.cwd) === expectedContext.cwd
@@ -574,6 +655,8 @@ export function assertNativeProcessIdentity(identity, native, expectedContext) {
     assert.equal(identity.containerInit.pid, expectedContext?.initPid);
     assert.equal(identity.ala.cwd, expectedContext?.cwd);
     assert.equal(identity.ala.pidNamespace, identity.containerInit.pidNamespace);
+    assert.equal(identity.ala.entrypoint, alaBinding.command);
+    assert.equal(identity.ala.sha256, alaBinding.hashes['bin/ala.mjs']);
     for (const key of ['sessionId', 'turnId']) {
         assert.ok(typeof identity.ala[key] === 'string' && identity.ala[key].length > 0
             && identity.ala[key].length <= 4096 && !identity.ala[key].startsWith('--')
@@ -613,6 +696,32 @@ export function assertNativeProcessIdentity(identity, native, expectedContext) {
     });
     const first = identity.ancestry[0];
     for (const key of ['pid', 'ppid', 'startToken', 'pidNamespace']) assert.equal(first[key], identity.native[key]);
+}
+
+export function assertNativeProcessCensus(rows, expectedContext) {
+    const binding = validateNativeAlaBinding(expectedContext?.alaBinding);
+    assert.ok(Array.isArray(rows) && rows.length <= 512, 'Invalid bounded native census.');
+    const pids = new Set(), sessions = new Set();
+    let previous = 0;
+    for (const row of rows) {
+        assert.ok(row && typeof row === 'object' && !Array.isArray(row));
+        assert.ok(['ala-turn', 'producer-pending'].includes(row.kind));
+        const keys = ['kind', 'pid', 'ppid', 'startToken', 'pidNamespace', 'cwd', 'sessionId',
+            ...(row.kind === 'ala-turn' ? ['turnId', 'producerKind', 'entrypoint', 'sha256'] : ['script'])];
+        assert.deepEqual(Object.keys(row).sort(), keys.sort(), 'Unexpected native census authority fields.');
+        assert.ok(Number.isSafeInteger(row.pid) && row.pid > 1 && row.pid > previous && !pids.has(row.pid));
+        assert.ok(Number.isSafeInteger(row.ppid) && row.ppid >= 0);
+        assert.match(row.startToken, /^[1-9][0-9]{0,19}$/); assert.match(row.pidNamespace, /^pid:\[[1-9][0-9]{0,19}\]$/);
+        assert.equal(row.cwd, expectedContext.cwd); assert.match(row.sessionId, /^[A-Za-z0-9_-]{1,128}$/);
+        assert.ok(!sessions.has(row.sessionId)); pids.add(row.pid); sessions.add(row.sessionId); previous = row.pid;
+        if (row.kind === 'ala-turn') {
+            assert.match(row.turnId, /^[A-Za-z0-9_-]{1,128}$/); assert.ok(['copilot', 'workflow'].includes(row.producerKind));
+            assert.equal(row.entrypoint, binding.command); assert.equal(row.sha256, binding.hashes['bin/ala.mjs']);
+        } else {
+            const root = expectedContext.workflowCodeRoot || expectedContext.codeRoot;
+            assert.equal(row.script, `${root}/server/robot-task.mjs`);
+        }
+    }
 }
 
 export function observeFinitePageWork(page) {
