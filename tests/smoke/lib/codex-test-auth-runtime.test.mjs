@@ -540,10 +540,10 @@ test('the binding helpers derive the RoboTeam repository and compare bindings wi
   const root = '/work/space é/ws';
   const runtime = { mounts: [
     { Type: 'bind', Source: root, Destination: root, RW: true },
-    { Type: 'bind', Source: `${root}/repos/AchillesCLI/roboTeamAgent`, Destination: `${root}/repos/AchillesCLI/roboTeamAgent`, RW: true },
+    { Type: 'bind', Source: `${root}/repos/AchillesIDE/roboTeamAgent`, Destination: `${root}/repos/AchillesIDE/roboTeamAgent`, RW: true },
     { Type: 'bind', Source: `${root}/.data/roboTeamAgent`, Destination: '/data', RW: true },
   ] };
-  assert.equal(deriveRoboTeamRepository(runtime, root), `${root}/repos/AchillesCLI`);
+  assert.equal(deriveRoboTeamRepository(runtime, root), `${root}/repos/AchillesIDE`);
   assert.throws(() => deriveRoboTeamRepository({ mounts: [] }, root));
   assert.throws(() => deriveRoboTeamRepository({ mounts: [...runtime.mounts, { ...runtime.mounts[1], Source: `${root}/other/roboTeamAgent`, Destination: `${root}/other/roboTeamAgent` }] }, root));
   assert.throws(() => deriveRoboTeamRepository({ mounts: [{ ...runtime.mounts[1], Source: '/elsewhere' }] }, root));

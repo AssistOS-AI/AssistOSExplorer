@@ -31,29 +31,29 @@ describe('SQLite DAO integration', () => {
     it('creates API key, provider, model, implicit session, and audit row with normalized values', async () => {
         await withDb(async (db) => {
             const key = await apiKeysDao.create(db, {
-                label: 'agent:proxies/soul-gateway',
+                label: 'agent:AchillesIDE/soul-gateway',
                 keyHint: 'agent:...way',
-                subjectId: 'agent:proxies/soul-gateway',
+                subjectId: 'agent:AchillesIDE/soul-gateway',
                 subjectType: 'agent',
                 metadata: { purpose: 'integration' },
             });
             assert.ok(key.id, 'api key id generated');
             assert.equal(key.metadata.purpose, 'integration');
-            assert.equal(key.subject_id, 'agent:proxies/soul-gateway');
+            assert.equal(key.subject_id, 'agent:AchillesIDE/soul-gateway');
             assert.equal(key.subject_type, 'agent');
             assert.equal(key.source, 'signed-subject');
 
             // Lookup is by subject_id, not a key hash.
             const found = await apiKeysDao.findBySubjectId(
                 db,
-                'agent:proxies/soul-gateway'
+                'agent:AchillesIDE/soul-gateway'
             );
             assert.equal(found.id, key.id);
 
             // upsertSignedSubjectKey is idempotent on subject_id: a second
             // call for the same subject returns the existing logical row.
             const again = await apiKeysDao.upsertSignedSubjectKey(db, {
-                subjectId: 'agent:proxies/soul-gateway',
+                subjectId: 'agent:AchillesIDE/soul-gateway',
                 subjectType: 'agent',
             });
             assert.equal(again.id, key.id, 'same subject re-reads one logical row');

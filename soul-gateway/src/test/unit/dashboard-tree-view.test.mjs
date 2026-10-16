@@ -90,8 +90,8 @@ describe('dashboard tree view helpers', () => {
                     enabled: true,
                 },
                 {
-                    provider_key: 'agent:AchillesIDE/tasksAgent',
-                    display_name: 'Ploinky agent agent:AchillesIDE/tasksAgent',
+                    provider_key: 'agent:legacy-agents/tasksAgent',
+                    display_name: 'Ploinky agent agent:legacy-agents/tasksAgent',
                     enabled: false,
                 },
                 {
@@ -135,8 +135,8 @@ describe('dashboard tree view helpers', () => {
                     },
                     {
                         type: 'leaf',
-                        key: 'agent:AchillesIDE/tasksAgent',
-                        path: 'agent:AchillesIDE/tasksAgent',
+                        key: 'agent:legacy-agents/tasksAgent',
+                        path: 'agent:legacy-agents/tasksAgent',
                         label: 'tasksAgent',
                         depth: 1,
                     },
@@ -161,7 +161,7 @@ describe('dashboard tree view helpers', () => {
             assert.equal(rows[0].enabledCount, 1);
             assert.equal(rows[0].expanded, true);
             assert.equal(rows[1].displayPath, 'AchillesIDE/explorer');
-            assert.equal(rows[2].displayPath, 'AchillesIDE/tasksAgent');
+            assert.equal(rows[2].displayPath, 'legacy-agents/tasksAgent');
             assert.equal(rows[3].displayPath, 'file-parser-agent');
         });
     });
@@ -287,26 +287,26 @@ describe('dashboard tree view helpers', () => {
         await withTreeView((tree) => {
             const models = [
                 {
-                    model_key: 'proxies/searchAgent/duckduckgo',
+                    model_key: 'legacy-agents/searchAgent/duckduckgo',
                     display_name: 'DuckDuckGo',
-                    provider_key: 'agent:proxies/searchAgent',
+                    provider_key: 'agent:legacy-agents/searchAgent',
                     provider_model_id: 'duckduckgo',
                     enabled: true,
                     metadata: {
                         discoverySource: 'ploinky-agent-discovery',
-                        repo: 'proxies',
+                        repo: 'legacy-agents',
                         agent: 'searchAgent',
                     },
                 },
                 {
-                    model_key: 'proxies/searchAgent/tavily',
+                    model_key: 'legacy-agents/searchAgent/tavily',
                     display_name: 'Tavily',
-                    provider_key: 'agent:proxies/searchAgent',
+                    provider_key: 'agent:legacy-agents/searchAgent',
                     provider_model_id: 'tavily',
                     enabled: true,
                     metadata: {
                         discoverySource: 'ploinky-agent-discovery',
-                        repo: 'proxies',
+                        repo: 'legacy-agents',
                         agent: 'searchAgent',
                     },
                 },
@@ -325,7 +325,7 @@ describe('dashboard tree view helpers', () => {
             ];
 
             const rows = tree.buildModelTreeRows(models, {
-                expanded: new Set(['proxies/searchAgent', 'AchillesCLI/codexAgent']),
+                expanded: new Set(['legacy-agents/searchAgent', 'AchillesCLI/codexAgent']),
             });
 
             assert.deepEqual(
@@ -353,22 +353,22 @@ describe('dashboard tree view helpers', () => {
                     },
                     {
                         type: 'group',
-                        key: 'proxies/searchAgent',
-                        path: 'proxies/searchAgent',
-                        label: 'proxies/searchAgent',
+                        key: 'legacy-agents/searchAgent',
+                        path: 'legacy-agents/searchAgent',
+                        label: 'legacy-agents/searchAgent',
                         depth: 0,
                     },
                     {
                         type: 'leaf',
-                        key: 'proxies/searchAgent/duckduckgo',
-                        path: 'proxies/searchAgent/duckduckgo',
+                        key: 'legacy-agents/searchAgent/duckduckgo',
+                        path: 'legacy-agents/searchAgent/duckduckgo',
                         label: 'duckduckgo',
                         depth: 1,
                     },
                     {
                         type: 'leaf',
-                        key: 'proxies/searchAgent/tavily',
-                        path: 'proxies/searchAgent/tavily',
+                        key: 'legacy-agents/searchAgent/tavily',
+                        path: 'legacy-agents/searchAgent/tavily',
                         label: 'tavily',
                         depth: 1,
                     },

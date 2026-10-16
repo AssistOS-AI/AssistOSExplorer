@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url';
 import {
     executeMenuAction,
     getMenuItems,
-} from '../roboTeamAgent/IDE-plugins/achilles-cli-menu-contributions/menu-contributions.js';
+} from '../../IDE-plugins/achilles-cli-menu-contributions/menu-contributions.js';
 
-const agentRoot = fileURLToPath(new URL('../roboTeamAgent/', import.meta.url));
+const agentRoot = fileURLToPath(new URL('../../', import.meta.url));
 const pluginsRoot = path.join(agentRoot, 'IDE-plugins');
 
 // The editor was removed. DS010's supported interface selects a workspace

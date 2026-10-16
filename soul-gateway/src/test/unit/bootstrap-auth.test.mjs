@@ -34,10 +34,10 @@ describe('bootstrap auth environment', () => {
                 OAUTH_ADAPTERS_ENABLED: '',
                 PLOINKY_AGENT_API_PUBLIC_KEY: 'test-public-key',
                 PLOINKY_ROUTER_URL: 'http://127.0.0.1:9',
-                PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
-                PLOINKY_AGENT_PRINCIPAL: 'agent:proxies/soul-gateway',
+                PLOINKY_AGENT_ID: 'agent:AchillesIDE/soul-gateway',
+                PLOINKY_AGENT_PRINCIPAL: 'agent:AchillesIDE/soul-gateway',
                 PLOINKY_AGENT_SECRET: '9'.repeat(64),
-                PLOINKY_AGENT_API_KEY: 'agent:proxies/soul-gateway|sig',
+                PLOINKY_AGENT_API_KEY: 'agent:AchillesIDE/soul-gateway|sig',
                 PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY: 'generated',
                 PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY: 'generated',
                 // Keep this auth fixture offline: the free defaults and their

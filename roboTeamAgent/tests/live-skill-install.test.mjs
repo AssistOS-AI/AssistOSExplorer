@@ -73,14 +73,14 @@ test('robot selection overrides a project name only in its session, including no
 test('bundled skills resolve to the workspace checkout', async t => {
     const { copilotSkillsRoot } = await import('../server/copilot-skillset.mjs');
     const { root, input, entries } = await fixture(t);
-    const source = path.join(root, 'AchillesCLI');
+    const source = path.join(root, 'AchillesIDE');
     const skill = path.join(source, 'roboTeamAgent/copilot/src/skills/bash');
     await fs.mkdir(skill, { recursive: true });
     await fs.writeFile(path.join(skill, 'SKILL.md'), 'current bundled skill');
     entries[0] = [{ builtin: true, name: 'bash', enabled: true, owner: await fs.realpath(copilotSkillsRoot),
         sourcePath: path.join(copilotSkillsRoot, 'bash') }];
     const request = input(0);
-    request.client.listRepositories = async () => [{ name: 'AchillesCLI', source, origin: 'workspace' }];
+    request.client.listRepositories = async () => [{ name: 'AchillesIDE', source, origin: 'workspace' }];
     const prepared = await installLiveSkills(request);
     assert.equal(await fs.readFile(path.join(prepared.skillsDirectory, 'bash/SKILL.md'), 'utf8'), 'current bundled skill');
 });

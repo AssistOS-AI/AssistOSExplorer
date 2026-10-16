@@ -1,7 +1,7 @@
 import { test, expect } from '../lib/fixtures.mjs';
 import { openExplorer } from '../lib/explorer.mjs';
 
-const optionalAgents = ['onlyOffice', 'webmeetScribeAgent', 'webmeetStt'];
+const optionalAgents = ['onlyOffice', 'webmeetScribeAgent', 'webmeetStt', 'umamiAgent'];
 const startupTimeout = 10 * 60 * 1000;
 
 async function readRuntimeStates(page, refs) {
@@ -28,7 +28,7 @@ async function readRuntimeStates(page, refs) {
 test.describe('Fresh optional-agent Marketplace activation', () => {
     test.skip(process.env.SMOKE_OPTIONAL_AGENTS !== '1', 'Requires a fresh deployment with optional agents disabled');
 
-    test('OnlyOffice, Scribe, and STT start disabled and can be enabled through Marketplace', async ({ page }, testInfo) => {
+    test('OnlyOffice, Scribe, STT, and Umami start disabled and can be enabled through Marketplace', async ({ page }, testInfo) => {
         test.setTimeout(3 * startupTimeout + 120000);
         await openExplorer(page, { hash: 'marketplace-modal' });
         const marketplace = page.locator('marketplace-modal');

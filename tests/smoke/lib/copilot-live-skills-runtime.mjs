@@ -111,7 +111,7 @@ export async function readRegistryAndRuntime({ workspaceRoot }) {
     assert.ok(typeof workspaceRoot === 'string' && path.isAbsolute(workspaceRoot) && path.normalize(workspaceRoot) === workspaceRoot
         && workspaceRoot !== '/' && !workspaceRoot.endsWith('/'));
     const rows = Object.entries(readAgentRegistrySnapshot({ workspaceRoot }))
-        .filter(([, row]) => row.type === 'agent' && row.repoName === 'AchillesCLI' && row.agentName === 'roboTeamAgent');
+        .filter(([, row]) => row.type === 'agent' && row.repoName === 'AchillesIDE' && row.agentName === 'roboTeamAgent');
     assert.equal(rows.length, 1);
     const [key, row] = rows[0];
     assert.match(row.containerId, /^[0-9a-f]{64}$/);
@@ -318,7 +318,7 @@ export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository, { 
     assert.match(runtime.imageId, /^sha256:[0-9a-f]{64}$|^[0-9a-f]{64}$/);
     assert.match(String(runtime.key), RUNTIME_KEY, 'The runtime registry key is not a single path segment.');
     assert.ok(typeof expectedRepository === 'string' && expectedRepository.startsWith(`${root}/`)
-        && path.posix.normalize(expectedRepository) === expectedRepository, 'The verified AchillesCLI repository is outside the admitted root.');
+        && path.posix.normalize(expectedRepository) === expectedRepository, 'The verified AchillesIDE repository is outside the admitted root.');
     assert.ok(Array.isArray(runtime.mounts), 'The runtime must report its exact mount inventory.');
     const options = { fsApi: fsApi || undefined, lexical: true, subject: SUBJECT };
     const writable = (destination, source) => {
@@ -421,9 +421,9 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
     assert.match(box.containerId, /^[0-9a-f]{64}$/);
     assert.equal(release.liveBox.workspaceSourceMount?.source, hostWorkspace, 'The verified Box workspace is not the selected host workspace.');
     // The Box mounts the workspace at its own path, so the verified host repository is also its runtime path.
-    const hostRepository = fsApi.realpathSync(release.repositories.achillesCLI.repositoryPath);
+    const hostRepository = fsApi.realpathSync(release.repositories.explorer.repositoryPath);
     assert.ok(hostRepository.startsWith(`${hostWorkspace}/`) && path.posix.normalize(hostRepository) === hostRepository,
-        'Verified AchillesCLI must belong to the selected workspace.');
+        'Verified AchillesIDE must belong to the selected workspace.');
     const expectedRepository = hostRepository;
     assert.ok(env.SMOKE_ALA_COMMAND && path.isAbsolute(env.SMOKE_ALA_COMMAND), 'Set SMOKE_ALA_COMMAND to the exact selected deployed ALA bin/ala.mjs.');
     const alaCommand = fsApi.realpathSync(env.SMOKE_ALA_COMMAND);

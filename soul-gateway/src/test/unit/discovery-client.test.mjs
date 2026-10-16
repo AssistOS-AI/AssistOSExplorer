@@ -28,7 +28,7 @@ const SILENT_LOG = {
 
 // A 32-byte (64 hex char) secret, the shape Ploinky injects.
 const SECRET_HEX = 'a'.repeat(64);
-const AGENT_ID = 'agent:proxies/soul-gateway';
+const AGENT_ID = 'agent:AchillesIDE/soul-gateway';
 
 function decodeJwtPayload(jwt) {
     const [, body] = jwt.split('.');

@@ -16,13 +16,13 @@ const ORIGIN = 'http://localhost:8080';
 
 test('RoboTeam dashboard waits through an inactive service response before navigation', async () => {
     const targetUrl = resolveAgentRuntimeTarget({
-        agentRef: 'AchillesCLI/roboTeamAgent', target: '/base-agent-additional-server/roboTeamAgent/3001/',
+        agentRef: 'AchillesIDE/roboTeamAgent', target: '/base-agent-additional-server/roboTeamAgent/3001/',
     }, ORIGIN);
     let attempts = 0;
     let waits = 0;
     let runtimeReads = 0;
     const result = await waitForAgentRuntimeAvailability({
-        agentRef: 'AchillesCLI/roboTeamAgent', label: 'RoboTeam',
+        agentRef: 'AchillesIDE/roboTeamAgent', label: 'RoboTeam',
         readRuntime: async () => {
             runtimeReads += 1;
             return { active: true, running: runtimeReads > 1, status: runtimeReads > 1 ? 'running' : 'starting' };
@@ -45,10 +45,10 @@ test('RoboTeam dashboard waits through an inactive service response before navig
 test('builds and parses the RoboTeam additional-service waiting route', () => {
     const targetUrl = '/base-agent-additional-server/roboTeamAgent/3001/';
     const waitingUrl = buildAgentRuntimeWaitUrl({
-        agentRef: 'AchillesCLI/roboTeamAgent', label: 'RoboTeam', targetUrl,
+        agentRef: 'AchillesIDE/roboTeamAgent', label: 'RoboTeam', targetUrl,
     }, ORIGIN);
     const parsed = parseAgentRuntimeWaitRoute(waitingUrl.hash, ORIGIN);
-    assert.equal(parsed.agentRef, 'AchillesCLI/roboTeamAgent');
+    assert.equal(parsed.agentRef, 'AchillesIDE/roboTeamAgent');
     assert.equal(parsed.targetUrl.toString(), `${ORIGIN}${targetUrl}`);
 });
 
@@ -64,21 +64,21 @@ test('additional-service targets stay on the same origin and exact agent with a 
         'https://example.test/base-agent-additional-server/roboTeamAgent/3001/',
         '/base-agent-additional-server/roboTeamAgent/3001/#fragment',
     ]) {
-        assert.throws(() => resolveAgentRuntimeTarget({ agentRef: 'AchillesCLI/roboTeamAgent', target }, ORIGIN),
+        assert.throws(() => resolveAgentRuntimeTarget({ agentRef: 'AchillesIDE/roboTeamAgent', target }, ORIGIN),
             /target is invalid/, target);
     }
 });
 
 test('builds and parses a same-agent Explorer waiting route', () => {
     const waitingUrl = buildAgentRuntimeWaitUrl({
-        agentRef: 'AchillesIDE/webmeetAgent',
+        agentRef: 'webmeet/webmeetAgent',
         label: 'WebMeet',
         targetUrl: '/webmeetAgent/roomLoader.html?roomId=room_123'
     }, ORIGIN);
     const parsed = parseAgentRuntimeWaitRoute(waitingUrl.hash, ORIGIN);
 
     assert.equal(waitingUrl.pathname, '/explorer/index.html');
-    assert.equal(parsed.agentRef, 'AchillesIDE/webmeetAgent');
+    assert.equal(parsed.agentRef, 'webmeet/webmeetAgent');
     assert.equal(parsed.label, 'WebMeet');
     assert.equal(parsed.targetUrl.toString(), `${ORIGIN}/webmeetAgent/roomLoader.html?roomId=room_123`);
 });
@@ -86,14 +86,14 @@ test('builds and parses a same-agent Explorer waiting route', () => {
 test('rejects cross-origin and cross-agent targets', () => {
     assert.throws(
         () => resolveAgentRuntimeTarget({
-            agentRef: 'AchillesIDE/webmeetAgent',
+            agentRef: 'webmeet/webmeetAgent',
             target: 'https://example.test/webmeetAgent/roomLoader.html'
         }, ORIGIN),
         /target is invalid/
     );
     assert.throws(
         () => resolveAgentRuntimeTarget({
-            agentRef: 'AchillesIDE/webmeetAgent',
+            agentRef: 'webmeet/webmeetAgent',
             target: '/onlyOffice/index.html'
         }, ORIGIN),
         /target is invalid/
@@ -133,7 +133,7 @@ test('runtime MCP probe waits for a complete agent handshake', async () => {
         }
     };
 
-    const result = await probeAgentRuntimeMcp('AchillesIDE/webmeetAgent', sdk);
+    const result = await probeAgentRuntimeMcp('webmeet/webmeetAgent', sdk);
     assert.equal(result, 'webmeetAgent');
     assert.equal(requestedAgent, 'webmeetAgent');
     assert.equal(listed, 1);
@@ -151,7 +151,7 @@ test('runtime MCP probe exposes startup failures as retryable availability error
     };
 
     await assert.rejects(
-        () => probeAgentRuntimeMcp('AchillesIDE/webmeetAgent', sdk),
+        () => probeAgentRuntimeMcp('webmeet/webmeetAgent', sdk),
         (error) => error.code === 'agent_not_ready' && /fetch failed/.test(error.message)
     );
 });
@@ -159,7 +159,7 @@ test('runtime MCP probe exposes startup failures as retryable availability error
 test('runtime route probe requires one stable Router generation window', async () => {
     const generations = ['generation-1', 'generation-1'];
     const waits = [];
-    const result = await probeAgentRuntimeRouteStability('AchillesIDE/webmeetAgent', {
+    const result = await probeAgentRuntimeRouteStability('webmeet/webmeetAgent', {
         origin: ORIGIN,
         settleMs: 2500,
         wait: async (delayMs) => waits.push(delayMs),
@@ -185,7 +185,7 @@ test('runtime route probe requires one stable Router generation window', async (
 test('runtime route probe retries when the Router generation changes', async () => {
     const generations = ['generation-1', 'generation-2'];
     await assert.rejects(
-        () => probeAgentRuntimeRouteStability('AchillesIDE/webmeetAgent', {
+        () => probeAgentRuntimeRouteStability('webmeet/webmeetAgent', {
             origin: ORIGIN,
             wait: async () => {},
             fetchImpl: async () => ({
@@ -233,7 +233,7 @@ async function runProbe(reads, options = {}) {
     const waits = [];
     let fetches = 0;
     const queue = [...reads];
-    const outcome = await probeAgentRuntimeRouteStability('AchillesIDE/tasksAgent', {
+    const outcome = await probeAgentRuntimeRouteStability('legacy-agents/tasksAgent', {
         origin: ORIGIN,
         settleMs: options.settleMs,
         wait: async (delayMs) => { waits.push(delayMs); options.onWait?.(delayMs); },

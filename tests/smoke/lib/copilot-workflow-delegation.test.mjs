@@ -14,7 +14,7 @@ async function harness(t) {
     assert.ok(process.env.SET2_ACHILLES_SOURCE && process.env.SET2_PLOINKY_SOURCE && process.env.SET2_ALA_COMMAND);
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'c4 workflow ü ')));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const repository = `${root}/AchillesCLI`, codeRoot = `${repository}/roboTeamAgent`, dataRoot = `${root}/_data`;
+    const repository = `${root}/AchillesIDE`, codeRoot = `${repository}/roboTeamAgent`, dataRoot = `${root}/_data`;
     fs.mkdirSync(repository); fs.cpSync(`${process.env.SET2_ACHILLES_SOURCE}/roboTeamAgent`, codeRoot, { recursive: true,
         filter: from => !from.split(path.sep).some(part => ['node_modules', '.git'].includes(part)) });
     const alaSource = path.dirname(path.dirname(fs.realpathSync(process.env.SET2_ALA_COMMAND))), alaRoot = `${root}/AdvancedLanguageAgent`;
@@ -176,7 +176,7 @@ test('C4 reader treats missing child session publication as incomplete evidence 
 });
 
 test('C4 reader refuses changed source before evaluating it or reading proof state', async t => {
-    const c = await harness(t), source = `${c.root}/AchillesCLI/roboTeamAgent/server/robot-store.mjs`, sentinel = `${c.root}/evaluated_codex.json`;
+    const c = await harness(t), source = `${c.root}/AchillesIDE/roboTeamAgent/server/robot-store.mjs`, sentinel = `${c.root}/evaluated_codex.json`;
     fs.appendFileSync(source, `\nimport { writeFileSync as c4Sentinel } from 'node:fs'; c4Sentinel(${JSON.stringify(sentinel)}, '{}');\n`);
     await assert.rejects(c.capture(c.baseline.userFiles), /Delegation source differs/);
     assert.equal(fs.existsSync(sentinel), false);
@@ -279,7 +279,7 @@ test('C4 review R3 child system prompt never leaves composed snapshot', async t 
     const file = `${c.fixture.workspace}/.roboteam/tasks/${id}/executions/${c.runtime.taskId}.json`;
     const runtime = JSON.parse(fs.readFileSync(file, 'utf8')); runtime.request.systemPrompt = sentinel;
     fs.writeFileSync(file, JSON.stringify(runtime));
-    const { buildTaskPrompt } = await import(pathToFileURL(`${c.root}/AchillesCLI/roboTeamAgent/copilot/src/lib/prompts.mjs`).href);
+    const { buildTaskPrompt } = await import(pathToFileURL(`${c.root}/AchillesIDE/roboTeamAgent/copilot/src/lib/prompts.mjs`).href);
     const transcriptFile = `${c.fixture.workspace}/.roboteam/.ala/sessions/${id}.jsonl`;
     const records = fs.readFileSync(transcriptFile, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
     const user = records.find(row => row.type === 'user'); user.text = buildTaskPrompt(runtime.request);

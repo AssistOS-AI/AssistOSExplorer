@@ -199,7 +199,7 @@ function makeAppCtx({ env = {} } = {}) {
         config: {
             env: {
                 PLOINKY_ROUTER_URL: 'http://router.local',
-                PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
+                PLOINKY_AGENT_ID: 'agent:AchillesIDE/soul-gateway',
                 ...env,
             },
         },
@@ -512,12 +512,12 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
 
         const summary = await reconcilePloinkyAgentRecords({
             appCtx: makeAppCtx({
-                env: { PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway' },
+                env: { PLOINKY_AGENT_ID: 'agent:AchillesIDE/soul-gateway' },
             }),
             discovery: {
                 complete: true,
                 agents: [
-                    agent({ subjectId: 'agent:proxies/soul-gateway' }),
+                    agent({ subjectId: 'agent:AchillesIDE/soul-gateway' }),
                     agent(),
                 ],
             },
@@ -535,7 +535,7 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         assert.equal(
             await providersFake.findByKey(
                 null,
-                providerKeyFor('agent:proxies/soul-gateway')
+                providerKeyFor('agent:AchillesIDE/soul-gateway')
             ),
             null
         );
@@ -1089,7 +1089,7 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
                 config: {
                     env: {
                         PLOINKY_ROUTER_URL: 'http://router.local',
-                        PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
+                        PLOINKY_AGENT_ID: 'agent:AchillesIDE/soul-gateway',
                     },
                 },
                 services: {},
@@ -1138,7 +1138,7 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
                 config: {
                     env: {
                         PLOINKY_ROUTER_URL: 'http://router.local',
-                        PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
+                        PLOINKY_AGENT_ID: 'agent:AchillesIDE/soul-gateway',
                     },
                 },
                 services: {},
@@ -1183,7 +1183,7 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
                 config: {
                     env: {
                         PLOINKY_ROUTER_URL: 'http://router.local',
-                        PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
+                        PLOINKY_AGENT_ID: 'agent:AchillesIDE/soul-gateway',
                         PLOINKY_AGENT_SECRET: 'a'.repeat(64),
                     },
                 },

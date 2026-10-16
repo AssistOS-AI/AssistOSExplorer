@@ -11,8 +11,8 @@ export function assertAccountRoles(primary, secondary, requirements) {
 }
 
 export function assertSearchAgentFixture(payload) {
-    const matches = payload?.marketplace?.agents?.filter(agent => agent.ref === 'proxies/searchAgent');
-    if (matches?.length !== 1) throw new Error('Smoke Marketplace preflight requires exactly one installed proxies/searchAgent catalog fixture.');
+    const matches = payload?.marketplace?.agents?.filter(agent => agent.ref === 'legacy-agents/searchAgent');
+    if (matches?.length !== 1) throw new Error('Smoke Marketplace preflight requires exactly one installed legacy-agents/searchAgent catalog fixture.');
 }
 
 export default async function accountPreflight() {

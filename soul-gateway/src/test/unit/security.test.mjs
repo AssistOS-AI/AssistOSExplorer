@@ -189,8 +189,8 @@ describe('extractBearerToken', () => {
 
 describe('router admin requireAdmin', () => {
     const config = {
-        PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
-        PLOINKY_AGENT_PRINCIPAL: 'agent:proxies/soul-gateway',
+        PLOINKY_AGENT_ID: 'agent:AchillesIDE/soul-gateway',
+        PLOINKY_AGENT_PRINCIPAL: 'agent:AchillesIDE/soul-gateway',
         PLOINKY_AGENT_SECRET: '9'.repeat(64),
     };
     const invocationBody = {

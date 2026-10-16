@@ -14,7 +14,7 @@ import { createLiveSkillsFixture, liveSkillsHash, liveSkillSources, liveSkillsPr
 const digest = 'a'.repeat(64);
 const files = LIVE_SKILLS_CONTRACT_FILES;
 
-function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'AchillesCLI') {
+function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'AchillesIDE') {
     const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
     const repository = path.join(directory, repositoryRelative);
@@ -58,7 +58,7 @@ test('image identity accepts only the full raw Podman and normalized forms', () 
 function readerSetup(f, { root = f.directory, image = 'sha256:' + digest } = {}) {
     const startedAt = new Date().toISOString();
     const release = { liveBox: { box: { containerId: 'b'.repeat(64), imageId: digest, startedAt }, workspaceSourceMount: { source: root } },
-        repositories: { achillesCLI: { repositoryPath: f.repository } } };
+        repositories: { explorer: { repositoryPath: f.repository } } };
     const codeSource = `${root}/.ploinky/container-runtime/owned-runtime/code-123`;
     fs.mkdirSync(codeSource, { recursive: true });
     fs.mkdirSync(`${root}/.data/roboTeamAgent`, { recursive: true });
@@ -177,7 +177,7 @@ test('code observer rejects empty, duplicate and escaping contract paths', async
 // ---------------------------------------------------------------------------------------------------------
 const bindMount = (Source, Destination, RW = true) => ({ Type: 'bind', Source, Destination, RW });
 
-function mountCase(t, { prefix = 'live skill ü mounts ', repositoryRelative = 'AchillesCLI' } = {}) {
+function mountCase(t, { prefix = 'live skill ü mounts ', repositoryRelative = 'AchillesIDE' } = {}) {
     const f = fixture(t, prefix, repositoryRelative);
     const setup = readerSetup(f);
     const root = f.directory;
@@ -208,7 +208,7 @@ test('runtime mounts accept the exact production tuples, including a space and U
 });
 
 test('the read-only controller pin is accepted only for a source that lives below it, and only as an exact read-only self bind', t => {
-    const c = mountCase(t, { repositoryRelative: '.ploinky/repos/AchillesCLI' });
+    const c = mountCase(t, { repositoryRelative: '.ploinky/repos/AchillesIDE' });
     const pin = path.join(c.root, '.ploinky');
     const pinned = c.clone(value => value.mounts.push(bindMount(pin, pin, false)));
     assert.equal(c.validate(pinned), pinned);
@@ -312,7 +312,7 @@ test('runtime mounts reject an unclean root before looking at any mount', t => {
     for (const workspaceRoot of [undefined, '', '/', `${c.root}/`, `${c.root}/../x`, `${c.root}:x`, `${c.root}\n`, 'relative']) {
         assert.throws(() => validateLiveSkillsRuntimeBinding(c.runtime, c.f.repository, { workspaceRoot }), /clean absolute host path/);
     }
-    assert.throws(() => validateLiveSkillsRuntimeBinding(c.runtime, `${c.root}-evil/AchillesCLI`, { workspaceRoot: c.root }), /outside the admitted root/);
+    assert.throws(() => validateLiveSkillsRuntimeBinding(c.runtime, `${c.root}-evil/AchillesIDE`, { workspaceRoot: c.root }), /outside the admitted root/);
     assert.throws(() => validateLiveSkillsRuntimeBinding(c.runtime, path.posix.dirname(c.root), { workspaceRoot: c.root }), /outside the admitted root/);
 });
 
@@ -393,8 +393,8 @@ test('the reader never starts a command for a root Box evidence cannot admit', a
     for (const name of ['fresh:workspace', 'fresh\nworkspace', 'fresh\\workspace']) {
         const f = fixture(t, 'parent ');
         const root = path.join(f.directory, name);
-        fs.mkdirSync(path.join(root, 'AchillesCLI/roboTeamAgent'), { recursive: true });
-        const setup = readerSetup({ ...f, directory: root, repository: path.join(root, 'AchillesCLI') }, { root });
+        fs.mkdirSync(path.join(root, 'AchillesIDE/roboTeamAgent'), { recursive: true });
+        const setup = readerSetup({ ...f, directory: root, repository: path.join(root, 'AchillesIDE') }, { root });
         let commands = 0;
         const run = async () => { commands += 1; return []; };
         await assert.rejects(createLiveSkillsRuntimeReader(setup.input, { collectRelease: async () => setup.release, runCommand: run }), /clean absolute host path/, name);
@@ -402,15 +402,15 @@ test('the reader never starts a command for a root Box evidence cannot admit', a
     }
 });
 
-test('the reader requires the verified AchillesCLI to be inside the admitted root and admits only canonical roots', async t => {
+test('the reader requires the verified AchillesIDE to be inside the admitted root and admits only canonical roots', async t => {
     const f = fixture(t, 'fresh workspace ü ');
     const setup = readerSetup(f);
     const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'outside-cli-')));
     t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
     fs.mkdirSync(path.join(outside, 'roboTeamAgent'));
-    setup.release.repositories.achillesCLI.repositoryPath = outside;
-    await assert.rejects(setup.create(), /Verified AchillesCLI must belong to the selected workspace/);
-    setup.release.repositories.achillesCLI.repositoryPath = `${f.directory}-evil`;
+    setup.release.repositories.explorer.repositoryPath = outside;
+    await assert.rejects(setup.create(), /Verified AchillesIDE must belong to the selected workspace/);
+    setup.release.repositories.explorer.repositoryPath = `${f.directory}-evil`;
     await assert.rejects(setup.create());
     // An alias of the root resolves to the canonical admitted root.
     const g = fixture(t, 'fresh workspace ü ');
@@ -470,7 +470,7 @@ const TRICKY_ROOTS = ["/srv/it's $HOME `x` ${y} \"q\"", '/Volumes/Ünïcode ws/�
 
 for (const root of TRICKY_ROOTS) {
     for (const [name, fn, args] of [
-        ['readLiveSkillsSnapshot', readLiveSkillsSnapshot, { sessionId: randomUUID(), folder: `copilot-live-skills-${randomUUID()}`, skillNames: [], contractFiles: [], expectedRepository: `${root}/AchillesCLI`, workspaceRoot: root }],
+        ['readLiveSkillsSnapshot', readLiveSkillsSnapshot, { sessionId: randomUUID(), folder: `copilot-live-skills-${randomUUID()}`, skillNames: [], contractFiles: [], expectedRepository: `${root}/AchillesIDE`, workspaceRoot: root }],
         ['readRegistryAndRuntime', readRegistryAndRuntime, { workspaceRoot: root }],
     ]) {
         test(`${name} serializes the root ${JSON.stringify(root)} as one JSON value that Node parses and runs without a ReferenceError`, t => {
@@ -496,7 +496,7 @@ for (const root of TRICKY_ROOTS) {
 // (/data robots and /code) are redirected to temporary directories; the workspace root is the admitted host path.
 function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thinkingLink = false } = {}) {
     const f = fixture(t, prefix);
-    assert.ok(process.env.SET2_ACHILLES_SOURCE && process.env.SET2_ALA_COMMAND && process.env.ACHILLES_ALA_COMMAND, 'Pin AchillesCLI and ALA source for SET2 tests.');
+    assert.ok(process.env.SET2_ACHILLES_SOURCE && process.env.SET2_ALA_COMMAND && process.env.ACHILLES_ALA_COMMAND, 'Pin AchillesIDE and ALA source for SET2 tests.');
     const selectedAlaCommand = fs.realpathSync(process.env.SET2_ALA_COMMAND);
     const selectedAlaRoot = path.dirname(path.dirname(selectedAlaCommand));
     const alaRoot = path.join(f.directory, 'AdvancedLanguageAgent');
@@ -601,7 +601,7 @@ test('the in-Box reader rejects unclean roots, repositories outside the root and
     for (const workspaceRoot of ['/workspace', `${c.f.directory}-evil`, `${c.f.directory}/`, `${c.f.directory}/../${path.basename(c.f.directory)}`, 'relative', '/', '']) {
         await assert.rejects(c.read({ workspaceRoot }), undefined, workspaceRoot);
     }
-    await assert.rejects(c.read({ expectedRepository: `${c.f.directory}-evil/AchillesCLI` }));
+    await assert.rejects(c.read({ expectedRepository: `${c.f.directory}-evil/AchillesIDE` }));
     await assert.rejects(c.read({ expectedRepository: path.dirname(c.f.directory) }));
     const alias = `${c.f.directory}-alias`;
     fs.symlinkSync(c.f.directory, alias);

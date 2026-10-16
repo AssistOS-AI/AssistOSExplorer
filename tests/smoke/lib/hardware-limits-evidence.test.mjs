@@ -676,7 +676,7 @@ test('snapshot readers find tokens, agents, instances and the single ready targe
   const snapshot = {
     token: { epoch: 'e1', revision: 7 },
     agents: [
-      { ref: 'AchillesIDE/tasksAgent', containers: [{ key: 'k1', availability: 'ready' }] },
+      { ref: 'legacy-agents/tasksAgent', containers: [{ key: 'k1', availability: 'ready' }] },
       { ref: 'AchillesIDE/gitAgent', containers: [{ key: 'k2', availability: 'ready' }, { key: 'k3', alias: 'x', availability: 'ready' }] },
       { ref: 'AchillesIDE/stopped', containers: [{ key: 'k4', availability: 'stopped' }] },
       { ref: 'nosuch/orphan', orphaned: true, containers: [] },
@@ -949,7 +949,7 @@ function fixtureSnapshot() {
     { ref: 'hwlFixture/aliased', containers: [{ key: 'ploinky_aliased_canonical', alias: null }, { key: 'ploinky_aliased_second', alias: 'second' }] },
     { ref: 'hwlFixture/refused', containers: [{ key: 'ploinky_refused_1' }] },
     { ref: 'hwlFixture/dependant', containers: [{ key: 'ploinky_dependant_1' }] },
-    { ref: 'AchillesIDE/tasksAgent', containers: [{ key: 'ploinky_tasks_1' }] },
+    { ref: 'legacy-agents/tasksAgent', containers: [{ key: 'ploinky_tasks_1' }] },
   ] };
 }
 const ORDER = ['hwlFixture/static', 'hwlFixture/dependant', 'hwlFixture/refused', 'hwlFixture/aliased'];

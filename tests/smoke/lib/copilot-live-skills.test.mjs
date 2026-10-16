@@ -157,7 +157,7 @@ test('pending polling never treats a previous completed assistant as a new nativ
 });
 
 function runtimeFixture(root = ROOT) {
-    const repository = `${root}/.ploinky/repos/AchillesCLI`;
+    const repository = `${root}/.ploinky/repos/AchillesIDE`;
     const runtime = { key: 'owned-runtime', containerId: 'a'.repeat(64), instanceId: randomUUID(), enableGeneration: randomUUID(),
         startedAt: new Date().toISOString(), imageId: 'sha256:' + 'b'.repeat(64), mounts: [
             { Type: 'bind', Source: root, Destination: root, RW: true },

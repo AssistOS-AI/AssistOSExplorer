@@ -216,7 +216,7 @@ function verifyHttpRouteAuthInfo(headers, {
 function signRouterInvocation(bodyObject) {
     const now = Math.floor(Date.now() / 1000);
     const audience =
-        process.env.PLOINKY_AGENT_PRINCIPAL || 'agent:proxies/soul-gateway';
+        process.env.PLOINKY_AGENT_PRINCIPAL || 'agent:AchillesIDE/soul-gateway';
     return signHmacJwt({
         secret: Buffer.from(ROUTER_AGENT_SECRET, 'hex'),
         payload: {
@@ -382,8 +382,8 @@ function createMockAppCtx(overrides = {}) {
             env: {
                 ENCRYPTION_KEY: null,
                 API_KEY_HASH_PEPPER: 'test-pepper',
-                PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
-                PLOINKY_AGENT_PRINCIPAL: 'agent:proxies/soul-gateway',
+                PLOINKY_AGENT_ID: 'agent:AchillesIDE/soul-gateway',
+                PLOINKY_AGENT_PRINCIPAL: 'agent:AchillesIDE/soul-gateway',
                 PLOINKY_AGENT_SECRET: ROUTER_AGENT_SECRET,
                 DATA_DIR: '/tmp/soul-gateway-test',
                 DASHBOARD_STATIC_DIR: '/tmp/soul-gateway-test/dashboard',
@@ -525,8 +525,8 @@ describe('management/keys-route', () => {
     it('handleListKeys returns key list', async () => {
         const mockRow = {
             id: 'k1',
-            label: 'agent:proxies/soul-gateway',
-            subject_id: 'agent:proxies/soul-gateway',
+            label: 'agent:AchillesIDE/soul-gateway',
+            subject_id: 'agent:AchillesIDE/soul-gateway',
             subject_type: 'agent',
             source: 'signed-subject',
             status: 'active',
@@ -551,7 +551,7 @@ describe('management/keys-route', () => {
         assert.equal(body.data.length, 1);
         // The HMAC key_hash is the only sensitive column; it must be stripped.
         assert.equal(body.data[0].key_hash, undefined);
-        assert.equal(body.data[0].subject_id, 'agent:proxies/soul-gateway');
+        assert.equal(body.data[0].subject_id, 'agent:AchillesIDE/soul-gateway');
     });
 
     it('handleProvisionUserKey provisions a user key row (201)', async () => {
@@ -596,7 +596,7 @@ describe('management/keys-route', () => {
         const pool = createMockPool(async () => ({ rows: [] }));
         const appCtx = createMockAppCtx({ pool });
         const bad = [
-            'agent:proxies/soul-gateway',
+            'agent:AchillesIDE/soul-gateway',
             'user:alice',
             'user:alice:laptop:extra',
             'user:alice:',
@@ -675,7 +675,7 @@ describe('management/keys-route', () => {
         // list is empty — there is no synthetic default row to add.
         const pool = createMockPool(async () => ({ rows: [] }));
         const appCtx = createMockAppCtx({ pool });
-        appCtx.config.env.PLOINKY_AGENT_API_KEY = 'agent:proxies/soul-gateway|sig';
+        appCtx.config.env.PLOINKY_AGENT_API_KEY = 'agent:AchillesIDE/soul-gateway|sig';
         const res = createMockRes();
 
         await handleListKeys({
@@ -726,8 +726,8 @@ describe('management/keys-route', () => {
     it('handleListKeys returns signed-subject row with subject_id, subject_type, source and no key_hash', async () => {
         const signedSubjectRow = {
             id: 'k-signed',
-            label: 'agent:proxies/soul-gateway',
-            subject_id: 'agent:proxies/soul-gateway',
+            label: 'agent:AchillesIDE/soul-gateway',
+            subject_id: 'agent:AchillesIDE/soul-gateway',
             subject_type: 'agent',
             source: 'signed-subject',
             status: 'active',
@@ -752,7 +752,7 @@ describe('management/keys-route', () => {
         const body = parseJsonResponse(res);
         assert.equal(body.data.length, 1);
         const row = body.data[0];
-        assert.equal(row.subject_id, 'agent:proxies/soul-gateway');
+        assert.equal(row.subject_id, 'agent:AchillesIDE/soul-gateway');
         assert.equal(row.subject_type, 'agent');
         assert.equal(row.source, 'signed-subject');
         assert.equal(row.key_hash, undefined, 'key_hash must be stripped');

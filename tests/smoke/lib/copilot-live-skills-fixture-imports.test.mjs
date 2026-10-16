@@ -15,7 +15,7 @@ function productionCase(t) {
     assert.ok(process.env.SET2_ACHILLES_SOURCE, 'Pin the disposable source to SET2_ACHILLES_SOURCE.');
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'set2 real imports ü ')));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const repository = `${root}/AchillesCLI`, codeRoot = `${repository}/roboTeamAgent`, dataRoot = `${root}/_data`;
+    const repository = `${root}/AchillesIDE`, codeRoot = `${repository}/roboTeamAgent`, dataRoot = `${root}/_data`;
     fs.mkdirSync(repository);
     fs.cpSync(`${process.env.SET2_ACHILLES_SOURCE}/roboTeamAgent`, codeRoot, { recursive: true,
         filter: source => !source.split(path.sep).some(part => ['node_modules', '.git'].includes(part)) });

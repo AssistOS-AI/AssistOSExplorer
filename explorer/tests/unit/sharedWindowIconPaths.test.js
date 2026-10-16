@@ -1,13 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+import { siblingRoot } from '../../../tests/helpers/sibling-roots.mjs';
 
 const explorerRoot = new URL('../../', import.meta.url);
 const repoRoot = new URL('../', explorerRoot);
 
+// Agents of this repository, and agents that moved to a sibling checkout (a
+// missing sibling throws).
+const siblingAgentsUrl = (repo) => pathToFileURL(`${siblingRoot(repo)}/`);
 const uiRoots = [
-    'explorer', 'gitAgent', 'dpuAgent', 'tasksAgent', 'webAssist',
-    'emailAgent', 'soplangAgent', 'multimedia', 'webmeetAgent',
+    ['explorer', repoRoot], ['gitAgent', repoRoot], ['dpuAgent', repoRoot], ['emailAgent', repoRoot],
+    ['tasksAgent', siblingAgentsUrl('legacy-agents')], ['webAssist', siblingAgentsUrl('legacy-agents')],
+    ['soplangAgent', siblingAgentsUrl('legacy-agents')], ['multimedia', siblingAgentsUrl('legacy-agents')],
+    ['webmeetAgent', siblingAgentsUrl('webmeet')],
 ];
 
 async function* uiSources(directory) {
@@ -49,10 +56,10 @@ test('Git dialog close icons resolve to existing shared assets', async () => {
     }
 });
 
-for (const root of uiRoots) {
+for (const [root, base] of uiRoots) {
     test(`${root} modal and UI icon paths are explicit and resolve to existing SVGs`, async () => {
         let checked = 0;
-        for await (const url of uiSources(new URL(`${root}/`, repoRoot))) {
+        for await (const url of uiSources(new URL(`${root}/`, base))) {
             const source = (await fs.readFile(url, 'utf8')).replace(/<!--[\s\S]*?-->/g, '');
             const icons = source.matchAll(/(?:\.\/|\/explorer\/(?:shared\/)?)assets\/icons\/[\w/-]+\.svg/g);
             for (const [src] of icons) {
@@ -77,7 +84,7 @@ test('dynamic document status icons use a page-independent Explorer path', async
 });
 
 test('SOPLang variable modal icons resolve relative to their module, not the open page', async () => {
-    const base = new URL('soplangAgent/IDE-plugins/edit-variables/', repoRoot);
+    const base = new URL('soplangAgent/IDE-plugins/edit-variables/', siblingAgentsUrl('legacy-agents'));
     const moduleUrl = new URL('components/edit-variable-tab/varUtilsUI.js', base);
     const source = await fs.readFile(moduleUrl, 'utf8');
     const iconBase = source.match(/ICON_BASE_URL = new URL\("([^"]+)", import\.meta\.url\)/);

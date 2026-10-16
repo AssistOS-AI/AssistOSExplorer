@@ -217,7 +217,7 @@ process.env.PLOINKY_AGENTLIB_DIR ||= fileURLToPath(new URL('node_modules/achille
 const { RouterRequestTokenService } = await import(new URL('cli/server/security/tokens/RouterRequestTokenService.js', PLOINKY_ROOT).href);
 const { verifyRouterRequestFromHeaders } = await import(new URL('Agent/lib/invocationAuth.mjs', PLOINKY_ROOT).href);
 const { computeRchTool } = await import(new URL('Agent/lib/requestHash.mjs', PLOINKY_ROOT).href);
-const ROBOTEAM_ID = 'agent:AchillesCLI/roboTeamAgent';
+const ROBOTEAM_ID = 'agent:AchillesIDE/roboTeamAgent';
 const ROBOTEAM_SECRET = Buffer.alloc(32, 7);
 const grantMinter = new RouterRequestTokenService({ resolveAgentSecret: () => ROBOTEAM_SECRET });
 

@@ -19,7 +19,7 @@ test('declares an Explorer toolbar plugin immediately after WebMeet', async () =
     assert.equal(config.presenter, 'RoboTeamToolButton');
     assert.equal(config.toolbarModal.mode, 'iframe');
     assert.equal(config.toolbarModal.url, '/base-agent-additional-server/roboTeamAgent/3001/');
-    assert.equal(config.toolbarModal.agentRef, 'AchillesCLI/roboTeamAgent');
+    assert.equal(config.toolbarModal.agentRef, 'AchillesIDE/roboTeamAgent');
 
     const [icon, html, css, source] = await Promise.all([
         'icon.svg',
@@ -90,7 +90,7 @@ test('opens the Explorer runtime loader for the RoboTeam dashboard and follows h
         assert.equal(waitingUrl.pathname, '/explorer/index.html');
         assert.ok(waitingUrl.hash.startsWith('#agent-runtime-wait?'));
         const parameters = new URLSearchParams(waitingUrl.hash.split('?')[1]);
-        assert.equal(parameters.get('agentRef'), 'AchillesCLI/roboTeamAgent');
+        assert.equal(parameters.get('agentRef'), 'AchillesIDE/roboTeamAgent');
         assert.equal(parameters.get('label'), 'RoboTeam');
         assert.equal(parameters.get('target'), '/base-agent-additional-server/roboTeamAgent/3001/');
 
@@ -135,7 +135,7 @@ test('opens the RoboTeam dashboard in the shared expanded modal when the host pr
             pluginToolbarModal: {
                 mode: 'iframe',
                 url: '/base-agent-additional-server/roboTeamAgent/3001/',
-                agentRef: 'AchillesCLI/roboTeamAgent',
+                agentRef: 'AchillesIDE/roboTeamAgent',
                 fullscreen: true,
             },
         });
@@ -144,7 +144,7 @@ test('opens the RoboTeam dashboard in the shared expanded modal when the host pr
 
         assert.equal(modalCalls.length, 1);
         assert.equal(modalCalls[0].url, '/base-agent-additional-server/roboTeamAgent/3001/');
-        assert.equal(modalCalls[0].agentRef, 'AchillesCLI/roboTeamAgent');
+        assert.equal(modalCalls[0].agentRef, 'AchillesIDE/roboTeamAgent');
         assert.equal(modalCalls[0].title, 'RoboTeam');
     } finally {
         globalThis.assistOS = previousAssistOS;

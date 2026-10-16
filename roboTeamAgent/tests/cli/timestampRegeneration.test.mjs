@@ -9,8 +9,8 @@ import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { siblingRoot } from '../../../tests/helpers/sibling-roots.mjs';
 
 import {
     createTempDir,
@@ -18,12 +18,10 @@ import {
     SKILL_DEFINITIONS,
 } from './helpers/testHelpers.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, '..');
+// AchillesAgentLib is supplied by the Ploinky checkout (PLOINKY_ROOT, default ../ploinky).
+// A missing checkout throws instead of silently skipping the generator checks.
 const achillesLibCandidates = [
-    path.join(repoRoot, 'achilles-cli/node_modules/achillesAgentLib/DBTableSkillsSubsystem'),
-    path.join(repoRoot, 'node_modules/achillesAgentLib/DBTableSkillsSubsystem'),
-    path.join(repoRoot, '../../..', 'ploinky/node_modules/achillesAgentLib/DBTableSkillsSubsystem'),
+    path.join(siblingRoot('ploinky'), 'node_modules/achillesAgentLib/DBTableSkillsSubsystem'),
 ];
 
 function findAchillesLibPath() {

@@ -26,7 +26,7 @@ describe('CommandSelector - Full Suite', () => {
     ];
 
     beforeEach(async () => {
-        const module = await import('../roboTeamAgent/copilot/src/ui/CommandSelector.mjs');
+        const module = await import('../../copilot/src/ui/CommandSelector.mjs');
         CommandSelector = module.CommandSelector;
     });
 
@@ -235,9 +235,9 @@ describe('buildCommandList - Full Suite', () => {
     let SlashCommandHandler;
 
     beforeEach(async () => {
-        const cmdModule = await import('../roboTeamAgent/copilot/src/ui/CommandSelector.mjs');
+        const cmdModule = await import('../../copilot/src/ui/CommandSelector.mjs');
         buildCommandList = cmdModule.buildCommandList;
-        const handlerModule = await import('../roboTeamAgent/copilot/src/repl/SlashCommandHandler.mjs');
+        const handlerModule = await import('../../copilot/src/repl/SlashCommandHandler.mjs');
         SlashCommandHandler = handlerModule.SlashCommandHandler;
     });
 
@@ -293,7 +293,7 @@ describe('showSkillSelector - Full Suite', () => {
     ];
 
     beforeEach(async () => {
-        const module = await import('../roboTeamAgent/copilot/src/ui/CommandSelector.mjs');
+        const module = await import('../../copilot/src/ui/CommandSelector.mjs');
         showSkillSelector = module.showSkillSelector;
         CommandSelector = module.CommandSelector;
     });

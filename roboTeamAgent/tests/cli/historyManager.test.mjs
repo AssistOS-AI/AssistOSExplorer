@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { HistoryManager } from '../roboTeamAgent/copilot/src/repl/HistoryManager.mjs';
+import { HistoryManager } from '../../copilot/src/repl/HistoryManager.mjs';
 
 function workspace(t) {
     const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-history-'));

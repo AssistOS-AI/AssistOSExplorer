@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { siblingUrl } from '../../../tests/helpers/sibling-roots.mjs';
 
 const clients = [
     ['Explorer', new URL('../../services/profileAvatar/avatarApi.js', import.meta.url)],
-    ['WebMeet', new URL('../../../webmeetAgent/IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/services/webmeet-profile-avatar-runtime.js', import.meta.url)]
+    ['WebMeet', siblingUrl('webmeet', 'webmeetAgent', 'IDE-plugins', 'webmeet-tool-button', 'components', 'webmeet-dashboard', 'services', 'webmeet-profile-avatar-runtime.js')]
 ];
 
 for (const [name, url] of clients) {

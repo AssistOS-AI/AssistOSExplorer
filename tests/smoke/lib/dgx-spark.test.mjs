@@ -79,7 +79,7 @@ test('compute processes are split by the Box scope in their host cgroup', () => 
 test('nestedNameOf finds exactly one container of a manifest agent', () => {
   const entries = [{ name: 'ploinky_local-llms_local-llm_testExplorerFresh_8b021738' }, { name: 'ploinky_AchillesIDE_explorer_testExplorerFresh_8b021738' }];
   assert.equal(nestedNameOf(entries, 'local-llms/local-llm'), 'ploinky_local-llms_local-llm_testExplorerFresh_8b021738');
-  assert.throws(() => nestedNameOf(entries, 'proxies/soul-gateway'), /found 0/);
+  assert.throws(() => nestedNameOf(entries, 'AchillesIDE/soul-gateway'), /found 0/);
 });
 
 test('errorCodeOf prefers the structured code and falls back to the message', () => {

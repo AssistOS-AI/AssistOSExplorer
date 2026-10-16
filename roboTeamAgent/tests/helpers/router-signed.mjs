@@ -14,9 +14,9 @@ const { buildHttpRouteAuthInfoHeader } = await import(new URL('cli/server/router
 const { deriveAgentRequestSecret } = await import(new URL('cli/utils/security/masterKey.js', `file://${PLOINKY_ROOT}`).href);
 const { sha256RawBodyHash } = await import(new URL('Agent/lib/requestHash.mjs', `file://${PLOINKY_ROOT}`).href);
 
-export const AGENT_ID = 'agent:AchillesCLI/roboTeamAgent';
+export const AGENT_ID = 'agent:AchillesIDE/roboTeamAgent';
 export const EXTERNAL_PREFIX = '/base-agent-additional-server/roboTeamAgent/3001';
-const DEFINITION = { includeAuthInfo: true, issueInvocation: true, routeKey: 'roboTeamAgent', route: { repo: 'AchillesCLI', agent: 'roboTeamAgent' } };
+const DEFINITION = { includeAuthInfo: true, issueInvocation: true, routeKey: 'roboTeamAgent', route: { repo: 'AchillesIDE', agent: 'roboTeamAgent' } };
 const ENV_KEYS = ['PLOINKY_AGENT_RUNTIME_ROOT', 'PLOINKY_AGENT_ID', 'PLOINKY_AGENT_SECRET'];
 
 export function configureAgentEnv(overrides = {}) {

@@ -26,7 +26,7 @@ test('WebChat errors use the forwarded public origin for clickable source links'
 
     assert.match(
         formatWebchatError(error, { publicBaseUrl: 'https://example.test/webchat?ignored=1' }),
-        /\(https:\/\/example\.test\/workspace-files\/\.ploinky\/repos\/AchillesCLI\/roboTeamAgent\/copilot\/src\/index\.mjs\)$/,
+        /\(https:\/\/example\.test\/workspace-files\/\.ploinky\/repos\/AchillesIDE\/roboTeamAgent\/copilot\/src\/index\.mjs\)$/,
     );
 });
 

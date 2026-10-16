@@ -43,7 +43,7 @@ test('runtime availability waits through stopped state until the operation succe
     let attempts = 0;
     let reads = 0;
     const result = await waitForAgentRuntimeAvailability({
-        agentRef: 'AchillesIDE/webmeetAgent',
+        agentRef: 'webmeet/webmeetAgent',
         timeoutMs: Number.POSITIVE_INFINITY,
         readRuntime: async () => (++reads === 1 ? { status: 'stopped', running: false } : { status: 'running', running: true }),
         wait: async () => {},
@@ -66,7 +66,7 @@ test('runtime availability waits through stopped state until the operation succe
 test('runtime availability surfaces a terminal runtime failure', async () => {
     await assert.rejects(
         () => waitForAgentRuntimeAvailability({
-            agentRef: 'AchillesIDE/webmeetAgent',
+            agentRef: 'webmeet/webmeetAgent',
             label: 'WebMeet',
             readRuntime: async () => ({ status: 'failed', running: false }),
             operation: async () => 'unreachable'
@@ -145,7 +145,7 @@ test('an initial running runtime entry serves as the only first read and later i
     let reads = 0;
     let attempts = 0;
     const result = await waitForAgentRuntimeAvailability({
-        agentRef: 'AchillesIDE/webmeetAgent',
+        agentRef: 'webmeet/webmeetAgent',
         initialRuntime: { active: true, running: true, status: 'running' },
         readRuntime: async () => { reads += 1; return { active: true, running: true, status: 'running' }; },
         wait: async () => {},
@@ -163,7 +163,7 @@ test('an initial running runtime entry serves as the only first read and later i
 test('an initial runtime entry that is not running is still followed by a re-read', async () => {
     let reads = 0;
     const result = await waitForAgentRuntimeAvailability({
-        agentRef: 'AchillesIDE/webmeetAgent',
+        agentRef: 'webmeet/webmeetAgent',
         initialRuntime: { active: true, running: false, status: 'starting' },
         readRuntime: async () => { reads += 1; return { active: true, running: true, status: 'running' }; },
         wait: async () => {},

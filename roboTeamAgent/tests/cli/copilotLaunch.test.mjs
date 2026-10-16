@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const copilotLaunchPath = path.join(
     __dirname,
-    '../roboTeamAgent/IDE-plugins/achilles-cli-tool-button/copilot-launch.js'
+    '../../IDE-plugins/achilles-cli-tool-button/copilot-launch.js'
 );
 const copilotLaunchSource = fs.readFileSync(copilotLaunchPath, 'utf8');
 const {

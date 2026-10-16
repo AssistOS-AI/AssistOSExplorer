@@ -178,7 +178,7 @@ test('the next execution installs exactly the skills the page enabled', async t 
     // A fake repository client that creates the symbolic links it is asked to publish.
     const repositories = [{ name: 'DocumentationSkills', source: path.join(f.workspaceRoot, 'DocumentationSkills'), origin: 'workspace' },
         { name: 'ProjectSkills', source: f.repository, origin: 'workspace' },
-        { name: 'AchillesCLI', source: path.resolve(fileURLToPath(new URL('../..', import.meta.url))), origin: 'workspace' }];
+        { name: 'AchillesIDE', source: path.resolve(fileURLToPath(new URL('../..', import.meta.url))), origin: 'workspace' }];
     const client = {
         listRepositories: async () => repositories,
         install: async ({ repos }) => {
@@ -208,7 +208,7 @@ test('the next execution installs exactly the skills the page enabled', async t 
     await fs.symlink(failure.sourcePath, obsolete);
     const stateFile = path.join(cwd, '.agents', '.roboteam-links.json');
     const installedRecords = [];
-    installedRecords.push({ repoName: 'AchillesCLI', destination: obsolete, sourcePath: 'roboTeamAgent/copilot/src/skills/report-task-blocked', linkTarget: failure.sourcePath });
+    installedRecords.push({ repoName: 'AchillesIDE', destination: obsolete, sourcePath: 'roboTeamAgent/copilot/src/skills/report-task-blocked', linkTarget: failure.sourcePath });
     await fs.writeFile(stateFile, JSON.stringify(installedRecords));
     await f.set({ identity: SKILL_IDENTITY, enabled: false, policyVersion: policyVersion + 1 });
     const off = await installLiveSkills({ service: f.skillsets, robot, policyId: f.sessionId, sessionId: f.sessionId, cwd, client });

@@ -26,17 +26,17 @@ function fixture(t, { installed = true, registered = true, cold = false } = {}) 
         fs.writeFileSync(path.join(state, name), JSON.stringify(value));
     };
     const readJson = (name) => JSON.parse(fs.readFileSync(path.join(state, name), 'utf8'));
-    const current = { type: 'agent', repoName: 'AchillesIDE', agentName: 'liveKitServerAgent', alias: 'liveKitServerAgent' };
+    const current = { type: 'agent', repoName: 'webmeet', agentName: 'liveKitServerAgent', alias: 'liveKitServerAgent' };
     const registry = cold ? {} : { current_livekit: current };
     if (registered && !cold) {
         for (const name of oldContainers) registry[name] = { type: 'agent', repoName: retiredRepo, agentName: 'liveKitServerAgent' };
     }
     writeJson('agents.json', registry);
     writeJson('containers.json', Object.keys(registry));
-    writeJson('enabled_repos.json', cold ? [] : [retiredRepo, 'AchillesIDE']);
+    writeJson('enabled_repos.json', cold ? [] : [retiredRepo, 'webmeet']);
     writeJson('repo_sources.json', { [retiredRepo]: { url: 'https://example.invalid/retired.git' } });
     if (!cold) {
-        writeJson('repos/AchillesIDE/liveKitServerAgent/manifest.json', { container: 'retained-image' });
+        writeJson('repos/webmeet/liveKitServerAgent/manifest.json', { container: 'retained-image' });
         if (installed) writeJson(`repos/${retiredRepo}/liveKitServerAgent/manifest.json`, { container: 'retained-image' });
     }
     const dataFile = path.join(workspace, '.data/liveKitServerAgent/recordings/retained.txt');
@@ -167,7 +167,7 @@ test('migration removes every exact old owner before update and preserves the un
         ['disable', 'repo', retiredRepo], ['uninstall', 'repo', retiredRepo], ['update'], ['start', 'explorer'],
     ]);
     assert.deepEqual(state.readJson('agents.json'), { current_livekit: state.current });
-    assert.deepEqual(state.readJson('enabled_repos.json'), ['AchillesIDE']);
+    assert.deepEqual(state.readJson('enabled_repos.json'), ['webmeet']);
     assert.equal(state.installed(), false);
     assert.equal(state.pending(), false);
     state.assertData();
@@ -235,7 +235,7 @@ test('failed runtime removal keeps captured owners across retries until physical
     assert.equal(state.readJson('agents.json')[oldContainers[0]], undefined);
     assert.ok(state.readJson('containers.json').includes(oldContainers[0]));
     assert.deepEqual(state.readJson('livekit-repository-migration.json'), oldContainers);
-    const unrelated = { type: 'agent', repoName: 'AchillesIDE', agentName: 'liveKitServerAgent', alias: oldContainers[0] };
+    const unrelated = { type: 'agent', repoName: 'webmeet', agentName: 'liveKitServerAgent', alias: oldContainers[0] };
     state.writeJson('agents.json', { ...state.readJson('agents.json'), unrelated_alias: unrelated });
     const retry = state.run();
     assert.notEqual(retry.status, 0);

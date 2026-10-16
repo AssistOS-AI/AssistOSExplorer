@@ -19,8 +19,8 @@ process.env.PLOINKY_AGENTLIB_DIR ||= path.join(PLOINKY_ROOT, 'node_modules', 'ac
 const { buildHttpRouteAuthInfoHeader, buildPlainAuthInfoHeader } = await import(new URL('cli/server/routerHandlers.js', `file://${PLOINKY_ROOT}`).href);
 const { deriveAgentRequestSecret } = await import(new URL('cli/utils/security/masterKey.js', `file://${PLOINKY_ROOT}`).href);
 
-const AGENT_ID = 'agent:AchillesCLI/roboTeamAgent';
-const DEFINITION = { includeAuthInfo: true, issueInvocation: true, routeKey: 'roboTeamAgent', route: { repo: 'AchillesCLI', agent: 'roboTeamAgent' } };
+const AGENT_ID = 'agent:AchillesIDE/roboTeamAgent';
+const DEFINITION = { includeAuthInfo: true, issueInvocation: true, routeKey: 'roboTeamAgent', route: { repo: 'AchillesIDE', agent: 'roboTeamAgent' } };
 const EXTERNAL_PREFIX = '/base-agent-additional-server/roboTeamAgent/3001';
 const ENV_KEYS = ['PLOINKY_AGENT_RUNTIME_ROOT', 'PLOINKY_AGENT_ID', 'PLOINKY_AGENT_SECRET'];
 
@@ -137,7 +137,7 @@ test('unsigned, forged and tampered listing requests are rejected before any lis
     await expectStatus(await fixture.get('/api/robots?all=1', signedHeaders(PRINCIPALS.explorerUser, { search: '?all=1' })), 200, 'signed query');
     // Audience: a token minted for another agent fails here.
     const otherAgent = buildHttpRouteAuthInfoHeader({ method: 'GET', url: `${EXTERNAL_PREFIX}/api/robots`, headers: {}, user: PRINCIPALS.explorerUser },
-        new URL(`http://127.0.0.1:8080${EXTERNAL_PREFIX}/api/robots`), { ...DEFINITION, route: { repo: 'AchillesCLI', agent: 'otherAgent' } }, { routePath: '/api/robots' });
+        new URL(`http://127.0.0.1:8080${EXTERNAL_PREFIX}/api/robots`), { ...DEFINITION, route: { repo: 'AchillesIDE', agent: 'otherAgent' } }, { routePath: '/api/robots' });
     await expectStatus(await fixture.get('/api/robots', otherAgent), 401, 'audience');
     const once = signedHeaders(PRINCIPALS.explorerUser);
     await expectStatus(await fixture.get('/api/robots', once), 200, 'first use');

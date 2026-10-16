@@ -25,7 +25,7 @@ test('terminal resolves the persistent robot home and rejects substituted mounts
 function discovery(targets) {
     return { ok: true, discovery: { id: 'd'.repeat(32), directory: 'robot/home', expiresAt: Date.now() + 60000, targets } };
 }
-const target = { kind: 'agent', detail: 'AchillesCLI/roboTeamAgent', access: 'rw', launch: 'x'.repeat(32) };
+const target = { kind: 'agent', detail: 'AchillesIDE/roboTeamAgent', access: 'rw', launch: 'x'.repeat(32) };
 
 test('terminal uses router discovery with only a relative cwd and a fragment-only launch', async () => {
     const calls = [];

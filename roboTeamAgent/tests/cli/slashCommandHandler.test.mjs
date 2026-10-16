@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SlashCommandHandler, buildSlashCommandCatalog } from '../roboTeamAgent/copilot/src/repl/SlashCommandHandler.mjs';
-import { getQuickReference, getCommandHelp } from '../roboTeamAgent/copilot/src/ui/HelpSystem.mjs';
+import { SlashCommandHandler, buildSlashCommandCatalog } from '../../copilot/src/repl/SlashCommandHandler.mjs';
+import { getQuickReference, getCommandHelp } from '../../copilot/src/ui/HelpSystem.mjs';
 
 function handler(options = {}) {
     return new SlashCommandHandler({ getSkills: () => [], getUserSkills: () => [], ...options });

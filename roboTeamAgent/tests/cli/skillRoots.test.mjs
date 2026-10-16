@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { collectPloinkyRepoSkillRoots } from '../roboTeamAgent/copilot/src/index.mjs';
+import { collectPloinkyRepoSkillRoots } from '../../copilot/src/index.mjs';
 
 describe('Ploinky repo skill root discovery', () => {
     const tempDirs = [];

@@ -180,8 +180,8 @@ describe('authenticateRouterAdmin', () => {
     };
     const routerConfig = {
         env: {
-            PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
-            PLOINKY_AGENT_PRINCIPAL: 'agent:proxies/soul-gateway',
+            PLOINKY_AGENT_ID: 'agent:AchillesIDE/soul-gateway',
+            PLOINKY_AGENT_PRINCIPAL: 'agent:AchillesIDE/soul-gateway',
             PLOINKY_AGENT_SECRET: agentSecret,
         },
         verifyHttpRouteAuthInfo,
@@ -205,7 +205,7 @@ describe('authenticateRouterAdmin', () => {
             payload: {
                 typ: 'router-request',
                 iss: 'ploinky-router',
-                aud: 'agent:proxies/soul-gateway',
+                aud: 'agent:AchillesIDE/soul-gateway',
                 sub: 'user:local:admin',
                 actor: {
                     kind: 'user',
@@ -536,7 +536,7 @@ describe('signed-subject API key', () => {
 
     it('does not require ciphertext columns to insert a row', async () => {
         await withSignedDb(async (db) => {
-            const subjectId = 'agent:proxies/soul-gateway';
+            const subjectId = 'agent:AchillesIDE/soul-gateway';
             const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
             const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
 
@@ -554,7 +554,7 @@ describe('signed-subject API key', () => {
 
     it('returns one logical row for concurrent first use of the same key', async () => {
         await withSignedDb(async (db) => {
-            const subjectId = 'agent:AssistOSExplorer/tasksAgent';
+            const subjectId = 'agent:legacy-agents/tasksAgent';
             const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
             const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
 

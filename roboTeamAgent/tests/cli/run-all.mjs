@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Run all achilles-cli tests
- * Usage: node tests/run-all.mjs
+ * Run the former AchillesCLI root tests (tests/cli) and the copilot runtime tests.
+ * Usage: node roboTeamAgent/tests/cli/run-all.mjs   (from any directory)
  */
 
 import { spawn } from 'node:child_process';
@@ -10,7 +10,8 @@ import path from 'node:path';
 import { readdirSync, statSync } from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, '..');
+// The RoboTeam agent root (roboTeamAgent/), two levels above this runner.
+const repoRoot = path.resolve(__dirname, '..', '..');
 
 function collectFiles(dir, predicate) {
     const files = [];
@@ -40,7 +41,7 @@ function run(command, args, options = {}) {
 
 const nodeTestFiles = [
     ...collectFiles(__dirname, file => file.endsWith('.test.mjs')),
-    ...collectFiles(path.join(repoRoot, 'roboTeamAgent/copilot/tests'), file => file.endsWith('.test.mjs')),
+    ...collectFiles(path.join(repoRoot, 'copilot/tests'), file => file.endsWith('.test.mjs')),
 ].sort();
 
 const skillTestFiles = collectFiles(__dirname, file => file.endsWith('.tests.mjs')).sort();

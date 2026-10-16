@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { siblingPath } from '../../../tests/helpers/sibling-roots.mjs';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(TEST_DIR, '..', '..');
@@ -11,7 +12,7 @@ test('AchillesCLI starts Soul Gateway asynchronously before model discovery', as
     const manifest = JSON.parse(await readFile(join(REPO_ROOT, 'manifest.json'), 'utf8'));
 
     assert.ok(Array.isArray(manifest.enable));
-    assert.ok(manifest.enable.includes('proxies/soul-gateway no-wait'));
+    assert.ok(manifest.enable.includes('soul-gateway no-wait'));
 });
 
 test('RoboTeam owns the CLI without recursively enabling itself', async () => {
@@ -46,7 +47,7 @@ test('AchillesCLI leaves optional coding and research agents for explicit startu
 
 test('AchillesCLI optional workers declare manual workspace startup', async () => {
     for (const agentName of ['GPTResearcher']) {
-        const manifest = JSON.parse(await readFile(join(REPO_ROOT, '..', agentName, 'manifest.json'), 'utf8'));
+        const manifest = JSON.parse(await readFile(siblingPath('legacy-agents', agentName, 'manifest.json'), 'utf8'));
         assert.equal(manifest.startup, 'manual', `${agentName} should start only through explicit invocation`);
     }
 });

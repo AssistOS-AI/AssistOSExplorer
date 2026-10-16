@@ -11,7 +11,10 @@ import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
 import { ConversationSessionStore, buildConversationInitialHistory } from '../src/lib/storage/conversationSessionStore.mjs';
 import { createRobotSkillCatalog } from '../src/lib/skills/robotSkillCatalog.mjs';
 import { REPLSession } from '../src/repl/REPLSession.mjs';
-import { installRepositoryLinks, removeRepositoryLinks } from '../../../../ploinky/cli/utils/repositoryInstall.mjs';
+import { importFromSibling } from '../../../tests/helpers/sibling-roots.mjs';
+
+// The Ploinky checkout (PLOINKY_ROOT, default ../ploinky) is required; a missing one throws.
+const { installRepositoryLinks, removeRepositoryLinks } = await importFromSibling('ploinky', 'cli', 'utils', 'repositoryInstall.mjs');
 
 async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robot-repl-skills-')));
