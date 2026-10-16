@@ -1036,6 +1036,13 @@ repository's parent directory. `lib/deploy-qa-userpersisto.test.mjs` and
 `explorer/tests/unit/retiredLocalModelGraph.test.js` (which runs under
 `cd explorer && npm test`) both use the helper.
 
+Tests that read the sources of moved agents (`direct-router-consumer-safety.test.mjs`, and the
+Explorer unit tests listed in the root `AGENTS.md`) locate the `legacy-agents`, `webmeet` and
+`ploinky` checkouts through `tests/helpers/sibling-roots.mjs`. It honors `LEGACY_AGENTS_ROOT`,
+`WEBMEET_ROOT` and `PLOINKY_ROOT`, defaults to the sibling directories, and throws when a checkout
+is missing instead of skipping. No `MINIMUM_REVISIONS` entry is recorded for the `legacy-agents`
+and `webmeet` agents yet: add them with the final merge commits of those repositories.
+
 Minimum revisions are recorded per enabled agent ref (`MINIMUM_REVISIONS` in
 the helper). One is recorded: `local-llms/local-llm` needs a local-llms
 checkout that contains `1990959` (the first local-llms revision with the
