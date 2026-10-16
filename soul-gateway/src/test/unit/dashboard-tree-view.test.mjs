@@ -90,8 +90,8 @@ describe('dashboard tree view helpers', () => {
                     enabled: true,
                 },
                 {
-                    provider_key: 'agent:legacy-agents/tasksAgent',
-                    display_name: 'Ploinky agent agent:legacy-agents/tasksAgent',
+                    provider_key: 'agent:AchillesIDE/workspaceMonitorAgent',
+                    display_name: 'Ploinky agent agent:AchillesIDE/workspaceMonitorAgent',
                     enabled: false,
                 },
                 {
@@ -135,9 +135,9 @@ describe('dashboard tree view helpers', () => {
                     },
                     {
                         type: 'leaf',
-                        key: 'agent:legacy-agents/tasksAgent',
-                        path: 'agent:legacy-agents/tasksAgent',
-                        label: 'tasksAgent',
+                        key: 'agent:AchillesIDE/workspaceMonitorAgent',
+                        path: 'agent:AchillesIDE/workspaceMonitorAgent',
+                        label: 'workspaceMonitorAgent',
                         depth: 1,
                     },
                     {
@@ -161,7 +161,7 @@ describe('dashboard tree view helpers', () => {
             assert.equal(rows[0].enabledCount, 1);
             assert.equal(rows[0].expanded, true);
             assert.equal(rows[1].displayPath, 'AchillesIDE/explorer');
-            assert.equal(rows[2].displayPath, 'legacy-agents/tasksAgent');
+            assert.equal(rows[2].displayPath, 'AchillesIDE/workspaceMonitorAgent');
             assert.equal(rows[3].displayPath, 'file-parser-agent');
         });
     });
