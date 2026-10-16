@@ -50,7 +50,6 @@ const WORKFLOWS = [
       "'OnlyOfficeAgent|https://github.com/AssistOS-AI/OnlyOfficeAgent.git'",
       "'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'",
       "'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'",
-      "'proxies|https://github.com/AssistOS-AI/proxies.git'",
       "'legacy-agents|https://github.com/AssistOS-AI/legacy-agents.git'",
       "'webmeet|https://github.com/AssistOS-AI/webmeet.git'",
       "CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'",
@@ -190,6 +189,8 @@ for (const workflow of WORKFLOWS) {
     for (const staleEndpoint of STALE_COMPONENT_ENDPOINTS) {
       assert.doesNotMatch(source, staleEndpoint);
     }
+    // No Explorer graph agent lives in proxies any more, so Ploinky never installs it.
+    assert.doesNotMatch(source, /'proxies\|https:\/\/github\.com\/AssistOS-AI\/proxies\.git'/, `${workflow.file} must not require a proxies checkout`);
     if (workflow.file.endsWith('deploy-explorer-qa.yml')) {
       assert.doesNotMatch(source, /BRANCH_ARGS=\(--branch|--branch-fallback|--reset-repos/);
       assert.doesNotMatch(source, /deleteTunnelOnTeardown|create-managed-tunnel/);

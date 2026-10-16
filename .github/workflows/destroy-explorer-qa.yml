@@ -451,7 +451,6 @@ jobs:
             'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'
             'legacy-agents|https://github.com/AssistOS-AI/legacy-agents.git'
             'webmeet|https://github.com/AssistOS-AI/webmeet.git'
-            'proxies|https://github.com/AssistOS-AI/proxies.git'
           )
           BRANCH_ARGS=(
             --branch-fallback fail
