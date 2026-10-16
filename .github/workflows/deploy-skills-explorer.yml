@@ -28,8 +28,13 @@ on:
         required: false
         default: ''
         type: string
-      proxies_branch:
-        description: 'proxies repo branch. Falls back to vars.PROXIES_BRANCH, then main.'
+      legacy_agents_branch:
+        description: 'legacy-agents repo branch. Falls back to vars.LEGACY_AGENTS_BRANCH, then main.'
+        required: false
+        default: ''
+        type: string
+      webmeet_branch:
+        description: 'webmeet repo branch (WebMeet agents and liveKitServerAgent). Falls back to vars.WEBMEET_BRANCH, then main.'
         required: false
         default: ''
         type: string
@@ -120,7 +125,8 @@ jobs:
           WEBMEET_CERTBOT_RENEW_INTERVAL_SECONDS: ${{ vars.WEBMEET_CERTBOT_RENEW_INTERVAL_SECONDS }}
           WEBMEET_ICE_TRANSPORT_POLICY: ${{ vars.WEBMEET_ICE_TRANSPORT_POLICY }}
           STRICT_INFRA_CHECKS: ${{ vars.STRICT_INFRA_CHECKS }}
-          PROXIES_BRANCH: ${{ inputs.proxies_branch || vars.PROXIES_BRANCH || 'main' }}
+          LEGACY_AGENTS_BRANCH: ${{ inputs.legacy_agents_branch || vars.LEGACY_AGENTS_BRANCH || 'main' }}
+          WEBMEET_BRANCH: ${{ inputs.webmeet_branch || vars.WEBMEET_BRANCH || 'main' }}
           PLOINKY_BRANCH: ${{ inputs.ploinky_branch || vars.PLOINKY_BRANCH || 'master' }}
           ACHILLES_BRANCH: ${{ inputs.achilles_branch || vars.ACHILLES_BRANCH || 'master' }}
         run: |
@@ -156,7 +162,7 @@ jobs:
 
           ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
             -i ~/.ssh/deploy_key "${SSH_USER}@${SSH_HOST}" \
-            "WORKSPACE='$WORKSPACE' EXPLORER_BRANCH='$EXPLORER_BRANCH' PROXIES_BRANCH='$PROXIES_BRANCH' PLOINKY_BRANCH='$PLOINKY_BRANCH' ACHILLES_BRANCH='$ACHILLES_BRANCH' ROUTER_PORT='$ROUTER_PORT' PUBLIC_URL='$PUBLIC_URL' PLOINKY_PROFILE='$PLOINKY_PROFILE' bash -s" << 'REMOTE'
+            "WORKSPACE='$WORKSPACE' EXPLORER_BRANCH='$EXPLORER_BRANCH' LEGACY_AGENTS_BRANCH='$LEGACY_AGENTS_BRANCH' WEBMEET_BRANCH='$WEBMEET_BRANCH' PLOINKY_BRANCH='$PLOINKY_BRANCH' ACHILLES_BRANCH='$ACHILLES_BRANCH' ROUTER_PORT='$ROUTER_PORT' PUBLIC_URL='$PUBLIC_URL' PLOINKY_PROFILE='$PLOINKY_PROFILE' bash -s" << 'REMOTE'
           set -euo pipefail
           # Ensure the plaintext env file is removed even if a later step exits non-zero.
           trap 'rm -f /tmp/skills_explorer_env' EXIT
@@ -400,10 +406,11 @@ jobs:
           # 'install <url|repoName> [name] [--branch X]'. Repos are activated by install; the
           # explorer manifest's "enable" list brings up the agent stack at start time.
           "$PLOINKY" install https://github.com/AssistOS-AI/AssistOSExplorer.git AchillesIDE --branch "${EXPLORER_BRANCH:-main}" || true
-          "$PLOINKY" install https://github.com/AssistOS-AI/proxies.git proxies --branch "${PROXIES_BRANCH:-main}" || true
+          "$PLOINKY" install https://github.com/AssistOS-AI/legacy-agents.git legacy-agents --branch "${LEGACY_AGENTS_BRANCH:-main}" || true
+          "$PLOINKY" install https://github.com/AssistOS-AI/webmeet.git webmeet --branch "${WEBMEET_BRANCH:-main}" || true
 
           sync_managed_repos() {
-            for repo_spec in "AchillesIDE:${EXPLORER_BRANCH:-main}" "proxies:${PROXIES_BRANCH:-main}"; do
+            for repo_spec in "AchillesIDE:${EXPLORER_BRANCH:-main}" "legacy-agents:${LEGACY_AGENTS_BRANCH:-main}" "webmeet:${WEBMEET_BRANCH:-main}"; do
               repo_name="${repo_spec%%:*}"
               repo_branch="${repo_spec#*:}"
               repo_dir="$WORK_DIR/.ploinky/repos/$repo_name"
@@ -470,7 +477,8 @@ jobs:
           echo "[deploy] Starting Explorer..."
           nohup env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" start AchillesIDE/explorer "$ROUTER_PORT" \
             --branch "${EXPLORER_BRANCH:-main}" \
-            --repo-branch "proxies=${PROXIES_BRANCH:-main}" \
+            --repo-branch "legacy-agents=${LEGACY_AGENTS_BRANCH:-main}" \
+            --repo-branch "webmeet=${WEBMEET_BRANCH:-main}" \
             --reset-repos \
             > "$WORK_DIR/logs/skills-explorer-start.log" 2>&1 &
 
