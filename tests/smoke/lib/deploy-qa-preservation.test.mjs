@@ -133,6 +133,141 @@ test('QA admission rejects unsafe env and modified managed sources before any re
     assert.ok(workflow.indexOf('// END QA preservation admission') < workflow.indexOf('Stopping nested QA services'));
 });
 
+const NEW_IDENTITY = ['.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc'];
+const LEGACY_IDENTITY = ['.ploinky/master-key', '.ploinky/.secrets', '.ploinky/passwords.enc', '.ploinky/ploinky_subject_identity_ed25519_v1.enc'];
+
+test('QA admission accepts the Ploinky 7d8c04d0 identity layout under .ploinky/data and the legacy layout', t => {
+    const modern = fixture(t);
+    modern.write('.data/dpu-data/blobs/one', 'ciphertext');
+    for (const name of NEW_IDENTITY) modern.write(name, `new:${name}`);
+    modern.write('.env', 'PLOINKY_MASTER_KEY=' + 'a'.repeat(64) + '\n');
+    modern.execute('preservation admission');
+    const legacy = fixture(t);
+    legacy.write('.data/dpu-data/blobs/one', 'ciphertext');
+    for (const name of LEGACY_IDENTITY) legacy.write(name, `legacy:${name}`);
+    legacy.execute('preservation admission');
+});
+
+test('QA admission refuses durable data without a master key in either location', t => {
+    const f = fixture(t);
+    f.write('.data/dpu-data/blobs/one', 'ciphertext');
+    f.write('.ploinky/data/.secrets', 'encrypted store without its key');
+    f.write('.ploinky/passwords.enc', 'accounts without a key');
+    assert.throws(() => f.execute('preservation admission'), /requires its original master key/);
+    f.write('.ploinky/data/master-key', 'seed');
+    f.execute('preservation admission');
+});
+
+test('QA admission refuses an unsafe master key or identity file in either location', t => {
+    for (const layout of ['.ploinky/data', '.ploinky']) {
+        const symlink = fixture(t);
+        symlink.write('.data/dpu-data/blobs/one', 'ciphertext');
+        symlink.write('outside-key', 'seed');
+        symlink.write(`${layout === '.ploinky' ? '.ploinky/data' : '.ploinky'}/master-key`, 'seed');
+        fs.mkdirSync(path.join(symlink.target, layout), { recursive: true });
+        fs.symlinkSync(path.join(symlink.target, 'outside-key'), path.join(symlink.target, layout, 'master-key'));
+        assert.throws(() => symlink.execute('preservation admission'), /Unsafe QA encryption identity/, `symlinked key in ${layout}`);
+
+        const hardlink = fixture(t);
+        hardlink.write('.data/dpu-data/blobs/one', 'ciphertext');
+        hardlink.write(`${layout}/master-key`, 'seed');
+        fs.linkSync(path.join(hardlink.target, layout, 'master-key'), path.join(hardlink.target, 'key-alias'));
+        assert.throws(() => hardlink.execute('preservation admission'), /Unsafe QA encryption identity/, `hardlinked key in ${layout}`);
+
+        const store = fixture(t);
+        store.write(`${layout}/master-key`, 'seed');
+        store.write('outside-store', 'ciphertext');
+        fs.symlinkSync(path.join(store.target, 'outside-store'), path.join(store.target, layout, '.secrets'));
+        assert.throws(() => store.execute('preservation admission'), /Unsafe QA encryption identity/, `symlinked store in ${layout}`);
+    }
+    const aliased = fixture(t);
+    aliased.write('.data/dpu-data/blobs/one', 'ciphertext');
+    aliased.write('elsewhere/master-key', 'seed');
+    fs.mkdirSync(path.join(aliased.target, '.ploinky'));
+    fs.symlinkSync(path.join(aliased.target, 'elsewhere'), path.join(aliased.target, '.ploinky/data'));
+    assert.throws(() => aliased.execute('preservation admission'), /must not escape the QA workspace/);
+});
+
+test('QA admission refuses a master key owned by another user', t => {
+    const f = fixture(t);
+    f.write('.data/dpu-data/blobs/one', 'ciphertext');
+    f.write('.ploinky/data/master-key', 'seed');
+    const real = fs.lstatSync;
+    const foreign = { ...fs, lstatSync: (file, ...rest) => {
+        const stat = real(file, ...rest);
+        return String(file).endsWith('.ploinky/data/master-key')
+            ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: stat.uid + 1 }) : stat;
+    } };
+    const source = block('preservation admission').replace("'/home/admin/explorerQaWorkspace'", JSON.stringify(f.target));
+    assert.throws(() => new Function('assert', 'fs', 'path', 'execFileSync', 'process', 'console', source)(
+        assert, foreign, path, execFileSync, { argv: ['node', '-', f.target] }, { log() {} }), /master key owner/);
+});
+
+test('QA admission refuses differing master keys in both layouts and admits identical copies', t => {
+    const f = fixture(t);
+    f.write('.data/dpu-data/blobs/one', 'ciphertext');
+    f.write('.ploinky/data/master-key', 'seed-one');
+    f.write('.ploinky/master-key', 'seed-two');
+    assert.throws(() => f.execute('preservation admission'), /Ambiguous QA master key/);
+    assert.equal(f.read('.ploinky/data/master-key'), 'seed-one');
+    assert.equal(f.read('.ploinky/master-key'), 'seed-two');
+    f.write('.ploinky/master-key', 'seed-one');
+    f.execute('preservation admission');
+});
+
+test('QA preservation carries the .ploinky/data identity into the fresh workspace and compares it', t => {
+    const f = fixture(t);
+    f.write('.data/dpu-data/blobs/one', 'ciphertext');
+    for (const name of NEW_IDENTITY) f.write(name, `new:${name}`);
+    f.write('.ploinky/data/dpuAgent/data', 'durable');
+    f.write('.ploinky/data/router-security/policy-state.json', '{}');
+    f.write('.ploinky/data/edge-routing/active.json', 'obsolete');
+    fs.chmodSync(path.join(f.target, '.ploinky/data'), 0o750);
+    f.execute('durable workspace preservation');
+    for (const name of [...NEW_IDENTITY, '.ploinky/data/dpuAgent/data']) {
+        assert.equal(f.read(name), name.endsWith('/data') ? 'durable' : `new:${name}`);
+        assert.equal(fs.readFileSync(path.join(f.backup, 'workspace', name), 'utf8'), name.endsWith('/data') ? 'durable' : `new:${name}`);
+    }
+    assert.equal(fs.existsSync(path.join(f.target, '.ploinky/data/edge-routing')), false);
+    assert.equal(fs.statSync(path.join(f.target, '.ploinky/data')).mode & 0o7777, 0o750);
+    const receipt = JSON.parse(fs.readFileSync(path.join(f.backup, 'preservation.json')));
+    for (const name of NEW_IDENTITY) assert.ok(receipt.copied.includes(name), name);
+});
+
+test('QA preservation fails when a copy leaves an identity file different or missing', t => {
+    for (const name of NEW_IDENTITY) {
+        for (const damage of ['corrupt', 'skip']) {
+            const f = fixture(t);
+            f.write('.data/dpu-data/blobs/one', 'ciphertext');
+            for (const identity of NEW_IDENTITY) f.write(identity, `new:${identity}`);
+            const command = (program, args, options) => {
+                const result = execFileSync(program, args, options);
+                const to = args[args.length - 1];
+                if (program === 'cp' && to.endsWith(name)) {
+                    if (damage === 'corrupt') fs.writeFileSync(to, 'corrupted');
+                    else fs.rmSync(to);
+                }
+                return result;
+            };
+            assert.throws(() => f.execute('durable workspace preservation', command), undefined, `${damage} ${name}`);
+            assert.equal(fs.existsSync(path.join(f.backup, 'preservation.json')), false);
+            assert.equal(fs.readFileSync(path.join(f.backup, 'workspace', name), 'utf8'), `new:${name}`);
+        }
+    }
+});
+
+test('QA preservation refuses durable data whose master key is in neither location', t => {
+    const f = fixture(t);
+    f.write('.data/dpu-data/blobs/one', 'ciphertext');
+    f.write('.ploinky/data/.secrets', 'store without its key');
+    assert.throws(() => f.execute('durable workspace preservation'), /requires its original workspace master key/);
+    assert.equal(f.read('.data/dpu-data/blobs/one'), 'ciphertext');
+    assert.equal(fs.existsSync(path.join(f.backup, 'workspace')), false);
+    f.write('.ploinky/data/master-key', 'seed');
+    f.execute('durable workspace preservation');
+    assert.equal(f.read('.ploinky/data/master-key'), 'seed');
+});
+
 test('failed QA copy retains the complete predecessor and emits no successful receipt', t => {
     const f = fixture(t);
     f.write('.data/dpu-data/blob', 'ciphertext');

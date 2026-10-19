@@ -29,8 +29,13 @@ const LEGACY_AGENTLIB_IMAGE_PROBE = '/usr/local/share/ploinky/agentlib/image-bun
 const AGENTLIB_IMAGE_PATH = '/opt/ploinky-agentlib';
 const AGENTLIB_PACKAGE_NAME = 'ploinky-agent-lib';
 const BOX_IMAGE_ID_ENV = 'PLOINKY_BOX_IMAGE_ID';
-const AUTH_FILES = ['.env', '.ploinky/master-key', '.ploinky/.secrets', '.ploinky/passwords.enc',
-    '.ploinky/ploinky_subject_identity_ed25519_v1.enc'];
+// Ploinky 7d8c04d0 keeps the encryption identity under .ploinky/data (12d76a76);
+// earlier runtimes kept it directly under .ploinky. Present files in either
+// layout are fingerprinted and absent ones are omitted.
+const MASTER_KEY_FILES = ['.ploinky/data/master-key', '.ploinky/master-key'];
+const AUTH_FILES = ['.env', ...MASTER_KEY_FILES, '.ploinky/data/.secrets', '.ploinky/.secrets',
+    '.ploinky/data/passwords.enc', '.ploinky/passwords.enc',
+    '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc', '.ploinky/ploinky_subject_identity_ed25519_v1.enc'];
 const GENERATED_STATE = new Set(['agents.json', 'routing.json', 'running', 'run', 'logs', 'box', 'deps',
     'container-runtime', 'graph-skill-scope.json', 'data']);
 const GENERATED_DATA = new Set(['edge-routing', 'edge-publication', 'router-security']);
@@ -474,7 +479,11 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             rollbackSupported: !predecessor || adapters.accountCapability(scope.workspace),
         };
         authority.rollbackCode = authority.rollbackSupported ? null : 'QA_PRIOR_CREDENTIAL_RUNTIME_UNSUPPORTED';
-        if (predecessor) requireProof(authority.auth.some(file => file.relative === '.ploinky/master-key'), 'QA_MASTER_KEY_MISSING');
+        if (predecessor) {
+            const keys = authority.auth.filter(file => MASTER_KEY_FILES.includes(file.relative));
+            requireProof(keys.length > 0, 'QA_MASTER_KEY_MISSING');
+            requireProof(keys.every(file => file.sha256 === keys[0].sha256), 'QA_MASTER_KEY_AMBIGUOUS');
+        }
         return authority;
     }
 

@@ -1191,17 +1191,26 @@ jobs:
           const workspace = present(target);
           if (workspace) {
               assert(workspace.isDirectory() && !workspace.isSymbolicLink(), 'Unsafe QA workspace');
-              for (const name of ['.ploinky', '.data', '.runtime']) {
+              for (const name of ['.ploinky', '.ploinky/data', '.data', '.runtime']) {
                   const stat = present(path.join(target, name));
                   if (stat) assert(stat.isDirectory() && !stat.isSymbolicLink(), 'Durable state must not escape the QA workspace');
               }
               const env = present(path.join(target, '.env'));
               if (env) assert(env.isFile() && env.nlink === 1 && env.uid === workspace.uid, 'Unsafe operator .env file');
-              const master = present(path.join(target, '.ploinky/master-key'));
-              if (present(path.join(target, '.data'))) assert(master?.isFile(), 'Durable QA data requires its original master key');
-              for (const name of ['master-key', '.secrets', 'passwords.enc', 'ploinky_subject_identity_ed25519_v1.enc']) {
-                  const stat = present(path.join(target, '.ploinky', name));
-                  if (stat) assert(stat.isFile() && stat.nlink === 1, 'Unsafe QA encryption identity');
+              // Ploinky 7d8c04d0 keeps the encryption identity under .ploinky/data (12d76a76);
+              // an earlier runtime kept it directly under .ploinky. Either layout is admitted.
+              const identityDirectories = ['.ploinky/data', '.ploinky'];
+              for (const directory of identityDirectories) {
+                  for (const name of ['master-key', '.secrets', 'passwords.enc', 'ploinky_subject_identity_ed25519_v1.enc']) {
+                      const stat = present(path.join(target, directory, name));
+                      if (stat) assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1, 'Unsafe QA encryption identity');
+                  }
+              }
+              const masterKeys = identityDirectories.map(directory => path.join(target, directory, 'master-key')).filter(file => present(file));
+              for (const file of masterKeys) assert(present(file).uid === workspace.uid, 'Unsafe QA master key owner');
+              if (present(path.join(target, '.data'))) assert(masterKeys.length > 0, 'Durable QA data requires its original master key');
+              if (masterKeys.length > 1) {
+                  assert(masterKeys.every(file => fs.readFileSync(file).equals(fs.readFileSync(masterKeys[0]))), 'Ambiguous QA master key: both layouts hold different keys');
               }
               const runtime = path.join(target, '.runtime');
               if (present(runtime)) assert(fs.readdirSync(runtime).every(name => name === 'ploinky'), 'Unreviewed files in the managed runtime directory');
@@ -1695,7 +1704,10 @@ jobs:
           if (original) {
               assert(original.isDirectory() && !original.isSymbolicLink(), 'The pinned QA workspace must be a directory');
               if (fs.existsSync(path.join(target, '.data'))) {
-                  assert(fs.statSync(path.join(target, '.ploinky/master-key')).isFile(), 'Durable QA data requires its original workspace master key');
+                  const keyed = ['.ploinky/data/master-key', '.ploinky/master-key'].some(relative => {
+                      try { return fs.lstatSync(path.join(target, relative)).isFile(); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+                  });
+                  assert(keyed, 'Durable QA data requires its original workspace master key');
               }
               fs.renameSync(target, source);
           }
@@ -1741,8 +1753,23 @@ jobs:
               }
               const data = path.join(state, 'data');
               if (fs.existsSync(data)) {
+                  // The directory holds the master key, so it keeps the previous owner and mode
+                  // instead of the root-owned default an implicit recursive mkdir would give it.
+                  const dataStat = fs.lstatSync(data), freshData = path.join(target, '.ploinky/data');
+                  fs.mkdirSync(freshData, { mode: dataStat.mode & 0o7777 });
+                  fs.chownSync(freshData, dataStat.uid, dataStat.gid);
+                  fs.chmodSync(freshData, dataStat.mode & 0o7777);
                   for (const name of fs.readdirSync(data)) {
                       if (!['edge-publication', 'edge-routing', 'router-security'].includes(name)) copy(path.join('.ploinky/data', name));
+                  }
+              }
+              // Every encryption identity file present in either layout must have been copied and compared.
+              for (const directory of ['.ploinky/data', '.ploinky']) {
+                  for (const name of ['master-key', '.secrets', 'passwords.enc', 'ploinky_subject_identity_ed25519_v1.enc']) {
+                      const relative = path.join(directory, name);
+                      try { fs.lstatSync(path.join(source, relative)); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+                      assert(copied.includes(relative), 'An encryption identity file was not preserved');
+                      compare(path.join(source, relative), path.join(target, relative));
                   }
               }
           }
@@ -1780,7 +1807,7 @@ jobs:
               throw new Error(`refusing unsafe workspace master-key target: ${target}`);
             }
             // Existing operator settings remain byte-for-byte intact. Managed
-            // Box encryption uses the preserved .ploinky/master-key identity.
+            // Box encryption uses the preserved master key under .ploinky/data (or the legacy .ploinky) identity.
             fs.chmodSync(target, 0o600);
           } catch (error) {
             if (error?.code !== 'ENOENT') throw error;

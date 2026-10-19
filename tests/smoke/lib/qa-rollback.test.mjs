@@ -507,6 +507,86 @@ test('preview applies the capture proofs and writes nothing', t => {
     assert.deepEqual(fs.readdirSync(unsupported.backup), []);
 });
 
+// Ploinky 7d8c04d0 keeps the encryption identity under .ploinky/data.
+function moveIdentityToData(f) {
+    for (const name of ['master-key', '.secrets', 'passwords.enc']) {
+        const from = path.join(f.scope.workspace, '.ploinky', name), to = path.join(f.scope.workspace, '.ploinky/data', name);
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        fs.renameSync(from, to);
+    }
+    write(path.join(f.scope.workspace, '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc'), 'subject identity\n');
+}
+
+test('preview and capture fingerprint the master key under .ploinky/data and accept it as present', t => {
+    const f = fixture(t); moveIdentityToData(f);
+    assert.equal(f.service.previewCapture().result, 'previewed');
+    assert.deepEqual(fs.readdirSync(f.backup), []);
+    assert.equal(f.service.capture(f.backup).result, 'captured');
+    const auth = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'))).auth.map(file => file.relative);
+    assert.deepEqual(auth, ['.env', '.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/passwords.enc',
+        '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc']);
+    const legacy = fixture(t);
+    legacy.service.capture(legacy.backup);
+    assert.ok(JSON.parse(fs.readFileSync(path.join(legacy.backup, 'rollback-authority.json'))).auth
+        .some(file => file.relative === '.ploinky/master-key'));
+});
+
+test('preview and capture refuse a missing master key and differing keys in both layouts', t => {
+    for (const [name, mutate, code] of [
+        ['no key anywhere', f => fs.rmSync(path.join(f.scope.workspace, '.ploinky/master-key')), 'QA_MASTER_KEY_MISSING'],
+        ['differing keys', f => { moveIdentityToData(f); write(path.join(f.scope.workspace, '.ploinky/master-key'), 'another seed\n'); }, 'QA_MASTER_KEY_AMBIGUOUS'],
+        ['symlinked key', f => { moveIdentityToData(f); const key = path.join(f.scope.workspace, '.ploinky/data/master-key');
+            fs.renameSync(key, path.join(f.root, 'outside-key')); fs.symlinkSync(path.join(f.root, 'outside-key'), key); }, 'QA_AUTH_FILE_INVALID'],
+    ]) {
+        const previewed = fixture(t), captured = fixture(t);
+        mutate(previewed); mutate(captured);
+        assert.throws(() => previewed.service.previewCapture(), { code }, name);
+        assert.throws(() => captured.service.capture(captured.backup), { code }, name);
+    }
+    const same = fixture(t); moveIdentityToData(same);
+    write(path.join(same.scope.workspace, '.ploinky/master-key'), 'saved seed\n');
+    assert.equal(same.service.capture(same.backup).result, 'captured');
+});
+
+for (const current of ['absent', FAILED]) {
+    test(`recovery retains the .ploinky/data identity byte for byte (${current === 'absent' ? 'early copy failure' : 'failed candidate'})`, async t => {
+        const f = fixture(t); moveIdentityToData(f);
+        f.service.capture(f.backup);
+        if (current !== 'absent') f.candidate();
+        assert.equal((await f.service.execute(f.backup, current)).result, 'recovered');
+        for (const relative of ['.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/passwords.enc',
+            '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc', '.ploinky/data/dpuAgent/data']) {
+            assert.deepEqual(fs.readFileSync(path.join(f.scope.workspace, relative)), fs.readFileSync(path.join(f.backup, 'workspace', relative)), relative);
+        }
+    });
+}
+
+test('recovery detects a changed or missing master key in whichever location holds it', async t => {
+    for (const [layout, relative] of [['data', '.ploinky/data/master-key'], ['legacy', '.ploinky/master-key']]) {
+        for (const damage of ['changed', 'missing', 'moved']) {
+            const f = fixture(t); if (layout === 'data') moveIdentityToData(f);
+            f.service.capture(f.backup);
+            const start = f.adapters.start;
+            f.adapters.start = async (...args) => {
+                await start(...args);
+                const key = path.join(f.scope.workspace, relative);
+                if (damage === 'changed') fs.writeFileSync(key, 'different seed\n');
+                else if (damage === 'missing') fs.rmSync(key);
+                else {
+                    const other = relative === '.ploinky/master-key' ? '.ploinky/data/master-key' : '.ploinky/master-key';
+                    fs.mkdirSync(path.dirname(path.join(f.scope.workspace, other)), { recursive: true });
+                    fs.renameSync(key, path.join(f.scope.workspace, other));
+                }
+            };
+            await assert.rejects(f.service.execute(f.backup, 'absent'), { code: 'QA_RECOVERY_AUTH_CHANGED' }, `${layout} ${damage}`);
+        }
+    }
+    const f = fixture(t); moveIdentityToData(f); f.service.capture(f.backup);
+    write(path.join(f.scope.workspace, '.ploinky/data/master-key'), 'tampered\n');
+    await assert.rejects(f.service.execute(f.backup, 'absent'), { code: 'QA_PREVIOUS_AUTH_CHANGED' });
+    assert.deepEqual(f.events, []);
+});
+
 test('preview and capture reject an unsupported agent row and an active foreign Box with the same codes', t => {
     const registry = f => path.join(f.scope.workspace, '.ploinky/agents.json');
     const cases = [
