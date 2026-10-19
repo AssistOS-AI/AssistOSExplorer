@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
+import { currentQaBox, productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
 
 const expected = JSON.parse(fs.readFileSync(0, 'utf8'));
 const verifierRevision = process.argv[2];
@@ -23,9 +23,7 @@ const adapters = productionAdapters();
 adapters.assertHost();
 const lock = await adapters.acquireWorkspaceLock(QA_SCOPE.workspace);
 try {
-    const boxes = adapters.boxes();
-    assert.equal(boxes.length, 1);
-    const current = boxes[0];
+    const current = currentQaBox(adapters.boxes());
     assert.equal(current.box.name, QA_SCOPE.box);
     assert.equal(current.box.id, expected.boxId);
     assert.equal(current.box.image, expected.imageId);
@@ -72,11 +70,10 @@ try {
     // and rejects inactive generations.
     const { checkBoxHealth } = await import(pathToFileURL(path.join(QA_SCOPE.workspace, '.runtime/ploinky/ploinky-box/supervisor.mjs')).href);
     await checkBoxHealth(8097, { timeoutMs: 5000, readinessTimeoutMs: 0 });
-    const final = adapters.boxes();
-    assert.equal(final.length, 1);
-    assert.equal(final[0].box.id, current.box.id);
-    assert.equal(final[0].box.contract, current.box.contract);
-    assert.equal(final[0].box.running, true);
+    const final = currentQaBox(adapters.boxes());
+    assert.equal(final.box.id, current.box.id);
+    assert.equal(final.box.contract, current.box.contract);
+    assert.equal(final.box.running, true);
     console.log(JSON.stringify({ result: 'passed', checkedAt: new Date().toISOString(), verifierRevision,
         boxId: current.box.id, imageId: current.box.image, imageReference: current.box.imageReference,
         ports: current.box.ports, agentLib, sources, noWait, runtime, loopbackHealth: 'canonical-probe-passed',

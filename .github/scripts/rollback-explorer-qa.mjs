@@ -348,6 +348,20 @@ export function sanitizeBox(item, scope = QA_SCOPE, imageProof = null) {
         contract: digest(JSON.stringify({ image, config: item.Config, hostConfig: item.HostConfig, mounts })) };
 }
 
+/**
+ * The one running exact-name QA Box. Boxes retained for rollback by a preserving
+ * redeploy are admitted only when stopped and named for a redeploy backup.
+ */
+export function currentQaBox(boxes, scope = QA_SCOPE) {
+    const exact = boxes.filter(item => item.box.name === scope.box);
+    requireProof(exact.length === 1 && exact[0].box.running === true
+        && boxes.every(item => item === exact[0] || (item.box.running === false
+            && item.box.name.startsWith(scope.box + '-')
+            && /^(?:rollback|failed)-redeploy-[A-Za-z0-9]{8}$/.test(item.box.name.slice(scope.box.length + 1)))),
+    'QA_EXACT_RUNNING_BOX_REQUIRED');
+    return exact[0];
+}
+
 /** Filesystem behavior is real in tests; external runtime operations are injected. */
 export function createRollbackService(adapters, scope = QA_SCOPE) {
     const paths = backup => {

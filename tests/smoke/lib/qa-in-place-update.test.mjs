@@ -263,6 +263,35 @@ for (const [name, changeFixture, code] of [
     });
 }
 
+const retiredBox = (f, suffix, overrides = {}) => {
+    const retired = structuredClone(f.boxes[0]);
+    retired.box = { ...retired.box, id: 'd'.repeat(64), name: `${f.scope.box}${suffix}`, running: false, ...overrides };
+    f.boxes.push(retired);
+};
+
+test('an update succeeds beside the stopped Boxes a preserving redeploy retained for rollback', async t => {
+    const f = fixture(t);
+    retiredBox(f, '-rollback-redeploy-AbCd1234');
+    retiredBox(f, '-failed-redeploy-AbCd1234', { id: 'c'.repeat(64) });
+    const result = await f.service.execute(f.receipt);
+    assert.equal(result.status, 'updated');
+    f.unchangedData();
+});
+
+for (const [name, suffix, overrides] of [
+    ['an arbitrary stopped Box', '-old', {}],
+    ['a retained Box that is running', '-rollback-redeploy-AbCd1234', { running: true }],
+    ['a retained name with a short backup id', '-rollback-redeploy-AbCd123', {}],
+]) {
+    test(`an update refuses ${name} next to the exact running Box`, async t => {
+        const f = fixture(t);
+        retiredBox(f, suffix, overrides);
+        await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED' });
+        assert.deepEqual(f.events, ['lock', 'unlock']);
+        f.unchangedData();
+    });
+}
+
 test('uncached unsafe candidate is fetched for inspection but never checked out', async t => {
     const f = fixture(t); f.state.local = false; f.state.changes = [change('explorer/package.json')];
     await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_REQUIRES_RECONFIGURATION' });

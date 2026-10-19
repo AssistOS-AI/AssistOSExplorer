@@ -7,7 +7,7 @@ import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-    ACCOUNT_CAPABILITY, ACCOUNT_CAPABILITY_SETS, accountCapability, assertImageOwnedAgentLib, createRollbackService, enableArguments,
+    ACCOUNT_CAPABILITY, ACCOUNT_CAPABILITY_SETS, accountCapability, assertImageOwnedAgentLib, createRollbackService, currentQaBox, enableArguments,
     imageAgentLibSourceId, productionAdapters, restorePriorSelections, sanitizeBox,
 } from '../../../.github/scripts/rollback-explorer-qa.mjs';
 
@@ -458,6 +458,26 @@ test('any one complete account capability set matches and a mixture of sets neve
     assert.equal(accountCapability(root, setB), false, 'a single set stays accepted as an object');
     fs.unlinkSync(file(store));
     assert.equal(accountCapability(root, setB), true);
+});
+
+test('the current QA Box is the single running exact-name Box beside only stopped redeploy Boxes', () => {
+    const scope = { box: 'ploinky-box-qa-7a31ab7775eb' };
+    const row = (name, running, id = 'a') => ({ engine: 'podman', box: { id: id.repeat(64), name, running } });
+    const exact = row(scope.box, true);
+    assert.equal(currentQaBox([exact], scope), exact);
+    assert.equal(currentQaBox([row(`${scope.box}-rollback-redeploy-AbCd1234`, false, 'b'), exact,
+        row(`${scope.box}-failed-redeploy-Zy9xW8v7`, false, 'c')], scope), exact);
+    for (const [name, rows] of Object.entries({
+        'a running retained Box': [exact, row(`${scope.box}-rollback-redeploy-AbCd1234`, true, 'b')],
+        'two exact Boxes': [exact, row(scope.box, false, 'b')],
+        'no exact Box': [row(`${scope.box}-rollback-redeploy-AbCd1234`, false, 'b')],
+        'a stopped exact Box': [row(scope.box, false)],
+        'an arbitrarily named stopped Box': [exact, row(`${scope.box}-old`, false, 'b')],
+        'a retained Box with a short backup id': [exact, row(`${scope.box}-rollback-redeploy-AbCd123`, false, 'b')],
+        'a foreign Box': [exact, row('production', false, 'b')],
+    })) {
+        assert.throws(() => currentQaBox(rows, scope), { code: 'QA_EXACT_RUNNING_BOX_REQUIRED' }, name);
+    }
 });
 
 test('capture records unsupported prior code, but plan/execute refuse before mutation', async t => {

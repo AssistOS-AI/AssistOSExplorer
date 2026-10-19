@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
+import { currentQaBox, productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
 
 export const EXPLORER_SOURCE = '.ploinky/repos/AchillesIDE';
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -172,9 +172,8 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
     async function snapshot() {
         adapters.assertHost();
         const workspaceIdentity = directory(scope.workspace);
-        const boxes = adapters.boxes();
-        prove(boxes.length === 1 && boxes[0].box.name === scope.box && boxes[0].box.running, 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED');
-        const current = boxes[0];
+        let current;
+        try { current = currentQaBox(adapters.boxes(), scope); } catch { prove(false, 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED'); }
         const sources = pins();
         prove(sources.some(source => source.relative === '.runtime/ploinky')
             && sources.some(source => source.relative === EXPLORER_SOURCE), 'QA_UPDATE_SOURCES_INCOMPLETE');
