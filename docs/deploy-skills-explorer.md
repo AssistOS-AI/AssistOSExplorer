@@ -15,8 +15,11 @@ implementation satisfies those requirements. If an explicit request forbids
 `--branch-fallback`, do not dispatch a workflow that injects that option; use an
 authorized direct channel or update and verify the workflow first.
 
-The Explorer QA deploy workflow has no inputs and never tears down an existing
-installation. When `/home/admin/explorerQaWorkspace` exists, deployment updates
+The Explorer QA deploy workflow never tears down an existing installation. Its
+`operation` input defaults to `update`, so a dispatch with no inputs behaves as
+described here. The other operations (`redeploy-rehearsal`, `redeploy`,
+`rollback-plan` and `rollback-execute`) are described under "Preserving
+redeploy, rehearsal and rollback" below. When `/home/admin/explorerQaWorkspace` exists, `update` updates
 only its clean `AchillesIDE` checkout (AssistOSExplorer) from the remote's
 configured default branch, pinned to an exact commit. It fast-forwards the
 checkout under the workspace lock. Browser assets served directly from the
@@ -40,7 +43,9 @@ lock. Source and runtime identities are checked again after activation.
 
 Fresh installation runs only when both the QA workspace and its Box are absent,
 with absence checked again under the workspace lock. Removal remains a separate,
-explicit operation in `destroy-explorer-qa.yml`. For a fresh installation it resolves
+explicit operation in `destroy-explorer-qa.yml`. An existing installation is
+retired only by the confirmed `redeploy` operation, which retains it for rollback
+instead of deleting it. For a fresh installation it resolves
 Ploinky and every managed application repository from each remote's configured
 default branch, while keeping explicit per-repository selections for the graph.
 It never applies one global branch to the differently named application
@@ -79,11 +84,12 @@ Rollback records retain image-backed source authority alongside the exact base
 image; only actual host sources become checkout pins. Recovery rejects a
 different bundle before initializing its fresh graph.
 
-Ordinary QA redeployment uses the in-place path above. The fresh-install path
+Ordinary QA deployment uses the in-place path above. The fresh-install path
 retains the guarded admission and recovery helpers used by older deployments,
 but its mandatory absence checks prevent them from stopping or moving an
-existing installation. The 25 GiB fresh-install capacity requirement does not
-apply to an in-place source update.
+existing installation unless the operator selects the confirmed `redeploy`
+operation. The 25 GiB capacity requirement applies to that opt-in redeploy and to
+a fresh install, never to an in-place source update.
 
 Existing backups from older recreation deployments remain available for their
 separately reviewed recovery procedure. Their shutdown helper pins registered
@@ -92,13 +98,13 @@ database shutdown. Recovery retains encryption identities, accounts, documents,
 policy, revocations and audit history together. The deploy workflow does not
 create another predecessor snapshot during an in-place update.
 
-Each backup contains reviewed recovery helpers and an authority record written before any stop or move. Run `node BACKUP/helpers/rollback-explorer-qa.mjs plan BACKUP --current-id FULL_ID` for a read-only recovery check, then replace `plan` with `execute` for the selected recovery operation. Use `absent` only when the failed replacement Box is absent. Recovery creates a fresh Box from the predecessor's pinned base image and clean source revisions, copies the saved durable data, restores policy and agent choices, and verifies new runtime identities and readiness. It preserves the predecessor and failed replacement snapshots. Recovery does not resume saved nested containers and does not claim browser acceptance.
+Each backup contains reviewed recovery helpers and an authority record written before any stop or move. With SSH access, run `node BACKUP/helpers/rollback-explorer-qa.mjs plan BACKUP --current-id FULL_ID` for a read-only recovery check, then replace `plan` with `execute` for the selected recovery operation. Without SSH, dispatch the `rollback-plan` and `rollback-execute` operations described below, which run exactly those commands. Use `absent` only when the failed replacement Box is absent. Recovery creates a fresh Box from the predecessor's pinned base image and clean source revisions, copies the saved durable data, restores policy and agent choices, and verifies new runtime identities and readiness. It preserves the predecessor and failed replacement snapshots. Recovery does not resume saved nested containers and does not claim browser acceptance.
 
-Older runtimes that overwrite saved accounts during graph registration cannot be used for exact-code rollback. The workflow rejects them before shutdown. They require a separately reviewed forward migration using fixed source revisions and the authoritative saved data. Low disk capacity likewise requires a scoped operator recovery plan. A complete quiesced GNU tar archive can be streamed over SSH to protected local storage with checksum verification and numeric ownership, ACLs and xattrs retained. Record that off-host archive dependency before clearing any proven generated QA cache. Never prune unrelated host resources. Retain backups and image references until data preservation and browser acceptance pass; retained predecessor Boxes require explicit review before a later automated deployment.
+Older runtimes that overwrite saved accounts during graph registration cannot be used for exact-code rollback. The workflow rejects them before shutdown. A runtime is admitted only when its account-handling files match one complete reviewed set. Set A is the original release with the local password store. Set B is Ploinky `7d8c04d0`, where local password authentication and its credential seeding were removed (commit `df976761`): `cli/utils/agents.js` must match its reviewed digest and `cli/utils/security/encryptedPasswordStore.js` and `passwordStoreLock.mjs` must be absent. Files from different sets never combine. They require a separately reviewed forward migration using fixed source revisions and the authoritative saved data. Low disk capacity likewise requires a scoped operator recovery plan. A complete quiesced GNU tar archive can be streamed over SSH to protected local storage with checksum verification and numeric ownership, ACLs and xattrs retained. Record that off-host archive dependency before clearing any proven generated QA cache. Never prune unrelated host resources. Retain backups and image references until data preservation and browser acceptance pass; retained predecessor Boxes require explicit review before a later automated deployment.
 
 QA also clones `AdvancedLanguageAgent` into the fresh workspace root from its remote default branch and records its exact commit. Before starting Explorer, the workflow checks ALA's package identity, absence of runtime dependencies, real checkout and CLI directories, executable CLI, and the `--home`, `--cwd`, and `--MCPServers` help options required by RoboTeam. It rejects incompatible CLI options or a dirty or moved ALA revision. ALA needs no dependency installation or AgentLib binding. The Box's image-owned AgentLib checks remain required, and this workspace prerequisite does not change the readiness gate.
 
-The default Explorer graph no longer enables Umami, WebMeet or LiveKit: `UmamiAgent` and `webmeet` stay in `repos` and Marketplace offers `UmamiAgent/umamiAgent` and `webmeet/webmeetAgent`, so the tracked-agent totals are 13 with 7 no-wait agents. Copilot runs through RoboTeam’s ordinary `default` robot; the retired `AchillesCLI/achilles-cli` agent is not a dependency. The default graph excludes the external `OnlyOfficeAgent/onlyOffice` agent, `webmeetAgent`, `liveKitServerAgent`, `webmeetScribeAgent`, and `webmeetStt`; the deployment pins the `OnlyOfficeAgent` repository alongside the other graph repositories while leaving the agent disabled. Readiness requires every runtime of the recursive default graph and every no-wait completion it declares; the workflow constants are checked against that graph by `explorer/tests/unit/retiredLocalModelGraph.test.js`. After that baseline is ready, QA restores prior optional agent selections through the supported CLI and verifies their aliases, authentication modes, profiles and readiness. Administrators can also enable optional agents through Explorer Marketplace. Meeting Secretary uses final browser SpeechRecognition transcripts and does not depend on the separate STT service.
+The default Explorer graph no longer enables Umami, WebMeet or LiveKit: `UmamiAgent` and `webmeet` stay in `repos` and Marketplace offers `UmamiAgent/umamiAgent` and `webmeet/webmeetAgent`, so the tracked-agent totals are 12 with 6 no-wait agents. Copilot runs through RoboTeam’s ordinary `default` robot; the retired `AchillesCLI/achilles-cli` agent is not a dependency. The default graph excludes the external `OnlyOfficeAgent/onlyOffice` agent, `webmeetAgent`, `liveKitServerAgent`, `webmeetScribeAgent`, and `webmeetStt`; the deployment pins the `OnlyOfficeAgent` repository alongside the other graph repositories while leaving the agent disabled. Readiness requires every runtime of the recursive default graph and every no-wait completion it declares; the workflow constants are checked against that graph by `explorer/tests/unit/retiredLocalModelGraph.test.js`. After that baseline is ready, QA restores prior optional agent selections through the supported CLI and verifies their aliases, authentication modes, profiles and readiness. Administrators can also enable optional agents through Explorer Marketplace. Meeting Secretary uses final browser SpeechRecognition transcripts and does not depend on the separate STT service.
 
 Neither deployment workflow pulls, starts, or inspects a local model image; the retired `proxies/default-local-llm` agent is not part of the default graph. The local Soul Gateway seeds a restricted free OpenRouter provider on first start with the tiers `fast`, `code`, `plan`, `write`, `deep`, `ultra`, and `web-assist`. Its bundled credential is guarded to free models only and shares one daily quota with every installation using it, so deployments need outbound internet access for these tiers and must not rely on them as unlimited or offline capacity. Administrators replace the credential through the admin-only Soul Gateway settings dashboard. OpenCode's free models are available through the optional `legacy-agents/opencode-free` agent, which `ploinky start explorer` does not enable; to add it to a workspace, run `ploinky enable agent legacy-agents/opencode-free` from the workspace root. The agent wraps the unmodified OpenCode CLI; once enabled, Soul Gateway discovers it like any other agent and adds it to no tier by default: plain-text chat only, no tool calls and no images, one answer per request delivered as a single chunk after several seconds, a free quota shared by every installation that uses the bundled key, and prompts subject to the free models' data-use terms. Native OpenCode execution through RoboTeam's installed OpenCode CLI is unchanged.
 
@@ -272,6 +278,37 @@ An inactive managed gateway does not authorize a wider bind, forwarder, direct
 target, or alternate authorization path. Ploinky DS004 Question #8 remains the
 owner of any architecture change needed to activate that lane.
 
+## Preserving redeploy, rehearsal and rollback
+
+Moving QA to a graph that differs from the running one, for example from the larger graph of the layout before the repository split to the twelve agents of the current default graph, cannot use the in-place updater: it refuses manifest, selection and identity changes by design. The `redeploy` operation does the work through the guarded Reconcile path. It moves the workspace into a protected backup, copies every durable file back and compares it byte for byte, regenerates the registry, and keeps the old Box stopped under the name `<box>-rollback-<backup>`. Nothing is deleted. A failed redeploy is acceptable; lost data is not, so every new branch either fails before services stop or leaves a backup that can be rolled back.
+
+| Operation | Inputs | Effect |
+| --- | --- | --- |
+| `update` (default) | none | The in-place update above, or a fresh installation when the workspace and Box are absent |
+| `redeploy-rehearsal` | `expected_explorer_commit` | Read-only. Runs the admission, capacity, account-runtime and capture checks, prints every verdict and a prediction for each prior agent selection, and stops before any backup directory is created |
+| `redeploy` | `expected_explorer_commit`, `confirm` = `redeploy explorerQaWorkspace` | Retires the running installation into a backup and starts a fresh one |
+| `rollback-plan` | `rollback_backup`, `rollback_current_id` | Read-only recovery check using the helper stored in the backup |
+| `rollback-execute` | `rollback_backup`, `rollback_current_id`, `confirm` = the backup name | Recovers the predecessor from the backup |
+
+Both redeploy operations need the 40-character lowercase commit of AssistOSExplorer `main` that the dispatch is meant to deploy. The runner checks it against `git ls-remote` before SSH, the host checks it again before anything is stopped, and the redeploy checks it a third time after source resolution. A mismatch fails closed. Redeploy also requires an existing real workspace directory and exactly one Box with the exact name, so an accidental first installation can never replace the safety of a backup. It refuses to create a Cloudflare tunnel and reuses the existing dedicated one.
+
+The rehearsal reports a capacity shortfall instead of stopping at it, so that the account-runtime and capture proofs are visible before the disk is resized. Any failed gate, capacity included, fails the rehearsal. The real `redeploy` keeps the capacity gate fatal: the free space must be at least the larger of 25 GiB and the workspace allocation plus 4 GiB. Do not dispatch `redeploy` while the rehearsal shows `admitted=false`. Resize the disk; do not lower the floor and do not delete durable data to make room.
+
+The prior selections of the old runtime are never enabled again. Each is classified against the fresh registry and logged: `retained`, `policy superseded` when the fresh graph sets another profile, auth mode or run mode, `not replayed` when the agent moved to another repository, and `not replayed` when it left the default graph. Re-enable an optional agent through Marketplace if it is still required. The totals line reports the live count, so no number is fixed in advance. Readiness is checked for the fresh graph only.
+
+The `Redeploy backup`, `Rollback reference` and `Verification expectation` log lines are the only source of the inputs for the later operations when the operator has no SSH. `Rollback reference` carries the backup name, the 64-character ID of the retained predecessor and the ID of the fresh Box; use the `current` value, or `absent` when the run stopped before the fresh Box existed, as `rollback_current_id`. Feed the JSON of `Verification expectation` to `verify-explorer-qa-runtime.yml`. GitHub echoes each step's script into its log, so filter the raw log before searching it: `grep -v $'\x1b\[36;1m' run.log`.
+
+| Last marker in the log | State | Action |
+| --- | --- | --- |
+| No `Stopping nested QA services` | QA untouched | Fix and rehearse again; do not roll back |
+| `Stopping nested QA services`, without `Exact prior Explorer QA runtime retired` | The old Box keeps its exact name and may be stopped or running | `rollback-plan` with `rollback_current_id=absent` |
+| `Exact prior Explorer QA runtime retired`, without `Rollback reference` | Old Box renamed and stopped, no fresh Box | `rollback-plan` with `absent` |
+| `Rollback reference` | Fresh Box present | `rollback-plan` with its `current` value |
+
+After `"result":"planned"`, dispatch `rollback-execute` with the same inputs and the backup name as `confirm`. Data written after the redeploy survives only in `failed-workspace` inside the backup. The retained stopped Boxes remain until a separately reviewed removal; they make a second `redeploy` fail, and the updater and the runtime verifier ignore only stopped Boxes named `<box>-rollback-redeploy-XXXXXXXX` or `<box>-failed-redeploy-XXXXXXXX`.
+
+The redeploy regenerates `.ploinky/enabled_repos.json`, `.ploinky/repo_sources.json` and `.ploinky/unregistered_agent_repos.json`, because a stale unregistered name makes agent resolution throw and a stale source entry pins a clone branch. The backup keeps the old copies and rollback restores them. Principal-keyed state is not re-keyed automatically; see the checklist below.
+
 ## Migrating principal-keyed state after the agent repository split
 
 Moving agents to the `legacy-agents` and `webmeet` repositories, and `soul-gateway` and `roboTeamAgent` into this repository, renames their Ploinky identities. Ploinky derives an agent identity, its principal and its container name from the repository name and the agent name, so a workspace that already ran the earlier layout must be reviewed before it starts the new one. A fresh deployment is not affected.
@@ -286,6 +323,6 @@ Moving agents to the `legacy-agents` and `webmeet` repositories, and `soul-gatew
 | Ploinky registry and selections (`.ploinky/agents.json`, enabled repositories, routing, QA prior-selection restoration) | Records `proxies/soul-gateway`, `AchillesCLI/roboTeamAgent`, `AchillesIDE/<moved agent>` and the `proxies` repository entry | `AchillesIDE/soul-gateway`, `AchillesIDE/roboTeamAgent`, `legacy-agents/<agent>`, `webmeet/<agent>` | Records are keyed by repository and agent, so an old record can coexist with the new one or fail the start preflight, and prior-selection restoration would re-enable the old ref. Disable the old records and repository through Ploinky before the first start, as the LiveKit repository migration does. This change ships no script for it |
 | Containers and repository checkouts | `ploinky_proxies_soul-gateway_*`, `.ploinky/repos/proxies` and the former agent folders | `ploinky_AchillesIDE_*`, `ploinky_legacy-agents_*`, `ploinky_webmeet_*` | Old containers and the unused `proxies` checkout stay until removed with the supported Ploinky commands |
 
-Before updating an existing QA or production workspace, export the DPU agent policy and the Soul Gateway subject and provider listings, update, then re-apply any customized grant under the new principal. Decide before merging whether to automate this as a script; this change ships the reference table above and no migration script. The deployment workflows were edited for the new repositories and have not been run.
+Post-redeploy checklist for QA. The preserving redeploy copies all durable data but does not re-key it, and Soul Gateway creates subject rows on the first signed call. Before the redeploy, export the DPU agent policy and the Soul Gateway subject and provider listings. After `verify-explorer-qa-runtime.yml` passes, review the rows for the old `agent:proxies/soul-gateway`, `agent:AchillesCLI/roboTeamAgent` and `agent:AchillesIDE/<moved agent>` principals and the DPU agent policies, and re-apply any customized limit or grant under the new key. The old keys stay inert. Confirm that an existing user signs in and finds their Explorer files, and that the Soul Gateway settings still list the prior providers and tiers with no tier naming a disabled provider. The migration of principals stays manual: this change ships the reference table above and no migration script. The post-split graph has not been deployed to QA before; the workflows were edited for the new repositories and the first redeploy is their first run.
 
 The `Deploy Skills Explorer` workflow changed with the split beyond text: it installs and synchronizes `legacy-agents` and `webmeet` instead of `proxies`, passes `--repo-branch` for both, and replaces the `proxies_branch` input and `PROXIES_BRANCH` variable with `legacy_agents_branch`/`LEGACY_AGENTS_BRANCH` and `webmeet_branch`/`WEBMEET_BRANCH`. A repository variable `PROXIES_BRANCH` that is still set is ignored. The workflow has not been run.
