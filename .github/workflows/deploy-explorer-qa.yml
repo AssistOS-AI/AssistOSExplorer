@@ -1199,21 +1199,21 @@ jobs:
               }
               const env = present(path.join(target, '.env'));
               if (env) assert(env.isFile() && env.nlink === 1 && env.uid === workspace.uid, 'Unsafe operator .env file');
-              // Ploinky 7d8c04d0 keeps the encryption identity under .ploinky/data (12d76a76);
-              // an earlier runtime kept it directly under .ploinky. Either layout is admitted.
-              const identityDirectories = ['.ploinky/data', '.ploinky'];
-              for (const directory of identityDirectories) {
+              // Ploinky 7d8c04d0 keeps the encryption identity under .ploinky/data (12d76a76) and refuses the
+              // same controller secrets at the retired .ploinky location once QA is stopped, so a new redeploy
+              // admits only the new layout and refuses any retired file before anything is stopped.
+              for (const directory of ['.ploinky/data', '.ploinky']) {
                   for (const name of ['master-key', '.secrets', 'passwords.enc', 'ploinky_subject_identity_ed25519_v1.enc']) {
                       const stat = present(path.join(target, directory, name));
                       if (stat) assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1, 'Unsafe QA encryption identity');
                   }
               }
-              const masterKeys = identityDirectories.map(directory => path.join(target, directory, 'master-key')).filter(file => present(file));
-              for (const file of masterKeys) assert(present(file).uid === workspace.uid, 'Unsafe QA master key owner');
-              if (present(path.join(target, '.data'))) assert(masterKeys.length > 0, 'Durable QA data requires its original master key');
-              if (masterKeys.length > 1) {
-                  assert(masterKeys.every(file => fs.readFileSync(file).equals(fs.readFileSync(masterKeys[0]))), 'Ambiguous QA master key: both layouts hold different keys');
-              }
+              const retiredIdentity = ['master-key', '.secrets', 'ploinky_subject_identity_ed25519_v1.enc']
+                  .map(name => path.join('.ploinky', name)).filter(relative => present(path.join(target, relative)));
+              assert.equal(retiredIdentity.length, 0, `Retired QA controller secrets at ${retiredIdentity.join(', ')} are refused by the pinned Ploinky runtime; migrate each into .ploinky/data first`);
+              const masterKey = path.join(target, '.ploinky/data/master-key');
+              if (present(masterKey)) assert(present(masterKey).uid === workspace.uid, 'Unsafe QA master key owner');
+              if (present(path.join(target, '.data'))) assert(present(masterKey), 'Durable QA data requires its original master key');
               const runtime = path.join(target, '.runtime');
               if (present(runtime)) assert(fs.readdirSync(runtime).every(name => name === 'ploinky'), 'Unreviewed files in the managed runtime directory');
               const managed = ['.runtime/ploinky', 'AdvancedLanguageAgent'];

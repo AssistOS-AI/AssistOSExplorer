@@ -136,7 +136,7 @@ test('QA admission rejects unsafe env and modified managed sources before any re
 const NEW_IDENTITY = ['.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc'];
 const LEGACY_IDENTITY = ['.ploinky/master-key', '.ploinky/.secrets', '.ploinky/passwords.enc', '.ploinky/ploinky_subject_identity_ed25519_v1.enc'];
 
-test('QA admission accepts the Ploinky 7d8c04d0 identity layout under .ploinky/data and the legacy layout', t => {
+test('QA admission accepts the Ploinky 7d8c04d0 identity layout under .ploinky/data and refuses the legacy layout', t => {
     const modern = fixture(t);
     modern.write('.data/dpu-data/blobs/one', 'ciphertext');
     for (const name of NEW_IDENTITY) modern.write(name, `new:${name}`);
@@ -145,7 +145,7 @@ test('QA admission accepts the Ploinky 7d8c04d0 identity layout under .ploinky/d
     const legacy = fixture(t);
     legacy.write('.data/dpu-data/blobs/one', 'ciphertext');
     for (const name of LEGACY_IDENTITY) legacy.write(name, `legacy:${name}`);
-    legacy.execute('preservation admission');
+    assert.throws(() => legacy.execute('preservation admission'), /Retired QA controller secrets/);
 });
 
 test('QA admission refuses durable data without a master key in either location', t => {
@@ -203,16 +203,24 @@ test('QA admission refuses a master key owned by another user', t => {
         assert, foreign, path, execFileSync, { argv: ['node', '-', f.target] }, { log() {} }), /master key owner/);
 });
 
-test('QA admission refuses differing master keys in both layouts and admits identical copies', t => {
-    const f = fixture(t);
-    f.write('.data/dpu-data/blobs/one', 'ciphertext');
-    f.write('.ploinky/data/master-key', 'seed-one');
-    f.write('.ploinky/master-key', 'seed-two');
-    assert.throws(() => f.execute('preservation admission'), /Ambiguous QA master key/);
-    assert.equal(f.read('.ploinky/data/master-key'), 'seed-one');
-    assert.equal(f.read('.ploinky/master-key'), 'seed-two');
-    f.write('.ploinky/master-key', 'seed-one');
-    f.execute('preservation admission');
+test('QA admission refuses every retired .ploinky controller secret, alone or beside the new layout', t => {
+    for (const name of ['master-key', '.secrets', 'ploinky_subject_identity_ed25519_v1.enc']) {
+        for (const withNew of [false, true]) {
+            const f = fixture(t);
+            f.write('.data/dpu-data/blobs/one', 'ciphertext');
+            f.write('.ploinky/data/master-key', 'seed-one');
+            f.write(`.ploinky/${name}`, 'retired');
+            if (!withNew) fs.rmSync(path.join(f.target, '.ploinky/data/master-key'));
+            if (!withNew && name !== 'master-key') f.write('.ploinky/master-key', 'seed-one');
+            assert.throws(() => f.execute('preservation admission'), /Retired QA controller secrets at .*\.ploinky\/.*migrate each into \.ploinky\/data first/, `${name} ${withNew}`);
+            assert.equal(f.read(`.ploinky/${name}`), 'retired');
+        }
+    }
+    const kept = fixture(t);
+    kept.write('.data/dpu-data/blobs/one', 'ciphertext');
+    kept.write('.ploinky/data/master-key', 'seed-one');
+    kept.write('.ploinky/passwords.enc', 'accounts');
+    kept.execute('preservation admission');
 });
 
 test('QA preservation carries the .ploinky/data identity into the fresh workspace and compares it', t => {
