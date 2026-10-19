@@ -41,6 +41,15 @@ export const ACCOUNT_CAPABILITY = Object.freeze({
     'cli/utils/security/encryptedPasswordStore.js': '7b25995756f48c10eeb56a53508bd5321701977ac8f0bfdd752199136a0265a3',
     'cli/utils/security/passwordStoreLock.mjs': 'f23ec55e64bfc44d4ffe3ea37f08b441f7b1bf848c1303ea9d130f1bd934beaf',
 });
+// Ploinky 7d8c04d0 removed local password authentication (df976761), so the
+// password-store modules and their credential seeding no longer exist; its
+// agent registration is reviewed against that removal. Any one complete set
+// matches; a file taken from one set never satisfies another.
+export const ACCOUNT_CAPABILITY_SETS = Object.freeze([ACCOUNT_CAPABILITY, Object.freeze({
+    'cli/utils/agents.js': '0583a4815c7ab0766d5d2a71920c78fab856f1c902d9b587e319dff964dba82b',
+    'cli/utils/security/encryptedPasswordStore.js': null,
+    'cli/utils/security/passwordStoreLock.mjs': null,
+})]);
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const identity = stat => ({ device: String(stat.dev), inode: String(stat.ino), uid: stat.uid, gid: stat.gid });
 const present = file => { try { return fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
@@ -54,11 +63,14 @@ function writeNew(file, value) {
     fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 }
 
-export function accountCapability(root, reviewedFiles = ACCOUNT_CAPABILITY) {
-    return Object.entries(reviewedFiles).every(([relative, expected]) => {
+/** `reviewedFiles` is one set of path to digest, or a list of such sets; `null` means the file must be absent. */
+export function accountCapability(root, reviewedFiles = ACCOUNT_CAPABILITY_SETS) {
+    const sets = Array.isArray(reviewedFiles) ? reviewedFiles : [reviewedFiles];
+    return sets.some(files => Object.entries(files).every(([relative, expected]) => {
         const file = path.join(root, '.runtime/ploinky', relative), stat = present(file);
+        if (expected === null) return stat === null;
         return stat?.isFile() && !stat.isSymbolicLink() && digest(fs.readFileSync(file)) === expected;
-    });
+    }));
 }
 
 export function enableArguments(selection) {

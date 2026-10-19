@@ -7,7 +7,7 @@ import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-    ACCOUNT_CAPABILITY, accountCapability, assertImageOwnedAgentLib, createRollbackService, enableArguments,
+    ACCOUNT_CAPABILITY, ACCOUNT_CAPABILITY_SETS, accountCapability, assertImageOwnedAgentLib, createRollbackService, enableArguments,
     imageAgentLibSourceId, productionAdapters, restorePriorSelections, sanitizeBox,
 } from '../../../.github/scripts/rollback-explorer-qa.mjs';
 
@@ -417,6 +417,47 @@ test('account capability compares every reviewed file and fails closed for missi
     assert.equal(accountCapability(f.scope.workspace), false, 'fixture implementation cannot authorize production recovery');
     fs.unlinkSync(path.join(f.scope.workspace, '.runtime/ploinky/cli/utils/security/passwordStoreLock.mjs'));
     assert.equal(fixtureCapability(f.scope.workspace), false);
+});
+
+test('the second reviewed account capability set keeps set A and requires the removed store modules to be absent', () => {
+    const [setA, setB] = ACCOUNT_CAPABILITY_SETS;
+    assert.equal(setA, ACCOUNT_CAPABILITY);
+    assert.deepEqual(Object.keys(setB), Object.keys(setA));
+    assert.equal(setB['cli/utils/agents.js'], '0583a4815c7ab0766d5d2a71920c78fab856f1c902d9b587e319dff964dba82b');
+    assert.notEqual(setB['cli/utils/agents.js'], setA['cli/utils/agents.js']);
+    assert.equal(setB['cli/utils/security/encryptedPasswordStore.js'], null);
+    assert.equal(setB['cli/utils/security/passwordStoreLock.mjs'], null);
+});
+
+test('any one complete account capability set matches and a mixture of sets never does', t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-capability-sets-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const sha = value => crypto.createHash('sha256').update(value).digest('hex');
+    const names = ['cli/utils/agents.js', 'cli/utils/security/encryptedPasswordStore.js', 'cli/utils/security/passwordStoreLock.mjs'];
+    const [agents, store, lock] = names;
+    const setA = { [agents]: sha('agents-a'), [store]: sha('store'), [lock]: sha('lock') };
+    const setB = { [agents]: sha('agents-b'), [store]: null, [lock]: null };
+    const file = relative => path.join(root, '.runtime/ploinky', relative);
+    const place = (state) => {
+        fs.rmSync(path.join(root, '.runtime'), { recursive: true, force: true });
+        for (const [relative, value] of Object.entries(state)) if (value !== null) write(file(relative), value);
+    };
+    const accepts = () => accountCapability(root, [setA, setB]);
+    place({ [agents]: 'agents-a', [store]: 'store', [lock]: 'lock' });
+    assert.equal(accepts(), true, 'set A');
+    place({ [agents]: 'agents-b', [store]: null, [lock]: null });
+    assert.equal(accepts(), true, 'set B');
+    place({ [agents]: 'agents-a', [store]: null, [lock]: null });
+    assert.equal(accepts(), false, 'agents of A with the stores absent');
+    place({ [agents]: 'agents-b', [store]: 'store', [lock]: 'lock' });
+    assert.equal(accepts(), false, 'agents of B with the stores present');
+    place({ [agents]: 'agents-b', [store]: null, [lock]: null });
+    fs.mkdirSync(path.dirname(file(store)), { recursive: true });
+    fs.symlinkSync(path.join(root, 'missing'), file(store));
+    assert.equal(accepts(), false, 'a dangling link does not count as an absent store module');
+    assert.equal(accountCapability(root, setB), false, 'a single set stays accepted as an object');
+    fs.unlinkSync(file(store));
+    assert.equal(accountCapability(root, setB), true);
 });
 
 test('capture records unsupported prior code, but plan/execute refuse before mutation', async t => {
