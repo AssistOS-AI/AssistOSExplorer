@@ -152,8 +152,10 @@ test('QA readiness includes UserPersisto and its email dependency in the default
     const explorer = JSON.parse(fs.readFileSync(new URL('../../../explorer/manifest.json', import.meta.url), 'utf8'));
     const provider = JSON.parse(fs.readFileSync(new URL('../../../userPersistoAgent/manifest.json', import.meta.url), 'utf8'));
     assert.equal(explorer.sso.providerAgent, 'userPersistoAgent');
-    assert.ok(explorer.enable.includes('userPersistoAgent'));
-    assert.ok(provider.enable.includes('emailAgent'));
+    // An enable entry is a spec string or an object carrying the spec and its profile.
+    const enabled = manifest => manifest.enable.map(entry => String(typeof entry === 'string' ? entry : entry.agent).split(/\s+/)[0]);
+    assert.ok(enabled(explorer).includes('userPersistoAgent'));
+    assert.ok(enabled(provider).includes('emailAgent'));
     // The workflow's readiness literals are the recursive Explorer graph's totals,
     // and neither the total nor the no-wait count may drift by one either way.
     // The walk needs the sibling checkouts this repository is deployed beside;
