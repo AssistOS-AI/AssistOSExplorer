@@ -2,6 +2,33 @@ name: Deploy Explorer QA Box
 
 on:
   workflow_dispatch:
+    inputs:
+      operation:
+        description: update (default), redeploy-rehearsal (read-only), redeploy, rollback-plan or rollback-execute
+        type: choice
+        default: update
+        options:
+          - update
+          - redeploy-rehearsal
+          - redeploy
+          - rollback-plan
+          - rollback-execute
+      expected_explorer_commit:
+        description: Redeploy modes only. The 40-character lowercase AssistOSExplorer main commit to deploy
+        type: string
+        default: ''
+      rollback_backup:
+        description: Rollback modes only. The redeploy backup name, for example redeploy-AbCd1234
+        type: string
+        default: ''
+      rollback_current_id:
+        description: Rollback modes only. The 64-character ID of the fresh Box, or absent
+        type: string
+        default: ''
+      confirm:
+        description: redeploy needs "redeploy explorerQaWorkspace"; rollback-execute needs the backup name
+        type: string
+        default: ''
 
 concurrency:
   group: deploy-explorer-qa
@@ -26,8 +53,11 @@ env:
 jobs:
   deploy:
     name: Deploy Explorer QA through Ploinky Box
+    if: ${{ !startsWith(inputs.operation, 'rollback-') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    # Quiesce takes up to about 15 minutes, start plus readiness took 10 minutes
+    # on 2026-10-13 and may take 30; a runner timeout would drop SSH mid-copy.
+    timeout-minutes: 90
     permissions:
       contents: read
 
@@ -36,6 +66,54 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Validate the requested operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+          EXPECTED_EXPLORER_COMMIT: ${{ inputs.expected_explorer_commit }}
+          ROLLBACK_BACKUP: ${{ inputs.rollback_backup }}
+          ROLLBACK_CURRENT_ID: ${{ inputs.rollback_current_id }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          OPERATION="${OPERATION:-update}"
+          if [ -n "${ROLLBACK_BACKUP:-}" ] || [ -n "${ROLLBACK_CURRENT_ID:-}" ]; then
+            echo "::error::rollback_backup and rollback_current_id belong to the rollback operations only"
+            exit 1
+          fi
+          case "$OPERATION" in
+            update)
+              if [ -n "${EXPECTED_EXPLORER_COMMIT:-}" ] || [ -n "${CONFIRM:-}" ]; then
+                echo "::error::update takes no expected_explorer_commit or confirm input"
+                exit 1
+              fi
+              ;;
+            redeploy-rehearsal|redeploy)
+              if [[ ! "${EXPECTED_EXPLORER_COMMIT:-}" =~ ^[a-f0-9]{40}$ ]]; then
+                echo "::error::$OPERATION needs expected_explorer_commit as 40 lowercase hexadecimal characters"
+                exit 1
+              fi
+              if [ "$OPERATION" = redeploy ] && [ "${CONFIRM:-}" != 'redeploy explorerQaWorkspace' ]; then
+                echo "::error::redeploy needs confirm to read exactly: redeploy explorerQaWorkspace"
+                exit 1
+              fi
+              if [ "$OPERATION" = redeploy-rehearsal ] && [ -n "${CONFIRM:-}" ]; then
+                echo "::error::redeploy-rehearsal takes no confirm input"
+                exit 1
+              fi
+              MAIN_RECORD="$(git ls-remote --exit-code --heads https://github.com/AssistOS-AI/AssistOSExplorer.git refs/heads/main)"
+              MAIN_COMMIT="$(printf '%s\n' "$MAIN_RECORD" | awk 'NR == 1 { print $1 }')"
+              if [ "$MAIN_COMMIT" != "$EXPECTED_EXPLORER_COMMIT" ]; then
+                echo "::error::AssistOSExplorer main is at ${MAIN_COMMIT:-unknown}, not the expected $EXPECTED_EXPLORER_COMMIT"
+                exit 1
+              fi
+              echo "[deploy-qa] Operation $OPERATION pinned to AssistOSExplorer main at $MAIN_COMMIT."
+              ;;
+            *)
+              echo "::error::Unsupported operation '$OPERATION' for the deploy job"
+              exit 1
+              ;;
+          esac
 
       - name: Set up the deployment test runtime
         uses: actions/setup-node@v4
@@ -312,9 +390,19 @@ jobs:
 
       - name: Update the existing Explorer QA installation in place
         id: inplace
+        env:
+          OPERATION: ${{ inputs.operation }}
         run: |
           set -euo pipefail
           umask 077
+          OPERATION="${OPERATION:-update}"
+          case "$OPERATION" in
+            update|redeploy-rehearsal|redeploy) ;;
+            *)
+              echo "::error::Unsupported operation '$OPERATION' for the in-place step"
+              exit 1
+              ;;
+          esac
           SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
             -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
             -o ServerAliveInterval=30 -o ServerAliveCountMax=5)
@@ -332,14 +420,30 @@ jobs:
           done
           status=0
           "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
-            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_DIR'" \
+            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_DIR' '$OPERATION'" \
             > "$RUNNER_TEMP/explorer-qa-update-result.json" <<'UPDATE' || status=$?
           set -euo pipefail
           update_dir="$1"
+          operation="${2:-update}"
           [[ "$update_dir" =~ ^/tmp/explorer-qa-update\.[A-Za-z0-9]{8}$ ]]
+          case "$operation" in
+            update|redeploy-rehearsal|redeploy) ;;
+            *) echo 'Unsupported QA operation' >&2; exit 1 ;;
+          esac
           test "$(id -un)" = admin
           test "$HOME" = /home/admin
           workspace=/home/admin/explorerQaWorkspace
+          if [ "$operation" != update ]; then
+            # The operator chose a preserving redeploy. An existing workspace goes
+            # to the guarded Reconcile step; the updater never runs and a missing
+            # workspace is never turned into a first installation.
+            if [ -d "$workspace" ] && [ ! -L "$workspace" ]; then
+              echo "[deploy-qa] Preserving redeploy selected ($operation); the in-place updater was not run."
+              exit 43
+            fi
+            echo '[deploy-qa] ERROR: redeploy requires an existing QA workspace directory.' >&2
+            exit 1
+          fi
           if [ ! -e "$workspace" ] && [ ! -L "$workspace" ]; then
             # Prove absence before the fresh-install step can provision a tunnel.
             for engine in podman docker; do
@@ -367,6 +471,10 @@ jobs:
           if [ "$status" -eq 42 ]; then
             echo 'updated=false' >> "$GITHUB_OUTPUT"
             echo '[deploy-qa] No existing workspace; proceeding to first installation.'
+          elif [ "$status" -eq 43 ] && [ "${OPERATION:-update}" != update ]; then
+            echo 'updated=false' >> "$GITHUB_OUTPUT"
+            echo "operation=${OPERATION}" >> "$GITHUB_OUTPUT"
+            echo "[deploy-qa] Proceeding to the guarded preserving redeploy path ($OPERATION)."
           elif [ "$status" -eq 0 ]; then
             echo 'updated=true' >> "$GITHUB_OUTPUT"
           else
@@ -377,6 +485,8 @@ jobs:
       - name: Reconcile and start Explorer QA Box
         if: steps.inplace.outputs.updated == 'false'
         env:
+          OPERATION: ${{ steps.inplace.outputs.operation }}
+          EXPECTED_EXPLORER_COMMIT: ${{ inputs.expected_explorer_commit }}
           QA_USERPERSISTO_GOOGLE_CLIENT_ID: ${{ vars.EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
@@ -455,6 +565,10 @@ jobs:
           )"
           CLOUDFLARE_TUNNEL_CREATED='false'
           if [ -z "$CLOUDFLARE_TUNNEL_ID" ]; then
+            if [ -n "${OPERATION:-}" ]; then
+              echo "::error::A preserving redeploy reuses the existing dedicated Explorer QA tunnel and never creates one"
+              exit 1
+            fi
             curl -fsS \
               -X POST \
               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
@@ -652,6 +766,7 @@ jobs:
             write_shell_var QA_QUIESCE_SHA
             write_shell_var QA_ROLLBACK_SOURCE
             write_shell_var QA_ROLLBACK_SHA
+            write_shell_var EXPECTED_EXPLORER_COMMIT
           } > "$LOCAL_ENV_FILE"
 
           REMOTE_ENV_UPLOADED='true'
@@ -670,10 +785,19 @@ jobs:
             -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=10 \
-            "${SSH_USER}@${SSH_HOST}" "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_ENV_FILE'" <<'REMOTE'
+            "${SSH_USER}@${SSH_HOST}" "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_ENV_FILE' '${OPERATION:-update}'" <<'REMOTE'
           set -euo pipefail
           umask 077
           REMOTE_ENV_FILE="${1:-}"
+          QA_OPERATION="${2:-update}"
+          case "$QA_OPERATION" in
+            update|redeploy-rehearsal|redeploy) ;;
+            *)
+              echo "[deploy-qa] ERROR: unsupported QA operation."
+              exit 1
+              ;;
+          esac
+          QA_CAPACITY_LOG=""
           CLOUDFLARE_CREDENTIAL_FILE=""
           PROTECTED_BEFORE_FILE=""
           PROTECTED_AFTER_FILE=""
@@ -716,6 +840,9 @@ jobs:
             if [ -n "$PROTECTED_AFTER_FILE" ]; then
               rm -f "$PROTECTED_AFTER_FILE"
             fi
+            if [ -n "$QA_CAPACITY_LOG" ]; then
+              rm -f "$QA_CAPACITY_LOG"
+            fi
             exit "$status"
           }
           case "$REMOTE_ENV_FILE" in
@@ -728,24 +855,48 @@ jobs:
           trap cleanup_remote_files EXIT
 
           # BEGIN QA fresh-install admission
-          # Deployment never retires an installation. A separately authorized
-          # destroy workflow owns removal; existing workspaces use the update step.
-          assert_qa_bootstrap_absent() {
-            if [ -e /home/admin/explorerQaWorkspace ] || [ -L /home/admin/explorerQaWorkspace ]; then
-              echo '[deploy-qa] ERROR: fresh installation requires an absent QA workspace; use in-place deployment for an existing installation.' >&2
+          # Deployment never retires an installation on its own. A separately
+          # authorized destroy workflow owns removal; existing workspaces use the
+          # update step. Only an explicit, confirmed redeploy operation reaches
+          # this script with an existing workspace, and it retains that workspace
+          # and its Box in a backup instead of deleting them.
+          assert_qa_install_admission() {
+            local engine ids
+            if [ "${QA_OPERATION:-update}" = update ]; then
+              if [ -e /home/admin/explorerQaWorkspace ] || [ -L /home/admin/explorerQaWorkspace ]; then
+                echo '[deploy-qa] ERROR: fresh installation requires an absent QA workspace; use in-place deployment for an existing installation.' >&2
+                return 1
+              fi
+              for engine in podman docker; do
+                command -v "$engine" >/dev/null 2>&1 || continue
+                ids="$("$engine" container ls -aq --filter label=io.assistos.ploinky-box.path-hash=7a31ab7775eb)" || return 1
+                if [ -n "$ids" ] || "$engine" container inspect ploinky-box-explorerqaworkspace-7a31ab7775eb >/dev/null 2>&1; then
+                  echo '[deploy-qa] ERROR: fresh installation refuses an existing QA Box; no teardown is performed.' >&2
+                  return 1
+                fi
+              done
+              return 0
+            fi
+            local labelled=0 named=0
+            if [ ! -d /home/admin/explorerQaWorkspace ] || [ -L /home/admin/explorerQaWorkspace ]; then
+              echo '[deploy-qa] ERROR: preserving redeploy requires an existing QA workspace directory.' >&2
               return 1
             fi
-            local engine ids
             for engine in podman docker; do
               command -v "$engine" >/dev/null 2>&1 || continue
               ids="$("$engine" container ls -aq --filter label=io.assistos.ploinky-box.path-hash=7a31ab7775eb)" || return 1
-              if [ -n "$ids" ] || "$engine" container inspect ploinky-box-explorerqaworkspace-7a31ab7775eb >/dev/null 2>&1; then
-                echo '[deploy-qa] ERROR: fresh installation refuses an existing QA Box; no teardown is performed.' >&2
-                return 1
+              labelled=$((labelled + $(printf '%s\n' "$ids" | awk 'NF { count++ } END { print count + 0 }')))
+              if "$engine" container inspect ploinky-box-explorerqaworkspace-7a31ab7775eb >/dev/null 2>&1; then
+                named=$((named + 1))
               fi
             done
+            if [ "$labelled" -ne 1 ] || [ "$named" -ne 1 ]; then
+              echo '[deploy-qa] ERROR: preserving redeploy requires exactly one existing QA Box with the exact name.' >&2
+              return 1
+            fi
+            echo '[deploy-qa] Preserving redeploy admitted: one existing workspace and exact Box.'
           }
-          assert_qa_bootstrap_absent
+          assert_qa_install_admission
           # END QA fresh-install admission
 
           if [ ! -f "$REMOTE_ENV_FILE" ] || [ -L "$REMOTE_ENV_FILE" ]; then
@@ -1074,7 +1225,8 @@ jobs:
           NODE
           }
           assert_qa_preservation_admission
-          sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" <<'NODE'
+          QA_CAPACITY_LOG="$(mktemp /tmp/explorer_qa_capacity.XXXXXX)"
+          sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" "$QA_OPERATION" <<'NODE' | tee "$QA_CAPACITY_LOG"
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import path from 'node:path';
@@ -1082,6 +1234,9 @@ jobs:
 
           // BEGIN QA capacity admission
           const target = process.argv[2];
+          // Only the read-only rehearsal reports a shortfall instead of stopping;
+          // an absent mode is the fatal one.
+          const rehearsal = process.argv[3] === 'redeploy-rehearsal';
           assert.equal(target, '/home/admin/explorerQaWorkspace');
           const available = fs.statfsSync(path.dirname(target), { bigint: true });
           const freeBytes = available.bavail * available.bsize;
@@ -1107,8 +1262,12 @@ jobs:
                   return { status: 'unavailable', bytes: null };
               }
           };
-          const workspaceAllocation = allocated(target, true);
-          const priorBytes = BigInt(workspaceAllocation.bytes);
+          let workspaceAllocation;
+          try { workspaceAllocation = allocated(target, true); } catch (error) {
+              if (!rehearsal) throw error;
+              workspaceAllocation = { status: 'unavailable', bytes: null };
+          }
+          const priorBytes = BigInt(workspaceAllocation.bytes ?? '0');
           const minimum = 25n * 1024n ** 3n;
           const required = priorBytes + 4n * 1024n ** 3n > minimum ? priorBytes + 4n * 1024n ** 3n : minimum;
           const components = {
@@ -1160,8 +1319,13 @@ jobs:
               components,
               retainedQaBackupInventory: backupInventory(),
           }));
-          assert(freeBytes >= required, 'Insufficient QA capacity for retained backup and fresh runtime; review a scoped archive/recovery operation before stopping services');
-          console.log('[deploy-qa] Capacity admission passed before stopping the previous runtime.');
+          if (rehearsal) {
+              const admitted = workspaceAllocation.bytes !== null && freeBytes >= required;
+              console.log(`[deploy-qa] Capacity verdict: admitted=${admitted} required=${required} available=${freeBytes}`);
+          } else {
+              assert(freeBytes >= required, 'Insufficient QA capacity for retained backup and fresh runtime; review a scoped archive/recovery operation before stopping services');
+              console.log('[deploy-qa] Capacity admission passed before stopping the previous runtime.');
+          }
           // END QA capacity admission
           NODE
 
@@ -1272,10 +1436,79 @@ jobs:
             printf '%s\n' "$default_branch"
           }
 
+          if [ "$QA_OPERATION" != update ]; then
+            if [[ ! "${EXPECTED_EXPLORER_COMMIT:-}" =~ ^[a-f0-9]{40}$ ]]; then
+              echo '[deploy-qa] ERROR: a redeploy needs the expected AssistOSExplorer commit.'
+              exit 1
+            fi
+            QA_EXPLORER_URL='https://github.com/AssistOS-AI/AssistOSExplorer.git'
+            QA_EXPLORER_BRANCH="$(resolve_default_branch "$QA_EXPLORER_URL")"
+            QA_EXPLORER_HEAD="$(git ls-remote --exit-code --heads "$QA_EXPLORER_URL" "refs/heads/$QA_EXPLORER_BRANCH" | awk 'NR == 1 { print $1 }')"
+            if [ "$QA_EXPLORER_HEAD" != "$EXPECTED_EXPLORER_COMMIT" ]; then
+              echo "[deploy-qa] ERROR: AchillesIDE/$QA_EXPLORER_BRANCH is at ${QA_EXPLORER_HEAD:-unknown}, not the expected $EXPECTED_EXPLORER_COMMIT; nothing was stopped or moved."
+              exit 1
+            fi
+            echo "[deploy-qa] Redeploy pinned to AchillesIDE/$QA_EXPLORER_BRANCH at $QA_EXPLORER_HEAD."
+          fi
+          if [ "$QA_OPERATION" = redeploy-rehearsal ]; then
+            # BEGIN QA redeploy rehearsal
+            # Every gate runs and reports; any failed gate fails the rehearsal.
+            # Nothing is stopped, moved, copied or created beyond a private temporary helper.
+            QA_REHEARSAL_FAILED=0
+            QA_CAPACITY_VERDICT="$(sed -n 's/^\[deploy-qa\] Capacity verdict: //p' "$QA_CAPACITY_LOG" | tail -n 1)"
+            case "$QA_CAPACITY_VERDICT" in
+              'admitted=true required='*) ;;
+              'admitted=false required='*) QA_REHEARSAL_FAILED=1 ;;
+              *) QA_CAPACITY_VERDICT='admitted=false required=unknown available=unknown'; QA_REHEARSAL_FAILED=1 ;;
+            esac
+            echo "[deploy-qa] Rehearsal: capacity $QA_CAPACITY_VERDICT"
+            QA_REHEARSAL_DIR="$(mktemp -d /tmp/explorer_qa_rehearsal.XXXXXX)"
+            printf '%s' "$QA_ROLLBACK_SOURCE" > "$QA_REHEARSAL_DIR/rollback-explorer-qa.mjs"
+            if ! node --input-type=module - "$QA_REHEARSAL_DIR/rollback-explorer-qa.mjs" <<'NODE'
+
+          // BEGIN QA rehearsal capture preview
+          const [helper] = process.argv.slice(2);
+          const { accountCapability, classifyPriorSelections, createRollbackService, describeSelectionDispositions,
+              EXPECTED_DEFAULT_GRAPH, productionAdapters, QA_SCOPE } = await import(helper);
+          let failed = false;
+          const reviewed = accountCapability(QA_SCOPE.workspace);
+          console.log(`[deploy-qa] Rehearsal: prior account runtime reviewed=${reviewed}`);
+          if (!reviewed) failed = true;
+          try {
+              const preview = createRollbackService(productionAdapters()).previewCapture();
+              console.log(`[deploy-qa] Rehearsal: capture preview passed; ${preview.sources.length} sources, ${preview.agents.length} prior selections.`);
+              const graph = Object.fromEntries(EXPECTED_DEFAULT_GRAPH.map(ref => {
+                  const [repoName, agentName] = ref.split('/');
+                  return [ref, { type: 'agent', repoName, agentName, alias: '' }];
+              }));
+              const prediction = classifyPriorSelections(preview.agents, graph, { comparePolicy: false });
+              for (const line of describeSelectionDispositions(prediction, '[deploy-qa] Rehearsal: prior selection')) console.log(line);
+          } catch (error) {
+              failed = true;
+              console.log(`[deploy-qa] Rehearsal: capture preview failed: ${/^QA_[A-Z_]+$/.test(error?.code || '') ? error.code : 'QA_PREVIEW_FAILED'}`);
+          }
+          process.exitCode = failed ? 1 : 0;
+          // END QA rehearsal capture preview
+          NODE
+            then
+              QA_REHEARSAL_FAILED=1
+            fi
+            rm -f "$QA_REHEARSAL_DIR/rollback-explorer-qa.mjs"
+            rmdir "$QA_REHEARSAL_DIR"
+            if [ "$QA_REHEARSAL_FAILED" != 0 ]; then
+              echo '[deploy-qa] ERROR: the redeploy rehearsal failed; no service was stopped and no workspace file was moved.'
+              exit 1
+            fi
+            echo '[deploy-qa] Redeploy rehearsal passed; no service was stopped and no workspace file was moved.'
+            exit 0
+            # END QA redeploy rehearsal
+          fi
+
           mkdir -p "$HOME/.qa-deployment-backups"
           chmod 700 "$HOME/.qa-deployment-backups"
           QA_BACKUP_DIR="$(mktemp -d "$HOME/.qa-deployment-backups/redeploy-XXXXXXXX")"
           export QA_BACKUP_DIR
+          echo "[deploy-qa] Redeploy backup: ${QA_BACKUP_DIR##*/}"
           QA_HELPER_DIR="${QA_BACKUP_DIR}-helpers"
           mkdir -m 700 "$QA_HELPER_DIR"
           printf '%s\n' "$QA_NODE_HOME" > "$QA_HELPER_DIR/node-runtime-path"
@@ -1371,7 +1604,7 @@ jobs:
           # END QA outer archive lock acquisition
           assert_qa_preservation_admission
           assert_qa_workspace_lock_held
-          assert_qa_bootstrap_absent
+          assert_qa_install_admission
           QA_CAPTURE="$(node "$QA_HELPER_DIR/rollback-explorer-qa.mjs" capture "$QA_BACKUP_DIR" --lock-held)"
           QA_CAPTURED_CONTAINERS="$(cat "$QA_BACKUP_DIR/prior-containers.txt")"
           QA_EXPECTED_CONTAINERS="$(printf '%s\n' "${QA_CONTAINER_RECORDS[@]}")"
@@ -1465,8 +1698,12 @@ jobs:
           if (original) {
               const regenerated = new Set(['.ploinky', '.runtime', 'AdvancedLanguageAgent']);
               for (const name of fs.readdirSync(source)) if (!regenerated.has(name)) copy(name);
+              // The repository maps name the previous graph. A stale unregistered name
+              // makes agent resolution throw and a stale source entry pins a clone
+              // branch, so Ploinky regenerates all three; the backup keeps the old ones.
               const runtimeEntries = new Set(['agents.json', 'routing.json', 'running', 'run', 'logs', 'box',
-                  'deps', 'repos', 'agentlib', 'container-runtime', 'graph-skill-scope.json', 'data']);
+                  'deps', 'repos', 'agentlib', 'container-runtime', 'graph-skill-scope.json', 'data',
+                  'enabled_repos.json', 'repo_sources.json', 'unregistered_agent_repos.json']);
               const state = path.join(source, '.ploinky');
               if (fs.existsSync(state)) {
                   for (const name of fs.readdirSync(state)) if (!runtimeEntries.has(name)) copy(path.join('.ploinky', name));
@@ -1598,6 +1835,10 @@ jobs:
             echo "[deploy-qa] Selected $repository_name/$default_branch at $expected_commit."
           done
           EXPLORER_BRANCH="${EXPECTED_BRANCHES[AchillesIDE]}"
+          if [ "$QA_OPERATION" = redeploy ] && [ "${EXPECTED_COMMITS[AchillesIDE]}" != "$EXPECTED_EXPLORER_COMMIT" ]; then
+            echo "[deploy-qa] ERROR: AchillesIDE resolved to ${EXPECTED_COMMITS[AchillesIDE]}, not the expected $EXPECTED_EXPLORER_COMMIT; the retained backup $QA_BACKUP_DIR can be rolled back."
+            exit 1
+          fi
 
           PLOINKY_URL='https://github.com/AssistOS-AI/ploinky.git'
           PLOINKY_BRANCH="$(resolve_default_branch "$PLOINKY_URL")"
@@ -1797,6 +2038,16 @@ jobs:
           if [ -z "$BOX_ENGINE" ]; then
             echo "[deploy-qa] ERROR: exact Box instance '$BOX_INSTANCE' was not found."
             exit 1
+          fi
+          # Without SSH, this line is the only source of the recovery inputs.
+          if [ "${#QA_CONTAINER_RECORDS[@]}" -eq 1 ]; then
+            IFS='|' read -r _ QA_PREDECESSOR_ID _ <<< "${QA_CONTAINER_RECORDS[0]}"
+            QA_CURRENT_ID="$("$BOX_ENGINE" container inspect "$BOX_INSTANCE" --format '{{.Id}}')"
+            if [[ ! "$QA_PREDECESSOR_ID" =~ ^[a-f0-9]{64}$ ]] || [[ ! "$QA_CURRENT_ID" =~ ^[a-f0-9]{64}$ ]]; then
+              echo "[deploy-qa] ERROR: the predecessor or fresh Box has no full container ID."
+              exit 1
+            fi
+            echo "[deploy-qa] Rollback reference: backup=${QA_BACKUP_DIR##*/} predecessor=$QA_PREDECESSOR_ID current=$QA_CURRENT_ID"
           fi
 
           "$BOX_ENGINE" container exec --user podman --workdir "$WORK_DIR" \
@@ -2262,6 +2513,29 @@ jobs:
           // END QA image-owned AgentLib verification
           NODE
 
+          # The runtime verifier workflow takes this record as its input.
+          QA_VERIFY_BOX_ID="$("$BOX_ENGINE" container inspect "$BOX_INSTANCE" --format '{{.Id}}')"
+          QA_VERIFY_IMAGE_ID="$("$BOX_ENGINE" container inspect "$BOX_INSTANCE" --format '{{.Image}}')"
+          QA_VERIFY_IMAGE_ID="${QA_VERIFY_IMAGE_ID#sha256:}"
+          QA_EXPECTED_SOURCES=(
+            ".runtime/ploinky|$PLOINKY_BRANCH|$(git -C "$RUNTIME_DIR" rev-parse HEAD)"
+            "AdvancedLanguageAgent|$ALA_BRANCH|$ALA_COMMIT"
+          )
+          for repository_record in "${GRAPH_REPOSITORIES[@]}"; do
+            IFS='|' read -r repository_name _ <<< "$repository_record"
+            QA_EXPECTED_SOURCES+=(".ploinky/repos/$repository_name|${EXPECTED_BRANCHES[$repository_name]}|${EXPECTED_COMMITS[$repository_name]}")
+          done
+          node --input-type=module - "$QA_VERIFY_BOX_ID" "$QA_VERIFY_IMAGE_ID" "$QA_DEPLOY_STARTED_AT_MS" "${QA_EXPECTED_SOURCES[@]}" <<'NODE'
+          // BEGIN QA verification expectation
+          const [boxId, imageId, startedAt, ...records] = process.argv.slice(2);
+          const sources = Object.fromEntries(records.map(record => {
+              const [relative, branch, commit] = record.split('|');
+              return [relative, { commit, branch }];
+          }));
+          console.log('[deploy-qa] Verification expectation:', JSON.stringify({ boxId, imageId, minimumRunStartedAtMs: Number(startedAt), sources }));
+          // END QA verification expectation
+          NODE
+
           echo "[deploy-qa] Verifying the loopback Router publication..."
           ROUTER_OK=0
           for _ in $(seq 1 30); do
@@ -2297,6 +2571,7 @@ jobs:
           REMOTE_ENV_UPLOADED='false'
 
       - name: Verify public URL
+        if: steps.inplace.outputs.operation != 'redeploy-rehearsal'
         run: |
           set -euo pipefail
           echo "[deploy-qa] Verifying the exact public Explorer login application..."
@@ -2385,7 +2660,7 @@ jobs:
           done
 
       - name: Verify dedicated connector and protected Cloudflare topology
-        if: always()
+        if: always() && steps.inplace.outputs.operation != 'redeploy-rehearsal'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
@@ -2487,6 +2762,7 @@ jobs:
         if: always()
         env:
           UPDATED_IN_PLACE: ${{ steps.inplace.outputs.updated }}
+          QA_OPERATION: ${{ steps.inplace.outputs.operation }}
         run: |
           {
             echo "## Explorer QA Box Deploy"
@@ -2498,6 +2774,10 @@ jobs:
             if [ "$UPDATED_IN_PLACE" = true ]; then
               echo "- Deployment: AssistOSExplorer updated in place from its configured default branch"
               echo "- Existing Box, image, AgentLib, other repositories and workspace data retained"
+            elif [ "$QA_OPERATION" = redeploy-rehearsal ]; then
+              echo "- Redeploy rehearsal only: capacity, prior account runtime and capture preview were checked; no service was stopped and no workspace file was moved"
+            elif [ "$QA_OPERATION" = redeploy ]; then
+              echo "- Preserving redeploy: the prior workspace and Box are retained for rollback; the log carries the Redeploy backup, Rollback reference and Verification expectation lines"
             elif [ "$UPDATED_IN_PLACE" = false ]; then
               echo "- First installation only: configured repository defaults, resolved and pinned at deploy time"
             else
@@ -2522,3 +2802,132 @@ jobs:
             "$RUNNER_TEMP/explorer-qa-response.txt" \
             "$RUNNER_TEMP/explorer-qa-headers.txt" \
             "$RUNNER_TEMP/explorer_qa_protected_cloudflare_before.json"
+
+  rollback:
+    name: Recover Explorer QA from a redeploy backup
+    if: ${{ startsWith(inputs.operation, 'rollback-') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate the rollback request
+        env:
+          OPERATION: ${{ inputs.operation }}
+          ROLLBACK_BACKUP: ${{ inputs.rollback_backup }}
+          ROLLBACK_CURRENT_ID: ${{ inputs.rollback_current_id }}
+          EXPECTED_EXPLORER_COMMIT: ${{ inputs.expected_explorer_commit }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${ROLLBACK_BACKUP:-}" =~ ^redeploy-[A-Za-z0-9]{8}$ ]]; then
+            echo "::error::rollback_backup must be a redeploy backup name such as redeploy-AbCd1234"
+            exit 1
+          fi
+          if [[ ! "${ROLLBACK_CURRENT_ID:-}" =~ ^([a-f0-9]{64}|absent)$ ]]; then
+            echo "::error::rollback_current_id must be the 64-character ID of the fresh Box, or absent"
+            exit 1
+          fi
+          if [ -n "${EXPECTED_EXPLORER_COMMIT:-}" ]; then
+            echo "::error::expected_explorer_commit belongs to the redeploy operations only"
+            exit 1
+          fi
+          case "$OPERATION" in
+            rollback-plan)
+              if [ -n "${CONFIRM:-}" ]; then
+                echo "::error::rollback-plan takes no confirm input"
+                exit 1
+              fi
+              ;;
+            rollback-execute)
+              if [ "${CONFIRM:-}" != "$ROLLBACK_BACKUP" ]; then
+                echo "::error::rollback-execute needs confirm to repeat the backup name exactly"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported operation '$OPERATION' for the rollback job"
+              exit 1
+              ;;
+          esac
+
+      - name: Pin the Explorer QA SSH identity
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$SSH_KEY"
+          if [ "$SSH_HOST" != '45.136.70.141' ] || [ "$SSH_USER" != 'admin' ]; then
+            echo "::error::Explorer QA target identity is not the pinned admin@45.136.70.141 target"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -T 10 -t ed25519 "$SSH_HOST" > ~/.ssh/explorer_qa_known_hosts
+          test "$({ ssh-keygen -lf ~/.ssh/explorer_qa_known_hosts -E sha256 || true; } | awk '{print $2}' | sort -u)" = "$SSH_ED25519_FINGERPRINT"
+          chmod 600 ~/.ssh/explorer_qa_known_hosts
+          echo "Validated the pinned Explorer QA SSH host identity."
+
+      - name: Run the recovery from the backup's own reviewed helper
+        env:
+          OPERATION: ${{ inputs.operation }}
+          ROLLBACK_BACKUP: ${{ inputs.rollback_backup }}
+          ROLLBACK_CURRENT_ID: ${{ inputs.rollback_current_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          case "$OPERATION" in
+            rollback-plan)
+              # Read-only; the host lock keeps a deployment from changing what is planned.
+              MODE=plan
+              LOCK_PREFIX='flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock '
+              ;;
+            rollback-execute)
+              # The helper takes the host lock itself, so no outer lock is held here.
+              MODE=execute
+              LOCK_PREFIX=''
+              ;;
+            *)
+              echo "::error::Unsupported operation '$OPERATION' for the rollback job"
+              exit 1
+              ;;
+          esac
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "${SSH_USER}@${SSH_HOST}" "${LOCK_PREFIX}bash -s -- '$ROLLBACK_BACKUP' '$MODE' '$ROLLBACK_CURRENT_ID'" <<'ROLLBACK'
+          set -euo pipefail
+          umask 077
+          backup_name="$1"
+          mode="$2"
+          current_id="$3"
+          [[ "$backup_name" =~ ^redeploy-[A-Za-z0-9]{8}$ ]]
+          [[ "$current_id" =~ ^([a-f0-9]{64}|absent)$ ]]
+          case "$mode" in
+            plan|execute) ;;
+            *) echo 'Unsupported rollback mode' >&2; exit 1 ;;
+          esac
+          test "$(id -un)" = admin
+          test "$HOME" = /home/admin
+          BACKUP="/home/admin/.qa-deployment-backups/$backup_name"
+          test -d "$BACKUP"
+          test ! -L "$BACKUP"
+          test -f "$BACKUP/helpers/node-runtime-path"
+          test ! -L "$BACKUP/helpers/node-runtime-path"
+          test -f "$BACKUP/helpers/rollback-explorer-qa.mjs"
+          test ! -L "$BACKUP/helpers/rollback-explorer-qa.mjs"
+          node_home="$(cat "$BACKUP/helpers/node-runtime-path")"
+          [[ "$node_home" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]]
+          test -x "$node_home/bin/node"
+          test "$("$node_home/bin/node" --version)" = v24.19.0
+          exec "$node_home/bin/node" "$BACKUP/helpers/rollback-explorer-qa.mjs" "$mode" "$BACKUP" --current-id "$current_id"
+          ROLLBACK
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/deploy_key ~/.ssh/explorer_qa_known_hosts

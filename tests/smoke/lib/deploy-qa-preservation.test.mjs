@@ -56,15 +56,21 @@ test('ordinary QA redeploy retains documents, local skills, databases and the ke
         'project/notes.txt', 'project/.agents/skills/local/SKILL.md', '.agents/skills/root/SKILL.md',
         '.ploinky/master-key', '.ploinky/.secrets', '.ploinky/passwords.enc',
         '.ploinky/ploinky_subject_identity_ed25519_v1.enc', '.ploinky/profile', '.ploinky/code/local.mjs',
-        '.ploinky/skills/authored/SKILL.md', '.ploinky/servers.json', '.ploinky/repo_sources.json',
-        '.ploinky/enabled_repos.json', '.ploinky/ploinky_history', '.ploinky/operator-notes.md',
+        '.ploinky/skills/authored/SKILL.md', '.ploinky/servers.json',
+        '.ploinky/ploinky_history', '.ploinky/operator-notes.md',
         '.ploinky/data/custom-store/authored.txt'];
-    for (const name of durable) f.write(name, `original:${name}`);
+    // These name the previous graph, so the redeploy regenerates them and the backup keeps the old copies.
+    const regenerated = ['.ploinky/repo_sources.json', '.ploinky/enabled_repos.json', '.ploinky/unregistered_agent_repos.json'];
+    for (const name of [...durable, ...regenerated]) f.write(name, `original:${name}`);
     for (const name of ['.ploinky/agents.json', '.ploinky/running/old.pid', '.ploinky/data/edge-routing/active.json',
         '.ploinky/run/edge-topology/current.json', '.runtime/ploinky/old-source', 'AdvancedLanguageAgent/old-source']) f.write(name);
     f.execute('durable workspace preservation');
     for (const name of durable) {
         assert.equal(f.read(name), `original:${name}`);
+        assert.equal(fs.readFileSync(path.join(f.backup, 'workspace', name), 'utf8'), `original:${name}`);
+    }
+    for (const name of regenerated) {
+        assert.equal(fs.existsSync(path.join(f.target, name)), false, name);
         assert.equal(fs.readFileSync(path.join(f.backup, 'workspace', name), 'utf8'), `original:${name}`);
     }
     for (const name of ['.ploinky/agents.json', '.ploinky/running', '.ploinky/data/edge-routing',

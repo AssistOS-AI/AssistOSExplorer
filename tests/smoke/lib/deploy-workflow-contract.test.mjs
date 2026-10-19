@@ -364,7 +364,10 @@ test('Explorer QA workflow rejects unsafe identity and tunnel state before SSH',
   assert.doesNotMatch(source, /workspace_name|inputs\.workspace_name/);
   assert.doesNotMatch(source, /(?<![\w.-])\/workspace(?![\w-])/, 'QA deploy uses the same-path host workspace inside the Box');
   assert.doesNotMatch(source, /vars\.EXPLORER_QA_(?:SSH_USER|SSH_HOST|WORKSPACE)/);
-  assert.equal(source.match(/ssh-keyscan/g)?.length, 1, 'host key must be scanned only in pinned preflight');
+  const [deployJob, rollbackJob] = source.split('\n  rollback:\n');
+  assert.equal(deployJob.match(/ssh-keyscan/g)?.length, 1, 'host key must be scanned only in pinned preflight');
+  assert.equal(rollbackJob.match(/ssh-keyscan/g)?.length, 1, 'the rollback job pins the same host identity once before SSH');
+  assert.match(rollbackJob, /= "\$SSH_ED25519_FINGERPRINT"/);
   assert.ok(
     source.indexOf('connector token claims do not match') < source.indexOf('          scp \\'),
     'connector identity must fail before the first SSH transfer',
