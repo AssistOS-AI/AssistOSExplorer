@@ -74,7 +74,7 @@ test('the deploy job is selected for every operation except the rollbacks and ha
     assert.match(deploy, /timeout-minutes: 90\n/);
     const rollback = workflow.match(/\n  rollback:\n([\s\S]*?)\n    steps:/)[1];
     assert.match(rollback, /if: \$\{\{ startsWith\(inputs\.operation, 'rollback-'\) \}\}/);
-    assert.match(rollback, /timeout-minutes: 60\n/);
+    assert.match(rollback, /timeout-minutes: 120\n/);
     assert.equal(workflow.match(/<<'ROLLBACK'/g)?.length, 1);
     assert.equal(workflow.match(/^          ROLLBACK$/gm)?.length, 1);
     const scripts = [...workflow.matchAll(/^ {8}run: \|\n((?: {10}.*\n|\n)+)/gm)];
@@ -154,15 +154,17 @@ test('rollback requests are validated on the runner and cannot reach SSH with a 
     }
 });
 
-test('the rollback job runs the backup\'s own helper, pins the host key and holds an outer lock only for the plan', () => {
+test('the rollback job runs the backup\'s own helper, pins the host key and holds the host lock for both modes', () => {
     const run = stepScript('Run the recovery from the backup\'s own reviewed helper');
     assert.match(run, /"\$BACKUP\/helpers\/rollback-explorer-qa\.mjs"/);
     assert.match(run, /BACKUP\/helpers\/node-runtime-path/);
     assert.match(run, /\^\/home\/admin\/\\\.qa-deployment-tools\/node-v24\\\.19\\\.0-linux-\(x64\|arm64\)\$/);
     const arm = name => run.match(new RegExp(`${name}\\)\\n([\\s\\S]*?);;`))[1];
-    assert.match(arm('rollback-plan'), /flock -n -E 75 --close \/home\/admin\/\.qa-deployment-operation\.lock /);
-    assert.doesNotMatch(arm('rollback-execute'), /flock/, 'the helper takes the host lock itself');
-    assert.match(arm('rollback-execute'), /LOCK_PREFIX=''/);
+    for (const name of ['rollback-plan', 'rollback-execute']) {
+        assert.match(arm(name), /LOCK_PREFIX='flock -n -E 75 --close \/home\/admin\/\.qa-deployment-operation\.lock '/, name);
+    }
+    assert.match(run, /--current-id "\$current_id" --lock-held\n/, 'both modes skip the helper\'s capped re-exec');
+    assert.match(workflow, /rollback:\n[\s\S]*?timeout-minutes: 120/);
     assert.match(run, /--current-id "\$current_id"/);
     assert.match(step('Pin the Explorer QA SSH identity'), /= "\$SSH_ED25519_FINGERPRINT"/);
     assert.match(step('Pin the Explorer QA SSH identity'), /-o BatchMode|ssh-keyscan -T 10 -t ed25519 "\$SSH_HOST"/);
@@ -334,4 +336,46 @@ test('the remote deployment, update and rollback scripts parse as shell, includi
         const checked = spawnSync('bash', ['-n'], { input: match[1].replace(/^ {10}/gm, ''), encoding: 'utf8', timeout: 10000 });
         assert.equal(checked.status, 0, `${name}: ${checked.stderr}`);
     }
+});
+
+function shellBlock(name) {
+    const match = workflow.match(new RegExp(`# BEGIN QA ${name}\\n([\\s\\S]*?)# END QA ${name}`));
+    assert.ok(match, `Missing ${name} implementation`);
+    return match[1].replace(/^ {10}/gm, '');
+}
+
+test('a failed redeploy prints the rollback reference from the exit handler, once, without changing the status', t => {
+    const handler = shellBlock('failure rollback reference');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-reference-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const predecessor = 'a'.repeat(64);
+    const fresh = 'b'.repeat(64);
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'podman'), '#!/bin/bash\n[ -n "$QA_MOCK_ID" ] && echo "$QA_MOCK_ID"\n[ -n "$QA_MOCK_ID" ]\n', { mode: 0o755 });
+    const run = (setup, mockId) => {
+        const script = `set -uo pipefail\n${handler}\nQA_ROLLBACK_REFERENCE_PRINTED=0\nBOX_INSTANCE=box\n${setup}\n`
+            + `cleanup() { local status=$?; if [ "$status" -ne 0 ]; then print_rollback_reference_on_failure || true; fi; exit "$status"; }\n`
+            + `trap cleanup EXIT\nprint_rollback_reference_on_failure; print_rollback_reference_on_failure; exit 7\n`;
+        return spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, QA_MOCK_ID: mockId } });
+    };
+    const records = `declare -a QA_CONTAINER_RECORDS=("x|${predecessor}|y")\nQA_BACKUP_DIR=/home/admin/.qa-deployment-backups/redeploy-AbCd1234`;
+    const parse = result => result.stdout.split('\n').filter(line => line.includes('Rollback reference'));
+    const withFresh = run(records, fresh);
+    assert.equal(withFresh.status, 7);
+    assert.deepEqual(parse(withFresh), [`[deploy-qa] Rollback reference: backup=redeploy-AbCd1234 predecessor=${predecessor} current=${fresh}`]);
+    assert.deepEqual(parse(run(records, predecessor)), [`[deploy-qa] Rollback reference: backup=redeploy-AbCd1234 predecessor=${predecessor} current=absent`]);
+    assert.deepEqual(parse(run(records, '')), [`[deploy-qa] Rollback reference: backup=redeploy-AbCd1234 predecessor=${predecessor} current=absent`]);
+    assert.deepEqual(parse(run('QA_BACKUP_DIR=/x/redeploy-AbCd1234\ndeclare -a QA_CONTAINER_RECORDS=()', fresh)), [], 'no predecessor record, no reference');
+    assert.deepEqual(parse(run(`${records}\nQA_ROLLBACK_REFERENCE_PRINTED=1`, fresh)), [], 'not printed twice after the normal print');
+    assert.deepEqual(parse(run('declare -a QA_CONTAINER_RECORDS=()', fresh)), [], 'no backup directory yet');
+});
+
+test('the remote script sets the printed flag after the normal reference and wires the handler into the exit trap', () => {
+    const script = workflow;
+    assert.match(script, /Rollback reference: backup=\$\{QA_BACKUP_DIR##\*\/\} predecessor=\$QA_PREDECESSOR_ID current=\$QA_CURRENT_ID"\n\s+QA_ROLLBACK_REFERENCE_PRINTED=1/);
+    assert.match(script, /if \[ "\$status" -ne 0 \]; then\n\s+print_rollback_reference_on_failure \|\| true\n\s+fi\n\s+release_qa_workspace_lock/);
+    assert.match(script, /rm -f "\$QA_REHEARSAL_DIR\/rollback-explorer-qa\.mjs"\n\s+rmdir "\$QA_REHEARSAL_DIR" 2>\/dev\/null \|\| true/);
+    const parsed = spawnSync('bash', ['-n'], { input: shellBlock('failure rollback reference'), encoding: 'utf8' });
+    assert.equal(parsed.status, 0, parsed.stderr);
 });

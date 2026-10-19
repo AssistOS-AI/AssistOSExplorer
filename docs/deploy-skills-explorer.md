@@ -296,14 +296,14 @@ The rehearsal reports a capacity shortfall instead of stopping at it, so that th
 
 The prior selections of the old runtime are never enabled again. Each is classified against the fresh registry and logged: `retained`, `policy superseded` when the fresh graph sets another profile, auth mode or run mode, `not replayed` when the agent moved to another repository, and `not replayed` when it left the default graph. Re-enable an optional agent through Marketplace if it is still required. The totals line reports the live count, so no number is fixed in advance. Readiness is checked for the fresh graph only.
 
-The `Redeploy backup`, `Rollback reference` and `Verification expectation` log lines are the only source of the inputs for the later operations when the operator has no SSH. `Rollback reference` carries the backup name, the 64-character ID of the retained predecessor and the ID of the fresh Box; use the `current` value, or `absent` when the run stopped before the fresh Box existed, as `rollback_current_id`. Feed the JSON of `Verification expectation` to `verify-explorer-qa-runtime.yml`. GitHub echoes each step's script into its log, so filter the raw log before searching it: `grep -v $'\x1b\[36;1m' run.log`.
+The `Redeploy backup`, `Rollback reference` and `Verification expectation` log lines are the only source of the inputs for the later operations when the operator has no SSH. `Rollback reference` carries the backup name, the 64-character ID of the retained predecessor and the ID of the fresh Box; use the `current` value, or `absent` when the run stopped before the fresh Box existed (the line is also printed when the run fails after the backup was created), as `rollback_current_id`. Feed the JSON of `Verification expectation` to `verify-explorer-qa-runtime.yml`. GitHub echoes each step's script into its log, so filter the raw log before searching it: `grep -v $'\x1b\[36;1m' run.log`.
 
 | Last marker in the log | State | Action |
 | --- | --- | --- |
 | No `Stopping nested QA services` | QA untouched | Fix and rehearse again; do not roll back |
 | `Stopping nested QA services`, without `Exact prior Explorer QA runtime retired` | The old Box keeps its exact name and may be stopped or running | `rollback-plan` with `rollback_current_id=absent` |
-| `Exact prior Explorer QA runtime retired`, without `Rollback reference` | Old Box renamed and stopped, no fresh Box | `rollback-plan` with `absent` |
-| `Rollback reference` | Fresh Box present | `rollback-plan` with its `current` value |
+| `Exact prior Explorer QA runtime retired` | Old Box renamed and stopped; a failure after the backup exists still prints `Rollback reference` from the exit handler, with `current=absent` when no fresh Box exists | `rollback-plan` with the `current` value of the last `Rollback reference` line |
+| `Rollback reference` | Fresh Box present, or `current=absent` | `rollback-plan` with its `current` value |
 
 After `"result":"planned"`, dispatch `rollback-execute` with the same inputs and the backup name as `confirm`. Data written after the redeploy survives only in `failed-workspace` inside the backup. The retained stopped Boxes remain until a separately reviewed removal; they make a second `redeploy` fail, and the updater and the runtime verifier ignore only stopped Boxes named `<box>-rollback-redeploy-XXXXXXXX` or `<box>-failed-redeploy-XXXXXXXX`.
 

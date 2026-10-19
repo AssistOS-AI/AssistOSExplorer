@@ -801,6 +801,8 @@ jobs:
           CLOUDFLARE_CREDENTIAL_FILE=""
           PROTECTED_BEFORE_FILE=""
           PROTECTED_AFTER_FILE=""
+          QA_REHEARSAL_DIR=""
+          QA_ROLLBACK_REFERENCE_PRINTED=0
           QA_WORKSPACE_LOCK_PID=""
           assert_qa_workspace_lock_held() {
             test -n "$QA_WORKSPACE_LOCK_PID" || return 1
@@ -827,8 +829,33 @@ jobs:
           NODE
             QA_WORKSPACE_LOCK_PID=""
           }
+          # BEGIN QA failure rollback reference
+          print_rollback_reference_on_failure() {
+            local candidate found current_id
+            [ "$QA_ROLLBACK_REFERENCE_PRINTED" = 0 ] || return 0
+            [ -n "${QA_BACKUP_DIR:-}" ] || return 0
+            declare -p QA_CONTAINER_RECORDS >/dev/null 2>&1 || return 0
+            [ "${#QA_CONTAINER_RECORDS[@]}" -eq 1 ] || return 0
+            IFS='|' read -r _ QA_PREDECESSOR_ID _ <<< "${QA_CONTAINER_RECORDS[0]}"
+            [[ "$QA_PREDECESSOR_ID" =~ ^[a-f0-9]{64}$ ]] || return 0
+            current_id=absent
+            for candidate in podman docker; do
+              command -v "$candidate" >/dev/null 2>&1 || continue
+              found="$("$candidate" container inspect "$BOX_INSTANCE" --format '{{.Id}}' 2>/dev/null)" || continue
+              if [[ "$found" =~ ^[a-f0-9]{64}$ ]] && [ "$found" != "$QA_PREDECESSOR_ID" ]; then
+                current_id="$found"
+                break
+              fi
+            done
+            QA_ROLLBACK_REFERENCE_PRINTED=1
+            echo "[deploy-qa] Rollback reference: backup=${QA_BACKUP_DIR##*/} predecessor=$QA_PREDECESSOR_ID current=$current_id"
+          }
+          # END QA failure rollback reference
           cleanup_remote_files() {
             local status=$?
+            if [ "$status" -ne 0 ]; then
+              print_rollback_reference_on_failure || true
+            fi
             release_qa_workspace_lock || status=1
             rm -f "$REMOTE_ENV_FILE"
             if [ -n "$CLOUDFLARE_CREDENTIAL_FILE" ]; then
@@ -842,6 +869,10 @@ jobs:
             fi
             if [ -n "$QA_CAPACITY_LOG" ]; then
               rm -f "$QA_CAPACITY_LOG"
+            fi
+            if [ -n "$QA_REHEARSAL_DIR" ]; then
+              rm -f "$QA_REHEARSAL_DIR/rollback-explorer-qa.mjs"
+              rmdir "$QA_REHEARSAL_DIR" 2>/dev/null || true
             fi
             exit "$status"
           }
@@ -2048,6 +2079,7 @@ jobs:
               exit 1
             fi
             echo "[deploy-qa] Rollback reference: backup=${QA_BACKUP_DIR##*/} predecessor=$QA_PREDECESSOR_ID current=$QA_CURRENT_ID"
+            QA_ROLLBACK_REFERENCE_PRINTED=1
           fi
 
           "$BOX_ENGINE" container exec --user podman --workdir "$WORK_DIR" \
@@ -2339,7 +2371,7 @@ jobs:
           NO_WAIT_SUMMARY=""
           # Detached no-wait runtimes activate serially. Allow the complete
           # bounded sequence to settle without weakening terminal-failure
-          # detection or the job's independent 50-minute hard limit.
+          # detection or the job's independent 90-minute hard limit.
           for _ in $(seq 1 180); do
             BOX_STATUS="$(inspect_outer_box_status)"
             NO_WAIT_READY=0
@@ -2807,7 +2839,7 @@ jobs:
     name: Recover Explorer QA from a redeploy backup
     if: ${{ startsWith(inputs.operation, 'rollback-') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
 
@@ -2887,9 +2919,9 @@ jobs:
               LOCK_PREFIX='flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock '
               ;;
             rollback-execute)
-              # The helper takes the host lock itself, so no outer lock is held here.
+              # Held here, like the plan, so the recovery is not bound by the helper's capped re-exec.
               MODE=execute
-              LOCK_PREFIX=''
+              LOCK_PREFIX='flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock '
               ;;
             *)
               echo "::error::Unsupported operation '$OPERATION' for the rollback job"
@@ -2924,7 +2956,7 @@ jobs:
           [[ "$node_home" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]]
           test -x "$node_home/bin/node"
           test "$("$node_home/bin/node" --version)" = v24.19.0
-          exec "$node_home/bin/node" "$BACKUP/helpers/rollback-explorer-qa.mjs" "$mode" "$BACKUP" --current-id "$current_id"
+          exec "$node_home/bin/node" "$BACKUP/helpers/rollback-explorer-qa.mjs" "$mode" "$BACKUP" --current-id "$current_id" --lock-held
           ROLLBACK
 
       - name: Cleanup

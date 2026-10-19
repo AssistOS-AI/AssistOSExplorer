@@ -117,7 +117,7 @@ test('workflow revalidates under the lease and releases only after preservation 
         && staged < released && released < prepare);
     const held = workflow.slice(acquired, released);
     assert.doesNotMatch(held, /"\$(?:PLOINKY|RUNTIME_DIR\/bin\/ploinky)" (?:start|restart|stop|destroy|enable|install)\b/);
-    assert.match(workflow, /cleanup_remote_files\(\) \{\n\s+local status=\$\?\n\s+release_qa_workspace_lock \|\| status=1/);
+    assert.match(workflow, /cleanup_remote_files\(\) \{\n\s+local status=\$\?\n(?:\s+if \[ \"\$status\" -ne 0 \]; then\n\s+print_rollback_reference_on_failure \|\| true\n\s+fi\n)?\s+release_qa_workspace_lock \|\| status=1/);
     assert.match(workflow, /END QA durable workspace preservation\n\s+NODE\n\s+assert_qa_workspace_lock_held/);
     assert.match(workflow, /wait "\$QA_WORKSPACE_LOCK_PID"/);
     assert.match(workflow, /assert\.deepEqual\(receipt, \{ released: true, pid: Number\(process\.argv\[3\]\), instance: process\.argv\[4\] \}\)/);
