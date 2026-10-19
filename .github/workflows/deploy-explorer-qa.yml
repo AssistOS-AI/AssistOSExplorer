@@ -1535,6 +1535,28 @@ jobs:
             then
               QA_REHEARSAL_FAILED=1
             fi
+            # BEGIN QA rehearsal quiesce preflight
+            # The quiesce helper's own proofs, with no lease, no lock and no stop.
+            if [ "${#QA_CONTAINER_RECORDS[@]}" -eq 1 ]; then
+              IFS='|' read -r engine container_id _ <<< "${QA_CONTAINER_RECORDS[0]}"
+              if [ "$("$engine" container inspect "$container_id" --format '{{.State.Running}}')" = 'true' ]; then
+                QA_PREFLIGHT_RECEIPT="$("$engine" container exec -i --user podman \
+                  --workdir "$WORK_DIR" --env "PLOINKY_WORKSPACE_ROOT=$WORK_DIR" \
+                  --env PLOINKY_ROUTER_HOST_PORT=8097 --env PLOINKY_MEDIA_HOST_PORT=7882 \
+                  --env QA_QUIESCE_PREFLIGHT_ONLY=1 \
+                  "$container_id" node --input-type=module - <<< "$QA_QUIESCE_SOURCE")" || true
+                echo "[deploy-qa] Rehearsal: quiesce preflight receipt: ${QA_PREFLIGHT_RECEIPT:-none}"
+                case "$QA_PREFLIGHT_RECEIPT" in
+                  *'"result":"preflight-passed"'*) ;;
+                  *) QA_REHEARSAL_FAILED=1 ;;
+                esac
+              else
+                echo '[deploy-qa] Rehearsal: quiesce preflight skipped; the QA Box is not running.'
+              fi
+            else
+              echo '[deploy-qa] Rehearsal: quiesce preflight skipped; there is no QA Box.'
+            fi
+            # END QA rehearsal quiesce preflight
             rm -f "$QA_REHEARSAL_DIR/rollback-explorer-qa.mjs"
             rmdir "$QA_REHEARSAL_DIR"
             if [ "$QA_REHEARSAL_FAILED" != 0 ]; then

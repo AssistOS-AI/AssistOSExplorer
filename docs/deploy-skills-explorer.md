@@ -285,7 +285,7 @@ Moving QA to a graph that differs from the running one, for example from the lar
 | Operation | Inputs | Effect |
 | --- | --- | --- |
 | `update` (default) | none | The in-place update above, or a fresh installation when the workspace and Box are absent |
-| `redeploy-rehearsal` | `expected_explorer_commit` | Read-only. Runs the admission, capacity, account-runtime and capture checks, prints every verdict and a prediction for each prior agent selection, and stops before any backup directory is created |
+| `redeploy-rehearsal` | `expected_explorer_commit` | Read-only. Runs the admission, capacity, account-runtime and capture checks and the quiesce helper's preflight proofs inside the running Box (registry, container ownership and mount contract, with no lease, lock or stop), prints every verdict and a prediction for each prior agent selection, and stops before any backup directory is created |
 | `redeploy` | `expected_explorer_commit`, `confirm` = `redeploy explorerQaWorkspace` | Retires the running installation into a backup and starts a fresh one |
 | `rollback-plan` | `rollback_backup`, `rollback_current_id` | Read-only recovery check using the helper stored in the backup |
 | `rollback-execute` | `rollback_backup`, `rollback_current_id`, `confirm` = the backup name | Recovers the predecessor from the backup |

@@ -214,7 +214,14 @@ test('the rehearsal reports every gate after capacity and exits before the backu
     assert.match(text, /Rehearsal: capacity \$QA_CAPACITY_VERDICT/);
     assert.match(text, /\[deploy-qa\] Redeploy rehearsal passed; no service was stopped and no workspace file was moved\./);
     assert.match(text, /QA_REHEARSAL_FAILED=1/);
-    assert.doesNotMatch(text, /container (?:stop|rename|exec)|renameSync|cp -a|rm -rf|--lock-held|capture "/);
+    // The one container exec is the quiesce helper in its preflight-only mode.
+    const withoutPreflight = text.replace(/# BEGIN QA rehearsal quiesce preflight[\s\S]*?# END QA rehearsal quiesce preflight/, '');
+    assert.doesNotMatch(withoutPreflight, /container (?:stop|rename|exec)|renameSync|cp -a|rm -rf|--lock-held|capture "/);
+    const preflight = text.match(/# BEGIN QA rehearsal quiesce preflight[\s\S]*?# END QA rehearsal quiesce preflight/)?.[0];
+    assert.ok(preflight, 'the rehearsal runs the quiesce preflight');
+    assert.equal((preflight.match(/container exec/g) || []).length, 1);
+    assert.match(preflight, /--env QA_QUIESCE_PREFLIGHT_ONLY=1/);
+    assert.doesNotMatch(preflight, /container (?:stop|rename|kill)|signal|--lock-held/);
     // Nothing that stops or moves anything may precede the rehearsal exit.
     const before = workflow.slice(0, rehearsalExit);
     for (const mutation of ['container stop', 'container rename', 'fs.renameSync(target, source)']) {
@@ -222,6 +229,48 @@ test('the rehearsal reports every gate after capacity and exits before the backu
     }
     assert.match(workflow, /Rehearsal: prior account runtime reviewed=\$\{reviewed\}/);
     assert.ok(workflow.indexOf('// BEGIN QA rehearsal capture preview') > rehearsal);
+});
+
+test('the rehearsal runs the quiesce preflight in the running Box and fails on any receipt but a pass', t => {
+    const handler = shellBlock('rehearsal quiesce preflight');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-preflight-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    const log = path.join(dir, 'engine.log');
+    fs.writeFileSync(path.join(bin, 'podman'), [
+        '#!/bin/bash',
+        'echo "$*" >> "$QA_MOCK_LOG"',
+        'if [ "$2" = inspect ]; then echo "$QA_MOCK_RUNNING"; exit 0; fi',
+        'if [ "$2" = exec ]; then cat > "$QA_MOCK_LOG.stdin"; printf "%s\\n" "$QA_MOCK_RECEIPT"; exit "$QA_MOCK_STATUS"; fi',
+        'exit 99',
+    ].join('\n'), { mode: 0o755 });
+    const passed = '{"version":1,"kind":"qa-quiesce","result":"preflight-passed","phase":"preflight","stopped":[]}';
+    const refused = '{"version":1,"kind":"qa-quiesce","result":"failed","phase":"preflight","stopped":[],"code":"QA_UNREGISTERED_WRITABLE_MOUNT"}';
+    const run = ({ records = 'declare -a QA_CONTAINER_RECORDS=("podman|' + 'a'.repeat(64) + '|box")', running = 'true', receipt = passed, status = 0 }) => {
+        const script = `set -uo pipefail\nWORK_DIR=/home/admin/explorerQaWorkspace\nQA_QUIESCE_SOURCE='export const x = 1;'\nQA_REHEARSAL_FAILED=0\n${records}\n${handler}\necho "failed=$QA_REHEARSAL_FAILED"\n`;
+        fs.rmSync(log, { force: true });
+        const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+            QA_MOCK_LOG: log, QA_MOCK_RUNNING: running, QA_MOCK_RECEIPT: receipt, QA_MOCK_STATUS: String(status) } });
+        return { ...result, calls: fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '' };
+    };
+    const ok = run({});
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.match(ok.stdout, /failed=0/);
+    assert.match(ok.calls, /container exec -i --user podman --workdir \/home\/admin\/explorerQaWorkspace --env PLOINKY_WORKSPACE_ROOT=\/home\/admin\/explorerQaWorkspace .* --env QA_QUIESCE_PREFLIGHT_ONLY=1 a{64} node --input-type=module -/);
+    assert.equal(fs.readFileSync(`${log}.stdin`, 'utf8'), 'export const x = 1;\n', 'the helper source is streamed on stdin');
+    assert.doesNotMatch(ok.calls, /container (?:stop|kill|rename)/);
+    const refusal = run({ receipt: refused, status: 1 });
+    assert.match(refusal.stdout, /quiesce preflight receipt: .*QA_UNREGISTERED_WRITABLE_MOUNT/);
+    assert.match(refusal.stdout, /failed=1/);
+    assert.match(run({ receipt: '' , status: 1 }).stdout, /receipt: none[\s\S]*failed=1/, 'an empty receipt fails');
+    assert.match(run({ receipt: '{"result":"passed"}' }).stdout, /failed=1/, 'only a preflight pass counts');
+    const stopped = run({ running: 'false' });
+    assert.match(stopped.stdout, /skipped; the QA Box is not running[\s\S]*failed=0/);
+    assert.doesNotMatch(stopped.calls, /container exec/);
+    const cold = run({ records: 'declare -a QA_CONTAINER_RECORDS=()' });
+    assert.match(cold.stdout, /skipped; there is no QA Box[\s\S]*failed=0/);
+    assert.equal(cold.calls, '');
 });
 
 test('the rehearsal preview fails when an account runtime is unreviewed or the capture proofs fail, and predicts the dispositions', t => {
