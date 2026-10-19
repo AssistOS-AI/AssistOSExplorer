@@ -803,6 +803,7 @@ jobs:
           PROTECTED_AFTER_FILE=""
           QA_REHEARSAL_DIR=""
           QA_ROLLBACK_REFERENCE_PRINTED=0
+          QA_STOP_STARTED=0
           QA_WORKSPACE_LOCK_PID=""
           assert_qa_workspace_lock_held() {
             test -n "$QA_WORKSPACE_LOCK_PID" || return 1
@@ -833,6 +834,7 @@ jobs:
           print_rollback_reference_on_failure() {
             local candidate found current_id
             [ "$QA_ROLLBACK_REFERENCE_PRINTED" = 0 ] || return 0
+            [ "$QA_STOP_STARTED" = 1 ] || return 0
             [ -n "${QA_BACKUP_DIR:-}" ] || return 0
             declare -p QA_CONTAINER_RECORDS >/dev/null 2>&1 || return 0
             [ "${#QA_CONTAINER_RECORDS[@]}" -eq 1 ] || return 0
@@ -1666,6 +1668,7 @@ jobs:
             IFS='|' read -r engine container_id _ <<< "$record"
             if [ "$("$engine" container inspect "$container_id" --format '{{.State.Running}}')" = 'true' ]; then
               assert_qa_workspace_lock_held
+              QA_STOP_STARTED=1
               echo "[deploy-qa] Stopping nested QA services before the consistent durable-data backup..."
               printf '%s' "$QA_QUIESCE_SOURCE" | "$engine" container exec -i --user podman \
                 --workdir "$WORK_DIR" --env "PLOINKY_WORKSPACE_ROOT=$WORK_DIR" \
@@ -1679,6 +1682,7 @@ jobs:
               exit 1
             fi
           done
+          QA_STOP_STARTED=1
           sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" "$QA_BACKUP_DIR" <<'NODE'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';

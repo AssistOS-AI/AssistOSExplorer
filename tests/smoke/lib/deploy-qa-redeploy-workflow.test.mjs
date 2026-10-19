@@ -354,11 +354,12 @@ test('a failed redeploy prints the rollback reference from the exit handler, onc
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, 'podman'), '#!/bin/bash\n[ -n "$QA_MOCK_ID" ] && echo "$QA_MOCK_ID"\n[ -n "$QA_MOCK_ID" ]\n', { mode: 0o755 });
     const run = (setup, mockId) => {
-        const script = `set -uo pipefail\n${handler}\nQA_ROLLBACK_REFERENCE_PRINTED=0\nBOX_INSTANCE=box\n${setup}\n`
+        const script = `set -uo pipefail\n${handler}\nQA_ROLLBACK_REFERENCE_PRINTED=0\nQA_STOP_STARTED=1\nBOX_INSTANCE=box\n${setup}\n`
             + `cleanup() { local status=$?; if [ "$status" -ne 0 ]; then print_rollback_reference_on_failure || true; fi; exit "$status"; }\n`
             + `trap cleanup EXIT\nprint_rollback_reference_on_failure; print_rollback_reference_on_failure; exit 7\n`;
         return spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, QA_MOCK_ID: mockId } });
     };
+    const runUnset = (setup, mockId) => run(`QA_STOP_STARTED=0\n${setup}`, mockId);
     const records = `declare -a QA_CONTAINER_RECORDS=("x|${predecessor}|y")\nQA_BACKUP_DIR=/home/admin/.qa-deployment-backups/redeploy-AbCd1234`;
     const parse = result => result.stdout.split('\n').filter(line => line.includes('Rollback reference'));
     const withFresh = run(records, fresh);
@@ -369,6 +370,12 @@ test('a failed redeploy prints the rollback reference from the exit handler, onc
     assert.deepEqual(parse(run('QA_BACKUP_DIR=/x/redeploy-AbCd1234\ndeclare -a QA_CONTAINER_RECORDS=()', fresh)), [], 'no predecessor record, no reference');
     assert.deepEqual(parse(run(`${records}\nQA_ROLLBACK_REFERENCE_PRINTED=1`, fresh)), [], 'not printed twice after the normal print');
     assert.deepEqual(parse(run('declare -a QA_CONTAINER_RECORDS=()', fresh)), [], 'no backup directory yet');
+    for (const mockId of [fresh, predecessor, '']) {
+        const untouched = runUnset(records, mockId);
+        assert.equal(untouched.status, 7, 'exit status is preserved');
+        assert.deepEqual(parse(untouched), [], 'backup and record without a started stop print nothing');
+    }
+    assert.equal(parse(run(records, fresh)).length, 1, 'with the flag set the reference prints exactly once');
 });
 
 test('the remote script sets the printed flag after the normal reference and wires the handler into the exit trap', () => {
@@ -378,4 +385,19 @@ test('the remote script sets the printed flag after the normal reference and wir
     assert.match(script, /rm -f "\$QA_REHEARSAL_DIR\/rollback-explorer-qa\.mjs"\n\s+rmdir "\$QA_REHEARSAL_DIR" 2>\/dev\/null \|\| true/);
     const parsed = spawnSync('bash', ['-n'], { input: shellBlock('failure rollback reference'), encoding: 'utf8' });
     assert.equal(parsed.status, 0, parsed.stderr);
+});
+
+test('QA_STOP_STARTED is initialised before the trap and set after the backup directory and before the first stop', () => {
+    const at = pattern => { const index = workflow.search(pattern); assert.ok(index >= 0, `Missing ${pattern}`); return index; };
+    const init = at(/\n\s+QA_STOP_STARTED=0\n/);
+    const trap = at(/trap cleanup_remote_files EXIT/);
+    const backup = at(/QA_BACKUP_DIR="\$\(mktemp -d/);
+    const stopEcho = at(/echo "\[deploy-qa\] Stopping nested QA services/);
+    const assignments = [...workflow.matchAll(/\n\s+QA_STOP_STARTED=1\n/g)].map(match => match.index);
+    assert.ok(init < trap, 'initialised before the trap');
+    assert.equal(assignments.length, 2, 'set before the stop echo and before the preservation step');
+    assert.ok(backup < assignments[0] && assignments[0] < stopEcho, 'set after backup creation and before the stop echo');
+    assert.match(workflow.slice(assignments[0], stopEcho), /^\n\s+QA_STOP_STARTED=1\n\s+$/);
+    assert.match(workflow.slice(assignments[1], assignments[1] + 200), /^\n\s+QA_STOP_STARTED=1\n\s+sudo -n \/usr\/bin\/node/);
+    assert.match(workflow, /\[ "\$QA_ROLLBACK_REFERENCE_PRINTED" = 0 \] \|\| return 0\n\s+\[ "\$QA_STOP_STARTED" = 1 \] \|\| return 0/);
 });
