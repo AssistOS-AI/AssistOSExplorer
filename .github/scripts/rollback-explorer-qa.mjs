@@ -892,15 +892,14 @@ export function productionAdapters(scope = QA_SCOPE) {
 
 export async function main(argv = process.argv.slice(2)) {
     const [mode, backup, ...flags] = argv;
-    requireProof(mode === 'preview' ? argv.length === 1
-        : ['capture', 'plan', 'execute'].includes(mode) && path.isAbsolute(backup || ''), 'QA_USAGE_INVALID');
+    requireProof(['capture', 'plan', 'execute'].includes(mode) && path.isAbsolute(backup || ''), 'QA_USAGE_INVALID');
     const lockHeld = flags.includes('--lock-held');
     const remaining = flags.filter(flag => flag !== '--lock-held');
-    requireProof(mode === 'capture' || mode === 'preview' ? remaining.length === 0
+    requireProof(mode === 'capture' ? remaining.length === 0
         : remaining.length === 2 && remaining[0] === '--current-id', 'QA_USAGE_INVALID');
     const adapters = productionAdapters();
     adapters.assertHost();
-    if (mode !== 'plan' && mode !== 'preview') {
+    if (mode !== 'plan') {
         if (!lockHeld) {
             const result = spawnSync('flock', ['-n', '-E', '75', '--close', QA_SCOPE.lock,
                 process.execPath, fileURLToPath(import.meta.url), ...argv, '--lock-held'], { stdio: 'inherit', timeout: 2_700_000 });
@@ -913,7 +912,6 @@ export async function main(argv = process.argv.slice(2)) {
     const service = createRollbackService(adapters);
     let receipt;
     if (mode === 'capture') receipt = service.capture(backup);
-    else if (mode === 'preview') receipt = service.previewCapture();
     else if (mode === 'plan') {
         const plan = service.plan(backup, remaining[1]);
         receipt = { result: 'planned', predecessorId: plan.predecessor.box.id,

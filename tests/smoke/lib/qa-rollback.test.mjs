@@ -907,16 +907,6 @@ test('the actual CLI refuses a foreign host without showing environment credenti
     assert.doesNotMatch(result.stdout + result.stderr, /never-log-this/);
 });
 
-test('the CLI preview mode takes no backup, honors the host guard and rejects extra arguments', () => {
-    const helper = fileURLToPath(new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url));
-    const run = (...args) => spawnSync(process.execPath, [helper, ...args], { encoding: 'utf8', timeout: 5000 });
-    assert.deepEqual(JSON.parse(run('preview', '/home/admin/.qa-deployment-backups/redeploy-12345678').stdout),
-        { result: 'failed', code: 'QA_USAGE_INVALID' });
-    assert.deepEqual(JSON.parse(run('preview', '--lock-held').stdout), { result: 'failed', code: 'QA_USAGE_INVALID' });
-    if (process.platform === 'linux' && os.userInfo().username === 'admin' && os.homedir() === '/home/admin') return;
-    assert.deepEqual(JSON.parse(run('preview').stdout), { result: 'failed', code: 'QA_HOST_INVALID' });
-});
-
 test('production recovery permits the bounded full graph shutdown without the former three minute cutoff', () => {
     const helper = new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url).href;
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
