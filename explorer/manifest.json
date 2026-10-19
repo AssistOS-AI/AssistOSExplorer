@@ -21,7 +21,6 @@
         "legacy-agents/soplangAgent global no-wait",
         "legacy-agents/tasksAgent global",
         "roboTeamAgent global no-wait",
-        "legacy-agents/multimedia global no-wait",
         "soul-gateway no-wait",
         "legacy-agents/webAssist no-wait",
         "workspaceMonitorAgent no-wait",

@@ -24,7 +24,7 @@ AchillesIDE provides the Explorer workspace shell and its coupled domain agents.
 - `docs/index.html` (documentation entry point), `docs/wiki.html` (canonical terminology), `docs/specs/` (normative design specifications), and each agent's `docs/specs/`.
 - `explorer/tests/` and `<agent>/tests/` — agent-owned tests.
 - Agents that moved out of this repository, with history:
-  - `legacy-agents` (`https://github.com/AssistOS-AI/legacy-agents.git`) holds `soplangAgent`, `tasksAgent`, `multimedia` and `webAssist` (all enabled by the Explorer manifest) plus `GPTResearcher`, `searchAgent` and `opencode-free` (enabled elsewhere or opt-in).
+  - `legacy-agents` (`https://github.com/AssistOS-AI/legacy-agents.git`) holds `soplangAgent`, `tasksAgent` and `webAssist` (all enabled by the Explorer manifest) plus `multimedia`, `GPTResearcher`, `searchAgent` and `opencode-free` (not enabled by default; installed for Marketplace or opt-in).
   - `webmeet` (`https://github.com/AssistOS-AI/webmeet.git`) holds `webmeetAgent`, `webmeetScribeAgent`, `webmeetStt` and `liveKitServerAgent`.
   - Ploinky installs both through the `repos` map of `explorer/manifest.json`. Tests here that read their sources resolve the sibling checkouts through `tests/helpers/sibling-roots.mjs` (`LEGACY_AGENTS_ROOT`, `WEBMEET_ROOT`, `PLOINKY_ROOT`; default `../legacy-agents`, `../webmeet`, `../ploinky`) and fail when a sibling is missing.
 - Ploinky names this repository `AchillesIDE`, so the identities of the agents it holds are `agent:AchillesIDE/<agent>`, for example `agent:AchillesIDE/soul-gateway` and `agent:AchillesIDE/roboTeamAgent`; container names use the `ploinky_AchillesIDE_<agent>_` prefix.

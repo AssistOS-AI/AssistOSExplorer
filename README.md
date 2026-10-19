@@ -29,7 +29,7 @@ curl -I http://127.0.0.1:8080/dashboard
 
 ### Agent repositories
 
-This repository holds Explorer and the agents `dpuAgent`, `gitAgent`, `emailAgent`, `userPersistoAgent`, `workspaceMonitorAgent`, `soul-gateway` and `roboTeamAgent`. The manifest's `repos` map installs `legacy-agents` (`soplangAgent`, `tasksAgent`, `multimedia`, `webAssist`) for the rest of the default graph, plus `webmeet` (`webmeetAgent`, `liveKitServerAgent`, `webmeetScribeAgent`, `webmeetStt`), none of whose agents is enabled by default. `UmamiAgent`, `OnlyOfficeAgent` and `webmeet` are installed for Marketplace but not enabled by default, and `local-llms` supplies the local model agent. Ploinky names this repository `AchillesIDE`, so its agents run as `AchillesIDE/<agent>`.
+This repository holds Explorer and the agents `dpuAgent`, `gitAgent`, `emailAgent`, `userPersistoAgent`, `workspaceMonitorAgent`, `soul-gateway` and `roboTeamAgent`. The manifest's `repos` map installs `legacy-agents` (`soplangAgent`, `tasksAgent`, `webAssist`) for the rest of the default graph; its `multimedia` agent is available through Marketplace but not enabled by default, plus `webmeet` (`webmeetAgent`, `liveKitServerAgent`, `webmeetScribeAgent`, `webmeetStt`), none of whose agents is enabled by default. `UmamiAgent`, `OnlyOfficeAgent` and `webmeet` are installed for Marketplace but not enabled by default, and `local-llms` supplies the local model agent. Ploinky names this repository `AchillesIDE`, so its agents run as `AchillesIDE/<agent>`.
 
 ### Account provider
 

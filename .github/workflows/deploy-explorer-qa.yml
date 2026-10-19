@@ -2079,7 +2079,7 @@ jobs:
           echo "[deploy-qa] Starting Explorer from each managed repository's configured default branch..."
           export PLOINKY_NO_WAIT_SEQUENCE_TERMINAL_GRACE_MS='300000'
           QA_DEPLOY_STARTED_AT_MS="$(node -p 'Date.now()')"
-          EXPECTED_NO_WAIT_AGENTS=7
+          EXPECTED_NO_WAIT_AGENTS=6
           "$PLOINKY" start explorer "${BRANCH_ARGS[@]}"
 
           QA_READY=0
@@ -2117,8 +2117,8 @@ jobs:
                 ;;
             esac
             if [[ "$BOX_STATUS" == *"Ploinky Box: running-initialized"* ]] &&
-              [[ "$BOX_STATUS" == *"Tracked agents: 13"* ]] &&
-              [[ "$BOX_STATUS" == *"Running agents: 13"* ]] &&
+              [[ "$BOX_STATUS" == *"Tracked agents: 12"* ]] &&
+              [[ "$BOX_STATUS" == *"Running agents: 12"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare mode: cloudflare"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare management: api-managed"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare publication: ready"* ]] &&
@@ -2141,7 +2141,7 @@ jobs:
             exit 1
           fi
           if [ "$QA_READY" != "1" ]; then
-            echo "[deploy-qa] ERROR: timed out waiting for stable 13/13 process admission and 7/7 semantic readiness."
+            echo "[deploy-qa] ERROR: timed out waiting for stable 12/12 process admission and 6/6 semantic readiness."
             exit 1
           fi
           case "$BOX_STATUS" in
@@ -2152,8 +2152,8 @@ jobs:
               ;;
           esac
           for expected_status in \
-            'Tracked agents: 13' \
-            'Running agents: 13' \
+            'Tracked agents: 12' \
+            'Running agents: 12' \
             'Cloudflare mode: cloudflare' \
             'Cloudflare management: api-managed' \
             'Cloudflare publication: ready' \
