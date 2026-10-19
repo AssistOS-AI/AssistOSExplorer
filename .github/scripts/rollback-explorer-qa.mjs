@@ -82,15 +82,85 @@ export function enableArguments(selection) {
     return args;
 }
 
+function assertSelection(selection) {
+    requireProof(NAME.test(selection.repo) && NAME.test(selection.agent)
+        && (!selection.alias || NAME.test(selection.alias))
+        && ['none', 'local', 'sso', 'guest'].includes(selection.auth)
+        && ['isolated', 'global', 'devel'].includes(selection.runMode || 'isolated')
+        && (selection.runMode !== 'devel' || NAME.test(selection.develRepo)), 'QA_SELECTION_INVALID');
+}
+
+/**
+ * The default Explorer graph the current workflow starts, used only to predict
+ * the dispositions of the prior selections before anything is stopped.
+ */
+export const EXPECTED_DEFAULT_GRAPH = Object.freeze([
+    'AchillesIDE/explorer', 'AchillesIDE/gitAgent', 'AchillesIDE/userPersistoAgent', 'AchillesIDE/emailAgent',
+    'AchillesIDE/dpuAgent', 'AchillesIDE/roboTeamAgent', 'AchillesIDE/soul-gateway', 'AchillesIDE/workspaceMonitorAgent',
+    'legacy-agents/soplangAgent', 'legacy-agents/tasksAgent', 'legacy-agents/webAssist', 'local-llms/local-llm',
+]);
+
+/**
+ * Decides, without enabling anything, what happens to each prior selection
+ * against the fresh registry. A selection in the fresh graph is retained, or
+ * superseded when the fresh graph sets another profile, auth or run mode. One
+ * that moved to another repository is renamed and one that left is absent;
+ * neither is replayed. With `comparePolicy` off only identity is compared.
+ */
+export function classifyPriorSelections(selections, registry, { comparePolicy = true } = {}) {
+    const rows = Object.values(registry || {}).filter(row => row?.type === 'agent');
+    const label = (repo, agent, alias) => `${repo}/${agent}${alias ? ` as ${alias}` : ''}`;
+    const dispositions = selections.map(selection => {
+        assertSelection(selection);
+        const alias = selection.alias || '';
+        const ref = label(selection.repo, selection.agent, alias);
+        const same = rows.filter(row => row.repoName === selection.repo && row.agentName === selection.agent
+            && (row.alias || '') === alias);
+        requireProof(same.length <= 1, 'QA_SELECTION_AMBIGUOUS');
+        if (same.length) {
+            const row = same[0], changes = [];
+            const compare = (field, from, to) => { if (from !== to) changes.push({ field, from, to }); };
+            if (comparePolicy) {
+                compare('profile', selection.profile, row.profile || 'default');
+                compare('auth', selection.auth, row.auth?.mode);
+                compare('runMode', selection.runMode || 'isolated', row.runMode || 'isolated');
+                if (selection.runMode === 'devel') compare('develRepo', selection.develRepo, row.develRepo);
+            }
+            return changes.length ? { ref, kind: 'superseded', changes } : { ref, kind: 'retained' };
+        }
+        const moved = rows.filter(row => row.agentName === selection.agent && (row.alias || '') === alias)
+            .map(row => label(row.repoName, row.agentName, row.alias)).sort();
+        return moved.length ? { ref, kind: 'renamed', replacement: moved.join(', ') } : { ref, kind: 'absent' };
+    });
+    const count = kind => dispositions.filter(item => item.kind === kind).length;
+    return { dispositions, counts: { total: dispositions.length, retained: count('retained'),
+        superseded: count('superseded'), renamed: count('renamed'), absent: count('absent'),
+        notReplayed: count('renamed') + count('absent'), enabled: 0 } };
+}
+
+/** One log line per disposition, then the totals. */
+export function describeSelectionDispositions({ dispositions, counts }, prefix = '[deploy-qa] Prior selection') {
+    const lines = [];
+    for (const item of dispositions) {
+        if (item.kind === 'retained') lines.push(`${prefix} retained: ${item.ref}`);
+        else if (item.kind === 'superseded') {
+            for (const change of item.changes) {
+                lines.push(`${prefix} policy superseded: ${item.ref} ${change.field} ${change.from} -> ${change.to}`);
+            }
+        } else if (item.kind === 'renamed') {
+            lines.push(`${prefix} not replayed: ${item.ref} (renamed to ${item.replacement}; fresh graph policy applies)`);
+        } else lines.push(`${prefix} not replayed: ${item.ref} (not in the fresh default graph; re-enable through Marketplace if still required)`);
+    }
+    lines.push(`${prefix}s: ${counts.total} total, ${counts.retained} retained, ${counts.superseded} superseded, `
+        + `${counts.notReplayed} not replayed, ${counts.enabled} enabled.`);
+    return lines;
+}
+
 /** The caller supplies an already admitted exact Box and pinned CLI operations. */
 export async function restorePriorSelections({ selections, profile, readRegistry, enable }) {
     const restored = [];
     for (const selection of selections) {
-        requireProof(NAME.test(selection.repo) && NAME.test(selection.agent)
-            && (!selection.alias || NAME.test(selection.alias))
-            && ['none', 'local', 'sso', 'guest'].includes(selection.auth)
-            && ['isolated', 'global', 'devel'].includes(selection.runMode || 'isolated')
-            && (selection.runMode !== 'devel' || NAME.test(selection.develRepo)), 'QA_SELECTION_INVALID');
+        assertSelection(selection);
         const registry = await readRegistry();
         const matches = Object.values(registry).filter(row => row?.type === 'agent'
             && row.repoName === selection.repo && row.agentName === selection.agent && (row.alias || '') === selection.alias);
@@ -376,10 +446,8 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
     const matches = (actual, expected, code) => requireProof(JSON.stringify(actual) === JSON.stringify(expected), code);
     const inventory = () => adapters.boxes();
 
-    function capture(backup) {
-        adapters.assertHost();
-        const files = paths(backup);
-        requireProof(fs.readdirSync(backup).length === 0, 'QA_BACKUP_NOT_EMPTY');
+    /** The proofs capture and its read-only preview share; nothing is written. */
+    function survey(backup) {
         const stat = present(scope.workspace);
         if (stat) directory(scope.workspace);
         const allBoxes = inventory();
@@ -407,11 +475,27 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
         };
         authority.rollbackCode = authority.rollbackSupported ? null : 'QA_PRIOR_CREDENTIAL_RUNTIME_UNSUPPORTED';
         if (predecessor) requireProof(authority.auth.some(file => file.relative === '.ploinky/master-key'), 'QA_MASTER_KEY_MISSING');
+        return authority;
+    }
+
+    function capture(backup) {
+        adapters.assertHost();
+        const files = paths(backup);
+        requireProof(fs.readdirSync(backup).length === 0, 'QA_BACKUP_NOT_EMPTY');
+        const authority = survey(backup);
         writeNew(files.authority, authority);
-        fs.writeFileSync(path.join(backup, 'prior-containers.txt'), predecessor
-            ? `${predecessor.engine}|${predecessor.box.id}|${scope.box}\n` : '', { flag: 'wx', mode: 0o600 });
-        return { result: 'captured', predecessorId: predecessor?.box.id || null, sources: sources.length,
+        fs.writeFileSync(path.join(backup, 'prior-containers.txt'), authority.predecessor
+            ? `${authority.predecessor.engine}|${authority.predecessor.box.id}|${scope.box}\n` : '', { flag: 'wx', mode: 0o600 });
+        return { result: 'captured', predecessorId: authority.predecessor?.box.id || null, sources: authority.sources.length,
             rollbackSupported: authority.rollbackSupported, rollbackCode: authority.rollbackCode };
+    }
+
+    /** Applies every proof of capture, with no backup, and writes nothing. */
+    function previewCapture() {
+        adapters.assertHost();
+        const authority = survey(null);
+        return { result: 'previewed', predecessorId: authority.predecessor?.box.id || null, sources: authority.sources,
+            agents: authority.agents, rollbackSupported: authority.rollbackSupported, rollbackCode: authority.rollbackCode };
     }
 
     function plan(backup, currentId) {
@@ -555,7 +639,7 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             workspaceLock.release();
         }
     }
-    return { capture, plan, execute };
+    return { capture, previewCapture, plan, execute };
 }
 
 function command(program, args, options = {}) {
@@ -808,14 +892,15 @@ export function productionAdapters(scope = QA_SCOPE) {
 
 export async function main(argv = process.argv.slice(2)) {
     const [mode, backup, ...flags] = argv;
-    requireProof(['capture', 'plan', 'execute'].includes(mode) && path.isAbsolute(backup || ''), 'QA_USAGE_INVALID');
+    requireProof(mode === 'preview' ? argv.length === 1
+        : ['capture', 'plan', 'execute'].includes(mode) && path.isAbsolute(backup || ''), 'QA_USAGE_INVALID');
     const lockHeld = flags.includes('--lock-held');
     const remaining = flags.filter(flag => flag !== '--lock-held');
-    requireProof(mode === 'capture' ? remaining.length === 0
+    requireProof(mode === 'capture' || mode === 'preview' ? remaining.length === 0
         : remaining.length === 2 && remaining[0] === '--current-id', 'QA_USAGE_INVALID');
     const adapters = productionAdapters();
     adapters.assertHost();
-    if (mode !== 'plan') {
+    if (mode !== 'plan' && mode !== 'preview') {
         if (!lockHeld) {
             const result = spawnSync('flock', ['-n', '-E', '75', '--close', QA_SCOPE.lock,
                 process.execPath, fileURLToPath(import.meta.url), ...argv, '--lock-held'], { stdio: 'inherit', timeout: 2_700_000 });
@@ -828,6 +913,7 @@ export async function main(argv = process.argv.slice(2)) {
     const service = createRollbackService(adapters);
     let receipt;
     if (mode === 'capture') receipt = service.capture(backup);
+    else if (mode === 'preview') receipt = service.previewCapture();
     else if (mode === 'plan') {
         const plan = service.plan(backup, remaining[1]);
         receipt = { result: 'planned', predecessorId: plan.predecessor.box.id,

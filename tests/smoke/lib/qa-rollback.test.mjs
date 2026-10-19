@@ -6,8 +6,10 @@ import crypto from 'node:crypto';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { resolveExplorerGraphOrSkip } from './explorer-graph.mjs';
 import {
-    ACCOUNT_CAPABILITY, ACCOUNT_CAPABILITY_SETS, accountCapability, assertImageOwnedAgentLib, createRollbackService, currentQaBox, enableArguments,
+    ACCOUNT_CAPABILITY, ACCOUNT_CAPABILITY_SETS, accountCapability, assertImageOwnedAgentLib, classifyPriorSelections,
+    createRollbackService, currentQaBox, describeSelectionDispositions, enableArguments, EXPECTED_DEFAULT_GRAPH,
     imageAgentLibSourceId, productionAdapters, restorePriorSelections, sanitizeBox,
 } from '../../../.github/scripts/rollback-explorer-qa.mjs';
 
@@ -490,6 +492,39 @@ test('capture records unsupported prior code, but plan/execute refuse before mut
     assert.deepEqual(fs.readdirSync(f.backup).sort(), ['prior-containers.txt', 'rollback-authority.json']);
 });
 
+test('preview applies the capture proofs and writes nothing', t => {
+    const f = fixture(t);
+    const preview = f.service.previewCapture();
+    assert.equal(preview.result, 'previewed');
+    assert.equal(preview.rollbackSupported, true);
+    assert.equal(preview.predecessorId, OLD);
+    assert.deepEqual(preview.agents.map(agent => `${agent.repo}/${agent.agent}`), ['AchillesIDE/explorer']);
+    assert.ok(preview.sources.some(source => source.relative === '.runtime/ploinky'));
+    assert.deepEqual(fs.readdirSync(f.backup), []);
+    assert.equal(f.service.capture(f.backup).result, 'captured', 'the same fixture is still capturable');
+    const unsupported = fixture(t, { supported: false });
+    assert.equal(unsupported.service.previewCapture().rollbackCode, 'QA_PRIOR_CREDENTIAL_RUNTIME_UNSUPPORTED');
+    assert.deepEqual(fs.readdirSync(unsupported.backup), []);
+});
+
+test('preview and capture reject an unsupported agent row and an active foreign Box with the same codes', t => {
+    const registry = f => path.join(f.scope.workspace, '.ploinky/agents.json');
+    const cases = [
+        ['QA_AGENT_SELECTION_UNSUPPORTED', f => write(registry(f), { explorer: { ...JSON.parse(fs.readFileSync(registry(f), 'utf8')).explorer,
+            runtime: 'docker' } })],
+        ['QA_UNSELECTED_ACTIVE_BOX', f => f.boxes.push({ engine: 'podman', box: { ...f.boxes[0].box, id: 'b'.repeat(64),
+            name: 'ploinky-box-someone-else', running: true } })],
+        ['QA_SOURCES_INCOMPLETE', f => fs.rmSync(path.join(f.scope.workspace, '.ploinky/repos/AchillesIDE'), { recursive: true })],
+    ];
+    for (const [code, mutate] of cases) {
+        const previewed = fixture(t), captured = fixture(t);
+        mutate(previewed); mutate(captured);
+        assert.throws(() => previewed.service.previewCapture(), { code });
+        assert.throws(() => captured.service.capture(captured.backup), { code });
+        assert.deepEqual(fs.readdirSync(previewed.backup), [], code);
+    }
+});
+
 test('capture accepts a recreated dedicated tunnel but refuses the shared proxies tunnel', t => {
     const desiredFile = f => path.join(f.scope.workspace, '.ploinky/edge-desired.json');
     const withTunnel = (f, tunnelId) => {
@@ -674,6 +709,88 @@ test('selection replay preserves existing choices and refreshes the registry aft
     await assert.rejects(replay(), { code: 'QA_OPTIONAL_PROFILE_UNSUPPORTED' });
 });
 
+// The 16 agents QA ran before the repository split, and the 12 the default graph starts now.
+const selection = (repo, agent, { profile = 'default', auth = 'sso', runMode = 'global', alias = '' } = {}) => ({
+    name: `${repo}_${agent}`, repo, agent, alias, profile, auth, runMode, oldId: 'a'.repeat(64) });
+const PRIOR_SELECTIONS = [
+    ...['explorer', 'gitAgent', 'emailAgent', 'dpuAgent', 'workspaceMonitorAgent', 'soplangAgent', 'tasksAgent',
+        'multimedia', 'webAssist', 'webmeetAgent', 'liveKitServerAgent'].map(agent => selection('AchillesIDE', agent)),
+    selection('AchillesIDE', 'userPersistoAgent', { profile: 'default' }),
+    selection('proxies', 'soul-gateway'), selection('AchillesCLI', 'roboTeamAgent'),
+    selection('UmamiAgent', 'umamiAgent'), selection('local-llms', 'local-llm'),
+];
+const freshRegistry = () => Object.fromEntries(EXPECTED_DEFAULT_GRAPH.map(ref => {
+    const [repoName, agentName] = ref.split('/');
+    return [`${repoName}_${agentName}`, { type: 'agent', repoName, agentName, alias: '',
+        profile: agentName === 'userPersistoAgent' ? 'explorer' : 'default', auth: { mode: 'sso' }, runMode: 'global' }];
+}));
+const kinds = result => Object.fromEntries(['retained', 'superseded', 'renamed', 'absent']
+    .map(kind => [kind, result.dispositions.filter(item => item.kind === kind).map(item => item.ref).sort()]));
+
+test('prior selections are classified against the fresh graph without enabling any of them', () => {
+    assert.equal(PRIOR_SELECTIONS.length, 16);
+    const result = classifyPriorSelections(PRIOR_SELECTIONS, freshRegistry());
+    assert.deepEqual(kinds(result), {
+        retained: ['AchillesIDE/dpuAgent', 'AchillesIDE/emailAgent', 'AchillesIDE/explorer', 'AchillesIDE/gitAgent',
+            'AchillesIDE/workspaceMonitorAgent', 'local-llms/local-llm'],
+        superseded: ['AchillesIDE/userPersistoAgent'],
+        renamed: ['AchillesCLI/roboTeamAgent', 'AchillesIDE/soplangAgent', 'AchillesIDE/tasksAgent', 'AchillesIDE/webAssist',
+            'proxies/soul-gateway'],
+        absent: ['AchillesIDE/liveKitServerAgent', 'AchillesIDE/multimedia', 'AchillesIDE/webmeetAgent', 'UmamiAgent/umamiAgent'],
+    });
+    assert.deepEqual(result.counts, { total: 16, retained: 6, superseded: 1, renamed: 5, absent: 4, notReplayed: 9, enabled: 0 });
+    assert.deepEqual(result.dispositions.find(item => item.ref === 'AchillesIDE/userPersistoAgent').changes,
+        [{ field: 'profile', from: 'default', to: 'explorer' }]);
+    assert.equal(result.dispositions.find(item => item.ref === 'proxies/soul-gateway').replacement, 'AchillesIDE/soul-gateway');
+    assert.equal(result.dispositions.find(item => item.ref === 'AchillesIDE/soplangAgent').replacement, 'legacy-agents/soplangAgent');
+});
+
+test('a selection that exists nowhere in the fresh graph is absent, so the live count is not fixed at sixteen', () => {
+    const seventeen = [...PRIOR_SELECTIONS, selection('AchillesCLI', 'promotionScout')];
+    const result = classifyPriorSelections(seventeen, freshRegistry());
+    assert.deepEqual(result.counts, { total: 17, retained: 6, superseded: 1, renamed: 5, absent: 5, notReplayed: 10, enabled: 0 });
+    assert.deepEqual(kinds(result).absent, ['AchillesCLI/promotionScout', 'AchillesIDE/liveKitServerAgent',
+        'AchillesIDE/multimedia', 'AchillesIDE/webmeetAgent', 'UmamiAgent/umamiAgent']);
+    const lines = describeSelectionDispositions(result);
+    assert.equal(lines.filter(line => line.startsWith('[deploy-qa] Prior selection not replayed:')).length, 10);
+    assert.equal(lines.at(-1), '[deploy-qa] Prior selections: 17 total, 6 retained, 1 superseded, 10 not replayed, 0 enabled.');
+});
+
+test('classification follows alias, auth and run mode, and refuses the inputs replay refuses', async () => {
+    const registry = freshRegistry();
+    const row = Object.values(registry).find(item => item.agentName === 'gitAgent');
+    row.auth.mode = 'none'; row.runMode = 'isolated';
+    const result = classifyPriorSelections([selection('AchillesIDE', 'gitAgent'), selection('AchillesIDE', 'dpuAgent', { alias: 'copy' })], registry);
+    assert.deepEqual(result.dispositions[0].changes, [{ field: 'auth', from: 'sso', to: 'none' },
+        { field: 'runMode', from: 'global', to: 'isolated' }]);
+    assert.equal(result.dispositions[1].kind, 'absent', 'an aliased selection is not the unaliased fresh agent');
+    assert.deepEqual(classifyPriorSelections([selection('AchillesIDE', 'gitAgent', { auth: 'none', runMode: 'isolated' })],
+        registry, { comparePolicy: false }).counts.retained, 1);
+    for (const bad of [{ ...selection('AchillesIDE', 'gitAgent'), repo: '../x' }, { ...selection('AchillesIDE', 'gitAgent'), auth: 'password' },
+        { ...selection('AchillesIDE', 'gitAgent'), runMode: 'devel', develRepo: '../x' }]) {
+        assert.throws(() => classifyPriorSelections([bad], registry), { code: 'QA_SELECTION_INVALID' });
+        await assert.rejects(restorePriorSelections({ selections: [bad], profile: 'default', readRegistry: async () => registry,
+            enable: async () => assert.fail('nothing is enabled') }), { code: 'QA_SELECTION_INVALID' });
+    }
+    assert.throws(() => classifyPriorSelections([selection('AchillesIDE', 'gitAgent')],
+        { one: row, two: structuredClone(row) }), { code: 'QA_SELECTION_AMBIGUOUS' });
+});
+
+test('replay of the same prior selections enables stale identities and then rejects the policy change classification only reports', async () => {
+    const calls = [];
+    await assert.rejects(restorePriorSelections({ selections: PRIOR_SELECTIONS, profile: 'default',
+        readRegistry: async () => freshRegistry(), enable: async args => { calls.push(args[2]); } }),
+    { code: 'QA_SELECTION_POLICY_CHANGED' });
+    assert.deepEqual(calls, ['AchillesIDE/soplangAgent', 'AchillesIDE/tasksAgent', 'AchillesIDE/multimedia',
+        'AchillesIDE/webAssist', 'AchillesIDE/webmeetAgent', 'AchillesIDE/liveKitServerAgent']);
+});
+
+test('the expected default graph lists exactly what the Explorer manifests enable', t => {
+    const graph = resolveExplorerGraphOrSkip(t);
+    if (!graph) return;
+    assert.deepEqual([...EXPECTED_DEFAULT_GRAPH].sort(), [...graph.runtimes.keys()].sort());
+});
+
 test('production source admission requires a clean owned Git checkout at its captured origin', t => {
     const f = fixture(t);
     const repo = path.join(f.scope.workspace, '.runtime/ploinky');
@@ -788,6 +905,16 @@ test('the actual CLI refuses a foreign host without showing environment credenti
     assert.equal(result.status, 1);
     assert.deepEqual(JSON.parse(result.stdout), { result: 'failed', code: 'QA_HOST_INVALID' });
     assert.doesNotMatch(result.stdout + result.stderr, /never-log-this/);
+});
+
+test('the CLI preview mode takes no backup, honors the host guard and rejects extra arguments', () => {
+    const helper = fileURLToPath(new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url));
+    const run = (...args) => spawnSync(process.execPath, [helper, ...args], { encoding: 'utf8', timeout: 5000 });
+    assert.deepEqual(JSON.parse(run('preview', '/home/admin/.qa-deployment-backups/redeploy-12345678').stdout),
+        { result: 'failed', code: 'QA_USAGE_INVALID' });
+    assert.deepEqual(JSON.parse(run('preview', '--lock-held').stdout), { result: 'failed', code: 'QA_USAGE_INVALID' });
+    if (process.platform === 'linux' && os.userInfo().username === 'admin' && os.homedir() === '/home/admin') return;
+    assert.deepEqual(JSON.parse(run('preview').stdout), { result: 'failed', code: 'QA_HOST_INVALID' });
 });
 
 test('production recovery permits the bounded full graph shutdown without the former three minute cutoff', () => {

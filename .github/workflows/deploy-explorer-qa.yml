@@ -2166,46 +2166,39 @@ jobs:
                 ;;
             esac
           done
-          node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$QA_BACKUP_DIR" "$WORK_DIR" "$PLOINKY" <<'NODE'
+          node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$QA_BACKUP_DIR" "$WORK_DIR" <<'NODE'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import path from 'node:path';
           import { execFileSync } from 'node:child_process';
 
           // BEGIN QA prior selection restoration
-          const [helper, backup, workspace, cli] = process.argv.slice(2);
+          // The fresh default graph decides what runs. A prior selection is
+          // classified against it and logged, and none is enabled again.
+          const [helper, backup, workspace] = process.argv.slice(2);
           assert.equal(workspace, '/home/admin/explorerQaWorkspace');
-          const { productionAdapters, restorePriorSelections } = await import(helper);
+          const { classifyPriorSelections, currentQaBox, describeSelectionDispositions, productionAdapters } = await import(helper);
           const adapters = productionAdapters();
           const authority = JSON.parse(fs.readFileSync(path.join(backup, 'rollback-authority.json'), 'utf8'));
-          const boxes = adapters.boxes().filter(item => item.box.name === 'ploinky-box-explorerqaworkspace-7a31ab7775eb');
-          assert.equal(boxes.length, 1, 'Current QA Box is ambiguous');
-          const current = boxes[0];
-          assert(current.box.running && current.box.id !== authority.predecessor?.box.id, 'Expected a fresh QA Box');
+          const current = currentQaBox(adapters.boxes());
+          assert(current.box.id !== authority.predecessor?.box.id, 'Expected a fresh QA Box');
           const assertCurrent = () => {
               const found = adapters.boxes().filter(item => item.box.id === current.box.id);
               assert.equal(found.length, 1, 'Current QA Box disappeared');
               assert.equal(found[0].box.contract, current.box.contract, 'Current QA Box changed');
               assert(found[0].box.running, 'Current QA Box stopped');
           };
-          const profileFile = path.join(workspace, '.ploinky/profile');
-          const profile = fs.existsSync(profileFile) ? fs.readFileSync(profileFile, 'utf8').trim() || 'default' : 'default';
-          const restored = await restorePriorSelections({ selections: authority.agents, profile,
-              readRegistry: () => {
-                  assertCurrent();
-                  return JSON.parse(execFileSync(current.engine, ['container', 'exec', '--user', 'podman', current.box.id,
-                      'node', '-e', 'process.stdout.write(require("fs").readFileSync("/home/admin/explorerQaWorkspace/.ploinky/agents.json","utf8"))'],
-                  { encoding: 'utf8', stdio: 'pipe', timeout: 30000 }));
-              },
-              enable: args => {
-                  assertCurrent();
-                  execFileSync(cli, args, { cwd: workspace, env: process.env, stdio: 'pipe', timeout: 600000 });
-              },
-          });
-          const readiness = await adapters.ready(current, authority);
-          assert(readiness.ready, 'Restored QA selections are not ready');
           assertCurrent();
-          fs.writeFileSync(path.join(backup, 'restored-selections.json'), JSON.stringify({ restored, readiness,
+          const registry = JSON.parse(execFileSync(current.engine, ['container', 'exec', '--user', 'podman', current.box.id,
+              'node', '-e', 'process.stdout.write(require("fs").readFileSync("/home/admin/explorerQaWorkspace/.ploinky/agents.json","utf8"))'],
+          { encoding: 'utf8', stdio: 'pipe', timeout: 30000 }));
+          const classification = classifyPriorSelections(authority.agents, registry);
+          for (const line of describeSelectionDispositions(classification)) console.log(line);
+          // The fresh graph is the whole expectation; only its own agents must be ready.
+          const readiness = await adapters.ready(current, { ...authority, agents: [] });
+          assert(readiness.ready, 'The fresh QA graph is not ready');
+          assertCurrent();
+          fs.writeFileSync(path.join(backup, 'restored-selections.json'), JSON.stringify({ ...classification, readiness,
               boxId: current.box.id }) + '\n', { flag: 'wx', mode: 0o600 });
           console.log('[deploy-qa] Prior agent choices restored and checked against the fresh runtime.');
           // END QA prior selection restoration
