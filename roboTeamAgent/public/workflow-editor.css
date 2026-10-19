@@ -146,10 +146,6 @@ textarea.workflow-description:is(:disabled, [readonly]) { border-color: transpar
 @media (prefers-reduced-motion: reduce) {
     .graph-node[data-execution-state].graph-state-running { animation: none; }
 }
-.workflow-description-hint { color: var(--text-soft); font-size: 11px; line-height: 1.4; }
-.workflow-description-review { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--text-soft); }
-.workflow-description-review[data-state='failed'] { color: var(--danger); }
-.description-review-retry { padding: 0; border: 0; background: transparent; color: var(--accent); cursor: pointer; text-decoration: underline; font: inherit; }
 .graph-port { position: absolute; z-index: 2; top: 50%; width: 20px; height: 20px; padding: 0; transform: translateY(-50%); border: 0; border-radius: 50%; background: var(--graph-node-surface); color: var(--task-color); cursor: crosshair; font-size: 12px; line-height: 20px; touch-action: none; }
 .graph-port-left { left: -10px; }
 .graph-port-right { right: -10px; }

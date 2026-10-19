@@ -10,10 +10,10 @@ import { ScheduleStore } from './schedule-store.mjs';
 import { ScheduleFolders } from './schedule-folders.mjs';
 import { RunFolders } from './run-folders.mjs';
 import { WorkflowScheduler } from './workflow-scheduler.mjs';
-import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator, resolveWorkflowObjective } from './graph.mjs';
+import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator, resolveWorkflowObjective, assertRunnable } from './graph.mjs';
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
 import { parseRoute, parseWorkflowResponse, workflowResponseContext } from './result-parser.mjs';
-import { generationPrompt, descriptionRevisionPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
+import { generationPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
 import { presetGraph, readPresets } from './workflow-presets.mjs';
 import { requiredDocumentationRepository } from '../required-skills.mjs';
 import { EXECUTION_TASK_TYPES, EXECUTION_TYPES } from './constants.mjs';
@@ -153,8 +153,7 @@ export class RoboFlowService {
     }
     async catalog() { return this.discover(); }
     async validateDraft(input) {
-        const graph = normalizeWorkflow({ ...input, name: input.name || 'Draft', tasks: input.tasks?.map(task => ({
-            ...task, name: task.name || 'Draft task', ...(isCoordinator(task) ? {} : { prompt: task.prompt || 'Draft task prompt' }) })) });
+        const graph = normalizeWorkflow({ ...input, name: input.name || 'Draft' });
         return { graph, coverage: coverage(graph, await this.robotStore.list()), diagnostics: graphDiagnostics(graph) };
     }
     async listWorkflows() {
@@ -193,6 +192,7 @@ export class RoboFlowService {
     async startFlow(input, { onCreated, scheduleId, scheduledAt } = {}) {
         const graph = await this.registry.get(input.workflowTypeId);
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
+        assertRunnable(graph);
         if (graph.kind === 'default' ? !EXECUTION_TYPES.includes(input.executionType) : input.executionType !== undefined) throw invalid('executionType is required only for the default workflow');
         const objective = textField(input.objective, 'objective', 32768);
         resolveWorkflowObjective(graph, objective);
@@ -632,22 +632,15 @@ export class RoboFlowService {
     }
     // Browser-facing generation: start returns immediately with an id and the
     // page polls generationInfo every couple of seconds for live task logs.
+    // Generation only creates a new workflow from the user's prompt; it never revises one being edited.
     async startGeneration(input) {
         const description = textField(input.description, 'description', 32768, true);
-        let revision;
-        if (input.workflow !== undefined) {
-            if (input.workflow?.readOnly || ['default', 'code-development'].includes(input.workflow?.id)) throw invalid('Read-only workflows cannot be regenerated');
-            const previousDescription = textField(input.previousDescription, 'previousDescription', 4000);
-            const workflow = normalizeWorkflow({ ...input.workflow, description: previousDescription });
-            textField(description, 'description', 4000, true);
-            revision = { previousDescription, description, workflow };
-        }
         const catalog = await this.catalog();
         const robot = await this.robotStore.getByName('default');
         if (!robot) throw new Error('Default robot is unavailable');
         const cwd = await this.generationCwd(input.folder);
         const record = { id: crypto.randomUUID(), runtimeTaskId: crypto.randomUUID(), robotId: robot.id,
-            status: 'running', graph: null, error: null, startedAt: new Date().toISOString(), catalog, ...(revision ? { revision } : {}) };
+            status: 'running', graph: null, error: null, startedAt: new Date().toISOString(), catalog };
         this.generationTasks.set(record.id, record);
         void this._runGeneration(record, robot, cwd, description).catch(() => {});
         return { id: record.id };
@@ -658,39 +651,28 @@ export class RoboFlowService {
         void completed.catch(() => {});
         this.generations.set(record.runtimeTaskId, { resolve, reject });
         try {
-            await this._startTask(robot, { cwd, task: record.revision ? JSON.stringify(record.revision) : description, runtimeTaskId: record.runtimeTaskId, skillSets: [],
-                systemPrompt: record.revision ? descriptionRevisionPrompt(record.catalog) : generationPrompt(record.catalog) });
-            const parsed = parseWorkflowResponse(await completed, { generation: true, revision: Boolean(record.revision) });
+            await this._startTask(robot, { cwd, task: description, runtimeTaskId: record.runtimeTaskId, skillSets: [],
+                systemPrompt: generationPrompt(record.catalog) });
+            const parsed = parseWorkflowResponse(await completed, { generation: true });
             if (record.status === 'cancelled') return;
-            if (record.revision) {
-                if (typeof parsed.regenerate !== 'boolean') throw invalid('Description revision requires a boolean regenerate decision');
-                record.reason = textField(parsed.reason, 'reason', 4000, true);
-                record.regenerate = parsed.regenerate;
-            }
-            if (!record.revision || record.regenerate) {
-                const graph = normalizeWorkflow(record.revision ? { ...parsed, id: record.revision.workflow.id,
-                    name: record.revision.workflow.name, description: record.revision.description, defaultObjective: record.revision.description }
-                    : { ...parsed, defaultObjective: description });
-                const known = new Set(record.catalog.skillsets.map(set => set.id));
-                if (graph.tasks.some(task => task.skillsets.some(id => !known.has(id)))) throw invalid('Generated graph contains an unknown skillset');
-                record.graph = { ...graph, coverage: coverage(graph, await this.robotStore.list()),
-                    diagnostics: [...record.catalog.diagnostics, ...graphDiagnostics(graph)] };
-            }
+            const graph = normalizeWorkflow({ ...parsed, defaultObjective: description });
+            const known = new Set(record.catalog.skillsets.map(set => set.id));
+            if (graph.tasks.some(task => task.skillsets.some(id => !known.has(id)))) throw invalid('Generated graph contains an unknown skillset');
+            record.graph = { ...graph, coverage: coverage(graph, await this.robotStore.list()),
+                diagnostics: [...record.catalog.diagnostics, ...graphDiagnostics(graph)] };
             record.status = 'completed';
         } catch (error) {
             if (record.status !== 'cancelled') { record.status = 'failed'; record.error = error.message; }
         } finally {
             this.generations.delete(record.runtimeTaskId);
             delete record.catalog;
-            delete record.revision;
         }
     }
     generationInfo(id) {
         const record = this.generationTasks.get(id);
         if (!record) return null;
         const log = (this.runtimeManager?.taskStatus?.(record.robotId, record.runtimeTaskId)?.logTail || '').slice(-256 * 1024);
-        const info = { id: record.id, status: record.status, log, graph: record.graph, error: record.error,
-            ...(typeof record.regenerate === 'boolean' ? { regenerate: record.regenerate, reason: record.reason } : {}) };
+        const info = { id: record.id, status: record.status, log, graph: record.graph, error: record.error };
         if (terminal(record.status)) this.generationTasks.delete(id);
         return info;
     }

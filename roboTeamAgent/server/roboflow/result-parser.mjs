@@ -42,8 +42,8 @@ export function extractJson(source) {
     return parseJsonObject(resultSource(source).replace(/\r\n?/g, '\n'));
 }
 
-export function parseWorkflowResponse(source, { generation = false, revision = false } = {}) {
-    const schema = revision ? { ...generationSchema, fields: { regenerate: 'boolean', reason: 'text', ...generationSchema.fields } } : generation ? generationSchema : decisionSchema;
+export function parseWorkflowResponse(source, { generation = false } = {}) {
+    const schema = generation ? generationSchema : decisionSchema;
     return parseStructuredResponse(resultSource(source), schema);
 }
 

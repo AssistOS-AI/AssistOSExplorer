@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
 
-const definition = { id: 'scheduled', name: 'Scheduled work', entryTaskId: 'one', tasks: [{ id: 'one', name: 'Work', executionType: 'terminal', prompt: 'Run the objective', skillsets: [] }], edges: [] };
+const definition = { id: 'scheduled', name: 'Scheduled work', description: 'Scheduled work', entryTaskId: 'one', tasks: [{ id: 'one', name: 'Work', executionType: 'terminal', prompt: 'Run the objective', skillsets: [] }], edges: [] };
 async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workflow-scheduler-')));
     let now = Date.parse('2026-10-09T07:00:00Z');

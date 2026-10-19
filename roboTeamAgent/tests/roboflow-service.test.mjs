@@ -10,7 +10,7 @@ import { coverage, canonicalSkillset, canonicalSkill, matchRobot, robotSelection
 
 const task = (id, extras = {}) => ({ id, name: id, prompt: `Execute ${id}`, executionType: 'terminal', skillsets: [], ...extras });
 const edge = (sourceTaskId, targetTaskId) => ({ id: `${sourceTaskId}-${targetTaskId}`, sourceTaskId, targetTaskId });
-const graph = () => ({ id: 'example', name: 'Example', entryTaskId: 'a', tasks: [task('a'), task('b'), task('c')], edges: [edge('a', 'b'), edge('a', 'c'), edge('b', 'a')] });
+const graph = () => ({ id: 'example', name: 'Example', description: 'Example workflow', entryTaskId: 'a', tasks: [task('a'), task('b'), task('c')], edges: [edge('a', 'b'), edge('a', 'c'), edge('b', 'a')] });
 const humanReport = text => `<<human-report>>\n${text}\n<<human-report>>`;
 async function fixture(t, options = {}) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-graph-')));
@@ -72,7 +72,7 @@ test('branch parser tolerates aliases and formats but only authorizes outgoing e
 test('workflow defaults reuse saved requirements, descriptions or task prompts without inventing generic work', () => {
     assert.equal(normalizeWorkflow({ ...graph(), defaultObjective: 'Original request', description: 'Short summary' }).defaultObjective, 'Original request');
     assert.equal(normalizeWorkflow({ ...graph(), description: 'Write a report' }).defaultObjective, 'Write a report');
-    assert.match(normalizeWorkflow(graph()).defaultObjective, /a\nExecute a/);
+    assert.match(normalizeWorkflow({ ...graph(), description: '' }).defaultObjective, /a\nExecute a/);
     for (const id of ['default', 'code-development']) assert.equal(workflowDefaultObjective({ id, description: 'Generic description', defaultObjective: 'Not a real request' }), '');
     assert.equal(workflowDefaultObjective({ id: 'large', tasks: [{ name: 'Work', prompt: 'x'.repeat(32769) }] }), '');
     assert.throws(() => resolveWorkflowObjective({ id: 'default' }), /explicit objective/);
@@ -276,8 +276,8 @@ test('both generation entrypoints accept Markdown graphs and reject invalid Mark
 
 test('Markdown child plans run in order, pass prior results and follow the saved continuation once', async t => {
     const f = await fixture(t);
-    await f.service.createWorkflow({ id: 'child', name: 'Child', entryTaskId: 'one', tasks: [task('one')], edges: [] });
-    await f.service.createWorkflow({ id: 'parent', name: 'Parent', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
+    await f.service.createWorkflow({ id: 'child', name: 'Child', description: 'Child workflow', entryTaskId: 'one', tasks: [task('one')], edges: [] });
+    await f.service.createWorkflow({ id: 'parent', name: 'Parent', description: 'Parent workflow', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
         edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' }, { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });
     const parent = await f.service.startFlow({ workflowTypeId: 'parent', objective: 'Work' });
     const firstPrompt = 'Implement "quoted" inputs.\n# workflow\nLiteral example.';
@@ -313,8 +313,8 @@ test('Markdown child plans run in order, pass prior results and follow the saved
 
 test('invalid Markdown delegation never creates or starts a partial child group', async t => {
     const f = await fixture(t);
-    await f.service.createWorkflow({ id: 'child', name: 'Child', entryTaskId: 'one', tasks: [task('one')], edges: [] });
-    await f.service.createWorkflow({ id: 'parent', name: 'Parent', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
+    await f.service.createWorkflow({ id: 'child', name: 'Child', description: 'Child workflow', entryTaskId: 'one', tasks: [task('one')], edges: [] });
+    await f.service.createWorkflow({ id: 'parent', name: 'Parent', description: 'Parent workflow', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
         edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' }, { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });
     const prefix = '# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n';
     const child = '# workflow\nchild\n# prompt\nWork\n';
@@ -578,60 +578,28 @@ test('cancelling an async generation stops its runtime task', async t => {
     assert.equal(f.service.cancelGeneration(id), null);
 });
 
-test('description revision keeps typos unchanged and semantic changes return a validated unsaved graph', async t => {
+test('cancelling a generation releases the pending runtime completion and ignores later output', async t => {
     const f = await fixture(t);
-    await f.service.createWorkflow({ ...graph(), description: 'Write a report' });
-    const stored = await f.service.registry.get('example');
-    for (const regenerate of [false, true]) {
-        const index = f.started.length;
-        const description = regenerate ? 'Do not write a report; collect sources only' : 'Write a repport';
-        const { id } = await f.service.startGeneration({ workflow: stored, previousDescription: stored.description, description });
-        while (f.started.length === index) await new Promise(resolve => setImmediate(resolve));
-        const input = JSON.parse(f.started[index].request.task);
-        assert.equal(input.previousDescription, 'Write a report'); assert.equal(input.description, description);
-        assert.deepEqual(input.workflow.tasks, stored.tasks);
-        assert.match(f.started[index].request.systemPrompt, /do not judge by edit distance/i);
-        await f.finish(index, regenerate ? JSON.stringify({ ...graph(), id: 'invented', name: 'Invented name', regenerate: true, reason: 'Changed deliverable' })
-            : '# regenerate\nfalse\n# reason\nSpelling correction only');
-        while (f.service.generationTasks.get(id).status === 'running') await new Promise(resolve => setImmediate(resolve));
-        const result = f.service.generationInfo(id);
-        assert.equal(result.status, 'completed'); assert.equal(result.regenerate, regenerate);
-        if (regenerate) {
-            assert.equal(result.graph.id, 'example'); assert.equal(result.graph.name, stored.name);
-            assert.equal(result.graph.description, description);
-            assert.equal(result.graph.defaultObjective, description);
-        } else assert.equal(result.graph, null);
-        assert.deepEqual(await f.service.registry.get('example'), stored);
-    }
-});
-
-test('description revision rejects ambiguity, invalid graphs and unknown skills without updating storage', async t => {
-    const f = await fixture(t);
-    for (const output of [JSON.stringify(graph()), '# regenerate\nyes\n# reason\nMaybe',
-        JSON.stringify({ regenerate: true, reason: 'Changed' }),
-        JSON.stringify({ ...graph(), regenerate: true, reason: 'Changed', tasks: [task('a', { skillsets: ['unknown'] })], edges: [] })]) {
-        const index = f.started.length;
-        const { id } = await f.service.startGeneration({ workflow: graph(), previousDescription: 'Write', description: 'Read' });
-        while (f.started.length === index) await new Promise(resolve => setImmediate(resolve));
-        await f.finish(index, output);
-        while (f.service.generationTasks.get(id).status === 'running') await new Promise(resolve => setImmediate(resolve));
-        assert.equal(f.service.generationInfo(id).status, 'failed');
-        assert.equal(await f.service.registry.get('example'), null);
-    }
-    for (const workflow of [{ ...graph(), readOnly: true }, { ...graph(), id: 'code-development' }, { ...graph(), id: 'default' }]) {
-        await assert.rejects(f.service.startGeneration({ workflow, previousDescription: 'Write', description: 'Read' }), /Read-only/);
-    }
-});
-
-test('cancelling a description review releases the pending runtime completion and ignores later output', async t => {
-    const f = await fixture(t);
-    const { id } = await f.service.startGeneration({ workflow: graph(), previousDescription: 'Write', description: 'Read' });
+    const { id } = await f.service.startGeneration({ description: 'Read' });
     while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
     f.service.cancelGeneration(id);
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(f.service.generations.size, 0);
-    await f.finish(0, JSON.stringify({ ...graph(), regenerate: true, reason: 'Late' }));
+    await f.finish(0, JSON.stringify(graph()));
     assert.equal(f.service.generationInfo(id), null); assert.equal(await f.service.registry.get('example'), null);
+});
+
+test('Save needs a description, a task and every prompt; other gaps are warnings until a run starts', async t => {
+    const f = await fixture(t);
+    await assert.rejects(f.service.createWorkflow({ ...graph(), description: ' ' }), /Add a workflow description before saving/);
+    await assert.rejects(f.service.createWorkflow({ ...graph(), entryTaskId: '', tasks: [], edges: [] }), /Add at least one task before saving/);
+    await assert.rejects(f.service.createWorkflow({ ...graph(), tasks: [task('a'), task('b', { prompt: '' }), task('c')] }), /Task b needs a prompt before saving/);
+    const saved = await f.service.createWorkflow({ ...graph(), tasks: [task('a'), task('b', { name: '' }), task('c')] });
+    await assert.rejects(f.service.updateWorkflow(saved.id, { ...saved, description: '' }), /Add a workflow description before saving/);
+    assert.equal(saved.tasks[1].name, '');
+    assert.ok((await f.service.validateDraft(saved)).diagnostics.some(item => item.message === 'Task b needs a name'));
+    await assert.rejects(f.service.startFlow({ workflowTypeId: saved.id, objective: 'Work' }), /not ready to run: Task b needs a name/);
+    assert.equal(f.started.length, 0);
 });
 
 test('human input commits before routing and concurrent answers resume the same visit once', async t => {
@@ -731,8 +699,8 @@ test('a resumed task can ask another question and stale replies cannot answer it
 
 test('a child question pauses the parent join and answering resumes the graph', async t => {
     const f = await fixture(t);
-    await f.service.createWorkflow({ id: 'child', name: 'Child', entryTaskId: 'one', tasks: [task('one', { allowsHumanInput: true })], edges: [] });
-    await f.service.createWorkflow({ id: 'parent', name: 'Parent', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
+    await f.service.createWorkflow({ id: 'child', name: 'Child', description: 'Child workflow', entryTaskId: 'one', tasks: [task('one', { allowsHumanInput: true })], edges: [] });
+    await f.service.createWorkflow({ id: 'parent', name: 'Parent', description: 'Parent workflow', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
         edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' }, { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });
     const parent = await f.service.startFlow({ workflowTypeId: 'parent', objective: 'Work' });
     await f.finish(0, '# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n# workflow\nchild\n# prompt\nChoose customer');
@@ -817,8 +785,8 @@ test('termination cancels pending human input and stops the still-running questi
 
 test('terminating a parent terminates running and pending children without launching the next node', async t => {
     const f = await fixture(t);
-    await f.service.createWorkflow({ id: 'child', name: 'Child', entryTaskId: 'one', tasks: [task('one')], edges: [] });
-    await f.service.createWorkflow({ id: 'parent', name: 'Parent', entryTaskId: 'creator',
+    await f.service.createWorkflow({ id: 'child', name: 'Child', description: 'Child workflow', entryTaskId: 'one', tasks: [task('one')], edges: [] });
+    await f.service.createWorkflow({ id: 'parent', name: 'Parent', description: 'Parent workflow', entryTaskId: 'creator',
         tasks: [task('creator', { creator: true }), task('end')],
         edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' },
             { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });

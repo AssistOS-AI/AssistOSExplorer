@@ -52,9 +52,9 @@ test('workflow overview unifies description and graph with an inline breadcrumb 
     assert.match(html, /data-embed-field="workflow-name" maxlength="120"/);
     assert.doesNotMatch(html, /<span>Name<\/span><input name="name"|flowSettingsPage|data-workflow-page/);
     assert.match(html, /name="description" class="workflow-description"/);
-    assert.match(html, /id="descriptionReviewText" role="status"/);
-    assert.match(js, /description\.addEventListener\('focusout'/);
-    assert.match(js, /if \(!await descriptionRevision\.check\(\)\) return;/);
+    // Editing the description never asks a model to change the graph.
+    assert.doesNotMatch(html, /descriptionReview/);
+    assert.doesNotMatch(js, /descriptionRevision|reviseGraph/);
     assert.match(html, /<details class="workflow-help">[\s\S]*<summary[^>]*aria-label="Graph editing help"/);
     assert.match(html, /id="graphPage" class="workflow-graph" aria-label="Graph"><div id="workflowBoard"/);
     assert.doesNotMatch(js, /showPage|currentPage|workflow-page-button/);

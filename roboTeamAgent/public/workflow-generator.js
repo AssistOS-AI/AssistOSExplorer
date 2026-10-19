@@ -16,10 +16,6 @@ export async function generateGraph(description, { onProgress = () => {}, onLog 
     return (await runGeneration({ description }, { onProgress, onLog, signal })).graph;
 }
 
-export async function reviseGraph(workflow, previousDescription, description, options = {}) {
-    return runGeneration({ workflow, previousDescription, description }, options);
-}
-
 async function runGeneration(input, { onProgress = () => {}, onLog = () => {}, signal, request = api } = {}) {
     signal?.throwIfAborted();
     // Do not abort the POST: its id is needed to cancel the server task even if

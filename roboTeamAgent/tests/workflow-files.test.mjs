@@ -6,7 +6,7 @@ import path from 'node:path';
 import { WorkflowRegistry } from '../server/roboflow/workflow-registry.mjs';
 import { ScheduleFolders } from '../server/roboflow/schedule-folders.mjs';
 
-const definition = (name, extra = {}) => ({ name, description: '', entryTaskId: 'one', edges: [],
+const definition = (name, extra = {}) => ({ name, description: 'A test workflow.', entryTaskId: 'one', edges: [],
     tasks: [{ id: 'one', name: 'One', prompt: 'Do one.', executionType: 'terminal', skillsets: [] }], ...extra });
 
 async function workspace(t) {
@@ -99,7 +99,7 @@ test('invalid workflow files and id conflicts are reported, never listed as work
     assert.match(errors['Other/flows/twice.json'], /more than one file/);
     assert.match(errors['Repo/flows/broken.json'], /invalid JSON/);
     assert.match(errors['Repo/flows/mismatch.json'], /does not match the file name/);
-    assert.match(errors['Repo/flows/no-tasks.json'], /1 to 100 tasks/);
+    assert.match(errors['Repo/flows/no-tasks.json'], /entryTaskId must identify a task/);
     assert.match(errors['Repo/flows/Bad_Name.json'], /not a valid workflow id/);
     assert.match(errors['Repo/flows/default.json'], /reserved/);
     assert.equal(await registry.get('twice'), null);

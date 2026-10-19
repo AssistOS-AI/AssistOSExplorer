@@ -512,7 +512,7 @@ export function createRoboTeamServer(options) {
             }
             if (pathname === '/InterVariable.woff2' && req.method === 'GET') return serveFile(req, res, publicDir, 'InterVariable.woff2');
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(req, res, publicDir, 'styles.css');
-            if (['/workflow-editor.js', '/workflow-board.js', '/workflow-routing.js', '/workflow-generator.js', '/workflow-description-revision.js', '/workflow-editor.css',
+            if (['/workflow-editor.js', '/workflow-board.js', '/workflow-routing.js', '/workflow-generator.js', '/workflow-editor.css',
                 '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js', '/workflow-execution.css', '/workflow-phase-list.js', '/workflow-execution-state.js', '/workflow-live-updates.js',
                 '/log-render.js', '/webchat-logs.js', '/robot-logs.js', '/robot-log-viewer.js', '/summary.js', '/conversation-skills.js', '/conversation-skills-model.js'].includes(pathname) && req.method === 'GET') return serveFile(req, res, publicDir, pathname.slice(1));
             if (pathname === '/dashboard-tabs.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'dashboard-tabs.js');
