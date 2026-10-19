@@ -73,7 +73,7 @@ export async function discoverWorkflowSkillsets(client) {
             // workflow ids of its skills start there too; a skills repository is recorded by its root.
             const base = repository.kind === 'mixed' ? skillsRoot : source;
             if (definitions.length) for (const set of definitions) skillsets.push({ id: canonicalSkillset(base, set.name), kind: 'skillset',
-                name: set.name, description: set.description, repositoryId: base, repositoryName: repository.name });
+                name: set.name, description: set.description, skills: set.skills, repositoryId: base, repositoryName: repository.name });
             else for (const name of skillNames) skillsets.push({ id: canonicalSkill(base, name), kind: 'skill', name,
                 description: '', repositoryId: base, repositoryName: repository.name });
         } catch (error) { diagnostics.push({ repository: repository.name, message: error.message }); }
@@ -81,7 +81,7 @@ export async function discoverWorkflowSkillsets(client) {
     const copilotSkills = await listSkillNames(copilotSkillsRoot);
     const copilotDefinitions = await readSkillsetDefinitions(copilotSkillsRoot, copilotSkills);
     if (copilotDefinitions.length) for (const set of copilotDefinitions) skillsets.push({ id: canonicalSkillset('builtin:copilot', set.name),
-        kind: 'skillset', name: set.name, description: set.description, repositoryId: 'builtin:copilot', repositoryName: 'copilot' });
+        kind: 'skillset', name: set.name, description: set.description, skills: set.skills, repositoryId: 'builtin:copilot', repositoryName: 'copilot' });
     else for (const name of copilotSkills) skillsets.push({ id: canonicalSkill('builtin:copilot', name), kind: 'skill', name,
         description: '', repositoryId: 'builtin:copilot', repositoryName: 'copilot' });
     return { skillsets: [...new Map(skillsets.map(set => [set.id, set])).values()], diagnostics };

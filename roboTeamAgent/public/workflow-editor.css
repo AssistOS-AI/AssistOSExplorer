@@ -166,28 +166,17 @@ textarea.workflow-description:is(:disabled, [readonly]) { border-color: transpar
 .skillset-trigger:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .skillset-trigger-icon { font-weight: 700; color: var(--accent); }
 .skillset-trigger-caret { margin-left: auto; color: var(--text-soft); }
-.skillset-dialog { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 12px; width: 80vw; height: 80vh; max-width: none; max-height: none; margin: auto; padding: 18px 20px; border: 1px solid var(--border); border-radius: var(--radius-xl, 14px); background: var(--surface); color: var(--text); box-shadow: 0 24px 60px rgba(0, 0, 0, .35); }
+/* The skill picker reuses the robot Manage skills dialog styles from styles.css. */
 .skillset-dialog:not([open]) { display: none; }
-.skillset-dialog::backdrop { background: rgba(15, 23, 42, .55); }
-.skillset-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.skillset-dialog-title { margin: 0; font-size: 1.05rem; }
+/* No backdrop blur here: under the editor's large dotted graph surface, every hover or scroll
+   repaint inside the dialog re-blurred the whole viewport and made the picker lag. */
+.skillset-dialog::backdrop, .theme-dark .skillset-dialog::backdrop { backdrop-filter: none; }
+.skillset-dialog { contain: layout paint; }
+.skillset-dialog .skills-dialog-heading h2 { margin: 0; }
+.skillset-dialog .skillset-toggle span { min-width: 6.5em; }
+.skillset-dialog .individual-skill { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.skillset-dialog .individual-skill > span { min-width: 0; overflow-wrap: anywhere; }
 .skillset-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.skillset-search { width: 100%; padding: 9px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md, 8px); background: var(--input-bg, var(--surface)); color: var(--text); font-size: var(--font-sm); outline: none; }
-.skillset-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 0 128 105), .14); }
-.skillset-list { display: grid; grid-auto-rows: max-content; gap: 12px; min-height: 0; overflow-y: auto; padding-right: 4px; align-content: start; }
-.skillset-group { border: 1px solid var(--border); border-radius: var(--radius-md, 8px); background: var(--surface); overflow: hidden; }
-.skillset-group-header { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 12px; border: 0; cursor: pointer; font-size: var(--font-sm); font-weight: 600; color: var(--text); background: var(--surface-soft, var(--surface)); text-align: left; }
-.skillset-group-arrow { color: var(--text-soft); font-size: .9em; }
-.skillset-group-name { flex: 1 1 auto; overflow-wrap: anywhere; }
-.skillset-group-count { color: var(--text-soft); font-size: var(--font-xs, .75rem); font-weight: 500; }
-.skillset-group-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px; padding: 10px 12px 12px; }
-.skillset-pick-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md, 8px); background: var(--surface); color: var(--text); text-align: left; cursor: pointer; }
-.skillset-pick-item:hover:not(:disabled) { border-color: var(--accent); }
-.skillset-pick-item.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
-.skillset-pick-check { flex: 0 0 16px; color: var(--accent); font-weight: 700; text-align: center; }
-.skillset-pick-name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
-.skillset-pick-name { font-size: var(--font-sm); font-weight: 600; overflow-wrap: anywhere; }
-.skillset-pick-kind { padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--text-soft) 14%, transparent); color: var(--text-soft); font-size: 10px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
 .skillset-count { color: var(--text-soft); font-size: var(--font-xs, .75rem); }
 .coverage-warning { border-color: var(--warning); }
 .task-coverage-icon { display: none; margin-top: 2px; color: var(--warning); }

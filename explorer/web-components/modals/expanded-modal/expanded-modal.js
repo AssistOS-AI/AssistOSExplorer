@@ -1,6 +1,6 @@
 import { ensureMarketplaceAgentRunning } from "../../../services/infrastructure/marketplaceAgentRuntime.js";
 import assistosSDK from "../../../services/assistosSDK.js";
-import { relayBreadcrumbFieldEvent, hasFocusedBreadcrumbField } from "./breadcrumbFields.js";
+import { relayBreadcrumbFieldEvent, relayBreadcrumbSelectEvent, syncBreadcrumbSelects, hasFocusedBreadcrumbField } from "./breadcrumbFields.js";
 import {
     probeAgentRuntimeMcp,
     probeAgentRuntimeRouteStability,
@@ -59,7 +59,7 @@ export class ExpandedModal {
         this.titleNode = this.element.querySelector("#expandedModalTitle");
         this.breadcrumbsNode = this.element.querySelector("#expandedModalBreadcrumbs");
         this.breadcrumbsNode?.addEventListener("click", this.handleBreadcrumbClick);
-        for (const type of ["input", "focusin", "focusout", "keydown"]) this.breadcrumbsNode?.addEventListener(type, this.handleBreadcrumbFieldEvent);
+        for (const type of ["input", "change", "focusin", "focusout", "keydown"]) this.breadcrumbsNode?.addEventListener(type, this.handleBreadcrumbFieldEvent);
         this.mode = this.attr("mode") || (this.attr("component") ? "component" : "iframe");
         const reloadButton = this.element.querySelector("#expandedModalReload");
         if (reloadButton) reloadButton.hidden = this.mode !== "iframe";
@@ -99,6 +99,7 @@ export class ExpandedModal {
     };
 
     handleBreadcrumbFieldEvent = (event) => {
+        if (relayBreadcrumbSelectEvent(event, this.sourceBreadcrumbs)) return;
         if (!relayBreadcrumbFieldEvent(event, this.sourceBreadcrumbs)) return;
         if (event.type === "focusout") queueMicrotask(() => this.renderBreadcrumbs?.());
     };
@@ -141,6 +142,7 @@ export class ExpandedModal {
             if (!this.breadcrumbsNode || !this.titleNode || !source.isConnected) return;
             if (hasFocusedBreadcrumbField(this.breadcrumbsNode)) return;
             this.breadcrumbsNode.replaceChildren(...[...source.childNodes].map((node) => node.cloneNode(true)));
+            syncBreadcrumbSelects(this.breadcrumbsNode, source);
             const sourceLinks = [...source.querySelectorAll("a")];
             const cloneLinks = [...this.breadcrumbsNode.querySelectorAll("a")];
             cloneLinks.forEach((link, index) => {
@@ -155,7 +157,7 @@ export class ExpandedModal {
         render();
         if (typeof MutationObserver === "function") {
             this.headerObserver = new MutationObserver(render);
-            this.headerObserver.observe(source, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden", "href", "disabled", "readonly", "style", "aria-invalid"] });
+            this.headerObserver.observe(source, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden", "href", "disabled", "readonly", "style", "aria-invalid", "data-embed-status"] });
         }
     }
 

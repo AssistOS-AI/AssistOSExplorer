@@ -200,27 +200,42 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         trigger.setAttribute('aria-haspopup', 'dialog');
         trigger.setAttribute('aria-expanded', 'false');
         trigger.append(node('span', '+', 'skillset-trigger-icon'), node('span', 'Add skill or skillset'), node('span', '▾', 'skillset-trigger-caret'));
+        // The picker follows Explorer's Manage skills layout: repositories on the left,
+        // the selected repository's skillsets or skills with checkboxes on the right.
+        // Only repositories already offered by the catalog are listed; none can be added here.
         const dialog = document.createElement('dialog');
-        dialog.className = 'skillset-dialog';
-        dialog.setAttribute('aria-label', 'Add skill or skillset');
-        const header = node('div', null, 'skillset-dialog-header');
-        header.append(node('h3', 'Add skill or skillset', 'skillset-dialog-title'), button('Close', () => closeSkillDialog()));
-        const search = node('input'); search.type = 'search'; search.className = 'skillset-search';
-        search.placeholder = 'Search skills and skillsets'; search.setAttribute('aria-label', 'Search skills and skillsets');
-        const list = node('div', null, 'skillset-list');
+        dialog.className = 'skills-dialog skills-manager-dialog skillset-dialog';
+        dialog.setAttribute('aria-labelledby', 'skillset-dialog-title');
+        const header = node('header', null, 'skills-dialog-heading');
+        const title = node('h2', 'Add skill or skillset'); title.id = 'skillset-dialog-title';
+        header.append(title, button('Close', () => closeSkillDialog()));
+        const layout = node('div', null, 'skills-manager-layout');
+        const nav = node('nav', null, 'skills-repository-nav');
+        nav.setAttribute('aria-label', 'Skill repositories');
+        const navHeading = node('div', null, 'skills-repository-nav-heading');
+        navHeading.append(node('h3', 'Repositories'));
+        const repositoryList = node('div', null, 'skills-repository-list');
+        nav.append(navHeading, repositoryList);
+        const content = node('div', null, 'skills-manager-content');
+        const detail = node('section'); detail.id = 'skillset-repository-detail';
+        content.append(detail);
+        layout.append(nav, content);
         const count = node('span', '', 'skillset-count');
-        const footer = node('div', null, 'skillset-dialog-footer');
+        const footer = node('footer', null, 'skills-manager-footer skillset-dialog-footer');
         footer.append(count, button('Done', () => closeSkillDialog()));
-        dialog.append(header, search, list, footer);
-        const groups = new Map();
+        dialog.append(header, layout, footer);
+        const repositories = new Map();
         for (const set of catalog) {
-            const key = set.repositoryName || set.repositoryId || 'Skillsets';
-            if (!groups.has(key)) groups.set(key, []);
-            groups.get(key).push(set);
+            const key = set.repositoryId || set.repositoryName || 'Skillsets';
+            if (!repositories.has(key)) repositories.set(key, { key, name: set.repositoryName || key, source: set.repositoryId || '', entries: [] });
+            repositories.get(key).entries.push(set);
         }
         const known = new Set(catalog.map(set => set.id));
         const unavailable = selectedIds.filter(id => !known.has(id));
-        if (unavailable.length) groups.set('Unavailable', unavailable.map(id => ({ id, name: `${id} (unavailable)` })));
+        if (unavailable.length) repositories.set('unavailable', { key: 'unavailable', name: 'Unavailable', unavailable: true,
+            source: 'Selected earlier but no longer offered by any repository. Uncheck to remove.', entries: unavailable.map(id => ({ id, kind: 'skill', name: id })) });
+        let currentRepository = [...repositories.values()].find(repo => repo.entries.some(set => selectedIds.includes(set.id)))?.key
+            || repositories.keys().next().value;
         function apply() { changed(); void checkCoverage(); }
         function open() {
             closeSkillDialog();
@@ -231,7 +246,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             trigger.setAttribute('aria-expanded', 'true');
             dialog.showModal();
             renderOptions();
-            search.focus();
+            repositoryList.querySelector('[aria-pressed="true"]')?.focus();
         }
         function renderPills() {
             pills.replaceChildren();
@@ -249,45 +264,77 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
                 pills.append(pill);
             }
         }
+        function toggleSelection(id, checked) {
+            const index = selectedIds.indexOf(id);
+            if (checked && index < 0) selectedIds.push(id);
+            if (!checked && index >= 0) selectedIds.splice(index, 1);
+            renderPills(); renderOptions(); apply();
+        }
+        function checkbox(set) {
+            const chosen = selectedIds.includes(set.id);
+            const label = node('label', null, 'skillset-toggle');
+            const input = node('input'); input.type = 'checkbox'; input.checked = chosen;
+            input.dataset.selectionId = set.id;
+            input.setAttribute('aria-label', `${set.name}: ${chosen ? 'selected' : 'not selected'}`);
+            input.onchange = () => toggleSelection(set.id, input.checked);
+            label.append(input, node('span', chosen ? 'Selected' : 'Not selected'));
+            return label;
+        }
+        function members(names) {
+            const list = node('ul', null, 'skill-members');
+            for (const name of names) list.append(node('li', name));
+            return list;
+        }
         function renderOptions() {
-            const term = search.value.trim().toLowerCase();
-            list.replaceChildren();
-            let visible = 0;
-            for (const [repository, sets] of groups) {
-                const matches = sets.filter(set => !term || String(set.name || '').toLowerCase().includes(term)
-                    || repository.toLowerCase().includes(term));
-                if (!matches.length) continue;
-                const group = node('div', null, 'skillset-group');
-                const header = node('button', null, 'skillset-group-header');
-                header.type = 'button';
-                const arrow = node('span', '▸', 'skillset-group-arrow');
-                header.append(arrow, node('span', repository, 'skillset-group-name'), node('span', String(matches.length), 'skillset-group-count'));
-                const grid = node('div', null, 'skillset-group-grid');
-                const setOpen = (openGroup) => {
-                    grid.style.display = openGroup ? 'grid' : 'none';
-                    arrow.textContent = openGroup ? '▾' : '▸';
-                    header.setAttribute('aria-expanded', String(openGroup));
-                };
-                setOpen(Boolean(term));
-                header.onclick = () => setOpen(grid.style.display === 'none');
-                for (const set of matches) {
-                    const chosen = selectedIds.includes(set.id);
-                    const item = node('button', null, 'skillset-pick-item');
-                    item.type = 'button';
-                    item.setAttribute('aria-pressed', String(chosen));
-                    if (chosen) item.classList.add('selected');
-                    const nameRow = node('span', null, 'skillset-pick-name-row');
-                    nameRow.append(node('span', set.name, 'skillset-pick-name'));
-                    if (set.kind) nameRow.append(node('span', set.kind, 'skillset-pick-kind'));
-                    item.append(node('span', chosen ? '✓' : '', 'skillset-pick-check'), nameRow);
-                    item.onclick = () => { if (chosen) selectedIds.splice(selectedIds.indexOf(set.id), 1); else selectedIds.push(set.id); renderPills(); renderOptions(); apply(); };
-                    grid.append(item);
-                }
-                group.append(header, grid);
-                list.append(group);
-                visible += matches.length;
+            const focused = document.activeElement?.dataset?.selectionId;
+            repositoryList.replaceChildren();
+            if (!repositories.size) repositoryList.append(node('p', 'No skill repositories are available.', 'muted'));
+            for (const repo of repositories.values()) {
+                const sets = repo.entries.filter(set => set.kind === 'skillset').length;
+                const skills = repo.entries.length - sets;
+                const chosen = repo.entries.filter(set => selectedIds.includes(set.id)).length;
+                const option = node('button', null, 'skills-repository-option');
+                option.type = 'button';
+                option.setAttribute('aria-pressed', String(repo.key === currentRepository));
+                option.setAttribute('aria-controls', detail.id);
+                const summary = [sets && `${sets} ${sets === 1 ? 'skillset' : 'skillsets'}`, skills && `${skills} ${skills === 1 ? 'skill' : 'skills'}`].filter(Boolean).join(' · ');
+                option.append(node('span', repo.name), node('span', `${summary}${chosen ? ` · ${chosen} selected` : ''}`, 'muted'));
+                option.onclick = () => { currentRepository = repo.key; renderOptions(); content.scrollTop = 0; };
+                repositoryList.append(option);
             }
-            if (!visible) list.append(node('p', 'No matching skills or skillsets.', 'skillset-empty'));
+            detail.replaceChildren();
+            const repo = repositories.get(currentRepository);
+            if (repo) {
+                const heading = node('div', null, 'skills-repository-heading');
+                const titles = node('div');
+                titles.append(node('h3', repo.name), node('p', repo.source, 'muted skills-repository-source'));
+                heading.append(titles);
+                detail.append(heading);
+                const sets = repo.entries.filter(set => set.kind === 'skillset');
+                const skills = repo.entries.filter(set => set.kind !== 'skillset');
+                if (sets.length) {
+                    detail.append(node('h4', 'Skillsets', 'skills-section-label'));
+                    for (const set of sets) {
+                        const item = node('article', null, `skillset-item${selectedIds.includes(set.id) ? '' : ' is-disabled'}`);
+                        const top = node('div', null, 'skillset-heading');
+                        top.append(node('h5', set.name), checkbox(set));
+                        item.append(top);
+                        if (set.description) item.append(node('p', set.description, 'skillset-description'));
+                        if (set.skills?.length) item.append(members(set.skills));
+                        detail.append(item);
+                    }
+                }
+                if (skills.length) {
+                    detail.append(node('h4', 'Skills', 'skills-section-label'));
+                    for (const set of skills) {
+                        const row = node('div', null, 'individual-skill');
+                        row.append(node('span', set.name), checkbox(set));
+                        detail.append(row);
+                    }
+                }
+                if (!repo.entries.length) detail.append(node('p', 'No skills available.', 'muted'));
+            } else detail.append(node('p', 'No skill repositories are available.', 'muted'));
+            if (focused) [...detail.querySelectorAll('input[type="checkbox"]')].find(input => input.dataset.selectionId === focused)?.focus();
             count.textContent = selectedIds.length ? `${selectedIds.length} selected` : 'None selected';
         }
         trigger.onclick = () => { if (openSkillDialog?.dialog === dialog) closeSkillDialog(); else open(); };
