@@ -32,7 +32,7 @@ test('durable Cron jobs create ordinary workflow snapshots and do not launch twi
     assert.equal(flow.scheduleId, job.id); assert.equal(flow.scheduledAt, '2026-10-09T08:00:00.000Z'); assert.equal(flow.createdBy, 'admin');
     assert.equal(flow.graph.id, 'scheduled'); assert.equal(flow.objective, 'Write the report');
     assert.equal(path.dirname(flow.folder), f.root);
-    assert.equal(path.basename(flow.folder), 'cron-2026-10-09_08-00-00-000Z');
+    assert.equal(path.basename(flow.folder), `scheduled-${job.id.slice(5, 13)}`);
     assert.equal(f.started[0].cwd, flow.folder);
     assert.equal(current.nextRunAt, '2026-10-09T09:00:00.000Z');
 });
@@ -83,22 +83,23 @@ test('editing, disabling or deleting a claimed job cancels its launch and rolls 
         else await f.service.saveSchedule({ revision: job.revision, ...(operation === 'disable' ? { enabled: false } : { objective: 'Edited before launch' }) }, 'admin', job.id);
         release(); await tick;
         assert.equal(f.started.length, 0, operation); assert.equal((await f.service.store.list()).length, 0, operation);
-        assert.equal((await fs.readdir(f.root)).filter(name => name.startsWith('cron-')).length, 0, operation);
+        assert.equal((await fs.readdir(f.root)).filter(name => name.startsWith('scheduled-')).length, 0, operation);
     }
 });
 
-test('scheduled and manual cron runs share workflow-runs with distinct per-attempt folders', async t => {
+test('scheduled and manual runs of a Cron job share its job folder and see earlier work', async t => {
     const f = await fixture(t), job = await f.create({ folder: '' });
     assert.equal(job.folder, path.join(f.root, 'workflow-runs'));
     assert.equal(job.folderLabel, 'workflow-runs');
     const manual = (await f.service.runScheduleNow(job.id, job.revision, 'runner')).flow;
-    assert.equal(manual.folder, path.join(job.folder, 'cron-2026-10-09_07-00-00-000Z'));
+    assert.equal(manual.folder, path.join(job.folder, `scheduled-${job.id.slice(5, 13)}`));
+    assert.equal((await f.service.listSchedules())[0].jobFolder, path.basename(manual.folder));
     assert.equal(f.started[0].cwd, manual.folder);
     await fs.writeFile(path.join(manual.folder, 'report.md'), 'First run');
     await f.service.store.update(manual.id, flow => { flow.status = 'completed'; });
     f.advance(60); await f.service.scheduler.tick();
     const current = (await f.service.listSchedules())[0], scheduled = await f.service.store.get(current.lastFlowId);
-    assert.equal(scheduled.folder, path.join(job.folder, 'cron-2026-10-09_08-00-00-000Z'));
+    assert.equal(scheduled.folder, manual.folder);
     assert.equal(f.started[1].cwd, scheduled.folder);
     assert.equal(await fs.readFile(path.join(manual.folder, 'report.md'), 'utf8'), 'First run');
     assert.equal(current.folder, job.folder);

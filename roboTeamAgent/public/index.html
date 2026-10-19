@@ -129,9 +129,9 @@
                 <span id="cronFolderTitle">Results folder</span>
                 <input name="folder" type="hidden">
                 <div class="cron-folder-selection"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></svg><output id="cronFolderLabel">workflow-runs</output><button id="cronChangeFolder" class="button secondary" type="button">Change folder</button></div>
-                <div class="cron-folder-note"><span>Each run uses its own cron-date-time folder for results and logs.</span><button id="cronDefaultFolder" class="folder-text-action" type="button" hidden>Use default</button></div>
+                <div class="cron-folder-note"><span id="cronFolderNote">Every run of this job works in one subfolder named after the workflow and the job, so each run sees what earlier runs left there.</span><button id="cronDefaultFolder" class="folder-text-action" type="button" hidden>Use default</button></div>
             </div>
-            <label id="cronObjectiveField" hidden><span id="cronObjectiveLabel">Objective</span><textarea name="objective" rows="3" maxlength="32768" placeholder="What should this workflow accomplish each time?"></textarea></label>
+            <label id="cronObjectiveField"><span id="cronObjectiveLabel">Prompt</span><textarea name="objective" rows="3" maxlength="32768" placeholder="What should this workflow do each time it runs?"></textarea></label>
             <p id="cronObjectiveHint" class="cron-hint">Uses the selected workflow’s default objective.</p>
             <label><span>Schedule</span><select name="scheduleKind"><option value="interval">At regular intervals</option><option value="daily">At daily times</option></select></label>
             <div id="cronInterval" class="cron-interval">

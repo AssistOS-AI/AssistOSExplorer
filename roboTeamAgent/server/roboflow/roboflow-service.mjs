@@ -8,7 +8,7 @@ import { FLOWS_FOLDER } from './workflow-files.mjs';
 import { TaskFlowStore } from './task-flow-store.mjs';
 import { ScheduleStore } from './schedule-store.mjs';
 import { ScheduleFolders } from './schedule-folders.mjs';
-import { RunFolders } from './run-folders.mjs';
+import { RunFolders, jobFolderName } from './run-folders.mjs';
 import { WorkflowScheduler } from './workflow-scheduler.mjs';
 import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator, resolveWorkflowObjective, assertRunnable } from './graph.mjs';
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
@@ -178,7 +178,7 @@ export class RoboFlowService {
             if (this.runFolders.isLegacyDefault(record.folder, root)) record.folder = path.join(root, 'workflow-runs');
             const workflow = this.registry.getSync(job.workflowTypeId);
             const flow = job.lastFlowId && this.store.getSync(job.lastFlowId);
-            return { ...record, folderLabel: this.scheduleFolders.label(record.folder, root), workflowName: workflow?.name || job.workflowTypeId,
+            return { ...record, folderLabel: this.scheduleFolders.label(record.folder, root), jobFolder: jobFolderName(job.workflowTypeId, job.id), workflowName: workflow?.name || job.workflowTypeId,
                 effectiveObjective: job.objective || workflow?.defaultObjective || '',
                 lastFlowStatus: flow?.status || null, lastFlowError: flow?.error || null, launching: Boolean(pendingLaunch) };
         });
@@ -197,7 +197,8 @@ export class RoboFlowService {
         const objective = textField(input.objective, 'objective', 32768);
         resolveWorkflowObjective(graph, objective);
         const allocated = Boolean(scheduleId) || !input.folder;
-        const folder = allocated ? await this.runFolders.create(input.folder, Boolean(scheduleId)) : await this.runtimeManager.resolveCwd(input.folder);
+        const folder = scheduleId ? await this.runFolders.forJob(input.folder, graph.id, scheduleId)
+            : allocated ? await this.runFolders.create(input.folder) : await this.runtimeManager.resolveCwd(input.folder);
         let flow;
         try {
             flow = await this.store.createFromWorkflow(this.registry, graph.id, { folder, objective, createdBy: input.createdBy || '',

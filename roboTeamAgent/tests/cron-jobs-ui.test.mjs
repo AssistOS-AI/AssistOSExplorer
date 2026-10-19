@@ -51,7 +51,7 @@ test('dashboard uses matching cards, discreet status and metadata, grouped editi
     assert.match(html, /class="robot-card cron-card"/); assert.match(html, /class="run-state cron-state"/);
     assert.doesNotMatch(html, /cron-id/); assert.doesNotMatch(js, /querySelector\('\.cron-id'\)/);
     assert.match(html, /id="cronDialog"[^>]*aria-labelledby="cronDialogTitle"/);
-    assert.match(html, /id="cronObjectiveField" hidden/); assert.doesNotMatch(html, /name="objective"[^>]*required/);
+    assert.match(html, /id="cronObjectiveField"><span id="cronObjectiveLabel">Prompt</); assert.doesNotMatch(js, /cronObjectiveField.\).hidden/); assert.doesNotMatch(html, /name="objective"[^>]*required/);
     assert.match(js, /control\('objective'\)\.required = requiresObjective/);
     assert.match(js, /!workflow\?\.defaultObjective/);
     assert.match(html, /name="folder" type="hidden"/); assert.doesNotMatch(html, /Absolute path to a workspace folder/);
