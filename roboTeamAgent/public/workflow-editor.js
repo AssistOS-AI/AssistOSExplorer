@@ -1,6 +1,4 @@
 import { drawBoard, workflowNodeRole, workflowRoleIcons } from './workflow-board.js';
-import { reviseGraph } from './workflow-generator.js';
-import { createDescriptionRevision } from './workflow-description-revision.js';
 import { initScheduleFolderPicker } from './schedule-folder-picker.js';
 const warningText = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
 const node = (tag, text, className) => { const element = document.createElement(tag); if (text) element.textContent = text; if (className) element.className = className; return element; };
@@ -67,9 +65,6 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const nameControl = form.elements.name;
     const taskPage = document.querySelector('#taskPage');
     const workflowContent = document.querySelector('#workflowContent');
-    const review = document.querySelector('#descriptionReview');
-    const reviewText = document.querySelector('#descriptionReviewText');
-    const reviewRetry = document.querySelector('#descriptionReviewRetry');
     // Save stores a new workflow internally, or an existing one in its own source. Save as opens the
     // folder selector and stores the draft as a JSON file in that folder's flows folder: a new workflow
     // as itself, an existing one as a copy (workflowCopy). Built-in workflows are read-only, but an
@@ -85,27 +80,6 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
     const readonly = () => !canAdmin || graph?.readOnly === true || graph?.kind === 'default';
     const changed = () => { version++; };
-    const descriptionRevision = createDescriptionRevision({
-        getGraph: () => graph,
-        generate: (snapshot, previous, description, options) => reviseGraph(snapshot, previous, description, { ...options, request: api }),
-        apply: revised => {
-            for (const key of ['tasks', 'edges', 'entryTaskId', 'layout', 'defaultObjective']) graph[key] = structuredClone(revised[key]);
-            selectedEdgeId = null;
-            changed(); render();
-        },
-        onState: (state, reason = '') => {
-            review.hidden = state === 'idle';
-            review.dataset.state = state;
-            reviewRetry.hidden = state !== 'failed';
-            reviewText.textContent = ({ edited: 'Description changed — leave the field to check the workflow.',
-                checking: 'Checking requirements and updating the graph if needed…',
-                regenerated: 'Graph updated. Review the changes, then save again.',
-                unchanged: 'No workflow change needed. The graph is unchanged.' }[state] || reason);
-            if (['regenerated', 'unchanged'].includes(state) && reason) reviewText.textContent += ` ${reason}`;
-            form.setAttribute('aria-busy', String(state === 'checking'));
-        }
-    });
-    reviewRetry.onclick = () => { if (!readonly()) void descriptionRevision.check(); };
     function showError(error) { message.textContent = error.message; }
     function showTaskEditor(show) {
         taskPage.hidden = !show;
@@ -515,7 +489,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             graph.edges = graph.edges.filter(edge => edge.sourceTaskId !== task.id && edge.targetTaskId !== task.id);
             delete graph.layout[task.id];
             syncCoordinator();
-            if (graph.entryTaskId === task.id) graph.entryTaskId = graph.tasks[0]?.id || '';
+            if (graph.entryTaskId === task.id) graph.entryTaskId = graph.tasks.find(item => item.kind !== 'run-workflows')?.id || '';
             if (selected === task.id) selected = graph.tasks[0]?.id || null;
             changed(); showTaskEditor(false); render();
         });
@@ -552,8 +526,6 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         version++; coverageRequest++; message.textContent = ''; selected = graph.entryTaskId || graph.tasks[0]?.id || null;
         updateWorkflowName(graph.name || ''); nameBeforeEditing = graph.name;
         form.elements.description.value = graph.description;
-        descriptionRevision.reset(graph.description);
-        document.querySelector('#descriptionReviewHint').hidden = readonly();
         for (const control of form.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
         nameControl.disabled = readonly();
         nameControl.title = readonly() ? 'Workflow name · Read only' : 'Rename workflow · Enter to finish · Escape to cancel';
@@ -575,8 +547,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         showTaskEditor(false); render();
         try { const result = await api('api/roboflow/skillsets'); catalog = result.skillsets; render(); if (result.diagnostics.length) message.textContent = result.diagnostics.map(item => item.message).join('\n'); } catch (error) { showError(error); }
     }
-    document.querySelector('#workflowCancelButton').onclick = async () => { await descriptionRevision.dispose(); onClose(); };
-    window.addEventListener('pagehide', () => descriptionRevision.dispose());
+    document.querySelector('#workflowCancelButton').onclick = () => onClose();
     nameControl.addEventListener('focusin', () => { nameBeforeEditing = graph.name; });
     nameControl.addEventListener('input', event => { if (!readonly()) updateWorkflowName(event.target.value); });
     nameControl.addEventListener('focusout', () => { if (!readonly()) updateWorkflowName(nameControl.value.trim()); });
@@ -588,9 +559,8 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     });
     form.elements.description.oninput = event => {
         if (readonly()) return;
-        graph.description = event.target.value; changed(); descriptionRevision.edited();
+        graph.description = event.target.value; changed();
     };
-    form.elements.description.addEventListener('focusout', () => { if (!readonly()) void descriptionRevision.check(); });
     document.querySelector('#closeTaskEditor').onclick = () => { showTaskEditor(false); taskList.querySelector(`[data-task-id="${CSS.escape(selected)}"]`)?.focus(); };
     addTaskButton.onclick = () => addTask();
     const help = document.querySelector('.workflow-help');
@@ -601,15 +571,17 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         event.preventDefault(); graph.edges = graph.edges.filter(edge => edge.id !== selectedEdgeId); selectedEdgeId = null; changed(); render();
     });
     let saving = false;
-    // Reports the first draft problem and focuses its field; returns whether the draft can be saved.
+    // Save needs a name, a description, at least one task and a prompt on every task. It reports the first missing
+    // one and focuses its field. Other gaps, such as a task without a name, are warnings checked when a run starts.
     function draftReady() {
         if (!graph.name.trim()) { message.textContent = 'Enter a workflow name before saving.'; nameControl.setAttribute('aria-invalid', 'true'); nameControl.focus(); return false; }
-        if (!graph.tasks.length) { message.textContent = 'Add at least one task before saving.'; addTaskButton.focus(); return false; }
-        const invalidTask = graph.tasks.find(task => task.kind !== 'run-workflows' && (!task.name?.trim() || !task.prompt?.trim()));
-        if (invalidTask) {
-            select(invalidTask.id);
-            message.textContent = 'Enter a name and prompt for this task before saving.';
-            taskPanel.querySelector(!invalidTask.name?.trim() ? 'input' : 'textarea')?.focus();
+        if (!graph.description?.trim()) { message.textContent = 'Add a workflow description before saving.'; form.elements.description.focus(); return false; }
+        if (!graph.tasks.some(task => task.kind !== 'run-workflows')) { message.textContent = 'Add at least one task before saving.'; addTaskButton.focus(); return false; }
+        const missing = graph.tasks.find(task => task.kind !== 'run-workflows' && !task.prompt?.trim());
+        if (missing) {
+            select(missing.id);
+            message.textContent = 'Enter a prompt for this task before saving.';
+            taskPanel.querySelector('textarea')?.focus();
             return false;
         }
         return true;
@@ -620,15 +592,9 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         if ((location ? !canAdmin : readonly()) || saving || !draftReady()) return;
         saving = true;
         try {
-            const beforeReview = JSON.stringify({ tasks: graph.tasks, edges: graph.edges, entryTaskId: graph.entryTaskId, layout: graph.layout });
-            if (!await descriptionRevision.check()) return;
-            if (beforeReview !== JSON.stringify({ tasks: graph.tasks, edges: graph.edges, entryTaskId: graph.entryTaskId, layout: graph.layout })) {
-                reviewText.textContent = `Graph updated. Review the changes, then choose ${location ? 'Save as' : 'Save'} again.`;
-                return;
-            }
             if (location) await api('api/roboflow/workflows', { method: 'POST', body: { ...workflowCopy(graph), location } });
             else await api(graph.id ? `api/roboflow/workflows/${graph.id}` : 'api/roboflow/workflows', { method: graph.id ? 'PUT' : 'POST', body: graph });
-            descriptionRevision.dispose(); onClose();
+            onClose();
         } catch (error) {
             if (location) throw error;
             showError(error);

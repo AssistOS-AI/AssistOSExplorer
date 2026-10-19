@@ -74,12 +74,13 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
         const workflow = workflows.find(workflow => workflow.id === control('workflowTypeId').value);
         const defaultWorkflow = workflow?.kind === 'default';
         root.querySelector('#cronExecutionField').hidden = !defaultWorkflow; control('executionType').disabled = !defaultWorkflow || busy;
-        const requiresObjective = !workflow?.defaultObjective, hasOverride = Boolean(control('objective').value.trim());
-        root.querySelector('#cronObjectiveField').hidden = !requiresObjective && !hasOverride;
-        control('objective').required = requiresObjective; control('objective').disabled = busy || (!requiresObjective && !hasOverride);
-        root.querySelector('#cronObjectiveLabel').textContent = requiresObjective ? 'Objective' : 'Objective override (optional)';
+        // The prompt each scheduled run starts with (the run's objective). It is always shown; it is required only when
+        // the workflow has no default objective (its generation request or description) to fall back on.
+        const requiresObjective = !workflow?.defaultObjective;
+        control('objective').required = requiresObjective; control('objective').disabled = busy;
+        root.querySelector('#cronObjectiveLabel').textContent = requiresObjective ? 'Prompt' : 'Prompt (optional)';
         root.querySelector('#cronObjectiveHint').hidden = requiresObjective;
-        root.querySelector('#cronObjectiveHint').textContent = hasOverride ? 'Leave the override empty to use the workflow’s default objective.' : 'Uses the selected workflow’s default objective.';
+        root.querySelector('#cronObjectiveHint').textContent = 'Left empty, each run starts with the workflow’s default objective, taken from its description.';
     }
     function open(job, invoking = trigger, show = true) {
         if (!admin || busy) return;
@@ -104,6 +105,9 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
         }
         for (const time of (job?.timing.kind === 'daily' ? job.timing.times : !job && newDraft?.times || ['09:00'])) addTime(time);
         folderPicker.setFolder(control('folder').value, job?.folderLabel);
+        root.querySelector('#cronFolderNote').textContent = job?.jobFolder
+            ? `Every run of this job works in its subfolder ${job.jobFolder}, so each run sees what earlier runs left there.`
+            : 'Every run of this job works in one subfolder named after the workflow and the job, so each run sees what earlier runs left there.';
         syncFields();
         if (show && !dialog.open) dialog.showModal();
         control('workflowTypeId').focus();

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { WORKFLOW_ID_PATTERN } from './constants.mjs';
 import { ensureDirectory } from './storage.mjs';
 import { WorkflowFiles } from './workflow-files.mjs';
-import { normalizeWorkflow, invalid, slugifyWorkflow, workflowCatalogEntry, workflowDefaultObjective } from './graph.mjs';
+import { normalizeWorkflow, invalid, slugifyWorkflow, workflowCatalogEntry, workflowDefaultObjective, assertSavable } from './graph.mjs';
 export { normalizeWorkflow, slugifyWorkflow, workflowCatalogEntry };
 
 const present = (graph, extra) => ({ ...graph, defaultObjective: workflowDefaultObjective(graph), readOnly: false, ...extra });
@@ -87,6 +87,7 @@ export class WorkflowRegistry {
     // Without a location the workflow is internal; with one (a workspace folder) it is created as <location>/flows/<id>.json.
     async create(input, { location } = {}) {
         const graph = normalizeWorkflow(input);
+        assertSavable(graph);
         await this.refresh();
         if (this.presetIds.has(graph.id) || this.internalIndex.has(graph.id) || this.fileIndex.has(graph.id)) throw conflict('workflow id already exists');
         if (location !== undefined && !this.workspace) throw invalid('workflow files need a workspace');
@@ -103,7 +104,9 @@ export class WorkflowRegistry {
         if (!entry) return null;
         const previous = this.presentEntry(entry);
         if (input.revision !== previous.revision) throw conflict('workflow changed; reload before saving');
-        const written = await this.files.write(entry, normalizeWorkflow({ ...input, defaultObjective: editedObjective(input, previous) }, { id }));
+        const graph = normalizeWorkflow({ ...input, defaultObjective: editedObjective(input, previous) }, { id });
+        assertSavable(graph);
+        const written = await this.files.write(entry, graph);
         if (written.error) throw invalid(written.error);
         const updated = entry.internal ? { ...written, path: written.file, internal: true } : written;
         (updated.internal ? this.internalIndex : this.fileIndex).set(id, updated);

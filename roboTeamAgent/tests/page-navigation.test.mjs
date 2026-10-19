@@ -143,7 +143,7 @@ test('destination pages use one breadcrumb return control without a separate nav
     }
     const editor = await readFile(new URL('../public/workflow-editor.js', import.meta.url), 'utf8');
     assert.match(editor, /querySelector\('#workflowCancelButton'\)\.disabled = false/);
-    assert.match(editor, /querySelector\('#workflowCancelButton'\)\.onclick = async \(\) => \{ await descriptionRevision\.dispose\(\); onClose\(\); \}/);
+    assert.match(editor, /querySelector\('#workflowCancelButton'\)\.onclick = \(\) => onClose\(\);/);
     const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
     assert.match(app, /restoreDashboardView\(initialView\)/);
     assert.match(app, /if \(!event\.persisted\) return;[\s\S]*await loadRobots\(\);[\s\S]*restoreDashboardView\(navigation\.view\)/);

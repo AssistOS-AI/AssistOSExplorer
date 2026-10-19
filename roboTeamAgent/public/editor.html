@@ -53,17 +53,12 @@
         <div class="workflow-main">
           <div class="workflow-overview">
             <label class="workflow-description-field">
-              <textarea name="description" class="workflow-description" rows="2" maxlength="4000" aria-label="Workflow description" aria-describedby="descriptionReviewHint" placeholder="Add a workflow description…"></textarea>
-              <span id="descriptionReviewHint" class="workflow-description-hint">Changes are checked when you leave this field. New requirements update the graph; text corrections keep it unchanged.</span>
+              <textarea name="description" class="workflow-description" rows="2" maxlength="4000" aria-label="Workflow description" placeholder="Add a workflow description…"></textarea>
             </label>
             <details class="workflow-help">
               <summary title="Graph editing help" aria-label="Graph editing help"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01" stroke-linecap="round"/></svg></summary>
               <p class="hint">Drag nodes to arrange them. Drag a left or right connection point to another node’s point to create a directed connection. Use Start node in the task editor to choose the start node. Select a connection and press Delete or Backspace to remove it.</p>
             </details>
-          </div>
-          <div id="descriptionReview" class="workflow-description-review" hidden>
-            <span id="descriptionReviewText" role="status" aria-live="polite"></span>
-            <button id="descriptionReviewRetry" type="button" class="description-review-retry" hidden>Retry review</button>
           </div>
           <div id="workflowContent" class="workflow-content">
             <section id="taskPage" class="workflow-task-details" aria-label="Task details" hidden>

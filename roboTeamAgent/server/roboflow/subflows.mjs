@@ -1,5 +1,5 @@
 import { parseWorkflowResponse, routeFromResponse, workflowResponseContext } from './result-parser.mjs';
-import { hasCreators, isCoordinator, invalid, textField, workflowCatalogEntry } from './graph.mjs';
+import { hasCreators, isCoordinator, invalid, textField, workflowCatalogEntry, runProblems, assertRunnable } from './graph.mjs';
 import { EXECUTION_TYPES } from './constants.mjs';
 
 const paused = state => state === 'paused';
@@ -9,7 +9,7 @@ export const CONTINUE_PROMPT = 'Continue where you left off';
 export class Subflows {
     constructor(service) { this.service = service; }
     async catalog() {
-        return (await this.service.registry.list()).filter(graph => !hasCreators(graph) && !graph.tasks.some(isCoordinator))
+        return (await this.service.registry.list()).filter(graph => !hasCreators(graph) && !graph.tasks.some(isCoordinator) && !runProblems(graph).length)
             .map(graph => { const { tasks, ...entry } = workflowCatalogEntry(graph); return entry; });
     }
     async plan(flow, instance, output) {
@@ -25,6 +25,7 @@ export class Subflows {
             if (!item || typeof item.workflowTypeId !== 'string') throw invalid('workflowTypeId is required');
             const graph = await this.service.registry.get(item.workflowTypeId);
             if (!graph || hasCreators(graph) || graph.tasks.some(isCoordinator)) throw invalid('Child workflow must exist and contain no tasks that allow sub-flows');
+            assertRunnable(graph);
             if (graph.kind === 'default' ? !EXECUTION_TYPES.includes(item.executionType) : item.executionType !== undefined) throw invalid('executionType is required only for default child workflows');
             plans.push({ graph, objective: textField(item.prompt, 'child prompt', 32768, true),
                 ...(graph.kind === 'default' ? { executionType: item.executionType } : {}) });

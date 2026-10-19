@@ -32,7 +32,8 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
     const workflowId = id || input.id || slugifyWorkflow(name);
     if (!WORKFLOW_ID_PATTERN.test(workflowId)) throw invalid('invalid workflow id');
     if (!builtin && (workflowId === 'default' || input.kind || input.members || input.decisionMemberId)) throw invalid('reserved or obsolete workflow fields');
-    if (!Array.isArray(input.tasks) || !input.tasks.length || input.tasks.length > 100) throw invalid('workflow requires 1 to 100 tasks');
+    // Loading accepts an unfinished definition; assertSavable guards Save and assertRunnable guards a run.
+    if (!Array.isArray(input.tasks) || input.tasks.length > 100) throw invalid('workflow allows at most 100 tasks');
     const ids = new Set();
     const tasks = input.tasks.map(task => {
         if (!task || !identifier.test(task.id) || ids.has(task.id)) throw invalid('task IDs must be valid and unique');
@@ -49,8 +50,8 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         if (task.robotName || task.robotId) throw invalid('tasks cannot select robots');
         if (!builtin && !EXECUTION_TYPES.includes(task.executionType)) throw invalid('invalid execution type');
         if (!Array.isArray(task.skillsets) || task.skillsets.length > 100 || task.skillsets.some(s => typeof s !== 'string' || !s || s.length > 512)) throw invalid('invalid task skillsets');
-        return { id: task.id, name: textField(task.name, 'task name', 120, true),
-            ...(task.creator ? { creator: true } : {}), ...(task.allowsHumanInput ? { allowsHumanInput: true } : {}), prompt: textField(task.prompt, 'task prompt', 16000, true), skillsets: [...new Set(task.skillsets)],
+        return { id: task.id, name: textField(task.name, 'task name', 120),
+            ...(task.creator ? { creator: true } : {}), ...(task.allowsHumanInput ? { allowsHumanInput: true } : {}), prompt: textField(task.prompt, 'task prompt', 16000), skillsets: [...new Set(task.skillsets)],
             ...(builtin ? { supportedExecutionTypes: [...EXECUTION_TYPES] } : { executionType: task.executionType }) };
     });
     const creators = tasks.filter(task => task.creator);
@@ -59,15 +60,13 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         tasks.push({ id: RUN_WORKFLOWS_ID, name: 'Run workflows', kind: 'run-workflows', skillsets: [] });
         ids.add(RUN_WORKFLOWS_ID);
     }
-    if (!creators.length && ids.has(RUN_WORKFLOWS_ID)) throw invalid('Run workflows requires a task that allows sub-flows');
     if (input.entryTaskId === RUN_WORKFLOWS_ID) throw invalid('Run workflows cannot be the entry task');
-    if (!ids.has(input.entryTaskId)) throw invalid('entryTaskId must identify a task');
+    if (input.entryTaskId && !ids.has(input.entryTaskId)) throw invalid('entryTaskId must identify a task');
     if (!Array.isArray(input.edges) || input.edges.length > 1000) throw invalid('edges must contain at most 1000 entries');
     const edgeIds = new Set();
     const edges = input.edges.map(edge => {
         if (!edge || !identifier.test(edge.id) || edgeIds.has(edge.id)) throw invalid('edge IDs must be valid and unique');
         if (!ids.has(edge.sourceTaskId) || !ids.has(edge.targetTaskId)) throw invalid('edge endpoints must identify tasks');
-        if (edge.targetTaskId === RUN_WORKFLOWS_ID && !tasks.find(task => task.id === edge.sourceTaskId)?.creator) throw invalid('Only a task that allows sub-flows can enter Run workflows');
         const sourcePort = edge.sourcePort === undefined ? 'right' : edge.sourcePort;
         const targetPort = edge.targetPort === undefined ? 'left' : edge.targetPort;
         if (!['left', 'right'].includes(sourcePort) || !['left', 'right'].includes(targetPort)) throw invalid('edge ports must be left or right');
@@ -80,18 +79,51 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
             y: Number.isFinite(point?.y) ? Math.max(0, Math.min(10000, point.y)) : 60 + Math.floor(index / 4) * 140 }];
     }));
     const graph = { schemaVersion: 2, id: workflowId, name, description: textField(input.description, 'description', 4000),
-        ...(builtin ? { kind: 'default' } : {}), entryTaskId: input.entryTaskId, tasks, edges, layout };
+        ...(builtin ? { kind: 'default' } : {}), entryTaskId: input.entryTaskId || '', tasks, edges, layout };
     graph.defaultObjective = workflowDefaultObjective({ ...graph, defaultObjective: textField(input.defaultObjective, 'defaultObjective', 32768) });
     return graph;
 }
+// What a run needs that a saved draft may still lack. Starting a run refuses the first problem found.
+export function runProblems(graph) {
+    const problems = [];
+    const work = graph.tasks.filter(task => !isCoordinator(task));
+    if (!work.length) problems.push('Add at least one task');
+    else if (!graph.entryTaskId) problems.push('Choose the entry task');
+    for (const task of work) {
+        if (!task.name?.trim()) problems.push(`Task ${task.id} needs a name`);
+        if (!task.prompt?.trim()) problems.push(`Task ${task.name?.trim() || task.id} needs a prompt`);
+    }
+    if (graph.tasks.some(isCoordinator) && !hasCreators(graph)) problems.push('Run workflows needs a task that allows sub-flows');
+    for (const edge of graph.edges) {
+        if (edge.targetTaskId === RUN_WORKFLOWS_ID && !graph.tasks.find(task => task.id === edge.sourceTaskId)?.creator) {
+            problems.push('Only a task that allows sub-flows can enter Run workflows');
+        }
+    }
+    return problems;
+}
+// Save needs a description, at least one task and a prompt on every task. Other gaps (a task without a name, Run
+// workflows without a task that allows sub-flows) are warnings until a run starts.
+export function assertSavable(graph) {
+    if (!graph.description?.trim()) throw invalid('Add a workflow description before saving');
+    const work = graph.tasks.filter(task => !isCoordinator(task));
+    if (!work.length) throw invalid('Add at least one task before saving');
+    const missing = work.find(task => !task.prompt?.trim());
+    if (missing) throw invalid(`Task ${missing.name?.trim() || missing.id} needs a prompt before saving`);
+}
+export function assertRunnable(graph) {
+    const [problem] = runProblems(graph);
+    if (problem) throw invalid(`This workflow is not ready to run: ${problem}`);
+}
 export function graphDiagnostics(graph) {
+    const diagnostics = runProblems(graph).map(message => ({ message }));
+    if (!graph.entryTaskId) return diagnostics;
     const seen = new Set([graph.entryTaskId]);
     let changed = true;
     while (changed) {
         changed = false;
         for (const edge of graph.edges) if (seen.has(edge.sourceTaskId) && !seen.has(edge.targetTaskId)) { seen.add(edge.targetTaskId); changed = true; }
     }
-    const diagnostics = graph.tasks.filter(task => !seen.has(task.id)).map(task => ({ taskId: task.id, message: 'Task is unreachable from the entry task' }));
+    diagnostics.push(...graph.tasks.filter(task => !seen.has(task.id)).map(task => ({ taskId: task.id, message: 'Task is unreachable from the entry task' })));
     if (hasCreators(graph) && !graph.edges.some(edge => edge.sourceTaskId === RUN_WORKFLOWS_ID)) diagnostics.push({ taskId: RUN_WORKFLOWS_ID, message: 'Run workflows needs an outgoing continuation edge before a task that allows sub-flows can delegate.' });
     return diagnostics;
 }
