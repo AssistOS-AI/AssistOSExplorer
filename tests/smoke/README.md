@@ -72,8 +72,9 @@ This setup does not establish a spec03 pass or change default enablement.
 Use `npm test -- --project=chromium --workers=1 --retries=0` with complete
 `specs/*.spec.mjs` filenames and an escaped distinctive title grep when selecting
 one case. Never use `file:line`. `acceptance-ledger.json` preserves the 44
-original identities, including 25 required local outcomes and 19 separate or blocked
-profiles. The recorded failures and skips remain historical observations. The
+original identities, including 24 required local outcomes and 20 separate or blocked
+profiles. Spec 15 (WebAssist guest) moved to a separate profile when the default
+Explorer graph stopped including `legacy-agents`; see `SMOKE_WEBASSIST` below. The recorded failures and skips remain historical observations. The
 ledger and `--list` discovery authorize no live run.
 Execution without explicit spec filenames is refused before the legacy no-spec
 Copilot envelope can wrap a full suite. `test:quick` and `test:full` are therefore
@@ -111,7 +112,7 @@ requirement. The separately selected QA profile
 retains its fixed QA origin and existing optional edge-IP validator. A configured
 edge IP does not prove that the edge routes to the inspected Box. Common Box
 acceptance for that split-origin profile remains blocked until owner evidence
-establishes the binding. Separate QA artifacts cannot close the 25 local outcomes
+establishes the binding. Separate QA artifacts cannot close the 24 local outcomes
 or claim that common preflight proved edge-to-Box identity.
 
 Common preflight independently verifies the source manifest, inspected Box name,
@@ -131,7 +132,8 @@ selected account sign-in inputs. Supply `SMOKE_LOGIN_EMAIL` and
 Profiles using two users require the corresponding `SMOKE_SECONDARY_*` inputs.
 Browser setup verifies the configured administrator and a distinct ordinary user
 through the authenticated identity endpoint. It does not print private values.
-Spec04 additionally requires the installed `legacy-agents/searchAgent` catalog fixture;
+Spec04 additionally requires the installed `UmamiAgent/umamiAgent` catalog fixture, which
+Explorer installs but does not enable by default;
 its lifecycle interception proves UI gating, not real-agent startup.
 Umami requires both `SMOKE_UMAMI_USERNAME` and `SMOKE_UMAMI_PASSWORD`. OnlyOffice
 requires absolute `SMOKE_PLOINKY_BIN` for targeted restarts. Spec61 generates
@@ -208,7 +210,7 @@ Scoped harness checks run with `node --test lib/acceptance-profile.test.mjs
 lib/readiness-diagnostics.test.mjs lib/playwright-config.test.mjs
 lib/webtty-core-profile.test.mjs lib/copilot-release-evidence.test.mjs`. They use
 fabricated/stubbed runtime evidence and source-only Playwright discovery. Actual
-Box deployment, account sign-in and the 25 live outcomes require a selected
+Box deployment, account sign-in and the 24 live outcomes require a selected
 deployment/E2E task.
 
 From this directory:
@@ -864,6 +866,12 @@ On headed Linux without `DISPLAY`, the npm runner starts a deterministic 1920×1
   complete, error-free EOF with the same positive byte count for every member;
   partial or ambiguous siblings fail the gate. Raw browser failures remain in
   the diagnostic ledger.
+- `SMOKE_WEBASSIST=1` enables spec 15, the WebAssist guest gate: embedded chat and
+  an unauthenticated MCP initialize through the Router. The default Explorer graph
+  no longer includes webAssist, so first install the repository with
+  `ploinky install repo https://github.com/AssistOS-AI/legacy-agents.git` and run
+  `ploinky enable agent legacy-agents/webAssist`. Without the flag the spec is
+  skipped. It is a separate profile, not a required acceptance case.
 - `SMOKE_GPT_RESEARCHER=1` enables the real GPTResearcher Router gate for HTML,
   assets, reports API, same-origin redirect rewriting, and a browser WebSocket
   ping/pong under `/base-agent-additional-server/GPTResearcher/8000/`. Root-relative and private-origin
@@ -1034,7 +1042,10 @@ SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
 checkouts placed **next to** this repository, except `AchillesIDE/...`, which
 names this repository itself. The known siblings are `legacy-agents`, `webmeet`,
 `UmamiAgent` (installed, not enabled, so the walk does not reach it) and `local-llms` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
-repository's parent directory. `lib/deploy-qa-userpersisto.test.mjs` and
+repository's parent directory. The default graph does not cross into `legacy-agents`,
+which Explorer no longer installs; it stays a known sibling so that a reintroduced
+legacy edge resolves and fails the explicit legacy-agents guards instead of being
+reported as an unknown repository. `lib/deploy-qa-userpersisto.test.mjs` and
 `explorer/tests/unit/retiredLocalModelGraph.test.js` (which runs under
 `cd explorer && npm test`) both use the helper.
 
@@ -1042,8 +1053,9 @@ Tests that read the sources of moved agents (`direct-router-consumer-safety.test
 Explorer unit tests listed in the root `AGENTS.md`) locate the `legacy-agents`, `webmeet` and
 `ploinky` checkouts through `tests/helpers/sibling-roots.mjs`. It honors `LEGACY_AGENTS_ROOT`,
 `WEBMEET_ROOT` and `PLOINKY_ROOT`, defaults to the sibling directories, and throws when a checkout
-is missing instead of skipping. No `MINIMUM_REVISIONS` entry is recorded for the `legacy-agents`
-and `webmeet` agents yet: add them with the final merge commits of those repositories.
+is missing instead of skipping, so `legacy-agents` remains a required sibling checkout for these
+source-reading tests even though no deployment installs it. No `MINIMUM_REVISIONS` entry is
+recorded for the `webmeet` agents yet: add them with the final merge commit of that repository.
 
 Minimum revisions are recorded per enabled agent ref (`MINIMUM_REVISIONS` in
 the helper). One is recorded: `local-llms/local-llm` needs a local-llms

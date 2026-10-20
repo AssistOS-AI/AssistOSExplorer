@@ -33,7 +33,10 @@ import {
   waitFor,
 } from '../lib/hardware-limits-evidence.mjs';
 
-const TARGET = 'tasksAgent';
+// A non-GPU, single-instance agent of the default graph (UserPersisto enables it) chosen to replace tasksAgent.
+// Unverified until this profile runs on the dedicated hardware host: whether the hardware-limits API admits it,
+// and whether recreating it under limits disturbs an email-code sign-in in a later test.
+const TARGET = 'emailAgent';
 const GPU_TARGET_REF = 'local-llms/local-llm';
 const LIMITS = Object.freeze({ cpus: 0.5, memoryPercent: 10 });
 const APPLY_BOUND_MS = 5 * 60_000;
@@ -302,7 +305,7 @@ test.describe('Hardware limits administrator panel and API @hardware-limits', ()
       expect(result.status, `memoryPercent ${memoryPercent}`).toBe(400);
       expect(result.body.error).toBe('invalid_limits');
     }
-    // The VRAM probe needs a GPU-eligible target: tasksAgent has no GPU grant, so its answer would be the
+    // The VRAM probe needs a GPU-eligible target: emailAgent has no GPU grant, so its answer would be the
     // generic gpu_sharing_unavailable and would never reach the 512 MiB minimum. local-llm is the GPU agent of the graph.
     const gpuAgent = agentByRef(base, GPU_TARGET_REF);
     expect(gpuAgent, `${GPU_TARGET_REF} must be installed for the GPU share probe`).toBeTruthy();

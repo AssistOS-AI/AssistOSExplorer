@@ -1887,7 +1887,6 @@ jobs:
             'OnlyOfficeAgent|https://github.com/AssistOS-AI/OnlyOfficeAgent.git'
             'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'
             'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'
-            'legacy-agents|https://github.com/AssistOS-AI/legacy-agents.git'
             'webmeet|https://github.com/AssistOS-AI/webmeet.git'
           )
           BRANCH_ARGS=()
@@ -2415,7 +2414,7 @@ jobs:
           echo "[deploy-qa] Starting Explorer from each managed repository's configured default branch..."
           export PLOINKY_NO_WAIT_SEQUENCE_TERMINAL_GRACE_MS='300000'
           QA_DEPLOY_STARTED_AT_MS="$(node -p 'Date.now()')"
-          EXPECTED_NO_WAIT_AGENTS=6
+          EXPECTED_NO_WAIT_AGENTS=4
           "$PLOINKY" start explorer "${BRANCH_ARGS[@]}"
 
           QA_READY=0
@@ -2453,8 +2452,8 @@ jobs:
                 ;;
             esac
             if [[ "$BOX_STATUS" == *"Ploinky Box: running-initialized"* ]] &&
-              [[ "$BOX_STATUS" == *"Tracked agents: 12"* ]] &&
-              [[ "$BOX_STATUS" == *"Running agents: 12"* ]] &&
+              [[ "$BOX_STATUS" == *"Tracked agents: 9"* ]] &&
+              [[ "$BOX_STATUS" == *"Running agents: 9"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare mode: cloudflare"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare management: api-managed"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare publication: ready"* ]] &&
@@ -2477,7 +2476,7 @@ jobs:
             exit 1
           fi
           if [ "$QA_READY" != "1" ]; then
-            echo "[deploy-qa] ERROR: timed out waiting for stable 12/12 process admission and 6/6 semantic readiness."
+            echo "[deploy-qa] ERROR: timed out waiting for stable 9/9 process admission and 4/4 semantic readiness."
             exit 1
           fi
           case "$BOX_STATUS" in
@@ -2488,8 +2487,8 @@ jobs:
               ;;
           esac
           for expected_status in \
-            'Tracked agents: 12' \
-            'Running agents: 12' \
+            'Tracked agents: 9' \
+            'Running agents: 9' \
             'Cloudflare mode: cloudflare' \
             'Cloudflare management: api-managed' \
             'Cloudflare publication: ready' \
@@ -2677,7 +2676,7 @@ jobs:
                 -D "$MISMATCH_HEADER_FILE" \
                 -o "$MISMATCH_RESPONSE_FILE" \
                 -w '%{http_code}' \
-                "${PUBLIC_URL%/}/auth/login?agent=webAssist" || true
+                "${PUBLIC_URL%/}/auth/login?agent=dpuAgent" || true
             )"
             if [ "$code" = "200" ] && [ "$mismatch_code" = "400" ] && node --input-type=module - \
               "$RESPONSE_FILE" \
@@ -2734,7 +2733,7 @@ jobs:
           // END QA public email-first verification
           NODE
             then
-              echo "[deploy-qa] Public edge verified the host-bound SSO login, email-first wizard, OIDC issuer, and rejected a WebAssist selector switch."
+              echo "[deploy-qa] Public edge verified the host-bound SSO login, email-first wizard, OIDC issuer, and rejected a mismatched agent selector."
               break
             fi
             if [ "$attempt" = "60" ]; then

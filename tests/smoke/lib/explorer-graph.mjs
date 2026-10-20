@@ -6,10 +6,13 @@ import path from 'node:path';
 export const EXPLORER_REPO_ALIAS = 'AchillesIDE';
 export const EXPLORER_REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 
-// Sibling repositories the current graph crosses into. A qualified ref whose
-// repository part is neither one of these nor the Explorer alias is a defect
-// (a typo such as `proxy/soul-gateway`), never an environment gap. A new
-// sibling repository in the graph is added here and to the README table.
+// Sibling repositories the graph may name. A qualified ref whose repository
+// part is neither one of these nor the Explorer alias is a defect (a typo such
+// as `proxy/soul-gateway`), never an environment gap. The default graph no
+// longer reaches legacy-agents, but it stays listed so that a reintroduced
+// legacy edge resolves and fails the explicit legacy-agents guards instead of
+// surfacing as an unknown-sibling defect. A new sibling repository in the
+// graph is added here and to the README table.
 export const KNOWN_SIBLINGS = Object.freeze(['legacy-agents', 'webmeet', 'UmamiAgent', 'local-llms']);
 
 // Minimum sibling revisions, keyed by the enabled agent ref. A present sibling

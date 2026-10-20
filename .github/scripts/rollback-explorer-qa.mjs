@@ -102,7 +102,7 @@ function assertSelection(selection) {
 export const EXPECTED_DEFAULT_GRAPH = Object.freeze([
     'AchillesIDE/explorer', 'AchillesIDE/gitAgent', 'AchillesIDE/userPersistoAgent', 'AchillesIDE/emailAgent',
     'AchillesIDE/dpuAgent', 'AchillesIDE/roboTeamAgent', 'AchillesIDE/soul-gateway', 'AchillesIDE/workspaceMonitorAgent',
-    'legacy-agents/soplangAgent', 'legacy-agents/tasksAgent', 'legacy-agents/webAssist', 'local-llms/local-llm',
+    'local-llms/local-llm',
 ]);
 
 /**

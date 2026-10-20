@@ -317,7 +317,7 @@ test('QA workflow quiesces before backup, retains the old runtime, and restores 
     assert.ok(workflow.indexOf('"$engine" container stop --time 30') < workflow.indexOf('// BEGIN QA durable workspace preservation'));
     assert.ok(workflow.indexOf('// END QA durable workspace preservation') < workflow.indexOf('"$engine" container rename "$container_id"'));
     assert.ok(workflow.indexOf('// END QA policy restoration') < workflow.indexOf('"$PLOINKY" start explorer "${BRANCH_ARGS[@]}"'));
-    const readinessFailure = workflow.indexOf('timed out waiting for stable 12/12');
+    const readinessFailure = workflow.indexOf('timed out waiting for stable 9/9');
     assert.ok(readinessFailure > 0 && readinessFailure < workflow.indexOf('// BEGIN QA prior selection restoration'));
     assert.doesNotMatch(workflow, /fs\.rmSync\(target, \{ recursive: true/);
     assert.equal(workflow.match(/-X POST/g)?.length, 1, 'the only Cloudflare mutation POST creates the dedicated tunnel');

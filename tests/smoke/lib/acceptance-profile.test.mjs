@@ -8,7 +8,7 @@ import {
     acceptanceLedger, selectAcceptanceCases, validateAcceptanceProfile, assertLedgerResults,
     collectAcceptancePreflight, assertAcceptanceGeneration,
 } from './acceptance-profile.mjs';
-import { assertAccountRoles, assertSearchAgentFixture } from './account-preflight.mjs';
+import { assertAccountRoles, assertMarketplaceLifecycleFixture } from './account-preflight.mjs';
 import AcceptanceReporter from './acceptance-reporter.mjs';
 
 const digest = `sha256:${'a'.repeat(64)}`;
@@ -25,10 +25,14 @@ const baseEnv = {
 const args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/01-webtty-core.spec.mjs'];
 const record = entry => ({ identity: entry.identity, expectedStatus: 'passed', outcome: 'expected', results: [{ status: 'passed', retry: 0 }] });
 
-test('ledger retains all 44 identities and the 25 previously executed required cases', () => {
+test('ledger retains all 44 identities and the 24 required cases', () => {
     assert.equal(acceptanceLedger.identities.length, 44);
-    assert.equal(acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance').length, 25);
+    assert.equal(acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance').length, 24);
     assert.equal(new Set(acceptanceLedger.identities.map(entry => entry.identity)).size, 44);
+    // The WebAssist guest case needs an explicitly installed legacy-agents repository, so it is a flag-gated separate profile.
+    const webAssistGuest = acceptanceLedger.identities.find(entry => entry.file === '15-webassist-guest.spec.mjs');
+    assert.equal(webAssistGuest.disposition, 'separate-profile');
+    assert.deepEqual(webAssistGuest.requiredFlags, { SMOKE_WEBASSIST: '1' });
     for (const entry of acceptanceLedger.identities) {
         const escaped = entry.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const selection = selectAcceptanceCases([entry.selection.spec, '--grep', `^${escaped}$`]);
@@ -85,7 +89,7 @@ test('public-room WebMeet gate is a required official-release identity that need
     assert.deepEqual(profile.cases.map(value => value.identity), [entry.identity]);
     assert.equal(profile.box, true);
     assert.equal(profile.ledgerCoverage, true);
-    assert.deepEqual({ ...profile.accounts }, { enabled: true, secondary: false, primaryAdmin: true, searchAgentFixture: false });
+    assert.deepEqual({ ...profile.accounts }, { enabled: true, secondary: false, primaryAdmin: true, marketplaceLifecycleFixture: false });
     for (const name of ['SMOKE_LOGIN_EMAIL', 'SMOKE_ACCOUNT_PASSWORD', 'SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_RELEASE_MANIFEST']) {
         const missing = { ...env }; delete missing[name];
         assert.throws(() => validateAcceptanceProfile(publicRoomArgs, missing), error => error.message.includes(name));
@@ -122,7 +126,7 @@ test('public-room gate source keeps its positive proof and its team-room negativ
 test('discovery and terminal pass matching refuses every false-pass outcome', () => {
     const cases = acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance');
     assert.doesNotThrow(() => assertLedgerResults(cases, cases.map(record), { terminal: true }));
-    for (const count of [0, 24, 26]) assert.throws(() => assertLedgerResults(cases, Array.from({ length: count }, (_, index) => record(cases[index % 25]))));
+    for (const count of [0, 23, 25]) assert.throws(() => assertLedgerResults(cases, Array.from({ length: count }, (_, index) => record(cases[index % 24]))));
     for (const status of ['skipped', 'failed', 'timedOut', 'interrupted', 'blocked']) {
         const records = cases.map(record); records[0].results[0].status = status;
         assert.throws(() => assertLedgerResults(cases, records, { terminal: true }), /terminal outcomes/);
@@ -231,7 +235,7 @@ test('postflight detects identity changes and account roles are authenticated se
     assert.doesNotThrow(() => assertAccountRoles(admin, user, { primaryAdmin: true, secondary: true }));
     assert.throws(() => assertAccountRoles(user, admin, { primaryAdmin: true, secondary: true }));
     assert.throws(() => assertAccountRoles(admin, admin, { primaryAdmin: true, secondary: true }));
-    assert.throws(() => assertSearchAgentFixture({ marketplace: { agents: [] } }), /catalog fixture/);
+    assert.throws(() => assertMarketplaceLifecycleFixture({ marketplace: { agents: [] } }), /catalog fixture/);
 });
 
 test('acceptance reporter writes only identities/outcomes and refuses stale or unwritable artifacts', () => {
@@ -262,7 +266,7 @@ test('canonical runner negative control rejects an omitted opt-in instead of rep
     assert.doesNotMatch(result.stdout, /skipped|passed/);
 });
 
-test('canonical discovery finds exactly the 25 required identities without starting a browser or Box probe', () => {
+test('canonical discovery finds exactly the 24 required identities without starting a browser or Box probe', () => {
     const cases = acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance');
     const specs = [...new Set(cases.map(entry => entry.selection.spec))];
     const grep = cases.map(entry => `${entry.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`).join('|');
@@ -282,7 +286,7 @@ test('canonical discovery finds exactly the 25 required identities without start
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('source inventory discovers all 44 ledger identities while keeping 19 separate/blocked dispositions intact', () => {
+test('source inventory discovers all 44 ledger identities while keeping 20 separate/blocked dispositions intact', () => {
     const cases = acceptanceLedger.identities;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-all-discovery-'));
     try {
@@ -298,7 +302,7 @@ test('source inventory discovers all 44 ledger identities while keeping 19 separ
         const report = JSON.parse(fs.readFileSync(path.join(root, 'ledger-discovery_codex.json')));
         assertLedgerResults(cases, report.records);
         assert.ok(report.records.every(entry => entry.results.length === 0));
-        assert.equal(cases.filter(entry => entry.disposition !== 'required-local-acceptance').length, 19);
+        assert.equal(cases.filter(entry => entry.disposition !== 'required-local-acceptance').length, 20);
         assert.ok(cases.every(entry => entry.executionAllowedByThisPlan === false));
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

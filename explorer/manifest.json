@@ -18,16 +18,12 @@
             "profile": "explorer"
         },
         "dpuAgent global",
-        "legacy-agents/soplangAgent global no-wait",
-        "legacy-agents/tasksAgent global",
         "roboTeamAgent global no-wait",
         "soul-gateway no-wait",
-        "legacy-agents/webAssist no-wait",
         "workspaceMonitorAgent no-wait",
         "local-llms/local-llm no-wait"
     ],
     "repos": {
-        "legacy-agents": "https://github.com/AssistOS-AI/legacy-agents.git",
         "webmeet": "https://github.com/AssistOS-AI/webmeet.git",
         "OnlyOfficeAgent": "https://github.com/AssistOS-AI/OnlyOfficeAgent.git",
         "UmamiAgent": "https://github.com/AssistOS-AI/UmamiAgent.git",
@@ -38,8 +34,6 @@
         "dpu-runtime-support": true,
         "workspace-monitor": true,
         "help": true,
-        "soplang-builder": true,
-        "tasks": true,
         "webmeet": true,
         "soul-gateway": true
     },

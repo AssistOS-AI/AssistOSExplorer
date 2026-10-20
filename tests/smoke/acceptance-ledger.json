@@ -10,8 +10,8 @@
   "status": "PLANNED_OUTCOMES_ONLY_NO_EXECUTION",
   "counts": {
     "total": 44,
-    "requiredLocalAcceptance": 25,
-    "separateOrBlocked": 19,
+    "requiredLocalAcceptance": 24,
+    "separateOrBlocked": 20,
     "originalPassed": 4,
     "originalFailed": 21,
     "originalSkipped": 19
@@ -148,7 +148,7 @@
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest. Installed legacy-agents/searchAgent catalog fixture; this spec uses intercepted lifecycle responses.",
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest. Installed UmamiAgent/umamiAgent catalog fixture (installed but disabled by default); this spec uses intercepted lifecycle responses.",
       "disposition": "required-local-acceptance",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
@@ -311,12 +311,14 @@
         "title": "embedded chat and MCP initialize without prior authentication",
         "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
       },
-      "requiredFlags": {},
+      "requiredFlags": {
+        "SMOKE_WEBASSIST": "1"
+      },
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
-      "disposition": "required-local-acceptance",
+      "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest. The default Explorer graph no longer includes webAssist: install the legacy-agents repository (ploinky install repo https://github.com/AssistOS-AI/legacy-agents.git), enable legacy-agents/webAssist and set SMOKE_WEBASSIST=1.",
+      "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
       "acceptanceRule": "This identity must pass in its assigned valid cohort; skip, retry, flaky, cancellation, missing identity or exit0 without pass fails coverage."

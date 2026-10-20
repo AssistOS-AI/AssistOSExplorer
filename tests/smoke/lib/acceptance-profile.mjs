@@ -97,7 +97,7 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
         || entry.cohort === 'fresh-webtty' || entry.cohort === 'supporting-61');
     const guestOnly = selection.cases.length > 0 && selection.cases.every(entry => entry.cohort === 'supporting-15');
     const accounts = { enabled: acceptance && !guestOnly, secondary: dualAccounts, primaryAdmin: true,
-        searchAgentFixture: selection.specs.includes('specs/04-marketplace-lifecycle.spec.mjs'),
+        marketplaceLifecycleFixture: selection.specs.includes('specs/04-marketplace-lifecycle.spec.mjs'),
     };
     if (!listing) {
         for (const entry of selection.cases) {
