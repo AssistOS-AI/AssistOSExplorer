@@ -32,6 +32,7 @@ test('WebMeet media validates images and moves one staged blob into the room ass
         fs,
         path,
         agentName: 'explorer',
+        workspaceRoot,
         validatePath: async (value) => path.join(workspaceRoot, String(value).replace(/^\/+/, ''))
     });
     const asset = await store.commit({
@@ -53,6 +54,7 @@ test('WebMeet media rejects blob references for another agent or path', async ()
         fs,
         path,
         agentName: 'explorer',
+        workspaceRoot: root,
         validatePath: async (value) => path.join(root, String(value).replace(/^\/+/, ''))
     });
     const id = 'b'.repeat(48);
@@ -101,6 +103,7 @@ test('WebMeet media commits arbitrary files and does not trust an image MIME dec
         fs,
         path,
         agentName: 'explorer',
+        workspaceRoot,
         validatePath: async (value) => path.join(workspaceRoot, String(value).replace(/^\/+/, ''))
     });
     const asset = await store.commit({
@@ -140,6 +143,7 @@ test('WebMeet media stores one real file per asset without sidecar metadata', as
         fs,
         path,
         agentName: 'explorer',
+        workspaceRoot,
         validatePath: async (value) => path.join(workspaceRoot, String(value).replace(/^\/+/, ''))
     });
     const asset = await store.commit({
@@ -175,6 +179,7 @@ test('WebMeet media preserves a sanitized real filename for arbitrary files', as
         fs,
         path,
         agentName: 'explorer',
+        workspaceRoot,
         validatePath: async (value) => path.join(workspaceRoot, String(value).replace(/^\/+/, ''))
     });
     const asset = await store.commit({
@@ -202,6 +207,7 @@ test('WebMeet media rejects an asset directory that does not contain exactly one
         fs,
         path,
         agentName: 'explorer',
+        workspaceRoot: root,
         validatePath: async (value) => path.join(root, String(value).replace(/^\/+/, ''))
     });
     await assert.rejects(

@@ -11,6 +11,12 @@ import { createScriptaCrdtService } from './markdown-crdt/scripta-crdt-service.m
 import { createWebMeetMediaStore } from './webmeet-media-store.mjs';
 import { createExplorerPrivateDataBoundary } from './private-data-boundary.mjs';
 import {
+  PROTECTED_DESCENDANT_REFUSAL,
+  WORKSPACE_ROOT_REFUSAL,
+  findProtectedDescendant,
+  protectedPathError
+} from './protected-workspace-paths.mjs';
+import {
   invocationIsAdministrator,
   projectSkillsManifestResult,
   restrictedSkillsManifestError,
@@ -85,6 +91,7 @@ export function createToolHandlers({
   validatePath,
   cacheConfig,
   readFileWithCache,
+  readFileAsBase64Stream: readMediaFileAsBase64 = readFileAsBase64Stream,
   listDirectoryDetailedWithCache,
   indexDirectory,
   invalidateCachesForPath,
@@ -96,6 +103,7 @@ export function createToolHandlers({
   headFile,
   writeFileContent,
   copyRecursive,
+  assertNoProtectedEntriesBelow: suppliedAssertNoProtectedEntriesBelow = null,
   aggregateIdePlugins,
   workspaceRoot,
   agentName = 'explorer',
@@ -119,6 +127,12 @@ export function createToolHandlers({
   registerCleanup
 }) {
   const privateData = createExplorerPrivateDataBoundary({ fs, path, workspaceRoot });
+  // The tool runtime supplies the check for all of its allowed roots; a
+  // standalone construction still refuses against its workspace root.
+  const assertNoProtectedEntriesBelow = suppliedAssertNoProtectedEntriesBelow || (async (validPath) => {
+    if (path.resolve(validPath) === path.resolve(workspaceRoot)) throw protectedPathError(WORKSPACE_ROOT_REFUSAL);
+    if (await findProtectedDescendant([workspaceRoot], validPath)) throw protectedPathError(PROTECTED_DESCENDANT_REFUSAL);
+  });
   const {
     ReadTextFileArgsSchema,
     ReadMediaFileArgsSchema,
@@ -170,7 +184,7 @@ export function createToolHandlers({
     UpdateAvatarSettingsAgentArgsSchema,
     SetAvatarSettingsAgentVisibilityArgsSchema
   } = schemas;
-  const webMeetMediaStore = createWebMeetMediaStore({ fs, path, validatePath, agentName });
+  const webMeetMediaStore = createWebMeetMediaStore({ fs, path, validatePath, workspaceRoot, agentName });
   const inflightSearchFiles = new Map();
   const inflightSearchText = new Map();
   const searchTextJobs = new Map();
@@ -670,7 +684,7 @@ export function createToolHandlers({
       '.mkv': 'video/x-matroska'
     };
     const mimeType = mimeTypes[extension] || 'application/octet-stream';
-    const data64 = await readFileAsBase64Stream(validPath);
+    const data64 = await readMediaFileAsBase64(validPath);
     const name = path.basename(validPath);
     if (mimeType.startsWith('image/')) {
       return { content: [{ type: 'image', data: data64, mimeType }] };
@@ -761,6 +775,7 @@ export function createToolHandlers({
   async function handleDeleteDirectory(args) {
     const data = parseArgs(DeleteDirectoryArgsSchema, args, 'delete_directory');
     const validPath = await validatePath(data.path);
+    await assertNoProtectedEntriesBelow(validPath);
     await fs.rm(validPath, { recursive: true, force: true });
     invalidateCachesForPath(validPath);
     return textResponse(`Successfully deleted directory ${data.path}`);
@@ -768,7 +783,7 @@ export function createToolHandlers({
 
   async function handleListDirectory(args) {
     const data = parseArgs(ListDirectoryArgsSchema, args, 'list_directory');
-    const validPath = await validatePath(data.path);
+    const validPath = await validatePath(data.path, { allowControllerRoot: true });
     const detailed = await listDirectoryDetailedWithCache(validPath);
     const formatted = detailed.map(entry => `${entry.type === 'directory' ? '[DIR]' : '[FILE]'} ${entry.name}`).join('\n');
     return textResponse(formatted);
@@ -776,7 +791,7 @@ export function createToolHandlers({
 
   async function handleListDirectoryWithSizes(args) {
     const data = parseArgs(ListDirectoryWithSizesArgsSchema, args, 'list_directory_with_sizes');
-    const validPath = await validatePath(data.path);
+    const validPath = await validatePath(data.path, { allowControllerRoot: true });
     const detailed = await indexDirectory(validPath);
     const enriched = detailed.map(entry => ({
       name: entry.name,
@@ -795,7 +810,7 @@ export function createToolHandlers({
 
   async function handleListDirectoryDetailed(args) {
     const data = parseArgs(ListDirectoryDetailedArgsSchema, args, 'list_directory_detailed');
-    const validPath = await validatePath(data.path);
+    const validPath = await validatePath(data.path, { allowControllerRoot: true });
     const detailed = await indexDirectory(validPath);
     const ordered = [...detailed].sort((a, b) => {
       const typeOrder = { directory: 0, file: 1, other: 2 };
@@ -808,7 +823,7 @@ export function createToolHandlers({
 
   async function handleDirectoryTree(args) {
     const data = parseArgs(DirectoryTreeArgsSchema, args, 'directory_tree');
-    const validPath = await validatePath(data.path);
+    const validPath = await validatePath(data.path, { allowControllerRoot: true });
     const maxDepth = data.maxDepth ?? DEFAULT_DIRECTORY_TREE_MAX_DEPTH;
     const maxNodes = data.maxNodes ?? DEFAULT_DIRECTORY_TREE_MAX_NODES;
 
@@ -833,6 +848,7 @@ export function createToolHandlers({
     const data = parseArgs(MoveFileArgsSchema, args, 'move_file');
     const validSource = await validatePath(data.source);
     const validDestination = await validatePath(data.destination);
+    await assertNoProtectedEntriesBelow(validSource);
     const sourceStat = await fs.lstat(validSource);
     await fs.rename(validSource, validDestination);
     if (sourceStat.isDirectory()) {
@@ -860,6 +876,9 @@ export function createToolHandlers({
       }
     }
     const overwrite = Boolean(data.overwrite);
+    await assertNoProtectedEntriesBelow(validSource);
+    // An overwriting copy first removes the existing destination tree.
+    if (overwrite) await assertNoProtectedEntriesBelow(validDestination);
     await copyRecursive(validSource, validDestination, overwrite);
     invalidateStructureIndexSubtree(validDestination);
     invalidateCachesForPath(validDestination);
