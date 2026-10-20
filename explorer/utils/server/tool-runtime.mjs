@@ -1,5 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { minimatch } from 'minimatch';
@@ -9,9 +9,24 @@ import {
   copyRecursive,
   createCacheHelpers,
   describeDirectoryEntry,
-  isProtectedSecretName,
-  isProtectedSecretPath
+  headFromHandle,
+  tailFromHandle
 } from '../filesystem-utils.mjs';
+import {
+  BOUND_OPEN_REFUSAL,
+  MANAGED_SOURCE_REFUSAL,
+  PROTECTED_DESCENDANT_REFUSAL,
+  WORKSPACE_ROOT_REFUSAL,
+  classifyCanonicalWorkspaceTarget,
+  classifyWorkspacePath,
+  crossesUnresolvedLink,
+  findProtectedDescendant,
+  isVisibleWorkspaceEntry,
+  isWritableKind,
+  openClassifiedWorkspaceFile,
+  protectedPathError,
+  withClassifiedWorkspaceFile
+} from './protected-workspace-paths.mjs';
 import { aggregateIdePlugins } from '../ide-plugins.mjs';
 import { createTimedCache, buildCacheKey } from './timed-cache.mjs';
 import { createStructureIndex } from './structure-index.mjs';
@@ -25,6 +40,23 @@ import { createToolHandlers } from './tool-handlers.mjs';
 import { errorResponse } from './responses.mjs';
 
 const { z } = mcpZod;
+
+// Listing tools may open the workspace-root `.ploinky` directory, which they
+// project as containing only `repos`; every other tool is refused there.
+const LISTING_TOOLS = new Set(['list_directory', 'list_directory_with_sizes', 'list_directory_detailed', 'directory_tree']);
+
+// Tools that only read the workspace. Every other tool runs in write mode, in
+// which managed agent sources under `.ploinky/repos` are refused, so a tool
+// added later fails closed. The mode reaches every `validatePath` call the
+// handler makes, including those inside the CRDT, Scripta and skills stores.
+const READ_TOOLS = new Set([
+  'read_file', 'read_text_file', 'read_media_file', 'read_multiple_files', 'get_file_info',
+  ...LISTING_TOOLS, 'search_files', 'search_text', 'search_text_status', 'search_text_cancel',
+  'open_markdown_crdt_document', 'sync_markdown_crdt_from_file',
+  'scripta_crdt_open', 'scripta_crdt_workspace_list', 'scripta_collaboration_open', 'scripta_collaboration_pull',
+  'webmeet_media_get', 'read_skills_manifest_state', 'llm_autocomplete',
+  'collect_ide_plugins', 'get_plugin_settings', 'get_avatar_settings_agents', 'list_allowed_directories',
+]);
 
 function createFatalRecorder() {
   let state = null;
@@ -83,15 +115,19 @@ async function resolveCanonicalPath(targetPath) {
   }
 }
 
-async function readFileAsBase64Stream(filePath) {
-  return new Promise((resolve, reject) => {
-    const stream = createReadStream(filePath);
-    const chunks = [];
-    stream.on('data', chunk => chunks.push(chunk));
-    stream.on('end', () => resolve(Buffer.concat(chunks).toString('base64')));
-    stream.on('error', reject);
-  });
+async function openClassifiedFileOrRefuse(filePath) {
+  const handle = await openClassifiedWorkspaceFile(filePath);
+  if (!handle) throw protectedPathError(BOUND_OPEN_REFUSAL);
+  return handle;
 }
+
+// User-facing reads of file content open the classified canonical path with a
+// descriptor-bound open, so a symlink swapped in after validation cannot
+// redirect them into a protected entry.
+const readClassifiedFileContent = (filePath) => withClassifiedWorkspaceFile(filePath, (handle) => handle.readFile({ encoding: 'utf-8' }));
+const readClassifiedFileBase64 = (filePath) => withClassifiedWorkspaceFile(filePath, async (handle) => (await handle.readFile()).toString('base64'));
+const headClassifiedFile = (filePath, numLines) => withClassifiedWorkspaceFile(filePath, (handle) => headFromHandle(handle, numLines));
+const tailClassifiedFile = (filePath, numLines) => withClassifiedWorkspaceFile(filePath, (handle) => tailFromHandle(handle, numLines));
 
 export async function createExplorerToolRuntime({
   argv = [],
@@ -105,13 +141,11 @@ export async function createExplorerToolRuntime({
     formatSize,
     validatePath: libraryValidatePath,
     getFileStats,
-    readFileContent,
     writeFileContent,
     applyFileEdits,
-    tailFile,
-    headFile,
     setAllowedDirectories
   } = await loadFilesystemDeps({ recordFatalError: fatal.record.bind(fatal) });
+  const readFileContent = readClassifiedFileContent;
 
   const requestedRoots = getRequestedRoots(argv, env);
   let allowedDirectories = [];
@@ -123,6 +157,12 @@ export async function createExplorerToolRuntime({
   }
 
   const workspaceRoot = allowedDirectories.length > 0 ? allowedDirectories[0] : path.resolve(process.cwd());
+  const rootsForPathChecks = () => getResolvedAllowedRoots(workspaceRoot, allowedDirectories);
+  const visibleEntries = async (directoryPath, entries) => {
+    const roots = rootsForPathChecks();
+    const visible = await Promise.all(entries.map((entry) => isVisibleWorkspaceEntry(roots, directoryPath, entry)));
+    return entries.filter((_, index) => visible[index]);
+  };
   let cacheConfig = createCacheConfig(env);
   let readFileWithCache = async (validPath, { skipReadForLarge = false } = {}) => {
     const stats = await fs.stat(validPath);
@@ -133,14 +173,13 @@ export async function createExplorerToolRuntime({
     return { content, stats };
   };
   let listDirectoryDetailedWithCache = async (validPath, { limit } = {}) => {
-    const entries = await fs.readdir(validPath, { withFileTypes: true });
-    const visibleEntries = entries.filter((entry) => !isProtectedSecretName(entry?.name));
-    if (Number.isFinite(limit) && limit >= 0 && visibleEntries.length > limit) {
-      const partial = await Promise.all(visibleEntries.slice(0, limit).map((entry) => describeDirectoryEntry(validPath, entry)));
+    const entries = await visibleEntries(validPath, await fs.readdir(validPath, { withFileTypes: true }));
+    if (Number.isFinite(limit) && limit >= 0 && entries.length > limit) {
+      const partial = await Promise.all(entries.slice(0, limit).map((entry) => describeDirectoryEntry(validPath, entry)));
       Object.defineProperty(partial, 'truncated', { value: true, enumerable: false });
       return partial;
     }
-    return Promise.all(visibleEntries.map((entry) => describeDirectoryEntry(validPath, entry)));
+    return Promise.all(entries.map((entry) => describeDirectoryEntry(validPath, entry)));
   };
   let invalidateCachesForPath = () => {};
   let indexDirectory = async (validDirPath, options) => listDirectoryDetailedWithCache(validDirPath, options);
@@ -158,6 +197,7 @@ export async function createExplorerToolRuntime({
     const cacheHelpers = initCacheHelpers({
       createCacheHelpers,
       readFileContent,
+      visibleEntries,
       cacheConfig,
       fs,
       path
@@ -186,8 +226,15 @@ export async function createExplorerToolRuntime({
     directoryTreeCache.clear();
   };
 
-  const rootsForPathChecks = () => getResolvedAllowedRoots(workspaceRoot, allowedDirectories);
-  async function resolvePathInAllowedRoots(inputPath) {
+  const callAccess = new AsyncLocalStorage();
+  const currentAccess = () => callAccess.getStore()?.access || 'write';
+
+  // Every user-supplied path, for every tool and for both the source and the
+  // destination of a move or copy, is classified here: its lexical form before
+  // any filesystem access, then its canonical target. A protected path is
+  // refused with an explicit denial, never reported as missing. In write mode
+  // a managed agent source is refused as well.
+  async function resolvePathInAllowedRoots(inputPath, { allowControllerRoot = false, access = currentAccess() } = {}) {
     if (typeof inputPath !== 'string') return inputPath;
     if (!workspaceRoot) throw new Error('Workspace root not configured.');
     if (inputPath.includes('\0')) throw new Error(`Invalid path: ${inputPath}`);
@@ -196,35 +243,75 @@ export async function createExplorerToolRuntime({
     const workspaceResolved = path.resolve(workspaceRoot);
     const resolvedPath = path.isAbsolute(candidate) && isPathWithinRoots(candidate, roots)
       ? path.resolve(candidate)
-      : path.resolve(workspaceResolved, candidate.startsWith('/') ? candidate.slice(1) : candidate);
+      : path.resolve(workspaceResolved, candidate.replace(/^\/+/, ''));
 
     if (!isPathWithinRoots(resolvedPath, roots)) {
       throw new Error(`Access denied: path traversal attempt for "${inputPath}"`);
     }
-    if (isProtectedSecretPath(resolvedPath)) {
-      throw new Error(`Access denied: protected file "${inputPath}"`);
+    // Only the workspace-root `.ploinky`, named as such, is projected to a
+    // listing tool; a link that leads there is refused like any other.
+    const lexicalKind = classifyWorkspacePath(roots, resolvedPath);
+    const refuseProtected = (kind) => {
+      if (kind === 'protected' || (kind === 'controller' && !(allowControllerRoot && lexicalKind === 'controller'))) {
+        throw protectedPathError(`Access denied: protected path "${inputPath}"`);
+      }
+      if (kind === 'managed' && access !== 'read') throw protectedPathError(MANAGED_SOURCE_REFUSAL);
+    };
+    refuseProtected(lexicalKind);
+    if (await crossesUnresolvedLink(resolvedPath)) {
+      throw protectedPathError(`Access denied: unresolved symbolic link in "${inputPath}"`);
     }
     const canonicalPath = await resolveCanonicalPath(resolvedPath);
     if (!canonicalPath || !isPathWithinRoots(canonicalPath, roots)) {
       throw new Error(`Access denied: symlink escape attempt for "${inputPath}"`);
     }
-    if (isProtectedSecretPath(canonicalPath)) {
-      throw new Error(`Access denied: protected file "${inputPath}"`);
-    }
+    refuseProtected(await classifyCanonicalWorkspaceTarget(roots, canonicalPath));
     return canonicalPath;
   }
 
-  async function resolvePathsInArgs(args) {
+  async function resolvePathsInArgs(name, args) {
     const originalArgs = args ?? {};
     const next = { ...originalArgs };
-    if (typeof next.path === 'string') next.path = await resolvePathInAllowedRoots(next.path);
-    if (typeof next.source === 'string') next.source = await resolvePathInAllowedRoots(next.source);
+    const allowControllerRoot = LISTING_TOOLS.has(name);
+    if (typeof next.path === 'string') next.path = await resolvePathInAllowedRoots(next.path, { allowControllerRoot });
+    // A copy only reads its source.
+    if (typeof next.source === 'string') {
+      next.source = await resolvePathInAllowedRoots(next.source, name === 'copy_file' ? { access: 'read' } : {});
+    }
     if (typeof next.destination === 'string') next.destination = await resolvePathInAllowedRoots(next.destination);
-    if (Array.isArray(next.paths)) next.paths = await Promise.all(next.paths.map(resolvePathInAllowedRoots));
+    if (Array.isArray(next.paths)) next.paths = await Promise.all(next.paths.map((entry) => resolvePathInAllowedRoots(entry)));
     return next;
   }
 
-  const validatePath = async (targetPath) => resolvePathInAllowedRoots(targetPath);
+  const validatePath = async (targetPath, options) => resolvePathInAllowedRoots(targetPath, options);
+
+  // Backstop for every content write the handlers, the CRDT store and
+  // replace make, including writes to a document addressed by its id after a
+  // read-mode open: the canonical target must be an ordinary writable path.
+  async function assertWritableTarget(targetPath) {
+    const roots = rootsForPathChecks();
+    const canonical = await crossesUnresolvedLink(targetPath) ? null : await resolveCanonicalPath(targetPath);
+    const kinds = [classifyWorkspacePath(roots, targetPath), canonical ? await classifyCanonicalWorkspaceTarget(roots, canonical) : 'protected'];
+    if (kinds.includes('managed')) throw protectedPathError(MANAGED_SOURCE_REFUSAL);
+    if (!kinds.every(isWritableKind)) throw protectedPathError(BOUND_OPEN_REFUSAL);
+  }
+  const guardedWriteFileContent = async (filePath, content) => {
+    await assertWritableTarget(filePath);
+    return writeFileContent(filePath, content);
+  };
+
+  // A recursive delete, move or copy touches every entry below its target, so
+  // it is refused when one of them is protected, and a workspace root is never
+  // deleted, moved or copied.
+  async function assertNoProtectedEntriesBelow(validPath) {
+    const roots = rootsForPathChecks();
+    if (roots.some((root) => path.resolve(root) === path.resolve(validPath))) {
+      throw protectedPathError(WORKSPACE_ROOT_REFUSAL);
+    }
+    if (await findProtectedDescendant(roots, validPath)) {
+      throw protectedPathError(PROTECTED_DESCENDANT_REFUSAL);
+    }
+  }
   const maxTextSearchFileBytes = Number.parseInt(env.SEARCH_TEXT_MAX_BYTES || '2097152', 10);
   const searchTextTimeoutMs = Number.parseInt(env.SEARCH_TEXT_TIMEOUT_MS || '30000', 10);
   const replaceTextTimeoutMs = Number.parseInt(env.REPLACE_TEXT_TIMEOUT_MS || '45000', 10);
@@ -241,13 +328,14 @@ export async function createExplorerToolRuntime({
     validatePath,
     getAllowedDirectories: () => allowedDirectories,
     readFileWithCache,
-    writeFileContent,
+    writeFileContent: guardedWriteFileContent,
     cacheConfig,
     indexDirectory,
     structureIndex,
     dirIndexTtlMs: cacheConfig.ttlMs,
     defaultExcludes: defaultTextSearchExcludes,
-    maxTextSearchFileBytes
+    maxTextSearchFileBytes,
+    openFile: openClassifiedFileOrRefuse
   });
 
   const schemas = createSchemas(z);
@@ -270,7 +358,7 @@ export async function createExplorerToolRuntime({
       validatePath,
       cacheConfig,
       readFileWithCache,
-      readFileAsBase64Stream,
+      readFileAsBase64Stream: readClassifiedFileBase64,
       listDirectoryDetailedWithCache,
       indexDirectory,
       invalidateCachesForPath,
@@ -278,10 +366,11 @@ export async function createExplorerToolRuntime({
       formatSize,
       getFileStats,
       applyFileEdits,
-      tailFile,
-      headFile,
-      writeFileContent,
+      tailFile: tailClassifiedFile,
+      headFile: headClassifiedFile,
+      writeFileContent: guardedWriteFileContent,
       copyRecursive,
+      assertNoProtectedEntriesBelow,
       aggregateIdePlugins,
       workspaceRoot,
       agentName: String(env.PLOINKY_AGENT_NAME || '').trim() || 'explorer',
@@ -318,10 +407,12 @@ export async function createExplorerToolRuntime({
       }
       activeInvocationContext = context && typeof context === 'object' ? context : {};
       try {
-        const resolvedArgs = await resolvePathsInArgs(args);
-        const handler = toolHandlers[name];
-        if (!handler) throw new Error(`Unknown tool: ${name}`);
-        return await handler(resolvedArgs);
+        return await callAccess.run({ access: READ_TOOLS.has(name) ? 'read' : 'write' }, async () => {
+          const resolvedArgs = await resolvePathsInArgs(name, args);
+          const handler = toolHandlers[name];
+          if (!handler) throw new Error(`Unknown tool: ${name}`);
+          return handler(resolvedArgs);
+        });
       } finally {
         activeInvocationContext = {};
       }

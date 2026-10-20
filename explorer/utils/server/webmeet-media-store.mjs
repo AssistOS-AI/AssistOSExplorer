@@ -1,5 +1,8 @@
 import crypto from 'node:crypto';
 
+import { createExplorerPrivateDataBoundary } from './private-data-boundary.mjs';
+import { withClassifiedWorkspaceFile } from './protected-workspace-paths.mjs';
+
 const MAX_ASSET_BYTES = 15 * 1024 * 1024;
 const BLOB_ID_RE = /^[a-f0-9]{48}$/;
 const SAFE_ID_RE = /^[a-zA-Z0-9_.:-]+$/;
@@ -144,8 +147,13 @@ export function createWebMeetMediaStore({
   fs,
   path,
   validatePath,
+  workspaceRoot,
   agentName = process.env.PLOINKY_AGENT_NAME || process.env.AGENT_NAME || 'explorer'
 }) {
+  // Staged blobs live in this agent's own `.data/<agent>/blobs`, which the
+  // user-facing `validatePath` refuses; they are reached through the private
+  // data boundary instead.
+  const stagedBlobs = createExplorerPrivateDataBoundary({ fs, path, workspaceRoot, agentName: String(agentName || 'explorer') });
 
   async function assetFolderPath(roomFolderPath, assetId) {
     const folderPath = safeRoomFolderPath(roomFolderPath, path);
@@ -168,7 +176,8 @@ export function createWebMeetMediaStore({
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_ASSET_BYTES) {
       throw new Error('The WebMeet asset file is invalid.');
     }
-    const inspected = inspectAsset(await fs.readFile(filePath), {filename}, path);
+    const content = await withClassifiedWorkspaceFile(filePath, (handle) => handle.readFile());
+    const inspected = inspectAsset(content, {filename}, path);
     const asset = {
       assetId: cleanAssetId,
       roomId: cleanRoomId,
@@ -183,8 +192,8 @@ export function createWebMeetMediaStore({
     const cleanRoomId = safeId(roomId, 'roomId');
     const folderPath = safeRoomFolderPath(roomFolderPath, path);
     const staged = validateBlobRef(blobRef, String(agentName || 'explorer'));
-    const blobPath = await validatePath(staged.localPath);
-    const blobMetaPath = await validatePath(`${staged.localPath}.json`);
+    const blobPath = await stagedBlobs.resolveFile(['blobs', staged.id]);
+    const blobMetaPath = await stagedBlobs.resolveFile(['blobs', `${staged.id}.json`]);
     const stat = await fs.lstat(blobPath);
     if (!stat.isFile() || stat.size > MAX_ASSET_BYTES) throw new Error('Files may not exceed 15 MB.');
     const metadata = JSON.parse(await fs.readFile(blobMetaPath, 'utf8'));

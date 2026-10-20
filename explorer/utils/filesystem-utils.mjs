@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { isProtectedWorkspaceSegments } from './server/protected-workspace-paths.mjs';
+
 const DEFAULT_CACHE_CONFIG = {
   maxFileSizeBytes: 2 * 1024 * 1024, // 2MB
   maxFiles: 200,
@@ -35,6 +37,69 @@ export function isProtectedSecretName(name) {
 
 export function isProtectedSecretPath(targetPath) {
   return isProtectedSecretName(path.basename(String(targetPath || '').trim()));
+}
+
+// Listing filter for callers that do not know the workspace roots: an entry
+// whose name alone is protected (`.data`, `.ploinky`, `.env`, `master-key`,
+// `*.secrets`, in folded form) is omitted wherever it is listed. The Explorer
+// tool runtime supplies a root-aware filter that also classifies symlinks.
+export async function visibleEntriesByName(directoryPath, entries) {
+  return entries.filter((entry) => !isProtectedWorkspaceSegments([String(entry?.name ?? '')]));
+}
+
+const normalizeLineEndings = (text) => text.replace(/\r\n/g, '\n');
+
+// The first `numLines` lines of an open file, read in 1 KiB chunks.
+export async function headFromHandle(handle, numLines) {
+  const lines = [];
+  let buffer = '';
+  let bytesRead = 0;
+  const chunk = Buffer.alloc(1024);
+  while (lines.length < numLines) {
+    const result = await handle.read(chunk, 0, chunk.length, bytesRead);
+    if (result.bytesRead === 0) break;
+    bytesRead += result.bytesRead;
+    buffer += chunk.subarray(0, result.bytesRead).toString('utf-8');
+    const newLineIndex = buffer.lastIndexOf('\n');
+    if (newLineIndex !== -1) {
+      const completeLines = buffer.slice(0, newLineIndex).split('\n');
+      buffer = buffer.slice(newLineIndex + 1);
+      for (const line of completeLines) {
+        lines.push(line);
+        if (lines.length >= numLines) break;
+      }
+    }
+  }
+  if (buffer.length > 0 && lines.length < numLines) lines.push(buffer);
+  return lines.join('\n');
+}
+
+// The last `numLines` lines of an open file, read backwards in 1 KiB chunks.
+export async function tailFromHandle(handle, numLines) {
+  const chunkSize = 1024;
+  const { size: fileSize } = await handle.stat();
+  if (fileSize === 0) return '';
+  const lines = [];
+  let position = fileSize;
+  const chunk = Buffer.alloc(chunkSize);
+  let linesFound = 0;
+  let remainingText = '';
+  while (position > 0 && linesFound < numLines) {
+    const size = Math.min(chunkSize, position);
+    position -= size;
+    const { bytesRead } = await handle.read(chunk, 0, size, position);
+    if (!bytesRead) break;
+    const chunkLines = normalizeLineEndings(chunk.subarray(0, bytesRead).toString('utf-8') + remainingText).split('\n');
+    if (position > 0) {
+      remainingText = chunkLines[0];
+      chunkLines.shift();
+    }
+    for (let index = chunkLines.length - 1; index >= 0 && linesFound < numLines; index--) {
+      lines.unshift(chunkLines[index]);
+      linesFound++;
+    }
+  }
+  return lines.join('\n');
 }
 
 export async function describeDirectoryEntry(basePath, entry) {
@@ -85,7 +150,7 @@ export async function describeDirectoryEntry(basePath, entry) {
   };
 }
 
-export function createCacheHelpers({ readFileContent, config } = {}) {
+export function createCacheHelpers({ readFileContent, visibleEntries = visibleEntriesByName, config } = {}) {
   if (typeof readFileContent !== 'function') {
     throw new Error('createCacheHelpers requires a readFileContent function');
   }
@@ -136,14 +201,13 @@ export function createCacheHelpers({ readFileContent, config } = {}) {
       return cached.entries;
     }
 
-    const entries = await fs.readdir(validPath, { withFileTypes: true });
-    const visibleEntries = entries.filter((entry) => !isProtectedSecretName(entry?.name));
-    if (Number.isFinite(limit) && limit >= 0 && visibleEntries.length > limit) {
-      const partial = await Promise.all(visibleEntries.slice(0, limit).map((entry) => describeDirectoryEntry(validPath, entry)));
+    const entries = await visibleEntries(validPath, await fs.readdir(validPath, { withFileTypes: true }));
+    if (Number.isFinite(limit) && limit >= 0 && entries.length > limit) {
+      const partial = await Promise.all(entries.slice(0, limit).map((entry) => describeDirectoryEntry(validPath, entry)));
       Object.defineProperty(partial, 'truncated', { value: true, enumerable: false });
       return partial;
     }
-    const detailed = await Promise.all(visibleEntries.map((entry) => describeDirectoryEntry(validPath, entry)));
+    const detailed = await Promise.all(entries.map((entry) => describeDirectoryEntry(validPath, entry)));
 
     dirCache.set(validPath, { entries: detailed, mtimeMs: stats.mtimeMs, cachedAt: Date.now() });
     pruneCache(dirCache, cacheConfig.maxDirs);

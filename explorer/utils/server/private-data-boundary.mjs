@@ -22,10 +22,16 @@ function isMissing(error) {
   return error?.code === 'ENOENT';
 }
 
-export function createExplorerPrivateDataBoundary({ fs, path, workspaceRoot }) {
+// `agentName` selects another `.data/<agent>` root of this same agent runtime,
+// such as the Router-staged WebMeet blobs of a renamed Explorer instance; by
+// default the boundary is `.data/explorer`.
+export function createExplorerPrivateDataBoundary({ fs, path, workspaceRoot, agentName = '' }) {
   const fsApi = fs?.promises || fs;
   const lexicalWorkspaceRoot = path.resolve(String(workspaceRoot || ''));
-  const lexicalPrivateRoot = path.join(lexicalWorkspaceRoot, ...PRIVATE_ROOT_SEGMENTS);
+  const rootSegments = agentName
+    ? ['.data', ...normalizeSegments(path, [agentName])]
+    : PRIVATE_ROOT_SEGMENTS;
+  const lexicalPrivateRoot = path.join(lexicalWorkspaceRoot, ...rootSegments);
 
   async function canonicalWorkspaceRoot() {
     const stats = await fsApi.stat(lexicalWorkspaceRoot);
@@ -35,7 +41,7 @@ export function createExplorerPrivateDataBoundary({ fs, path, workspaceRoot }) {
 
   async function resolveDirectory(segments = [], { create = false } = {}) {
     const privateSegments = normalizeSegments(path, segments);
-    const allSegments = [...PRIVATE_ROOT_SEGMENTS, ...privateSegments];
+    const allSegments = [...rootSegments, ...privateSegments];
     const canonicalWorkspace = await canonicalWorkspaceRoot();
     let lexicalCurrent = lexicalWorkspaceRoot;
     let canonicalCurrent = canonicalWorkspace;
