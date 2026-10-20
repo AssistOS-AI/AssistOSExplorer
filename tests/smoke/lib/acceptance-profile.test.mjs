@@ -29,6 +29,10 @@ test('ledger retains all 44 identities and the 24 required cases', () => {
     assert.equal(acceptanceLedger.identities.length, 44);
     assert.equal(acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance').length, 24);
     assert.equal(new Set(acceptanceLedger.identities.map(entry => entry.identity)).size, 44);
+    // The WebAssist guest case needs an explicitly installed legacy-agents repository, so it is a flag-gated separate profile.
+    const webAssistGuest = acceptanceLedger.identities.find(entry => entry.file === '15-webassist-guest.spec.mjs');
+    assert.equal(webAssistGuest.disposition, 'separate-profile');
+    assert.deepEqual(webAssistGuest.requiredFlags, { SMOKE_WEBASSIST: '1' });
     for (const entry of acceptanceLedger.identities) {
         const escaped = entry.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const selection = selectAcceptanceCases([entry.selection.spec, '--grep', `^${escaped}$`]);

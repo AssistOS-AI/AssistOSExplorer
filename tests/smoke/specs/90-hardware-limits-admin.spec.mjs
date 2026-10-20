@@ -33,8 +33,9 @@ import {
   waitFor,
 } from '../lib/hardware-limits-evidence.mjs';
 
-// A non-GPU, single-instance agent of the default graph that is safe to recreate: UserPersisto enables it, and
-// recreating it does not interrupt sign-in.
+// A non-GPU, single-instance agent of the default graph (UserPersisto enables it) chosen to replace tasksAgent.
+// Unverified until this profile runs on the dedicated hardware host: whether the hardware-limits API admits it,
+// and whether recreating it under limits disturbs an email-code sign-in in a later test.
 const TARGET = 'emailAgent';
 const GPU_TARGET_REF = 'local-llms/local-llm';
 const LIMITS = Object.freeze({ cpus: 0.5, memoryPercent: 10 });
