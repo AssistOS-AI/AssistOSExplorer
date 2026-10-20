@@ -6,3 +6,4 @@ export const BROWSER_IMAGE = 'docker.io/assistos/roboteam-browser:runtime';
 export const DESKTOP_IMAGE = 'docker.io/assistos/roboteam-desktop:runtime';
 export const PUBLIC_BASE_PATH = '/base-agent-additional-server/roboTeamAgent/3001/';
 export const TIMEZONE = 'UTC';
+export const PROXY_POOL_DIR = '/data/proxy-pool';

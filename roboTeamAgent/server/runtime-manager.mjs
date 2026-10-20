@@ -13,12 +13,16 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { ToolCache } from './tool-cache.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
-import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE } from './constants.mjs';
+import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE, PROXY_POOL_DIR } from './constants.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
+import { prepareDesktopLaunchers } from './desktop-launchers.mjs';
+import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
 import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
 import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
 import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
+import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
+import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
 
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
@@ -148,9 +152,12 @@ function mappedPort(output) {
     return Number(match[1]);
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, shellTools, workspaceRoot = requireWorkspaceRoot(), homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, shellTools, proxy = null, workspaceRoot = requireWorkspaceRoot(), homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
+    if (proxy && (!Number.isInteger(proxy.relayPort) || proxy.relayPort < 1 || proxy.relayPort > 65535 || !path.isAbsolute(String(proxy.policyFile || '')))) {
+        throw new Error('proxy needs a relay port and an absolute policy file');
+    }
     const robotRoot = path.join(path.resolve(dataDir), 'robots', robot.id);
     const containerName = `roboteam-${mode}-${robot.id}`;
     const subfolder = robotSessionUrl(publicBasePath, robot.id);
@@ -159,7 +166,10 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
         image: images[mode],
         subfolder,
         args: [
-            'run', '-d', '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777', '--network', 'pasta',
+            'run', '-d', '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777',
+            // With a proxy, the container's loopback proxy port reaches the robot's relay on the outer
+            // loopback, and nothing else of the outer loopback.
+            '--network', proxy ? `pasta:-T,${CONTAINER_PROXY_PORT}:${proxy.relayPort}` : 'pasta',
             '--name', containerName, '--label', MANAGED_LABEL,
             '--label', `io.assistos.roboteam.robot-id=${robot.id}`,
             '--label', `io.assistos.roboteam.mode=${mode}`,
@@ -187,6 +197,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
                 : ['-v', `${workspaceRoot}:${workspaceRoot}:ro`, '-v', `${cwd}:${cwd}:rw`]),
             '-w', cwd,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
+            ...(proxy ? ['-v', `${proxy.policyFile}:${CHROMIUM_POLICY_TARGET}:ro`] : []),
             ...(shellTools ? [
                 '-v', `${shellTools.path}:${path.dirname(shellTools.binPath)}:ro`,
                 ...Object.values(shellTools.agents).flatMap(agent => ['-v', `${agent.path}:${agent.path}:ro`]),
@@ -210,6 +221,11 @@ export class RuntimeManager {
             browser: options.browserImage || BROWSER_IMAGE,
         };
         this.timezone = options.timezone || TIMEZONE;
+        this.proxyPool = options.proxyPool || null;
+        this.proxyPolicyDir = options.proxyPolicyDir || PROXY_POOL_DIR;
+        this.createRelay = options.createRelay || ((upstream) => new ProxyRelay(upstream, {
+            log: (line) => console.warn(`[roboTeamAgent] proxy relay: ${line}`),
+        }));
         this.execFileImpl = options.execFileImpl || execFileAsync;
         this.spawnImpl = options.spawnImpl || spawn;
         this.toolCache = options.toolCache || new ToolCache({
@@ -395,9 +411,12 @@ export class RuntimeManager {
             const existing = this.sessions.get(robot.id);
             const codingAgents = robotCodingAgents(robot);
             const codingAgentsKey = codingAgents.join(',');
+            // Null while the shared pool is inactive; throws while it is active and has nothing free.
+            const upstream = this.proxyPool ? this.proxyPool.acquire(robot.id) : null;
+            const proxyKey = upstream ? `${upstream.id}@${upstream.host}:${upstream.port}` : '';
             if (existing) {
                 if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
-                if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey) return existing;
+                if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey && existing.proxyKey === proxyKey) return existing;
                 const activeTask = this.activeTaskStatus(robot.id);
                 const activeStates = ['queued', 'starting', 'running', 'pausing'];
                 if (activeTask && activeTask.taskId !== options.taskId && activeStates.includes(activeTask.state)) {
@@ -405,6 +424,7 @@ export class RuntimeManager {
                 }
                 existing.state = 'stopping';
                 await this._podman(['rm', '-f', existing.containerName], 30000).catch(() => {});
+                await this._closeRelay(existing);
                 this.sessions.delete(robot.id);
             }
             if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
@@ -413,8 +433,12 @@ export class RuntimeManager {
                 this.toolCache.prepareShellTools(),
             ]);
             await prepareRobotShell(robotHome, { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
-            const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools });
-            const session = { robotId: robot.id, mode, cwd, codingAgentsKey, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
+            if (mode === 'desktop') await prepareDesktopLaunchers(robotHome);
+            const policyFile = upstream ? await writeChromiumProxyPolicy(this.proxyPolicyDir) : null;
+            const relay = upstream ? this.createRelay(upstream) : null;
+            const proxy = relay ? { relayPort: await relay.listen(), policyFile } : null;
+            const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools, proxy });
+            const session = { robotId: robot.id, mode, cwd, codingAgentsKey, proxyKey, relay, proxyId: upstream?.id || null, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
             this.sessions.set(robot.id, session);
             try {
                 await this._podman(plan.args, 10 * 60 * 1000);
@@ -428,10 +452,18 @@ export class RuntimeManager {
                 return session;
             } catch (error) {
                 await this._podman(['rm', '-f', plan.containerName]).catch(() => {});
+                await this._closeRelay(session);
                 this.sessions.delete(robot.id);
                 throw error;
             }
         });
+    }
+
+    async _closeRelay(session) {
+        const relay = session?.relay;
+        if (!relay) return;
+        session.relay = null;
+        await relay.close().catch(() => {});
     }
 
     async openDesktop(robot, cwd) {
@@ -623,8 +655,9 @@ export class RuntimeManager {
             child.stdin?.on('error', () => {});
             // The task prompt is the first control record. The copilot engine adds
             // the caller's system instructions when it opens the native session.
+            const systemPrompt = [task.type === 'desktop' ? DESKTOP_TASK_INSTRUCTIONS : '', task.request.systemPrompt].filter(Boolean).join('\n\n');
             child.stdin?.write(`${JSON.stringify({ type: 'prompt', prompt: task.request.task,
-                ...(task.request.systemPrompt ? { systemPrompt: task.request.systemPrompt } : {}) })}\n`);
+                ...(systemPrompt ? { systemPrompt } : {}) })}\n`);
             const resultDecoder = new StringDecoder('utf8');
             let resultBytes = 0;
             child.stdout?.on('data', (chunk) => {
@@ -838,6 +871,7 @@ export class RuntimeManager {
             if (active && active.type === mode && ['queued', 'starting', 'running'].includes(active.state)) throw new Error(`stop the ${mode} task before its container`);
             session.state = 'stopping';
             await this._podman(['rm', '-f', session.containerName], 30000).catch(() => {});
+            await this._closeRelay(session);
             this.sessions.delete(robotId);
             return { state: 'stopped' };
         });
@@ -860,6 +894,7 @@ export class RuntimeManager {
         try { await remove(); }
         catch (error) { this.deletedRobots.delete(robotId); throw error; }
         await this.soulGateway.remove(path.join(this.dataDir, 'robots', robotId, 'home'));
+        this.proxyPool?.release(robotId);
         // Server-only model-list cache for this robot (never inside the robot's mounted folder).
         if (/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) {
             await fs.rm(path.join(this.dataDir, 'server-state', 'model-catalog', robotId), { recursive: true, force: true }).catch(() => {});

@@ -363,6 +363,28 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .cron-card .cron-error { color: var(--danger); }
 .cron-state.enabled { color: var(--success); }
 .cron-state.disabled { color: var(--text-soft); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.proxy-subheading { margin: 24px 0 12px; color: var(--text-soft); font-size: var(--font-sm); font-weight: 600; }
+.proxy-pool-state { margin: 12px 0 0; color: var(--text-soft); font-size: var(--font-sm); }
+.proxy-pool-state.active { color: var(--success); }
+.proxy-account-card p { margin: 4px 0 0; color: var(--text-soft); font-size: var(--font-sm); overflow-wrap: anywhere; }
+.proxy-account-card .proxy-account-error { color: var(--danger); }
+.proxy-status-enabled { color: var(--success); }
+.proxy-status-draining { color: var(--warning); }
+.proxy-status-disabled { color: var(--text-soft); }
+#proxyAccountForm select, #proxyAccountForm textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text); font: inherit; }
+#proxyAccountForm textarea { resize: vertical; font-family: var(--mono-font); font-size: var(--font-xs); }
+.proxy-table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.proxy-table { width: 100%; border-collapse: collapse; font-size: var(--font-sm); }
+.proxy-table th { padding: 10px 12px; color: var(--text-soft); font-size: var(--font-xs); font-weight: 500; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.proxy-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.proxy-table tbody tr:last-child td { border-bottom: 0; }
+.proxy-address { font-family: var(--mono-font); font-size: var(--font-xs); white-space: nowrap; }
+.proxy-state-ok { color: var(--success); }
+.proxy-state-busy { color: var(--accent); }
+.proxy-state-error { color: var(--danger); }
+.proxy-row-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.proxy-row-actions .button { min-height: 30px; padding: 4px 10px; }
 .cron-card .robot-meta { margin-top: 4px; }
 .robot-card { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px 16px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .robot-main { display: flex; align-items: start; gap: 12px; min-width: 0; }

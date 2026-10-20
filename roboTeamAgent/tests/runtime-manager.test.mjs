@@ -9,6 +9,8 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { buildRobotRunArgs, RuntimeManager, runtimeManagerInternals } from '../server/runtime-manager.mjs';
+import { CHROMIUM_LAUNCHER } from '../server/desktop-launchers.mjs';
+import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
 
 const preparedToolCache = {
     root: '/cache',
@@ -632,9 +634,11 @@ test('recreates a reused desktop when an Achilles task requests a different cwd'
         if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
         return { stdout: '', stderr: '' };
     };
+    let written = '';
     const spawnImpl = () => {
         const child = new EventEmitter();
         child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+        child.stdin = new PassThrough(); child.stdin.on('data', (chunk) => { written += chunk; });
         setImmediate(() => child.emit('close', 0, null));
         return child;
     };
@@ -660,6 +664,9 @@ test('recreates a reused desktop when an Achilles task requests a different cwd'
     assert.equal(manager.taskStatus(robot.id, accepted.taskId).state, 'completed');
     assert.equal(manager.status(robot.id).state, 'running');
     assert.equal(manager.sessions.get(robot.id).cwd, secondCwd);
+    // The coding agent's shell is not the desktop; the prompt says so and the desktop shows Chromium.
+    assert.deepEqual(JSON.parse(written.split('\n')[0]), { type: 'prompt', prompt: 'Show the files in the current directory.', systemPrompt: DESKTOP_TASK_INSTRUCTIONS });
+    assert.equal(await fs.readFile(path.join(dataDir, 'robots', robot.id, 'home', 'Desktop', 'chromium.desktop'), 'utf8'), CHROMIUM_LAUNCHER);
     const runCalls = podmanCalls.filter((args) => args[0] === 'run');
     assert.equal(runCalls.length, 2);
     assert.ok(runCalls[0].includes(`${firstCwd}:${firstCwd}:rw`));
@@ -865,4 +872,73 @@ test('reported task failure never publishes completed even when the wrapper exit
     for (let i = 0; i < 200 && events.filter(event => event.kind === 'terminal').length < 3; i++) await new Promise(resolve => setTimeout(resolve, 5));
     assert.equal(launches.length, 3);
     assert.equal(launches[2].includes('--workflow-execution'), false);
+});
+
+test('puts a proxied workstation behind its own relay and the managed Chromium policy', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-gui-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const listener = http.createServer((_request, response) => response.end());
+    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+    t.after(() => listener.close());
+    const port = listener.address().port;
+    const calls = [], relays = [];
+    let upstream = { id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' };
+    const manager = new RuntimeManager({
+        dataDir: path.join(root, 'data'),
+        workspaceRoot: root,
+        proxyPolicyDir: path.join(root, 'proxy-pool'),
+        proxyPool: { acquire: () => upstream, release: () => true },
+        createRelay: (target) => {
+            const relay = { target, closed: false, port: 45000 + relays.length, listen: async () => relay.port, close: async () => { relay.closed = true; } };
+            relays.push(relay);
+            return relay;
+        },
+        execFileImpl: async (_command, args) => {
+            calls.push(args);
+            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
+            return { stdout: '', stderr: '' };
+        },
+        toolCache: preparedToolCache,
+    });
+    t.after(() => manager.stopAll());
+    const robot = { id: 'proxied-a1b2c3', name: 'Proxied', codingAgents: ['opencode'] };
+
+    await manager.start(robot, 'browser');
+    const run = calls.find(args => args[0] === 'run');
+    assert.equal(run[run.indexOf('--network') + 1], 'pasta:-T,3128:45000');
+    const policyFile = path.join(root, 'proxy-pool', 'chromium-proxy-policy.json');
+    assert.ok(run.includes(`${policyFile}:/etc/chromium/policies/managed/roboteam-proxy.json:ro`));
+    assert.deepEqual(JSON.parse(await fs.readFile(policyFile, 'utf8')), {
+        ProxySettings: { ProxyMode: 'fixed_servers', ProxyServer: 'http://127.0.0.1:3128' },
+        WebRtcIPHandling: 'disable_non_proxied_udp',
+    });
+    assert.equal(relays[0].target, upstream);
+    assert.doesNotMatch(run.join(' '), /198\.51\.100\.7|\bu:p\b/u);
+
+    await manager.start(robot, 'browser');
+    assert.equal(calls.filter(args => args[0] === 'run').length, 1, 'the same proxy reuses the running workstation');
+    upstream = { ...upstream, id: 'pxp_fedcba9876543210', host: '198.51.100.8' };
+    await manager.start(robot, 'browser');
+    assert.equal(relays[0].closed, true);
+    assert.equal(calls.filter(args => args[0] === 'run').length, 2, 'a different proxy replaces the workstation');
+    await manager.stop(robot.id);
+    assert.equal(relays[1].closed, true);
+});
+
+test('an active pool without a free proxy keeps the workstation from starting', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-none-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const manager = new RuntimeManager({
+        dataDir: path.join(root, 'data'),
+        workspaceRoot: root,
+        proxyPool: { acquire: () => { throw Object.assign(new Error('No free proxy is available in the shared proxy pool.'), { statusCode: 409 }); } },
+        createRelay: () => assert.fail('no relay without a proxy'),
+        execFileImpl: async (_command, args) => { calls.push(args); return { stdout: '', stderr: '' }; },
+        toolCache: preparedToolCache,
+    });
+    await assert.rejects(manager.start({ id: 'unproxied-a1b2c3', name: 'Waiting', codingAgents: ['opencode'] }, 'desktop'),
+        error => error.statusCode === 409);
+    assert.equal(calls.some(args => args[0] === 'run'), false);
+    assert.equal(manager.status('unproxied-a1b2c3').state, 'stopped');
 });

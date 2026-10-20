@@ -1,0 +1,32 @@
+---
+title: DS008-proxy-pool
+summary: Defines the shared proxy pool, provider accounts, per-robot proxy assignment, the credential-holding loopback relay, and the managed Chromium policy for Browser and Desktop workstations.
+---
+
+## Introduction
+
+Robot browsers can reach the internet through proxies instead of the host's own address. RoboTeam keeps one shared pool of proxies drawn from any number of provider accounts, gives each robot workstation exactly one of them, and keeps the provider-specific part to one small module per provider.
+
+## Core Content
+
+### Pool, accounts and providers
+
+The pool is stored in SQLite at `/data/proxy-pool/proxy-pool.sqlite`, mode `0600`, in tables `accounts`, `proxies` and `assignments`. An account names a provider, a label, a priority of `high`, `medium` (the default) or `low`, a status (`enabled`, `draining` or `disabled`), the validated provider configuration and its last synchronization outcome. The same provider configuration cannot be added twice.
+
+A provider module under `server/proxy-pool/providers/` declares its id, label and configuration fields, validates configuration, summarizes it without secrets, and lists proxies as `{ externalId, scheme, host, port, username, password, country, city, available }`. An error carrying `credentialsRejected` marks the account `rejected`. RoboTeam ships `webshare`, which reads Webshare's direct-mode proxy list with the account API key, and `static`, which takes administrator-pasted `http://user:pass@host:port [CC]` lines and so covers any provider without an implemented API. Only `http` upstream proxies are supported. Adding another provider is one module registered in `providers/index.mjs`; the pool, relay and containers do not depend on the provider.
+
+Synchronization runs at service start, every 30 minutes and on demand, one provider call per account at a time. A successful listing upserts proxies under stable ids derived from the account and the provider's proxy id and deletes proxies the provider no longer lists; their assignments disappear with them. A failed listing keeps the previous proxies and records the error; rejected credentials take the account's proxies out of rotation.
+
+### Assignment
+
+The pool is active while at least one account is `enabled` or `draining`. While it is inactive, workstations start without a proxy. While it is active, every Browser or Desktop workstation start acquires a proxy for its robot before any container is created. A robot keeps its assigned proxy while that proxy is available, has not failed its last check, and belongs to an enabled or draining account whose credentials were not rejected, so websites see a stable address across sessions. Otherwise the stale assignment is released and the robot receives the free usable proxy of an enabled account with the highest priority, preferring the account with the fewest assigned robots, then the oldest account, then address order. Draining accounts keep their robots but receive no new ones. When the pool is active and nothing is free, the start fails with HTTP 409 and no container starts; a workstation never falls back to a direct connection. Assignments are released when the robot is deleted or when an administrator releases them while the robot's workstation is stopped. Changes to accounts and assignments take effect at the robot's next workstation start; a running workstation keeps its relay.
+
+### Relay and container network
+
+For a proxied workstation RoboTeam starts one `ProxyRelay` on a random outer loopback port. The relay accepts CONNECT tunnels and absolute-form plain HTTP requests, removes hop-by-hop and client proxy headers, and forwards them to the upstream proxy with its `Proxy-Authorization`. An upstream refusal or failure reaches Chromium as 502, which Chromium reports as a tunnel failure. The container is started with `--network pasta:-T,3128:<relay port>`, so its loopback port 3128 reaches only that robot's relay and no other outer loopback service. The relay closes when the container is removed by stop, replacement, failed start or shutdown. A retained workstation is reused only when its proxy is the one the robot currently holds.
+
+Chromium cannot answer proxy authentication by itself, which is why credentials stay in the relay: they never appear in container arguments, environment, files or logs. Both GUI images ship Debian-packaged Chromium, so RoboTeam mounts the managed policy `/etc/chromium/policies/managed/roboteam-proxy.json` read-only from `/data/proxy-pool/chromium-proxy-policy.json`. The policy fixes `ProxySettings` to `http://127.0.0.1:3128` and sets `WebRtcIPHandling` to `disable_non_proxied_udp`. It applies to the Browser image's own Chromium used by Playwright MCP through CDP, to Chromium opened on the Desktop, and to any later Chromium start, and it cannot be changed from the browser. Other Desktop programs are not proxied. Coding agents and ALA run in the outer container and are never proxied.
+
+### Administration
+
+Every `/api/proxy-pool*` route requires an administrator after the normal signed entitlement gate: `GET /api/proxy-pool` returns the providers, whether the pool is active, the accounts with counts and synchronization state, and the proxies with address, country, state, last check and assigned robot; `POST /api/proxy-pool/accounts` adds and synchronizes an account; `PATCH` and `DELETE /api/proxy-pool/accounts/<id>` change label, priority or status, or remove the account; `POST /api/proxy-pool/accounts/<id>/sync` synchronizes it; `POST /api/proxy-pool/proxies/<id>/check` asks an IP echo service through the proxy and records the exit address, a failed check taking the proxy out of rotation until a later check succeeds; `DELETE /api/proxy-pool/assignments/<robot id>` releases a stopped robot's proxy. Responses never contain provider configuration, usernames or passwords. The dashboard's **Proxies** tab presents the same operations.

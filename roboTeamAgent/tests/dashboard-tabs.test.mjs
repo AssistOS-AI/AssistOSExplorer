@@ -74,17 +74,19 @@ test('dashboard tabs support wrapped arrows, Home, End and listener cleanup', ()
     state.tabs.forEach(tab => assert.equal(tab.listeners.size, 0));
 });
 
-test('dashboard markup groups robot, workflow and scheduling controls into exactly three linked tabs', async () => {
+test('dashboard markup groups robot, workflow, scheduling and proxy controls into exactly four linked tabs', async () => {
     const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
-    assert.equal((html.match(/role="tab"/g) || []).length, 3);
-    assert.equal((html.match(/role="tabpanel"/g) || []).length, 3);
-    for (const [tab, panel, label] of [['robotsTab', 'robotsPanel', 'Robots'], ['workflowTypesTab', 'workflowTypesPanel', 'Workflow types'], ['kronJobsTab', 'kronJobsPanel', 'Cron jobs']]) {
+    assert.equal((html.match(/role="tab"/g) || []).length, 4);
+    assert.equal((html.match(/role="tabpanel"/g) || []).length, 4);
+    for (const [tab, panel, label] of [['robotsTab', 'robotsPanel', 'Robots'], ['workflowTypesTab', 'workflowTypesPanel', 'Workflow types'], ['kronJobsTab', 'kronJobsPanel', 'Cron jobs'], ['proxiesTab', 'proxiesPanel', 'Proxies']]) {
         assert.match(html, new RegExp(`id="${tab}"[^>]*aria-controls="${panel}"[^>]*>\\s*${label}\\s*</button>`));
         assert.match(html, new RegExp(`id="${panel}"[^>]*aria-labelledby="${tab}"`));
     }
     const robots = html.slice(html.indexOf('<div id="robotsPanel"'), html.indexOf('<div id="workflowTypesPanel"'));
     const workflows = html.slice(html.indexOf('<div id="workflowTypesPanel"'), html.indexOf('<div id="kronJobsPanel"'));
     const kron = html.slice(html.indexOf('<div id="kronJobsPanel"'), html.indexOf('</main>'));
+    const proxies = html.slice(html.indexOf('<div id="proxiesPanel"'), html.indexOf('<dialog id="cronDialog"'));
+    for (const id of ['proxyAccountsList', 'proxyTableBody', 'proxyCount', 'addProxyAccountButton', 'proxyMessage']) assert.ok(proxies.includes(`id="${id}"`));
     for (const id of ['createForm', 'formMessage', 'robotsList', 'robotCount']) assert.ok(robots.includes(`id="${id}"`));
     for (const id of ['workflowsList', 'workflowCount', 'workflowListMessage', 'addWorkflowButton', 'flowsHistoryButton']) assert.ok(workflows.includes(`id="${id}"`));
     assert.doesNotMatch(robots, /id="workflowsList"/);

@@ -10,3 +10,4 @@
 | [DS005-ploinky-security](specsLoader.html?spec=DS005-ploinky-security.md) | Specifies authenticated routing, administrator controls, workspace robot access, nested-container authority, secrets, and experiment limitations. |
 | [DS006-ala-task-boundary](specsLoader.html?spec=DS006-ala-task-boundary.md) | Defines the outer ALA process, persistent home, cwd, MCP injection, cancellation, and resume boundary. |
 | [DS007-roboflow-team-workflow](specsLoader.html?spec=DS007-roboflow-team-workflow.md) | Global task graphs, creator-selected sequential sub-workflows, human business decisions, coordinated pause and resume, SQLite execution records and directed routing. |
+| [DS008-proxy-pool](specsLoader.html?spec=DS008-proxy-pool.md) | Defines the shared proxy pool, provider accounts, per-robot proxy assignment, the credential-holding loopback relay, and the managed Chromium policy for Browser and Desktop workstations. |

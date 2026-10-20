@@ -66,7 +66,7 @@ test('dashboard uses matching cards, discreet status and metadata, grouped editi
     assert.match(js, /if \(saved\) \{[^\n]*await refresh\(true, false\)/);
     assert.match(js, /pendingMutations\.delete\(job\.id\); await refresh\(true, false\)/);
     assert.match(js, /panel\.hidden \|\| dialog\.open/); assert.match(js, /if \(!admin \|\| busy\) return/);
-    assert.match(app, /requestedTab === 'cron-jobs' \? 'kronJobsTab'/);
+    assert.match(app, /'cron-jobs': 'kronJobsTab'/);
     assert.match(server, /pathname === '\/cron-jobs\.js'/);
 });
 test('Cron job identity uses workflow and effective objective, with ellipsis and full-text tooltips', async () => {

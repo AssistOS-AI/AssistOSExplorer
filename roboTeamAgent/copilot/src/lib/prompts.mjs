@@ -16,6 +16,10 @@ export function buildNativePrompt({ prompt, resume = false, selectedSkillName, s
     return parts.filter(Boolean).join('\n\n');
 }
 
+// Desktop tasks run the coding agent outside the Desktop container, so its shell cannot see the
+// desktop's programs or files outside the shared workspace.
+export const DESKTOP_TASK_INSTRUCTIONS = 'You operate a separate virtual desktop through the computer-use MCP tools. Your shell, file tools and network commands run on a different machine than that desktop: do not inspect or install desktop programs from the shell, and never conclude from the shell that the desktop lacks an application. Look at the desktop with screenshots and its window and application tools. The desktop has the Chromium web browser: double-click the Chromium icon on the desktop or use Applications > Internet, and reuse its window when one is already open. Open web pages the task asks for in that browser, not with shell commands.';
+
 export const WORKSPACE_COPILOT_PROMPT = "You are the workspace copilot. Use list-workflows to get the current workflow types and their ids, then choose and start one workflow for the user's request using launch-workflow with the workflow name and a self-contained prompt. Only for workflow default, you may also pass executionType desktop or browser when the task needs one; it runs in terminal otherwise. For other workflows their task definitions determine execution modes; never pass executionType. Do not launch individual robots or control graph traversal. Never invent workflow IDs.";
 
 export function buildWorkflowTaskPrompt({ objective, currentTaskId, graph, previousFinalResponses, continuationPrompt = '', previousSubflowFinalResponse }) {

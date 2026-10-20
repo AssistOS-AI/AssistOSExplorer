@@ -4,7 +4,9 @@ import { RobotStore } from './robot-store.mjs';
 import { RuntimeManager } from './runtime-manager.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
 import { RoboFlowService } from './roboflow/roboflow-service.mjs';
-import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
+import { DATA_DIR, PUBLIC_BASE_PATH, PROXY_POOL_DIR } from './constants.mjs';
+import { ProxyPool } from './proxy-pool/proxy-pool.mjs';
+import path from 'node:path';
 import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
@@ -23,10 +25,14 @@ const robotStore = new RobotStore({ dataDir });
 await robotStore.initialize();
 await robotStore.ensureDefaultRobot();
 
+const proxyPool = new ProxyPool({ file: path.join(PROXY_POOL_DIR, 'proxy-pool.sqlite') });
+proxyPool.initialize();
+
 const runtimeManager = new RuntimeManager({
     dataDir,
     publicBasePath,
     workspaceRoot,
+    proxyPool,
 });
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot, alaCommand: runtimeManager.alaCommand });
@@ -47,6 +53,7 @@ const server = createRoboTeamServer({
     robotStore,
     runtimeManager,
     roboflow,
+    proxyPool,
     internalToken,
     mcpPort: process.env.ROBOTEAM_MCP_PORT,
     publicBasePath,
@@ -56,6 +63,7 @@ const server = createRoboTeamServer({
 server.listen(port, host, () => {
     console.log(`RoboTeamAgent listening on ${host}:${port}`);
     roboflow.scheduler.start();
+    proxyPool.startAutoSync(undefined, (line) => console.warn(`[roboTeamAgent] ${line}`));
     // Downloads must not delay service readiness; requests share this cache's pending preparations.
     void runtimeManager.toolCache.warmup()
         .then(async () => runtimeManager.warmOpenCodePlugins(await robotStore.list()))
@@ -71,6 +79,7 @@ async function shutdown() {
     server.close();
     await roboflow.close();
     await runtimeManager.stopAll();
+    proxyPool.close();
     process.exit(0);
 }
 
