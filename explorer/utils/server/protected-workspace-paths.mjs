@@ -8,7 +8,9 @@ import path from 'node:path';
 // rules mirror the Ploinky Router's `/workspace-files` guard
 // (`ploinky/cli/server/utils/protectedWorkspacePaths.js`); a parity test keeps
 // the two in step. Repository checkouts under the workspace's `.ploinky/repos`
-// stay reachable. Explorer's own `.data/explorer` store is reached only through
+// stay readable but are read-only here: Ploinky runs agents from them, so a
+// write there would run code inside the agents whose data these rules protect.
+// Explorer's own `.data/explorer` store is reached only through
 // `private-data-boundary.mjs`, never through these tools.
 const CONTROLLER_ROOT = '.ploinky';
 const REPOSITORIES_DIRECTORY = 'repos';
@@ -22,6 +24,7 @@ export const PROTECTED_PATH_ERROR_CODE = 'EXPLORER_PROTECTED_PATH';
 // The open reached a different file than the one that was classified.
 export const BOUND_OPEN_REFUSAL = 'Access denied: protected path';
 export const WORKSPACE_ROOT_REFUSAL = 'Access denied: a workspace root cannot be deleted, moved or copied';
+export const MANAGED_SOURCE_REFUSAL = 'Access denied: managed agent sources under .ploinky/repos are read-only';
 export const PROTECTED_DESCENDANT_REFUSAL = 'Access denied: the folder contains protected entries';
 
 export function protectedPathError(message) {
@@ -56,6 +59,11 @@ export function isControllerRootSegments(segments) {
   return segments.length === 1 && foldWorkspaceName(segments[0]) === CONTROLLER_ROOT;
 }
 
+// `.ploinky/repos` and everything below it: the agent sources Ploinky runs.
+export function isManagedSourceSegments(segments) {
+  return segments.length >= 2 && foldWorkspaceName(segments[0]) === CONTROLLER_ROOT && segments[1] === REPOSITORIES_DIRECTORY;
+}
+
 function isWithin(root, target) {
   const relative = path.relative(root, target);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
@@ -76,7 +84,8 @@ export function workspaceSegmentsFor(roots, targetPath) {
   return result;
 }
 
-// 'protected', 'controller' (the projected workspace-root `.ploinky`) or
+// 'protected', 'controller' (the projected workspace-root `.ploinky`),
+// 'managed' (readable, never written: `.ploinky/repos` and below) or
 // 'allowed', from the path alone and before any filesystem access, so a
 // protected entry that does not exist is refused exactly like one that does.
 // A path outside every root is 'protected'.
@@ -84,15 +93,22 @@ export function classifyWorkspacePath(roots, targetPath) {
   const segmentLists = workspaceSegmentsFor(roots, targetPath);
   if (segmentLists.length === 0) return 'protected';
   let controller = false;
+  let managed = false;
   for (const segments of segmentLists) {
     if (isControllerRootSegments(segments)) {
       controller = true;
       continue;
     }
     if (isProtectedWorkspaceSegments(segments)) return 'protected';
+    if (isManagedSourceSegments(segments)) managed = true;
   }
-  return controller ? 'controller' : 'allowed';
+  if (controller) return 'controller';
+  return managed ? 'managed' : 'allowed';
 }
+
+// Kinds that a user-facing read may reach, and the one a write may reach.
+export const isReadableKind = (kind) => kind === 'allowed' || kind === 'managed';
+export const isWritableKind = (kind) => kind === 'allowed';
 
 async function fileIdentity(target) {
   try {
@@ -172,13 +188,14 @@ export async function isVisibleWorkspaceEntry(roots, directoryPath, entry) {
   if (!entry.isSymbolicLink?.()) return true;
   const canonical = await realpathOrNull(entryPath);
   if (!canonical) return false;
-  return await classifyCanonicalWorkspaceTarget(roots, canonical) === 'allowed';
+  return isReadableKind(await classifyCanonicalWorkspaceTarget(roots, canonical));
 }
 
 // The first protected path in the subtree at `rootPath`, or ''. Links are not
 // followed: deleting, moving or copying a link touches the link, not its
 // target. Used before an operation that would delete, relocate or duplicate
-// every entry below the target.
+// every entry below the target; the target itself was already classified for
+// that operation, so managed sources below a readable copy source pass.
 export async function findProtectedDescendant(roots, rootPath) {
   const pending = [path.resolve(rootPath)];
   while (pending.length > 0) {
@@ -192,7 +209,7 @@ export async function findProtectedDescendant(roots, rootPath) {
     }
     for (const entry of entries) {
       const entryPath = path.join(current, entry.name);
-      if (classifyWorkspacePath(roots, entryPath) !== 'allowed') return entryPath;
+      if (!isReadableKind(classifyWorkspacePath(roots, entryPath))) return entryPath;
       if (entry.isDirectory()) pending.push(entryPath);
     }
   }

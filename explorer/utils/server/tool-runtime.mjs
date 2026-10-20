@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -13,6 +14,7 @@ import {
 } from '../filesystem-utils.mjs';
 import {
   BOUND_OPEN_REFUSAL,
+  MANAGED_SOURCE_REFUSAL,
   PROTECTED_DESCENDANT_REFUSAL,
   WORKSPACE_ROOT_REFUSAL,
   classifyCanonicalWorkspaceTarget,
@@ -20,6 +22,7 @@ import {
   crossesUnresolvedLink,
   findProtectedDescendant,
   isVisibleWorkspaceEntry,
+  isWritableKind,
   openClassifiedWorkspaceFile,
   protectedPathError,
   withClassifiedWorkspaceFile
@@ -41,6 +44,19 @@ const { z } = mcpZod;
 // Listing tools may open the workspace-root `.ploinky` directory, which they
 // project as containing only `repos`; every other tool is refused there.
 const LISTING_TOOLS = new Set(['list_directory', 'list_directory_with_sizes', 'list_directory_detailed', 'directory_tree']);
+
+// Tools that only read the workspace. Every other tool runs in write mode, in
+// which managed agent sources under `.ploinky/repos` are refused, so a tool
+// added later fails closed. The mode reaches every `validatePath` call the
+// handler makes, including those inside the CRDT, Scripta and skills stores.
+const READ_TOOLS = new Set([
+  'read_file', 'read_text_file', 'read_media_file', 'read_multiple_files', 'get_file_info',
+  ...LISTING_TOOLS, 'search_files', 'search_text', 'search_text_status', 'search_text_cancel',
+  'open_markdown_crdt_document', 'sync_markdown_crdt_from_file',
+  'scripta_crdt_open', 'scripta_crdt_workspace_list', 'scripta_collaboration_open', 'scripta_collaboration_pull',
+  'webmeet_media_get', 'read_skills_manifest_state', 'llm_autocomplete',
+  'collect_ide_plugins', 'get_plugin_settings', 'get_avatar_settings_agents', 'list_allowed_directories',
+]);
 
 function createFatalRecorder() {
   let state = null;
@@ -210,11 +226,15 @@ export async function createExplorerToolRuntime({
     directoryTreeCache.clear();
   };
 
+  const callAccess = new AsyncLocalStorage();
+  const currentAccess = () => callAccess.getStore()?.access || 'write';
+
   // Every user-supplied path, for every tool and for both the source and the
   // destination of a move or copy, is classified here: its lexical form before
   // any filesystem access, then its canonical target. A protected path is
-  // refused with an explicit denial, never reported as missing.
-  async function resolvePathInAllowedRoots(inputPath, { allowControllerRoot = false } = {}) {
+  // refused with an explicit denial, never reported as missing. In write mode
+  // a managed agent source is refused as well.
+  async function resolvePathInAllowedRoots(inputPath, { allowControllerRoot = false, access = currentAccess() } = {}) {
     if (typeof inputPath !== 'string') return inputPath;
     if (!workspaceRoot) throw new Error('Workspace root not configured.');
     if (inputPath.includes('\0')) throw new Error(`Invalid path: ${inputPath}`);
@@ -235,6 +255,7 @@ export async function createExplorerToolRuntime({
       if (kind === 'protected' || (kind === 'controller' && !(allowControllerRoot && lexicalKind === 'controller'))) {
         throw protectedPathError(`Access denied: protected path "${inputPath}"`);
       }
+      if (kind === 'managed' && access !== 'read') throw protectedPathError(MANAGED_SOURCE_REFUSAL);
     };
     refuseProtected(lexicalKind);
     if (await crossesUnresolvedLink(resolvedPath)) {
@@ -253,13 +274,31 @@ export async function createExplorerToolRuntime({
     const next = { ...originalArgs };
     const allowControllerRoot = LISTING_TOOLS.has(name);
     if (typeof next.path === 'string') next.path = await resolvePathInAllowedRoots(next.path, { allowControllerRoot });
-    if (typeof next.source === 'string') next.source = await resolvePathInAllowedRoots(next.source);
+    // A copy only reads its source.
+    if (typeof next.source === 'string') {
+      next.source = await resolvePathInAllowedRoots(next.source, name === 'copy_file' ? { access: 'read' } : {});
+    }
     if (typeof next.destination === 'string') next.destination = await resolvePathInAllowedRoots(next.destination);
     if (Array.isArray(next.paths)) next.paths = await Promise.all(next.paths.map((entry) => resolvePathInAllowedRoots(entry)));
     return next;
   }
 
   const validatePath = async (targetPath, options) => resolvePathInAllowedRoots(targetPath, options);
+
+  // Backstop for every content write the handlers, the CRDT store and
+  // replace make, including writes to a document addressed by its id after a
+  // read-mode open: the canonical target must be an ordinary writable path.
+  async function assertWritableTarget(targetPath) {
+    const roots = rootsForPathChecks();
+    const canonical = await crossesUnresolvedLink(targetPath) ? null : await resolveCanonicalPath(targetPath);
+    const kinds = [classifyWorkspacePath(roots, targetPath), canonical ? await classifyCanonicalWorkspaceTarget(roots, canonical) : 'protected'];
+    if (kinds.includes('managed')) throw protectedPathError(MANAGED_SOURCE_REFUSAL);
+    if (!kinds.every(isWritableKind)) throw protectedPathError(BOUND_OPEN_REFUSAL);
+  }
+  const guardedWriteFileContent = async (filePath, content) => {
+    await assertWritableTarget(filePath);
+    return writeFileContent(filePath, content);
+  };
 
   // A recursive delete, move or copy touches every entry below its target, so
   // it is refused when one of them is protected, and a workspace root is never
@@ -289,7 +328,7 @@ export async function createExplorerToolRuntime({
     validatePath,
     getAllowedDirectories: () => allowedDirectories,
     readFileWithCache,
-    writeFileContent,
+    writeFileContent: guardedWriteFileContent,
     cacheConfig,
     indexDirectory,
     structureIndex,
@@ -329,7 +368,7 @@ export async function createExplorerToolRuntime({
       applyFileEdits,
       tailFile: tailClassifiedFile,
       headFile: headClassifiedFile,
-      writeFileContent,
+      writeFileContent: guardedWriteFileContent,
       copyRecursive,
       assertNoProtectedEntriesBelow,
       aggregateIdePlugins,
@@ -368,10 +407,12 @@ export async function createExplorerToolRuntime({
       }
       activeInvocationContext = context && typeof context === 'object' ? context : {};
       try {
-        const resolvedArgs = await resolvePathsInArgs(name, args);
-        const handler = toolHandlers[name];
-        if (!handler) throw new Error(`Unknown tool: ${name}`);
-        return await handler(resolvedArgs);
+        return await callAccess.run({ access: READ_TOOLS.has(name) ? 'read' : 'write' }, async () => {
+          const resolvedArgs = await resolvePathsInArgs(name, args);
+          const handler = toolHandlers[name];
+          if (!handler) throw new Error(`Unknown tool: ${name}`);
+          return handler(resolvedArgs);
+        });
       } finally {
         activeInvocationContext = {};
       }

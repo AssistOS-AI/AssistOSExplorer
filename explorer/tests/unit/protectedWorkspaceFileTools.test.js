@@ -8,10 +8,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { createMarkdownCrdtStore } from '../../utils/server/markdown-crdt/markdown-crdt-store.mjs';
 import { createExplorerToolRuntime } from '../../utils/server/tool-runtime.mjs';
 
 const SECRET = 'SECRET-SENTINEL';
 const DENIED = /Access denied: protected path/;
+const READ_ONLY = /Access denied: managed agent sources under \.ploinky\/repos are read-only/;
 const ADMIN = { invocation: { sub: 'user:ops-1', actor: { kind: 'user', id: 'user:ops-1', roles: ['admin'] } } };
 const MEMBER = { invocation: { sub: 'user:member-1', actor: { kind: 'user', id: 'user:member-1', roles: ['user'] } } };
 const WEBMEET = { invocation: { caller: { id: 'agent:webmeet/webmeetAgent' } } };
@@ -59,6 +61,7 @@ async function workspace(t) {
     await write('project/app.js', 'console.log("app");\n');
     await write('scratch/old.txt', 'disposable\n');
     await write('.ploinky/repos/bizanso/bizansoAgent/index.mjs', 'export const source = "bizanso source";\n');
+    await write('.ploinky/repos/bizanso/bizansoAgent/README.md', '# Bizanso agent\n\nrepo-only-marker\n');
     await fs.symlink(path.join(root, '.data', 'userPersistoAgent'), path.join(root, 'link-to-users'));
     await fs.symlink('.data/userPersistoAgent/users.json', path.join(root, 'link-to-users-file'));
     await fs.symlink('.env', path.join(root, 'link-to-env'));
@@ -271,7 +274,10 @@ test('listings omit protected entries and project the workspace .ploinky as cont
     const sized = text(await runtime.callTool('list_directory_with_sizes', { path: '/' }));
     assert.doesNotMatch(sized, /\.env|master-key|github\.secrets|\.data|link-to-users|link-to-env|dangling/);
     assert.deepEqual(json(await runtime.callTool('list_directory_detailed', { path: '/.ploinky' })).map(entry => entry.name), ['repos']);
-    assert.deepEqual(json(await runtime.callTool('list_directory_detailed', { path: '.PLOINKY' })).map(entry => entry.name), ['repos']);
+    // A case-insensitive filesystem opens the same directory through `.PLOINKY`.
+    if (await fs.stat(path.join(root, '.PLOINKY')).then(() => true, () => false)) {
+        assert.deepEqual(json(await runtime.callTool('list_directory_detailed', { path: '.PLOINKY' })).map(entry => entry.name), ['repos']);
+    }
     assert.deepEqual(json(await runtime.callTool('list_directory_detailed', { path: 'project' })).map(entry => entry.name).sort(), ['app.js', 'nested']);
     assert.deepEqual(json(await runtime.callTool('list_directory_detailed', { path: 'project/nested' })), []);
 
@@ -284,7 +290,7 @@ test('listings omit protected entries and project the workspace .ploinky as cont
     visit(tree, '');
     assert.deepEqual(treePaths.filter(entry => entry.startsWith('.ploinky')).sort(), [
         '.ploinky', '.ploinky/repos', '.ploinky/repos/bizanso', '.ploinky/repos/bizanso/bizansoAgent',
-        '.ploinky/repos/bizanso/bizansoAgent/index.mjs',
+        '.ploinky/repos/bizanso/bizansoAgent/README.md', '.ploinky/repos/bizanso/bizansoAgent/index.mjs',
     ]);
     for (const entry of treePaths) {
         assert.doesNotMatch(entry, /(^|\/)(\.data|\.env|master-key|[^/]*\.secrets|link-to-users|link-to-env|link-to-controller|dangling-into-data)(\/|$)/, entry);
@@ -375,6 +381,10 @@ test('ordinary workspace files, .ploinky/repos sources and recursive operations 
     assert.match(text(await runtime.callTool('read_text_file', { path: '/.ploinky/repos/bizanso/bizansoAgent/index.mjs' })), /bizanso source/);
     assert.match(text(await runtime.callTool('read_text_file', { path: '.ploinky/repos/bizanso/bizansoAgent/index.mjs', head: 1 })), /bizanso source/);
     assert.deepEqual(json(await runtime.callTool('list_directory_detailed', { path: '.ploinky/repos/bizanso' })).map(entry => entry.name), ['bizansoAgent']);
+    await runtime.callTool('copy_file', { source: '.ploinky/repos/bizanso/bizansoAgent', destination: 'docs/bizanso-copy' });
+    assert.match(await fs.readFile(path.join(root, 'docs/bizanso-copy/index.mjs'), 'utf8'), /bizanso source/);
+    await runtime.callTool('copy_file', { source: 'link-to-repos/bizanso/bizansoAgent/README.md', destination: 'docs/bizanso-readme.md' });
+    assert.match(await fs.readFile(path.join(root, 'docs/bizanso-readme.md'), 'utf8'), /repo-only-marker/);
     assert.equal(json(await runtime.callTool('get_file_info', { path: '.ploinky/repos/bizanso/bizansoAgent/index.mjs' })).isFile, true);
     await runtime.callTool('write_file', { path: 'docs/new.md', content: 'new doc\n' });
     await runtime.callTool('copy_file', { source: 'docs', destination: 'docs-copy' });
@@ -418,4 +428,65 @@ test('Explorer private data stays usable through its internal boundary but is no
     assert.equal(committed.ok, true);
     assert.equal(await fs.readFile(path.join(root, committed.asset.workspaceUrl), 'utf8'), 'plain attachment\n');
     await assert.rejects(fs.lstat(path.join(blobDirectory, blobId)), { code: 'ENOENT' });
+});
+
+test('managed agent sources under .ploinky/repos are readable but never written', async (t) => {
+    const root = await workspace(t);
+    const sourceFile = '.ploinky/repos/bizanso/bizansoAgent/index.mjs';
+    const sourceDoc = '.ploinky/repos/bizanso/bizansoAgent/README.md';
+    // A document whose CRDT state already exists, for example from an open
+    // made before this rule: later writes address it by id only.
+    const seeded = createMarkdownCrdtStore({
+        fs, path, workspaceRoot: root,
+        validatePath: async (value) => path.resolve(root, String(value).replace(/^\/+/, '')),
+        writeFileContent: (target, content) => fs.writeFile(target, content),
+        invalidateCachesForPath: () => {},
+    });
+    const { documentId } = await seeded.open(sourceDoc);
+    const runtime = await runtimeFor(t, root);
+    const managed = async () => [...await snapshot(root)].filter(([relative]) => relative.startsWith(path.join('.ploinky', 'repos'))).sort();
+    const before = await managed();
+    for (const base of ['.ploinky/repos/bizanso/bizansoAgent', '.PLOINKY/repos/bizanso/bizansoAgent', 'link-to-repos/bizanso/bizansoAgent']) {
+        for (const [name, args, context] of [
+            ['write_file', { path: `${base}/index.mjs`, content: 'export const source = "injected";' }],
+            ['write_file', { path: `${base}/planted.mjs`, content: 'export const planted = true;' }],
+            ['write_binary_file', { path: `${base}/index.mjs`, content: Buffer.from('injected').toString('base64') }],
+            ['edit_file', { path: `${base}/index.mjs`, edits: [{ oldText: 'bizanso source', newText: 'injected' }] }],
+            ['create_directory', { path: `${base}/planted` }],
+            ['delete_file', { path: `${base}/index.mjs` }],
+            ['delete_directory', { path: base }],
+            ['move_file', { source: `${base}/index.mjs`, destination: 'docs/moved.mjs' }],
+            ['move_file', { source: 'notes.txt', destination: `${base}/notes.txt` }],
+            ['copy_file', { source: 'notes.txt', destination: `${base}/notes.txt` }],
+            ['copy_file', { source: 'project/app.js', destination: `${base}/index.mjs`, overwrite: true }],
+            ['replace_text', { path: base, query: 'bizanso source', replaceWith: 'injected' }],
+            ['save_markdown_crdt_document', { documentId, path: `${base}/README.md` }],
+            ['add_skills_manifest_repo', { folderPath: base, url: 'https://example.invalid/skills.git' }, ADMIN],
+        ]) {
+            await assert.rejects(runtime.callTool(name, args, context), READ_ONLY, `${name} ${JSON.stringify(args)}`);
+        }
+    }
+    for (const repository of ['.ploinky/repos', '.ploinky/repos/bizanso']) {
+        await assert.rejects(runtime.callTool('delete_directory', { path: repository }), READ_ONLY, `delete ${repository}`);
+        await assert.rejects(runtime.callTool('move_file', { source: repository, destination: 'moved-repos' }), READ_ONLY, `move ${repository}`);
+    }
+    await assert.rejects(runtime.callTool('create_directory', { path: '.ploinky/repos/new-repo' }), READ_ONLY);
+    // A write to a document addressed only by its id reaches the shared
+    // writer, which refuses the managed target.
+    await assert.rejects(runtime.callTool('save_markdown_crdt_document', { documentId }), READ_ONLY, 'save by documentId');
+    // Replace never reports or makes a change in managed sources.
+    for (const dryRun of [true, false]) {
+        const replaced = json(await runtime.callTool('replace_text', { path: '/', query: 'repo-only-marker', replaceWith: 'injected', dryRun }));
+        assert.equal(replaced.summary.filesChanged, 0, `replace dryRun=${dryRun}`);
+        assert.deepEqual(replaced.changedFiles, []);
+    }
+    assert.deepEqual(await managed(), before);
+    await assert.rejects(fs.lstat(path.join(root, 'docs/moved.mjs')), { code: 'ENOENT' });
+    await assert.rejects(fs.lstat(path.join(root, 'moved-repos')), { code: 'ENOENT' });
+    // Reads stay available.
+    assert.match(text(await runtime.callTool('read_text_file', { path: sourceFile })), /bizanso source/);
+    const search = json(await runtime.callTool('search_text', { path: '/.ploinky/repos', query: 'repo-only-marker' }));
+    assert.deepEqual(json(await runtime.callTool('search_text_status', { jobId: search.jobId })).results.map(result => result.path),
+        ['/.ploinky/repos/bizanso/bizansoAgent/README.md']);
+    assert.equal(json(await runtime.callTool('open_markdown_crdt_document', { path: sourceDoc })).documentId, documentId);
 });

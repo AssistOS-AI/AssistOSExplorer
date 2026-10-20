@@ -1,4 +1,4 @@
-import { classifyWorkspacePath } from './protected-workspace-paths.mjs';
+import { classifyWorkspacePath, isReadableKind, isWritableKind } from './protected-workspace-paths.mjs';
 
 export function createWorkspaceSearch({
   fs,
@@ -38,6 +38,9 @@ export function createWorkspaceSearch({
     return rootsForSource;
   };
   const isProtectedEntryPath = (targetPath) => classifyWorkspacePath(classificationRoots(), targetPath) === 'protected';
+  // Replace never writes into managed agent sources, so its walk skips them
+  // and a dry run cannot report a change the real run would refuse.
+  const isUnwritableEntryPath = (targetPath) => !isWritableKind(classifyWorkspacePath(classificationRoots(), targetPath));
   const readTextFile = async (filePath) => {
     const handle = await openFile(filePath);
     try {
@@ -428,7 +431,7 @@ export function createWorkspaceSearch({
         const fullPath = path.resolve(rawPath);
         if (seenPaths.has(fullPath)) continue;
         seenPaths.add(fullPath);
-        if (classifyWorkspacePath(classificationRoots(), fullPath) !== 'allowed') {
+        if (!isReadableKind(classifyWorkspacePath(classificationRoots(), fullPath))) {
           continue;
         }
         if (!(fullPath === rootResolved || fullPath.startsWith(`${rootResolved}${path.sep}`))) {
@@ -668,7 +671,7 @@ export function createWorkspaceSearch({
           break;
         }
         const fullPath = path.join(currentPath, entry.name);
-        if (isProtectedEntryPath(fullPath)) {
+        if (isUnwritableEntryPath(fullPath)) {
           continue;
         }
         if (!isPathWithinAllowedDirectories(fullPath)) {

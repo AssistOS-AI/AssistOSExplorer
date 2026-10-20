@@ -59,8 +59,12 @@ test('path classification matches the Ploinky Router, with only the root .ploink
     const root = path.resolve('/workspace');
     for (const relative of RELATIVE_PATHS) {
         const kind = classifyWorkspacePath([root], path.join(root, relative));
-        assert.equal(kind !== 'allowed', ploinky.isProtectedWorkspaceRequestPath(relative), JSON.stringify(relative));
+        assert.equal(['protected', 'controller'].includes(kind), ploinky.isProtectedWorkspaceRequestPath(relative), JSON.stringify(relative));
         const normalized = path.posix.normalize(relative).replace(/\/+$/, '');
+        // Readable but never written: exactly the leading `.ploinky/repos` tree.
+        const segments = normalized.split('/');
+        const leadingRepos = segments.length >= 2 && foldWorkspaceName(segments[0]) === '.ploinky' && segments[1] === 'repos';
+        assert.equal(kind === 'managed', leadingRepos && !ploinky.isProtectedWorkspaceRequestPath(relative), `${JSON.stringify(relative)} is ${kind}`);
         assert.equal(kind === 'controller', ['.ploinky', '.PLOINKY', '.ploinKy'].includes(normalized), `${JSON.stringify(relative)} is ${kind}`);
     }
     assert.equal(classifyWorkspacePath([root], path.resolve('/elsewhere/file')), 'protected');

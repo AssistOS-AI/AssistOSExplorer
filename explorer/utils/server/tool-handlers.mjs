@@ -862,7 +862,7 @@ export function createToolHandlers({
 
   async function handleCopyFile(args) {
     const data = parseArgs(CopyFileArgsSchema, args, 'copy_file');
-    const validSource = await validatePath(data.source);
+    const validSource = await validatePath(data.source, { access: 'read' });
     const validDestination = await validatePath(data.destination);
     if (validSource === validDestination) {
       throw new Error('Source and destination must be different.');
