@@ -1009,10 +1009,10 @@ Run only the default non-external suite:
 npm run test:quick
 ```
 
-Run against production:
+Run against another deployed Explorer (for QA, use the `test:qa` gate above):
 
 ```bash
-SMOKE_BASE_URL=https://skills.axiologic.dev npm test
+SMOKE_BASE_URL=https://explorer.example.test npm test
 ```
 
 Run long relay and media checks:

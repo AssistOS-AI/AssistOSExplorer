@@ -142,19 +142,6 @@ const WORKFLOWS = [
       'Protected host resource identities remained unchanged',
     ],
   },
-  {
-    file: '.github/workflows/deploy-skills-explorer.yml',
-    name: 'Deploy Skills Explorer',
-    expected: [
-      'public-services/soul-gateway-health/',
-      'Provision Skills Explorer Host workflow first',
-      'https://github.com/AssistOS-AI/ploinky.git',
-      'https://github.com/AssistOS-AI/AchillesAgentLib.git',
-      '--repo-branch "legacy-agents=${LEGACY_AGENTS_BRANCH:-main}"',
-      '--repo-branch "webmeet=${WEBMEET_BRANCH:-main}"',
-      '${PUBLIC_URL%/}/dashboard',
-    ],
-  },
 ];
 
 const SHARED_DEPLOYMENT_CONTRACT = [
@@ -195,8 +182,6 @@ for (const workflow of WORKFLOWS) {
       assert.doesNotMatch(source, /BRANCH_ARGS=\(--branch|--branch-fallback|--reset-repos/);
       assert.doesNotMatch(source, /deleteTunnelOnTeardown|create-managed-tunnel/);
       assert.doesNotMatch(source, /BOX_STATUS="\$\("\$PLOINKY" status\)"/);
-    } else {
-      assert.match(source, /--reset-repos/);
     }
 
     assert.equal(source.match(/<< ?'REMOTE'/g)?.length, 1, 'expected one remote deployment heredoc');
@@ -215,7 +200,7 @@ test('Explorer QA deploy, destroy and runtime verifier do not manage container-i
     }
 });
 
-test('Explorer workflows omit retired stack repositories outside the explicit LiveKit migration', () => {
+test('Explorer workflows omit retired stack repositories', () => {
     const retiredRepositories = ['basic', ['webmeet', 'Infra'].join('')];
     const retiredRepositoryPattern = new RegExp(`\\b(?:${retiredRepositories.join('|')})\\b`);
     for (const file of [
@@ -223,10 +208,7 @@ test('Explorer workflows omit retired stack repositories outside the explicit Li
         '.github/workflows/destroy-explorer-qa.yml',
     ]) {
         const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
-        const activeSource = file === '.github/workflows/deploy-skills-explorer.yml'
-            ? source.replace(/^          # BEGIN LiveKit repository migration\n[\s\S]*?^          # END LiveKit repository migration$/gm, '')
-            : source;
-        assert.doesNotMatch(activeSource, retiredRepositoryPattern, `${file} must not manage a retired stack repository outside migration`);
+        assert.doesNotMatch(source, retiredRepositoryPattern, `${file} must not manage a retired stack repository`);
     }
 });
 
@@ -237,27 +219,6 @@ test('Explorer deployment workflows neither provision nor inspect the retired lo
         assert.doesNotMatch(source, /default-local-llm/i, `${workflow.file} must not pull, start, or inspect the retired local model agent`);
         assert.doesNotMatch(source, /default local LLM image/i, `${workflow.file} must not inspect a local model image`);
     }
-});
-
-test('Skills Explorer keeps the LiveKit env plumbing but no longer pulls or gates on LiveKit by default', () => {
-    const source = fs.readFileSync(path.join(ROOT, '.github/workflows/deploy-skills-explorer.yml'), 'utf8');
-    for (const required of [
-        "WEBMEET_INFRA_IMAGE_TAG: ${{ inputs.webmeet_infra_image_tag || vars.WEBMEET_INFRA_IMAGE_TAG || 'webmeet-infra' }}",
-        'write_env WEBMEET_INFRA_IMAGE_TAG',
-        'write_env WEBMEET_INFRA_HEALTH_PORT',
-        'set_var WEBMEET_INFRA_IMAGE_TAG "${WEBMEET_INFRA_IMAGE_TAG:-webmeet-infra}"',
-        'set_var WEBMEET_INFRA_HEALTH_PORT "${WEBMEET_INFRA_HEALTH_PORT:-17000}"',
-    ]) {
-        assert.equal(source.includes(required), true, `missing LiveKit compatibility contract: ${required}`);
-    }
-    for (const retired of [
-        'podman pull "docker.io/assistos/livekit-server-agent:${WEBMEET_INFRA_IMAGE_TAG}"',
-        '"http://127.0.0.1:${WEBMEET_INFRA_HEALTH_PORT}/"',
-        'liveKitServerAgent health did not respond and STRICT_INFRA_CHECKS=1.',
-    ]) {
-        assert.equal(source.includes(retired), false, `LiveKit is not started by default, so the deploy must not gate on it: ${retired}`);
-    }
-    assert.doesNotMatch(source, /cleanup_retired_webmeet_infra|retired_pattern|delete agents\[key\]|delete routing\.routes\[key\]/);
 });
 
 test('Explorer QA destroy removes only its Ploinky-owned Cloudflare publication', () => {
