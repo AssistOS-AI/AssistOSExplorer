@@ -15,7 +15,8 @@ function png(width = 2, height = 3) {
 }
 
 test('WebMeet media validates images and moves one staged blob into the room asset tree', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-media-'));
+    // The tool runtime hands the store canonical paths.
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-media-')));
     const workspaceRoot = path.join(root, 'workspace');
     await fs.mkdir(path.join(workspaceRoot, '.data', 'explorer', 'blobs'), { recursive: true });
     const blobId = 'a'.repeat(48);
@@ -49,7 +50,8 @@ test('WebMeet media validates images and moves one staged blob into the room ass
 });
 
 test('WebMeet media rejects blob references for another agent or path', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-media-ref-'));
+    // The tool runtime hands the store canonical paths.
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-media-ref-')));
     const store = createWebMeetMediaStore({
         fs,
         path,
@@ -85,7 +87,8 @@ test('WebMeet media rejects unsupported image content', () => {
 });
 
 test('WebMeet media commits arbitrary files and does not trust an image MIME declaration', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-file-'));
+    // The tool runtime hands the store canonical paths.
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-file-')));
     const workspaceRoot = path.join(root, 'workspace');
     await fs.mkdir(path.join(workspaceRoot, '.data', 'explorer', 'blobs'), {recursive: true});
     const blobId = 'c'.repeat(48);
@@ -125,7 +128,8 @@ test('WebMeet media commits arbitrary files and does not trust an image MIME dec
 });
 
 test('WebMeet media stores one real file per asset without sidecar metadata', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-json-'));
+    // The tool runtime hands the store canonical paths.
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-json-')));
     const workspaceRoot = path.join(root, 'workspace');
     await fs.mkdir(path.join(workspaceRoot, '.data', 'explorer', 'blobs'), {recursive: true});
     const blobId = 'd'.repeat(48);
@@ -161,7 +165,8 @@ test('WebMeet media stores one real file per asset without sidecar metadata', as
 });
 
 test('WebMeet media preserves a sanitized real filename for arbitrary files', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-active-file-'));
+    // The tool runtime hands the store canonical paths.
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-active-file-')));
     const workspaceRoot = path.join(root, 'workspace');
     await fs.mkdir(path.join(workspaceRoot, '.data', 'explorer', 'blobs'), {recursive: true});
     const blobId = 'e'.repeat(48);
@@ -198,7 +203,8 @@ test('WebMeet media preserves a sanitized real filename for arbitrary files', as
 });
 
 test('WebMeet media rejects an asset directory that does not contain exactly one file', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-invalid-asset-'));
+    // The tool runtime hands the store canonical paths.
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-webmeet-invalid-asset-')));
     const assetFolder = path.join(root, 'WebMeet', 'invalid-room', 'assets', 'asset_invalid');
     await fs.mkdir(assetFolder, {recursive: true});
     await fs.writeFile(path.join(assetFolder, 'one.txt'), 'one');

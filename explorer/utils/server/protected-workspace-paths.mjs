@@ -169,10 +169,13 @@ export async function classifyCanonicalWorkspaceTarget(roots, canonicalPath) {
     const segments = relative.split(path.sep);
     const aliased = await aliasedProtectedRoot(resolvedRoot, segments);
     if (aliased === 'data') return 'protected';
-    // The projected `.ploinky` itself, or a `repos` path below it, is what the
-    // segment rules already admitted; anything else reaching it is refused.
-    if (aliased === 'controller' && !(kind === 'controller' && isControllerRootSegments(segments))
-      && segments[1] !== REPOSITORIES_DIRECTORY) return 'protected';
+    if (aliased === 'controller') {
+      // A `repos` path below an alias of `.ploinky` is a managed source; the
+      // projected `.ploinky` itself stays the controller root; anything else
+      // reaching it is refused.
+      if (segments[1] === REPOSITORIES_DIRECTORY) return kind === 'allowed' ? 'managed' : kind;
+      if (!(kind === 'controller' && isControllerRootSegments(segments))) return 'protected';
+    }
   }
   return kind;
 }

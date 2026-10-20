@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import { createExplorerPrivateDataBoundary } from './private-data-boundary.mjs';
+import { withClassifiedWorkspaceFile } from './protected-workspace-paths.mjs';
 
 const MAX_ASSET_BYTES = 15 * 1024 * 1024;
 const BLOB_ID_RE = /^[a-f0-9]{48}$/;
@@ -175,7 +176,8 @@ export function createWebMeetMediaStore({
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_ASSET_BYTES) {
       throw new Error('The WebMeet asset file is invalid.');
     }
-    const inspected = inspectAsset(await fs.readFile(filePath), {filename}, path);
+    const content = await withClassifiedWorkspaceFile(filePath, (handle) => handle.readFile());
+    const inspected = inspectAsset(content, {filename}, path);
     const asset = {
       assetId: cleanAssetId,
       roomId: cleanRoomId,

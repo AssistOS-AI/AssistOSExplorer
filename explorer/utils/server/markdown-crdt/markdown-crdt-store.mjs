@@ -22,6 +22,7 @@ import {
   writeMarkdownModelToDraft
 } from './markdown-crdt-model.mjs';
 import { createExplorerPrivateDataBoundary } from '../private-data-boundary.mjs';
+import { PROTECTED_PATH_ERROR_CODE } from '../protected-workspace-paths.mjs';
 
 const STORE_ROOT = ['.data', 'explorer', 'automerge', 'documents'];
 const DELETION_ROOT = 'pending-deletions';
@@ -717,8 +718,10 @@ export function createMarkdownCrdtStore({
       if (error?.code === 'ENOENT') return null;
       throw error;
     });
+    let markdownWritten = false;
     try {
       await writeFileContent(validPath, markdown);
+      markdownWritten = true;
       invalidateCachesForPath(validPath);
       const stats = await fs.stat(validPath);
       document = changeDocument(document, (draft) => {
@@ -729,6 +732,8 @@ export function createMarkdownCrdtStore({
       await writeAutomergeState(document);
       return document;
     } catch (error) {
+      // A refused write changed nothing, so there is nothing to roll back.
+      if (!markdownWritten && error?.code === PROTECTED_PATH_ERROR_CODE) throw error;
       const rollbackErrors = [];
       try {
         await writeFileContent(validPath, raw);
@@ -1051,8 +1056,10 @@ export function createMarkdownCrdtStore({
       paragraph: 0,
       duplicate: 0
     });
+    let markdownWritten = false;
     try {
       await writeFileContent(validPath, markdown);
+      markdownWritten = true;
       invalidateCachesForPath(validPath);
       const stats = await fs.stat(validPath);
       const versionKey = getVersionKey(stats);
@@ -1079,6 +1086,8 @@ export function createMarkdownCrdtStore({
       if (typeof onCommitted === 'function') await onCommitted(response);
       return response;
     } catch (error) {
+      // A refused write changed nothing, so there is nothing to roll back.
+      if (!markdownWritten && error?.code === PROTECTED_PATH_ERROR_CODE) throw error;
       const rollbackErrors = [];
       try {
         await writeFileContent(validPath, previousMarkdown);
@@ -1263,7 +1272,9 @@ export function createMarkdownCrdtStore({
         ? await loadByDocumentId(args.documentId)
         : await loadByPath(args.path);
       const documentId = normalizeDocumentId(document.documentId);
-      const validPath = await validatePath(document.path);
+      // Staging a deletion, restoring it and crash recovery move the user's
+      // document, whatever tool triggered them, so they check it for writing.
+      const validPath = await validatePath(document.path, { access: 'write' });
       const transactionId = normalizeDocumentId(generateId('scripta-delete'));
       const stateSegments = [
         'automerge',
@@ -1323,7 +1334,7 @@ export function createMarkdownCrdtStore({
         }
         if (markdownMoved) {
           try {
-            await fs.rename(await deletionFile(transactionId, 'document.md'), await validatePath(validPath));
+            await fs.rename(await deletionFile(transactionId, 'document.md'), await validatePath(validPath, { access: 'write' }));
           } catch { restored = false; }
         }
         if (restored) await removeDeletionDirectory(transactionId, relatedArtifacts).catch(() => {});
@@ -1364,7 +1375,7 @@ export function createMarkdownCrdtStore({
     const scope = await lockScopeForPath(initial.transaction.path);
     return withCrdtLock(scope, async () => {
       const { transaction } = await readDeletionTransaction(args.transactionId);
-      const validPath = await validatePath(transaction.path);
+      const validPath = await validatePath(transaction.path, { access: 'write' });
       const statePath = await privateData.resolveFile([
         'automerge',
         'documents',
@@ -1379,7 +1390,7 @@ export function createMarkdownCrdtStore({
         }
       }
       await fs.mkdir(path.dirname(validPath), { recursive: true });
-      await fs.rename(await deletionFile(args.transactionId, 'document.md'), await validatePath(validPath));
+      await fs.rename(await deletionFile(args.transactionId, 'document.md'), await validatePath(validPath, { access: 'write' }));
       try {
         const destination = await privateData.resolveFile(['automerge', 'documents', path.basename(statePath)]);
         await fs.rename(await deletionFile(args.transactionId, 'document.automerge'), destination);

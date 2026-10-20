@@ -9,6 +9,7 @@ import test from 'node:test';
 
 import { importFromSibling } from '../../../tests/helpers/sibling-roots.mjs';
 import {
+    classifyCanonicalWorkspaceTarget,
     classifyWorkspacePath,
     foldWorkspaceName,
     isProtectedWorkspaceSegments,
@@ -104,4 +105,19 @@ test('a directory swapped for a symlink after classification cannot redirect the
         withClassifiedWorkspaceFile(classified, (handle) => handle.readFile({ encoding: 'utf8' })),
         /Access denied: protected path/
     );
+});
+
+test('a top-level entry that resolves to .ploinky or .data is classified as that directory', async (t) => {
+    const root = await fixture(t);
+    await fs.mkdir(path.join(root, '.ploinky', 'repos', 'bizanso'), { recursive: true });
+    // A symlink models a name the filesystem resolves to the same directory
+    // without matching it after folding (for example a bind mount).
+    await fs.symlink(path.join(root, '.ploinky'), path.join(root, '.alias'));
+    await fs.symlink(path.join(root, '.data'), path.join(root, '.alias-data'));
+    assert.equal(await classifyCanonicalWorkspaceTarget([root], path.join(root, '.alias', 'repos', 'bizanso', 'x.mjs')), 'managed');
+    assert.equal(await classifyCanonicalWorkspaceTarget([root], path.join(root, '.alias', 'routing.json')), 'protected');
+    assert.equal(await classifyCanonicalWorkspaceTarget([root], path.join(root, '.alias')), 'protected');
+    assert.equal(await classifyCanonicalWorkspaceTarget([root], path.join(root, '.alias-data', 'userPersistoAgent', 'users.json')), 'protected');
+    assert.equal(await classifyCanonicalWorkspaceTarget([root], path.join(root, '.ploinky')), 'controller');
+    assert.equal(await classifyCanonicalWorkspaceTarget([root], path.join(root, 'docs', 'users.json')), 'allowed');
 });

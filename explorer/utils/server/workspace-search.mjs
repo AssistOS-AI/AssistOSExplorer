@@ -211,7 +211,7 @@ export function createWorkspaceSearch({
     }
     let handle;
     try {
-      handle = await fs.open(filePath, 'r');
+      handle = await openFile(filePath);
       const buffer = Buffer.alloc(1024);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
       const slice = buffer.subarray(0, bytesRead);

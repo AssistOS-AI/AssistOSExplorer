@@ -62,6 +62,7 @@ async function workspace(t) {
     await write('scratch/old.txt', 'disposable\n');
     await write('.ploinky/repos/bizanso/bizansoAgent/index.mjs', 'export const source = "bizanso source";\n');
     await write('.ploinky/repos/bizanso/bizansoAgent/README.md', '# Bizanso agent\n\nrepo-only-marker\n');
+    await write('.ploinky/repos/bizanso/bizansoAgent/GUIDE.md', '# Guide\n\nNo CRDT state yet.\n');
     await fs.symlink(path.join(root, '.data', 'userPersistoAgent'), path.join(root, 'link-to-users'));
     await fs.symlink('.data/userPersistoAgent/users.json', path.join(root, 'link-to-users-file'));
     await fs.symlink('.env', path.join(root, 'link-to-env'));
@@ -290,7 +291,8 @@ test('listings omit protected entries and project the workspace .ploinky as cont
     visit(tree, '');
     assert.deepEqual(treePaths.filter(entry => entry.startsWith('.ploinky')).sort(), [
         '.ploinky', '.ploinky/repos', '.ploinky/repos/bizanso', '.ploinky/repos/bizanso/bizansoAgent',
-        '.ploinky/repos/bizanso/bizansoAgent/README.md', '.ploinky/repos/bizanso/bizansoAgent/index.mjs',
+        '.ploinky/repos/bizanso/bizansoAgent/GUIDE.md', '.ploinky/repos/bizanso/bizansoAgent/README.md',
+        '.ploinky/repos/bizanso/bizansoAgent/index.mjs',
     ]);
     for (const entry of treePaths) {
         assert.doesNotMatch(entry, /(^|\/)(\.data|\.env|master-key|[^/]*\.secrets|link-to-users|link-to-env|link-to-controller|dangling-into-data)(\/|$)/, entry);
@@ -471,6 +473,13 @@ test('managed agent sources under .ploinky/repos are readable but never written'
         await assert.rejects(runtime.callTool('move_file', { source: repository, destination: 'moved-repos' }), READ_ONLY, `move ${repository}`);
     }
     await assert.rejects(runtime.callTool('create_directory', { path: '.ploinky/repos/new-repo' }), READ_ONLY);
+    // Opening a managed document that has no CRDT state yet would rewrite it;
+    // the refusal is the explicit denial, with nothing to roll back.
+    for (const name of ['open_markdown_crdt_document', 'sync_markdown_crdt_from_file']) {
+        const error = await runtime.callTool(name, { path: '.ploinky/repos/bizanso/bizansoAgent/GUIDE.md' }).then(() => null, (failure) => failure);
+        assert.ok(error, `${name} must be refused`);
+        assert.match(error.message, READ_ONLY, `${name}: ${error.message}`);
+    }
     // A write to a document addressed only by its id reaches the shared
     // writer, which refuses the managed target.
     await assert.rejects(runtime.callTool('save_markdown_crdt_document', { documentId }), READ_ONLY, 'save by documentId');
