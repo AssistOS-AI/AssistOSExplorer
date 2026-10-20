@@ -297,7 +297,7 @@ export const createRollbackService = () => ({ previewCapture() {
     assert.equal(passed.status, 0, passed.stderr);
     assert.match(passed.stdout, /Rehearsal: prior account runtime reviewed=true/);
     assert.match(passed.stdout, /Rehearsal: prior selection retained: AchillesIDE\/explorer/);
-    assert.match(passed.stdout, /Rehearsal: prior selection not replayed: AchillesIDE\/soplangAgent \(renamed to legacy-agents\/soplangAgent;/);
+    assert.match(passed.stdout, /Rehearsal: prior selection not replayed: AchillesIDE\/soplangAgent \(not in the fresh default graph;/);
     assert.match(passed.stdout, /Rehearsal: prior selection not replayed: AchillesCLI\/promotionScout \(not in the fresh default graph;/);
     assert.match(passed.stdout, /Rehearsal: prior selections: 4 total, 1 retained, 0 superseded, 3 not replayed, 0 enabled\./);
     const unreviewed = run({ reviewed: false });
@@ -334,7 +334,7 @@ test('the redeploy logs carry the backup name, the rollback reference and the ve
 
     const expectation = block('verification expectation');
     const repositories = [...workflow.matchAll(/^ {12}'([A-Za-z-]+)\|https:\/\/github\.com\/AssistOS-AI\/[A-Za-z-]+\.git'$/gm)].map(match => match[1]);
-    assert.equal(repositories.length, 7);
+    assert.equal(repositories.length, 6);
     const records = ['.runtime/ploinky|master|' + 'a'.repeat(40), 'AdvancedLanguageAgent|main|' + 'b'.repeat(40),
         ...repositories.map((name, index) => `.ploinky/repos/${name}|main|${String(index + 1).repeat(40)}`)];
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-expectation-'));
@@ -352,7 +352,7 @@ test('the redeploy logs carry the backup name, the rollback reference and the ve
     assert.match(expected.boxId, /^[a-f0-9]{64}$/);
     assert.match(expected.imageId, /^[a-f0-9]{64}$/);
     assert.ok(Number.isSafeInteger(expected.minimumRunStartedAtMs) && expected.minimumRunStartedAtMs > 0);
-    assert.equal(Object.keys(expected.sources).length, 9);
+    assert.equal(Object.keys(expected.sources).length, 8);
     for (const relative of Object.keys(expected.sources)) {
         assert.ok(verifier.includes(relative.replace('.ploinky/repos/', '')) || relative === '.runtime/ploinky', relative);
         assert.match(expected.sources[relative].commit, /^[a-f0-9]{40}$/);

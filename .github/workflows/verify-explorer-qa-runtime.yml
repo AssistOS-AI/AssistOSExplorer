@@ -79,7 +79,7 @@ jobs:
           assert.equal(wizardUrl.pathname, new URL(`${base}/auth/`).pathname);
           const wizard = await (await get(wizardUrl.href)).text();
           assert.ok(/id="auth_content"/.test(wizard), 'QA sign-in wizard is unavailable');
-          const mismatch = await fetch(`${origin}/auth/login?agent=webAssist`, {redirect:'error',signal:AbortSignal.timeout(20000)});
+          const mismatch = await fetch(`${origin}/auth/login?agent=dpuAgent`, {redirect:'error',signal:AbortSignal.timeout(20000)});
           assert.equal(mismatch.status, 400);
           assert.equal((await mismatch.json()).error, 'auth_route_context_mismatch');
           const setup = await (await get(`${base}/auth/setup`)).json();

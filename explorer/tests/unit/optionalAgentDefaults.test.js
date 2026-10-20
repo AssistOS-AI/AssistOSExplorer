@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { REPO_ROOT, siblingPath } from '../../../tests/helpers/sibling-roots.mjs';
+import { EXPECTED_DEFAULT_GRAPH } from '../../../.github/scripts/rollback-explorer-qa.mjs';
 
 const EXPLORER_ALIAS = 'AchillesIDE';
 const ONLY_OFFICE_REPO = {
@@ -10,9 +11,9 @@ const ONLY_OFFICE_REPO = {
     url: 'https://github.com/AssistOS-AI/OnlyOfficeAgent.git',
 };
 const SIBLING_REPOS = {
-    'legacy-agents': 'https://github.com/AssistOS-AI/legacy-agents.git',
     webmeet: 'https://github.com/AssistOS-AI/webmeet.git',
 };
+const LEGACY_REPO = 'legacy-agents';
 const localOptionalAgents = ['webmeetAgent', 'liveKitServerAgent', 'webmeetScribeAgent', 'webmeetStt'];
 const refOf = (entry) => (typeof entry === 'string' ? entry : entry.agent).split(/\s+/)[0];
 
@@ -81,7 +82,7 @@ test('Explorer local dependency graph excludes optional agents while retaining t
     assert.ok(scribe.enable.some((entry) => identityOf(refOf(entry), 'webmeet') === 'webmeet/liveKitServerAgent'));
 });
 
-test('Explorer installs the legacy-agents and webmeet repositories and keeps Umami installed but disabled', async () => {
+test('Explorer installs the webmeet repository and keeps Umami installed but disabled', async () => {
     const explorer = await readManifest(identityOf('explorer'));
     for (const [name, url] of Object.entries(SIBLING_REPOS)) {
         assert.equal(explorer.repos?.[name], url, `${name} must be a plain URL entry so --branch still applies`);
@@ -95,6 +96,26 @@ test('Explorer installs the legacy-agents and webmeet repositories and keeps Uma
         [],
         'the moved agents are enabled by their current repository, never by a former one'
     );
+});
+
+test('Explorer neither installs nor enables the legacy-agents repository', async () => {
+    const explorer = await readManifest(identityOf('explorer'));
+    assert.deepEqual(
+        (explorer.enable || []).map(refOf).filter((ref) => ref.startsWith(`${LEGACY_REPO}/`)),
+        [],
+        'no legacy-agents agent may be enabled by default'
+    );
+    assert.equal(Object.hasOwn(explorer.repos || {}, LEGACY_REPO), false,
+        'legacy-agents must not be installed by default; an administrator installs it explicitly');
+    for (const key of ['soplang-builder', 'tasks']) {
+        assert.equal(Object.hasOwn(explorer.applicationPlugins || {}, key), false, `applicationPlugins must not list the legacy "${key}" plugin`);
+    }
+    for (const relative of ['.github/workflows/deploy-explorer-qa.yml', '.github/scripts/verify-explorer-qa-runtime.mjs']) {
+        const text = await fs.readFile(path.join(REPO_ROOT, relative), 'utf8');
+        assert.equal(text.includes(LEGACY_REPO), false, `${relative} must not pin or verify the legacy-agents repository`);
+    }
+    assert.deepEqual(EXPECTED_DEFAULT_GRAPH.filter((ref) => ref.startsWith(`${LEGACY_REPO}/`)), [],
+        'the QA rollback prediction must not expect a legacy-agents runtime');
 });
 
 test('WebMeet and Scribe share the local LiveKit runtime, Explorer has no LiveKit edge, and retired stack repositories are not installed', async () => {

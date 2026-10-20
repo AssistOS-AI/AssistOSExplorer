@@ -789,7 +789,7 @@ test('selection replay preserves existing choices and refreshes the registry aft
     await assert.rejects(replay(), { code: 'QA_OPTIONAL_PROFILE_UNSUPPORTED' });
 });
 
-// The 16 agents QA ran before the repository split, and the 12 the default graph starts now.
+// The 16 agents QA ran before the repository split, and the 9 the default graph starts now.
 const selection = (repo, agent, { profile = 'default', auth = 'sso', runMode = 'global', alias = '' } = {}) => ({
     name: `${repo}_${agent}`, repo, agent, alias, profile, auth, runMode, oldId: 'a'.repeat(64) });
 const PRIOR_SELECTIONS = [
@@ -814,23 +814,24 @@ test('prior selections are classified against the fresh graph without enabling a
         retained: ['AchillesIDE/dpuAgent', 'AchillesIDE/emailAgent', 'AchillesIDE/explorer', 'AchillesIDE/gitAgent',
             'AchillesIDE/workspaceMonitorAgent', 'local-llms/local-llm'],
         superseded: ['AchillesIDE/userPersistoAgent'],
-        renamed: ['AchillesCLI/roboTeamAgent', 'AchillesIDE/soplangAgent', 'AchillesIDE/tasksAgent', 'AchillesIDE/webAssist',
-            'proxies/soul-gateway'],
-        absent: ['AchillesIDE/liveKitServerAgent', 'AchillesIDE/multimedia', 'AchillesIDE/webmeetAgent', 'UmamiAgent/umamiAgent'],
+        renamed: ['AchillesCLI/roboTeamAgent', 'proxies/soul-gateway'],
+        absent: ['AchillesIDE/liveKitServerAgent', 'AchillesIDE/multimedia', 'AchillesIDE/soplangAgent', 'AchillesIDE/tasksAgent',
+            'AchillesIDE/webAssist', 'AchillesIDE/webmeetAgent', 'UmamiAgent/umamiAgent'],
     });
-    assert.deepEqual(result.counts, { total: 16, retained: 6, superseded: 1, renamed: 5, absent: 4, notReplayed: 9, enabled: 0 });
+    assert.deepEqual(result.counts, { total: 16, retained: 6, superseded: 1, renamed: 2, absent: 7, notReplayed: 9, enabled: 0 });
     assert.deepEqual(result.dispositions.find(item => item.ref === 'AchillesIDE/userPersistoAgent').changes,
         [{ field: 'profile', from: 'default', to: 'explorer' }]);
     assert.equal(result.dispositions.find(item => item.ref === 'proxies/soul-gateway').replacement, 'AchillesIDE/soul-gateway');
-    assert.equal(result.dispositions.find(item => item.ref === 'AchillesIDE/soplangAgent').replacement, 'legacy-agents/soplangAgent');
+    assert.equal(result.dispositions.find(item => item.ref === 'AchillesIDE/soplangAgent').kind, 'absent');
 });
 
 test('a selection that exists nowhere in the fresh graph is absent, so the live count is not fixed at sixteen', () => {
     const seventeen = [...PRIOR_SELECTIONS, selection('AchillesCLI', 'promotionScout')];
     const result = classifyPriorSelections(seventeen, freshRegistry());
-    assert.deepEqual(result.counts, { total: 17, retained: 6, superseded: 1, renamed: 5, absent: 5, notReplayed: 10, enabled: 0 });
+    assert.deepEqual(result.counts, { total: 17, retained: 6, superseded: 1, renamed: 2, absent: 8, notReplayed: 10, enabled: 0 });
     assert.deepEqual(kinds(result).absent, ['AchillesCLI/promotionScout', 'AchillesIDE/liveKitServerAgent',
-        'AchillesIDE/multimedia', 'AchillesIDE/webmeetAgent', 'UmamiAgent/umamiAgent']);
+        'AchillesIDE/multimedia', 'AchillesIDE/soplangAgent', 'AchillesIDE/tasksAgent', 'AchillesIDE/webAssist',
+        'AchillesIDE/webmeetAgent', 'UmamiAgent/umamiAgent']);
     const lines = describeSelectionDispositions(result);
     assert.equal(lines.filter(line => line.startsWith('[deploy-qa] Prior selection not replayed:')).length, 10);
     assert.equal(lines.at(-1), '[deploy-qa] Prior selections: 17 total, 6 retained, 1 superseded, 10 not replayed, 0 enabled.');

@@ -78,7 +78,8 @@ test('the recursive Explorer graph never enables the retired local model runtime
     assert.deepEqual(violations, [], `The retired ${RETIRED_REPO}/${RETIRED_AGENT} runtime is still enabled:\n${violations.join('\n')}`);
     assert.ok(runtimes.has('AchillesIDE/soul-gateway'), 'the walk must reach soul-gateway in this repository');
     assert.ok(runtimes.has('AchillesIDE/roboTeamAgent'), 'the walk must reach roboTeamAgent in this repository');
-    assert.ok(runtimes.has('legacy-agents/soplangAgent'), 'the walk must cross into the sibling legacy-agents repository');
+    assert.equal([...runtimes.keys()].some((key) => key.startsWith('legacy-agents/')), false,
+        'no legacy-agents runtime may be part of an Explorer deployment; an administrator installs that repository explicitly');
     assert.equal([...runtimes.keys()].some((key) => key.startsWith('webmeet/')), false, 'the WebMeet agents are installed but disabled by default');
     assert.equal([...runtimes.keys()].some((key) => key.endsWith(`/${RETIRED_AGENT}`)), false);
 });
@@ -115,8 +116,9 @@ test('with every known sibling checked out at its minimum revision, the real gra
         { explorerRepo: repoRoot, isRetired: isRetiredLocalModel });
     assert.deepEqual(skipped, []);
     assert.ok(graph, 'the helper must return the graph');
-    // UmamiAgent and webmeet are known siblings that are installed but not enabled, so the walk does not reach them.
-    for (const repo of KNOWN_SIBLINGS.filter((name) => name !== 'UmamiAgent' && name !== 'webmeet')) {
+    // UmamiAgent and webmeet are known siblings that are installed but not enabled, and legacy-agents is not
+    // installed at all, so the walk reaches none of them.
+    for (const repo of KNOWN_SIBLINGS.filter((name) => !['UmamiAgent', 'webmeet', 'legacy-agents'].includes(name))) {
         assert.ok([...graph.runtimes.keys()].some((key) => key.startsWith(`${repo}/`)), `the walk must reach ${repo}`);
     }
 });
