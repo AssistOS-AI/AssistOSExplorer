@@ -53,7 +53,7 @@ Prepare role-correct private sign-in inputs before execution. Umami needs userna
 and password, OnlyOffice an absolute selected Ploinky executable, and the official
 WebMeet case two distinct verified users plus the headless/media profile. The
 public-room WebMeet case needs only the primary account and no WebMeet flags. Spec04
-needs the installed `legacy-agents/searchAgent` catalog fixture. Spec61 uses synthetic tokens.
+needs the installed `UmamiAgent/umamiAgent` catalog fixture (installed but disabled by default). Spec61 uses synthetic tokens.
 The public-room case leaves the guest through the UI and waits for session cleanup and LiveKit disconnection before deleting its rooms. It closes browser contexts before flushing final diagnostics and rejects every console error and page error, including cleanup errors.
 Keep GPT Researcher excluded and browser errors strict. The explorer tool-worker pool is active (see DS002); the preflight no longer requires the opt-in to be absent.
 WebTTY retains the last collector/binding/eligibility/stability cause and rejects
