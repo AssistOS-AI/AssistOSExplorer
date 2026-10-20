@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { ToolCache } from './tool-cache.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
-import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE, PROXY_POOL_DIR } from './constants.mjs';
+import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE } from './constants.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { prepareDesktopLaunchers } from './desktop-launchers.mjs';
 import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
@@ -222,7 +222,7 @@ export class RuntimeManager {
         };
         this.timezone = options.timezone || TIMEZONE;
         this.proxyPool = options.proxyPool || null;
-        this.proxyPolicyDir = options.proxyPolicyDir || PROXY_POOL_DIR;
+        this.proxyPolicyDir = options.proxyPolicyDir || path.join(this.dataDir, 'proxy-pool');
         this.createRelay = options.createRelay || ((upstream) => new ProxyRelay(upstream, {
             log: (line) => console.warn(`[roboTeamAgent] proxy relay: ${line}`),
         }));

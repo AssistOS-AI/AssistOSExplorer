@@ -4,7 +4,7 @@ import { RobotStore } from './robot-store.mjs';
 import { RuntimeManager } from './runtime-manager.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
 import { RoboFlowService } from './roboflow/roboflow-service.mjs';
-import { DATA_DIR, PUBLIC_BASE_PATH, PROXY_POOL_DIR } from './constants.mjs';
+import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
 import { ProxyPool } from './proxy-pool/proxy-pool.mjs';
 import path from 'node:path';
 import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
@@ -25,7 +25,7 @@ const robotStore = new RobotStore({ dataDir });
 await robotStore.initialize();
 await robotStore.ensureDefaultRobot();
 
-const proxyPool = new ProxyPool({ file: path.join(PROXY_POOL_DIR, 'proxy-pool.sqlite') });
+const proxyPool = new ProxyPool({ file: path.join(dataDir, 'proxy-pool', 'proxy-pool.sqlite') });
 proxyPool.initialize();
 
 const runtimeManager = new RuntimeManager({

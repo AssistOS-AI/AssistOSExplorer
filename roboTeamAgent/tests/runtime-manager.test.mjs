@@ -886,7 +886,6 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
     const manager = new RuntimeManager({
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
-        proxyPolicyDir: path.join(root, 'proxy-pool'),
         proxyPool: { acquire: () => upstream, release: () => true },
         createRelay: (target) => {
             const relay = { target, closed: false, port: 45000 + relays.length, listen: async () => relay.port, close: async () => { relay.closed = true; } };
@@ -906,7 +905,8 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
     await manager.start(robot, 'browser');
     const run = calls.find(args => args[0] === 'run');
     assert.equal(run[run.indexOf('--network') + 1], 'pasta:-T,3128:45000');
-    const policyFile = path.join(root, 'proxy-pool', 'chromium-proxy-policy.json');
+    // The policy lives under the manager's data directory, never the production /data.
+    const policyFile = path.join(root, 'data', 'proxy-pool', 'chromium-proxy-policy.json');
     assert.ok(run.includes(`${policyFile}:/etc/chromium/policies/managed/roboteam-proxy.json:ro`));
     assert.deepEqual(JSON.parse(await fs.readFile(policyFile, 'utf8')), {
         ProxySettings: { ProxyMode: 'fixed_servers', ProxyServer: 'http://127.0.0.1:3128' },
