@@ -34,7 +34,11 @@ JSON payload. Failed runs return the agent error text or an MCP failure message.
 The call path uses the runtime bridge backed by parent-process `AgentMcpClient` and invokes
 its `callToolWithoutWait` capability. Before invoking research, it checks Marketplace status
 and starts optional workers in dependency order: first `legacy-agents/searchAgent`,
-then `legacy-agents/GPTResearcher`. Each worker receives `enable_agent` only when
+then `legacy-agents/GPTResearcher`. Both workers belong to the `legacy-agents`
+repository, which no Explorer deployment installs by default, so the skill requires
+an administrator to install that repository first
+(`ploinky install repo https://github.com/AssistOS-AI/legacy-agents.git`); until then
+activation fails. Each worker receives `enable_agent` only when
 it is not already running, each activation explicitly requests `global` mode,
 and the tool call waits for both runtimes to become
 ready. Async task metadata is offered to the process-local
