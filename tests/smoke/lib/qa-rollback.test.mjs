@@ -422,8 +422,14 @@ test('account capability compares every reviewed file and fails closed for missi
 });
 
 test('the second reviewed account capability set keeps set A and requires the removed store modules to be absent', () => {
-    const [setA, setB] = ACCOUNT_CAPABILITY_SETS;
+    const [setA, setB, setC] = ACCOUNT_CAPABILITY_SETS;
+    assert.equal(ACCOUNT_CAPABILITY_SETS.length, 3);
     assert.equal(setA, ACCOUNT_CAPABILITY);
+    // Ploinky 581f8299 (the runtime QA ran after the 2026-10-19 redeploy).
+    assert.deepEqual(Object.keys(setC), Object.keys(setA));
+    assert.equal(setC['cli/utils/agents.js'], '237abcb8d52d1fc60908c3151e71f726a8f3f2767838aa0736cb659f0fc4de0b');
+    assert.equal(setC['cli/utils/security/encryptedPasswordStore.js'], null);
+    assert.equal(setC['cli/utils/security/passwordStoreLock.mjs'], null);
     assert.deepEqual(Object.keys(setB), Object.keys(setA));
     assert.equal(setB['cli/utils/agents.js'], '0583a4815c7ab0766d5d2a71920c78fab856f1c902d9b587e319dff964dba82b');
     assert.notEqual(setB['cli/utils/agents.js'], setA['cli/utils/agents.js']);

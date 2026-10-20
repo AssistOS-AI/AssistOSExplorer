@@ -48,10 +48,18 @@ export const ACCOUNT_CAPABILITY = Object.freeze({
 });
 // Ploinky 7d8c04d0 removed local password authentication (df976761), so the
 // password-store modules and their credential seeding no longer exist; its
-// agent registration is reviewed against that removal. Any one complete set
-// matches; a file taken from one set never satisfies another.
+// agent registration is reviewed against that removal. Ploinky 581f8299 changes
+// agents.js only for edge routing: same-name re-enables that drain and replace
+// beside the old runtime, withdrawal on disable, the disable retry and
+// replacement-policy persistence; account stores stay untouched and the
+// password-store modules stay absent. Any one complete set matches; a file
+// taken from one set never satisfies another.
 export const ACCOUNT_CAPABILITY_SETS = Object.freeze([ACCOUNT_CAPABILITY, Object.freeze({
     'cli/utils/agents.js': '0583a4815c7ab0766d5d2a71920c78fab856f1c902d9b587e319dff964dba82b',
+    'cli/utils/security/encryptedPasswordStore.js': null,
+    'cli/utils/security/passwordStoreLock.mjs': null,
+}), Object.freeze({
+    'cli/utils/agents.js': '237abcb8d52d1fc60908c3151e71f726a8f3f2767838aa0736cb659f0fc4de0b',
     'cli/utils/security/encryptedPasswordStore.js': null,
     'cli/utils/security/passwordStoreLock.mjs': null,
 })]);
