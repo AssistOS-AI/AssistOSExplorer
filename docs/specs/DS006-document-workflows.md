@@ -30,3 +30,5 @@ The Advanced edit toolbar temporarily hides the legacy Run Script action while i
 Audio and video preview resolves Router-issued 48-digit hexadecimal blob IDs through the authenticated `/blobs/explorer/<id>` route. Blob resolution must not depend on reading private metadata sidecars through workspace file tools or invent a document-multimedia path for those IDs.
 
 All visual document previews share the same scene rules for duration estimation and playback. Explicit zero-duration audio starts a background soundtrack at its scene and continues across subsequent scenes and chapters until replaced by another background track or the presentation ends. Images use their own duration (three seconds by default); positive-duration audio remains scene narration. Background audio obeys its loop flag, pauses and resumes with the preview, and seeks with scene navigation. Audio-only documents retain audio-ended playback. This interpretation does not rewrite stored document attachments.
+
+The references empty-state message uses the semantic secondary text color to remain readable against its panel in both light and dark themes.

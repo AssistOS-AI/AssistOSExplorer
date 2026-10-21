@@ -131,7 +131,7 @@ references-table {
 }
 
 .tor-empty {
-    color: var(--light-gray-border);
+    color: var(--text-soft);
     font-style: italic;
     padding: 15px 0;
     text-align: center;
