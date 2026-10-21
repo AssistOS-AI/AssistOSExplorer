@@ -94,9 +94,6 @@ test('QA readiness constants match the recursive Explorer graph', (t) => {
     const expectedNoWait = Number(workflow.match(/EXPECTED_NO_WAIT_AGENTS=(\d+)/)[1]);
     assert.deepEqual([...new Set(tracked)], [runtimes.size], `graph runtimes: ${[...runtimes.keys()].join(', ')}`);
     assert.equal(expectedNoWait, noWait.length, `graph no-wait agents: ${noWait.join(', ')}`);
-    const verifier = fs.readFileSync(path.join(repoRoot, '.github/scripts/verify-explorer-qa-runtime.mjs'), 'utf8');
-    assert.equal(Number(verifier.match(/assert\.equal\(records\.length, (\d+)\)/)[1]), runtimes.size);
-    assert.equal(Number(verifier.match(/'\.ploinky\/running\/no-wait'\), '(\d+)'/)[1]), noWait.length);
 });
 
 test('with every known sibling checked out at its minimum revision, the real graph resolves without a skip', (t) => {

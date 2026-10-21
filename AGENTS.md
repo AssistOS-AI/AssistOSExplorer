@@ -93,22 +93,22 @@ may trigger tracked GitHub Actions workflows with `gh` and may use direct SSH,
 Ploinky CLI, container, registry, Cloudflare, DNS, or other remote operations
 needed to complete that selected task.
 
-- Supported tracked workflows include `deploy-explorer-qa.yml` (no inputs; it
-  selects a fresh install, an in-place update or an automatic preserving
-  redeploy itself), `rollback-explorer-qa.yml` (one `plan` or `execute`
-  action), `destroy-explorer-qa.yml`, and `verify-retired-source-absence.yml`.
-  Inspect the dispatched revision, inputs, exact target, ownership guards,
-  secret prerequisites, and branch/fallback behavior before invocation.
+- Supported tracked workflows are exactly `deploy-explorer-qa.yml` (no
+  inputs; it selects a fresh install, an in-place update or a rebuild itself)
+  and `destroy-explorer-qa.yml` (one `delete_data` checkbox: unchecked keeps
+  the QA data, checked deletes it). Inspect the dispatched revision, inputs,
+  exact target, ownership guards, secret prerequisites, and branch/fallback
+  behavior before invocation.
 - This repository no longer deploys `skills.axiologic.dev`. Its
   `deploy-skills-explorer.yml` and `destroy-explorer.yml` workflows were removed
   on 2026-10-20, when the host was reinstalled.
 - Operator authority does not broaden the task target. Positively identify the
-  environment, host, workspace, branch, revisions, images, and rollback state
+  environment, host, workspace, branch, revisions, images, and recovery state
   before destructive or externally visible mutation. QA/local authorization
   never implies production authorization.
-- An absent workflow such as `update-explorer.yml` may be restored when needed
-  through the normal reviewed and tested change process; do not bypass workflow
-  validation or target guards.
+- An absent workflow may be restored when needed through the normal reviewed
+  and tested change process; do not bypass workflow validation or target
+  guards.
 - `.ploinky/.secrets` is encrypted. Never append/edit it as plaintext; use
   `ploinky var` with `PLOINKY_MASTER_KEY` set.
 - A Box activation must use dedicated authorized test resources and must report

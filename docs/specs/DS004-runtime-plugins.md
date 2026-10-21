@@ -62,3 +62,5 @@ The modal owns cleanup directly: closing marks it closed, aborts HTTP probes, cl
 Once the panel is visible, the toolbar control remains in its normal state. Its presenter may finish mounting in a hidden sibling and replaces the host button only after rendering completes; this background work must not reapply toolbar loading indicators.
 
 The runtime plugin contract makes one workspace interface extensible while keeping each domain implementation independent.
+
+Concurrent component mounts may share template, stylesheet and presenter fetches, but every mounted element must acquire its own WebSkel resource reference. Removing or replacing some elements must not unload CSS while any instance still uses it. Dropdown lists portaled into a dialog retain their shared fixed positioning and visual styles.

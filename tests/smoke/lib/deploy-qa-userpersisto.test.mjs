@@ -140,9 +140,13 @@ test('QA public verification checks the SSO wizard and OIDC metadata without cla
     } }), /rejected/);
 });
 
-test('QA config executes after durable preservation and before graph activation, without changing other auth settings', () => {
+test('QA config executes after the teardown and before graph activation, without changing other auth settings', () => {
     const configure = workflow.indexOf('// BEGIN QA UserPersisto configuration');
-    assert(configure > workflow.indexOf('// END QA durable workspace preservation'));
+    // A missing anchor makes indexOf return -1, which would let the ordering check below pass without proving anything.
+    const anchor = workflow.indexOf('# END QA teardown');
+    assert(anchor > 0, 'the teardown block must end with its anchor');
+    assert(configure > 0, 'the UserPersisto configuration block must exist');
+    assert(configure > anchor);
     assert(configure < workflow.indexOf('"$PLOINKY" start explorer "${BRANCH_ARGS[@]}"'));
     assert.match(block('UserPersisto configuration'), /collectManifestEnv/);
     assert.doesNotMatch(block('UserPersisto configuration'), /USERPERSISTO_DEV_BOOTSTRAP|USERPERSISTO_AUTH_METHODS|USERPERSISTO_SELF_REGISTRATION_ENABLED/);

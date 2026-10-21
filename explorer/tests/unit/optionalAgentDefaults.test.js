@@ -110,7 +110,7 @@ test('Explorer neither installs nor enables the legacy-agents repository', async
     for (const key of ['soplang-builder', 'tasks']) {
         assert.equal(Object.hasOwn(explorer.applicationPlugins || {}, key), false, `applicationPlugins must not list the legacy "${key}" plugin`);
     }
-    for (const relative of ['.github/workflows/deploy-explorer-qa.yml', '.github/scripts/verify-explorer-qa-runtime.mjs']) {
+    for (const relative of ['.github/workflows/deploy-explorer-qa.yml']) {
         const text = await fs.readFile(path.join(REPO_ROOT, relative), 'utf8');
         assert.equal(text.includes(LEGACY_REPO), false, `${relative} must not pin or verify the legacy-agents repository`);
     }

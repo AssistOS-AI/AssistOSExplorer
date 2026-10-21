@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,8 +6,12 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 const workflow = fs.readFileSync(new URL('../../../.github/workflows/deploy-explorer-qa.yml', import.meta.url), 'utf8');
-const admission = workflow.match(/# BEGIN QA fresh-install admission\n([\s\S]*?)# END QA fresh-install admission/)[1]
-    .replace(/^ {10}/gm, '');
+
+function shellBlock(name) {
+    const match = workflow.match(new RegExp(`# BEGIN QA ${name}\\n([\\s\\S]*?)# END QA ${name}`));
+    assert.ok(match, `Missing ${name} implementation`);
+    return match[1].replace(/^ {10}/gm, '');
+}
 
 test('deploy dispatch has no inputs and no inputs. reference', () => {
     assert.equal(workflow.match(/^on:\n {2}workflow_dispatch:\n\nconcurrency:/m)?.length, 1);
@@ -31,111 +34,112 @@ test('deployment takes no inputs, updates in place by default and has no recreat
     assert.match(workflow, /if \[ "\$status" -eq 42 \]; then\n\s+echo 'updated=false'/);
     assert.match(workflow, /The deploy workflow will not recreate or destroy this installation/);
     assert.match(workflow, /flock -n -E 75 --close \/home\/admin\/\.qa-deployment-operation.lock bash -s -- '\$REMOTE_DIR' '\$EXPECTED_EXPLORER_COMMIT'/);
-    assert.match(workflow, /assert_qa_install_admission\n\s+QA_CAPTURE=/);
-    assert(workflow.indexOf('# BEGIN QA fresh-install admission') < workflow.indexOf('QA_CONTAINER_RECORDS=()'));
+    assert.match(workflow, /flock -n -E 75 --close \/home\/admin\/\.qa-deployment-operation.lock bash -s -- '\$REMOTE_ENV_FILE' '\$\{OPERATION:-update\}'/);
 });
 
-// A model of the container engines. Each container is { engine, id, name, running }.
-function engineMock(containers, { engineFailure = false } = {}) {
-    const table = containers.map(({ engine = 'podman', id, name, running = true }) => `${engine}|${id}|${name}|${running}`).join('\n');
-    return `
-QA_MOCK_TABLE='${table}'
-mock_engine() {
-    local engine="$1"; shift
-    local row row_engine row_id row_name row_running
-    if [ "$1 $2" = 'container ls' ]; then
-        ${engineFailure ? 'return 125' : ':'}
-        while IFS='|' read -r row_engine row_id row_name row_running; do
-            [ "$row_engine" = "$engine" ] && echo "$row_id"
-        done <<< "$QA_MOCK_TABLE"
-        return 0
-    fi
-    if [ "$1 $2" = 'container inspect' ]; then
-        local subject="$3" format="\${5:-}"
-        while IFS='|' read -r row_engine row_id row_name row_running; do
-            [ -n "$row_id" ] || continue
-            [ "$row_engine" = "$engine" ] || continue
-            if [ "$subject" = "$row_id" ] || [ "$subject" = "$row_name" ]; then
-                case "$format" in
-                    '{{.Name}}|{{.State.Running}}') echo "/$row_name|$row_running" ;;
-                    '{{.State.Running}}') echo "$row_running" ;;
-                    '{{.Name}}') echo "/$row_name" ;;
-                    '{{.Id}}') echo "$row_id" ;;
-                    *'path-hash'*) echo 7a31ab7775eb ;;
-                    *'.role'*) echo box ;;
-                    '') ;;
-                    *) echo "unexpected format $format" >&2; exit 99 ;;
-                esac
-                return 0
-            fi
-        done <<< "$QA_MOCK_TABLE"
-        return 1
-    fi
-    if [ "$1 $2" = 'container exec' ]; then echo "exec $engine $3" >> "$QA_MOCK_CALLS"; return 0; fi
-    if [ "$1 $2" = 'volume ls' ]; then return 0; fi
-    if [ "$1 $2" = 'volume inspect' ]; then return 1; fi
-    echo "unexpected container mutation: $*" >&2
-    exit 99
-}
-podman() { mock_engine podman "$@"; }
-docker() { mock_engine docker "$@"; }
-`;
-}
+// The Reconcile script has exactly two operations: a fresh installation (update) and a rebuild.
+test('the Reconcile script accepts only the update and rebuild operations', () => {
+    assert.match(workflow, /QA_OPERATION="\$\{2:-update\}"\n\s+case "\$QA_OPERATION" in\n\s+update\|rebuild\) ;;\n/);
+    assert.doesNotMatch(workflow, /update\|redeploy|resume\) ;;/);
+});
 
-const BOX = 'ploinky-box-explorerqaworkspace-7a31ab7775eb';
-const exact = (extra = {}) => ({ id: '1'.repeat(64), name: BOX, running: true, ...extra });
-const retained = (kind, suffix, extra = {}) => {
-    const name = `${BOX}-${kind}-redeploy-${suffix}`;
-    return { id: crypto.createHash('sha256').update(name).digest('hex'), name, running: false, ...extra };
-};
+// AC9: the admission is the route re-proof under the Reconcile lock, and it precedes every mutation.
+const EXACT = { engine: 'podman', id: 'a'.repeat(64), running: true };
+const routed = (route, extra = {}) => ({ output: JSON.stringify({ result: 'routed', route, reason: 'fixture', marker: null, stash: false, exact: null, legacy: [], ...extra }), status: 0 });
 
-function runAdmission(t, { workspace = 'absent', containers = [], engineFailure = false, operation } = {}) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-bootstrap-admission-'));
+function runReproof(t, { operation, answer }) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-route-reproof-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const target = path.join(root, 'workspace');
-    if (workspace === 'directory') fs.mkdirSync(target);
-    if (workspace === 'file') fs.writeFileSync(target, 'operator data');
-    if (workspace === 'symlink') fs.symlinkSync(path.join(root, 'missing'), target);
-    const checked = spawnSync('bash', ['-c', `set -euo pipefail\nQA_MOCK_CALLS=${path.join(root, 'calls')}\n${operation ? `QA_OPERATION=${operation}\n` : ''}${engineMock(containers, { engineFailure })}\n${admission.replaceAll('/home/admin/explorerQaWorkspace', target)}`], {
-        encoding: 'utf8', timeout: 5000,
-    });
-    assert.notEqual(checked.status, 99, checked.stderr);
-    return checked;
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    const calls = path.join(root, 'calls');
+    const answerFile = path.join(root, 'answer');
+    fs.writeFileSync(answerFile, answer.output);
+    fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh
+case "$*" in
+  *qa-teardown.mjs\\ route*)
+    echo "$*" >> '${calls}'
+    cat '${answerFile}'
+    exit ${answer.status} ;;
+esac
+exec '${process.execPath}' "$@"
+`, { mode: 0o755 });
+    const script = `set -euo pipefail
+QA_OPERATION=${operation}
+QA_HELPERS_DIR=/tmp/helpers
+${shellBlock('route re-proof')}
+echo "kind=$QA_ROUTE_KIND marker=$QA_MARKER_AT_ROUTE engine=$QA_EXACT_ENGINE id=$QA_EXACT_ID running=$QA_EXACT_RUNNING"
+echo MARK_REACHED
+`;
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 20000, env: { PATH: `${bin}:${process.env.PATH}` } });
+    return { result, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '' };
 }
 
-test('bootstrap accepts only absence of both workspace and QA container', t => {
-    const checked = runAdmission(t);
-    assert.equal(checked.status, 0, checked.stderr);
+test('a fresh installation is admitted only when the route is fresh and names no current Box', t => {
+    for (const marker of [null, { operation: 'update' }, { operation: 'rebuild' }, { operation: 'destroy-keep' }]) {
+        const { result, calls } = runReproof(t, { operation: 'update', answer: routed('fresh', { marker, stash: marker !== null }) });
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        assert.match(calls, /^\/tmp\/helpers\/qa-teardown\.mjs route --lock-held$/m);
+        assert.match(result.stdout, new RegExp(`kind=fresh marker=${marker ? marker.operation : ''} engine= id= running=\\nMARK_REACHED`));
+    }
 });
 
-for (const workspace of ['directory', 'file', 'symlink']) {
-    test(`bootstrap refuses an existing ${workspace} without inspecting or deleting its contents`, t => {
-        const checked = runAdmission(t, { workspace });
-        assert.notEqual(checked.status, 0);
-        assert.match(checked.stderr, /requires an absent QA workspace/);
-    });
-}
-
-for (const [name, containers] of [
-    ['a labelled Box', [exact()]],
-    ['a stopped retained predecessor', [retained('rollback', 'AbCd1234')]],
-    ['a stopped retained failed replacement', [retained('failed', 'AbCd1234')]],
-]) {
-    test(`bootstrap refuses a retained QA container (${name})`, t => {
-        const checked = runAdmission(t, { containers });
-        assert.notEqual(checked.status, 0);
-        assert.match(checked.stderr, /refuses an existing QA Box/);
-    });
-}
-
-test('bootstrap refuses a Box that is only reachable by name', t => {
-    const checked = runAdmission(t, { containers: [{ engine: 'docker', id: '3'.repeat(64), name: BOX }] });
-    assert.notEqual(checked.status, 0);
-    assert.match(checked.stderr, /refuses an existing QA Box/);
+test('a rebuild is admitted for a running Box without a marker, for a marker, and for a stopped Box, and carries the exact fields', t => {
+    const select = runReproof(t, { operation: 'rebuild', answer: routed('select', { exact: EXACT }) });
+    assert.equal(select.result.status, 0, select.result.stdout + select.result.stderr);
+    assert.match(select.result.stdout, new RegExp(`kind=select marker= engine=podman id=${EXACT.id} running=true\\n`));
+    const marked = runReproof(t, { operation: 'rebuild', answer: routed('rebuild', { exact: EXACT, marker: { operation: 'rebuild' } }) });
+    assert.equal(marked.result.status, 0, marked.result.stdout + marked.result.stderr);
+    assert.match(marked.result.stdout, new RegExp(`kind=rebuild marker=rebuild engine=podman id=${EXACT.id} running=true\\n`));
+    const stopped = runReproof(t, { operation: 'rebuild', answer: routed('rebuild', { exact: { ...EXACT, engine: 'docker', running: false } }) });
+    assert.equal(stopped.result.status, 0, stopped.result.stdout + stopped.result.stderr);
+    assert.match(stopped.result.stdout, new RegExp(`kind=rebuild marker= engine=docker id=${EXACT.id} running=false\\n`));
 });
 
-test('bootstrap fails closed when the container engine cannot prove absence', t => {
-    assert.notEqual(runAdmission(t, { engineFailure: true }).status, 0);
+test('the re-proof refuses every route that does not match the operation, before anything is stopped or removed', t => {
+    for (const [name, options] of [
+        ['a rebuild whose route became fresh', { operation: 'rebuild', answer: routed('fresh') }],
+        ['a fresh installation whose route became select', { operation: 'update', answer: routed('select', { exact: EXACT }) }],
+        ['a fresh installation whose route became rebuild', { operation: 'update', answer: routed('rebuild', { exact: EXACT }) }],
+        ['a fresh route that names a current Box', { operation: 'update', answer: routed('fresh', { exact: EXACT }) }],
+        ['a select route without a Box', { operation: 'rebuild', answer: routed('select') }],
+        ['an unknown engine', { operation: 'rebuild', answer: routed('select', { exact: { ...EXACT, engine: 'lxc' } }) }],
+        ['an engine that would be run as a command', { operation: 'rebuild', answer: routed('select', { exact: { ...EXACT, engine: 'sh -c id' } }) }],
+        ['a short Box id', { operation: 'rebuild', answer: routed('select', { exact: { ...EXACT, id: 'a'.repeat(63) } }) }],
+        ['an uppercase Box id', { operation: 'rebuild', answer: routed('select', { exact: { ...EXACT, id: 'A'.repeat(64) } }) }],
+        ['a running flag that is not a boolean', { operation: 'rebuild', answer: routed('select', { exact: { ...EXACT, running: 'true' } }) }],
+        ['an unknown marker operation', { operation: 'rebuild', answer: routed('rebuild', { exact: EXACT, marker: { operation: 'resume' } }) }],
+        ['a refusal', { operation: 'rebuild', answer: { output: '{"result":"refused","code":"QA_ROUTE_STALE_POLICY_STASH"}', status: 1 } }],
+        ['a helper that exits 75', { operation: 'rebuild', answer: { output: '', status: 75 } }],
+        ['a refusal with a zero status', { operation: 'rebuild', answer: { output: '{"result":"refused","route":"rebuild"}', status: 0 } }],
+        ['garbage', { operation: 'update', answer: { output: 'not json', status: 0 } }],
+        ['empty output', { operation: 'update', answer: { output: '', status: 0 } }],
+    ]) {
+        const { result } = runReproof(t, options);
+        assert.equal(result.status, 1, `${name}: ${result.stdout}${result.stderr}`);
+        assert.match(result.stdout, /ERROR: the route (?:does not admit this \w+ run|was refused); nothing was stopped or removed\./, name);
+        assert.doesNotMatch(result.stdout, /MARK_REACHED|Route confirmed/, name);
+    }
+});
+
+test('the route re-proof runs before every mutation of the Reconcile script', () => {
+    const at = marker => { const index = workflow.indexOf(marker); assert.ok(index > 0, marker); return index; };
+    const reproof = at('# BEGIN QA route re-proof');
+    assert.equal(workflow.match(/# BEGIN QA route re-proof/g).length, 1);
+    assert(reproof < at('# BEGIN QA install marker'), 'the marker is the first mutation and follows the re-proof');
+    for (const later of ['// BEGIN QA preservation admission', '# BEGIN QA preflight quiesce check', '# BEGIN QA read-only plan',
+        '// BEGIN QA capacity admission', '# BEGIN QA teardown', 'prepareBoxForCommand']) {
+        assert(reproof < at(later), `the re-proof precedes ${later}`);
+    }
+    const before = workflow.slice(0, at('# BEGIN QA install marker'));
+    for (const mutation of ['container stop', 'container rm', ' image rm', 'fs.renameSync', 'cp -a']) {
+        assert.equal(before.slice(before.indexOf('<<\'REMOTE\'')).includes(mutation), false, `nothing mutates before the marker: ${mutation}`);
+    }
+    // The old admission read engines in shell; the route now owns the inventory. Only the in-place step lists containers, and only
+    // to prove a host without the QA toolchain is empty; the Reconcile script never does.
+    const reconcile = workflow.slice(workflow.indexOf("<<'REMOTE'"));
+    assert.equal(/assert_qa_install_admission|container ls -aq/.test(reconcile), false, 'the Reconcile script keeps no shell inventory');
+    assert.equal(/assert_qa_install_admission/.test(workflow), false);
 });
 
 test('all deployment shell blocks parse after GitHub expression substitution', () => {
@@ -146,165 +150,4 @@ test('all deployment shell blocks parse after GitHub expression substitution', (
         const checked = spawnSync('bash', ['-n'], { input: source, encoding: 'utf8', timeout: 5000 });
         assert.equal(checked.status, 0, `shell block ${index}: ${checked.stderr}`);
     }
-});
-
-test('redeploy admits exactly one existing workspace and exact Box', t => {
-    const checked = runAdmission(t, { workspace: 'directory', containers: [exact()], operation: 'redeploy' });
-    assert.equal(checked.status, 0, checked.stderr);
-    assert.match(checked.stdout, /\[deploy-qa\] Preserving redeploy admitted: one existing workspace and exact Box\./);
-});
-
-// AC10: a second redeploy is admitted beside the Boxes an earlier redeploy or rollback retained.
-for (const [name, extras] of [
-    ['a stopped retained predecessor', [retained('rollback', 'AbCd1234')]],
-    ['a stopped retained failed replacement', [retained('failed', 'AbCd1234')]],
-    ['both retained kinds from two redeploys', [retained('rollback', 'AbCd1234'), retained('failed', 'ZyXw9876'), retained('rollback', 'QqRr5555')]],
-]) {
-    test(`redeploy is admitted beside ${name}`, t => {
-        const checked = runAdmission(t, { workspace: 'directory', containers: [exact(), ...extras], operation: 'redeploy' });
-        assert.equal(checked.status, 0, checked.stderr);
-        assert.match(checked.stdout, /Preserving redeploy admitted/);
-    });
-}
-
-test('redeploy refuses a running retained-pattern Box', t => {
-    for (const kind of ['rollback', 'failed']) {
-        const checked = runAdmission(t, { workspace: 'directory', containers: [exact(), retained(kind, 'AbCd1234', { running: true })], operation: 'redeploy' });
-        assert.notEqual(checked.status, 0);
-        assert.match(checked.stderr, /retained predecessor Box is running/);
-        assert.doesNotMatch(checked.stdout, /admitted/);
-    }
-});
-
-for (const [name, containers, message] of [
-    ['no Box', [], /exactly one existing QA Box/],
-    // The only case where the labelled count passes and the exact-name count alone refuses.
-    ['a labelled Box without the exact name', [{ id: '4'.repeat(64), name: 'someone-else', running: true }], /exactly one existing QA Box/],
-    ['a retained Box without a current Box',[retained('rollback', 'AbCd1234')], /exactly one existing QA Box/],
-    ['two exact Boxes in two engines', [exact(), exact({ engine: 'docker', id: '2'.repeat(64) })], /exactly one existing QA Box/],
-    ['a near-miss name with an extra suffix', [exact(), { ...retained('rollback', 'AbCd1234'), name: `${BOX}-rollback-redeploy-AbCd1234-x` }], /exactly one existing QA Box/],
-    ['a near-miss name with a short id', [exact(), { ...retained('rollback', 'AbCd1234'), name: `${BOX}-rollback-redeploy-AbCd123` }], /exactly one existing QA Box/],
-    ['a near-miss name with a long id', [exact(), { ...retained('rollback', 'AbCd1234'), name: `${BOX}-rollback-redeploy-AbCd12345` }], /exactly one existing QA Box/],
-    ['a near-miss kind', [exact(), { ...retained('rollback', 'AbCd1234'), name: `${BOX}-restored-redeploy-AbCd1234` }], /exactly one existing QA Box/],
-    ['a stopped current Box beside a labelled stranger', [exact(), { id: '4'.repeat(64), name: 'someone-else', running: false }], /exactly one existing QA Box/],
-]) {
-    test(`redeploy refuses ${name}`, t => {
-        const checked = runAdmission(t, { workspace: 'directory', containers, operation: 'redeploy' });
-        assert.notEqual(checked.status, 0);
-        assert.match(checked.stderr, message);
-        assert.doesNotMatch(checked.stdout, /admitted/);
-    });
-}
-
-for (const [name, options] of [
-    ['an absent workspace', { containers: [exact()] }],
-    ['a symlinked workspace', { workspace: 'symlink', containers: [exact()] }],
-    ['a workspace file', { workspace: 'file', containers: [exact()] }],
-]) {
-    test(`redeploy refuses ${name}`, t => {
-        const checked = runAdmission(t, { ...options, operation: 'redeploy' });
-        assert.notEqual(checked.status, 0);
-        assert.match(checked.stderr, /requires an existing QA workspace directory/);
-    });
-}
-
-test('redeploy refuses an engine that cannot prove the Box inventory', t => {
-    const checked = runAdmission(t, { workspace: 'directory', engineFailure: true, containers: [exact()], operation: 'redeploy' });
-    assert.notEqual(checked.status, 0);
-    assert.doesNotMatch(checked.stdout, /admitted/);
-});
-
-test('update admission is unchanged when the operation is named explicitly, and still refuses a retained Box', t => {
-    assert.equal(runAdmission(t, { operation: 'update' }).status, 0);
-    assert.notEqual(runAdmission(t, { operation: 'update', workspace: 'directory' }).status, 0);
-    assert.notEqual(runAdmission(t, { operation: 'update', containers: [retained('rollback', 'AbCd1234')] }).status, 0);
-});
-
-// The record loop between the canonicalizer and the ambiguity check.
-const recordLoop = (() => {
-    const start = workflow.indexOf('          canonicalize_container_candidates() {');
-    const end = workflow.indexOf('          if [ "${#QA_CONTAINER_RECORDS[@]}" -gt 1 ]; then');
-    assert(start > 0 && end > start);
-    return workflow.slice(start, end).replace(/^ {10}/gm, '');
-})();
-
-function runRecordLoop(t, containers) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-record-loop-'));
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const calls = path.join(root, 'calls');
-    const script = `set -euo pipefail\nQA_MOCK_CALLS=${calls}\nBOX_PATH_HASH=7a31ab7775eb\nBOX_INSTANCE=${BOX}\n${engineMock(containers)}\n${recordLoop}\nprintf 'record=%s\\n' "\${QA_CONTAINER_RECORDS[@]}"\n`;
-    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 5000 });
-    return { result, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '' };
-}
-
-test('the record loop logs a stopped retained Box and records only the current Box', t => {
-    const old = retained('rollback', 'AbCd1234');
-    const { result, calls } = runRecordLoop(t, [exact(), old, retained('failed', 'ZyXw9876')]);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, new RegExp(`\\[deploy-qa\\] Retained Box: engine=podman id=${old.id} name=${old.name}`));
-    assert.match(result.stdout, /Retained Box: .* name=ploinky-box-explorerqaworkspace-7a31ab7775eb-failed-redeploy-ZyXw9876/);
-    assert.deepEqual(result.stdout.split('\n').filter(line => line.startsWith('record=')), [`record=podman|${'1'.repeat(64)}|${BOX}`]);
-    assert.doesNotMatch(result.stdout, /Rollback Box: .*-redeploy-/);
-    assert.equal(calls.includes(old.id), false, 'a retained Box is never exec-ed');
-    assert.equal((calls.match(/exec/g) || []).length, 1, 'only the current Box lists its nested storage');
-});
-
-test('the record loop refuses a running retained-pattern Box and keeps the ownership check for everything else', t => {
-    const running = runRecordLoop(t, [exact(), retained('rollback', 'AbCd1234', { running: true })]);
-    assert.equal(running.result.status, 1);
-    assert.match(running.result.stdout, /a retained Box is running/);
-    assert.equal(running.calls.includes(retained('rollback', 'AbCd1234').id), false);
-    // A labelled container with any other name still stops the run at the ownership check.
-    const stranger = runRecordLoop(t, [exact(), { id: '5'.repeat(64), name: `${BOX}-rollback-redeploy-AbCd1234-x`, running: false }]);
-    assert.equal(stranger.result.status, 1);
-    assert.match(stranger.result.stdout, /conflicting ownership labels/);
-});
-
-// Contract 4: a resume needs an existing workspace, no Box with the exact name and only stopped retained Boxes.
-for (const [name, extras] of [
-    ['no container at all', []],
-    ['a stopped retained predecessor', [retained('rollback', 'AbCd1234')]],
-    ['a stopped retained failed replacement', [retained('failed', 'ZyXw9876')]],
-    ['both retained kinds from two redeploys', [retained('rollback', 'AbCd1234'), retained('failed', 'ZyXw9876'), retained('rollback', 'QqRr5555')]],
-]) {
-    test(`resume is admitted with ${name} and no exact Box`, t => {
-        const checked = runAdmission(t, { workspace: 'directory', containers: extras, operation: 'resume' });
-        assert.equal(checked.status, 0, checked.stderr);
-        assert.match(checked.stdout, /\[deploy-qa\] Resume admitted: one existing workspace, no exact Box and only stopped retained Boxes\./);
-        assert.doesNotMatch(checked.stdout, /Preserving redeploy admitted/);
-    });
-}
-
-for (const [name, containers, workspace] of [
-    ['a running exact Box', [exact()], 'directory'],
-    ['a stopped exact Box', [exact({ running: false })], 'directory'],
-    ['an exact Box beside its stopped predecessor', [exact({ running: false }), retained('rollback', 'AbCd1234')], 'directory'],
-    ['a Box that is only reachable by its exact name', [{ engine: 'docker', id: '3'.repeat(64), name: BOX, running: false }], 'directory'],
-    ['a running retained predecessor', [retained('rollback', 'AbCd1234', { running: true })], 'directory'],
-    ['a running retained failed replacement', [retained('failed', 'AbCd1234', { running: true })], 'directory'],
-    ['a labelled stranger', [retained('rollback', 'AbCd1234'), { id: '4'.repeat(64), name: 'someone-else', running: false }], 'directory'],
-    ['a near-miss name with an extra suffix', [{ ...retained('rollback', 'AbCd1234'), name: `${BOX}-rollback-redeploy-AbCd1234-x` }], 'directory'],
-    ['a near-miss kind', [{ ...retained('rollback', 'AbCd1234'), name: `${BOX}-restored-redeploy-AbCd1234` }], 'directory'],
-    ['an absent workspace', [retained('rollback', 'AbCd1234')], 'absent'],
-    ['a symlinked workspace', [retained('rollback', 'AbCd1234')], 'symlink'],
-    ['a workspace file', [retained('rollback', 'AbCd1234')], 'file'],
-]) {
-    test(`resume refuses ${name}`, t => {
-        const checked = runAdmission(t, { workspace, containers, operation: 'resume' });
-        assert.notEqual(checked.status, 0);
-        assert.match(checked.stderr, /ERROR: resume requires an absent exact Box and only stopped retained Boxes\./);
-        assert.doesNotMatch(checked.stdout, /admitted/);
-    });
-}
-
-test('resume refuses an engine that cannot prove the Box inventory', t => {
-    const checked = runAdmission(t, { workspace: 'directory', engineFailure: true, containers: [retained('rollback', 'AbCd1234')], operation: 'resume' });
-    assert.notEqual(checked.status, 0);
-    assert.doesNotMatch(checked.stdout, /admitted/);
-});
-
-test('resume admission changes nothing for the other operations', t => {
-    assert.match(runAdmission(t, { workspace: 'directory', containers: [exact()], operation: 'redeploy' }).stdout, /Preserving redeploy admitted/);
-    assert.notEqual(runAdmission(t, { workspace: 'directory', containers: [retained('rollback', 'AbCd1234')], operation: 'redeploy' }).status, 0);
-    assert.equal(runAdmission(t, { operation: 'update' }).status, 0);
 });

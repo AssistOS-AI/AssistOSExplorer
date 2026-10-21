@@ -8,27 +8,6 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
-test('QA nested inventory reaches the container as one complete shell program', () => {
-    const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'), 'utf8');
-    const start = workflow.indexOf('"$engine" container exec "$container_id" sh -lc \'');
-    assert(start >= 0);
-    const end = workflow.indexOf("\n              '\n", start);
-    assert(end > start);
-    const invocation = workflow.slice(start, end + "\n              '".length);
-    const checked = spawnSync('bash', ['-c', `set -euo pipefail
-inspect_engine() {
-    [ "$#" -eq 6 ]
-    [ "$1" = container ] && [ "$2" = exec ] && [ "$3" = "$container_id" ]
-    [ "$4" = sh ] && [ "$5" = -lc ]
-    printf '%s' "$6" | sh -n
-}
-engine=inspect_engine
-container_id='exact-owned-container'
-${invocation}
-`], { encoding: 'utf8', timeout: 5000 });
-    assert.equal(checked.status, 0, checked.stderr);
-});
-
 const WORKFLOWS = [
   {
     file: '.github/workflows/deploy-explorer-qa.yml',
@@ -126,18 +105,12 @@ const WORKFLOWS = [
       'process.stdout.write(formatBoxStatus(status))',
       'BOX_STATUS="$(inspect_outer_box_status)"',
       "[ \"$BOX_PATH_HASH\" != '7a31ab7775eb' ]",
-      'QA_VOLUME_ROLES=(workspace containers ploinky-deps)',
-      'io.assistos.ploinky-box.path-hash',
-      'Exact prior Explorer QA runtime retired',
-      'hold-workspace-lock.mjs',
-      'release_qa_workspace_lock',
-      'QA Box identity changed before workspace-lock acquisition',
       "assert.equal(target, '/home/admin/explorerQaWorkspace')",
-      'BEGIN QA durable workspace preservation',
       'BEGIN QA policy restoration',
-      'exactCopiesVerified: true',
-      'compiledGenerationsRestored: false',
-      'snapshot_protected_resources()',
+      'BEGIN QA install marker',
+      'BEGIN QA teardown',
+      'qa-teardown.mjs" complete --lock-held',
+      'protected-snapshot',
       'Protected host resource identities remained unchanged',
     ],
   },
@@ -188,11 +161,10 @@ for (const workflow of WORKFLOWS) {
   });
 }
 
-test('Explorer QA deploy, destroy and runtime verifier do not manage container-image-builds as a graph repository', () => {
+test('Explorer QA deploy and destroy do not manage container-image-builds as a graph repository', () => {
     for (const file of [
         '.github/workflows/deploy-explorer-qa.yml',
         '.github/workflows/destroy-explorer-qa.yml',
-        '.github/scripts/verify-explorer-qa-runtime.mjs',
     ]) {
         const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
         assert.doesNotMatch(source, /container-image-builds/, `${file} must not pin or require container-image-builds`);
@@ -220,101 +192,6 @@ test('Explorer deployment workflows neither provision nor inspect the retired lo
     }
 });
 
-test('Explorer QA destroy removes only its Ploinky-owned Cloudflare publication', () => {
-  const source = fs.readFileSync(
-    path.join(ROOT, '.github/workflows/destroy-explorer-qa.yml'),
-    'utf8',
-  );
-
-  for (const required of [
-    "SSH_USER: 'admin'",
-    "SSH_HOST: '45.136.70.141'",
-    "SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'",
-    "WORKSPACE: 'explorerQaWorkspace'",
-    'resolve_default_branch() {',
-    'PLOINKY_BRANCH="$(resolve_default_branch "$PLOINKY_URL")"',
-    'export PLOINKY_AGENTLIB_REF="$(resolve_default_branch "$AGENTLIB_URL")"',
-    "PUBLIC_HOST: 'explorer-qa.axiologic.dev'",
-    "CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'",
-    '"refs/heads/$PLOINKY_BRANCH:refs/remotes/origin/$PLOINKY_BRANCH"',
-    'git -C "$RUNTIME_DIR" merge-base --is-ancestor',
-    'The deployed runtime remains authoritative for its immutable edge generation during teardown',
-    'hosts: {}',
-    'tunnelName,',
-    'deleteTunnelOnTeardown: true',
-    'const target = "/home/admin/explorerQaWorkspace/.ploinky"',
-    'Ploinky authority directory has the wrong owner',
-    'STAGED_EDGE_DESIRED="$WORK_DIR/.ploinky/.explorer-qa-edge-desired.json"',
-    'const target = "/home/admin/explorerQaWorkspace/.ploinky/edge-desired.json"',
-    'staged edge desired file has the wrong owner',
-    'Cloudflare mode: local-only',
-    'Cloudflare connector: absent',
-    'managed empty-route reconciliation did not converge; using the exact-identity teardown fallback',
-    '/cfd_tunnel/${tunnelId}/connections',
-    'Exact Explorer QA Cloudflare publication deletion verified',
-    'Unrelated Cloudflare tunnels and routes: preserved',
-    'inspect_outer_box_status() {',
-    'createBoxSupervisor().inspectBoxStatus()',
-    'process.stdout.write(formatBoxStatus(status))',
-    'BOX_STATUS="$(inspect_outer_box_status)"',
-    'printf \'yes\\n\' | "$PLOINKY" destroy',
-    'QA_VOLUME_ROLES=(workspace containers ploinky-deps)',
-    'io.assistos.ploinky-box.path-hash',
-    '"$engine" volume rm "$volume_name"',
-    'QA_VOLUME_RECORDS=()',
-    "target !== '/home/admin/explorerQaWorkspace'",
-    'QA workspace, nested-container, dependency volumes, and host identity directory were removed',
-    "\"$PINNED_BOX_PATH_HASH\" != '7a31ab7775eb'",
-    'BOX_INSTANCE" != "ploinky-box-explorerqaworkspace-$PINNED_BOX_PATH_HASH',
-    'cleanup_destroy_files() {',
-    "REMOTE_ENV_UPLOADED='true'",
-  ]) {
-    assert.equal(source.includes(required), true, `missing destroy workflow contract: ${required}`);
-  }
-  assert.doesNotMatch(source, /checkout --detach --force "refs\/remotes\/origin\/\$PLOINKY_BRANCH"/);
-  assert.doesNotMatch(source, /EXPLORER_QA_CLOUDFLARE_TUNNEL_(?:TOKEN|ID)/);
-  assert.doesNotMatch(source, /tunnelTokenSecret|publication\/explorer-qa-tunnel/);
-  assert.doesNotMatch(source, /BOX_STATUS="\$\("\$PLOINKY" status\)"/);
-  assert.doesNotMatch(source, /workspace_name|inputs\.workspace_name/);
-  assert.doesNotMatch(source, /(?<![\w.-])\/workspace(?![\w-])/, 'QA destroy uses the same-path host workspace inside the Box');
-  assert.doesNotMatch(source, /vars\.EXPLORER_QA_(?:SSH_USER|SSH_HOST|WORKSPACE)/);
-  assert.equal(source.match(/ssh-keyscan/g)?.length, 1, 'destroy host key must be scanned only in pinned preflight');
-  assert.ok(
-    source.indexOf('SSH_ED25519_FINGERPRINT') < source.indexOf('- name: Destroy Explorer QA Box'),
-    'destroy target fingerprint must be established before remote mutation',
-  );
-});
-
-test('Explorer QA destroy runs Ploinky on the QA-scoped Node, not an older host Node', () => {
-  const source = fs.readFileSync(
-    path.join(ROOT, '.github/workflows/destroy-explorer-qa.yml'),
-    'utf8',
-  );
-  const selectNode = source.indexOf('export PATH="$QA_NODE_HOME/bin:$PATH"');
-  assert.ok(selectNode > 0, 'destroy must prefer the deploy-installed QA Node');
-  assert.match(source, /QA_NODE_HOME="\/home\/admin\/\.qa-deployment-tools\/node-v24\.19\.0-linux-\$QA_NODE_ARCH"/);
-  assert.match(source, /--version 2>\/dev\/null\)" = 'v24\.19\.0' \]/);
-  assert.match(source, /process\.versions\.node\.split\("\."\)\[0\]'\)" -lt 22 \]/);
-  for (const marker of ['PINNED_BOX_PATH_HASH="$(', 'inspect_outer_box_status() {', '"$PLOINKY" --dry-run']) {
-    assert.ok(selectNode < source.indexOf(marker), `QA Node must be selected before ${marker}`);
-  }
-});
-
-test('Explorer QA destroy resolves every repository from its configured default branch', () => {
-  const source = fs.readFileSync(
-    path.join(ROOT, '.github/workflows/destroy-explorer-qa.yml'),
-    'utf8',
-  );
-
-  assert.match(source, /resolve_default_branch\(\) \{/);
-  assert.match(source, /PLOINKY_BRANCH="\$\(resolve_default_branch "\$PLOINKY_URL"\)"/);
-  assert.match(source, /export PLOINKY_AGENTLIB_REF="\$\(resolve_default_branch "\$AGENTLIB_URL"\)"/);
-  assert.match(source, /default_branch="\$\(resolve_default_branch "\$repository_url"\)"/);
-  assert.match(source, /BRANCH_ARGS\+=\(--repo-branch "\$repository_name=\$default_branch"\)/);
-  assert.match(source, /merge-base --is-ancestor[\s\S]*refs\/remotes\/origin\/\$PLOINKY_BRANCH/);
-  assert.doesNotMatch(source, /inputs\.(?:deploy_branch|ploinky_branch)|ploinky-proxy/);
-});
-
 test('Explorer QA workflow rejects unsafe identity and tunnel state before SSH', () => {
   const source = fs.readFileSync(
     path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'),
@@ -324,14 +201,8 @@ test('Explorer QA workflow rejects unsafe identity and tunnel state before SSH',
   assert.doesNotMatch(source, /workspace_name|inputs\.workspace_name/);
   assert.doesNotMatch(source, /(?<![\w.-])\/workspace(?![\w-])/, 'QA deploy uses the same-path host workspace inside the Box');
   assert.doesNotMatch(source, /vars\.EXPLORER_QA_(?:SSH_USER|SSH_HOST|WORKSPACE)/);
-  assert.doesNotMatch(source, /\n  rollback:\n/, 'the rollback job moved to its own workflow');
+  assert.doesNotMatch(source, /\n  rollback:\n/, 'the deploy workflow has no rollback job');
   assert.equal(source.match(/ssh-keyscan/g)?.length, 1, 'host key must be scanned only in pinned preflight');
-  const rollbackWorkflow = fs.readFileSync(
-    path.join(ROOT, '.github/workflows/rollback-explorer-qa.yml'),
-    'utf8',
-  );
-  assert.equal(rollbackWorkflow.match(/ssh-keyscan/g)?.length, 1, 'the rollback workflow pins the same host identity once before SSH');
-  assert.match(rollbackWorkflow, /= "\$SSH_ED25519_FINGERPRINT"/);
   assert.ok(
     source.indexOf('connector token claims do not match') < source.indexOf('          scp \\'),
     'connector identity must fail before the first SSH transfer',
@@ -617,94 +488,22 @@ test('Explorer QA credential staging does not use exclusive create on a mktemp f
   assert.match(block, /flag:\s*['"]w['"]/);
 });
 
-test('Explorer QA cleanup handles an absent workspace with exact orphan resources', () => {
+test('Explorer QA teardown deletes through the reviewed helper only, and the workspace is created after it', () => {
   const source = fs.readFileSync(
     path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'),
     'utf8',
   );
-  const cleanup = source.slice(
-    source.indexOf('declare -a QA_CONTAINER_RECORDS'),
-    source.indexOf('mkdir -p "$WORK_DIR"', source.indexOf('declare -a QA_CONTAINER_RECORDS')),
-  );
-  assert.match(cleanup, /container ls -aq --filter "label=io\.assistos\.ploinky-box\.path-hash=\$BOX_PATH_HASH"/);
-  assert.match(cleanup, /volume ls -q --filter "label=io\.assistos\.ploinky-box\.path-hash=\$BOX_PATH_HASH"/);
-  assert.match(cleanup, /error\?\.code !== 'ENOENT'/);
-  assert.doesNotMatch(cleanup, /rm\s+-rf|rm\s+-fr/, 'cleanup must use the exact guarded Node target');
-  // Superseded backups are removed by the reviewed retention helper, never by shell: the one prune
-  // call sits inside the redeploy-only block of this region.
-  assert.equal(cleanup.match(/qa-backups\.mjs" prune --current-id/g)?.length, 1, 'exactly one retention call');
-  const retention = cleanup.match(/# BEGIN QA superseded backup retention\n([\s\S]*?)# END QA superseded backup retention/)?.[1] ?? '';
-  assert.match(retention, /^(?: {10}#.*\n)* {10}if \[ "\$QA_OPERATION" = redeploy \]; then\n[\s\S]*qa-backups\.mjs" prune --current-id[\s\S]*\n {10}fi\n {10}$/);
-});
-
-test('the resume setup sits inside the guarded cleanup region, ahead of the first workspace creation, and removes only through node', () => {
-  const source = fs.readFileSync(
-    path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'),
-    'utf8',
-  );
-  const first = source.indexOf('mkdir -p "$WORK_DIR"', source.indexOf('declare -a QA_CONTAINER_RECORDS'));
-  const setupStart = source.indexOf('# BEGIN QA resume setup');
-  const setupEnd = source.indexOf('# END QA resume setup');
-  assert.ok(setupStart > 0 && setupEnd > setupStart && setupEnd < first,
-    'the slice of the test above reaches the end of the resume setup, so its rm -rf guard covers it');
-  const setup = source.slice(setupStart, setupEnd);
-  assert.equal(setup.includes('mkdir -p "$WORK_DIR"'), false, 'a literal workspace mkdir would end that slice early');
-  assert.doesNotMatch(setup, /rm\s+-rf|rm\s+-fr/);
-  assert.match(setup, /fs\.rmSync\(directory, \{ recursive: true \}\)/);
-  assert.equal(source.split('mkdir -p "$WORK_DIR"').length - 1, 1, 'the only workspace mkdir is the one after the guarded region');
-});
-
-test('Explorer QA cleanup canonicalizes short and full container identities before ambiguity checks', () => {
-  const source = fs.readFileSync(
-    path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'),
-    'utf8',
-  );
-  const cleanup = source.slice(
-    source.indexOf('canonicalize_container_candidates()'),
-    source.indexOf('mkdir -p "$WORK_DIR"', source.indexOf('canonicalize_container_candidates()')),
-  );
-  assert.match(cleanup, /container inspect "\$candidate" --format '\{\{\.Id\}\}'/);
-  assert.match(
-    cleanup,
-    /\}\s*\| canonicalize_container_candidates "\$engine" \| sort -u/,
-    'candidate names, short IDs, and full IDs must collapse to one immutable identity',
-  );
-  assert.match(cleanup, /QA_CONTAINER_RECORDS\+=\("\$engine\|\$container_id\|\$container_name"\)/);
-
-  const functionEnd = cleanup.indexOf('\n\n          declare -a QA_CONTAINER_RECORDS');
-  assert.ok(functionEnd > 0, 'canonicalization function boundary must exist');
-  const functionSource = cleanup.slice(0, functionEnd).replace(/^ {10}/gm, '');
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'explorer-qa-container-id-'));
-  try {
-    const fakeEngine = path.join(temporary, 'podman');
-    fs.writeFileSync(fakeEngine, `#!/bin/sh
-set -eu
-[ "$1" = container ]
-[ "$2" = inspect ]
-case "$3" in
-  unrelated) printf '%s\\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ;;
-  *) printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
-esac
-`, { mode: 0o700 });
-    const run = (candidates) => spawnSync('bash', ['-c', `set -euo pipefail
-${functionSource}
-printf '%s\\n' "$@" | canonicalize_container_candidates podman | sort -u
-`, 'canonicalize-test', ...candidates], {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: `${temporary}:${process.env.PATH}` },
-    });
-    const duplicate = run([
-      '2d9102773f02',
-      '2d9102773f0273493f640935623749c4696dcafe0683d539123f4b58624ab0b8',
-      'ploinky-box-explorerqaworkspace-7a31ab7775eb',
-    ]);
-    assert.equal(duplicate.status, 0, duplicate.stderr);
-    assert.deepEqual(duplicate.stdout.trim().split('\n'), ['a'.repeat(64)]);
-
-    const ambiguous = run(['2d9102773f02', 'unrelated']);
-    assert.equal(ambiguous.status, 0, ambiguous.stderr);
-    assert.deepEqual(ambiguous.stdout.trim().split('\n'), ['a'.repeat(64), 'b'.repeat(64)]);
-  } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
-  }
+  const marker = source.indexOf('# BEGIN QA install marker');
+  const teardownEnd = source.indexOf('# END QA teardown\n');
+  const firstMkdir = source.indexOf('mkdir -p "$WORK_DIR"');
+  assert.ok(marker > 0 && teardownEnd > marker && firstMkdir > teardownEnd, 'the marker and the teardown precede the first workspace creation');
+  // The slice from the marker to the first workspace creation is the whole mutation region of a rebuild.
+  const region = source.slice(marker, firstMkdir);
+  assert.doesNotMatch(region, /rm\s+-rf|rm\s+-fr/, 'the region must delete only through the guarded helper');
+  assert.doesNotMatch(region, /mkdir -p "\$WORK_DIR"/);
+  assert.equal(region.match(/qa-teardown\.mjs" execute --scope/g)?.length, 1, 'exactly one teardown call');
+  assert.equal(region.match(/qa-teardown\.mjs" mark /g)?.length, 1, 'exactly one marker write');
+  assert.match(region, /--plan-digest "\$QA_PLAN_DIGEST" --lock-held/);
+  assert.doesNotMatch(region, /container (?:stop|rm|rename)|image (?:rm|untag)/, 'the helper removes containers and images, never the shell');
+  assert.equal(source.split('mkdir -p "$WORK_DIR"').length - 1, 1, 'the only workspace mkdir is the one after the teardown');
 });

@@ -5,60 +5,26 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { resolveExplorerGraphOrSkip } from './explorer-graph.mjs';
 import {
-    ACCOUNT_CAPABILITY, ACCOUNT_CAPABILITY_SETS, accountCapability, assertImageOwnedAgentLib, classifyPriorSelections,
-    createRollbackService, currentQaBox, describeSelectionDispositions, enableArguments, EXPECTED_DEFAULT_GRAPH,
-    imageAgentLibSourceId, productionAdapters, restorePriorSelections, sanitizeBox,
+    assertImageOwnedAgentLib, currentQaBox, EXPECTED_DEFAULT_GRAPH, imageAgentLibSourceId, productionAdapters, sanitizeBox,
 } from '../../../.github/scripts/rollback-explorer-qa.mjs';
 
-const OLD = 'a'.repeat(64), FAILED = 'b'.repeat(64), FRESH = 'c'.repeat(64), IMAGE = 'd'.repeat(64);
+const OLD = 'a'.repeat(64), FRESH = 'c'.repeat(64), IMAGE = 'd'.repeat(64);
 const librarySource = '.ploinky/agentlib/generations/' + 'e'.repeat(40) + '-' + 'f'.repeat(12);
-const fixtureSource = 'reviewed fixture account preservation implementation';
-const fixtureCapabilities = Object.fromEntries(Object.keys(ACCOUNT_CAPABILITY)
-    .map(relative => [relative, crypto.createHash('sha256').update(fixtureSource).digest('hex')]));
-const fixtureCapability = root => accountCapability(root, fixtureCapabilities);
 const write = (file, value) => {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     fs.writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value), { mode: 0o600 });
 };
 
-function fixture(t, { predecessor = true, supported = true } = {}) {
+function fixture(t, { predecessor = true } = {}) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-rollback-')));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const scope = { workspace: path.join(root, 'workspace'), backups: path.join(root, 'backups'),
         lock: path.join(root, 'lock'), box: 'ploinky-box-qa-7a31ab7775eb', hash: '7a31ab7775eb' };
-    const backup = path.join(scope.backups, 'redeploy-12345678');
-    fs.mkdirSync(backup, { recursive: true, mode: 0o700 });
     for (const relative of ['.runtime/ploinky', '.ploinky/repos/AchillesIDE', 'AdvancedLanguageAgent', librarySource]) {
         write(path.join(scope.workspace, relative, '.source-pin'), 'e'.repeat(40));
     }
-    for (const relative of Object.keys(ACCOUNT_CAPABILITY)) {
-        write(path.join(scope.workspace, '.runtime/ploinky', relative), fixtureSource);
-    }
-    if (!supported) write(path.join(scope.workspace, '.runtime/ploinky/cli/utils/agents.js'), 'old unsafe seeding');
-    write(path.join(scope.workspace, '.env'), 'PRESERVED="literal bytes"\n');
-    write(path.join(scope.workspace, '.ploinky/master-key'), 'saved seed\n');
-    write(path.join(scope.workspace, '.ploinky/passwords.enc'), 'opaque saved accounts including empty route selection\n');
-    write(path.join(scope.workspace, '.ploinky/.secrets'), 'paired encrypted selected tunnel credentials\n');
-    write(path.join(scope.workspace, '.ploinky/data/dpuAgent/data'), 'durable application data');
-    write(path.join(scope.workspace, '.ploinky/data/router-security/revocations'), 'preserved revocations');
-    for (const relative of ['running/watchdog', 'run/runtime-transaction', 'box/descriptor', 'data/edge-routing/selector', 'data/edge-publication/lease']) {
-        write(path.join(scope.workspace, '.ploinky', relative), 'old generated identifier');
-    }
-    write(path.join(scope.workspace, 'authored/source.txt'), 'local authored data');
-    write(path.join(scope.workspace, '.ploinky/operator-private-settings.json'), 'operator-owned unknown state');
-    write(path.join(scope.workspace, '.ploinky/edge-desired.json'), {
-        hosts: { 'explorer-qa.axiologic.dev': { agent: 'AchillesIDE/explorer',
-            routerSurfaces: ['browser-auth', 'agent-mcp', 'user-admin', 'workspace-assets', 'blob-transfer', 'marketplace-ui', 'webchat', 'webtty'] } },
-        cloudflare: { tunnelId: '89dd05b5-05a7-4bd4-9626-ec4343b07c67',
-            tunnelTokenSecret: 'publication/explorer-qa-tunnel', apiTokenSecret: 'publication/explorer-qa-api' },
-        media: { publicIPv4: '45.136.70.141', addressMode: 'direct' },
-    });
-    const registry = { explorer: { type: 'agent', runtime: 'podman', containerId: OLD,
-        repoName: 'AchillesIDE', agentName: 'explorer', auth: { mode: 'local' }, runMode: 'isolated', profile: 'default' } };
-    write(path.join(scope.workspace, '.ploinky/agents.json'), registry);
     const raw = id => ({ Id: id, Image: `sha256:${IMAGE}`, Name: scope.box,
         Config: { User: 'podman', WorkingDir: scope.workspace, Env: [`PLOINKY_WORKSPACE_ROOT=${scope.workspace}`],
             Labels: { 'io.assistos.ploinky-box.path-hash': scope.hash,
@@ -73,50 +39,7 @@ function fixture(t, { predecessor = true, supported = true } = {}) {
         ] });
     const box = id => ({ engine: 'podman', box: sanitizeBox(raw(id), scope) });
     const boxes = predecessor ? [box(OLD)] : [];
-    const events = [];
-    let held = false;
-    const adapters = {
-        assertHost() {}, machineId: () => 'machine-fixture', accountCapability: fixtureCapability,
-        sourcePin: directory => ({ commit: fs.readFileSync(path.join(directory, '.source-pin'), 'utf8'), branch: 'main', origin: 'fixture' }),
-        boxes: () => structuredClone(boxes), imageId: () => IMAGE, checkPrerequisites() {},
-        async acquireWorkspaceLock() {
-            assert.equal(held, false); held = true; events.push('lock');
-            return { release() { if (held) { held = false; events.push('unlock'); } } };
-        },
-        async quiesce(item) { assert.equal(held, true); events.push(`quiesce:${item.box.id}`); },
-        stop(item) { assert.equal(held, true); events.push(`stop:${item.box.id}`); boxes.find(row => row.box.id === item.box.id).box.running = false; },
-        rename(item, name) { assert.equal(held, true); events.push(`rename:${item.box.id}`); boxes.find(row => row.box.id === item.box.id).box.name = name; },
-        copy(from, to) { assert.equal(held, true); events.push('copy:' + path.relative(scope.workspace, to)); fs.cpSync(from, to, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true }); },
-        async prepare() {
-            assert.equal(held, false); events.push('prepare');
-            for (const relative of ['agents.json', 'running', 'run', 'box', 'data/edge-routing', 'data/edge-publication', 'data/router-security']) {
-                assert.equal(fs.existsSync(path.join(scope.workspace, '.ploinky', relative)), false, relative);
-            }
-            const fresh = box(FRESH); boxes.push(fresh); return structuredClone(fresh);
-        },
-        async initialize() {
-            events.push('initialize');
-            assert.equal(fs.existsSync(path.join(scope.workspace, '.ploinky/data/router-security')), false);
-            write(path.join(scope.workspace, '.ploinky/data/edge-routing/selector'), 'fresh generation');
-            // Durable security is copied after the Box lock has been released for supervisor startup.
-            adapters.copy = (from, to) => { events.push('restore-policy'); fs.cpSync(from, to, { recursive: true }); };
-        },
-        async start(_item, authority) {
-            events.push('start');
-            assert.equal(fs.readFileSync(path.join(scope.workspace, '.ploinky/data/router-security/revocations'), 'utf8'), 'preserved revocations');
-            assert.equal(authority.agents[0].auth, 'local');
-            write(path.join(scope.workspace, '.ploinky/agents.json'), { ...registry, explorer: { ...registry.explorer, containerId: FRESH } });
-        },
-        async ready() { events.push('ready'); return { ready: true, generation: 'fresh', count: 1 }; },
-    };
-    const service = createRollbackService(adapters, scope);
-    const candidate = () => {
-        fs.renameSync(scope.workspace, path.join(backup, 'workspace'));
-        boxes[0].box.name += '-rollback-' + path.basename(backup); boxes[0].box.running = false;
-        write(path.join(scope.workspace, 'failed-state'), 'failed generation retained');
-        boxes.push(box(FAILED));
-    };
-    return { root, scope, backup, service, adapters, boxes, events, raw, candidate };
+    return { root, scope, boxes, raw };
 }
 
 const AGENTLIB_REPORT = Object.freeze({ schema: 'ploinky.box.library-inspect/v1', library: 'achillesAgentLib',
@@ -144,13 +67,6 @@ function imageFixture(t) {
     };
     fs.rmSync(path.join(f.scope.workspace, librarySource), { recursive: true });
     f.boxes[0] = { engine: 'podman', box: sanitizeBox(raw(OLD), f.scope, proof) };
-    const prepare = f.adapters.prepare;
-    f.adapters.prepare = async (...args) => {
-        await prepare(...args);
-        const fresh = { engine: 'podman', box: sanitizeBox(raw(FRESH), f.scope, proof) };
-        f.boxes[f.boxes.findIndex(item => item.box.id === FRESH)] = fresh;
-        return structuredClone(fresh);
-    };
     return { ...f, rawImage: raw, proof, sourceId };
 }
 
@@ -172,13 +88,6 @@ function legacyImageFixture(t) {
     };
     fs.rmSync(path.join(f.scope.workspace, librarySource), { recursive: true });
     f.boxes[0] = { engine: 'podman', box: sanitizeBox(raw(OLD), f.scope, proof) };
-    const prepare = f.adapters.prepare;
-    f.adapters.prepare = async (...args) => {
-        await prepare(...args);
-        const fresh = { engine: 'podman', box: sanitizeBox(raw(FRESH), f.scope, proof) };
-        f.boxes[f.boxes.findIndex(item => item.box.id === FRESH)] = fresh;
-        return structuredClone(fresh);
-    };
     return { ...f, rawImage: raw, proof, commit, fingerprint, sourceId };
 }
 
@@ -303,43 +212,6 @@ test('image AgentLib rejects mounts shadowing the package, either verifier, prov
     }
 });
 
-test('capture and recovery retain image source authority without inventing an AgentLib host checkout', async t => {
-    for (const make of [imageFixture, legacyImageFixture]) {
-        const f = make(t);
-        f.service.capture(f.backup);
-        const authority = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'), 'utf8'));
-        assert.deepEqual(authority.predecessor.box.agentLib, f.boxes[0].box.agentLib);
-        assert.equal(authority.sources.some(source => source.relative === librarySource), false);
-        f.candidate();
-        const receipt = await f.service.execute(f.backup, FAILED);
-        assert.equal(receipt.result, 'recovered');
-        assert.deepEqual(f.boxes.find(item => item.box.id === FRESH).box.agentLib, authority.predecessor.box.agentLib);
-    }
-});
-
-test('image capture reads no dependency lock, and recovery rejects a different bundle', async t => {
-    for (const make of [imageFixture, legacyImageFixture]) {
-        // A stale lock naming another commit is ignored: the image is the authority.
-        const stale = make(t);
-        write(path.join(stale.scope.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json'), {
-            repositories: { achillesAgentLib: { url: 'https://github.com/AssistOS-AI/AchillesAgentLib.git', commit: 'a'.repeat(40) } },
-        });
-        assert.equal(stale.service.capture(stale.backup).result, 'captured');
-        const f = make(t);
-        assert.equal(fs.existsSync(path.join(f.scope.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json')), false);
-        f.service.capture(f.backup); f.candidate();
-        const prepare = f.adapters.prepare;
-        f.adapters.prepare = async (...args) => {
-            const fresh = await prepare(...args);
-            if (fresh.box.agentLib.contract === 'image-owned') fresh.box.agentLib.packageVersion = '9.9.9';
-            else fresh.box.agentLib.fingerprint = 'a'.repeat(64);
-            return fresh;
-        };
-        await assert.rejects(f.service.execute(f.backup, FAILED), { code: 'QA_RECOVERY_AGENTLIB_CHANGED' });
-        assert.equal(f.events.includes('initialize'), false, 'changed bundle must fail before graph initialization');
-    }
-});
-
 function fakeEngine(t, f) {
     const records = path.join(f.root, 'commands.jsonl'), input = path.join(f.root, 'inspection.json');
     const setInput = (raw, report) => write(input, { raw,
@@ -413,61 +285,6 @@ test('production verification refuses a current Box whose AgentLib is not image-
         && error.message.includes('the QA Box uses managed mode.'));
 });
 
-test('account capability compares every reviewed file and fails closed for missing code', t => {
-    const f = fixture(t);
-    assert.equal(fixtureCapability(f.scope.workspace), true);
-    assert.equal(accountCapability(f.scope.workspace), false, 'fixture implementation cannot authorize production recovery');
-    fs.unlinkSync(path.join(f.scope.workspace, '.runtime/ploinky/cli/utils/security/passwordStoreLock.mjs'));
-    assert.equal(fixtureCapability(f.scope.workspace), false);
-});
-
-test('the second reviewed account capability set keeps set A and requires the removed store modules to be absent', () => {
-    const [setA, setB, setC] = ACCOUNT_CAPABILITY_SETS;
-    assert.equal(ACCOUNT_CAPABILITY_SETS.length, 3);
-    assert.equal(setA, ACCOUNT_CAPABILITY);
-    // Ploinky 581f8299 (the runtime QA ran after the 2026-10-19 redeploy).
-    assert.deepEqual(Object.keys(setC), Object.keys(setA));
-    assert.equal(setC['cli/utils/agents.js'], '237abcb8d52d1fc60908c3151e71f726a8f3f2767838aa0736cb659f0fc4de0b');
-    assert.equal(setC['cli/utils/security/encryptedPasswordStore.js'], null);
-    assert.equal(setC['cli/utils/security/passwordStoreLock.mjs'], null);
-    assert.deepEqual(Object.keys(setB), Object.keys(setA));
-    assert.equal(setB['cli/utils/agents.js'], '0583a4815c7ab0766d5d2a71920c78fab856f1c902d9b587e319dff964dba82b');
-    assert.notEqual(setB['cli/utils/agents.js'], setA['cli/utils/agents.js']);
-    assert.equal(setB['cli/utils/security/encryptedPasswordStore.js'], null);
-    assert.equal(setB['cli/utils/security/passwordStoreLock.mjs'], null);
-});
-
-test('any one complete account capability set matches and a mixture of sets never does', t => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-capability-sets-')));
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const sha = value => crypto.createHash('sha256').update(value).digest('hex');
-    const names = ['cli/utils/agents.js', 'cli/utils/security/encryptedPasswordStore.js', 'cli/utils/security/passwordStoreLock.mjs'];
-    const [agents, store, lock] = names;
-    const setA = { [agents]: sha('agents-a'), [store]: sha('store'), [lock]: sha('lock') };
-    const setB = { [agents]: sha('agents-b'), [store]: null, [lock]: null };
-    const file = relative => path.join(root, '.runtime/ploinky', relative);
-    const place = (state) => {
-        fs.rmSync(path.join(root, '.runtime'), { recursive: true, force: true });
-        for (const [relative, value] of Object.entries(state)) if (value !== null) write(file(relative), value);
-    };
-    const accepts = () => accountCapability(root, [setA, setB]);
-    place({ [agents]: 'agents-a', [store]: 'store', [lock]: 'lock' });
-    assert.equal(accepts(), true, 'set A');
-    place({ [agents]: 'agents-b', [store]: null, [lock]: null });
-    assert.equal(accepts(), true, 'set B');
-    place({ [agents]: 'agents-a', [store]: null, [lock]: null });
-    assert.equal(accepts(), false, 'agents of A with the stores absent');
-    place({ [agents]: 'agents-b', [store]: 'store', [lock]: 'lock' });
-    assert.equal(accepts(), false, 'agents of B with the stores present');
-    place({ [agents]: 'agents-b', [store]: null, [lock]: null });
-    fs.mkdirSync(path.dirname(file(store)), { recursive: true });
-    fs.symlinkSync(path.join(root, 'missing'), file(store));
-    assert.equal(accepts(), false, 'a dangling link does not count as an absent store module');
-    assert.equal(accountCapability(root, setB), false, 'a single set stays accepted as an object');
-    fs.unlinkSync(file(store));
-    assert.equal(accountCapability(root, setB), true);
-});
-
 test('the current QA Box is the single running exact-name Box beside only stopped redeploy Boxes', () => {
     const scope = { box: 'ploinky-box-qa-7a31ab7775eb' };
     const row = (name, running, id = 'a') => ({ engine: 'podman', box: { id: id.repeat(64), name, running } });
@@ -486,263 +303,6 @@ test('the current QA Box is the single running exact-name Box beside only stoppe
     })) {
         assert.throws(() => currentQaBox(rows, scope), { code: 'QA_EXACT_RUNNING_BOX_REQUIRED' }, name);
     }
-});
-
-test('capture records unsupported prior code, but plan/execute refuse before mutation', async t => {
-    const f = fixture(t, { supported: false });
-    const receipt = f.service.capture(f.backup);
-    assert.equal(receipt.rollbackSupported, false);
-    assert.equal(receipt.rollbackCode, 'QA_PRIOR_CREDENTIAL_RUNTIME_UNSUPPORTED');
-    await assert.rejects(f.service.execute(f.backup, 'absent'), { code: receipt.rollbackCode });
-    assert.deepEqual(f.events, []);
-    assert.deepEqual(fs.readdirSync(f.backup).sort(), ['prior-containers.txt', 'rollback-authority.json']);
-});
-
-test('preview applies the capture proofs and writes nothing', t => {
-    const f = fixture(t);
-    const preview = f.service.previewCapture();
-    assert.equal(preview.result, 'previewed');
-    assert.equal(preview.rollbackSupported, true);
-    assert.equal(preview.predecessorId, OLD);
-    assert.deepEqual(preview.agents.map(agent => `${agent.repo}/${agent.agent}`), ['AchillesIDE/explorer']);
-    assert.ok(preview.sources.some(source => source.relative === '.runtime/ploinky'));
-    assert.deepEqual(fs.readdirSync(f.backup), []);
-    assert.equal(f.service.capture(f.backup).result, 'captured', 'the same fixture is still capturable');
-    const unsupported = fixture(t, { supported: false });
-    assert.equal(unsupported.service.previewCapture().rollbackCode, 'QA_PRIOR_CREDENTIAL_RUNTIME_UNSUPPORTED');
-    assert.deepEqual(fs.readdirSync(unsupported.backup), []);
-});
-
-// Ploinky 7d8c04d0 keeps the encryption identity under .ploinky/data.
-function moveIdentityToData(f) {
-    for (const name of ['master-key', '.secrets', 'passwords.enc']) {
-        const from = path.join(f.scope.workspace, '.ploinky', name), to = path.join(f.scope.workspace, '.ploinky/data', name);
-        fs.mkdirSync(path.dirname(to), { recursive: true });
-        fs.renameSync(from, to);
-    }
-    write(path.join(f.scope.workspace, '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc'), 'subject identity\n');
-}
-
-test('preview and capture fingerprint the master key under .ploinky/data and accept it as present', t => {
-    const f = fixture(t); moveIdentityToData(f);
-    assert.equal(f.service.previewCapture().result, 'previewed');
-    assert.deepEqual(fs.readdirSync(f.backup), []);
-    assert.equal(f.service.capture(f.backup).result, 'captured');
-    const auth = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'))).auth.map(file => file.relative);
-    assert.deepEqual(auth, ['.env', '.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/passwords.enc',
-        '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc']);
-    const legacy = fixture(t);
-    legacy.service.capture(legacy.backup);
-    assert.ok(JSON.parse(fs.readFileSync(path.join(legacy.backup, 'rollback-authority.json'))).auth
-        .some(file => file.relative === '.ploinky/master-key'));
-});
-
-test('preview and capture refuse a missing master key and differing keys in both layouts', t => {
-    for (const [name, mutate, code] of [
-        ['no key anywhere', f => fs.rmSync(path.join(f.scope.workspace, '.ploinky/master-key')), 'QA_MASTER_KEY_MISSING'],
-        ['differing keys', f => { moveIdentityToData(f); write(path.join(f.scope.workspace, '.ploinky/master-key'), 'another seed\n'); }, 'QA_MASTER_KEY_AMBIGUOUS'],
-        ['symlinked key', f => { moveIdentityToData(f); const key = path.join(f.scope.workspace, '.ploinky/data/master-key');
-            fs.renameSync(key, path.join(f.root, 'outside-key')); fs.symlinkSync(path.join(f.root, 'outside-key'), key); }, 'QA_AUTH_FILE_INVALID'],
-    ]) {
-        const previewed = fixture(t), captured = fixture(t);
-        mutate(previewed); mutate(captured);
-        assert.throws(() => previewed.service.previewCapture(), { code }, name);
-        assert.throws(() => captured.service.capture(captured.backup), { code }, name);
-    }
-    const same = fixture(t); moveIdentityToData(same);
-    write(path.join(same.scope.workspace, '.ploinky/master-key'), 'saved seed\n');
-    assert.equal(same.service.capture(same.backup).result, 'captured');
-});
-
-for (const current of ['absent', FAILED]) {
-    test(`recovery retains the .ploinky/data identity byte for byte (${current === 'absent' ? 'early copy failure' : 'failed candidate'})`, async t => {
-        const f = fixture(t); moveIdentityToData(f);
-        f.service.capture(f.backup);
-        if (current !== 'absent') f.candidate();
-        assert.equal((await f.service.execute(f.backup, current)).result, 'recovered');
-        for (const relative of ['.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/passwords.enc',
-            '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc', '.ploinky/data/dpuAgent/data']) {
-            assert.deepEqual(fs.readFileSync(path.join(f.scope.workspace, relative)), fs.readFileSync(path.join(f.backup, 'workspace', relative)), relative);
-        }
-    });
-}
-
-test('recovery detects a changed or missing master key in whichever location holds it', async t => {
-    for (const [layout, relative] of [['data', '.ploinky/data/master-key'], ['legacy', '.ploinky/master-key']]) {
-        for (const damage of ['changed', 'missing', 'moved']) {
-            const f = fixture(t); if (layout === 'data') moveIdentityToData(f);
-            f.service.capture(f.backup);
-            const start = f.adapters.start;
-            f.adapters.start = async (...args) => {
-                await start(...args);
-                const key = path.join(f.scope.workspace, relative);
-                if (damage === 'changed') fs.writeFileSync(key, 'different seed\n');
-                else if (damage === 'missing') fs.rmSync(key);
-                else {
-                    const other = relative === '.ploinky/master-key' ? '.ploinky/data/master-key' : '.ploinky/master-key';
-                    fs.mkdirSync(path.dirname(path.join(f.scope.workspace, other)), { recursive: true });
-                    fs.renameSync(key, path.join(f.scope.workspace, other));
-                }
-            };
-            await assert.rejects(f.service.execute(f.backup, 'absent'), { code: 'QA_RECOVERY_AUTH_CHANGED' }, `${layout} ${damage}`);
-        }
-    }
-    const f = fixture(t); moveIdentityToData(f); f.service.capture(f.backup);
-    write(path.join(f.scope.workspace, '.ploinky/data/master-key'), 'tampered\n');
-    await assert.rejects(f.service.execute(f.backup, 'absent'), { code: 'QA_PREVIOUS_AUTH_CHANGED' });
-    assert.deepEqual(f.events, []);
-});
-
-test('preview and capture reject an unsupported agent row and an active foreign Box with the same codes', t => {
-    const registry = f => path.join(f.scope.workspace, '.ploinky/agents.json');
-    const cases = [
-        ['QA_AGENT_SELECTION_UNSUPPORTED', f => write(registry(f), { explorer: { ...JSON.parse(fs.readFileSync(registry(f), 'utf8')).explorer,
-            runtime: 'docker' } })],
-        ['QA_UNSELECTED_ACTIVE_BOX', f => f.boxes.push({ engine: 'podman', box: { ...f.boxes[0].box, id: 'b'.repeat(64),
-            name: 'ploinky-box-someone-else', running: true } })],
-        ['QA_SOURCES_INCOMPLETE', f => fs.rmSync(path.join(f.scope.workspace, '.ploinky/repos/AchillesIDE'), { recursive: true })],
-    ];
-    for (const [code, mutate] of cases) {
-        const previewed = fixture(t), captured = fixture(t);
-        mutate(previewed); mutate(captured);
-        assert.throws(() => previewed.service.previewCapture(), { code });
-        assert.throws(() => captured.service.capture(captured.backup), { code });
-        assert.deepEqual(fs.readdirSync(previewed.backup), [], code);
-    }
-});
-
-test('capture accepts a recreated dedicated tunnel but refuses the shared proxies tunnel', t => {
-    const desiredFile = f => path.join(f.scope.workspace, '.ploinky/edge-desired.json');
-    const withTunnel = (f, tunnelId) => {
-        const desired = JSON.parse(fs.readFileSync(desiredFile(f), 'utf8'));
-        desired.cloudflare.tunnelId = tunnelId;
-        write(desiredFile(f), desired);
-    };
-    const recreated = fixture(t);
-    withTunnel(recreated, '11111111-2222-4333-8444-555555555555');
-    assert.equal(recreated.service.capture(recreated.backup).rollbackSupported, true);
-    const shared = fixture(t);
-    withTunnel(shared, '091c4096-d1c8-4dbc-bb12-0c6357431d96');
-    assert.throws(() => shared.service.capture(shared.backup), { code: 'QA_INTENT_NOT_DEDICATED' });
-});
-
-test('cold capture is supported, but no predecessor rollback is fabricated', async t => {
-    const f = fixture(t, { predecessor: false });
-    assert.equal(f.service.capture(f.backup).rollbackSupported, true);
-    await assert.rejects(f.service.execute(f.backup, 'absent'), { code: 'QA_NO_PREDECESSOR' });
-    assert.deepEqual(f.events, []);
-});
-
-for (const current of ['absent', FAILED]) {
-    test(`recovery reconstructs fresh runtime state while retaining coherent source, key and data (${current === 'absent' ? 'early copy failure' : 'failed candidate'})`, async t => {
-        const f = fixture(t);
-        f.service.capture(f.backup);
-        if (current !== 'absent') f.candidate();
-        const receipt = await f.service.execute(f.backup, current);
-        assert.equal(receipt.result, 'recovered'); assert.equal(receipt.recoveryBoxId, FRESH);
-        assert.equal(receipt.browserAcceptance, 'not-run');
-        for (const relative of ['.env', '.ploinky/master-key', '.ploinky/passwords.enc', '.ploinky/.secrets',
-            'authored/source.txt', '.ploinky/data/dpuAgent/data', '.ploinky/operator-private-settings.json']) {
-            assert.deepEqual(fs.readFileSync(path.join(f.scope.workspace, relative)), fs.readFileSync(path.join(f.backup, 'workspace', relative)));
-        }
-        assert.equal(f.boxes.find(item => item.box.id === OLD).box.running, false);
-        if (current !== 'absent') {
-            assert.equal(f.boxes.find(item => item.box.id === FAILED).box.running, false);
-            assert.equal(fs.readFileSync(path.join(f.backup, 'failed-workspace/failed-state'), 'utf8'), 'failed generation retained');
-        }
-        assert.ok(f.events.indexOf('initialize') < f.events.indexOf('restore-policy'));
-        assert.ok(f.events.indexOf('restore-policy') < f.events.indexOf('start'));
-        assert.ok(f.events.indexOf('unlock') < f.events.indexOf('prepare'));
-        await assert.rejects(f.service.execute(f.backup, current), { code: 'QA_ROLLBACK_ALREADY_ATTEMPTED' });
-    });
-}
-
-for (const [name, mutate, code] of [
-    ['host identity', f => { f.adapters.machineId = () => 'another-host'; }, 'QA_AUTHORITY_IDENTITY_INVALID'],
-    ['source pin', f => write(path.join(f.scope.workspace, '.runtime/ploinky/.source-pin'), 'changed'), 'QA_PREVIOUS_SOURCES_CHANGED'],
-    ['saved accounts', f => write(path.join(f.scope.workspace, '.ploinky/passwords.enc'), 'changed'), 'QA_PREVIOUS_AUTH_CHANGED'],
-    ['source capability', f => write(path.join(f.scope.workspace, '.runtime/ploinky/cli/utils/agents.js'), 'changed'), 'QA_PRIOR_CREDENTIAL_RUNTIME_UNSUPPORTED'],
-    ['image identity', f => { f.adapters.imageId = () => 'f'.repeat(64); }, 'QA_PREVIOUS_IMAGE_CHANGED'],
-    ['container identity', f => { f.boxes[0].box.contract = 'changed'; }, 'QA_PREDECESSOR_CHANGED'],
-    ['unselected active Box', f => { const other = structuredClone(f.boxes[0]); other.box.id = FAILED; other.box.name += '-foreign'; f.boxes.push(other); }, 'QA_UNSELECTED_ACTIVE_BOX'],
-    ['same-workspace Box with unrelated name', f => { const other = structuredClone(f.boxes[0]); other.box.id = FAILED; other.box.name = 'renamed-by-operator'; f.boxes.push(other); }, 'QA_UNSELECTED_ACTIVE_BOX'],
-    ['insufficient recovery capacity', f => { f.adapters.checkPrerequisites = () => { throw Object.assign(new Error('no space'), { code: 'QA_RECOVERY_SPACE_INSUFFICIENT' }); }; }, 'QA_RECOVERY_SPACE_INSUFFICIENT'],
-    ['workspace inode', f => { fs.renameSync(f.scope.workspace, f.scope.workspace + '-moved'); fs.mkdirSync(f.scope.workspace); }, 'QA_PREVIOUS_WORKSPACE_CHANGED'],
-    ['prior exact records', f => write(path.join(f.backup, 'prior-containers.txt'), 'podman|short|guessed'), 'QA_PRIOR_RECORD_CHANGED'],
-]) {
-    test(`admission rejects changed ${name} without runtime or filesystem mutation`, async t => {
-        const f = fixture(t); f.service.capture(f.backup); mutate(f);
-        await assert.rejects(f.service.execute(f.backup, 'absent'), { code });
-        assert.deepEqual(f.events, []);
-        assert.equal(fs.existsSync(path.join(f.backup, 'rollback-result.json')), false);
-    });
-}
-
-for (const step of ['quiesce', 'stop', 'copy', 'prepare', 'initialize', 'start', 'ready']) {
-    test(`failure in ${step} preserves evidence and never reports readiness`, async t => {
-        const f = fixture(t); f.service.capture(f.backup); f.candidate();
-        f.adapters[step] = () => { throw Object.assign(new Error('safe fixture error'), { code: 'QA_FIXTURE_FAILURE' }); };
-        await assert.rejects(f.service.execute(f.backup, FAILED), { code: 'QA_FIXTURE_FAILURE' });
-        const receipt = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-result.json')));
-        assert.equal(receipt.result, 'failed');
-        assert.equal(f.boxes.some(item => item.box.id === OLD), true);
-        assert.equal(f.boxes.some(item => item.box.id === FAILED), true);
-        assert.equal(fs.existsSync(path.join(f.backup, 'workspace/.ploinky/passwords.enc')), true);
-        assert.equal(f.events.includes('unlock'), true);
-        if (step === 'quiesce' || step === 'stop') assert.equal(fs.existsSync(path.join(f.scope.workspace, 'failed-state')), true);
-    });
-}
-
-test('missing, short and stale current IDs cannot select a candidate by guessed name', async t => {
-    const f = fixture(t); f.service.capture(f.backup); f.candidate();
-    for (const id of [undefined, '', 'b'.repeat(12), 'absent', 'f'.repeat(64), OLD]) {
-        await assert.rejects(f.service.execute(f.backup, id));
-    }
-    assert.deepEqual(f.events, []);
-});
-
-test('aliases use the supported CLI grammar and keep the prior auth policy', () => {
-    assert.deepEqual(enableArguments({ repo: 'OnlyOfficeAgent', agent: 'onlyOffice', alias: 'documents', auth: 'local' }),
-        ['enable', 'agent', 'OnlyOfficeAgent/onlyOffice', 'isolated', '--auth', 'pwd', 'as', 'documents']);
-    assert.deepEqual(enableArguments({ repo: 'OnlyOfficeAgent', agent: 'onlyOffice', alias: '', auth: 'none' }),
-        ['enable', 'agent', 'OnlyOfficeAgent/onlyOffice', 'isolated', '--auth', 'none']);
-    assert.deepEqual(enableArguments({ repo: 'webmeet', agent: 'webmeetAgent', alias: '', auth: 'guest', runMode: 'global' }),
-        ['enable', 'agent', 'webmeet/webmeetAgent', 'global', '--auth', 'guest']);
-    assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'gitAgent', alias: '', auth: 'none', runMode: 'devel', develRepo: 'work' }),
-        ['enable', 'agent', 'AchillesIDE/gitAgent', 'devel', 'work', '--auth', 'none']);
-});
-
-test('capture retains actual global, guest, embedded-profile and devel selection shapes', t => {
-    const f = fixture(t);
-    const records = {
-        webmeet: { type: 'agent', runtime: 'podman', containerId: OLD, repoName: 'webmeet', agentName: 'webmeetAgent',
-            auth: { mode: 'guest' }, profile: 'default', runMode: 'global' },
-        git: { type: 'agent', runtime: 'podman', containerId: FAILED, repoName: 'AchillesIDE', agentName: 'gitAgent',
-            auth: { mode: 'none' }, profile: 'embedded', runMode: 'global' },
-        development: { type: 'agent', runtime: 'podman', containerId: FRESH, repoName: 'AchillesIDE', agentName: 'explorer',
-            auth: { mode: 'local' }, profile: 'default', runMode: 'devel', develRepo: 'work' },
-    };
-    write(path.join(f.scope.workspace, '.ploinky/agents.json'), records);
-    f.service.capture(f.backup);
-    const captured = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'))).agents;
-    for (const selection of captured) {
-        const original = records[selection.name];
-        assert.equal(selection.auth, original.auth.mode); assert.equal(selection.runMode, original.runMode);
-        assert.equal(selection.profile, original.profile); assert.equal(selection.develRepo, original.develRepo);
-    }
-});
-
-test('identity is checked again after acquiring the workspace mutation lock', async t => {
-    const f = fixture(t); f.service.capture(f.backup);
-    const acquire = f.adapters.acquireWorkspaceLock;
-    f.adapters.acquireWorkspaceLock = async () => {
-        const lock = await acquire();
-        f.boxes[0].box.contract = 'drifted while waiting for lock';
-        return lock;
-    };
-    await assert.rejects(f.service.execute(f.backup, 'absent'), { code: 'QA_PREDECESSOR_CHANGED' });
-    assert.deepEqual(f.events, ['lock', 'unlock']);
-    assert.equal(fs.existsSync(path.join(f.backup, 'rollback-result.json')), false);
 });
 
 test('container security and environment fields contribute to the exact immutable contract', t => {
@@ -771,105 +331,6 @@ test('Box admission requires the same-path host workspace mount, working directo
         const changed = structuredClone(baseline); change(changed);
         assert.throws(() => sanitizeBox(changed, f.scope), { code: 'QA_BOX_WORKSPACE_INVALID' });
     }
-});
-
-test('selection replay preserves existing choices and refreshes the registry after each real enable', async () => {
-    const selections = [{ name: 'office', repo: 'OnlyOfficeAgent', agent: 'onlyOffice', alias: '', auth: 'local', profile: 'default' },
-        { name: 'stats', repo: 'UmamiAgent', agent: 'umamiAgent', alias: 'analytics', auth: 'none', profile: 'default' }];
-    const registry = {};
-    const enabled = [];
-    const replay = () => restorePriorSelections({ selections, profile: 'default', readRegistry: async () => registry,
-        enable: async args => {
-            enabled.push(args);
-            // The first enable may register its dependency, so a fresh read must avoid a duplicate second enable.
-            for (const selection of selections) registry[selection.name] = { type: 'agent', repoName: selection.repo,
-                agentName: selection.agent, alias: selection.alias, profile: selection.profile, auth: { mode: selection.auth } };
-        } });
-    assert.deepEqual(await replay(), { restored: ['office'] });
-    assert.deepEqual(await replay(), { restored: [] });
-    assert.equal(enabled.length, 1);
-    registry.office.auth.mode = 'none';
-    await assert.rejects(replay(), { code: 'QA_SELECTION_POLICY_CHANGED' });
-    delete registry.office;
-    selections[0].profile = 'custom';
-    await assert.rejects(replay(), { code: 'QA_OPTIONAL_PROFILE_UNSUPPORTED' });
-});
-
-// The 16 agents QA ran before the repository split, and the 9 the default graph starts now.
-const selection = (repo, agent, { profile = 'default', auth = 'sso', runMode = 'global', alias = '' } = {}) => ({
-    name: `${repo}_${agent}`, repo, agent, alias, profile, auth, runMode, oldId: 'a'.repeat(64) });
-const PRIOR_SELECTIONS = [
-    ...['explorer', 'gitAgent', 'emailAgent', 'dpuAgent', 'workspaceMonitorAgent', 'soplangAgent', 'tasksAgent',
-        'multimedia', 'webAssist', 'webmeetAgent', 'liveKitServerAgent'].map(agent => selection('AchillesIDE', agent)),
-    selection('AchillesIDE', 'userPersistoAgent', { profile: 'default' }),
-    selection('proxies', 'soul-gateway'), selection('AchillesCLI', 'roboTeamAgent'),
-    selection('UmamiAgent', 'umamiAgent'), selection('local-llms', 'local-llm'),
-];
-const freshRegistry = () => Object.fromEntries(EXPECTED_DEFAULT_GRAPH.map(ref => {
-    const [repoName, agentName] = ref.split('/');
-    return [`${repoName}_${agentName}`, { type: 'agent', repoName, agentName, alias: '',
-        profile: agentName === 'userPersistoAgent' ? 'explorer' : 'default', auth: { mode: 'sso' }, runMode: 'global' }];
-}));
-const kinds = result => Object.fromEntries(['retained', 'superseded', 'renamed', 'absent']
-    .map(kind => [kind, result.dispositions.filter(item => item.kind === kind).map(item => item.ref).sort()]));
-
-test('prior selections are classified against the fresh graph without enabling any of them', () => {
-    assert.equal(PRIOR_SELECTIONS.length, 16);
-    const result = classifyPriorSelections(PRIOR_SELECTIONS, freshRegistry());
-    assert.deepEqual(kinds(result), {
-        retained: ['AchillesIDE/dpuAgent', 'AchillesIDE/emailAgent', 'AchillesIDE/explorer', 'AchillesIDE/gitAgent',
-            'AchillesIDE/workspaceMonitorAgent', 'local-llms/local-llm'],
-        superseded: ['AchillesIDE/userPersistoAgent'],
-        renamed: ['AchillesCLI/roboTeamAgent', 'proxies/soul-gateway'],
-        absent: ['AchillesIDE/liveKitServerAgent', 'AchillesIDE/multimedia', 'AchillesIDE/soplangAgent', 'AchillesIDE/tasksAgent',
-            'AchillesIDE/webAssist', 'AchillesIDE/webmeetAgent', 'UmamiAgent/umamiAgent'],
-    });
-    assert.deepEqual(result.counts, { total: 16, retained: 6, superseded: 1, renamed: 2, absent: 7, notReplayed: 9, enabled: 0 });
-    assert.deepEqual(result.dispositions.find(item => item.ref === 'AchillesIDE/userPersistoAgent').changes,
-        [{ field: 'profile', from: 'default', to: 'explorer' }]);
-    assert.equal(result.dispositions.find(item => item.ref === 'proxies/soul-gateway').replacement, 'AchillesIDE/soul-gateway');
-    assert.equal(result.dispositions.find(item => item.ref === 'AchillesIDE/soplangAgent').kind, 'absent');
-});
-
-test('a selection that exists nowhere in the fresh graph is absent, so the live count is not fixed at sixteen', () => {
-    const seventeen = [...PRIOR_SELECTIONS, selection('AchillesCLI', 'promotionScout')];
-    const result = classifyPriorSelections(seventeen, freshRegistry());
-    assert.deepEqual(result.counts, { total: 17, retained: 6, superseded: 1, renamed: 2, absent: 8, notReplayed: 10, enabled: 0 });
-    assert.deepEqual(kinds(result).absent, ['AchillesCLI/promotionScout', 'AchillesIDE/liveKitServerAgent',
-        'AchillesIDE/multimedia', 'AchillesIDE/soplangAgent', 'AchillesIDE/tasksAgent', 'AchillesIDE/webAssist',
-        'AchillesIDE/webmeetAgent', 'UmamiAgent/umamiAgent']);
-    const lines = describeSelectionDispositions(result);
-    assert.equal(lines.filter(line => line.startsWith('[deploy-qa] Prior selection not replayed:')).length, 10);
-    assert.equal(lines.at(-1), '[deploy-qa] Prior selections: 17 total, 6 retained, 1 superseded, 10 not replayed, 0 enabled.');
-});
-
-test('classification follows alias, auth and run mode, and refuses the inputs replay refuses', async () => {
-    const registry = freshRegistry();
-    const row = Object.values(registry).find(item => item.agentName === 'gitAgent');
-    row.auth.mode = 'none'; row.runMode = 'isolated';
-    const result = classifyPriorSelections([selection('AchillesIDE', 'gitAgent'), selection('AchillesIDE', 'dpuAgent', { alias: 'copy' })], registry);
-    assert.deepEqual(result.dispositions[0].changes, [{ field: 'auth', from: 'sso', to: 'none' },
-        { field: 'runMode', from: 'global', to: 'isolated' }]);
-    assert.equal(result.dispositions[1].kind, 'absent', 'an aliased selection is not the unaliased fresh agent');
-    assert.deepEqual(classifyPriorSelections([selection('AchillesIDE', 'gitAgent', { auth: 'none', runMode: 'isolated' })],
-        registry, { comparePolicy: false }).counts.retained, 1);
-    for (const bad of [{ ...selection('AchillesIDE', 'gitAgent'), repo: '../x' }, { ...selection('AchillesIDE', 'gitAgent'), auth: 'password' },
-        { ...selection('AchillesIDE', 'gitAgent'), runMode: 'devel', develRepo: '../x' }]) {
-        assert.throws(() => classifyPriorSelections([bad], registry), { code: 'QA_SELECTION_INVALID' });
-        await assert.rejects(restorePriorSelections({ selections: [bad], profile: 'default', readRegistry: async () => registry,
-            enable: async () => assert.fail('nothing is enabled') }), { code: 'QA_SELECTION_INVALID' });
-    }
-    assert.throws(() => classifyPriorSelections([selection('AchillesIDE', 'gitAgent')],
-        { one: row, two: structuredClone(row) }), { code: 'QA_SELECTION_AMBIGUOUS' });
-});
-
-test('replay of the same prior selections enables stale identities and then rejects the policy change classification only reports', async () => {
-    const calls = [];
-    await assert.rejects(restorePriorSelections({ selections: PRIOR_SELECTIONS, profile: 'default',
-        readRegistry: async () => freshRegistry(), enable: async args => { calls.push(args[2]); } }),
-    { code: 'QA_SELECTION_POLICY_CHANGED' });
-    assert.deepEqual(calls, ['AchillesIDE/soplangAgent', 'AchillesIDE/tasksAgent', 'AchillesIDE/multimedia',
-        'AchillesIDE/webAssist', 'AchillesIDE/webmeetAgent', 'AchillesIDE/liveKitServerAgent']);
 });
 
 test('the expected default graph matches the direct enable entries of this repository, without any sibling checkout', () => {
@@ -957,7 +418,7 @@ test('a legacy image tag requires an exact inspected image ID and canonical immu
     }
 });
 
-test('production routing initialization and readiness pass both selected QA ports to independent Box execs', t => {
+test('production readiness passes both selected QA ports to an independent Box exec', t => {
     const f = fixture(t), executable = path.join(f.root, 'podman'), record = path.join(f.root, 'exec.jsonl');
     write(executable, `#!${process.execPath}
         const fs = require('node:fs');
@@ -974,16 +435,14 @@ test('production routing initialization and readiness pass both selected QA port
         const { productionAdapters } = await import(process.argv[1]);
         const adapters = productionAdapters();
         const item = { engine: 'podman', box: { id: process.argv[2] } };
-        await adapters.initialize(item);
         await adapters.ready(item, { agents: [] });
     `, helper, FRESH], { encoding: 'utf8', timeout: 5000, env: { ...process.env,
         PATH: f.root + path.delimiter + process.env.PATH, QA_EXEC_RECORD: record,
         PLOINKY_ROUTER_HOST_PORT: '9000', PLOINKY_MEDIA_HOST_PORT: '9001' } });
     assert.equal(result.status, 0, result.stderr);
     const calls = fs.readFileSync(record, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    assert.equal(calls.length, 2);
-    assert.match(calls[0].source, /initializeFreshEdgeRoutingSources/);
-    assert.match(calls[1].source, /loadActiveEdgeRoutingGeneration/);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].source, /loadActiveEdgeRoutingGeneration/);
     for (const call of calls) {
         assert.deepEqual(call.args.slice(0, 14), ['container', 'exec', '-i', '--user', 'podman', '--workdir', '/home/admin/explorerQaWorkspace',
             '--env', 'PLOINKY_WORKSPACE_ROOT=/home/admin/explorerQaWorkspace', '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
@@ -991,38 +450,4 @@ test('production routing initialization and readiness pass both selected QA port
         assert.equal(call.args.includes('PLOINKY_ROUTER_HOST_PORT=9000'), false);
         assert.equal(call.args.includes('PLOINKY_MEDIA_HOST_PORT=9001'), false);
     }
-});
-
-test('the actual CLI refuses a foreign host without showing environment credentials', () => {
-    if (process.platform === 'linux' && os.userInfo().username === 'admin' && os.homedir() === '/home/admin') return;
-    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url)),
-        'execute', '/home/admin/.qa-deployment-backups/redeploy-12345678', '--current-id', FAILED],
-    { encoding: 'utf8', env: { ...process.env, SECRET: 'never-log-this' }, timeout: 5000 });
-    assert.equal(result.status, 1);
-    assert.deepEqual(JSON.parse(result.stdout), { result: 'failed', code: 'QA_HOST_INVALID' });
-    assert.doesNotMatch(result.stdout + result.stderr, /never-log-this/);
-});
-
-test('production recovery permits the bounded full graph shutdown without the former three minute cutoff', () => {
-    const helper = new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url).href;
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
-        import assert from 'node:assert/strict';
-        import childProcess from 'node:child_process';
-        import { syncBuiltinESMExports } from 'node:module';
-        let calls = 0;
-        childProcess.spawnSync = (program, args, options) => {
-            calls++;
-            assert.equal(program, 'podman');
-            assert.equal(options.timeout, 900_000);
-            assert(options.timeout > 199_229, 'Measured complete QA shutdown must fit');
-            assert.match(options.input, /createProductionAdapters/);
-            assert(args.includes('PLOINKY_ROUTER_HOST_PORT=8097'));
-            return { status: 0, stdout: JSON.stringify({ result: 'passed' }) };
-        };
-        syncBuiltinESMExports();
-        const { productionAdapters } = await import(process.argv[1]);
-        await productionAdapters().quiesce({ engine: 'podman', box: { id: process.argv[2] } });
-        assert.equal(calls, 1);
-    `, helper, FRESH], { encoding: 'utf8', timeout: 5000 });
-    assert.equal(result.status, 0, result.stderr);
 });
