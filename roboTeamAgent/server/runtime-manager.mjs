@@ -23,6 +23,7 @@ import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './co
 import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
+import { NFT_COMMAND, NSENTER_COMMAND, writeContainerFirewallRules } from './proxy-pool/container-firewall.mjs';
 
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
@@ -161,12 +162,15 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
     const robotRoot = path.join(path.resolve(dataDir), 'robots', robot.id);
     const containerName = `roboteam-${mode}-${robot.id}`;
     const subfolder = robotSessionUrl(publicBasePath, robot.id);
+    // A proxied Browser container is only created here; its firewall is loaded before it starts.
+    const firewalled = Boolean(proxy) && mode === 'browser';
     return {
         containerName,
         image: images[mode],
         subfolder,
+        firewalled,
         args: [
-            'run', '-d', '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777',
+            ...(firewalled ? ['create'] : ['run', '-d']), '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777',
             // With a proxy, the container's loopback proxy port reaches the robot's relay on the outer
             // loopback, and nothing else of the outer loopback.
             '--network', proxy ? `pasta:-T,${CONTAINER_PROXY_PORT}:${proxy.relayPort}` : 'pasta',
@@ -212,6 +216,8 @@ export class RuntimeManager {
         this.dataDir = path.resolve(options.dataDir || DATA_DIR);
         this.publicBasePath = normalizeBasePath(options.publicBasePath);
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
+        this.nsenterCommand = options.nsenterCommand || NSENTER_COMMAND;
+        this.nftCommand = options.nftCommand || NFT_COMMAND;
         this.alaCommand = resolveAlaCommand(options.alaCommand);
         this.workspaceRoot = path.resolve(options.workspaceRoot ?? requireWorkspaceRoot());
         this.hostWorkspaceRoot = options.hostWorkspaceRoot ? path.resolve(options.hostWorkspaceRoot) : null;
@@ -435,6 +441,7 @@ export class RuntimeManager {
             await prepareRobotShell(robotHome, { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
             if (mode === 'desktop') await prepareDesktopLaunchers(robotHome);
             const policyFile = upstream ? await writeChromiumProxyPolicy(this.proxyPolicyDir) : null;
+            const firewallFile = upstream && mode === 'browser' ? await writeContainerFirewallRules(this.proxyPolicyDir) : null;
             const relay = upstream ? this.createRelay(upstream) : null;
             const proxy = relay ? { relayPort: await relay.listen(), policyFile } : null;
             const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools, proxy });
@@ -442,6 +449,7 @@ export class RuntimeManager {
             this.sessions.set(robot.id, session);
             try {
                 await this._podman(plan.args, 10 * 60 * 1000);
+                if (plan.firewalled) await this._startFirewalled(plan.containerName, firewallFile);
                 session.sessionPort = mappedPort((await this._podman(['port', plan.containerName, '3000/tcp'])).stdout);
                 session.mcpPort = mappedPort((await this._podman(['port', plan.containerName, '8100/tcp'])).stdout);
                 await Promise.all([
@@ -457,6 +465,16 @@ export class RuntimeManager {
                 throw error;
             }
         });
+    }
+
+    // Initializing the container creates its network namespace without running anything in it, so
+    // the rules are in place before the container's first packet. A failure removes the container.
+    async _startFirewalled(containerName, rulesFile) {
+        await this._podman(['init', containerName]);
+        const namespace = (await this._podman(['inspect', '--format', '{{.NetworkSettings.SandboxKey}}', containerName])).stdout.trim();
+        if (!path.isAbsolute(namespace)) throw new Error('could not resolve the container network namespace');
+        await this.execFileImpl(this.nsenterCommand, [`--net=${namespace}`, this.nftCommand, '-f', rulesFile], { timeout: 30000, maxBuffer: 1024 * 1024, env: process.env });
+        await this._podman(['start', containerName]);
     }
 
     async _closeRelay(session) {

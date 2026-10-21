@@ -10,6 +10,7 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { buildRobotRunArgs, RuntimeManager, runtimeManagerInternals } from '../server/runtime-manager.mjs';
 import { CHROMIUM_LAUNCHER } from '../server/desktop-launchers.mjs';
+import { CONTAINER_FIREWALL_RULES } from '../server/proxy-pool/container-firewall.mjs';
 import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
 
 const preparedToolCache = {
@@ -892,9 +893,10 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
             relays.push(relay);
             return relay;
         },
-        execFileImpl: async (_command, args) => {
-            calls.push(args);
+        execFileImpl: async (command, args) => {
+            calls.push(command === '/usr/bin/podman' ? args : [command, ...args]);
             if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
+            if (args[0] === 'inspect') return { stdout: '/run/netns/netns-test\n', stderr: '' };
             return { stdout: '', stderr: '' };
         },
         toolCache: preparedToolCache,
@@ -903,8 +905,15 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
     const robot = { id: 'proxied-a1b2c3', name: 'Proxied', codingAgents: ['opencode'] };
 
     await manager.start(robot, 'browser');
-    const run = calls.find(args => args[0] === 'run');
+    const run = calls.find(args => args[0] === 'create');
+    assert.equal(calls.some(args => args[0] === 'run'), false, 'a proxied browser is created, not started, before its firewall');
     assert.equal(run[run.indexOf('--network') + 1], 'pasta:-T,3128:45000');
+    // The firewall is loaded into the initialized container's network namespace before it starts.
+    const rulesFile = path.join(root, 'data', 'proxy-pool', 'container-firewall.nft');
+    const order = calls.map(args => args[0]);
+    assert.deepEqual(order.slice(order.indexOf('create'), order.indexOf('start') + 1), ['create', 'init', 'inspect', '/usr/bin/nsenter', 'start']);
+    assert.deepEqual(calls.find(args => args[0] === '/usr/bin/nsenter'), ['/usr/bin/nsenter', '--net=/run/netns/netns-test', '/usr/bin/nft', '-f', rulesFile]);
+    assert.equal(await fs.readFile(rulesFile, 'utf8'), CONTAINER_FIREWALL_RULES);
     // The policy lives under the manager's data directory, never the production /data.
     const policyFile = path.join(root, 'data', 'proxy-pool', 'chromium-proxy-policy.json');
     assert.ok(run.includes(`${policyFile}:/etc/chromium/policies/managed/roboteam-proxy.json:ro`));
@@ -916,13 +925,55 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
     assert.doesNotMatch(run.join(' '), /198\.51\.100\.7|\bu:p\b/u);
 
     await manager.start(robot, 'browser');
-    assert.equal(calls.filter(args => args[0] === 'run').length, 1, 'the same proxy reuses the running workstation');
+    assert.equal(calls.filter(args => args[0] === 'create').length, 1, 'the same proxy reuses the running workstation');
     upstream = { ...upstream, id: 'pxp_fedcba9876543210', host: '198.51.100.8' };
     await manager.start(robot, 'browser');
     assert.equal(relays[0].closed, true);
-    assert.equal(calls.filter(args => args[0] === 'run').length, 2, 'a different proxy replaces the workstation');
+    assert.equal(calls.filter(args => args[0] === 'create').length, 2, 'a different proxy replaces the workstation');
     await manager.stop(robot.id);
     assert.equal(relays[1].closed, true);
+});
+
+test('a proxied desktop keeps its network for other programs and a failed firewall stops the browser', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-firewall-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const listener = http.createServer((_request, response) => response.end());
+    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+    t.after(() => listener.close());
+    const port = listener.address().port;
+    const calls = [], relays = [];
+    const manager = new RuntimeManager({
+        dataDir: path.join(root, 'data'),
+        workspaceRoot: root,
+        proxyPool: { acquire: () => ({ id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' }), release: () => true },
+        createRelay: () => {
+            const relay = { closed: false, listen: async () => 45000, close: async () => { relay.closed = true; } };
+            relays.push(relay);
+            return relay;
+        },
+        execFileImpl: async (command, args) => {
+            calls.push(command === '/usr/bin/podman' ? args : [command, ...args]);
+            if (command === '/usr/bin/nsenter') throw new Error('nft: Operation not permitted');
+            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
+            if (args[0] === 'inspect') return { stdout: '/run/netns/netns-test\n', stderr: '' };
+            return { stdout: '', stderr: '' };
+        },
+        toolCache: preparedToolCache,
+    });
+    t.after(() => manager.stopAll());
+
+    const desktop = { id: 'desktop-a1b2c3', name: 'Desktop', codingAgents: ['opencode'] };
+    await manager.start(desktop, 'desktop');
+    assert.deepEqual(calls.find(args => args[1] === '-d')?.slice(0, 2), ['run', '-d']);
+    assert.equal(calls.some(args => args[0] === '/usr/bin/nsenter'), false);
+    await manager.stop(desktop.id);
+
+    const browser = { id: 'browser-a1b2c3', name: 'Browser', codingAgents: ['opencode'] };
+    await assert.rejects(manager.start(browser, 'browser'), /Operation not permitted/u);
+    assert.equal(calls.some(args => args[0] === 'start'), false, 'the browser never starts without its firewall');
+    assert.ok(calls.some(args => args[0] === 'rm' && args[2] === 'roboteam-browser-browser-a1b2c3'));
+    assert.equal(relays.at(-1).closed, true);
+    assert.equal(manager.status(browser.id).state, 'stopped');
 });
 
 test('an active pool without a free proxy keeps the workstation from starting', async (t) => {
