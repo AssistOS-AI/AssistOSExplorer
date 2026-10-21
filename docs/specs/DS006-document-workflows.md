@@ -34,3 +34,5 @@ All visual document previews share the same scene rules for duration estimation 
 The references empty-state message uses the semantic secondary text color to remain readable against its panel in both light and dark themes.
 
 Reference rows place the citation and its actions in separate responsive columns. Edit and Delete reuse the shared compact chapter action styling and existing icons, with accessible names and keyboard focus indicators. Long citations wrap without pushing actions below the row.
+
+File Save accepts one operation at a time, acquiring its guard before Markdown flushing or any other asynchronous work and releasing it after success or failure. While saving, the native Save button is disabled, announces busy state, and reads “Saving…”. Repeated clicks, keyboard shortcuts and autosave calls must not start duplicate saves.

@@ -293,6 +293,9 @@ export async function editSoplangMarkdown(fileExp) {
 }
 
 export async function saveFile(fileExp, options = {}) {
+    if (fileExp._saveFileInProgress || fileExp.state.savePending) {
+        return;
+    }
     fileExp.textarea = fileExp.element.querySelector('.code-input');
     if (!fileExp.textarea) {
         return;
@@ -307,10 +310,10 @@ export async function saveFile(fileExp, options = {}) {
     const isExternalModificationError = (error) => /updated externally/i.test(String(error?.message || ''));
     let markdownCrdtDocumentId = '';
     let markdownInfoMessage = '';
-    if (fileExp.state.savePending) {
-        return;
-    }
+    fileExp._saveFileInProgress = true;
     try {
+        fileExp.setPreviewState({ savePending: true, lastSaveError: '' }, { invalidate: false });
+        fileExp.refreshPreviewUi();
         let markdownEditorPresenter = null;
         if (!isDpuPath && fileExp.state.selectedIsMarkdown) {
             markdownEditorPresenter = fileExp.element.querySelector('markdown-editor')?.webSkelPresenter || null;
@@ -324,11 +327,6 @@ export async function saveFile(fileExp, options = {}) {
                 throw new Error('Markdown CRDT document id is not available.');
             }
         }
-        fileExp.setPreviewState({
-            savePending: true,
-            lastSaveError: ''
-        }, { invalidate: false });
-        fileExp.refreshPreviewUi();
         if (isDpuPath) {
             if (!fileExp.state.dpuSelectedCanWrite) {
                 throw new Error('You do not have permission to save this DPU file.');
@@ -403,7 +401,6 @@ export async function saveFile(fileExp, options = {}) {
         fileExp.setPreviewState({
             fileContent: savedContent,
             hasUnsavedChanges: false,
-            savePending: false,
             lastSaveError: '',
             lastEditorSaveAt: Date.now(),
             lastEditorSaveMode: autoSave ? 'auto' : 'manual',
@@ -458,13 +455,16 @@ export async function saveFile(fileExp, options = {}) {
             console.error(err);
         }
         fileExp.setPreviewState({
-            savePending: false,
             lastSaveError: err?.message || 'Failed to save file.',
             lastEditorSaveMode: '',
             lastExternalReloadAt: 0
         }, { invalidate: false });
         fileExp.refreshPreviewUi();
         fileExp.showStatus(err.message || 'Failed to save file.', true);
+    } finally {
+        fileExp._saveFileInProgress = false;
+        fileExp.setPreviewState({ savePending: false }, { invalidate: false });
+        fileExp.refreshPreviewUi();
     }
 }
 
