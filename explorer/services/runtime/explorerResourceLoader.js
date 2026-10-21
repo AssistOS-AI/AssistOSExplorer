@@ -105,7 +105,10 @@ export function installExplorerResourceLoader(webSkel, options = {}) {
         }
 
         const running = inFlight.get(component.name);
-        if (running) return running;
+        // Each mounted element owns a stylesheet reference, even when its asset fetch is shared.
+        // Reusing the first WebSkel load result would undercount those references and let a
+        // form rerender remove CSS still needed by the replacement controls.
+        if (running) return running.then(() => originalLoadComponent(component));
         const request = loadFresh(component).finally(() => {
             inFlight.delete(component.name);
         });
