@@ -53,6 +53,9 @@
         <button class="dashboard-tab" id="proxiesTab" type="button" role="tab" aria-selected="false"
                 aria-controls="proxiesPanel" tabindex="-1">Proxies
         </button>
+        <button class="dashboard-tab" id="emailsTab" type="button" role="tab" aria-selected="false"
+                aria-controls="emailsPanel" tabindex="-1">Emails
+        </button>
     </div>
 
     <div id="robotsPanel" role="tabpanel" aria-labelledby="robotsTab" tabindex="0">
@@ -144,6 +147,38 @@
             </div>
         </section>
     </div>
+    <div id="emailsPanel" role="tabpanel" aria-labelledby="emailsTab" tabindex="0" hidden>
+        <section aria-labelledby="emails-title">
+            <div class="section-heading">
+                <div class="heading-main"><h2 id="emails-title">Emails</h2><span id="emailCount" class="robot-count"></span></div>
+                <div class="heading-actions">
+                    <button id="importEmailsButton" class="button secondary" type="button" disabled>Import CSV</button>
+                    <button id="addEmailsButton" class="button primary" type="button" aria-haspopup="dialog" aria-controls="emailDialog" disabled><span class="button-plus" aria-hidden="true">+</span>Add emails</button>
+                </div>
+                <input id="emailCsvFile" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
+            </div>
+            <p class="lede">Each robot receives one free address from this list, at random, the first time it starts a Browser or Desktop, and keeps it until it is released or the robot is deleted. Browser and Desktop tasks receive the address in their instructions. Only addresses are stored: a person signs each mailbox in to the robot's Chromium, and robots never receive passwords.</p>
+            <p id="emailMessage" class="message" role="status"></p>
+            <div id="emailAdminContent" hidden>
+                <div id="emailEmpty" class="empty-state" hidden><h3>No emails yet</h3><p>Import a CSV with an email column, or add addresses one per line.</p></div>
+                <div id="emailTableWrap" class="proxy-table-wrap">
+                    <table class="proxy-table">
+                        <thead><tr><th scope="col">Address</th><th scope="col">Robot</th><th scope="col">Assigned</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+                        <tbody id="emailTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </div>
+    <dialog id="emailDialog" class="create-robot-dialog" aria-labelledby="emailDialogTitle">
+        <div class="create-robot-heading"><h2 id="emailDialogTitle">Add emails</h2><button id="emailClose" class="button icon-button" type="button" aria-label="Close email dialog" title="Close">×</button></div>
+        <form id="emailForm" class="robot-form">
+            <label><span>Addresses, one per line or pasted CSV</span><textarea name="addresses" rows="8" required autocomplete="off" spellcheck="false" placeholder="robot.one@example.com"></textarea></label>
+            <p class="cron-hint">Only the email column is kept; passwords or other columns are ignored and never sent.</p>
+            <p id="emailFormMessage" class="message" role="status"></p>
+            <div class="create-robot-actions"><button id="emailCancel" class="button secondary" type="button">Cancel</button><button id="emailSave" class="button primary" type="submit">Add emails</button></div>
+        </form>
+    </dialog>
     <dialog id="proxyAccountDialog" class="create-robot-dialog" aria-labelledby="proxyAccountDialogTitle">
         <div class="create-robot-heading"><h2 id="proxyAccountDialogTitle">Add proxy account</h2><button id="proxyAccountClose" class="button icon-button" type="button" aria-label="Close proxy account dialog" title="Close">×</button></div>
         <form id="proxyAccountForm" class="robot-form">

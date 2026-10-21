@@ -11,3 +11,4 @@
 | [DS006-ala-task-boundary](specsLoader.html?spec=DS006-ala-task-boundary.md) | Defines the outer ALA process, persistent home, cwd, MCP injection, cancellation, and resume boundary. |
 | [DS007-roboflow-team-workflow](specsLoader.html?spec=DS007-roboflow-team-workflow.md) | Global task graphs, creator-selected sequential sub-workflows, human business decisions, coordinated pause and resume, SQLite execution records and directed routing. |
 | [DS008-proxy-pool](specsLoader.html?spec=DS008-proxy-pool.md) | Defines the shared proxy pool, provider accounts, per-robot proxy assignment, the exit-address locale, the credential-holding loopback relay, and the managed Chromium policy for Browser and Desktop workstations. |
+| [DS009-email-pool](specsLoader.html?spec=DS009-email-pool.md) | Defines the shared list of robot email addresses, sticky per-robot assignment, the instructions Browser and Desktop tasks receive with the address, and the administrator Emails tab. |

@@ -374,6 +374,7 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .proxy-status-disabled { color: var(--text-soft); }
 #proxyAccountForm select, #proxyAccountForm textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text); font: inherit; }
 #proxyAccountForm textarea { resize: vertical; font-family: var(--mono-font); font-size: var(--font-xs); }
+#emailForm textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text); resize: vertical; font-family: var(--mono-font); font-size: var(--font-xs); }
 .proxy-table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .proxy-table { width: 100%; border-collapse: collapse; font-size: var(--font-sm); }
 .proxy-table th { padding: 10px 12px; color: var(--text-soft); font-size: var(--font-xs); font-weight: 500; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }

@@ -6,6 +6,7 @@ import { RobotSkillsets } from './robot-skillsets.mjs';
 import { RoboFlowService } from './roboflow/roboflow-service.mjs';
 import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
 import { ProxyPool } from './proxy-pool/proxy-pool.mjs';
+import { EmailPool, emailPoolFile } from './email-pool.mjs';
 import { secretBoxFromEnvironment, VAULT_KEY_ENV } from './secret-box.mjs';
 import path from 'node:path';
 import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
@@ -31,12 +32,15 @@ await robotStore.ensureDefaultRobot();
 
 const proxyPool = new ProxyPool({ file: path.join(dataDir, 'proxy-pool', 'proxy-pool.sqlite'), secretBox });
 proxyPool.initialize();
+const emailPool = new EmailPool({ file: emailPoolFile(dataDir) });
+emailPool.initialize();
 
 const runtimeManager = new RuntimeManager({
     dataDir,
     publicBasePath,
     workspaceRoot,
     proxyPool,
+    emailPool,
 });
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot, alaCommand: runtimeManager.alaCommand });
@@ -58,6 +62,7 @@ const server = createRoboTeamServer({
     runtimeManager,
     roboflow,
     proxyPool,
+    emailPool,
     internalToken,
     mcpPort: process.env.ROBOTEAM_MCP_PORT,
     publicBasePath,
@@ -84,6 +89,7 @@ async function shutdown() {
     await roboflow.close();
     await runtimeManager.stopAll();
     proxyPool.close();
+    emailPool.close();
     process.exit(0);
 }
 

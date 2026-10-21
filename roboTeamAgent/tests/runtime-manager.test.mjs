@@ -12,6 +12,7 @@ import { buildRobotRunArgs, RuntimeManager, runtimeManagerInternals } from '../s
 import { CHROMIUM_LAUNCHER } from '../server/desktop-launchers.mjs';
 import { CONTAINER_FIREWALL_RULES } from '../server/proxy-pool/container-firewall.mjs';
 import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
+import { EmailPool, emailInstructions } from '../server/email-pool.mjs';
 
 const preparedToolCache = {
     root: '/cache',
@@ -160,6 +161,51 @@ test('reads only the active GUI container log', async () => {
     assert.equal(await manager.logs('worker-a1b2c3', 250), 'desktop stdout\ndesktop stderr\n');
     assert.deepEqual(calls, [['logs', '--tail', '250', 'roboteam-desktop-worker-a1b2c3']]);
     assert.equal(await manager.logs('idle-a1b2c3'), '');
+});
+
+test('browser and desktop tasks receive the robot email, terminal tasks do not, and a deleted robot frees it', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-email-task-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const dataDir = path.join(root, 'data');
+    const workspace = path.join(root, 'workspace');
+    const robot = { id: 'mailer-a1b2c3', name: 'Mailer' };
+    await Promise.all([
+        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }),
+        fs.mkdir(workspace, { recursive: true }),
+    ]);
+    const listener = http.createServer((_request, response) => response.end());
+    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+    t.after(() => listener.close());
+    const port = listener.address().port;
+    const emailPool = new EmailPool({ file: path.join(root, 'email-pool.sqlite') });
+    t.after(() => emailPool.close());
+    emailPool.add(['mailer@example.com']);
+    const written = [];
+    const spawnImpl = () => {
+        const child = new EventEmitter();
+        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+        child.stdin = new PassThrough(); let text = '';
+        child.stdin.on('data', (chunk) => { text += chunk; });
+        setImmediate(() => { written.push(JSON.parse(text.split('\n')[0])); child.emit('close', 0, null); });
+        return child;
+    };
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, emailPool, toolCache: preparedToolCache,
+        execFileImpl: async (_command, args) => ({ stdout: args[0] === 'port' ? `127.0.0.1:${port}\n` : '[]', stderr: '' }) });
+    t.after(() => manager.stopAll());
+    const run = async (type) => {
+        const accepted = manager.startTask(robot, type, { cwd: workspace, task: 'Write to the client', ca: 'codex', systemPrompt: 'Route it' });
+        while (!['completed', 'failed'].includes(manager.taskStatus(robot.id, accepted.taskId).state)) await new Promise((resolve) => setTimeout(resolve, 5));
+        return written.at(-1);
+    };
+
+    assert.equal((await run('simple')).systemPrompt, 'Route it');
+    assert.equal(emailPool.assignedAddress(robot.id), null, 'a terminal task takes no address');
+    assert.equal((await run('browser')).systemPrompt, `${emailInstructions('mailer@example.com')}\n\nRoute it`);
+    assert.equal(emailPool.assignedAddress(robot.id), 'mailer@example.com');
+
+    await manager.stop(robot.id);
+    await manager.deleteRobot(robot.id, async () => {});
+    assert.equal(emailPool.assignedAddress(robot.id), null);
 });
 
 test('runs independent CLI sessions for one robot concurrently', async (t) => {
