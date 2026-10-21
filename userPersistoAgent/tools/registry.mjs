@@ -11,6 +11,7 @@ import { describeOriginPolicy, environmentPolicyOverrides, getAuthPolicy, isAuth
 import * as oidcClients from '../lib/oidc/clients.mjs';
 import { getGoogleStatus } from '../lib/auth/google.mjs';
 import { getEmailAuthCodeStatus } from '../lib/email-agent-client.mjs';
+import { getSignInReadiness } from '../lib/auth/signinReadiness.mjs';
 import * as roles from '../lib/roles.mjs';
 
 async function requireAdmin(context, capability = 'admin.users.manage') {
@@ -236,6 +237,13 @@ const HANDLERS = {
     userpersisto_google_status: async (_args, context) => {
         await requireAdmin(context, 'admin.agentSettings.manage');
         return getGoogleStatus();
+    },
+    // Read-only account inventory plus provider readiness: both administrator
+    // capabilities are required, and the result carries counts and IDs only.
+    userpersisto_signin_readiness: async (args, context) => {
+        await requireAdmin(context);
+        await requireAdmin(context, 'admin.agentSettings.manage');
+        return getSignInReadiness({ origin: args.origin });
     },
     userpersisto_oidc_clients_list: async (args, context) => oidcClients.listOidcClients(args, { actorId: requireActor(context) }),
     userpersisto_oidc_client_create: async (args, context) => oidcClients.createOidcClient(args, { actorId: requireActor(context) }),
