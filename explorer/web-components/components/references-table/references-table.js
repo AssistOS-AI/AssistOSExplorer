@@ -74,8 +74,8 @@ export class ReferencesTable {
                 <span class="reference-citation">${citation}</span>
             </div>
             <div class="reference-actions">
-               <button class="edit-reference-btn" data-local-action="editReference ${reference.id}">Edit</button>
-               <button class="delete-reference-btn" data-local-action="deleteReference ${reference.id}">Delete</button>
+               <button class="edit-reference-btn document-icon-action" type="button" data-local-action="editReference ${reference.id}" aria-label="Edit reference" title="Edit reference"><img class="black-icon" src="/explorer/assets/icons/edit.svg" alt=""></button>
+               <button class="delete-reference-btn document-icon-action" type="button" data-local-action="deleteReference ${reference.id}" aria-label="Delete reference" title="Delete reference"><img class="black-icon" src="/explorer/assets/icons/trash-can.svg" alt=""></button>
             </div>
         </div>`;
             torContent.appendChild(referenceItem);

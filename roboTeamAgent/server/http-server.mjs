@@ -495,11 +495,43 @@ async function handleProxyPool({ req, res, pathname, actor, proxyPool, robotStor
     return true;
 }
 
+// Shared email addresses for robots, administrator-only like the proxy pool. Only addresses are
+// stored; a person signs each mailbox in to the robot's Chromium.
+async function handleEmailPool({ req, res, pathname, actor, emailPool, robotStore, runtimeManager }) {
+    if (!pathname.startsWith('/api/email-pool')) return false;
+    if (!emailPool) { sendError(res, 404, 'not found'); return true; }
+    if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+    if (pathname === '/api/email-pool' && req.method === 'GET') {
+        const robots = new Map((await robotStore.list()).map(robot => [robot.id, robot.name]));
+        const snapshot = emailPool.snapshot();
+        for (const email of snapshot.emails) email.robotName = email.robotId ? robots.get(email.robotId) || null : null;
+        sendJson(res, 200, { ok: true, ...snapshot }); return true;
+    }
+    if (pathname === '/api/email-pool/emails' && req.method === 'POST') {
+        sendJson(res, 200, { ok: true, ...emailPool.add((await readJsonBody(req)).addresses) }); return true;
+    }
+    const emailId = pathname.match(/^\/api\/email-pool\/emails\/(eml_[0-9a-f]{12})$/)?.[1];
+    if (emailId && req.method === 'DELETE') {
+        sendJson(res, 200, { ok: true, removed: emailPool.remove(emailId) }); return true;
+    }
+    const releaseId = pathname.match(new RegExp(`^/api/email-pool/assignments/(${ROBOT_ID})$`))?.[1];
+    if (releaseId && req.method === 'DELETE') {
+        // A running workstation or task was told this address; it moves only once the robot is idle.
+        if (runtimeManager.status(releaseId).state !== 'stopped' || runtimeManager.hasUnfinishedTasks(releaseId)) {
+            sendError(res, 409, 'stop the robot workstation and its tasks before releasing its email'); return true;
+        }
+        sendJson(res, 200, { ok: true, released: emailPool.release(releaseId) }); return true;
+    }
+    sendError(res, 404, 'not found');
+    return true;
+}
+
 export function createRoboTeamServer(options) {
     const robotStore = options.robotStore;
     const runtimeManager = options.runtimeManager;
     const roboflow = options.roboflow || null;
     const proxyPool = options.proxyPool || runtimeManager.proxyPool || null;
+    const emailPool = options.emailPool || runtimeManager.emailPool || null;
     const robotModels = options.robotModels || new RobotModels({ robotStore, runtimeManager });
     const skillsets = options.skillsets || runtimeManager.skillsets || new RobotSkillsets({ robotStore,
         workspaceRoot: runtimeManager.workspaceRoot, alaCommand: runtimeManager.alaCommand });
@@ -568,6 +600,7 @@ export function createRoboTeamServer(options) {
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'app.js');
             if (pathname === '/cron-jobs.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'cron-jobs.js');
             if (pathname === '/proxy-pool.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'proxy-pool.js');
+            if (pathname === '/email-pool.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'email-pool.js');
             if (pathname === '/schedule-folder-picker.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'schedule-folder-picker.js');
             if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'skills-dialog.js');
             if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'terminal.js');
@@ -794,6 +827,7 @@ export function createRoboTeamServer(options) {
                 return sendJson(res, 200, { ok: true, logs: await runtimeManager.logs(robot.id, url.searchParams.get('tail')) });
             }
             if (await handleProxyPool({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager })) return;
+            if (await handleEmailPool({ req, res, pathname, actor, emailPool, robotStore, runtimeManager })) return;
             if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath })) return;
             sendError(res, 404, 'not found');
         } catch (error) {

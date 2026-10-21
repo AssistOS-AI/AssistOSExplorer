@@ -7,6 +7,9 @@ import path from 'node:path';
 import tls from 'node:tls';
 import { proxyProvider, publicProviders } from './providers/index.mjs';
 import { proxyAuthorization } from './proxy-relay.mjs';
+import { lookupExitLocale } from './locale-lookup.mjs';
+import { fallbackLocaleProfile } from './locale-profile.mjs';
+import { SecretBox, requireSecretBox } from '../secret-box.mjs';
 
 const ACCOUNT_ID = /^pxa_[0-9a-f]{12}$/u;
 const PROXY_ID = /^pxp_[0-9a-f]{16}$/u;
@@ -76,13 +79,16 @@ export function checkProxyExit(proxy, { timeoutMs = CHECK_TIMEOUT_MS } = {}) {
 // The shared pool of proxies, drawn from any number of provider accounts. Each robot that opens a
 // browser or desktop holds at most one proxy, and keeps it across sessions while it stays usable,
 // so the address websites see is stable. Records live in SQLite beside the other RoboTeam state;
-// credentials never leave this process except as the relay's upstream Proxy-Authorization.
+// provider configuration and proxy credentials are stored sealed by the secret box and never leave
+// this process except as the relay's upstream Proxy-Authorization.
 export class ProxyPool {
-    constructor({ file, fetchImpl = fetch, checkImpl = checkProxyExit, now = () => new Date() } = {}) {
+    constructor({ file, secretBox = null, fetchImpl = fetch, checkImpl = checkProxyExit, localeImpl = lookupExitLocale, now = () => new Date() } = {}) {
         if (!file) throw new Error('proxy pool file is required');
         this.file = file;
+        this.secretBox = secretBox;
         this.fetchImpl = fetchImpl;
         this.checkImpl = checkImpl;
+        this.localeImpl = localeImpl;
         this.now = now;
         this.syncing = new Map();
         this.timer = null;
@@ -99,7 +105,7 @@ export class ProxyPool {
         this.db.exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY, provider TEXT NOT NULL, label TEXT NOT NULL, config TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 2, status TEXT NOT NULL DEFAULT 'enabled',
+                summary TEXT, config_fingerprint TEXT, priority INTEGER NOT NULL DEFAULT 2, status TEXT NOT NULL DEFAULT 'enabled',
                 health TEXT NOT NULL DEFAULT 'pending', last_error TEXT, last_sync_at TEXT, created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS proxies (
                 id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -109,7 +115,44 @@ export class ProxyPool {
                 UNIQUE(account_id, external_id));
             CREATE TABLE IF NOT EXISTS assignments (
                 robot_id TEXT PRIMARY KEY, proxy_id TEXT NOT NULL UNIQUE REFERENCES proxies(id) ON DELETE CASCADE,
-                assigned_at TEXT NOT NULL);`);
+                assigned_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS locale_cache (
+                exit_ip TEXT PRIMARY KEY, timezone TEXT NOT NULL, locale TEXT NOT NULL, lang TEXT NOT NULL,
+                fetched_at TEXT NOT NULL);`);
+        const columns = new Set(this.db.prepare('PRAGMA table_info(accounts)').all().map(column => column.name));
+        for (const column of ['summary', 'config_fingerprint']) {
+            if (!columns.has(column)) this.db.exec(`ALTER TABLE accounts ADD COLUMN ${column} TEXT`);
+        }
+        this._sealPlaintext();
+    }
+
+    // Pools written before encryption kept configuration and credentials in clear text. They are
+    // sealed as soon as a key is available; without one they stay unusable rather than readable.
+    _sealPlaintext() {
+        if (!this.secretBox) return;
+        const box = this.secretBox;
+        this._transaction(() => {
+            for (const account of this.db.prepare('SELECT * FROM accounts').all()) {
+                if (SecretBox.isSealed(account.config)) continue;
+                const config = JSON.parse(account.config);
+                this.db.prepare('UPDATE accounts SET config = ?, summary = ?, config_fingerprint = ? WHERE id = ?')
+                    .run(box.seal(account.config), proxyProvider(account.provider).describeConfig(config),
+                        box.fingerprint(`${account.provider}\0${account.config}`), account.id);
+            }
+            for (const proxy of this.db.prepare('SELECT id, username, password FROM proxies').all()) {
+                if (SecretBox.isSealed(proxy.username) && SecretBox.isSealed(proxy.password)) continue;
+                this.db.prepare('UPDATE proxies SET username = ?, password = ? WHERE id = ?')
+                    .run(this._seal(proxy.username), this._seal(proxy.password), proxy.id);
+            }
+        });
+    }
+
+    _seal(value) {
+        return SecretBox.isSealed(value) ? value : requireSecretBox(this.secretBox).seal(value);
+    }
+
+    _open(value) {
+        return requireSecretBox(this.secretBox).open(value);
     }
 
     close() {
@@ -120,6 +163,7 @@ export class ProxyPool {
 
     _transaction(operation) {
         this.initialize();
+        if (this.db.isTransaction) return operation();
         this.db.exec('BEGIN IMMEDIATE');
         try { const result = operation(); this.db.exec('COMMIT'); return result; }
         catch (error) { this.db.exec('ROLLBACK'); throw error; }
@@ -153,7 +197,7 @@ export class ProxyPool {
             provider: account.provider,
             providerLabel: proxyProvider(account.provider).label,
             label: account.label,
-            summary: proxyProvider(account.provider).describeConfig(JSON.parse(account.config)),
+            summary: account.summary || 'Sealed configuration',
             priority: PRIORITY_NAMES[account.priority] || 'medium',
             status: account.status,
             health: account.health,
@@ -193,12 +237,15 @@ export class ProxyPool {
         const label = String(input.label || '').trim() || provider.label;
         if (label.length > 80) throw httpError(400, 'account label must be at most 80 characters');
         const priority = priorityRank(input.priority, PRIORITY_RANKS.medium);
+        const box = requireSecretBox(this.secretBox);
         const id = `pxa_${crypto.randomBytes(6).toString('hex')}`;
+        const serialized = JSON.stringify(config);
+        const fingerprint = box.fingerprint(`${provider.id}\0${serialized}`);
         this._transaction(() => {
-            const duplicate = this.db.prepare('SELECT id FROM accounts WHERE provider = ? AND config = ?').get(provider.id, JSON.stringify(config));
+            const duplicate = this.db.prepare('SELECT id FROM accounts WHERE config_fingerprint = ?').get(fingerprint);
             if (duplicate) throw httpError(409, 'this proxy account is already in the pool');
-            this.db.prepare('INSERT INTO accounts (id, provider, label, config, priority, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-                .run(id, provider.id, label, JSON.stringify(config), priority, this.now().toISOString());
+            this.db.prepare('INSERT INTO accounts (id, provider, label, config, summary, config_fingerprint, priority, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                .run(id, provider.id, label, box.seal(serialized), provider.describeConfig(config), fingerprint, priority, this.now().toISOString());
         });
         return id;
     }
@@ -232,7 +279,7 @@ export class ProxyPool {
         const syncedAt = this.now().toISOString();
         let entries;
         try {
-            entries = await provider.listProxies(JSON.parse(account.config), { fetchImpl: this.fetchImpl });
+            entries = await provider.listProxies(JSON.parse(this._open(account.config)), { fetchImpl: this.fetchImpl });
         } catch (error) {
             const rejected = error?.credentialsRejected === true;
             if (!this.db.prepare('SELECT 1 FROM accounts WHERE id = ?').get(id)) throw httpError(404, 'proxy account not found');
@@ -253,7 +300,7 @@ export class ProxyPool {
                 const proxy = proxyId(id, entry.externalId);
                 keep.add(proxy);
                 upsert.run(proxy, id, String(entry.externalId), entry.scheme, entry.host, entry.port,
-                    String(entry.username || ''), String(entry.password || ''), entry.country || null, entry.city || null, entry.available === false ? 0 : 1);
+                    this._seal(String(entry.username || '')), this._seal(String(entry.password || '')), entry.country || null, entry.city || null, entry.available === false ? 0 : 1);
             }
             for (const { id: existing } of this.db.prepare('SELECT id FROM proxies WHERE account_id = ?').all(id)) {
                 if (!keep.has(existing)) this.db.prepare('DELETE FROM proxies WHERE id = ?').run(existing);
@@ -315,7 +362,7 @@ export class ProxyPool {
 
     _publicUpstream(row) {
         return { id: row.id, accountId: row.account_id, scheme: row.scheme, host: row.host, port: row.port,
-            username: row.username, password: row.password, country: row.country };
+            username: this._open(row.username), password: this._open(row.password), country: row.country };
     }
 
     release(robotId) {
@@ -341,6 +388,31 @@ export class ProxyPool {
             .run(result.ok ? 'ok' : 'failed', result.ok ? null : String(result.error || 'check failed').slice(0, 300),
                 result.ok ? result.exitIp : null, this.now().toISOString(), id);
         return result.ok ? { ok: true, exitIp: result.exitIp } : { ok: false, error: result.error };
+    }
+
+    // Timezone and language for the address a robot's proxy presents. The exit address is discovered
+    // through the proxy when it is not already known, and a lookup is kept by that address, so a robot
+    // that keeps its proxy does not ask again. A failed discovery or lookup returns the neutral profile
+    // and is not cached, so the next start tries again.
+    async localeFor(proxy) {
+        if (!proxy) return fallbackLocaleProfile();
+        this.initialize();
+        const stored = proxy.id ? this.db.prepare('SELECT exit_ip, country FROM proxies WHERE id = ?').get(proxy.id) : null;
+        let exitIp = proxy.exitIp || stored?.exit_ip || null;
+        // Discovery must not record a check: a failed echo would take the proxy out of rotation, and a
+        // locale is not a health check. A later explicit check still records the address.
+        if (!exitIp && proxy.host) {
+            const discovered = await this.checkImpl(proxy).catch(() => null);
+            exitIp = discovered?.ok ? discovered.exitIp : null;
+        }
+        if (!exitIp) return fallbackLocaleProfile();
+        const cached = this.db.prepare('SELECT timezone, locale, lang FROM locale_cache WHERE exit_ip = ?').get(exitIp);
+        if (cached) return cached;
+        const profile = await this.localeImpl({ ...proxy, country: proxy.country || stored?.country || null }, exitIp);
+        if (profile.unresolved) return fallbackLocaleProfile();
+        this.db.prepare('INSERT INTO locale_cache (exit_ip, timezone, locale, lang, fetched_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(exit_ip) DO NOTHING')
+            .run(exitIp, profile.timezone, profile.locale, profile.lang, this.now().toISOString());
+        return profile;
     }
 }
 

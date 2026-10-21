@@ -125,9 +125,10 @@ test('manifest declares the required report repository alongside ALA', async () 
 test('manifest selects runtime-only GUI images and the persistent tool cache', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
     const constants = await import('../server/constants.mjs');
-    // The only environment the manifest declares is the optional exact coding-agent version pins.
+    // The manifest declares the optional exact coding-agent version pins and the generated vault key.
     assert.deepEqual(manifest.profiles.default.env, [
         'ROBOTEAM_CODEX_VERSION', 'ROBOTEAM_OPENCODE_VERSION', 'ROBOTEAM_PI_VERSION', 'ROBOTEAM_CLAUDE_VERSION',
+        { name: 'ROBOTEAM_VAULT_KEY', generatedSecret: true },
     ]);
 
     assert.equal(constants.DESKTOP_IMAGE, 'docker.io/assistos/roboteam-desktop:runtime');

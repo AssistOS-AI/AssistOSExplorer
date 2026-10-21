@@ -152,6 +152,7 @@ test('emailAgent starts its MCP server and executes verified email settings call
         'email_send_template',
         'email_send_test',
         'email_send_text',
+        'email_text_status',
     ]);
 
     async function callTool(name, args = {}, actor = { kind: 'user', id: 'user:email-admin', roles: ['admin'] }) {
@@ -188,6 +189,8 @@ test('emailAgent starts its MCP server and executes verified email settings call
     const agentActor = { kind: 'agent', id: 'agent:AssistOSExplorer/userPersistoAgent', roles: [] };
     const unavailable = await callTool('email_auth_code_status', {}, agentActor);
     assert.deepEqual(JSON.parse(unavailable.result.content[0].text), { available: false });
+    const textUnavailable = await callTool('email_text_status', {}, agentActor);
+    assert.deepEqual(JSON.parse(textUnavailable.result.content[0].text), { available: false });
     const publicStatus = await callTool('email_auth_code_status');
     assert.equal(publicStatus.result?.isError, true, 'Even an administrator user cannot call the internal availability tool.');
 
@@ -208,6 +211,7 @@ test('emailAgent starts its MCP server and executes verified email settings call
 
     const invalidInputs = [
         ['email_auth_code_status', { unexpected: true }],
+        ['email_text_status', { unexpected: true }],
         ['email_provider_status', { unexpected: true }],
         ['email_config_set', { remove: [42] }],
         ['email_send_text', { to: 'recipient@example.test', subject: 'Subject' }],
@@ -248,9 +252,13 @@ test('emailAgent starts its MCP server and executes verified email settings call
     await callTool('email_config_set', { MAILJET_API_SECRET: 'fixture-only-secret' });
     const ready = await callTool('email_auth_code_status', {}, agentActor);
     assert.deepEqual(JSON.parse(ready.result.content[0].text), { available: true }, 'Readiness exposes only a boolean and never sends mail.');
+    const textReady = await callTool('email_text_status', {}, agentActor);
+    assert.deepEqual(JSON.parse(textReady.result.content[0].text), { available: true });
     await callTool('email_config_set', { EMAIL_AUTH_CODE_TEMPLATE_ID: 'invalid-template' });
     const invalidTemplate = await callTool('email_auth_code_status', {}, agentActor);
     assert.deepEqual(JSON.parse(invalidTemplate.result.content[0].text), { available: false });
+    const textStillReady = await callTool('email_text_status', {}, agentActor);
+    assert.deepEqual(JSON.parse(textStillReady.result.content[0].text), { available: true });
 
     const denied = await callTool('email_config_get', {}, { kind: 'user', id: 'user:email-member', roles: ['user'] });
     assert.equal(denied.error, undefined, JSON.stringify(denied));

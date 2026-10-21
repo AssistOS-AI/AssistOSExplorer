@@ -93,10 +93,12 @@ may trigger tracked GitHub Actions workflows with `gh` and may use direct SSH,
 Ploinky CLI, container, registry, Cloudflare, DNS, or other remote operations
 needed to complete that selected task.
 
-- Supported tracked workflows include `deploy-explorer-qa.yml`,
-  `destroy-explorer-qa.yml`, and `verify-retired-source-absence.yml`. Inspect the
-  dispatched revision, inputs, exact target, ownership guards, secret
-  prerequisites, and branch/fallback behavior before invocation.
+- Supported tracked workflows include `deploy-explorer-qa.yml` (no inputs; it
+  selects a fresh install, an in-place update or an automatic preserving
+  redeploy itself), `rollback-explorer-qa.yml` (one `plan` or `execute`
+  action), `destroy-explorer-qa.yml`, and `verify-retired-source-absence.yml`.
+  Inspect the dispatched revision, inputs, exact target, ownership guards,
+  secret prerequisites, and branch/fallback behavior before invocation.
 - This repository no longer deploys `skills.axiologic.dev`. Its
   `deploy-skills-explorer.yml` and `destroy-explorer.yml` workflows were removed
   on 2026-10-20, when the host was reinstalled.

@@ -17,12 +17,14 @@ import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE
 import { prepareRobotShell } from './robot-shell.mjs';
 import { prepareDesktopLaunchers } from './desktop-launchers.mjs';
 import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
+import { emailInstructions } from './email-pool.mjs';
 import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
 import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
 import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
+import { NFT_COMMAND, NSENTER_COMMAND, writeContainerFirewallRules } from './proxy-pool/container-firewall.mjs';
 
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
@@ -152,7 +154,11 @@ function mappedPort(output) {
     return Number(match[1]);
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, shellTools, proxy = null, workspaceRoot = requireWorkspaceRoot(), homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
+function chromiumLanguageFlag(lang) {
+    return lang && lang !== 'en-US' ? ` --lang=${lang}` : '';
+}
+
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, workspaceRoot = requireWorkspaceRoot(), homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     if (proxy && (!Number.isInteger(proxy.relayPort) || proxy.relayPort < 1 || proxy.relayPort > 65535 || !path.isAbsolute(String(proxy.policyFile || '')))) {
@@ -161,12 +167,15 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
     const robotRoot = path.join(path.resolve(dataDir), 'robots', robot.id);
     const containerName = `roboteam-${mode}-${robot.id}`;
     const subfolder = robotSessionUrl(publicBasePath, robot.id);
+    // A proxied Browser container is only created here; its firewall is loaded before it starts.
+    const firewalled = Boolean(proxy) && mode === 'browser';
     return {
         containerName,
         image: images[mode],
         subfolder,
+        firewalled,
         args: [
-            'run', '-d', '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777',
+            ...(firewalled ? ['create'] : ['run', '-d']), '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777',
             // With a proxy, the container's loopback proxy port reaches the robot's relay on the outer
             // loopback, and nothing else of the outer loopback.
             '--network', proxy ? `pasta:-T,${CONTAINER_PROXY_PORT}:${proxy.relayPort}` : 'pasta',
@@ -175,10 +184,11 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             '--label', `io.assistos.roboteam.mode=${mode}`,
             '-p', '127.0.0.1::3000', '-p', '127.0.0.1::8100',
             '-e', 'PUID=0', '-e', 'PGID=0', '-e', `TZ=${timezone}`,
+            ...(locale ? ['-e', `LC_ALL=${locale.locale}`, '-e', `LANG=${locale.locale}`, '-e', `LANGUAGE=${locale.lang}`] : []),
             '-e', `SUBFOLDER=${subfolder}`, '-e', `TITLE=${robot.name}`,
             '-e', `ROBOTEAM_WORKING_DIRECTORY=${cwd}`,
             '-e', 'START_DOCKER=false', '-e', 'DISABLE_IPV6=true', '-e', 'PELORUS=true',
-            ...(mode === 'browser' ? ['-e', 'CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility'] : []),
+            ...(mode === 'browser' ? ['-e', `CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility${chromiumLanguageFlag(locale?.lang)}`] : []),
             ...(shellTools ? [
                 '-e', `PATH=${shellTools.binPath}:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
                 '-e', 'CODEX_HOME=/config/.codex',
@@ -212,6 +222,8 @@ export class RuntimeManager {
         this.dataDir = path.resolve(options.dataDir || DATA_DIR);
         this.publicBasePath = normalizeBasePath(options.publicBasePath);
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
+        this.nsenterCommand = options.nsenterCommand || NSENTER_COMMAND;
+        this.nftCommand = options.nftCommand || NFT_COMMAND;
         this.alaCommand = resolveAlaCommand(options.alaCommand);
         this.workspaceRoot = path.resolve(options.workspaceRoot ?? requireWorkspaceRoot());
         this.hostWorkspaceRoot = options.hostWorkspaceRoot ? path.resolve(options.hostWorkspaceRoot) : null;
@@ -222,6 +234,7 @@ export class RuntimeManager {
         };
         this.timezone = options.timezone || TIMEZONE;
         this.proxyPool = options.proxyPool || null;
+        this.emailPool = options.emailPool || null;
         this.proxyPolicyDir = options.proxyPolicyDir || path.join(this.dataDir, 'proxy-pool');
         this.createRelay = options.createRelay || ((upstream) => new ProxyRelay(upstream, {
             log: (line) => console.warn(`[roboTeamAgent] proxy relay: ${line}`),
@@ -413,10 +426,14 @@ export class RuntimeManager {
             const codingAgentsKey = codingAgents.join(',');
             // Null while the shared pool is inactive; throws while it is active and has nothing free.
             const upstream = this.proxyPool ? this.proxyPool.acquire(robot.id) : null;
+            // A person opening the workstation signs the robot's mailbox in, so the robot holds its address from here on.
+            this.emailPool?.acquire(robot.id);
             const proxyKey = upstream ? `${upstream.id}@${upstream.host}:${upstream.port}` : '';
+            const locale = upstream && this.proxyPool.localeFor ? await this.proxyPool.localeFor(upstream) : null;
+            const localeKey = locale ? `${locale.timezone}|${locale.locale}` : '';
             if (existing) {
                 if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
-                if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey && existing.proxyKey === proxyKey) return existing;
+                if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey && existing.proxyKey === proxyKey && existing.localeKey === localeKey) return existing;
                 const activeTask = this.activeTaskStatus(robot.id);
                 const activeStates = ['queued', 'starting', 'running', 'pausing'];
                 if (activeTask && activeTask.taskId !== options.taskId && activeStates.includes(activeTask.state)) {
@@ -435,13 +452,15 @@ export class RuntimeManager {
             await prepareRobotShell(robotHome, { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
             if (mode === 'desktop') await prepareDesktopLaunchers(robotHome);
             const policyFile = upstream ? await writeChromiumProxyPolicy(this.proxyPolicyDir) : null;
+            const firewallFile = upstream && mode === 'browser' ? await writeContainerFirewallRules(this.proxyPolicyDir) : null;
             const relay = upstream ? this.createRelay(upstream) : null;
             const proxy = relay ? { relayPort: await relay.listen(), policyFile } : null;
-            const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools, proxy });
-            const session = { robotId: robot.id, mode, cwd, codingAgentsKey, proxyKey, relay, proxyId: upstream?.id || null, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
+            const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: locale?.timezone || this.timezone, locale, cwd, toolsPath: tools.path, shellTools, proxy });
+            const session = { robotId: robot.id, mode, cwd, codingAgentsKey, proxyKey, localeKey, relay, proxyId: upstream?.id || null, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
             this.sessions.set(robot.id, session);
             try {
                 await this._podman(plan.args, 10 * 60 * 1000);
+                if (plan.firewalled) await this._startFirewalled(plan.containerName, firewallFile);
                 session.sessionPort = mappedPort((await this._podman(['port', plan.containerName, '3000/tcp'])).stdout);
                 session.mcpPort = mappedPort((await this._podman(['port', plan.containerName, '8100/tcp'])).stdout);
                 await Promise.all([
@@ -457,6 +476,16 @@ export class RuntimeManager {
                 throw error;
             }
         });
+    }
+
+    // Initializing the container creates its network namespace without running anything in it, so
+    // the rules are in place before the container's first packet. A failure removes the container.
+    async _startFirewalled(containerName, rulesFile) {
+        await this._podman(['init', containerName]);
+        const namespace = (await this._podman(['inspect', '--format', '{{.NetworkSettings.SandboxKey}}', containerName])).stdout.trim();
+        if (!path.isAbsolute(namespace)) throw new Error('could not resolve the container network namespace');
+        await this.execFileImpl(this.nsenterCommand, [`--net=${namespace}`, this.nftCommand, '-f', rulesFile], { timeout: 30000, maxBuffer: 1024 * 1024, env: process.env });
+        await this._podman(['start', containerName]);
     }
 
     async _closeRelay(session) {
@@ -649,13 +678,16 @@ export class RuntimeManager {
             }
             delete childEnv.ROBOTEAM_INTERNAL_TOKEN;
             delete childEnv.ROBOTEAM_TASK_SKILL_SELECTION;
+            // Only Browser and Desktop tasks work in the robot's Chromium, where its mailbox is signed in.
+            const emailAddress = GUI_MODES.has(task.type) ? this.emailPool?.acquire(robot.id) : null;
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
                 '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
             child.stdin?.on('error', () => {});
             // The task prompt is the first control record. The copilot engine adds
             // the caller's system instructions when it opens the native session.
-            const systemPrompt = [task.type === 'desktop' ? DESKTOP_TASK_INSTRUCTIONS : '', task.request.systemPrompt].filter(Boolean).join('\n\n');
+            const systemPrompt = [task.type === 'desktop' ? DESKTOP_TASK_INSTRUCTIONS : '', emailAddress ? emailInstructions(emailAddress) : '',
+                task.request.systemPrompt].filter(Boolean).join('\n\n');
             child.stdin?.write(`${JSON.stringify({ type: 'prompt', prompt: task.request.task,
                 ...(systemPrompt ? { systemPrompt } : {}) })}\n`);
             const resultDecoder = new StringDecoder('utf8');
@@ -895,6 +927,7 @@ export class RuntimeManager {
         catch (error) { this.deletedRobots.delete(robotId); throw error; }
         await this.soulGateway.remove(path.join(this.dataDir, 'robots', robotId, 'home'));
         this.proxyPool?.release(robotId);
+        this.emailPool?.release(robotId);
         // Server-only model-list cache for this robot (never inside the robot's mounted folder).
         if (/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) {
             await fs.rm(path.join(this.dataDir, 'server-state', 'model-catalog', robotId), { recursive: true, force: true }).catch(() => {});

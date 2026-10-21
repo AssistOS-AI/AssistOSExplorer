@@ -113,10 +113,6 @@ export class PrintDocumentModal {
         document.body.removeChild(tempDiv);
     }
 
-    async openSettingsPage(eventTarget) {
-        await this.closeModal();
-        await assistOS.UI.changeToDynamicPage("settings-page", "settings-page", {subpage: "settingsTab"});
-    }
 
     async previewDocument() {
         this.collectFormData();

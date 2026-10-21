@@ -6,6 +6,7 @@ import test from 'node:test';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 import { ProxyPool } from '../server/proxy-pool/proxy-pool.mjs';
+import { SecretBox } from '../server/secret-box.mjs';
 
 async function startFixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-http-'));
@@ -15,7 +16,7 @@ async function startFixture(t) {
     process.env.PLOINKY_WORKSPACE_ROOT = workspaceRoot;
     const robotStore = new RobotStore({ dataDir: path.join(root, 'private') });
     await robotStore.initialize();
-    const proxyPool = new ProxyPool({ file: path.join(root, 'proxy-pool', 'pool.sqlite'),
+    const proxyPool = new ProxyPool({ file: path.join(root, 'proxy-pool', 'pool.sqlite'), secretBox: new SecretBox('test-vault-key-0123456789'),
         checkImpl: async () => ({ ok: true, exitIp: '203.0.113.5' }) });
     const runs = new Map();
     const runtimeManager = { workspaceRoot, status: (id) => runs.get(id) || { state: 'stopped' }, activePort: () => null, hasUnfinishedTasks: () => false };

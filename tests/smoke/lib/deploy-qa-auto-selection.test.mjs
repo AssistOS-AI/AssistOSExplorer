@@ -9,8 +9,50 @@ import test from 'node:test';
 const workflow = fs.readFileSync(new URL('../../../.github/workflows/deploy-explorer-qa.yml', import.meta.url), 'utf8');
 const locked = workflow.match(/<<'UPDATE' \|\| status=\$\?\n([\s\S]*?)\n {10}UPDATE\n/)[1].replace(/^ {10}/gm, '');
 const dispatch = workflow.match(/          if \[ "\$status" -eq 42 \]; then\n([\s\S]*?)\n          fi\n/)[0].replace(/^ {10}/gm, '');
+const COMMIT = 'a'.repeat(40);
 
-function runLocked(t, { workspace = 'absent', labelled = false, named = false, engineFailure = false, updateFailure = false, operation } = {}) {
+const SELECTION = mode => JSON.stringify({ result: 'selected', mode, mutations: false, expectedCommit: COMMIT, previousCommit: 'b'.repeat(40),
+    boxImage: { reference: 'docker.io/assistos/ploinky-box:latest', current: 'c'.repeat(64), remote: 'c'.repeat(64) },
+    reasons: mode === 'redeploy' ? [{ source: '.runtime/ploinky', kind: 'commit', from: 'd'.repeat(40), to: 'e'.repeat(40) }] : [] });
+
+// The stub stands in for the updater helper. Every other node invocation (the mode parser) runs the real node.
+const SELECT = {
+    'in-place': { output: SELECTION('in-place'), status: 0 },
+    redeploy: { output: SELECTION('redeploy'), status: 0 },
+    'node exit 42': { output: '', status: 42 },
+    'node exit 43': { output: '', status: 43 },
+    'node exit 1': { output: '{"result":"failed","status":"rejected","code":"QA_UPDATE_NOT_FAST_FORWARD"}', status: 1 },
+    'node exit 19': { output: '', status: 19 },
+    garbage: { output: 'not json', status: 0 },
+    'unknown mode': { output: SELECTION('fresh'), status: 0 },
+    'redeploy-looking text': { output: '"mode":"redeploy"', status: 0 },
+    'two lines': { output: `${SELECTION('redeploy')}\n${SELECTION('redeploy')}`, status: 0 },
+    'failed result': { output: JSON.stringify({ result: 'failed', mode: 'redeploy' }), status: 0 },
+    'empty output': { output: '', status: 0 },
+};
+
+const BACKUP = 'redeploy-AbCd1234';
+const PREDECESSOR = 'd'.repeat(64);
+// The stub stands in for `qa-backups.mjs route`; the default answer is the steady state.
+const ROUTE = {
+    select: { output: '{"result":"routed","route":"select"}', status: 0 },
+    resume: { output: JSON.stringify({ result: 'routed', route: 'resume', backup: BACKUP, predecessorId: PREDECESSOR, engine: 'podman' }), status: 0 },
+    refused: { output: '{"result":"refused","code":"QA_EXACT_BOX_ABSENT_NOT_RESUMABLE","reason":"newest-complete"}', status: 1 },
+    'node exit 42': { output: '', status: 42 },
+    'node exit 43': { output: '', status: 43 },
+    'node exit 44': { output: '', status: 44 },
+    'node exit 75': { output: '', status: 75 },
+    'exit 0 with a resume-looking refusal': { output: '{"result":"refused","route":"resume"}', status: 0 },
+    garbage: { output: 'not json', status: 0 },
+    'unknown route': { output: '{"result":"routed","route":"fresh"}', status: 0 },
+    'routed without a route': { output: '{"result":"routed"}', status: 0 },
+    'resume-looking text': { output: '"route":"resume"', status: 0 },
+    'two lines': { output: '{"result":"routed","route":"select"}\n{"result":"routed","route":"resume"}', status: 0 },
+    'empty output': { output: '', status: 0 },
+};
+
+function runLocked(t, { workspace = 'absent', labelled = false, named = false, engineFailure = false, select = 'in-place', route = 'select',
+    execute = 0, expected = COMMIT, drop = false } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-auto-selection-'));
     const updateDir = `/tmp/explorer-qa-update.${crypto.randomBytes(4).toString('hex')}`;
     fs.mkdirSync(updateDir, { mode: 0o700 });
@@ -28,20 +70,60 @@ function runLocked(t, { workspace = 'absent', labelled = false, named = false, e
     for (const name of ['podman', 'docker']) {
         fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $*" >> '${marker}'\nif [ "$1 $2" = 'container ls' ]; then\n${engineFailure ? 'exit 125' : labelled ? 'echo retained-box' : ':'}\nexit 0\nfi\n[ "$1 $2" = 'container inspect' ] && exit ${named ? 0 : 1}\nexit 99\n`, { mode: 0o755 });
     }
-    fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh\n[ "$1" = '--version' ] && { echo v24.19.0; exit 0; }\necho "update $*" >> '${marker}'\nexit ${updateFailure || ['symlink', 'file'].includes(workspace) ? 19 : 0}\n`, { mode: 0o755 });
+    const selected = SELECT[select];
+    const selectionFile = path.join(root, 'selection');
+    fs.writeFileSync(selectionFile, selected.output);
+    const routed = ROUTE[route];
+    const routeFile = path.join(root, 'route');
+    const routeMarker = path.join(root, 'route-calls');
+    fs.writeFileSync(routeFile, routed.output);
+    fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh
+[ "$1" = '--version' ] && { echo v24.19.0; exit 0; }
+case "$*" in
+  *qa-backups.mjs\\ route*)
+    echo "route $*" >> '${routeMarker}'
+    cat '${routeFile}'
+    exit ${routed.status} ;;
+  *update-explorer-qa.mjs\\ select*)
+    echo "update $*" >> '${marker}'
+    cat '${selectionFile}'
+    exit ${selected.status} ;;
+  *update-explorer-qa.mjs\\ execute*)
+    echo "update $*" >> '${marker}'
+    echo '{"result":"updated"}'
+    exit ${execute} ;;
+esac
+exec '${process.execPath}' "$@"
+`, { mode: 0o755 });
     const script = `id() { echo admin; }\n${locked.replaceAll('/home/admin/explorerQaWorkspace', target).replace(/node_home="[^"]+"/, `node_home='${root}'`)}`;
-    const result = spawnSync('bash', ['-s', '--', updateDir, ...(operation ? [operation] : [])], {
-        input: script, encoding: 'utf8', timeout: 10000,
+    const result = spawnSync('bash', ['-s', '--', updateDir, ...(drop ? [] : [expected])], {
+        input: script, encoding: 'utf8', timeout: 20000,
         env: { PATH: `${bin}:${process.env.PATH}`, HOME: '/home/admin' },
     });
-    return { result, calls: fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '' };
+    return { result, calls: fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '',
+        routes: fs.existsSync(routeMarker) ? fs.readFileSync(routeMarker, 'utf8') : '' };
 }
 
-test('locked deployment selects update with no operator input for an existing installation', t => {
+test('locked deployment runs select and then execute with the pinned commit and no operator input', t => {
     const { result, calls } = runLocked(t, { workspace: 'directory' });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(calls, /update .*update-explorer-qa.mjs execute --receipt .* --lock-held/);
+    const lines = calls.trim().split('\n');
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], new RegExp(`update-explorer-qa.mjs select --expected-commit ${COMMIT} --lock-held$`));
+    assert.match(lines[1], new RegExp(`update-explorer-qa.mjs execute --receipt \\S+/update.json --expected-commit ${COMMIT} --lock-held$`));
     assert.doesNotMatch(calls, /podman|docker/);
+    assert.match(result.stdout, /^\[deploy-qa\] Deployment route: \{"result":"routed","route":"select"\}$/m);
+    assert.ok(result.stdout.indexOf('Deployment route:') < result.stdout.indexOf('Deployment selection:'), 'the route is decided before the selection');
+    assert.match(result.stdout, /^\[deploy-qa\] Deployment selection: \{"result":"selected","mode":"in-place"/m);
+});
+
+test('locked deployment hands a selected redeploy to Reconcile with exit 43 and never runs execute', t => {
+    const { result, calls } = runLocked(t, { workspace: 'directory', select: 'redeploy' });
+    assert.equal(result.status, 43, result.stderr);
+    assert.match(result.stdout, /Deployment selection: \{"result":"selected","mode":"redeploy".*"kind":"commit"/);
+    assert.match(result.stdout, /Preserving redeploy selected automatically; the in-place updater was not run\./);
+    assert.match(calls, /select --expected-commit/);
+    assert.doesNotMatch(calls, /execute|podman|docker/);
 });
 
 test('locked deployment selects first installation only after both engines prove absence', t => {
@@ -55,98 +137,147 @@ test('locked deployment selects first installation only after both engines prove
 });
 
 for (const [name, options] of Object.entries({
-    'failed update': { workspace: 'directory', updateFailure: true },
     'failed engine probe': { engineFailure: true },
     'labelled orphan Box': { labelled: true },
     'named orphan Box': { named: true },
-    'dangling workspace symlink': { workspace: 'symlink' },
-    'ordinary workspace file': { workspace: 'file' },
 })) {
     test(`locked deployment never selects first installation after ${name}`, t => {
         const { result, calls } = runLocked(t, options);
         assert.notEqual(result.status, 0);
         assert.notEqual(result.status, 42);
-        if (options.workspace) assert.match(calls, /update .* --lock-held/);
-        else assert.doesNotMatch(calls, /update/);
+        assert.notEqual(result.status, 43);
+        assert.doesNotMatch(calls, /update/);
     });
 }
 
-for (const status of [0, 42, 19, 75]) {
-    test(`workflow result handler maps status ${status} without failure fallthrough`, t => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-result-dispatch-'));
-        t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-        const output = path.join(root, 'output');
-        fs.writeFileSync(output, '');
-        const result = spawnSync('bash', ['-c', `set -euo pipefail\nstatus=${status}\n${dispatch}`], {
-            encoding: 'utf8', timeout: 5000, env: { ...process.env, GITHUB_OUTPUT: output },
-        });
-        assert.equal(result.status, [0, 42].includes(status) ? 0 : status, result.stderr);
-        assert.equal(fs.readFileSync(output, 'utf8'), status === 0 ? 'updated=true\n' : status === 42 ? 'updated=false\n' : '');
-        if ([19, 75].includes(status)) {
-            assert.match(result.stdout, /will not recreate or destroy/);
-            assert.doesNotMatch(result.stdout, /proceeding to first installation/);
-        }
+for (const workspace of ['symlink', 'file']) {
+    test(`locked deployment refuses a ${workspace} workspace before running the updater`, t => {
+        const { result, calls } = runLocked(t, { workspace });
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stderr, /not a real directory/);
+        assert.equal(calls, '');
     });
 }
 
-for (const operation of [undefined, 'update']) {
-    test(`locked deployment keeps the update mapping for operation ${operation ?? '(none)'}`, t => {
-        const existing = runLocked(t, { workspace: 'directory', operation });
-        assert.equal(existing.result.status, 0, existing.result.stderr);
-        assert.match(existing.calls, /update .*update-explorer-qa.mjs execute/);
-        const absent = runLocked(t, { operation });
-        assert.equal(absent.result.status, 42, absent.result.stderr);
-        assert.doesNotMatch(absent.calls, /update/);
-        const failed = runLocked(t, { workspace: 'directory', updateFailure: true, operation });
-        assert.equal(failed.result.status, 19);
-    });
-}
+// AC5: the route is decided before the selection, and only a parsed `resume` answer exits 44.
+test('a resume route exits 44 with the route in the log and never runs select or execute', t => {
+    const { result, calls, routes } = runLocked(t, { workspace: 'directory', route: 'resume' });
+    assert.equal(result.status, 44, result.stderr);
+    assert.match(result.stdout, new RegExp(`^\\[deploy-qa\\] Deployment route: \\{"result":"routed","route":"resume","backup":"${BACKUP}","predecessorId":"${PREDECESSOR}","engine":"podman"\\}$`, 'm'));
+    assert.match(result.stdout, /Interrupted preserving redeploy found/);
+    assert.doesNotMatch(result.stdout, /Deployment selection:/);
+    assert.equal(calls, '', 'neither select nor execute ran');
+    assert.match(routes, /qa-backups\.mjs route --lock-held$/m);
+    assert.equal(routes.trim().split('\n').length, 1);
+});
 
-for (const operation of ['redeploy-rehearsal', 'redeploy']) {
-    test(`locked ${operation} hands an existing workspace to Reconcile without running the updater`, t => {
-        const { result, calls } = runLocked(t, { workspace: 'directory', operation });
-        assert.equal(result.status, 43, result.stderr);
-        assert.match(result.stdout, new RegExp(`Preserving redeploy selected \\(${operation}\\); the in-place updater was not run\\.`));
-        assert.doesNotMatch(calls, /update|podman|docker/);
-    });
-
-    for (const workspace of ['absent', 'file', 'symlink']) {
-        test(`locked ${operation} refuses a ${workspace} workspace and never selects first installation`, t => {
-            const { result, calls } = runLocked(t, { workspace, operation });
-            assert.equal(result.status, 1, result.stderr);
-            assert.match(result.stderr, /redeploy requires an existing QA workspace directory/);
-            assert.doesNotMatch(calls, /update|podman|docker/);
-        });
-    }
-}
-
-test('locked deployment refuses an unsupported operation before touching the host', t => {
-    const { result, calls } = runLocked(t, { workspace: 'directory', operation: 'destroy' });
-    assert.equal(result.status, 1);
+test('a refused route exits 1, surfaces the refusal and never runs select', t => {
+    const { result, calls } = runLocked(t, { workspace: 'directory', route: 'refused' });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /"code":"QA_EXACT_BOX_ABSENT_NOT_RESUMABLE"/);
+    assert.doesNotMatch(result.stdout, /Deployment route:|Deployment selection:/);
     assert.equal(calls, '');
 });
 
-for (const [status, operation, output, failed] of [
-    [43, 'redeploy', 'updated=false\noperation=redeploy\n', false],
-    [43, 'redeploy-rehearsal', 'updated=false\noperation=redeploy-rehearsal\n', false],
-    [43, 'update', '', true],
-    [43, undefined, '', true],
-    [19, 'redeploy', '', true],
-    [75, 'redeploy-rehearsal', '', true],
-    [42, 'redeploy', 'updated=false\n', false],
+test('a select route continues to the unchanged selection', t => {
+    const { result, calls } = runLocked(t, { workspace: 'directory', route: 'select', select: 'redeploy' });
+    assert.equal(result.status, 43, result.stderr);
+    assert.match(calls, /select --expected-commit/);
+    assert.doesNotMatch(calls, /execute/);
+});
+
+for (const route of ['node exit 42', 'node exit 43', 'node exit 44', 'node exit 75', 'exit 0 with a resume-looking refusal', 'garbage', 'unknown route',
+    'routed without a route', 'resume-looking text', 'two lines', 'empty output']) {
+    test(`a failing route (${route}) exits 1 and never reaches select, 42, 43 or 44`, t => {
+        const { result, calls } = runLocked(t, { workspace: 'directory', route });
+        assert.equal(result.status, 1, result.stderr);
+        assert.equal(calls, '', 'select and execute never ran');
+        assert.doesNotMatch(result.stdout, /Interrupted preserving redeploy|Preserving redeploy selected|Deployment selection:/);
+    });
+}
+
+test('a route is not asked for when the workspace is absent or unsafe', t => {
+    for (const workspace of ['absent', 'symlink', 'file']) {
+        const { routes } = runLocked(t, { workspace });
+        assert.equal(routes, '', workspace);
+    }
+});
+
+// AC7: no updater failure can fall through as 42 (fresh install) or 43 (redeploy).
+for (const select of ['node exit 42', 'node exit 43', 'node exit 1', 'node exit 19', 'garbage', 'unknown mode',
+    'redeploy-looking text', 'two lines', 'failed result', 'empty output']) {
+    test(`a failing select (${select}) exits 1 and never reaches execute, 42 or 43`, t => {
+        const { result, calls } = runLocked(t, { workspace: 'directory', select });
+        assert.equal(result.status, 1, result.stderr);
+        assert.doesNotMatch(calls, /execute/);
+        assert.doesNotMatch(result.stdout, /Preserving redeploy selected/);
+    });
+}
+
+test('a rejected select surfaces the updater answer in the log, so the failure is diagnosable', t => {
+    const { result } = runLocked(t, { workspace: 'directory', select: 'node exit 1' });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /"code":"QA_UPDATE_NOT_FAST_FORWARD"/);
+    assert.doesNotMatch(result.stdout, /Deployment selection:/);
+});
+
+for (const execute of [42, 43, 19, 1]) {
+    test(`a failing execute (node exit ${execute}) exits 1`, t => {
+        const { result, calls } = runLocked(t, { workspace: 'directory', execute });
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(calls, /select --expected-commit[\s\S]*execute --receipt/);
+    });
+}
+
+for (const [name, options] of Object.entries({
+    'a missing commit': { drop: true },
+    'a 39 character commit': { expected: 'a'.repeat(39) },
+    'an uppercase commit': { expected: 'A'.repeat(40) },
+    'a commit with a trailing option': { expected: `${COMMIT} --lock-held` },
+})) {
+    test(`locked deployment refuses ${name} before touching the host`, t => {
+        const { result, calls } = runLocked(t, { workspace: 'directory', ...options });
+        assert.equal(result.status, 1);
+        assert.equal(calls, '');
+    });
+}
+
+test('the locked script produces 42, 43 and 44 only from its own proofs and carries no operation argument', () => {
+    assert.equal(locked.match(/exit 42/g).length, 1);
+    assert.equal(locked.match(/exit 43/g).length, 1);
+    assert.equal(locked.match(/exit 44/g).length, 1);
+    assert.match(locked, /resume\)\n[^\n]*\n\s+exit 44\n\s+;;/, 'exit 44 sits in the arm of a parsed resume route');
+    assert.match(locked, /route="\$\(node "\$update_dir\/qa-backups\.mjs" route --lock-held\)" \|\| \{ printf '%s\\n' "\$route"; exit 1; \}/);
+    assert.ok(locked.indexOf('qa-backups.mjs" route') < locked.indexOf('update-explorer-qa.mjs" select'), 'the route runs before the selection');
+    assert.match(locked, /redeploy\)\n[\s\S]*?exit 43\n\s+;;/, 'exit 43 sits in the arm of a parsed redeploy selection');
+    assert.match(locked, /selection="\$\(node "\$update_dir\/update-explorer-qa\.mjs" select --expected-commit "\$expected_commit" --lock-held\)" \|\| \{ printf '%s\\n' "\$selection"; exit 1; \}/);
+    assert.match(locked, /\n\s*node "\$update_dir\/update-explorer-qa\.mjs" execute --receipt "\$update_dir\/update\.json" --expected-commit "\$expected_commit" --lock-held \|\| exit 1(?:\n|$)/);
+    assert.doesNotMatch(locked, /operation|OPERATION|rehears/);
+});
+
+for (const [status, output, failed] of [
+    [0, 'updated=true\n', false],
+    [42, 'updated=false\n', false],
+    [43, 'updated=false\noperation=redeploy\n', false],
+    [44, 'updated=false\noperation=resume\n', false],
+    [19, '', true],
+    [75, '', true],
+    [1, '', true],
 ]) {
-    test(`result handler maps status ${status} for operation ${operation ?? '(none)'} without a failure fallthrough`, t => {
+    test(`workflow result handler maps status ${status} without failure fallthrough`, t => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-result-dispatch-'));
         t.after(() => fs.rmSync(root, { recursive: true, force: true }));
         const outputFile = path.join(root, 'output');
         fs.writeFileSync(outputFile, '');
+        // No OPERATION variable exists: status 43 selects the redeploy unconditionally.
         const env = { ...process.env, GITHUB_OUTPUT: outputFile };
         delete env.OPERATION;
-        if (operation) env.OPERATION = operation;
-        const result = spawnSync('bash', ['-c', `set -euo pipefail\nstatus=${status}\n${dispatch}`],
-            { encoding: 'utf8', timeout: 5000, env });
-        assert.equal(result.status === 0, !failed, result.stderr);
+        const result = spawnSync('bash', ['-c', `set -euo pipefail\nstatus=${status}\n${dispatch}`], { encoding: 'utf8', timeout: 5000, env });
+        assert.equal(result.status, failed ? status : 0, result.stderr);
         assert.equal(fs.readFileSync(outputFile, 'utf8'), output);
-        if (failed) assert.doesNotMatch(result.stdout, /proceeding to/i);
+        if (failed) {
+            assert.match(result.stdout, /will not recreate or destroy/);
+            assert.doesNotMatch(result.stdout, /proceeding to/i);
+        }
     });
 }

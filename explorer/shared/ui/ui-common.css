@@ -198,14 +198,28 @@
     color: #CFD1D6;
 }
 
-.theme-dark .general-button.secondary:hover:not(:disabled),
-.theme-dark .gray-button:hover:not(:disabled) {
+.theme-dark .general-button.secondary:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]),
+.theme-dark .gray-button:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]) {
     background-color: #33353B;
     border-color: #4C4F56;
     box-shadow: 0 8px 16px rgba(2, 6, 23, 0.45);
 }
 
-.general-button:hover:not(:disabled) {
+/* Keep disabled action labels legible in both themes without fading the text. */
+:root :is(.general-button, .gray-button, .general-button-reversed-colors):is(.disabled, :disabled, [aria-disabled="true"]) {
+    color: var(--text-soft);
+    -webkit-text-fill-color: currentColor;
+    background: var(--bg);
+    border-color: var(--border-strong);
+    opacity: 1;
+    box-shadow: none;
+    transform: none;
+    pointer-events: none;
+    cursor: not-allowed;
+}
+
+
+.general-button:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]) {
     transform: translateY(-1px);
     box-shadow: 0 10px 18px rgba(var(--accent-rgb), 0.28);
 }
@@ -214,14 +228,14 @@
     transform: translateY(1px);
 }
 
-.general-button.secondary:hover:not(:disabled) {
+.general-button.secondary:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]) {
     background-color: var(--border);
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
 }
 
 
 
-.gray-button:hover:not(:disabled) {
+.gray-button:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]) {
     background-color: var(--border);
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
 }
@@ -955,4 +969,61 @@ dialog.modal::backdrop {
     --gray-button-text: #454545;
     --gray-button-border: #CCCCCC;
     --backlog-status-approved-glow: rgba(59, 130, 246, 0.2);
+}
+
+/* Shared compact actions for chapter and document content controls. */
+.chapter-toolbar .icon-container,
+.document-icon-action {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    flex: 0 0 30px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 8%, transparent);
+    transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+}
+
+.chapter-toolbar .icon-container:hover,
+.document-icon-action:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+    background: var(--option-hover);
+    color: var(--accent);
+    box-shadow: 0 8px 18px rgba(var(--accent-rgb), 0.12);
+}
+
+.chapter-toolbar .icon-container:active,
+.document-icon-action:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(var(--accent-rgb), 0.14);
+}
+
+.chapter-toolbar .icon-container img,
+.document-icon-action img {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+    opacity: 0.9;
+    display: block;
+    margin: 0;
+}
+
+
+.document-icon-action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.theme-dark .chapter-toolbar .icon-container img,
+.theme-dark .document-icon-action img {
+    filter: brightness(0) invert(1) opacity(0.92);
 }

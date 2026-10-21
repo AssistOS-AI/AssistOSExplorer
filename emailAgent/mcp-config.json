@@ -23,6 +23,28 @@
       }
     },
     {
+      "name": "email_text_status",
+      "title": "Check text email availability",
+      "description": "Agent-to-agent: returns only whether text email is configured, without sending mail or exposing provider settings.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 5000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "tags": [
+        "internal"
+      ],
+      "env": {
+        "TOOL_NAME": "email_text_status"
+      }
+    },
+    {
       "name": "email_config_get",
       "title": "Get email configuration",
       "description": "Returns the masked EmailAgent Mailjet configuration.",

@@ -47,7 +47,11 @@
         "ROBOTEAM_CODEX_VERSION",
         "ROBOTEAM_OPENCODE_VERSION",
         "ROBOTEAM_PI_VERSION",
-        "ROBOTEAM_CLAUDE_VERSION"
+        "ROBOTEAM_CLAUDE_VERSION",
+        {
+          "name": "ROBOTEAM_VAULT_KEY",
+          "generatedSecret": true
+        }
       ]
     }
   },

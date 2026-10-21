@@ -1,3 +1,4 @@
+import { getParagraphScenes, getSceneDuration, hasVisualScenes } from '../../shared/document/media-scenes.js';
 import DocumentStore, {
     hydrateDocumentModel,
     hydrateChapterModel,
@@ -33,7 +34,6 @@ const DEFAULT_STYLE_PREFERENCES = {
     "infoText-font-size": "medium"
 };
 
-const DEFAULT_IMAGE_SCENE_DURATION = 3;
 
 const DOCUMENT_TYPES = {
     DOCUMENT: 'document',
@@ -137,97 +137,6 @@ const findParagraphReference = async (chapterId, paragraphId) => {
         found = searchLoadedDocuments();
     }
     return found;
-};
-
-const getChapterSceneAttachment = (chapter, type, paragraphIndex) => {
-    const attachments = chapter?.mediaAttachments?.[type];
-    if (!Array.isArray(attachments) || paragraphIndex < 0) {
-        return null;
-    }
-    return attachments[paragraphIndex] ?? null;
-};
-
-const getBaseSceneCommands = (chapter, paragraph, paragraphIndex) => {
-    const commands = paragraph?.commands && typeof paragraph.commands === 'object' && !Array.isArray(paragraph.commands)
-        ? { ...paragraph.commands }
-        : {};
-    if (!commands.video) {
-        const chapterVideo = getChapterSceneAttachment(chapter, 'video', paragraphIndex);
-        if (chapterVideo) {
-            commands.video = chapterVideo;
-        }
-    }
-    if (!commands.image) {
-        const chapterImage = getChapterSceneAttachment(chapter, 'image', paragraphIndex);
-        if (chapterImage) {
-            commands.image = chapterImage;
-        }
-    }
-    return commands;
-};
-
-const getParagraphScenes = (chapter, paragraph, paragraphIndex) => {
-    const paragraphAudio = Array.isArray(paragraph?.mediaAttachments?.audio) ? paragraph.mediaAttachments.audio : [];
-    const paragraphVideo = Array.isArray(paragraph?.mediaAttachments?.video) ? paragraph.mediaAttachments.video : [];
-    const paragraphImage = Array.isArray(paragraph?.mediaAttachments?.image) ? paragraph.mediaAttachments.image : [];
-    const baseCommands = getBaseSceneCommands(chapter, paragraph, paragraphIndex);
-    const sceneCount = Math.max(paragraphAudio.length, paragraphVideo.length, paragraphImage.length);
-
-    if (sceneCount > 0) {
-        const scenes = [];
-        for (let sceneIndex = 0; sceneIndex < sceneCount; sceneIndex += 1) {
-            const scene = {};
-            const audio = paragraphAudio[sceneIndex];
-            const video = paragraphVideo[sceneIndex];
-            const image = paragraphImage[sceneIndex];
-            if (audio) {
-                scene.audio = audio;
-            }
-            if (video) {
-                scene.video = video;
-            }
-            if (image) {
-                scene.image = image;
-            }
-            if (!scene.video && sceneIndex === 0 && baseCommands.video) {
-                scene.video = baseCommands.video;
-            }
-            if (!scene.image && sceneIndex === 0 && baseCommands.image) {
-                scene.image = baseCommands.image;
-            }
-            if (scene.video || scene.audio || scene.image || scene.silence) {
-                scenes.push(scene);
-            }
-        }
-        if (scenes.length > 0) {
-            return scenes;
-        }
-    }
-
-    return baseCommands.video || baseCommands.audio || baseCommands.image || baseCommands.silence
-        ? [baseCommands]
-        : [];
-};
-
-const getSceneDuration = (commands = {}) => {
-    if (commands.video) {
-        const videoDuration = Number(commands.video.end) - Number(commands.video.start);
-        const audioDuration = Number(commands.audio?.duration) || 0;
-        return Math.max(Number.isFinite(videoDuration) ? videoDuration : 0, audioDuration);
-    }
-    if (commands.audio) {
-        return Number(commands.audio.duration) || 0;
-    }
-    if (commands.silence) {
-        return Number(commands.silence.duration) || 0;
-    }
-    if (commands.image) {
-        const imageDuration = Number(commands.image.duration);
-        return Number.isFinite(imageDuration) && imageDuration > 0
-            ? imageDuration
-            : DEFAULT_IMAGE_SCENE_DURATION;
-    }
-    return 0;
 };
 
 const getSerializableChapter = (document, chapterId) => {
@@ -897,7 +806,7 @@ const documentModule = {
         let duration = 0;
         for (const chapter of document.chapters || []) {
             for (const [paragraphIndex, paragraph] of (chapter.paragraphs || []).entries()) {
-                const scenes = getParagraphScenes(chapter, paragraph, paragraphIndex);
+                const scenes = getParagraphScenes(chapter, paragraph, paragraphIndex, hasVisualScenes(document));
                 for (const scene of scenes) {
                     duration += getSceneDuration(scene);
                 }

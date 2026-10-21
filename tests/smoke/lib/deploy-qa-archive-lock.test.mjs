@@ -80,6 +80,30 @@ test('unsafe release metadata fails the operation and still releases its lease',
     assert.equal(fs.existsSync(f.released), true);
 });
 
+test('a release request that is still being written is awaited instead of failing the lease', async t => {
+    const f = fixture(t), result = f.start();
+    await until(() => fs.existsSync(f.ready));
+    // `printf release > file` creates the file before it writes it.
+    const file = `${f.backup}-lock-release`;
+    fs.writeFileSync(file, '', { mode: 0o600 });
+    await delay(20);
+    fs.appendFileSync(file, 'rel');
+    await delay(20);
+    assert.equal(fs.existsSync(f.released), false, 'a partial request never releases');
+    assert.throws(() => fs.mkdirSync(f.lockPath), { code: 'EEXIST' }, 'the lease is still held');
+    fs.appendFileSync(file, 'ease\n');
+    assert.equal(await result, null);
+    assert.deepEqual(JSON.parse(fs.readFileSync(f.released)), { released: true, pid: process.pid, instance: f.args.scope.box });
+});
+
+test('release content other than the request still fails the operation', async t => {
+    const f = fixture(t), result = f.start();
+    await until(() => fs.existsSync(f.ready));
+    fs.writeFileSync(`${f.backup}-lock-release`, 'releasX\n', { mode: 0o600 });
+    assert.match((await result).message, /without a deliberate release/);
+    assert.equal(fs.existsSync(f.lockPath), false);
+});
+
 test('acquisition failure emits neither readiness nor a successful release receipt', async t => {
     const f = fixture(t);
     f.adapters.acquireWorkspaceLock = async () => { throw new Error('Injected acquisition failure'); };

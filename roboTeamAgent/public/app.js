@@ -6,6 +6,7 @@ import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
 import { initPageNavigation, restoreNavigationFocus } from './page-navigation.js';
 import { initCronJobs } from './cron-jobs.js';
 import { initProxyPool } from './proxy-pool.js';
+import { initEmailPool } from './email-pool.js';
 
 const robotsList = document.querySelector('#robotsList');
 const robotTemplate = document.querySelector('#robotTemplate');
@@ -39,10 +40,11 @@ const navigation = initPageNavigation({
 const initialView = navigation.view;
 const cronJobs = initCronJobs({ api, endpoint, bindLink: navigation.bindLink, closeMenus: closeOpenMenus });
 const proxyPool = initProxyPool({ api, closeMenus: closeOpenMenus });
+const emailPool = initEmailPool({ api, closeMenus: closeOpenMenus });
 const requestedTab = new URL(location.href).searchParams.get('tab');
-const requestedTabIds = { 'workflow-types': 'workflowTypesTab', 'cron-jobs': 'kronJobsTab', proxies: 'proxiesTab' };
+const requestedTabIds = { 'workflow-types': 'workflowTypesTab', 'cron-jobs': 'kronJobsTab', proxies: 'proxiesTab', emails: 'emailsTab' };
 initDashboardTabs({ initialTabId: initialView?.tabId || requestedTabIds[requestedTab],
-    onChange: () => { closeOpenMenus(); void cronJobs.refresh(); void proxyPool.refresh(); } });
+    onChange: () => { closeOpenMenus(); void cronJobs.refresh(); void proxyPool.refresh(); void emailPool.refresh(); } });
 navigation.bindLink(addWorkflowButton);
 navigation.bindLink(document.querySelector('#flowsHistoryButton'));
 
@@ -380,6 +382,7 @@ async function loadRobots() {
         const result = await api('api/robots');
         canCreateRobots = result.canAdmin === true;
         proxyPool.setContext(canCreateRobots);
+        emailPool.setContext(canCreateRobots);
         updateCreateControls();
         renderRobots(result.robots || [], result.canAdmin === true);
         await loadWorkflows(result.canAdmin === true);

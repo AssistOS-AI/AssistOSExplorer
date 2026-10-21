@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { createHardwareLimitsApi, hardwareAccessDenied, HardwareLimitsError } from '../../services/infrastructure/hardwareLimitsApi.js';
-import { HardwareLimitsPanel, renderHardwareLimits } from '../../web-components/components/hardware-limits-panel/hardware-limits-panel.js';
+import { HardwareLimitsPanel, renderHardwareLimits, renderHardwarePreview } from '../../web-components/components/hardware-limits-panel/hardware-limits-panel.js';
 import { createDraft, reconcileDrafts, draftLimits, describeProblem, GPU_HELP, AUTHORITY_HELP } from '../../web-components/components/hardware-limits-panel/hardware-limits-model.js';
 import { hardwareController } from '../../web-components/modals/settings-modal/settings-hardware-controller.js';
 import { SettingsModal } from '../../web-components/modals/settings-modal/settings-modal.js';
@@ -99,7 +99,7 @@ test('X.pending-applied', () => {
     assert.match(html, /refused<\/span> \/ applied/);
     assert.match(html, /150% quota/);
     assert.match(html, /1.0 GiB \(kernel\)/);
-    assert.match(html, /Stored .*declared .*effective /);
+    assert.match(html, /Currently applied/);
 });
 
 test('X.refused-blocked-cause', () => {
@@ -112,9 +112,9 @@ test('X.refused-blocked-cause', () => {
 test('X.optional-child-parent-ready', () => {
     const value = snapshot();
     value.agents.push({ ref: 'repo/explorer', configured: {}, declared: {}, effective: {}, containers: [{ key: 'explorer', availability: 'ready', limitsState: 'applied' }] });
-    const html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token));
-    assert.match(html, /Canonical instance<code>explorer<\/code><\/td><td><span class="hardware-instance-state">ready/);
-    assert.match(html, /Alias: router/);
+    const html = renderHardwareLimits(value, reconcileDrafts(value.agents, value.token), { selectedAgentRef: 'repo/explorer' });
+    assert.match(html, /Canonical instance<code>explorer<\/code><\/td><td data-label="Availability \/ limits" data-state="ready"><span class="hardware-instance-state">ready/);
+    assert.match(renderHardwareLimits(value, reconcileDrafts(value.agents, value.token), { selectedAgentRef: ref }), /Alias: router/);
     assert.match(html, /optional no-wait child refusal does not block its parent/);
 });
 
@@ -332,3 +332,110 @@ for (const error of [new Error('Network unavailable'), new HardwareLimitsError({
         assert.equal(presenter.drafts.get(ref).cpus, '2.25');
     });
 }
+
+test('agent picker defaults to Local LLMs and renders only the selected policy', () => {
+    const value = snapshot();
+    value.agents.push({ ref: 'local-llms/local-llm', configured: {}, declared: {}, effective: {}, containers: [] });
+    const drafts = reconcileDrafts(value.agents, value.token);
+    const initial = renderHardwareLimits(value, drafts);
+    assert.match(initial, /data-hardware-agent-search[^>]*value="Local LLMs"/);
+    assert.equal((initial.match(/<article /g) || []).length, 1);
+    assert.match(initial, /<article[^>]*data-agent-index="1"/);
+    const other = renderHardwareLimits(value, drafts, { selectedAgentRef: ref });
+    assert.match(other, /<article[^>]*data-agent-index="0"/);
+    assert.equal((other.match(/<article /g) || []).length, 1);
+});
+
+test('switching agent retains edits and Save still targets its original agent identity', async () => {
+    const value = snapshot();
+    value.agents.push({ ref: 'local-llms/local-llm', configured: {}, declared: {}, effective: {}, containers: [] });
+    const posts = [];
+    const presenter = panel({ read: async () => structuredClone(value), set: async (_token, agentRef, limits) => { posts.push({ agentRef, limits }); return { ok: true }; } }, value);
+    presenter.edit({ dataset: { hardwareField: 'cpus', agentIndex: '1' }, value: '2.5' });
+    presenter.selectAgent(ref);
+    assert.equal(presenter.selectedAgentRef, ref);
+    presenter.selectAgent('local-llms/local-llm');
+    assert.equal(presenter.selectedAgentRef, 'local-llms/local-llm');
+    assert.equal(presenter.drafts.get('local-llms/local-llm').cpus, '2.5');
+    await presenter.action({ hardwareAction: 'save', agentIndex: '1' });
+    assert.deepEqual(posts, [{ agentRef: 'local-llms/local-llm', limits: { cpus: 2.5 } }]);
+});
+
+
+test('agent dropdown opens with all agents independently of selection and filters only a typed query', () => {
+    const value = snapshot();
+    value.agents.push({ ref: 'local-llms/local-llm', configured: {}, declared: {}, effective: {}, containers: [] });
+    const presenter = panel({}, value);
+    presenter.selectedAgentRef = 'local-llms/local-llm';
+    assert.deepEqual(presenter.agentChoices().map((agent) => agent.ref), [ref, 'local-llms/local-llm']);
+    assert.deepEqual(presenter.agentChoices('LOCAL LLMS').map((agent) => agent.ref), ['local-llms/local-llm']);
+    assert.deepEqual(presenter.agentChoices('repo/').map((agent) => agent.ref), [ref]);
+    assert.deepEqual(presenter.agentChoices('missing'), []);
+    presenter.selectedAgentRef = ref;
+    assert.equal(presenter.agentChoices().length, 2);
+});
+
+test('a pending background read does not replace a picker opened after the request', async () => {
+    let finish;
+    const presenter = panel({ read: () => new Promise((resolve) => { finish = resolve; }) });
+    let renders = 0;
+    presenter.content = { set innerHTML(_) { renders += 1; } };
+    const request = presenter.refresh();
+    presenter.agentPickerOpen = true;
+    finish(snapshot(2));
+    await request;
+    assert.equal(renders, 0);
+    assert.deepEqual(presenter.snapshot.token, token(1));
+});
+
+
+for (const action of ['save-apply', 'restore-apply']) {
+    test(`${action} applies exactly the server-returned keys with the committed token`, async () => {
+        const calls = [];
+        const api = { read: async () => snapshot(1),
+            set: async (expected, agentRef, limits) => { calls.push({ operation: 'set', expected, agentRef, limits }); return { token: token(2), affectedInstances: ['exact-selected-alias'] }; },
+            clear: async (expected, agentRef) => { calls.push({ operation: 'clear', expected, agentRef }); return { token: token(2), affectedInstances: ['exact-selected-alias'] }; },
+            apply: async (expected, keys) => { calls.push({ operation: 'apply', expected, keys }); return { ok: true, results: [{ key: keys[0], state: 'applied' }] }; } };
+        const presenter = panel(api);
+        presenter.edit({ dataset: { hardwareField: 'cpus', agentIndex: '0' }, value: '2.5' });
+        await presenter.action({ hardwareAction: action, agentIndex: '0' });
+        assert.equal(calls[0].operation, action === 'save-apply' ? 'set' : 'clear');
+        assert.equal(calls[0].agentRef, ref);
+        if (action === 'save-apply') assert.deepEqual(calls[0].limits, { cpus: 2.5 });
+        assert.deepEqual(calls[1], { operation: 'apply', expected: token(2), keys: ['exact-selected-alias'] });
+        assert.equal(calls.length, 2);
+        assert.match(presenter.notice, /applied/);
+    });
+}
+
+test('combined actions never turn an empty or unverifiable affected list into Apply all', async () => {
+    for (const affectedInstances of [[], undefined]) {
+        let applies = 0;
+        const presenter = panel({ read: async () => snapshot(), clear: async () => ({ token: token(2), affectedInstances }), apply: async () => { applies += 1; } });
+        await presenter.action({ hardwareAction: 'restore-apply', agentIndex: '0' });
+        assert.equal(applies, 0);
+        assert.match(presenter.notice, affectedInstances ? /when this agent starts/ : /could not be fully applied/);
+    }
+});
+
+test('combined Apply failure preserves the saved policy and never applies a newer concurrent token', async () => {
+    const expectedTokens = [];
+    const presenter = panel({ read: async () => snapshot(), clear: async () => ({ token: token(2), affectedInstances: ['exact-key'] }),
+        apply: async (expected) => { expectedTokens.push(expected); throw new HardwareLimitsError({ error: 'revision_conflict', message: 'Policy changed after save.' }, 409); } });
+    await presenter.action({ hardwareAction: 'restore-apply', agentIndex: '0' });
+    assert.deepEqual(expectedTokens, [token(2)]);
+    assert.match(presenter.notice, /Policy saved.*could not be fully applied/);
+    assert.match(presenter.error, /Policy changed after save/);
+});
+
+test('preview compares applied limits to draft values and inherited defaults without saving', () => {
+    const value = snapshot();
+    value.agents[0].containers = value.agents[0].containers.slice(0, 1);
+    const html = renderHardwarePreview(value.agents[0], { cpus: '2.5', memoryPercent: '50', smPercent: '', vramPercent: '' }, value);
+    assert.match(html, /1.5 cores/);
+    assert.match(html, /2.5 cores/);
+    assert.match(html, /50% of Box RAM \(4.0 GiB\)/);
+    assert.match(html, /Restore defaults/);
+    const inherited = renderHardwarePreview(value.agents[0], {}, value);
+    assert.match(inherited, /1g/);
+});

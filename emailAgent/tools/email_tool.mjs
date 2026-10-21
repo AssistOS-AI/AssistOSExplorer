@@ -26,6 +26,10 @@ const HANDLERS = {
         return { available: status.configured && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(status.fromEmail)
             && (!templateId || (Number.isFinite(Number(templateId)) && Number(templateId) > 0)) };
     },
+    email_text_status: async () => {
+        const status = await providerStatus();
+        return { available: status.configured && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(status.fromEmail) };
+    },
     email_send_text: () => sendText({ to: args.to, subject: args.subject, text: args.text, html: args.html }),
     email_send_template: () => sendTemplate({ to: args.to, templateId: args.templateId, variables: args.variables || {} }),
     email_send_test: () => sendText({ to: args.to, subject: 'EmailAgent test', text: 'EmailAgent test email.' }),

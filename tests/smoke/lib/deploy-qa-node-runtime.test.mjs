@@ -98,7 +98,10 @@ test('QA Node pinning precedes recovery capture and never replaces the shared ho
     assert.match(section, /cmp -s/);
     assert.doesNotMatch(section, /sudo|apt-get|\/usr\/bin\/node|\/usr\/local\/bin\/node/);
     const start = workflow.indexOf('# BEGIN QA isolated Node runtime');
-    assert(start > workflow.indexOf('// END QA capacity admission'));
+    // The QA Node runs the retention helper, so it is installed after durable-state
+    // admission and before the capacity admission that measures the freed space.
+    assert(start > workflow.indexOf('// END QA preservation admission'));
+    assert(start < workflow.indexOf('// BEGIN QA capacity admission'));
     assert(start < workflow.indexOf('capture "$QA_BACKUP_DIR" --lock-held'));
     assert.match(workflow, /printf '%s\\n' "\$QA_NODE_HOME" > "\$QA_HELPER_DIR\/node-runtime-path"/);
 });
