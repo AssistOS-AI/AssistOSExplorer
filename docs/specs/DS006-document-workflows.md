@@ -36,3 +36,5 @@ The references empty-state message uses the semantic secondary text color to rem
 Reference rows place the citation and its actions in separate responsive columns. Edit and Delete reuse the shared compact chapter action styling and existing icons, with accessible names and keyboard focus indicators. Long citations wrap without pushing actions below the row.
 
 File Save accepts one operation at a time, acquiring its guard before Markdown flushing or any other asynchronous work and releasing it after success or failure. While saving, the native Save button is disabled, announces busy state, and reads “Saving…”. Repeated clicks, keyboard shortcuts and autosave calls must not start duplicate saves.
+
+Export and print dialogs must not advertise the retired Export Preferences link or navigate to the removed `settings-page` component. The current Settings modal does not provide export preferences.

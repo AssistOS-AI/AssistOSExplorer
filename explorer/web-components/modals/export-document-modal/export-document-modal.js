@@ -19,10 +19,6 @@ export class ExportDocumentModal {
 
     }
 
-    async openSettingsPage(eventTarget){
-        await this.closeModal();
-        await assistOS.UI.changeToDynamicPage("settings-page","settings-page",{subpage:"settingsTab"});
-    }
 
     async closeModal() {
         await assistOS.UI.closeModal(this.element);
