@@ -35,6 +35,7 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
             process.env.ACHILLES_AGENT_LIB_PATH = process.env.PLOINKY_AGENTLIB_DIR;
         }
         delete process.env.ROBOTEAM_INTERNAL_TOKEN;
+        delete process.env.ROBOTEAM_VAULT_KEY;
         if (prepareTools) {
             // CLI output is consumed as conversation content. Routine cache diagnostics
             // must not enter that channel; preparation failures still propagate below.

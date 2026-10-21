@@ -6,6 +6,7 @@ import { RobotSkillsets } from './robot-skillsets.mjs';
 import { RoboFlowService } from './roboflow/roboflow-service.mjs';
 import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
 import { ProxyPool } from './proxy-pool/proxy-pool.mjs';
+import { secretBoxFromEnvironment, VAULT_KEY_ENV } from './secret-box.mjs';
 import path from 'node:path';
 import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
 
@@ -14,6 +15,9 @@ const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
 const port = Number(process.env.ROBOTEAM_SERVICE_PORT) || 3001;
 const dataDir = DATA_DIR;
 const internalToken = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
+// Removed from the environment before any child process starts.
+const secretBox = secretBoxFromEnvironment();
+if (!secretBox) console.warn(`[roboTeamAgent] ${VAULT_KEY_ENV} is missing; proxy accounts cannot be added or used`);
 
 if (!internalToken) {
     throw new Error('ROBOTEAM_INTERNAL_TOKEN is required');
@@ -25,7 +29,7 @@ const robotStore = new RobotStore({ dataDir });
 await robotStore.initialize();
 await robotStore.ensureDefaultRobot();
 
-const proxyPool = new ProxyPool({ file: path.join(dataDir, 'proxy-pool', 'proxy-pool.sqlite') });
+const proxyPool = new ProxyPool({ file: path.join(dataDir, 'proxy-pool', 'proxy-pool.sqlite'), secretBox });
 proxyPool.initialize();
 
 const runtimeManager = new RuntimeManager({

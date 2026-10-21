@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 const MAX_PROXIES = 500;
 
 function parseLine(line, index) {
@@ -40,7 +42,9 @@ export default {
     async listProxies(config) {
         return config.proxies.split('\n').map((line, index) => {
             const proxy = parseLine(line, index);
-            return { ...proxy, externalId: `${proxy.host}:${proxy.port}:${proxy.username}`, city: null, available: true };
+            // The id is stored in clear, so it names the entry without carrying its username.
+            const externalId = crypto.createHash('sha256').update(`${proxy.host}\0${proxy.port}\0${proxy.username}`).digest('hex').slice(0, 32);
+            return { ...proxy, externalId, city: null, available: true };
         });
     },
 };

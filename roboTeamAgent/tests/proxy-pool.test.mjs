@@ -3,14 +3,16 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { ProxyPool } from '../server/proxy-pool/proxy-pool.mjs';
+import { SecretBox } from '../server/secret-box.mjs';
 import webshare from '../server/proxy-pool/providers/webshare.mjs';
 import staticList from '../server/proxy-pool/providers/static.mjs';
 import { proxyProvider, publicProviders } from '../server/proxy-pool/providers/index.mjs';
 
 async function withPool(options, run) {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-pool-'));
-    const pool = new ProxyPool({ file: path.join(directory, 'pool.sqlite'), ...options });
+    const pool = new ProxyPool({ file: path.join(directory, 'pool.sqlite'), secretBox: new SecretBox('test-vault-key-0123456789'), ...options });
     try { return await run(pool, directory); } finally { pool.close(); await fs.rm(directory, { recursive: true, force: true }); }
 }
 
@@ -135,3 +137,56 @@ test('the pool database is private to the service', () => withPool({}, async (po
     pool.initialize();
     assert.equal((await fs.stat(pool.file)).mode & 0o777, 0o600);
 }));
+
+test('provider configuration and proxy credentials are stored sealed', () => withPool({}, async (pool, directory) => {
+    const account = await addStatic(pool, 'Sealed', ['10.4.0.1']);
+    const db = new DatabaseSync(path.join(directory, 'pool.sqlite'), { readOnly: true });
+    try {
+        const stored = JSON.stringify([db.prepare('SELECT * FROM accounts').all(), db.prepare('SELECT * FROM proxies').all()]);
+        assert.doesNotMatch(stored, /secret0|user0/u);
+        assert.match(stored, /rtv1:/u);
+    } finally { db.close(); }
+    assert.equal(pool.snapshot().accounts[0].summary, '1 proxy');
+    const upstream = pool.acquire('robot-one');
+    assert.equal(upstream.username, 'user0');
+    assert.equal(upstream.password, 'secret0');
+    assert.throws(() => pool.addAccount({ provider: 'static', config: staticConfig('10.4.0.1') }), error => error.statusCode === 409);
+    assert.ok(account);
+}));
+
+test('a pool without the vault key refuses secrets and seals clear-text rows once the key arrives', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-legacy-'));
+    const file = path.join(directory, 'pool.sqlite');
+    try {
+        const legacy = new DatabaseSync(file);
+        legacy.exec(`CREATE TABLE accounts (id TEXT PRIMARY KEY, provider TEXT NOT NULL, label TEXT NOT NULL, config TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 2, status TEXT NOT NULL DEFAULT 'enabled', health TEXT NOT NULL DEFAULT 'pending',
+                last_error TEXT, last_sync_at TEXT, created_at TEXT NOT NULL);
+            CREATE TABLE proxies (id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                external_id TEXT NOT NULL, scheme TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL,
+                username TEXT NOT NULL, password TEXT NOT NULL, country TEXT, city TEXT,
+                available INTEGER NOT NULL DEFAULT 1, check_status TEXT, check_error TEXT, exit_ip TEXT, checked_at TEXT,
+                UNIQUE(account_id, external_id));`);
+        legacy.prepare('INSERT INTO accounts (id, provider, label, config, created_at) VALUES (?, ?, ?, ?, ?)')
+            .run('pxa_0123456789ab', 'webshare', 'Old', JSON.stringify({ apiKey: 'legacy-key-9876' }), '2026-01-01T00:00:00.000Z');
+        legacy.prepare(`INSERT INTO proxies (id, account_id, external_id, scheme, host, port, username, password)
+            VALUES ('pxp_0123456789abcdef', 'pxa_0123456789ab', 'x', 'http', '10.5.0.1', 8080, 'olduser', 'oldpass')`).run();
+        legacy.close();
+
+        const locked = new ProxyPool({ file });
+        assert.throws(() => locked.addAccount({ provider: 'static', config: staticConfig('10.5.0.2') }), error => error.statusCode === 503);
+        assert.throws(() => locked.acquire('robot-one'), error => error.statusCode === 503);
+        locked.close();
+
+        const pool = new ProxyPool({ file, secretBox: new SecretBox('test-vault-key-0123456789') });
+        pool.initialize();
+        assert.equal(pool.snapshot().accounts[0].summary, 'API key …9876');
+        assert.equal(pool.acquire('robot-one').password, 'oldpass');
+        pool.close();
+        const db = new DatabaseSync(file, { readOnly: true });
+        const stored = JSON.stringify([db.prepare('SELECT * FROM accounts').all(), db.prepare('SELECT * FROM proxies').all()]);
+        db.close();
+        assert.doesNotMatch(stored, /legacy-key|olduser|oldpass/u);
+        await assert.rejects(async () => new ProxyPool({ file, secretBox: new SecretBox('another-vault-key-0000') }).acquire('robot-one'), /cannot be decrypted/u);
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
