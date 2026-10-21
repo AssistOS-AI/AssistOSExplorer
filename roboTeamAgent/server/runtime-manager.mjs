@@ -153,7 +153,11 @@ function mappedPort(output) {
     return Number(match[1]);
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, shellTools, proxy = null, workspaceRoot = requireWorkspaceRoot(), homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
+function chromiumLanguageFlag(lang) {
+    return lang && lang !== 'en-US' ? ` --lang=${lang}` : '';
+}
+
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, workspaceRoot = requireWorkspaceRoot(), homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     if (proxy && (!Number.isInteger(proxy.relayPort) || proxy.relayPort < 1 || proxy.relayPort > 65535 || !path.isAbsolute(String(proxy.policyFile || '')))) {
@@ -179,10 +183,11 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             '--label', `io.assistos.roboteam.mode=${mode}`,
             '-p', '127.0.0.1::3000', '-p', '127.0.0.1::8100',
             '-e', 'PUID=0', '-e', 'PGID=0', '-e', `TZ=${timezone}`,
+            ...(locale ? ['-e', `LC_ALL=${locale.locale}`, '-e', `LANG=${locale.locale}`, '-e', `LANGUAGE=${locale.lang}`] : []),
             '-e', `SUBFOLDER=${subfolder}`, '-e', `TITLE=${robot.name}`,
             '-e', `ROBOTEAM_WORKING_DIRECTORY=${cwd}`,
             '-e', 'START_DOCKER=false', '-e', 'DISABLE_IPV6=true', '-e', 'PELORUS=true',
-            ...(mode === 'browser' ? ['-e', 'CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility'] : []),
+            ...(mode === 'browser' ? ['-e', `CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility${chromiumLanguageFlag(locale?.lang)}`] : []),
             ...(shellTools ? [
                 '-e', `PATH=${shellTools.binPath}:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
                 '-e', 'CODEX_HOME=/config/.codex',
@@ -420,9 +425,11 @@ export class RuntimeManager {
             // Null while the shared pool is inactive; throws while it is active and has nothing free.
             const upstream = this.proxyPool ? this.proxyPool.acquire(robot.id) : null;
             const proxyKey = upstream ? `${upstream.id}@${upstream.host}:${upstream.port}` : '';
+            const locale = upstream && this.proxyPool.localeFor ? await this.proxyPool.localeFor(upstream) : null;
+            const localeKey = locale ? `${locale.timezone}|${locale.locale}` : '';
             if (existing) {
                 if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
-                if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey && existing.proxyKey === proxyKey) return existing;
+                if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey && existing.proxyKey === proxyKey && existing.localeKey === localeKey) return existing;
                 const activeTask = this.activeTaskStatus(robot.id);
                 const activeStates = ['queued', 'starting', 'running', 'pausing'];
                 if (activeTask && activeTask.taskId !== options.taskId && activeStates.includes(activeTask.state)) {
@@ -444,8 +451,8 @@ export class RuntimeManager {
             const firewallFile = upstream && mode === 'browser' ? await writeContainerFirewallRules(this.proxyPolicyDir) : null;
             const relay = upstream ? this.createRelay(upstream) : null;
             const proxy = relay ? { relayPort: await relay.listen(), policyFile } : null;
-            const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools, proxy });
-            const session = { robotId: robot.id, mode, cwd, codingAgentsKey, proxyKey, relay, proxyId: upstream?.id || null, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
+            const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: locale?.timezone || this.timezone, locale, cwd, toolsPath: tools.path, shellTools, proxy });
+            const session = { robotId: robot.id, mode, cwd, codingAgentsKey, proxyKey, localeKey, relay, proxyId: upstream?.id || null, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
             this.sessions.set(robot.id, session);
             try {
                 await this._podman(plan.args, 10 * 60 * 1000);

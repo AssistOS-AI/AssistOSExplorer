@@ -9,6 +9,7 @@ import { SecretBox } from '../server/secret-box.mjs';
 import webshare from '../server/proxy-pool/providers/webshare.mjs';
 import staticList from '../server/proxy-pool/providers/static.mjs';
 import { proxyProvider, publicProviders } from '../server/proxy-pool/providers/index.mjs';
+import { localeForCountry, localeProfileFromLookup } from '../server/proxy-pool/locale-profile.mjs';
 
 async function withPool(options, run) {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-pool-'));
@@ -190,3 +191,35 @@ test('a pool without the vault key refuses secrets and seals clear-text rows onc
         await assert.rejects(async () => new ProxyPool({ file, secretBox: new SecretBox('another-vault-key-0000') }).acquire('robot-one'), /cannot be decrypted/u);
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
+
+test('a country maps to one locale and an unknown country stays English', () => {
+    assert.deepEqual(localeForCountry('de'), { locale: 'de_DE.UTF-8', lang: 'de-DE' });
+    assert.deepEqual(localeForCountry('US'), { locale: 'en_US.UTF-8', lang: 'en-US' });
+    assert.deepEqual(localeForCountry('ZZ'), { locale: 'en_US.UTF-8', lang: 'en-US' });
+    assert.deepEqual(localeProfileFromLookup({ timezone: { id: 'America/Los_Angeles' }, country_code: 'us' }),
+        { timezone: 'America/Los_Angeles', locale: 'en_US.UTF-8', lang: 'en-US' });
+    assert.deepEqual(localeProfileFromLookup({ timezone: { id: '../Etc/UTC' }, country_code: 'nope' }, 'DE'),
+        { timezone: 'UTC', locale: 'de_DE.UTF-8', lang: 'de-DE' });
+});
+
+test('the exit-address locale is cached and a failed lookup is not', () => withPool({
+    checkImpl: async () => ({ ok: true, exitIp: '203.0.113.9' }),
+}, async (pool) => {
+    const lookups = [];
+    pool.localeImpl = async (_proxy, exitIp) => {
+        lookups.push(exitIp);
+        return exitIp === '203.0.113.9'
+            ? { timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' }
+            : { timezone: 'UTC', locale: 'en_US.UTF-8', lang: 'en-US', unresolved: true };
+    };
+    await addStatic(pool, 'Main', ['10.0.0.1']);
+    const proxy = pool.acquire('robot-one');
+    const expected = { timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' };
+    assert.deepEqual({ ...await pool.localeFor(proxy) }, expected);
+    assert.deepEqual({ ...await pool.localeFor(proxy) }, expected);
+    assert.deepEqual(lookups, ['203.0.113.9']);
+    pool.db.prepare('UPDATE proxies SET exit_ip = ? WHERE id = ?').run('203.0.113.10', proxy.id);
+    pool.localeImpl = async () => ({ timezone: 'UTC', locale: 'en_US.UTF-8', lang: 'en-US', unresolved: true });
+    assert.deepEqual(await pool.localeFor({ ...proxy, exitIp: '203.0.113.10' }), { timezone: 'UTC', locale: 'en_US.UTF-8', lang: 'en-US' });
+    assert.equal(pool.db.prepare('SELECT COUNT(*) AS n FROM locale_cache').get().n, 1);
+}));

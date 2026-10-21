@@ -887,7 +887,7 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
     const manager = new RuntimeManager({
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
-        proxyPool: { acquire: () => upstream, release: () => true },
+        proxyPool: { acquire: () => upstream, release: () => true, localeFor: async () => ({ timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' }) },
         createRelay: (target) => {
             const relay = { target, closed: false, port: 45000 + relays.length, listen: async () => relay.port, close: async () => { relay.closed = true; } };
             relays.push(relay);
@@ -921,6 +921,9 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
         ProxySettings: { ProxyMode: 'fixed_servers', ProxyServer: 'http://127.0.0.1:3128' },
         WebRtcIPHandling: 'disable_non_proxied_udp',
     });
+    assert.ok(run.includes('TZ=Europe/Berlin'));
+    assert.ok(run.includes('LC_ALL=de_DE.UTF-8'));
+    assert.ok(run.some(value => value.startsWith('CHROME_CLI=') && value.includes('--lang=de-DE')));
     assert.equal(relays[0].target, upstream);
     assert.doesNotMatch(run.join(' '), /198\.51\.100\.7|\bu:p\b/u);
 
@@ -945,7 +948,8 @@ test('a proxied desktop keeps its network for other programs and a failed firewa
     const manager = new RuntimeManager({
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
-        proxyPool: { acquire: () => ({ id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' }), release: () => true },
+        proxyPool: { acquire: () => ({ id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' }), release: () => true,
+            localeFor: async () => ({ timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' }) },
         createRelay: () => {
             const relay = { closed: false, listen: async () => 45000, close: async () => { relay.closed = true; } };
             relays.push(relay);
@@ -964,7 +968,11 @@ test('a proxied desktop keeps its network for other programs and a failed firewa
 
     const desktop = { id: 'desktop-a1b2c3', name: 'Desktop', codingAgents: ['opencode'] };
     await manager.start(desktop, 'desktop');
-    assert.deepEqual(calls.find(args => args[1] === '-d')?.slice(0, 2), ['run', '-d']);
+    const desktopRun = calls.find(args => args[1] === '-d');
+    assert.deepEqual(desktopRun?.slice(0, 2), ['run', '-d']);
+    assert.ok(desktopRun.includes('TZ=Europe/Berlin'));
+    assert.ok(desktopRun.includes('LC_ALL=de_DE.UTF-8'));
+    assert.ok(desktopRun.includes('LANG=de_DE.UTF-8'));
     assert.equal(calls.some(args => args[0] === '/usr/bin/nsenter'), false);
     await manager.stop(desktop.id);
 

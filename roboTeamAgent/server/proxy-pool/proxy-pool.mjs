@@ -7,6 +7,8 @@ import path from 'node:path';
 import tls from 'node:tls';
 import { proxyProvider, publicProviders } from './providers/index.mjs';
 import { proxyAuthorization } from './proxy-relay.mjs';
+import { lookupExitLocale } from './locale-lookup.mjs';
+import { fallbackLocaleProfile } from './locale-profile.mjs';
 import { SecretBox, requireSecretBox } from '../secret-box.mjs';
 
 const ACCOUNT_ID = /^pxa_[0-9a-f]{12}$/u;
@@ -80,12 +82,13 @@ export function checkProxyExit(proxy, { timeoutMs = CHECK_TIMEOUT_MS } = {}) {
 // provider configuration and proxy credentials are stored sealed by the secret box and never leave
 // this process except as the relay's upstream Proxy-Authorization.
 export class ProxyPool {
-    constructor({ file, secretBox = null, fetchImpl = fetch, checkImpl = checkProxyExit, now = () => new Date() } = {}) {
+    constructor({ file, secretBox = null, fetchImpl = fetch, checkImpl = checkProxyExit, localeImpl = lookupExitLocale, now = () => new Date() } = {}) {
         if (!file) throw new Error('proxy pool file is required');
         this.file = file;
         this.secretBox = secretBox;
         this.fetchImpl = fetchImpl;
         this.checkImpl = checkImpl;
+        this.localeImpl = localeImpl;
         this.now = now;
         this.syncing = new Map();
         this.timer = null;
@@ -112,7 +115,10 @@ export class ProxyPool {
                 UNIQUE(account_id, external_id));
             CREATE TABLE IF NOT EXISTS assignments (
                 robot_id TEXT PRIMARY KEY, proxy_id TEXT NOT NULL UNIQUE REFERENCES proxies(id) ON DELETE CASCADE,
-                assigned_at TEXT NOT NULL);`);
+                assigned_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS locale_cache (
+                exit_ip TEXT PRIMARY KEY, timezone TEXT NOT NULL, locale TEXT NOT NULL, lang TEXT NOT NULL,
+                fetched_at TEXT NOT NULL);`);
         const columns = new Set(this.db.prepare('PRAGMA table_info(accounts)').all().map(column => column.name));
         for (const column of ['summary', 'config_fingerprint']) {
             if (!columns.has(column)) this.db.exec(`ALTER TABLE accounts ADD COLUMN ${column} TEXT`);
@@ -382,6 +388,31 @@ export class ProxyPool {
             .run(result.ok ? 'ok' : 'failed', result.ok ? null : String(result.error || 'check failed').slice(0, 300),
                 result.ok ? result.exitIp : null, this.now().toISOString(), id);
         return result.ok ? { ok: true, exitIp: result.exitIp } : { ok: false, error: result.error };
+    }
+
+    // Timezone and language for the address a robot's proxy presents. The exit address is discovered
+    // through the proxy when it is not already known, and a lookup is kept by that address, so a robot
+    // that keeps its proxy does not ask again. A failed discovery or lookup returns the neutral profile
+    // and is not cached, so the next start tries again.
+    async localeFor(proxy) {
+        if (!proxy) return fallbackLocaleProfile();
+        this.initialize();
+        const stored = proxy.id ? this.db.prepare('SELECT exit_ip, country FROM proxies WHERE id = ?').get(proxy.id) : null;
+        let exitIp = proxy.exitIp || stored?.exit_ip || null;
+        // Discovery must not record a check: a failed echo would take the proxy out of rotation, and a
+        // locale is not a health check. A later explicit check still records the address.
+        if (!exitIp && proxy.host) {
+            const discovered = await this.checkImpl(proxy).catch(() => null);
+            exitIp = discovered?.ok ? discovered.exitIp : null;
+        }
+        if (!exitIp) return fallbackLocaleProfile();
+        const cached = this.db.prepare('SELECT timezone, locale, lang FROM locale_cache WHERE exit_ip = ?').get(exitIp);
+        if (cached) return cached;
+        const profile = await this.localeImpl({ ...proxy, country: proxy.country || stored?.country || null }, exitIp);
+        if (profile.unresolved) return fallbackLocaleProfile();
+        this.db.prepare('INSERT INTO locale_cache (exit_ip, timezone, locale, lang, fetched_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(exit_ip) DO NOTHING')
+            .run(exitIp, profile.timezone, profile.locale, profile.lang, this.now().toISOString());
+        return profile;
     }
 }
 
