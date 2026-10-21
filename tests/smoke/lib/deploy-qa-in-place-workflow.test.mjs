@@ -259,3 +259,52 @@ test('the record loop refuses a running retained-pattern Box and keeps the owner
     assert.equal(stranger.result.status, 1);
     assert.match(stranger.result.stdout, /conflicting ownership labels/);
 });
+
+// Contract 4: a resume needs an existing workspace, no Box with the exact name and only stopped retained Boxes.
+for (const [name, extras] of [
+    ['no container at all', []],
+    ['a stopped retained predecessor', [retained('rollback', 'AbCd1234')]],
+    ['a stopped retained failed replacement', [retained('failed', 'ZyXw9876')]],
+    ['both retained kinds from two redeploys', [retained('rollback', 'AbCd1234'), retained('failed', 'ZyXw9876'), retained('rollback', 'QqRr5555')]],
+]) {
+    test(`resume is admitted with ${name} and no exact Box`, t => {
+        const checked = runAdmission(t, { workspace: 'directory', containers: extras, operation: 'resume' });
+        assert.equal(checked.status, 0, checked.stderr);
+        assert.match(checked.stdout, /\[deploy-qa\] Resume admitted: one existing workspace, no exact Box and only stopped retained Boxes\./);
+        assert.doesNotMatch(checked.stdout, /Preserving redeploy admitted/);
+    });
+}
+
+for (const [name, containers, workspace] of [
+    ['a running exact Box', [exact()], 'directory'],
+    ['a stopped exact Box', [exact({ running: false })], 'directory'],
+    ['an exact Box beside its stopped predecessor', [exact({ running: false }), retained('rollback', 'AbCd1234')], 'directory'],
+    ['a Box that is only reachable by its exact name', [{ engine: 'docker', id: '3'.repeat(64), name: BOX, running: false }], 'directory'],
+    ['a running retained predecessor', [retained('rollback', 'AbCd1234', { running: true })], 'directory'],
+    ['a running retained failed replacement', [retained('failed', 'AbCd1234', { running: true })], 'directory'],
+    ['a labelled stranger', [retained('rollback', 'AbCd1234'), { id: '4'.repeat(64), name: 'someone-else', running: false }], 'directory'],
+    ['a near-miss name with an extra suffix', [{ ...retained('rollback', 'AbCd1234'), name: `${BOX}-rollback-redeploy-AbCd1234-x` }], 'directory'],
+    ['a near-miss kind', [{ ...retained('rollback', 'AbCd1234'), name: `${BOX}-restored-redeploy-AbCd1234` }], 'directory'],
+    ['an absent workspace', [retained('rollback', 'AbCd1234')], 'absent'],
+    ['a symlinked workspace', [retained('rollback', 'AbCd1234')], 'symlink'],
+    ['a workspace file', [retained('rollback', 'AbCd1234')], 'file'],
+]) {
+    test(`resume refuses ${name}`, t => {
+        const checked = runAdmission(t, { workspace, containers, operation: 'resume' });
+        assert.notEqual(checked.status, 0);
+        assert.match(checked.stderr, /ERROR: resume requires an absent exact Box and only stopped retained Boxes\./);
+        assert.doesNotMatch(checked.stdout, /admitted/);
+    });
+}
+
+test('resume refuses an engine that cannot prove the Box inventory', t => {
+    const checked = runAdmission(t, { workspace: 'directory', engineFailure: true, containers: [retained('rollback', 'AbCd1234')], operation: 'resume' });
+    assert.notEqual(checked.status, 0);
+    assert.doesNotMatch(checked.stdout, /admitted/);
+});
+
+test('resume admission changes nothing for the other operations', t => {
+    assert.match(runAdmission(t, { workspace: 'directory', containers: [exact()], operation: 'redeploy' }).stdout, /Preserving redeploy admitted/);
+    assert.notEqual(runAdmission(t, { workspace: 'directory', containers: [retained('rollback', 'AbCd1234')], operation: 'redeploy' }).status, 0);
+    assert.equal(runAdmission(t, { operation: 'update' }).status, 0);
+});

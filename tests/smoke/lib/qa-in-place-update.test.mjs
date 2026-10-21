@@ -547,10 +547,13 @@ test('production runtime probes select the deployed Router and media ports insid
 test('fresh health connections survive synchronous probes after the server closes its idle socket', async t => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', `
         import http from 'node:http';
+        let connections = 0;
         const server = http.createServer((req, res) => {
-            res.writeHead(401, {'Content-Type':'application/json', 'Connection':'keep-alive', 'Keep-Alive':'timeout=60'});
+            res.writeHead(401, {'Content-Type':'application/json', 'Connection':'keep-alive', 'Keep-Alive':'timeout=60',
+                'X-Connection-Id': String(req.socket.connectionId), 'X-Request-Connection': String(req.headers.connection || '')});
             res.end(JSON.stringify({ok:false,error:{code:'AUTH_REQUIRED'}}));
         });
+        server.on('connection', socket => { connections += 1; socket.connectionId = connections; });
         server.keepAliveTimeout = 100; server.keepAliveTimeoutBuffer = 0;
         server.listen(0, '127.0.0.1', () => process.stdout.write(String(server.address().port) + '\\n'));
     `], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -560,7 +563,8 @@ test('fresh health connections survive synchronous probes after the server close
     const probe = get => new Promise((resolve, reject) => {
         get({ hostname: '127.0.0.1', port, path: '/health' }, response => {
             let body = ''; response.setEncoding('utf8'); response.on('data', chunk => { body += chunk; });
-            response.on('end', () => resolve({ status: response.statusCode, body }));
+            response.on('end', () => resolve({ status: response.statusCode, body,
+                connectionId: response.headers['x-connection-id'], requestConnection: response.headers['x-request-connection'] }));
         }).on('error', reject);
     });
     const blockEventLoop = () => {
@@ -570,13 +574,24 @@ test('fresh health connections survive synchronous probes after the server close
     const pooledAgent = new http.Agent({ keepAlive: true });
     t.after(() => pooledAgent.destroy());
     const pooledGet = (options, callback) => http.get({ ...options, agent: pooledAgent }, callback);
-    assert.equal((await probe(pooledGet)).status, 401);
+    const pooled = await probe(pooledGet);
+    assert.equal(pooled.status, 401);
     await new Promise(resolve => setImmediate(resolve));
     blockEventLoop();
-    await assert.rejects(probe(pooledGet), error => ['ECONNRESET', 'EPIPE'].includes(error.code));
-    assert.equal((await probe(freshLoopbackHttpGet)).status, 401);
+    // Negative control: Node up to 24.22.0 reuses the socket the server already closed and fails.
+    // Node 24.22.1 no longer reuses it, so the pooled probe may succeed; the fresh probes below stay strict.
+    const stale = await probe(pooledGet).then(() => null, error => error);
+    if (stale) assert(['ECONNRESET', 'EPIPE'].includes(stale.code), String(stale.code));
+    else t.diagnostic(`Node ${process.version} did not reuse the closed keep-alive socket; the negative control does not apply`);
+    const firstFresh = await probe(freshLoopbackHttpGet);
+    assert.equal(firstFresh.status, 401);
     blockEventLoop();
-    assert.deepEqual(await probe(freshLoopbackHttpGet), { status: 401, body: '{"ok":false,"error":{"code":"AUTH_REQUIRED"}}' });
+    const secondFresh = await probe(freshLoopbackHttpGet);
+    assert.deepEqual({ status: secondFresh.status, body: secondFresh.body },
+        { status: 401, body: '{"ok":false,"error":{"code":"AUTH_REQUIRED"}}' });
+    // The fix itself, on every Node version: each fresh probe opens its own connection and asks for it to be closed.
+    assert.deepEqual([firstFresh.requestConnection, secondFresh.requestConnection], ['close', 'close']);
+    assert.equal(new Set([pooled.connectionId, firstFresh.connectionId, secondFresh.connectionId]).size, 3);
 });
 
 test('production health retains strict readiness and reports a safe loopback phase and runtime code', async t => {

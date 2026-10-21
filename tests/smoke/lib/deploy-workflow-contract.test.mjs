@@ -405,8 +405,8 @@ test('Explorer QA takes AchillesAgentLib from the Box image and pins no commit',
   assert.ok(markerIndex > 0 && heredocStart > 0 && scriptEnd > scriptStart, 'AgentLib verification heredoc must close');
   assert.equal(
     source.slice(source.lastIndexOf('\n', heredocStart) + 1, heredocStart).trim(),
-    'node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$BOX_INSTANCE"',
-    'the verifier receives only the rollback helper and the exact Box instance',
+    'node --input-type=module - "$QA_TAIL_HELPER" "$BOX_INSTANCE"',
+    'the verifier receives only the tail rollback helper and the exact Box instance',
   );
   const script = source.slice(scriptStart, scriptEnd).replace(/^          /gm, '');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'explorer-qa-agentlib-verifier-'));
@@ -451,7 +451,7 @@ test('Explorer QA validates Ploinky AgentLib selection against the outer Box ide
 
   for (const required of [
     'BEGIN QA image-owned AgentLib verification',
-    `"$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$BOX_INSTANCE" <<'NODE'`,
+    `"$QA_TAIL_HELPER" "$BOX_INSTANCE" <<'NODE'`,
     'const adapters = productionAdapters();',
     'await adapters.verifyAgentLib(boxes[0])',
     'immutable source ${selection.sourceId}',
@@ -635,6 +635,23 @@ test('Explorer QA cleanup handles an absent workspace with exact orphan resource
   assert.equal(cleanup.match(/qa-backups\.mjs" prune --current-id/g)?.length, 1, 'exactly one retention call');
   const retention = cleanup.match(/# BEGIN QA superseded backup retention\n([\s\S]*?)# END QA superseded backup retention/)?.[1] ?? '';
   assert.match(retention, /^(?: {10}#.*\n)* {10}if \[ "\$QA_OPERATION" = redeploy \]; then\n[\s\S]*qa-backups\.mjs" prune --current-id[\s\S]*\n {10}fi\n {10}$/);
+});
+
+test('the resume setup sits inside the guarded cleanup region, ahead of the first workspace creation, and removes only through node', () => {
+  const source = fs.readFileSync(
+    path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'),
+    'utf8',
+  );
+  const first = source.indexOf('mkdir -p "$WORK_DIR"', source.indexOf('declare -a QA_CONTAINER_RECORDS'));
+  const setupStart = source.indexOf('# BEGIN QA resume setup');
+  const setupEnd = source.indexOf('# END QA resume setup');
+  assert.ok(setupStart > 0 && setupEnd > setupStart && setupEnd < first,
+    'the slice of the test above reaches the end of the resume setup, so its rm -rf guard covers it');
+  const setup = source.slice(setupStart, setupEnd);
+  assert.equal(setup.includes('mkdir -p "$WORK_DIR"'), false, 'a literal workspace mkdir would end that slice early');
+  assert.doesNotMatch(setup, /rm\s+-rf|rm\s+-fr/);
+  assert.match(setup, /fs\.rmSync\(directory, \{ recursive: true \}\)/);
+  assert.equal(source.split('mkdir -p "$WORK_DIR"').length - 1, 1, 'the only workspace mkdir is the one after the guarded region');
 });
 
 test('Explorer QA cleanup canonicalizes short and full container identities before ambiguity checks', () => {

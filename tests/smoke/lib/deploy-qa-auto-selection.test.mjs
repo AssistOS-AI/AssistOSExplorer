@@ -31,7 +31,27 @@ const SELECT = {
     'empty output': { output: '', status: 0 },
 };
 
-function runLocked(t, { workspace = 'absent', labelled = false, named = false, engineFailure = false, select = 'in-place',
+const BACKUP = 'redeploy-AbCd1234';
+const PREDECESSOR = 'd'.repeat(64);
+// The stub stands in for `qa-backups.mjs route`; the default answer is the steady state.
+const ROUTE = {
+    select: { output: '{"result":"routed","route":"select"}', status: 0 },
+    resume: { output: JSON.stringify({ result: 'routed', route: 'resume', backup: BACKUP, predecessorId: PREDECESSOR, engine: 'podman' }), status: 0 },
+    refused: { output: '{"result":"refused","code":"QA_EXACT_BOX_ABSENT_NOT_RESUMABLE","reason":"newest-complete"}', status: 1 },
+    'node exit 42': { output: '', status: 42 },
+    'node exit 43': { output: '', status: 43 },
+    'node exit 44': { output: '', status: 44 },
+    'node exit 75': { output: '', status: 75 },
+    'exit 0 with a resume-looking refusal': { output: '{"result":"refused","route":"resume"}', status: 0 },
+    garbage: { output: 'not json', status: 0 },
+    'unknown route': { output: '{"result":"routed","route":"fresh"}', status: 0 },
+    'routed without a route': { output: '{"result":"routed"}', status: 0 },
+    'resume-looking text': { output: '"route":"resume"', status: 0 },
+    'two lines': { output: '{"result":"routed","route":"select"}\n{"result":"routed","route":"resume"}', status: 0 },
+    'empty output': { output: '', status: 0 },
+};
+
+function runLocked(t, { workspace = 'absent', labelled = false, named = false, engineFailure = false, select = 'in-place', route = 'select',
     execute = 0, expected = COMMIT, drop = false } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-auto-selection-'));
     const updateDir = `/tmp/explorer-qa-update.${crypto.randomBytes(4).toString('hex')}`;
@@ -53,9 +73,17 @@ function runLocked(t, { workspace = 'absent', labelled = false, named = false, e
     const selected = SELECT[select];
     const selectionFile = path.join(root, 'selection');
     fs.writeFileSync(selectionFile, selected.output);
+    const routed = ROUTE[route];
+    const routeFile = path.join(root, 'route');
+    const routeMarker = path.join(root, 'route-calls');
+    fs.writeFileSync(routeFile, routed.output);
     fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh
 [ "$1" = '--version' ] && { echo v24.19.0; exit 0; }
 case "$*" in
+  *qa-backups.mjs\\ route*)
+    echo "route $*" >> '${routeMarker}'
+    cat '${routeFile}'
+    exit ${routed.status} ;;
   *update-explorer-qa.mjs\\ select*)
     echo "update $*" >> '${marker}'
     cat '${selectionFile}'
@@ -72,7 +100,8 @@ exec '${process.execPath}' "$@"
         input: script, encoding: 'utf8', timeout: 20000,
         env: { PATH: `${bin}:${process.env.PATH}`, HOME: '/home/admin' },
     });
-    return { result, calls: fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '' };
+    return { result, calls: fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '',
+        routes: fs.existsSync(routeMarker) ? fs.readFileSync(routeMarker, 'utf8') : '' };
 }
 
 test('locked deployment runs select and then execute with the pinned commit and no operator input', t => {
@@ -83,6 +112,8 @@ test('locked deployment runs select and then execute with the pinned commit and 
     assert.match(lines[0], new RegExp(`update-explorer-qa.mjs select --expected-commit ${COMMIT} --lock-held$`));
     assert.match(lines[1], new RegExp(`update-explorer-qa.mjs execute --receipt \\S+/update.json --expected-commit ${COMMIT} --lock-held$`));
     assert.doesNotMatch(calls, /podman|docker/);
+    assert.match(result.stdout, /^\[deploy-qa\] Deployment route: \{"result":"routed","route":"select"\}$/m);
+    assert.ok(result.stdout.indexOf('Deployment route:') < result.stdout.indexOf('Deployment selection:'), 'the route is decided before the selection');
     assert.match(result.stdout, /^\[deploy-qa\] Deployment selection: \{"result":"selected","mode":"in-place"/m);
 });
 
@@ -128,6 +159,50 @@ for (const workspace of ['symlink', 'file']) {
     });
 }
 
+// AC5: the route is decided before the selection, and only a parsed `resume` answer exits 44.
+test('a resume route exits 44 with the route in the log and never runs select or execute', t => {
+    const { result, calls, routes } = runLocked(t, { workspace: 'directory', route: 'resume' });
+    assert.equal(result.status, 44, result.stderr);
+    assert.match(result.stdout, new RegExp(`^\\[deploy-qa\\] Deployment route: \\{"result":"routed","route":"resume","backup":"${BACKUP}","predecessorId":"${PREDECESSOR}","engine":"podman"\\}$`, 'm'));
+    assert.match(result.stdout, /Interrupted preserving redeploy found/);
+    assert.doesNotMatch(result.stdout, /Deployment selection:/);
+    assert.equal(calls, '', 'neither select nor execute ran');
+    assert.match(routes, /qa-backups\.mjs route --lock-held$/m);
+    assert.equal(routes.trim().split('\n').length, 1);
+});
+
+test('a refused route exits 1, surfaces the refusal and never runs select', t => {
+    const { result, calls } = runLocked(t, { workspace: 'directory', route: 'refused' });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /"code":"QA_EXACT_BOX_ABSENT_NOT_RESUMABLE"/);
+    assert.doesNotMatch(result.stdout, /Deployment route:|Deployment selection:/);
+    assert.equal(calls, '');
+});
+
+test('a select route continues to the unchanged selection', t => {
+    const { result, calls } = runLocked(t, { workspace: 'directory', route: 'select', select: 'redeploy' });
+    assert.equal(result.status, 43, result.stderr);
+    assert.match(calls, /select --expected-commit/);
+    assert.doesNotMatch(calls, /execute/);
+});
+
+for (const route of ['node exit 42', 'node exit 43', 'node exit 44', 'node exit 75', 'exit 0 with a resume-looking refusal', 'garbage', 'unknown route',
+    'routed without a route', 'resume-looking text', 'two lines', 'empty output']) {
+    test(`a failing route (${route}) exits 1 and never reaches select, 42, 43 or 44`, t => {
+        const { result, calls } = runLocked(t, { workspace: 'directory', route });
+        assert.equal(result.status, 1, result.stderr);
+        assert.equal(calls, '', 'select and execute never ran');
+        assert.doesNotMatch(result.stdout, /Interrupted preserving redeploy|Preserving redeploy selected|Deployment selection:/);
+    });
+}
+
+test('a route is not asked for when the workspace is absent or unsafe', t => {
+    for (const workspace of ['absent', 'symlink', 'file']) {
+        const { routes } = runLocked(t, { workspace });
+        assert.equal(routes, '', workspace);
+    }
+});
+
 // AC7: no updater failure can fall through as 42 (fresh install) or 43 (redeploy).
 for (const select of ['node exit 42', 'node exit 43', 'node exit 1', 'node exit 19', 'garbage', 'unknown mode',
     'redeploy-looking text', 'two lines', 'failed result', 'empty output']) {
@@ -167,9 +242,13 @@ for (const [name, options] of Object.entries({
     });
 }
 
-test('the locked script produces 42 and 43 only from its own proofs and carries no operation argument', () => {
+test('the locked script produces 42, 43 and 44 only from its own proofs and carries no operation argument', () => {
     assert.equal(locked.match(/exit 42/g).length, 1);
     assert.equal(locked.match(/exit 43/g).length, 1);
+    assert.equal(locked.match(/exit 44/g).length, 1);
+    assert.match(locked, /resume\)\n[^\n]*\n\s+exit 44\n\s+;;/, 'exit 44 sits in the arm of a parsed resume route');
+    assert.match(locked, /route="\$\(node "\$update_dir\/qa-backups\.mjs" route --lock-held\)" \|\| \{ printf '%s\\n' "\$route"; exit 1; \}/);
+    assert.ok(locked.indexOf('qa-backups.mjs" route') < locked.indexOf('update-explorer-qa.mjs" select'), 'the route runs before the selection');
     assert.match(locked, /redeploy\)\n[\s\S]*?exit 43\n\s+;;/, 'exit 43 sits in the arm of a parsed redeploy selection');
     assert.match(locked, /selection="\$\(node "\$update_dir\/update-explorer-qa\.mjs" select --expected-commit "\$expected_commit" --lock-held\)" \|\| \{ printf '%s\\n' "\$selection"; exit 1; \}/);
     assert.match(locked, /\n\s*node "\$update_dir\/update-explorer-qa\.mjs" execute --receipt "\$update_dir\/update\.json" --expected-commit "\$expected_commit" --lock-held \|\| exit 1(?:\n|$)/);
@@ -180,6 +259,7 @@ for (const [status, output, failed] of [
     [0, 'updated=true\n', false],
     [42, 'updated=false\n', false],
     [43, 'updated=false\noperation=redeploy\n', false],
+    [44, 'updated=false\noperation=resume\n', false],
     [19, '', true],
     [75, '', true],
     [1, '', true],

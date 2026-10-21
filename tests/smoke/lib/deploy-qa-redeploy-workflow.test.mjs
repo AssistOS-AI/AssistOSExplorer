@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 const workflow = fs.readFileSync(new URL('../../../.github/workflows/deploy-explorer-qa.yml', import.meta.url), 'utf8');
 
@@ -117,22 +117,26 @@ for (const [name, options] of Object.entries({
     });
 }
 
-test('the pinned commit reaches every check: the Reconcile step has no input line of its own and neither pin check is gated', () => {
+test('the pinned commit reaches every check: the Reconcile step has no input line of its own and neither check is gated on the mode', () => {
     assert.doesNotMatch(step('Reconcile and start Explorer QA Box'), /^ {10}EXPECTED_EXPLORER_COMMIT:/m);
     assert.match(step('Reconcile and start Explorer QA Box'), /OPERATION: \$\{\{ steps\.inplace\.outputs\.operation \}\}/);
     assert.doesNotMatch(step('Update the existing Explorer QA installation in place'), /^ {8}env:/m);
     assert.match(stepScript('Update the existing Explorer QA installation in place'), /\$EXPECTED_EXPLORER_COMMIT/);
-    const early = workflow.indexOf('if [ "$QA_EXPLORER_HEAD" != "$EXPECTED_EXPLORER_COMMIT" ]; then');
+    // Reconcile accepts the pin or a proven fast-forward descendant of it; the in-place path keeps the exact pin.
+    const earlyCall = 'prove_explorer_fast_forward "$EXPECTED_EXPLORER_COMMIT" "$QA_EXPLORER_HEAD" early || exit 1';
+    const early = workflow.indexOf(earlyCall);
     assert.ok(early > 0);
-    const earlyGuard = workflow.slice(workflow.lastIndexOf('QA_EXPLORER_URL=', early) - 400, early);
-    assert.doesNotMatch(earlyGuard, /QA_OPERATION/, 'the early pin check is not gated on the mode');
-    assert.match(workflow.slice(early, early + 400), /not the expected \$EXPECTED_EXPLORER_COMMIT; nothing was stopped or moved\./);
+    const earlyGuard = workflow.slice(workflow.lastIndexOf('QA_EXPLORER_URL=', early) - 400, early + earlyCall.length);
+    assert.doesNotMatch(earlyGuard, /QA_OPERATION/, 'the early check is not gated on the mode');
     assert.ok(early < workflow.indexOf('# BEGIN QA retention helpers'));
-    const lateStart = workflow.indexOf('if [ "${EXPECTED_COMMITS[AchillesIDE]}" != "$EXPECTED_EXPLORER_COMMIT" ]; then');
+    assert.ok(early > workflow.indexOf('# END QA explorer fast-forward proof'));
+    assert.match(workflow.slice(early, early + 400), /QA_RESOLVED_EXPLORER_COMMIT="\$QA_EXPLORER_HEAD"/);
+    const lateCall = 'prove_explorer_fast_forward "$EXPECTED_EXPLORER_COMMIT" "${EXPECTED_COMMITS[AchillesIDE]}" late || exit 1';
+    const lateStart = workflow.indexOf(lateCall);
     assert.ok(lateStart > workflow.indexOf('EXPLORER_BRANCH="${EXPECTED_BRANCHES[AchillesIDE]}"') && lateStart < workflow.indexOf("PLOINKY_URL='"));
-    const late = workflow.slice(lateStart, workflow.indexOf("PLOINKY_URL='"));
-    assert.match(late, /if \[ "\$QA_OPERATION" = redeploy \]; then\n\s+echo "\[deploy-qa\] ERROR: AchillesIDE resolved to .*the retained backup \$QA_BACKUP_DIR can be rolled back\."\n\s+else\n\s+echo "\[deploy-qa\] ERROR: AchillesIDE resolved to .*nothing was started and no prior installation existed\."\n\s+fi\n\s+exit 1/);
-    assert.equal(workflow.slice(workflow.lastIndexOf('\n', lateStart) + 1, workflow.indexOf('\n', lateStart)).includes('QA_OPERATION'), false, 'the late pin check is not gated on the mode');
+    assert.equal(workflow.slice(workflow.lastIndexOf('\n', lateStart) + 1, workflow.indexOf('\n', lateStart)).includes('QA_OPERATION'), false, 'the late check is not gated on the mode');
+    // AC3: no exact comparison with the pin remains in Reconcile.
+    assert.doesNotMatch(workflow, /"\$\{EXPECTED_COMMITS\[AchillesIDE\]\}" != "\$EXPECTED_EXPLORER_COMMIT"|"\$QA_EXPLORER_HEAD" != "\$EXPECTED_EXPLORER_COMMIT"/);
 });
 
 // AC26: every helper the Reconcile script uses is transferred through the env file and checked by SHA.
@@ -283,7 +287,9 @@ test('the retention block is redeploy-only, unforgiving, and the only caller of 
     assert.doesNotMatch(retention, /\|\| true|if ! node|rm -rf|rm -fr/);
     assert.equal(retention.match(/qa-backups\.mjs" prune --current-id/g).length, 1);
     assert.equal(workflow.match(/qa-backups\.mjs" prune/g).length, 1, 'no other step prunes');
-    assert.match(shellBlock('retention helpers'), /^if \[ "\$QA_OPERATION" = redeploy \]; then\n/m);
+    // The helpers are also transferred for a resume, which runs the route, the lock holder and the tail from them.
+    assert.match(shellBlock('retention helpers'), /^if \[ "\$QA_OPERATION" = redeploy \] \|\| \[ "\$QA_OPERATION" = resume \]; then\n/m);
+    assert.match(shellBlock('redeploy preflight'), /^if \[ "\$QA_OPERATION" = redeploy \]; then\n/m, 'the preflight stays redeploy-only');
 });
 
 // AC13 and AC14: admissions, Node, pins, preflight, retention, capacity, then the first backup directory.
@@ -292,7 +298,7 @@ test('retention sits after the read-only admissions and the preflight, and befor
     const order = [
         'Durable-state admission passed',
         'Verified QA-scoped Node v24.19.0',
-        'if [ "$QA_EXPLORER_HEAD" != "$EXPECTED_EXPLORER_COMMIT" ]',
+        'prove_explorer_fast_forward "$EXPECTED_EXPLORER_COMMIT" "$QA_EXPLORER_HEAD" early',
         '# BEGIN QA redeploy preflight',
         '# BEGIN QA superseded backup retention',
         '// BEGIN QA capacity admission',
@@ -335,7 +341,7 @@ test('capacity admission is always fatal and its diagnostics stay in the log', t
         assert.match(admitted.at(-1), /Capacity admission passed before stopping the previous runtime\./);
         assert.doesNotMatch(admitted.join('\n'), /verdict/i);
     }
-    assert.match(workflow, /sudo -n \/usr\/bin\/node --input-type=module - "\$WORK_DIR" <<'NODE'\n\n?\s+import assert from 'node:assert\/strict';\n[\s\S]*?\/\/ BEGIN QA capacity admission/);
+    assert.match(workflow, /sudo -n \/usr\/bin\/node --input-type=module - "\$WORK_DIR" "\$QA_OPERATION" "\$QA_RESUME_BACKUP_DIR" <<'NODE'\n\n?\s+import assert from 'node:assert\/strict';\n[\s\S]*?\/\/ BEGIN QA capacity admission/);
     assert.doesNotMatch(workflow, /QA_CAPACITY_LOG|tee "\$QA_CAPACITY/);
 });
 
@@ -441,7 +447,7 @@ test('a redeploy never creates a tunnel', () => {
     assert.ok(refusal > 0 && refusal < workflow.indexOf('-X POST'));
     assert.match(workflow.slice(refusal - 200, refusal), /if \[ -n "\$\{OPERATION:-\}" \]/);
     assert.match(step('Reconcile and start Explorer QA Box'), /OPERATION: \$\{\{ steps\.inplace\.outputs\.operation \}\}/);
-    assert.match(workflow, /QA_OPERATION="\$\{2:-update\}"\n\s+case "\$QA_OPERATION" in\n\s+update\|redeploy\) ;;/);
+    assert.match(workflow, /QA_OPERATION="\$\{2:-update\}"\n\s+case "\$QA_OPERATION" in\n\s+update\|redeploy\|resume\) ;;/);
 });
 
 test('the redeploy logs carry the backup name, the rollback reference and the verifier input', t => {
@@ -577,7 +583,7 @@ test('the remote script sets the printed flag after the normal reference and wir
     const script = workflow;
     assert.match(script, /Rollback reference: backup=\$\{QA_BACKUP_DIR##\*\/\} predecessor=\$QA_PREDECESSOR_ID current=\$QA_CURRENT_ID"\n\s+QA_ROLLBACK_REFERENCE_PRINTED=1/);
     assert.match(script, /if \[ "\$status" -ne 0 \]; then\n\s+print_rollback_reference_on_failure \|\| true\n\s+fi\n\s+release_qa_workspace_lock/);
-    assert.match(script, /if \[ -n "\$QA_RETENTION_DIR" \]; then\n\s+rm -f "\$QA_RETENTION_DIR\/qa-backups\.mjs" "\$QA_RETENTION_DIR\/qa-backups-privileged\.mjs" \\\n\s+"\$QA_RETENTION_DIR\/update-explorer-qa\.mjs" "\$QA_RETENTION_DIR\/rollback-explorer-qa\.mjs"\n\s+rmdir "\$QA_RETENTION_DIR" 2>\/dev\/null \|\| true/);
+    assert.match(script, /if \[ -n "\$QA_RETENTION_DIR" \]; then\n\s+rm -f "\$QA_RETENTION_DIR\/qa-backups\.mjs" "\$QA_RETENTION_DIR\/qa-backups-privileged\.mjs" \\\n\s+"\$QA_RETENTION_DIR\/update-explorer-qa\.mjs" "\$QA_RETENTION_DIR\/rollback-explorer-qa\.mjs" \\\n\s+"\$QA_RETENTION_DIR\/hold-workspace-lock\.mjs"\n\s+rmdir "\$QA_RETENTION_DIR" 2>\/dev\/null \|\| true\n\s+fi\n\s+remove_qa_ancestry_dir \|\| true\n\s+exit "\$status"/);
     const parsed = spawnSync('bash', ['-n'], { input: shellBlock('failure rollback reference'), encoding: 'utf8' });
     assert.equal(parsed.status, 0, parsed.stderr);
 });
@@ -590,9 +596,711 @@ test('QA_STOP_STARTED is initialised before the trap and set after the backup di
     const stopEcho = at(/echo "\[deploy-qa\] Stopping nested QA services/);
     const assignments = [...workflow.matchAll(/\n\s+QA_STOP_STARTED=1\n/g)].map(match => match.index);
     assert.ok(init < trap, 'initialised before the trap');
-    assert.equal(assignments.length, 2, 'set before the stop echo and before the preservation step');
+    assert.equal(assignments.length, 3, 'set before the stop echo and before the preservation step, and once at the end of the resume setup');
+    assert.ok(assignments[2] > at(/# BEGIN QA resume setup/) && assignments[2] < at(/# END QA resume setup/), 'the third assignment is the resume setup\'s');
+    assert.ok(assignments[2] > at(/BEGIN QA resume stale runtime removal/), 'a resume declares the stop only after it holds the lock and removed the stale clones');
     assert.ok(backup < assignments[0] && assignments[0] < stopEcho, 'set after backup creation and before the stop echo');
     assert.match(workflow.slice(assignments[0], stopEcho), /^\n\s+QA_STOP_STARTED=1\n\s+$/);
     assert.match(workflow.slice(assignments[1], assignments[1] + 200), /^\n\s+QA_STOP_STARTED=1\n\s+sudo -n \/usr\/bin\/node/);
     assert.match(workflow, /\[ "\$QA_ROLLBACK_REFERENCE_PRINTED" = 0 \] \|\| return 0\n\s+\[ "\$QA_STOP_STARTED" = 1 \] \|\| return 0/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Fast-forward acceptance (AC2), the post-start rule (AC4), the resume path (AC8-AC11).
+// ---------------------------------------------------------------------------------------------
+
+const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+const gitEnv = {
+    GIT_AUTHOR_NAME: 'qa', GIT_AUTHOR_EMAIL: 'qa@example.test', GIT_COMMITTER_NAME: 'qa', GIT_COMMITTER_EMAIL: 'qa@example.test',
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_TERMINAL_PROMPT: '0',
+};
+const git = (cwd, ...args) => {
+    const result = spawnSync(realGit, args, { cwd, encoding: 'utf8', env: { ...process.env, ...gitEnv } });
+    assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
+    return result.stdout.trim();
+};
+
+// A real origin that serves partial clones: main is c1 <- c2 <- c3, and "side" branches off c1.
+// It is built once and shared, because every git call is slow on a loaded machine.
+let sharedOrigin = null;
+const originRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-ancestry-origin-'));
+after(() => fs.rmSync(originRoot, { recursive: true, force: true }));
+function makeOrigin() {
+    if (sharedOrigin) return sharedOrigin;
+    const root = originRoot;
+    const origin = path.join(root, 'origin');
+    fs.mkdirSync(origin);
+    git(origin, 'init', '-q', '-b', 'main');
+    git(origin, 'config', 'uploadpack.allowFilter', 'true');
+    const commit = name => { fs.writeFileSync(path.join(origin, name), name); git(origin, 'add', name); git(origin, 'commit', '-q', '-m', name); return git(origin, 'rev-parse', 'HEAD'); };
+    const c1 = commit('one');
+    git(origin, 'checkout', '-q', '-b', 'side');
+    const side = commit('side');
+    git(origin, 'checkout', '-q', 'main');
+    const c2 = commit('two');
+    const c3 = commit('three');
+    sharedOrigin = { root, url: `file://${origin}`, c1, c2, c3, side };
+    return sharedOrigin;
+}
+
+// `timeout` is GNU; the shim only fills a gap and never shadows a real one. The git wrapper records
+// how the ancestry clone was made, and can force the status of merge-base.
+function ancestryTools(root) {
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'timeout'), '#!/bin/sh\nshift\nexec "$@"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh
+real='${realGit}'
+log='${path.join(root, 'git.log')}'
+echo "git $* [lazy=\${GIT_NO_LAZY_FETCH:-}]" >> "$log"
+case " $* " in
+  *' merge-base '*) if [ -n "\${QA_FORCE_MERGE_BASE:-}" ]; then exit "$QA_FORCE_MERGE_BASE"; fi ;;
+esac
+"$real" "$@"
+status=$?
+if [ "$1" = clone ] && [ "$status" -eq 0 ]; then
+  for last; do :; done
+  echo "promisor=$("$real" -C "$last" config --get remote.origin.promisor) filter=$("$real" -C "$last" config --get remote.origin.partialclonefilter)" >> "$log"
+fi
+exit "$status"
+`, { mode: 0o755 });
+    return bin;
+}
+
+function runProof(t, { origin, expected, resolved, phase = 'early', operation = 'redeploy', url, merge } = {}) {
+    const tools = ancestryTools(origin.root);
+    fs.rmSync(path.join(origin.root, 'git.log'), { force: true });
+    const script = `set -uo pipefail
+QA_ANCESTRY_DIR=""
+QA_OPERATION=${operation}
+QA_BACKUP_DIR=/home/admin/.qa-deployment-backups/redeploy-AbCd1234
+QA_EXPLORER_URL='${url ?? origin.url}'
+QA_EXPLORER_BRANCH=main
+${shellBlock('ancestry directory removal')}
+${shellBlock('explorer fast-forward proof')}
+prove_explorer_fast_forward '${expected}' '${resolved}' ${phase}
+echo "status=$?"
+echo "dir=\${QA_ANCESTRY_DIR:-unset}"
+`;
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 60000,
+        env: { ...process.env, ...gitEnv, PATH: `${tools}:${process.env.PATH}`, ...(merge === undefined ? {} : { QA_FORCE_MERGE_BASE: String(merge) }) } });
+    const log = fs.existsSync(path.join(origin.root, 'git.log')) ? fs.readFileSync(path.join(origin.root, 'git.log'), 'utf8') : '';
+    return { result, log, status: Number(result.stdout.match(/^status=(\d+)$/m)?.[1]), dir: result.stdout.match(/^dir=(.*)$/m)?.[1] };
+}
+
+test('P == R is accepted without any fetch', t => {
+    const origin = makeOrigin();
+    const { status, result, log } = runProof(t, { origin, expected: origin.c3, resolved: origin.c3, url: 'file:///nonexistent/never-fetched' });
+    assert.equal(status, 0, result.stdout + result.stderr);
+    assert.equal(log, '', 'git never ran');
+    assert.doesNotMatch(result.stdout, /moved from/);
+});
+
+test('a fast-forward descendant is proven in a partial clone, logged, and its temporary directory is removed', t => {
+    const origin = makeOrigin();
+    const { status, result, log, dir } = runProof(t, { origin, expected: origin.c1, resolved: origin.c3, phase: 'late' });
+    assert.equal(status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, new RegExp(`\\[deploy-qa\\] AssistOSExplorer main moved from ${origin.c1} to ${origin.c3} \\(fast-forward, late\\); deploying ${origin.c3}\\.`));
+    assert.equal(dir, 'unset');
+    assert.match(log, /git clone --bare --filter=tree:0 --single-branch --branch main --no-tags file:\/\/\S+ \/tmp\/explorer_qa_ancestry\.[A-Za-z0-9]{6}\/history \[lazy=1\]/);
+    assert.match(log, /promisor=true filter=tree:0/, 'the clone is partial, so the filter path is the one exercised');
+    assert.match(log, /cat-file -e [a-f0-9]{40}\^\{commit\}/);
+    assert.match(log, /merge-base --is-ancestor /);
+    assert.equal(fs.readdirSync('/tmp').some(name => /^explorer_qa_ancestry\./.test(name) && log.includes(name)), false, 'the clone directory is gone');
+});
+
+const MESSAGES = {
+    'early redeploy': { operation: 'redeploy', phase: 'early', text: /nothing was stopped or moved\.$/m },
+    'early update': { operation: 'update', phase: 'early', text: /nothing was stopped or moved\.$/m },
+    'early resume': { operation: 'resume', phase: 'early', text: /QA stays down on its retained backup; dispatch again or roll back\.$/m },
+    'late redeploy': { operation: 'redeploy', phase: 'late', text: /the retained backup redeploy-AbCd1234 can be rolled back, or dispatch again to resume it\.$/m },
+    'late resume': { operation: 'resume', phase: 'late', text: /the retained backup redeploy-AbCd1234 can be rolled back, or dispatch again to resume it\.$/m },
+    'late fresh install': { operation: 'update', phase: 'late', text: /not the expected [a-f0-9]{40}; nothing was started and no prior installation existed\.$/m },
+};
+
+for (const [name, mode] of Object.entries(MESSAGES)) {
+    for (const [kind, pick] of Object.entries({
+        'a sibling branch head': o => [o.c1, o.side],
+        'a rewound parent': o => [o.c3, o.c2],
+    })) {
+        test(`${kind} is refused with the ${name} text`, t => {
+            const origin = makeOrigin();
+            const [expected, resolved] = pick(origin);
+            const { status, result, dir } = runProof(t, { origin, expected, resolved, ...mode });
+            assert.equal(status, 1, result.stdout + result.stderr);
+            assert.match(result.stdout, mode.text);
+            assert.match(result.stdout, /^\[deploy-qa\] ERROR: /m);
+            assert.doesNotMatch(result.stdout, /moved from/);
+            assert.equal(dir, 'unset');
+        });
+    }
+    test(`a fetch failure is refused with the ${name} text`, t => {
+        const origin = makeOrigin();
+        const { status, result, dir } = runProof(t, { origin, expected: origin.c1, resolved: origin.c3, url: 'file:///nonexistent/origin', ...mode });
+        assert.equal(status, 1, result.stdout + result.stderr);
+        assert.match(result.stdout, mode.text);
+        assert.equal(dir, 'unset');
+    });
+}
+
+test('every non-zero merge-base status (1 and 128) fails closed, and malformed inputs never reach git', t => {
+    const origin = makeOrigin();
+    for (const merge of [1, 128]) {
+        const { status, result } = runProof(t, { origin, expected: origin.c1, resolved: origin.c3, merge });
+        assert.equal(status, 1, `merge-base status ${merge}`);
+        assert.doesNotMatch(result.stdout, /moved from/);
+    }
+    for (const [expected, resolved, phase] of [[origin.c1, 'A'.repeat(40), 'early'], ['b'.repeat(39), origin.c3, 'early'], [origin.c1, '', 'late'], [origin.c1, origin.c3, 'middle']]) {
+        const { status, log } = runProof(t, { origin, expected, resolved, phase });
+        assert.equal(status, 1, `${expected} ${resolved} ${phase}`);
+        assert.equal(log, '', 'nothing was fetched');
+    }
+});
+
+test('the ancestry directory removal only deletes the exact mktemp shape of a real directory of this user', t => {
+    const removal = shellBlock('ancestry directory removal');
+    const run = path_ => spawnSync('bash', ['-c', `set -uo pipefail\nQA_ANCESTRY_DIR='${path_}'\n${removal}\nremove_qa_ancestry_dir\necho "status=$?"\necho "dir=\${QA_ANCESTRY_DIR:-unset}"\n`], { encoding: 'utf8', timeout: 20000 });
+    const stray = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-not-ancestry-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-ancestry-victim-'));
+    const link = `/tmp/explorer_qa_ancestry.${crypto.randomBytes(3).toString('hex').slice(0, 6)}`;
+    const real = fs.mkdtempSync('/tmp/explorer_qa_ancestry.');
+    t.after(() => { for (const item of [stray, victim, real]) fs.rmSync(item, { recursive: true, force: true }); fs.rmSync(link, { force: true }); });
+    fs.writeFileSync(path.join(victim, 'keep'), 'data');
+    fs.symlinkSync(victim, link);
+    for (const refused of [stray, link, '/tmp/explorer_qa_ancestry.abc', '/tmp/explorer_qa_ancestry.abcdefg', `${real}/..`]) {
+        assert.match(run(refused).stdout, /status=1/, refused);
+    }
+    assert.equal(fs.existsSync(stray), true);
+    assert.equal(fs.existsSync(path.join(victim, 'keep')), true, 'a symlink is never followed');
+    assert.match(run(real).stdout, /status=0\ndir=unset/);
+    assert.equal(fs.existsSync(real), false);
+    assert.match(run('/tmp/explorer_qa_ancestry.GONE00').stdout, /status=0/, 'an already removed directory is fine');
+});
+
+// AC4: the post-start rule, run against a stub engine. `merge-base` answers with a forced status.
+// The deployment script uses associative arrays, so these runs need bash 4 (the host and CI have it; macOS ships 3.2).
+const bashMajor = Number(spawnSync('bash', ['-c', 'echo ${BASH_VERSINFO[0]}'], { encoding: 'utf8' }).stdout.trim());
+const bash4 = bashMajor >= 4 ? {} : { skip: `Requires bash 4 associative arrays (found bash ${bashMajor}); run these on Linux.` };
+const GRAPH = ['AchillesIDE', 'UmamiAgent', 'OnlyOfficeAgent', 'AchillesCLI', 'copilot-agents', 'webmeet'];
+
+function runDeployedVerification(t, { deployed = {}, mergeBase = 0 } = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-post-start-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const calls = path.join(dir, 'calls');
+    const expected = Object.fromEntries(GRAPH.map((name, index) => [name, String(index + 1).repeat(40)]));
+    const script = `set -euo pipefail
+WORK_DIR=/home/admin/explorerQaWorkspace
+BOX_INSTANCE=ploinky-box-explorerqaworkspace-7a31ab7775eb
+BOX_ENGINE=podman
+GRAPH_REPOSITORIES=(${GRAPH.map(name => `'${name}|https://github.com/AssistOS-AI/${name}.git'`).join(' ')})
+declare -A EXPECTED_BRANCHES=(${GRAPH.map(name => `[${name}]=main`).join(' ')})
+declare -A EXPECTED_COMMITS=(${GRAPH.map(name => `[${name}]=${expected[name]}`).join(' ')})
+verify_ala_checkout() { :; }
+podman() {
+    # container exec --user podman BOX git -C DIR <subcommand> ...
+    local directory="$8" name sub="$9"
+    name="\${directory##*/}"
+    echo "$name $sub $*" >> '${calls}'
+    case "$sub" in
+        rev-parse)
+            if [ "\${10}" = HEAD ]; then
+                local override="DEPLOYED_$(printf '%s' "$name" | tr -c 'A-Za-z0-9\\n' _)"
+                printf '%s\\n' "\${!override:-$(printf '%s' "\${EXPECTED_COMMITS[$name]}")}"
+            else echo origin/main; fi ;;
+        branch) echo main ;;
+        status) ;;
+        merge-base) return ${mergeBase} ;;
+        *) echo "unexpected git $sub" >&2; return 99 ;;
+    esac
+}
+${shellBlock('deployed source verification')}
+printf 'final=%s\\n' "\${EXPECTED_COMMITS[@]}" | sort
+`;
+    const env = { ...process.env };
+    for (const [name, commit] of Object.entries(deployed)) env[`DEPLOYED_${name.replace(/[^A-Za-z0-9]/g, '_')}`] = commit;
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 20000, env });
+    return { result, expected, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '' };
+}
+
+test('a deployed commit equal to the resolved one passes without an ancestry check', bash4, t => {
+    const { result, calls, expected } = runDeployedVerification(t);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.doesNotMatch(calls, /merge-base/);
+    assert.match(result.stdout, new RegExp(`Deployed AssistOSExplorer commit: ${expected.AchillesIDE}`));
+    assert.equal(result.stdout.match(/Verified \S+ at [a-f0-9]{40}\./g).length, 6);
+});
+
+test('a deployed commit that is a fast-forward of the resolved one passes for every graph repository and is carried forward', bash4, t => {
+    for (const name of GRAPH) {
+        const moved = 'f'.repeat(40);
+        const { result, calls, expected } = runDeployedVerification(t, { deployed: { [name]: moved }, mergeBase: 0 });
+        assert.equal(result.status, 0, `${name}: ${result.stdout}${result.stderr}`);
+        assert.match(result.stdout, new RegExp(`\\[deploy-qa\\] ${name}/main moved from ${expected[name]} to ${moved} between source resolution and start \\(fast-forward\\); verifying ${moved}\\.`));
+        assert.match(result.stdout, new RegExp(`Verified ${name}/main at ${moved}\\.`));
+        assert.match(calls, new RegExp(`${name} merge-base .* merge-base --is-ancestor ${expected[name]} ${moved}`));
+        assert.ok(result.stdout.includes(`final=${moved}`), 'EXPECTED_COMMITS carries the deployed commit into the verification expectation');
+        assert.equal(result.stdout.includes(`final=${expected[name]}`), false);
+    }
+    const explorer = runDeployedVerification(t, { deployed: { AchillesIDE: 'e'.repeat(40) } });
+    assert.match(explorer.result.stdout, /Deployed AssistOSExplorer commit: e{40}/);
+});
+
+for (const status of [1, 128, 2]) {
+    test(`a deployed commit whose ancestry check exits ${status} is a mismatch`, bash4, t => {
+        const { result, expected } = runDeployedVerification(t, { deployed: { UmamiAgent: 'f'.repeat(40) }, mergeBase: status });
+        assert.equal(result.status, 1, result.stdout + result.stderr);
+        assert.match(result.stdout, new RegExp(`ERROR: deployed UmamiAgent commit ${'f'.repeat(40)}\\n.*does not match main at ${expected.UmamiAgent}\\.`));
+        assert.doesNotMatch(result.stdout, /moved from|Deployed AssistOSExplorer/);
+    });
+}
+
+test('a malformed deployed commit is a mismatch without asking git', bash4, t => {
+    const { result, calls } = runDeployedVerification(t, { deployed: { webmeet: 'not-a-commit' } });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(calls, /merge-base/);
+});
+
+test('the verification expectation takes the commits after the deployed-source loop, and the loop carries them', () => {
+    const loopEnd = workflow.indexOf('# END QA deployed source verification');
+    const sources = workflow.indexOf('QA_EXPECTED_SOURCES=(');
+    assert.ok(loopEnd > 0 && sources > loopEnd);
+    assert.match(workflow.slice(sources, sources + 700), /\$\{EXPECTED_COMMITS\[\$repository_name\]\}/);
+    assert.match(shellBlock('deployed source verification'), /EXPECTED_COMMITS\["\$repository_name"\]="\$deployed_commit"/);
+});
+
+// AC8, AC11 and the resume order (decision B3, notes N3 and N5).
+const resumeSetup = () => shellBlock('resume setup');
+
+test('the resume setup never stops, renames, backs up, prunes or removes through the shell, and sits in the guarded else-branch', () => {
+    const setup = resumeSetup();
+    for (const forbidden of ['container stop', 'container rename', 'mktemp -d "$HOME/.qa-deployment-backups', 'qa-backups.mjs" prune', 'rm -rf', 'rm -fr', 'mkdir -p "$WORK_DIR"',
+        'capture "$QA_BACKUP_DIR"', 'renameSync', 'cp -a']) {
+        assert.equal(setup.includes(forbidden), false, forbidden);
+    }
+    const wrapper = workflow.indexOf('if [ "$QA_OPERATION" != resume ]; then\n          mkdir -p "$HOME/.qa-deployment-backups"');
+    const backup = workflow.indexOf('QA_BACKUP_DIR="$(mktemp -d "$HOME/.qa-deployment-backups/redeploy-XXXXXXXX")"');
+    const stop = workflow.indexOf('"$engine" container stop --time 30');
+    const retired = workflow.indexOf('Exact prior Explorer QA runtime retired and retained stopped for rollback');
+    const elseBranch = workflow.indexOf('          else\n          # BEGIN QA resume setup');
+    const fi = workflow.indexOf('          # END QA resume setup\n          fi\n');
+    assert.ok(wrapper > 0 && wrapper < backup && backup < stop && stop < retired && retired < elseBranch && elseBranch < fi,
+        'the whole stop, backup and move segment is the if-branch of the resume guard');
+    // The segment is only skipped by a resume; preflight and retention stay redeploy-only.
+    assert.match(shellBlock('redeploy preflight'), /^if \[ "\$QA_OPERATION" = redeploy \]; then\n/m);
+    assert.match(shellBlock('superseded backup retention'), /^if \[ "\$QA_OPERATION" = redeploy \]; then\n/m);
+    assert.match(workflow, /\[ "\$QA_OPERATION" = resume \] \|\| assert_qa_preservation_admission/);
+});
+
+test('the resume setup follows the reviewed order: archive receipts, hold the lock, remove stale clones, declare the stop', () => {
+    const setup = resumeSetup();
+    const at = text => { const index = setup.indexOf(text); assert.ok(index >= 0, text); return index; };
+    const order = [
+        'QA_BACKUP_DIR="$QA_RESUME_BACKUP_DIR"',
+        'QA_CONTAINER_RECORDS=("$QA_RESUME_RECORD")',
+        'mkdir -m 700 "$QA_INTERRUPTED_DIR"',
+        'mv -n ',
+        'node "$QA_RETENTION_DIR/hold-workspace-lock.mjs" "$QA_BACKUP_DIR/workspace" "$QA_BACKUP_DIR"',
+        'QA_WORKSPACE_LOCK_PID=$!',
+        'assert_qa_workspace_lock_held\n',
+        'BEGIN QA resume stale runtime removal',
+        'fs.rmSync(directory, { recursive: true })',
+        'END QA resume stale runtime removal',
+        'QA_STOP_STARTED=1',
+        'Resuming the preserving redeploy from',
+    ].map(at);
+    assert.deepEqual([...order].sort((a, b) => a - b), order);
+    assert.match(setup, /"\$QA_TAIL_HELPER" "\$\$" > "\$QA_BACKUP_DIR-lock\.log"/);
+    assert.match(setup, /QA_TAIL_HELPER="\$QA_RETENTION_DIR\/rollback-explorer-qa\.mjs"/);
+});
+
+test('the resume lock holder is byte-identical to the archive lock holder, so the lock tests cover both', () => {
+    const holders = [...workflow.matchAll(/cat > "\$(?:QA_HELPER_DIR|QA_RETENTION_DIR)\/hold-workspace-lock\.mjs" <<'NODE'\n([\s\S]*?)\n {10}NODE\n/g)].map(match => match[1]);
+    assert.equal(holders.length, 2);
+    assert.equal(holders[0], holders[1]);
+    assert.match(holders[0], /BEGIN QA archive lock holder/);
+});
+
+test('the tail runs the helper chosen by each branch and no tail step reads the frozen copy directly (AC11)', () => {
+    assert.ok(workflow.match(/QA_TAIL_HELPER/g).length >= 4);
+    assert.equal(workflow.match(/^ {10}QA_TAIL_HELPER=/gm).length, 2, 'one definition per branch');
+    const tail = workflow.slice(workflow.indexOf('\n          mkdir -p "$WORK_DIR"\n'));
+    assert.doesNotMatch(tail, /"\$QA_HELPER_DIR\/rollback-explorer-qa\.mjs"/);
+    assert.equal(tail.match(/"\$QA_TAIL_HELPER"/g).length, 2);
+    // The frozen copy stays the rollback authority: the non-resume branch still points at it.
+    assert.match(workflow, /QA_HELPER_DIR="\$QA_BACKUP_DIR\/helpers"\n {10}QA_TAIL_HELPER="\$QA_HELPER_DIR\/rollback-explorer-qa\.mjs"/);
+});
+
+test('every edited heredoc of this change is valid module code', t => {
+    assertParses(t, 'resume stale runtime removal', `import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+${block('resume stale runtime removal')}`);
+    assertParses(t, 'capacity admission', `import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+${block('capacity admission')}`);
+    const removal = workflow.match(/remove_qa_ancestry_dir\(\) \{\n[^\n]*\n[^\n]*<<'NODE' \|\| return 1\n([\s\S]*?)\n {10}NODE\n/)[1].replace(/^ {10}/gm, '');
+    assertParses(t, 'ancestry directory removal', removal);
+    assertParses(t, 'archive lock holder', block('archive lock holder'));
+    for (const name of ['REMOTE', 'UPDATE']) {
+        const script = workflow.match(new RegExp(`<<'${name}'[^\\n]*\\n([\\s\\S]*?)\\n {10}${name}\\n`))[1].replace(/^ {10}/gm, '');
+        assert.equal(spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' }).status, 0, name);
+    }
+    for (const name of ['resume setup', 'resume admission', 'explorer fast-forward proof', 'ancestry directory removal', 'deployed source verification']) {
+        assert.equal(spawnSync('bash', ['-n'], { input: shellBlock(name), encoding: 'utf8' }).status, 0, name);
+    }
+});
+
+// Resume admission: the route is asked again under the Reconcile lock, and only `resume` proceeds.
+const RESUME_BOX = 'ploinky-box-explorerqaworkspace-7a31ab7775eb';
+const PREDECESSOR = 'd'.repeat(64);
+const RESUME_BACKUP = 'redeploy-AbCd1234';
+const resumeAnswer = (extra = {}) => JSON.stringify({ result: 'routed', route: 'resume', backup: RESUME_BACKUP, predecessorId: PREDECESSOR, engine: 'podman', ...extra });
+
+function runResumeAdmission(t, { operation = 'resume', answer = resumeAnswer(), status = 0, record = `podman|${PREDECESSOR}|${RESUME_BOX}\n`, backupExists = true } = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-resume-admission-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const home = path.join(dir, 'home');
+    const backup = path.join(home, '.qa-deployment-backups', RESUME_BACKUP);
+    if (backupExists) fs.mkdirSync(backup, { recursive: true });
+    if (backupExists && record !== null) fs.writeFileSync(path.join(backup, 'prior-containers.txt'), record);
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    const calls = path.join(dir, 'calls');
+    fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh
+case "$*" in
+  *qa-backups.mjs\\ route*) echo "$*" >> '${calls}'; printf '%s\\n' "$QA_STUB_ANSWER"; exit "$QA_STUB_STATUS" ;;
+esac
+exec '${process.execPath}' "$@"
+`, { mode: 0o755 });
+    const script = `set -euo pipefail
+QA_OPERATION=${operation}
+QA_RETENTION_DIR=${dir}
+BOX_INSTANCE=${RESUME_BOX}
+${shellBlock('resume admission')}
+echo "backup=$QA_RESUME_BACKUP dir=$QA_RESUME_BACKUP_DIR record=$QA_RESUME_RECORD"
+`;
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 20000,
+        env: { PATH: `${bin}:${process.env.PATH}`, HOME: home, QA_STUB_ANSWER: answer, QA_STUB_STATUS: String(status) } });
+    return { result, home, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '' };
+}
+
+test('a proven resume route is admitted again under the Reconcile lock and its identifiers are kept', t => {
+    const { result, home, calls } = runResumeAdmission(t);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(calls, /qa-backups\.mjs route --lock-held$/m);
+    assert.match(result.stdout, /Resume route confirmed under the Reconcile lock: \{"result":"routed","route":"resume"/);
+    assert.match(result.stdout, new RegExp(`backup=${RESUME_BACKUP} dir=${home}/.qa-deployment-backups/${RESUME_BACKUP} record=podman\\|${PREDECESSOR}\\|${RESUME_BOX}`));
+});
+
+for (const [name, options, message] of [
+    ['a select answer', { answer: '{"result":"routed","route":"select"}' }, /did not prove a resumable redeploy/],
+    ['a refusal', { answer: '{"result":"refused","code":"QA_REDEPLOY_UNFINISHED"}', status: 1 }, /resume route was refused.*QA_REDEPLOY_UNFINISHED/],
+    ['a route helper that exits 75', { answer: '', status: 75 }, /resume route was refused/],
+    ['garbage', { answer: 'not json' }, /did not prove a resumable redeploy/],
+    ['a short predecessor id', { answer: resumeAnswer({ predecessorId: 'd'.repeat(63) }) }, /did not prove a resumable redeploy/],
+    ['an uppercase predecessor id', { answer: resumeAnswer({ predecessorId: 'D'.repeat(64) }) }, /did not prove a resumable redeploy/],
+    ['a malformed backup name', { answer: resumeAnswer({ backup: 'redeploy-../x' }) }, /did not prove a resumable redeploy/],
+    ['an unknown engine', { answer: resumeAnswer({ engine: 'lxc' }) }, /did not prove a resumable redeploy/],
+    ['a missing backup directory', { backupExists: false }, /does not record the retained predecessor Box/],
+    ['a prior-containers record of another Box', { record: `podman|${'e'.repeat(64)}|${RESUME_BOX}\n` }, /does not record the retained predecessor Box/],
+    ['a prior-containers record with a trailing space', { record: `podman|${PREDECESSOR}|${RESUME_BOX} \n` }, /does not record the retained predecessor Box/],
+    ['a prior-containers record of another engine', { record: `docker|${PREDECESSOR}|${RESUME_BOX}\n` }, /does not record the retained predecessor Box/],
+]) {
+    test(`resume admission refuses ${name} before anything is stopped or moved`, t => {
+        const { result } = runResumeAdmission(t, options);
+        assert.equal(result.status, 1, result.stdout + result.stderr);
+        assert.match(result.stdout, message);
+        assert.doesNotMatch(result.stdout, /Resume admitted|backup=/);
+    });
+}
+
+test('resume admission does nothing for the other operations', t => {
+    for (const operation of ['redeploy', 'update']) {
+        const { result, calls } = runResumeAdmission(t, { operation });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(calls, '');
+        assert.match(result.stdout, /backup= dir= record=\n/);
+    }
+});
+
+// AC10: a resume measures only what the tail regenerates; every other mode keeps the 25 GiB rule.
+const GIB = 1024n ** 3n;
+const RETAINED = '/home/admin/.qa-deployment-backups/redeploy-AbCd1234';
+
+function runCapacity(t, { free, argv = [], sizes = {}, failing = [], liveWorkspace = 30n * GIB } = {}) {
+    const logs = [];
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-resume-capacity-'));
+    t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+    const source = block('capacity admission').replace("'/home/admin/explorerQaWorkspace'", JSON.stringify(target));
+    const realLstat = fs.lstatSync;
+    const directory = realLstat(target);
+    const fake = { ...fs, statfsSync: () => ({ bavail: free, bsize: 1n }),
+        lstatSync: item => String(item).startsWith(RETAINED) ? directory : realLstat(item) };
+    const du = (_command, args) => {
+        const location = args.at(-1);
+        if (failing.some(item => location.endsWith(item))) throw Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
+        if (location === target) return `${liveWorkspace}\tx\n`;
+        const relative = location.startsWith(`${RETAINED}/workspace`) ? location.slice(`${RETAINED}/workspace`.length).replace(/^\//, '') : null;
+        return `${relative === null ? 0n : (sizes[relative] ?? 0n)}\tx\n`;
+    };
+    // Stubs for the du probe and statfs only; the block itself is the one in the workflow.
+    const run = () => new Function('assert', 'fs', 'path', 'execFileSync', 'process', 'console', source)(
+        assert, fake, path, du, { argv: ['node', '-', target, ...argv] }, { log: (...parts) => logs.push(parts.join(' ')) });
+    return { run, logs };
+}
+
+const RESUME_SIZES = { '': 14n * GIB, '.ploinky/box': 2n * GIB, '.runtime': 1n * GIB, '.ploinky/repos': 1n * GIB, AdvancedLanguageAgent: GIB / 2n };
+
+test('a resume needs 4 GiB plus the regenerated components, not the 25 GiB floor, and logs the rollback headroom', t => {
+    // 2 + 1 + 1 + 0.5 = 4.5 GiB regenerated, so 8.5 GiB are required.
+    const enough = runCapacity(t, { free: 9n * GIB, argv: ['resume', RETAINED], sizes: RESUME_SIZES });
+    enough.run();
+    const report = JSON.parse(enough.logs[0].slice('[deploy-qa] Capacity diagnostics: '.length));
+    assert.equal(report.requiredFreeBytes, String(8n * GIB + GIB / 2n));
+    assert.equal(report.shortfallBytes, '0');
+    assert.equal(report.resume.regeneratedBytes, String(4n * GIB + GIB / 2n));
+    assert.equal(report.resume.durableBytes, String(14n * GIB - 4n * GIB - GIB / 2n));
+    assert.equal(report.resume.rollbackHeadroomBytes, String(9n * GIB - (14n * GIB - 4n * GIB - GIB / 2n)), 'logged, and negative when a rollback would not fit');
+    assert.equal(report.resume.retainedBackup, 'redeploy-AbCd1234');
+    assert.match(enough.logs.at(-1), /Capacity admission passed/);
+    const short = runCapacity(t, { free: 8n * GIB, argv: ['resume', RETAINED], sizes: RESUME_SIZES });
+    assert.throws(() => short.run(), /Insufficient QA capacity/);
+    assert.equal(JSON.parse(short.logs[0].slice('[deploy-qa] Capacity diagnostics: '.length)).shortfallBytes, String(GIB / 2n));
+});
+
+test('a resume measurement is fatal: an unreadable component cannot lower the requirement', t => {
+    for (const failing of ['.ploinky/box', '.runtime', '.ploinky/repos', 'AdvancedLanguageAgent', 'workspace']) {
+        const { run } = runCapacity(t, { free: 100n * GIB, argv: ['resume', RETAINED], sizes: RESUME_SIZES, failing: [failing] });
+        assert.throws(() => run(), /Unable to measure QA workspace allocation/, failing);
+    }
+});
+
+test('the resume rule applies only to the exact retained backup of a resume', t => {
+    for (const argv of [['resume'], ['resume', ''], ['resume', '/home/admin/.qa-deployment-backups/redeploy-../x'], ['resume', '/tmp/redeploy-AbCd1234'],
+        ['resume', `${RETAINED}/workspace`]]) {
+        assert.throws(() => runCapacity(t, { free: 100n * GIB, argv, sizes: RESUME_SIZES }).run(), /exact retained backup/, argv.join(' '));
+    }
+    // Any other mode keeps the 25 GiB floor and the prior-workspace rule, whatever else is passed.
+    for (const argv of [[], ['redeploy', ''], ['update', RETAINED], ['anything', RETAINED]]) {
+        assert.throws(() => runCapacity(t, { free: 15n * GIB, argv, sizes: RESUME_SIZES }).run(), /Insufficient QA capacity/, argv.join(' '));
+        const admitted = runCapacity(t, { free: 40n * GIB, argv, sizes: RESUME_SIZES });
+        admitted.run();
+        const report = JSON.parse(admitted.logs[0].slice('[deploy-qa] Capacity diagnostics: '.length));
+        assert.equal(report.requiredFreeBytes, String(34n * GIB));
+        assert.equal(report.resume, null);
+        assert.equal(report.minimumFreeBytes, String(25n * GIB));
+    }
+});
+
+// AC9: the resume setup, run for real against a fixture workspace, a fixture backup and a stand-in lock manager.
+const lockFunctions = () => workflow.slice(workflow.indexOf('          assert_qa_workspace_lock_held() {'), workflow.indexOf('          # BEGIN QA failure rollback reference'))
+    .replace(/^ {10}/gm, '');
+
+function resumeFixture(t, { origins = {} } = {}) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-resume-setup-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const home = path.join(root, 'home');
+    const backup = path.join(home, '.qa-deployment-backups', RESUME_BACKUP);
+    const workspace = path.join(root, 'explorerQaWorkspace');
+    const retention = path.join(root, 'retention');
+    for (const dir of [path.join(backup, 'helpers'), path.join(backup, 'workspace'), path.join(workspace, '.runtime'), retention]) fs.mkdirSync(dir, { recursive: true });
+    const clone = (relative, origin) => {
+        const directory = path.join(workspace, relative);
+        fs.mkdirSync(directory, { recursive: true });
+        git(directory, 'init', '-q', '-b', 'main');
+        git(directory, 'remote', 'add', 'origin', origin);
+        fs.writeFileSync(path.join(directory, 'stale'), 'interrupted clone');
+        return directory;
+    };
+    const stale = {
+        ploinky: clone('.runtime/ploinky', origins.ploinky ?? 'https://github.com/AssistOS-AI/ploinky.git'),
+        ala: clone('AdvancedLanguageAgent', origins.ala ?? 'https://github.com/AssistOS-AI/AdvancedLanguageAgent.git'),
+    };
+    fs.writeFileSync(path.join(backup, 'prior-containers.txt'), `podman|${PREDECESSOR}|${RESUME_BOX}\n`);
+    fs.writeFileSync(path.join(backup, 'helpers', 'rollback-explorer-qa.mjs'), '// frozen rollback authority\n');
+    const events = path.join(root, 'events');
+    // The stand-in helper exports what the lock holder and the tail use. Acquiring records whether the stale clones still exist,
+    // which proves that they are removed only after the workspace lock is held.
+    fs.writeFileSync(path.join(retention, 'rollback-explorer-qa.mjs'), `
+import fs from 'node:fs';
+export const QA_SCOPE = { box: '${RESUME_BOX}' };
+export const productionAdapters = () => ({
+    assertHost() {},
+    async acquireWorkspaceLock(runtimeRoot) {
+        fs.appendFileSync('${events}', 'acquire ' + runtimeRoot + ' clones-present=' + (fs.existsSync('${stale.ploinky}') && fs.existsSync('${stale.ala}')) + '\\n');
+        return { release() { fs.appendFileSync('${events}', 'release\\n'); } };
+    },
+});
+`);
+    return { root, home, backup, workspace, retention, stale, events };
+}
+
+function runResumeSetup(t, fixture, { repeat = 1, release = true } = {}) {
+    const { home, backup, workspace, retention } = fixture;
+    const setup = shellBlock('resume setup').replaceAll('/home/admin/explorerQaWorkspace', workspace);
+    const once = `${setup}
+assert_qa_workspace_lock_held
+echo "stop-started=$QA_STOP_STARTED lock-pid-set=$([ -n "$QA_WORKSPACE_LOCK_PID" ] && echo yes || echo no)"
+echo "tail-helper=$QA_TAIL_HELPER helper-dir=$QA_HELPER_DIR records=\${QA_CONTAINER_RECORDS[*]}"
+${release ? `# The release request is written atomically here: the workflow's own writer creates the file before its content,
+# so a holder poll in between can see it empty (reported separately as an adjacent finding).
+printf 'release\\n' > "$QA_BACKUP_DIR-lock-release.tmp"
+mv "$QA_BACKUP_DIR-lock-release.tmp" "$QA_BACKUP_DIR-lock-release"
+wait "$QA_WORKSPACE_LOCK_PID"
+QA_WORKSPACE_LOCK_PID=""` : ''}
+`;
+    const script = `set -euo pipefail
+umask 077
+${lockFunctions()}
+assert_qa_install_admission() { echo admission-called; }
+QA_OPERATION=resume
+QA_RETENTION_DIR='${retention}'
+QA_RESUME_BACKUP=${RESUME_BACKUP}
+QA_RESUME_BACKUP_DIR='${backup}'
+QA_RESUME_PREDECESSOR=${PREDECESSOR}
+QA_RESUME_RECORD='podman|${PREDECESSOR}|${RESUME_BOX}'
+BOX_INSTANCE=${RESUME_BOX}
+WORK_DIR='${workspace}'
+QA_WORKSPACE_LOCK_PID=""
+QA_STOP_STARTED=0
+declare -a QA_CONTAINER_RECORDS=()
+${Array.from({ length: repeat }, (_, index) => `${index ? 'sleep 1.1\n' : ''}${once}`).join('\n')}
+`;
+    return spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 60000, env: { PATH: process.env.PATH, HOME: home, ...gitEnv } });
+}
+
+const staleReceipts = backup => {
+    const outer = { 'lock-ready.json': '{"held":true}', 'lock-released.json': '{"released":true}', 'lock-release': 'release\n', 'lock.log': 'old log\n', 'lock-source.txt': 'master|abc\n' };
+    for (const [suffix, text] of Object.entries(outer)) fs.writeFileSync(`${backup}-${suffix}`, text, { mode: 0o600 });
+    fs.writeFileSync(path.join(backup, 'lock-ready.json'), '{"held":true,"inner":true}', { mode: 0o600 });
+    fs.writeFileSync(path.join(backup, 'lock-release'), 'release\n', { mode: 0o600 });
+    return outer;
+};
+
+test('the resume setup archives the stale receipts, holds the lock through the predecessor runtime, then removes only the stale clones', t => {
+    const f = resumeFixture(t);
+    const outer = staleReceipts(f.backup);
+    fs.writeFileSync(path.join(f.workspace, 'operator-data'), 'preserved');
+    const result = runResumeSetup(t, f);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    // Archived, with nothing lost: the outer and inner receipts sit in one interrupted-<UTC> directory.
+    const archives = fs.readdirSync(path.join(f.backup, 'helpers')).filter(name => /^interrupted-\d{8}T\d{6}Z$/.test(name));
+    assert.equal(archives.length, 1);
+    const archived = path.join(f.backup, 'helpers', archives[0]);
+    for (const [suffix, text] of Object.entries(outer)) assert.equal(fs.readFileSync(path.join(archived, `outer-${suffix}`), 'utf8'), text, suffix);
+    assert.equal(fs.readFileSync(path.join(archived, 'inner-lock-ready.json'), 'utf8'), '{"held":true,"inner":true}');
+    assert.equal(fs.statSync(archived).mode & 0o777, 0o700);
+    // The holder started after the archive, took the lock through the predecessor's workspace, and kept it until released.
+    const events = fs.readFileSync(f.events, 'utf8').trim().split('\n');
+    assert.deepEqual(events, [`acquire ${path.join(f.backup, 'workspace')} clones-present=true`, 'release']);
+    assert.match(result.stdout, /^admission-called$/m);
+    assert.match(result.stdout, /^stop-started=1 lock-pid-set=yes$/m);
+    assert.match(result.stdout, new RegExp(`^tail-helper=${f.retention}/rollback-explorer-qa\\.mjs helper-dir=${f.backup}/helpers records=podman\\|${PREDECESSOR}\\|${RESUME_BOX}$`, 'm'));
+    assert.match(result.stdout, new RegExp(`Resuming the preserving redeploy from ${RESUME_BACKUP}; predecessor ${PREDECESSOR} stays retained stopped; no service is stopped and no workspace file is moved\\.`));
+    // Only the two stale clones are gone; the operator data and the runtime directory stay.
+    assert.equal(fs.existsSync(f.stale.ploinky), false);
+    assert.equal(fs.existsSync(f.stale.ala), false);
+    assert.equal(fs.readFileSync(path.join(f.workspace, 'operator-data'), 'utf8'), 'preserved');
+    assert.equal(fs.statSync(path.join(f.workspace, '.runtime')).isDirectory(), true);
+    assert.match(result.stdout, /Removed the stale \.runtime\/ploinky clone/);
+    assert.match(result.stdout, /Removed the stale AdvancedLanguageAgent clone/);
+    // The released receipts of this run are the only ones left beside the backup.
+    assert.equal(fs.existsSync(`${f.backup}-lock-released.json`), true);
+});
+
+test('without the archive a stale release request ends the new lease at once (the base behavior this order prevents)', t => {
+    const f = resumeFixture(t);
+    staleReceipts(f.backup);
+    fs.rmSync(`${f.backup}-lock-ready.json`);
+    fs.rmSync(`${f.backup}-lock-released.json`);
+    // Same holder, started with the failed run's release request still present and no archive step.
+    const holder = [...workflow.matchAll(/cat > "\$QA_RETENTION_DIR\/hold-workspace-lock\.mjs" <<'NODE'\n([\s\S]*?)\n {10}NODE\n/g)][0][1].replace(/^ {10}/gm, '');
+    fs.writeFileSync(path.join(f.retention, 'hold-workspace-lock.mjs'), holder);
+    const script = `set -euo pipefail
+${lockFunctions()}
+BOX_INSTANCE=${RESUME_BOX}
+QA_BACKUP_DIR='${f.backup}'
+QA_WORKSPACE_LOCK_PID=""
+node '${f.retention}/hold-workspace-lock.mjs' '${f.backup}/workspace' '${f.backup}' '${f.retention}/rollback-explorer-qa.mjs' "$$" > '${f.backup}-lock.log' 2>&1 &
+QA_WORKSPACE_LOCK_PID=$!
+for _ in $(seq 1 200); do if [ -f '${f.backup}-lock-ready.json' ]; then break; fi; sleep 0.1; done
+sleep 1
+assert_qa_workspace_lock_held
+`;
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 30000, env: { PATH: process.env.PATH, HOME: f.home } });
+    assert.notEqual(result.status, 0, 'the lease was released by the stale request, so the held-lock assertion fails');
+});
+
+test('a second resume after a failed tail archives the new receipts beside the first archive and loses nothing', t => {
+    const f = resumeFixture(t);
+    const result = runResumeSetup(t, f, { repeat: 2 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const archives = fs.readdirSync(path.join(f.backup, 'helpers')).filter(name => /^interrupted-/.test(name)).sort();
+    assert.equal(archives.length, 2);
+    // The first run's receipts (ready, released, release request, log) are in the first archive; the second finds the second set.
+    assert.deepEqual(fs.readdirSync(path.join(f.backup, 'helpers', archives[1])).filter(name => name.startsWith('outer-')).sort(),
+        ['outer-lock-ready.json', 'outer-lock-release', 'outer-lock-released.json', 'outer-lock.log']);
+    assert.equal(fs.readdirSync(path.join(f.backup, 'helpers', archives[0])).length, 0, 'the first archive was empty: nothing existed before the first run');
+    assert.equal(fs.existsSync(f.stale.ploinky), false);
+});
+
+test('a stale clone with a foreign origin, a symlink or a wrong runtime entry stops the resume before the stop is declared and nothing else is removed', t => {
+    for (const [name, prepare, options] of [
+        ['a foreign origin of the ploinky clone', () => {}, { origins: { ploinky: 'https://example.test/evil/ploinky.git' } }],
+        ['a foreign origin of the ALA clone', () => {}, { origins: { ala: 'https://github.com/AssistOS-AI/Other.git' } }],
+        ['an extra entry in the runtime directory', f => fs.writeFileSync(path.join(f.workspace, '.runtime', 'unreviewed'), 'x'), {}],
+        ['a symlinked ALA clone', f => { fs.rmSync(f.stale.ala, { recursive: true }); fs.symlinkSync(f.stale.ploinky, f.stale.ala); }, {}],
+    ]) {
+        const f = resumeFixture(t, options);
+        prepare(f);
+        fs.writeFileSync(path.join(f.workspace, 'operator-data'), 'preserved');
+        const result = runResumeSetup(t, f);
+        assert.notEqual(result.status, 0, name);
+        assert.doesNotMatch(result.stdout, /Resuming the preserving redeploy|stop-started=1/, name);
+        assert.equal(fs.readFileSync(path.join(f.workspace, 'operator-data'), 'utf8'), 'preserved', name);
+        assert.equal(fs.lstatSync(f.stale.ploinky, { throwIfNoEntry: false }) !== undefined, true, `${name}: no clone is removed when any proof fails`);
+        assert.equal(fs.lstatSync(f.stale.ala, { throwIfNoEntry: false }) !== undefined, true, name);
+    }
+});
+
+test('the resume setup refuses a backup that is not the exact redeploy directory', t => {
+    const f = resumeFixture(t);
+    const result = runResumeSetup(t, f);
+    assert.equal(result.status, 0, result.stderr);
+    const bad = resumeFixture(t);
+    const setup = shellBlock('resume setup');
+    const script = `set -euo pipefail\numask 077\nQA_RETENTION_DIR='${bad.retention}'\nQA_RESUME_BACKUP=redeploy-AbCd1234\nQA_RESUME_BACKUP_DIR='${bad.home}/.qa-deployment-backups/redeploy-OTHER123'\n${setup}\n`;
+    const refused = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 10000, env: { PATH: process.env.PATH, HOME: bad.home } });
+    assert.equal(refused.status, 1);
+    assert.match(refused.stdout, /the resume backup is not a real redeploy backup directory/);
+    assert.equal(fs.existsSync(bad.stale.ploinky), true);
+});
+
+// The summary shows the route and the deployed commit.
+test('the summary renders the route and, for a resume, the deployed commit', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-summary-resume-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(dir, 'explorer-qa-update-result.json'), `[deploy-qa] Interrupted preserving redeploy found.\n[deploy-qa] Deployment route: ${resumeAnswer()}\n`);
+    fs.writeFileSync(path.join(dir, 'explorer-qa-reconcile.log'), `[deploy-qa] Selected AssistOSExplorer commit ${'9'.repeat(40)} (dispatch pin ${COMMIT}).\n[deploy-qa] Deployed AssistOSExplorer commit: ${'9'.repeat(40)}\n`);
+    const summary = path.join(dir, 'summary.md');
+    const result = spawnSync('bash', ['-c', stepScript('Create summary')], { encoding: 'utf8', timeout: 5000,
+        env: { PATH: process.env.PATH, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: summary, UPDATED_IN_PLACE: 'false', QA_OPERATION: 'resume',
+            DISPATCH_REF: 'main', DISPATCH_SHA: '8'.repeat(40), EXPECTED_EXPLORER_COMMIT: COMMIT, SSH_USER: 'admin', SSH_HOST: 'h', WORKSPACE: 'w', ROUTER_PORT: '1',
+            CLOUDFLARE_TUNNEL_NAME: 'n', CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: 'p', PUBLIC_URL: 'u' } });
+    assert.equal(result.status, 0, result.stderr);
+    const text = fs.readFileSync(summary, 'utf8');
+    assert.match(text, new RegExp(`Deployment route: \`\\{"result":"routed","route":"resume","backup":"${RESUME_BACKUP}"`));
+    assert.match(text, /Resumed preserving redeploy: the interrupted redeploy was finished from its retained backup; no service was stopped/);
+    assert.match(text, new RegExp(`Deployed AssistOSExplorer commit: \`${'9'.repeat(40)}\``));
+    assert.doesNotMatch(text, /Preserving redeploy: the prior workspace/);
+});
+
+test('the in-place step uploads, runs and cleans up the route helpers beside the updater', () => {
+    const script = stepScript('Update the existing Explorer QA installation in place');
+    assert.match(script, /for helper in update-explorer-qa\.mjs rollback-explorer-qa\.mjs qa-backups\.mjs qa-backups-privileged\.mjs; do/);
+    assert.match(script, /rm -f '\$REMOTE_DIR\/update-explorer-qa\.mjs' '\$REMOTE_DIR\/rollback-explorer-qa\.mjs' '\$REMOTE_DIR\/qa-backups\.mjs' '\$REMOTE_DIR\/qa-backups-privileged\.mjs' '\$REMOTE_DIR\/update\.json'/);
+    assert.match(script, /elif \[ "\$status" -eq 44 \]; then\n\s+echo 'updated=false' >> "\$GITHUB_OUTPUT"\n\s+echo 'operation=resume' >> "\$GITHUB_OUTPUT"/);
 });

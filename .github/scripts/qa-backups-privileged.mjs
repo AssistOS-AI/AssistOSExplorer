@@ -4,6 +4,9 @@
 // compatible with Node 20 and never depends on its own file location.
 // One process reads the root-owned receipts, classifies every backup and
 // deletes only the prunable ones. Nothing here runs a shell or `rm`.
+// The read-only `resume-proof --root R --workspace W --owner U --backup NAME`
+// form proves that an interrupted preserving redeploy can be resumed; it never
+// writes, renames or removes anything.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -259,10 +262,134 @@ function pruneAll({ root, workspace, owner, hooks = {} }, removedNames) {
     return result;
 }
 
+// The encryption identity files the preservation block copies and compares, in
+// the current `.ploinky/data` and the legacy `.ploinky` layout.
+export const IDENTITY_DIRECTORIES = Object.freeze(['.ploinky/data', '.ploinky']);
+export const IDENTITY_FILES = Object.freeze(['master-key', '.secrets', 'passwords.enc', 'ploinky_subject_identity_ed25519_v1.enc']);
+const IDENTITY_LIMIT = 64 * 1024 * 1024;
+const FILE_TYPE = 0o170000n;
+
+/** A `copied` entry as the preservation block records it: a normalized relative path. */
+export function isCopiedEntry(entry) {
+    return typeof entry === 'string' && entry.length > 0 && entry.length <= 4096 && !path.isAbsolute(entry)
+        && path.normalize(entry) === entry && !/[\u0000-\u001f\u007f]/u.test(entry)
+        && entry.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/**
+ * Read-only resume proof (R6 with I1 and N7 of the reviewed resume contract).
+ * `preservation.json` is root-owned, so it is read here: it must record a
+ * verified exact copy from `<backup>/workspace` into the live workspace. The
+ * backup workspace must be a different directory from the live one; every
+ * encryption identity file it holds must be byte-equal in the live workspace;
+ * and every copied entry must still exist there with its original type.
+ * Returns the `copied` list for the admin-side allowlist. `hooks` exist for
+ * in-process tests only, as in `prunePrivileged`.
+ */
+export function resumeProofPrivileged({ root, workspace, owner, backup, hooks = {} }) {
+    requireProof(path.isAbsolute(root || '') && path.isAbsolute(workspace || '') && path.normalize(root) === root
+        && path.normalize(workspace) === workspace && root !== workspace && !root.startsWith(workspace + path.sep)
+        && !workspace.startsWith(root + path.sep) && Number.isSafeInteger(owner) && owner > 0
+        && BACKUP.test(backup || ''), 'QA_PRIVILEGED_USAGE_INVALID');
+    const uid = BigInt(owner);
+    const lstat = file => {
+        const stat = fs.lstatSync(file, { bigint: true });
+        return hooks.lstat ? hooks.lstat(file, stat) : stat;
+    };
+    const present = file => {
+        try { return lstat(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    };
+    const realDirectory = stat => Boolean(stat?.isDirectory() && !stat.isSymbolicLink());
+    const regularFile = stat => Boolean(stat?.isFile() && !stat.isSymbolicLink());
+    const read = file => {
+        if (hooks.beforeRead) hooks.beforeRead(file);
+        return fs.readFileSync(file);
+    };
+    // Resolves `relative` below `base` without following any link: every
+    // intermediate component must be a real directory. Absent is null.
+    const inside = (base, relative, code) => {
+        let current = base;
+        const segments = relative.split('/');
+        for (const [index, segment] of segments.entries()) {
+            current = path.join(current, segment);
+            const stat = present(current);
+            if (!stat) return null;
+            if (index === segments.length - 1) return stat;
+            requireProof(realDirectory(stat), code);
+        }
+        return null;
+    };
+
+    const rootStat = present(root);
+    requireProof(realDirectory(rootStat) && rootStat.uid === uid && fs.realpathSync(root) === root, 'QA_PRIVILEGED_ROOT_INVALID');
+    const live = present(workspace);
+    requireProof(realDirectory(live) && live.uid === uid && fs.realpathSync(workspace) === workspace, 'QA_RESUME_WORKSPACE_INVALID');
+    const file = path.join(root, backup);
+    const backupStat = present(file);
+    requireProof(realDirectory(backupStat) && backupStat.uid === uid && (backupStat.mode & 0o077n) === 0n
+        && fs.realpathSync(file) === file && !(backupStat.dev === live.dev && backupStat.ino === live.ino), 'QA_RESUME_BACKUP_INVALID');
+
+    const receipt = path.join(file, 'preservation.json');
+    const receiptStat = present(receipt);
+    requireProof(regularFile(receiptStat) && receiptStat.nlink === 1n && receiptStat.size <= BigInt(RECEIPT_LIMIT)
+        && (receiptStat.mode & 0o022n) === 0n, 'QA_RESUME_PRESERVATION_INVALID');
+    let preservation = null;
+    try { preservation = JSON.parse(read(receipt).toString('utf8')); } catch {}
+    const source = path.join(file, 'workspace');
+    const copied = preservation?.copied;
+    requireProof(preservation !== null && typeof preservation === 'object' && preservation.version === 1
+        && preservation.exactCopiesVerified === true && preservation.source === source && preservation.target === workspace
+        && Array.isArray(copied) && copied.every(isCopiedEntry) && new Set(copied).size === copied.length,
+    'QA_RESUME_PRESERVATION_INVALID');
+
+    const sourceStat = present(source);
+    requireProof(realDirectory(sourceStat) && fs.realpathSync(source) === source
+        && !(sourceStat.dev === live.dev && sourceStat.ino === live.ino), 'QA_RESUME_BACKUP_WORKSPACE_INVALID');
+
+    // Every identity file of the previous workspace was copied and is still byte-equal.
+    for (const directory of IDENTITY_DIRECTORIES) {
+        for (const name of IDENTITY_FILES) {
+            const relative = path.join(directory, name);
+            const previous = inside(source, relative, 'QA_RESUME_BACKUP_WORKSPACE_INVALID');
+            if (!previous) continue;
+            requireProof(copied.includes(relative), 'QA_RESUME_PRESERVATION_INVALID');
+            const current = inside(workspace, relative, 'QA_RESUME_IDENTITY_CHANGED');
+            requireProof(regularFile(previous) && regularFile(current) && previous.size === current.size
+                && previous.size <= BigInt(IDENTITY_LIMIT), 'QA_RESUME_IDENTITY_CHANGED');
+            requireProof(read(path.join(source, relative)).equals(read(path.join(workspace, relative))), 'QA_RESUME_IDENTITY_CHANGED');
+        }
+    }
+    // N7: no preserved entry was lost or replaced by another type since the copy.
+    for (const relative of copied) {
+        const previous = inside(source, relative, 'QA_RESUME_BACKUP_WORKSPACE_INVALID');
+        requireProof(previous, 'QA_RESUME_BACKUP_WORKSPACE_INVALID');
+        const current = inside(workspace, relative, 'QA_RESUME_COPIED_ENTRY_MISSING');
+        requireProof(current && (current.mode & FILE_TYPE) === (previous.mode & FILE_TYPE), 'QA_RESUME_COPIED_ENTRY_MISSING');
+    }
+    return { result: 'proved', backup, copied: [...copied] };
+}
+
 const safeCode = (error, fallback) => /^QA_[A-Z_]+$/.test(error?.code || '') ? error.code : fallback;
+
+function runResumeProofCli(argv) {
+    try {
+        requireProof(argv.length === 9 && argv[1] === '--root' && argv[3] === '--workspace' && argv[5] === '--owner'
+            && /^[1-9][0-9]{0,9}$/.test(argv[6]) && argv[7] === '--backup' && BACKUP.test(argv[8]), 'QA_PRIVILEGED_USAGE_INVALID');
+        requireProof(argv[2] === QA_PRIVILEGED_SCOPE.backups && argv[4] === QA_PRIVILEGED_SCOPE.workspace,
+            'QA_PRIVILEGED_USAGE_INVALID');
+        requireProof(typeof process.getuid === 'function' && process.getuid() === 0, 'QA_PRIVILEGED_ROOT_REQUIRED');
+        const result = resumeProofPrivileged({ root: argv[2], workspace: argv[4], owner: Number(argv[6]), backup: argv[8] });
+        process.stdout.write(JSON.stringify(result) + '\n');
+        return 0;
+    } catch (error) {
+        process.stdout.write(JSON.stringify({ result: 'failed', code: safeCode(error, 'QA_PRIVILEGED_FAILED') }) + '\n');
+        return 1;
+    }
+}
 
 /** CLI form; exactly one JSON line on stdout. */
 export function runPrivilegedCli(argv) {
+    if (argv[0] === 'resume-proof') return runResumeProofCli(argv);
     try {
         requireProof(argv.length === 7 && argv[0] === 'prune' && argv[1] === '--root' && argv[3] === '--workspace'
             && argv[5] === '--owner' && /^[1-9][0-9]{0,9}$/.test(argv[6]), 'QA_PRIVILEGED_USAGE_INVALID');
