@@ -198,14 +198,28 @@
     color: #CFD1D6;
 }
 
-.theme-dark .general-button.secondary:hover:not(:disabled),
-.theme-dark .gray-button:hover:not(:disabled) {
+.theme-dark .general-button.secondary:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]),
+.theme-dark .gray-button:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]) {
     background-color: #33353B;
     border-color: #4C4F56;
     box-shadow: 0 8px 16px rgba(2, 6, 23, 0.45);
 }
 
-.general-button:hover:not(:disabled) {
+/* Keep disabled action labels legible in both themes without fading the text. */
+:root :is(.general-button, .gray-button, .general-button-reversed-colors):is(.disabled, :disabled, [aria-disabled="true"]) {
+    color: var(--text-soft);
+    -webkit-text-fill-color: currentColor;
+    background: var(--bg);
+    border-color: var(--border-strong);
+    opacity: 1;
+    box-shadow: none;
+    transform: none;
+    pointer-events: none;
+    cursor: not-allowed;
+}
+
+
+.general-button:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]) {
     transform: translateY(-1px);
     box-shadow: 0 10px 18px rgba(var(--accent-rgb), 0.28);
 }
@@ -214,14 +228,14 @@
     transform: translateY(1px);
 }
 
-.general-button.secondary:hover:not(:disabled) {
+.general-button.secondary:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]) {
     background-color: var(--border);
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
 }
 
 
 
-.gray-button:hover:not(:disabled) {
+.gray-button:hover:not(:disabled):not(.disabled):not([aria-disabled="true"]) {
     background-color: var(--border);
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
 }
