@@ -11,7 +11,7 @@ import { rateSourceOf } from '../lib/auth/browserBinding.mjs';
 
 const PREFIX = '/service/dashboard';
 const ASSETS = new Set([
-    'index.html', 'main.js', 'dashboard.css', 'enrollment.js', 'enrollment.css',
+    'index.html', 'main.js', 'theme.js', 'dashboard.css', 'enrollment.js', 'enrollment.css',
     'users.html', 'applications.html', 'authentication.html', 'admin.mjs', 'admin.css',
     'management.mjs', 'management.css', 'api.mjs',
     'roles.html', 'roles.mjs', 'roles.css',
