@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
+import { assertSkeletonOnlyHostState, productionAdapters } from '../../../.github/scripts/rollback-explorer-qa.mjs';
+import { writeLockModule } from './qa-fake-lock-modules.mjs';
 
 const workflow = fs.readFileSync(new URL('../../../.github/workflows/deploy-explorer-qa.yml', import.meta.url), 'utf8');
 
@@ -29,14 +33,19 @@ function fixture(t) {
         fs.writeFileSync(destination, value);
     };
     const read = relative => fs.readFileSync(path.join(target, relative), 'utf8');
-    const execute = (name, command = execFileSync) => {
+    const execute = (name, command = execFileSync, { custody, alone = false } = {}) => {
+        // The workflow runs the preservation as two root steps: the relocation
+        // renames and recreates the workspace, then, after any lock handover,
+        // the preservation copies durable state. Unless `alone`, running the
+        // preservation here runs both.
+        if (name === 'durable workspace preservation' && !alone) execute('durable workspace relocation', command, { custody });
         const source = block(name)
             .replace("'/home/admin/explorerQaWorkspace'", JSON.stringify(target))
             .replace("'/home/admin/.qa-deployment-backups'", JSON.stringify(backups));
         // The workflow runs this helper as root for mixed-UID database files.
         // The fixture uses its current owner; only the operator-ID prerequisite
         // is substituted, while all filesystem operations run on real files.
-        const operator = { argv: ['node', '-', target, backup], getuid: () => 0 };
+        const operator = { argv: ['node', '-', target, backup, ...(custody ? [custody] : [])], getuid: () => 0, pid: process.pid };
         const run = (program, args, options) => command(program,
             program === 'cp' && process.platform === 'darwin'
                 ? args.filter(argument => argument !== '--reflink=auto') : args, options);
@@ -44,7 +53,7 @@ function fixture(t) {
             assert, fs, path, run, operator, { log() {} },
         );
     };
-    return { root, target, backup, write, read, execute };
+    return { root, target, backups, backup, write, read, execute };
 }
 
 test('ordinary QA redeploy retains documents, local skills, databases and the key/account set', t => {
@@ -114,7 +123,7 @@ test('QA bootstrap preserves operator env formatting and extra settings exactly'
     assert.equal(f.read('.env'), `PLOINKY_MASTER_KEY=${'a'.repeat(64)}\n`);
 });
 
-test('QA admission rejects unsafe env and modified managed sources before any retirement', t => {
+test('QA admission rejects unsafe env and non-repository managed sources before any retirement', t => {
     const f = fixture(t);
     f.write('.env', '# retained operator config');
     f.execute('preservation admission');
@@ -124,13 +133,42 @@ test('QA admission rejects unsafe env and modified managed sources before any re
     fs.unlinkSync(path.join(f.target, '.env'));
     const runtime = path.join(f.target, '.runtime/ploinky');
     fs.mkdirSync(runtime, { recursive: true });
+    assert.throws(() => f.execute('preservation admission'), /Managed source must be its own repository/);
+    fs.symlinkSync(path.join(f.root, 'elsewhere'), path.join(runtime, '.git'));
+    assert.throws(() => f.execute('preservation admission'), /Managed source must be its own repository/);
+    fs.unlinkSync(path.join(runtime, '.git'));
     execFileSync('git', ['init', '-q', runtime]);
-    execFileSync('git', ['-C', runtime, 'remote', 'add', 'origin', 'https://github.com/AssistOS-AI/ploinky.git']);
     f.execute('preservation admission');
-    f.write('.runtime/ploinky/local-skill.mjs', 'authored source');
-    assert.throws(() => f.execute('preservation admission'), /Local managed source edits/);
-    assert.equal(f.read('.runtime/ploinky/local-skill.mjs'), 'authored source');
     assert.ok(workflow.indexOf('// END QA preservation admission') < workflow.indexOf('Stopping nested QA services'));
+});
+
+test('Q1: the root admission never runs Git; the sandboxed capture proves source cleanliness and origin before any quiesce or stop', t => {
+    const f = fixture(t);
+    f.write('.data/dpu-data/blobs/one', 'ciphertext');
+    f.write('.ploinky/data/master-key', 'seed');
+    const marker = path.join(f.root, 'fsmonitor-ran-as-root');
+    for (const relative of ['.runtime/ploinky', '.ploinky/repos/AchillesIDE', 'AdvancedLanguageAgent']) {
+        const repo = path.join(f.target, relative);
+        fs.mkdirSync(repo, { recursive: true });
+        execFileSync('git', ['init', '-q', repo]);
+        fs.writeFileSync(path.join(repo, '.git/hook'), `#!/bin/sh\necho ran >> '${marker}'\n`, { mode: 0o755 });
+        fs.appendFileSync(path.join(repo, '.git/config'), `[core]\n\tfsmonitor = ${path.join(repo, '.git/hook')}\n`);
+        f.write(path.join(relative, 'uncommitted.mjs'), 'Box-written edit');
+    }
+    const spawned = [];
+    const spy = (program, ...rest) => { spawned.push(program); return execFileSync(program, ...rest); };
+    const source = block('preservation admission').replace("'/home/admin/explorerQaWorkspace'", JSON.stringify(f.target));
+    new Function('assert', 'fs', 'path', 'execFileSync', 'process', 'console', source)(
+        assert, fs, path, spy, { argv: ['node', '-', f.target], env: process.env }, { log() {} });
+    assert.deepEqual(spawned, [], 'the root step spawns nothing');
+    assert.equal(fs.existsSync(marker), false, 'no Box-written Git configuration ran as root');
+    assert.doesNotMatch(source, /execFileSync|spawnSync|['"]git['"]/);
+    // The same properties are proven by the capture, which runs Git only in the
+    // sandbox (rollback-explorer-qa.mjs sourcePin), under the lock and before any quiesce or stop.
+    const capture = workflow.indexOf('capture "$QA_BACKUP_DIR" --lock-held');
+    assert.ok(workflow.indexOf('# END QA outer archive lock acquisition') < capture);
+    assert.ok(capture < workflow.indexOf('Stopping nested QA services') && capture < workflow.indexOf('"$engine" container stop --time 30'));
+    assert.ok(capture < workflow.indexOf('// BEGIN QA durable workspace relocation'));
 });
 
 const NEW_IDENTITY = ['.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc'];
@@ -465,4 +503,97 @@ test('QA tunnel lookup reuses one exact tunnel, leaves an absent one to creation
         assert.notEqual(observed.status, 0);
         assert.match(observed.stderr, message);
     }
+});
+
+const holderSource = (() => {
+    const source = workflow.split('// BEGIN QA archive lock holder\n')[1].split('// END QA archive lock holder')[0].replace(/^ {10}/gm, '');
+    return source.slice(0, source.indexOf('if (process.argv[1]'));
+})();
+
+// Every regular file under .data, .ploinky/data and .env with its digest, minus the
+// generated data the preservation deliberately leaves to regeneration.
+function durableManifest(root) {
+    const manifest = {};
+    const walk = relative => {
+        const file = path.join(root, relative), stat = fs.lstatSync(file, { throwIfNoEntry: false });
+        if (!stat) return;
+        if (stat.isDirectory()) { for (const name of fs.readdirSync(file).sort()) walk(path.join(relative, name)); return; }
+        manifest[relative] = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    };
+    walk('.data'); walk('.env');
+    for (const name of fs.existsSync(path.join(root, '.ploinky/data')) ? fs.readdirSync(path.join(root, '.ploinky/data')).sort() : []) {
+        if (!['edge-publication', 'edge-routing', 'router-security'].includes(name)) walk(path.join('.ploinky/data', name));
+    }
+    return manifest;
+}
+
+test('A16(b): a workspace-generation redeploy keeps every durable file byte for byte, regenerates generated state and starts from a fresh host-state skeleton', async t => {
+    const f = fixture(t);
+    const durable = ['.data/userPersistoAgent/persisto/.userpersisto.snapshot.json', '.data/dpu-data/blobs/one', '.env',
+        '.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc',
+        '.ploinky/data/dpuAgent/data'];
+    const generated = ['.ploinky/data/edge-routing/active.json', '.ploinky/data/edge-publication/lease',
+        '.ploinky/data/router-security/policy-state.json', '.ploinky/agents.json', '.ploinky/run/edge-topology/current.json'];
+    for (const name of [...durable, ...generated]) f.write(name, `original:${name}`);
+    f.write('.ploinky-host/quarantine/x', 'quarantined');
+    f.write('.ploinky-host/router-bindings/ploinky-box-qa-7a31ab7775eb.json', '{"address":"0.0.0.0"}');
+    f.write('.ploinky-host.previous/gpu-grants.json', '{"agents":["R/A"]}');
+    const before = durableManifest(f.target);
+    assert.equal(Object.keys(before).length, durable.length, 'the fixture seeds every durable file');
+    // The holder takes the workspace-generation lock through the production adapter.
+    const { holdArchiveLock } = await import('data:text/javascript;base64,' + Buffer.from(holderSource).toString('base64'));
+    const scope = { box: 'ploinky-box-qa-7a31ab7775eb', workspace: f.target };
+    const runtimeRoot = path.join(f.root, 'runtime');
+    writeLockModule(runtimeRoot, 'workspace');
+    const holder = holdArchiveLock({ adapters: { assertHost() {}, acquireWorkspaceLock: productionAdapters(scope).acquireWorkspaceLock },
+        scope, runtimeRoot, backup: f.backup, parentPid: process.ppid, intervalMs: 5 }).then(() => null, error => error);
+    // Whatever fails below, the holder is asked to release before the test ends,
+    // so its timer cannot keep the test process alive.
+    try {
+        const until = async file => { for (let i = 0; i < 400 && !fs.existsSync(file); i++) await delay(5); assert.ok(fs.existsSync(file), file); };
+        await until(`${f.backup}-lock-ready.json`);
+        f.execute('durable workspace relocation', execFileSync, { custody: 'workspace' });
+        fs.writeFileSync(`${f.backup}-lock-relocated`, 'relocated\n', { mode: 0o600 });
+        await until(`${f.backup}-lock-ready2.json`);
+        f.execute('durable workspace preservation', execFileSync, { alone: true });
+        fs.writeFileSync(`${f.backup}-lock-release`, 'release\n', { mode: 0o600 });
+        assert.equal(await holder, null);
+        assert.deepEqual(durableManifest(f.target), before, 'durable data is byte-identical');
+        for (const name of generated) assert.equal(fs.existsSync(path.join(f.target, name)), false, name);
+        assertSkeletonOnlyHostState(f.target);
+        assert.equal(fs.existsSync(path.join(f.target, '.ploinky-host.previous')), false);
+        const receipt = JSON.parse(fs.readFileSync(path.join(f.backup, 'preservation.json')));
+        assert.equal(receipt.copied.some(name => name.startsWith('.ploinky-host')), false, 'host state is never copied');
+        assert.equal(fs.readFileSync(path.join(f.backup, 'workspace/.ploinky-host/router-bindings/ploinky-box-qa-7a31ab7775eb.json'), 'utf8'),
+            '{"address":"0.0.0.0"}', 'the backup keeps the prior tree');
+        const authority = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json')));
+        assert.equal(authority.custody.phase, 'previous-lock-released');
+        assert.equal(fs.statSync(path.join(f.backup, 'rollback-authority.json')).mode & 0o777, 0o600);
+    } finally {
+        if (!fs.existsSync(`${f.backup}-lock-release`)) fs.writeFileSync(`${f.backup}-lock-release`, 'release\n', { mode: 0o600 });
+        await Promise.race([holder, delay(2000)]);
+    }
+});
+
+test('E5: the earlier-generation redeploy also leaves host state behind and records no custody phase', t => {
+    const f = fixture(t);
+    f.write('.data/dpu-data/blobs/one', 'ciphertext');
+    f.write('.ploinky/data/master-key', 'seed');
+    f.write('.ploinky-host/router-bindings/forged.json', 'forged');
+    f.write('.ploinky-host.old/x', 'forged');
+    f.write('project/.ploinky-host-notes.md', 'operator notes stay');
+    f.execute('durable workspace preservation');
+    assert.deepEqual(fs.readdirSync(f.target).sort(), ['.data', '.ploinky', 'project']);
+    assert.equal(f.read('project/.ploinky-host-notes.md'), 'operator notes stay');
+    assert.equal(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'), 'utf8'), '{}', 'the authority is untouched');
+});
+
+test('the copy step refuses a recreated workspace holding anything but its empty state and host-state skeleton', t => {
+    const f = fixture(t);
+    f.write('.data/dpu-data/blobs/one', 'ciphertext');
+    f.write('.ploinky/data/master-key', 'seed');
+    f.execute('durable workspace relocation');
+    f.write('planted', 'not from the prior workspace');
+    assert.throws(() => f.execute('durable workspace preservation', execFileSync, { alone: true }), /must hold only its empty state/);
+    assert.equal(fs.existsSync(path.join(f.backup, 'preservation.json')), false);
 });

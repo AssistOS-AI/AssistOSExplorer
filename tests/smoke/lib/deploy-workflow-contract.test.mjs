@@ -37,7 +37,8 @@ const WORKFLOWS = [
       'resolve_default_branch() {',
       'Resolving every managed repository from its configured default branch',
       'default_branch="$(resolve_default_branch "$repository_url")"',
-      'PLOINKY_BRANCH="$(resolve_default_branch "$PLOINKY_URL")"',
+      'QA_TARGET_BRANCH="$(resolve_default_branch https://github.com/AssistOS-AI/ploinky.git)"',
+      'PLOINKY_BRANCH="$QA_TARGET_BRANCH"',
       "SSH_USER: 'admin'",
       "SSH_HOST: '45.136.70.141'",
       "SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'",
@@ -347,8 +348,11 @@ test('Explorer QA deploy resolves graph defaults and takes AgentLib from the Box
 
   assert.match(source, /resolve_default_branch\(\) \{/);
   assert.doesNotMatch(source, /dependencies\.lock\.json|resolve_default_branch "\$AGENTLIB_URL"|AchillesAgentLib\.git/);
-  assert.match(source, /PLOINKY_BRANCH="\$\(resolve_default_branch "\$PLOINKY_URL"\)"/);
-  assert.match(source, /checkout -B "\$PLOINKY_BRANCH" "refs\/remotes\/origin\/\$PLOINKY_BRANCH"/);
+  // Ploinky's default branch is resolved once, by the target probe before anything is
+  // retired, and the runtime is staged at exactly the probed commit on that branch.
+  assert.match(source, /QA_TARGET_BRANCH="\$\(resolve_default_branch https:\/\/github\.com\/AssistOS-AI\/ploinky\.git\)"/);
+  assert.match(source, /PLOINKY_BRANCH="\$QA_TARGET_BRANCH"/);
+  assert.match(source, /checkout -B "\$PLOINKY_BRANCH" "\$QA_TARGET_COMMIT"/);
   assert.match(source, /branch --set-upstream-to="origin\/\$PLOINKY_BRANCH" "\$PLOINKY_BRANCH"/);
   assert.match(source, /BRANCH_ARGS\+=\(--repo-branch "\$repository_name=\$default_branch"\)/);
   assert.match(source, /--dry-run --port "\$ROUTER_PORT" start explorer "\$\{BRANCH_ARGS\[@\]\}"/);
@@ -363,7 +367,8 @@ test('Explorer QA deploy explicitly reconciles every managed checkout to the sel
     'utf8',
   );
   const graphStart = source.indexOf('GRAPH_REPOSITORIES=(');
-  const graphEnd = source.indexOf("PLOINKY_URL='", graphStart);
+  const graphEnd = source.indexOf('PLOINKY_BRANCH="$QA_TARGET_BRANCH"', graphStart);
+  assert.ok(graphEnd > graphStart);
   const graphBlock = source.slice(graphStart, graphEnd);
 
   assert.match(graphBlock, /BRANCH_ARGS=\(\)/);

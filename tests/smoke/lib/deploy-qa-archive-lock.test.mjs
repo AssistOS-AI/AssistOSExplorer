@@ -4,6 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { spawnSync } from 'node:child_process';
+import { productionAdapters } from '../../../.github/scripts/rollback-explorer-qa.mjs';
+import { writeLockModule } from './qa-fake-lock-modules.mjs';
 
 const workflow = fs.readFileSync(new URL('../../../.github/workflows/deploy-explorer-qa.yml', import.meta.url), 'utf8');
 const holderSource = workflow.split('// BEGIN QA archive lock holder\n')[1]
@@ -132,7 +135,7 @@ test('cold bootstrap requires no prior Box or authored workspace and pins the sh
     assert.match(cold, /rev-parse HEAD\).*"\$QA_LOCK_COMMIT"/);
     assert.match(cold, /status --porcelain=v1 --untracked-files=all/);
     assert.match(cold, /\$QA_BACKUP_DIR-lock-source\.txt/);
-    assert.match(holderSource, /lock = await adapters\.acquireWorkspaceLock\(runtimeRoot\)/);
+    assert.match(holderSource, /lock = await adapters\.acquireWorkspaceLock\(runtimeRoot, \{ workspaceRoot: scope\.workspace, deferIfAbsent: true \}\)/);
     assert.doesNotMatch(holderSource, /mkdirSync|owner\.json|\.ploinky-box/);
 });
 
@@ -144,4 +147,186 @@ test('direct quiesce exec uses QA publication ports for OnlyOffice targeted drai
     assert.match(args, /--env PLOINKY_ROUTER_HOST_PORT=8097/);
     assert.match(args, /--env PLOINKY_MEDIA_HOST_PORT=7882/);
     assert.match(args, /"\$container_id" node --input-type=module -/);
+});
+
+// Custody fixtures: the holder runs with the production lock adapter, which
+// imports a fake lock module of either generation from the runtime root.
+function custodyFixture(t, generation, { workspace = true } = {}) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-archive-custody-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const scope = { box: 'ploinky-box-qa-7a31ab7775eb', workspace: path.join(root, 'explorerQaWorkspace') };
+    const runtimeRoot = path.join(root, 'runtime');
+    const moduleUrl = writeLockModule(runtimeRoot, generation, { stateRoot: path.join(root, 'home/.ploinky-box') });
+    const backup = path.join(root, 'backups/redeploy-Ab123456');
+    fs.mkdirSync(backup, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(backup, 'rollback-authority.json'), JSON.stringify({ version: 1, createdAt: '2026-10-21T00:00:00.000Z' }), { mode: 0o600 });
+    if (workspace) { fs.mkdirSync(scope.workspace); fs.writeFileSync(path.join(scope.workspace, 'durable'), 'kept'); }
+    const adapters = { assertHost() {}, acquireWorkspaceLock: productionAdapters(scope).acquireWorkspaceLock };
+    const args = { adapters, scope, runtimeRoot, backup, parentPid: process.ppid, intervalMs: 5 };
+    const signal = (suffix, content) => fs.writeFileSync(`${backup}-${suffix}`, content, { mode: 0o600 });
+    // The workflow's relocation step: the workspace moves into the backup and is recreated.
+    const relocate = () => {
+        if (fs.existsSync(scope.workspace)) fs.renameSync(scope.workspace, path.join(backup, 'workspace'));
+        fs.mkdirSync(scope.workspace, { mode: 0o700 });
+    };
+    const receipt = suffix => JSON.parse(fs.readFileSync(`${backup}-${suffix}`, 'utf8'));
+    const lockAt = rootPath => fs.existsSync(path.join(rootPath, '.ploinky-host/locks/workspace.lock'));
+    const calls = async () => (await import(moduleUrl)).calls.map(call => [call.op, ...call.args]);
+    // Runs one holder for `body`. Whatever the body asserts, the holder is asked to
+    // release before the test ends, so a failure cannot leave its timer running.
+    const run = async body => {
+        const result = holdArchiveLock(args).then(() => null, error => error);
+        try { return await body(result); } finally {
+            if (!fs.existsSync(`${backup}-lock-release`)) signal('lock-release', 'release\n');
+            await Promise.race([result, delay(2000)]);
+        }
+    };
+    return { root, scope, backup, args, signal, relocate, receipt, lockAt, calls, run };
+}
+
+test('E3: the holder relocates the workspace lock, takes the recreated workspace lock on a fresh skeleton, then releases the old one at its new path', async t => {
+    const f = custodyFixture(t, 'workspace');
+    await f.run(async result => {
+        await until(() => fs.existsSync(`${f.backup}-lock-ready.json`));
+        assert.deepEqual(f.receipt('lock-ready.json'), { held: true, pid: process.pid, instance: f.scope.box, custody: 'workspace', deferred: false });
+        assert.equal(f.lockAt(f.scope.workspace), true);
+        f.relocate();
+        const relocated = path.join(f.backup, 'workspace');
+        assert.equal(f.lockAt(relocated), true, 'the lock moved with the workspace');
+        f.signal('lock-relocated', 'relocated\n');
+        await until(() => fs.existsSync(`${f.backup}-lock-ready2.json`));
+        assert.deepEqual(f.receipt('lock-ready2.json'), { held: true, pid: process.pid, instance: f.scope.box, custody: 'workspace', phase: 'successor' });
+        assert.deepEqual([f.lockAt(f.scope.workspace), f.lockAt(relocated)], [true, false]);
+        assert.deepEqual(await f.calls(), [
+            ['acquire', f.scope.box, { workspaceRoot: f.scope.workspace, requireNewSkeleton: false }],
+            ['assertHeldAt', relocated],
+            ['acquire', f.scope.box, { workspaceRoot: f.scope.workspace, requireNewSkeleton: true }],
+            ['releaseRelocated', relocated],
+        ]);
+        const authority = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'), 'utf8'));
+        assert.equal(authority.custody.phase, 'previous-lock-released');
+        assert.equal(authority.createdAt, '2026-10-21T00:00:00.000Z', 'the recovery authority keeps its fields');
+        assert.equal(fs.statSync(path.join(f.backup, 'rollback-authority.json')).mode & 0o777, 0o600);
+        f.signal('lock-release', 'release\n');
+        assert.equal(await result, null);
+        assert.deepEqual(f.receipt('lock-released.json'), { released: true, pid: process.pid, instance: f.scope.box });
+        assert.equal(f.lockAt(f.scope.workspace), false);
+    });
+});
+
+test('E3: a recreated workspace that already has host state is refused, and the relocated lock is still released at its new path', async t => {
+    const f = custodyFixture(t, 'workspace');
+    await f.run(async result => {
+        await until(() => fs.existsSync(`${f.backup}-lock-ready.json`));
+        f.relocate();
+        fs.mkdirSync(path.join(f.scope.workspace, '.ploinky-host'));
+        f.signal('lock-relocated', 'relocated\n');
+        assert.equal((await result)?.code, 'PLOINKY_BOX_HOST_STATE_NOT_NEW');
+        assert.equal(fs.existsSync(`${f.backup}-lock-ready2.json`), false);
+        assert.equal(fs.existsSync(`${f.backup}-lock-released.json`), true);
+        assert.equal(f.lockAt(path.join(f.backup, 'workspace')), false);
+        assert.equal((await f.calls()).at(-1)[0], 'releaseRelocated');
+    });
+});
+
+test('E3: a release request after the workspace moved but before the handover releases the lock where it now is', async t => {
+    const f = custodyFixture(t, 'workspace');
+    await f.run(async result => {
+        await until(() => fs.existsSync(`${f.backup}-lock-ready.json`));
+        f.relocate();
+        f.signal('lock-release', 'release\n');
+        assert.equal(await result, null);
+        assert.equal(f.lockAt(path.join(f.backup, 'workspace')), false);
+        assert.deepEqual((await f.calls()).map(call => call[0]), ['acquire', 'assertHeld', 'releaseRelocated']);
+        assert.equal(fs.existsSync(`${f.backup}-lock-ready2.json`), false);
+    });
+});
+
+test('E4: with no workspace the holder is deferred, creates nothing, and takes the recreated workspace lock on its fresh skeleton', async t => {
+    const f = custodyFixture(t, 'workspace', { workspace: false });
+    await f.run(async result => {
+        await until(() => fs.existsSync(`${f.backup}-lock-ready.json`));
+        assert.deepEqual(f.receipt('lock-ready.json'), { held: false, pid: process.pid, instance: f.scope.box, custody: 'workspace', deferred: true });
+        await delay(15);
+        assert.equal(fs.existsSync(f.scope.workspace), false, 'the second admission still sees an absent workspace');
+        assert.deepEqual(await f.calls(), []);
+        f.relocate();
+        f.signal('lock-relocated', 'relocated\n');
+        await until(() => fs.existsSync(`${f.backup}-lock-ready2.json`));
+        assert.deepEqual(await f.calls(), [['acquire', f.scope.box, { workspaceRoot: f.scope.workspace, requireNewSkeleton: true }]]);
+        assert.equal(JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'), 'utf8')).custody.phase, 'replacement-lock-acquired');
+        f.signal('lock-release', 'release\n');
+        assert.equal(await result, null);
+        assert.equal(f.lockAt(f.scope.workspace), false);
+    });
+});
+
+test('E2/E3: an earlier-generation module keeps the former holder receipts and ignores a relocation request', async t => {
+    const f = custodyFixture(t, 'legacy');
+    await f.run(async result => {
+        await until(() => fs.existsSync(`${f.backup}-lock-ready.json`));
+        assert.deepEqual(f.receipt('lock-ready.json'), { held: true, pid: process.pid, instance: f.scope.box });
+        f.signal('lock-relocated', 'relocated\n');
+        await delay(20);
+        assert.equal(fs.existsSync(`${f.backup}-lock-ready2.json`), false);
+        f.signal('lock-release', 'release\n');
+        assert.equal(await result, null);
+        assert.deepEqual((await f.calls()).map(call => call.slice(0, 2)), [['acquire', f.scope.box], ['release']]);
+        assert.equal((await f.calls())[0].length, 2, 'acquire receives the instance alone');
+        assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-host')), false);
+        assert.equal(JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'), 'utf8')).custody, undefined);
+    });
+});
+
+test('an unsafe relocation request stops the holder and releases its lock', async t => {
+    const f = custodyFixture(t, 'workspace');
+    await f.run(async result => {
+        await until(() => fs.existsSync(`${f.backup}-lock-ready.json`));
+        f.signal('lock-relocated', 'relocate everything\n');
+        assert.match((await result).message, /without a deliberate release/);
+        assert.equal(f.lockAt(f.scope.workspace), false);
+    });
+});
+
+// The workflow's lock receipt check, run on its own.
+const receiptCheck = (() => {
+    const start = workflow.indexOf('assert_qa_workspace_lock_held() {');
+    const body = workflow.slice(workflow.indexOf("<<'NODE'\n", start) + "<<'NODE'\n".length, workflow.indexOf('\n          NODE', start));
+    return body.replace(/^ {10}/gm, '');
+})();
+
+test('E4: the workflow lock check accepts a deferred holder only while the workspace is absent and requires the successor receipt after handover', t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-lock-receipt-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const backup = path.join(root, 'redeploy-Ab123456'), workspace = path.join(root, 'explorerQaWorkspace');
+    const check = (phase, ready, ready2) => {
+        fs.writeFileSync(`${backup}-lock-ready.json`, JSON.stringify(ready));
+        if (ready2) fs.writeFileSync(`${backup}-lock-ready2.json`, JSON.stringify(ready2)); else fs.rmSync(`${backup}-lock-ready2.json`, { force: true });
+        return spawnSync(process.execPath, ['--input-type=module', '-', backup, String(process.pid), 'box', phase, workspace],
+            { input: receiptCheck, encoding: 'utf8', timeout: 5000 }).status;
+    };
+    const base = { pid: process.pid, instance: 'box' };
+    assert.equal(check('initial', { held: true, ...base }), 0, 'earlier-generation receipt');
+    assert.equal(check('initial', { held: true, ...base, custody: 'workspace', deferred: false }), 0);
+    assert.equal(check('initial', { held: false, ...base, custody: 'workspace', deferred: true }), 0, 'deferred, workspace absent');
+    fs.mkdirSync(workspace);
+    assert.notEqual(check('initial', { held: false, ...base, custody: 'workspace', deferred: true }), 0, 'deferred, workspace present');
+    assert.notEqual(check('initial', { held: false, ...base }), 0);
+    assert.notEqual(check('successor', { held: true, ...base }), 0, 'the successor phase needs its own receipt');
+    assert.equal(check('successor', { held: true, ...base }, { held: true, ...base, custody: 'workspace', phase: 'successor' }), 0);
+    assert.notEqual(check('successor', { held: true, ...base }, { held: true, ...base, custody: 'workspace', phase: 'initial' }), 0);
+});
+
+test('workflow hands the lock over between relocation and copy and records the custody it learned from the holder', () => {
+    const relocationEnd = workflow.indexOf('// END QA durable workspace relocation');
+    const handover = workflow.indexOf('\n          hand_over_qa_workspace_lock\n', relocationEnd);
+    const copy = workflow.indexOf('// BEGIN QA durable workspace preservation');
+    assert.ok(workflow.indexOf('// BEGIN QA durable workspace relocation') < relocationEnd && relocationEnd < handover && handover < copy);
+    assert.match(workflow, /sudo -n \/usr\/bin\/node --input-type=module - "\$WORK_DIR" "\$QA_BACKUP_DIR" "\$QA_WORKSPACE_LOCK_CUSTODY" <<'NODE'/);
+    assert.match(workflow, /QA_WORKSPACE_LOCK_CUSTODY="\$\(node --input-type=module - "\$QA_BACKUP_DIR-lock-ready\.json"/);
+    const handOver = workflow.slice(workflow.indexOf('hand_over_qa_workspace_lock() {'), workflow.indexOf('\n          }\n', workflow.indexOf('hand_over_qa_workspace_lock() {')));
+    assert.match(handOver, /\[ "\$QA_WORKSPACE_LOCK_CUSTODY" = workspace \] \|\| return 0/);
+    assert.match(handOver, /printf '%s\\n' relocated > "\$QA_BACKUP_DIR-lock-relocated"/);
+    assert.match(handOver, /QA_WORKSPACE_LOCK_PHASE=successor\n\s+assert_qa_workspace_lock_held/);
+    assert.match(workflow, /for suffix in lock-ready\.json lock-ready2\.json lock-relocated lock-released\.json lock-release lock\.log lock-source\.txt; do/);
 });

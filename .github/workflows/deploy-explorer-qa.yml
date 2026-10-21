@@ -805,15 +805,54 @@ jobs:
           QA_ROLLBACK_REFERENCE_PRINTED=0
           QA_STOP_STARTED=0
           QA_WORKSPACE_LOCK_PID=""
+          # The lock module of the runtime being retired decides the custody: an
+          # earlier-generation lock lives outside the workspace and is held as is;
+          # a workspace-generation lock moves with the renamed workspace and is
+          # handed over to the recreated one (phase "successor").
+          QA_WORKSPACE_LOCK_CUSTODY=legacy
+          QA_WORKSPACE_LOCK_PHASE=initial
+          QA_TARGET_PROBE_DIR=""
           assert_qa_workspace_lock_held() {
             test -n "$QA_WORKSPACE_LOCK_PID" || return 1
-          node --input-type=module - "$QA_BACKUP_DIR-lock-ready.json" "$QA_WORKSPACE_LOCK_PID" "$BOX_INSTANCE" <<'NODE'
+          node --input-type=module - "$QA_BACKUP_DIR" "$QA_WORKSPACE_LOCK_PID" "$BOX_INSTANCE" "$QA_WORKSPACE_LOCK_PHASE" "$WORK_DIR" <<'NODE'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
-          const receipt = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          assert.deepEqual(receipt, { held: true, pid: Number(process.argv[3]), instance: process.argv[4] });
+          const [backup, pid, instance, phase, workspace] = process.argv.slice(2);
+          const expected = { pid: Number(pid), instance };
+          const receipt = JSON.parse(fs.readFileSync(`${backup}-${phase === 'successor' ? 'lock-ready2.json' : 'lock-ready.json'}`, 'utf8'));
+          if (phase === 'successor') assert.deepEqual(receipt, { held: true, ...expected, custody: 'workspace', phase: 'successor' });
+          else if (receipt.custody !== 'workspace') assert.deepEqual(receipt, { held: true, ...expected });
+          else if (receipt.deferred === true) {
+            // A deferred holder holds nothing; the outer flock serializes QA operations
+            // only while the workspace does not exist yet.
+            assert.deepEqual(receipt, { held: false, ...expected, custody: 'workspace', deferred: true });
+            assert.throws(() => fs.lstatSync(workspace), { code: 'ENOENT' });
+          } else assert.deepEqual(receipt, { held: true, ...expected, custody: 'workspace', deferred: false });
           process.kill(receipt.pid, 0);
           NODE
+          }
+          remove_qa_target_probe() {
+            [ -n "$QA_TARGET_PROBE_DIR" ] || return 0
+            node --input-type=module - "$QA_TARGET_PROBE_DIR" <<'NODE' || return 1
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const [probe] = process.argv.slice(2);
+          assert.match(probe, /^\/tmp\/explorer_qa_target\.[A-Za-z0-9]{6}$/);
+          assert.equal(fs.realpathSync(probe), probe);
+          fs.rmSync(probe, { recursive: true });
+          NODE
+            QA_TARGET_PROBE_DIR=""
+          }
+          hand_over_qa_workspace_lock() {
+            [ "$QA_WORKSPACE_LOCK_CUSTODY" = workspace ] || return 0
+            printf '%s\n' relocated > "$QA_BACKUP_DIR-lock-relocated" || return 1
+            for _ in $(seq 1 350); do
+              if [ -f "$QA_BACKUP_DIR-lock-ready2.json" ]; then break; fi
+              kill -0 "$QA_WORKSPACE_LOCK_PID" || return 1
+              sleep 0.1
+            done
+            QA_WORKSPACE_LOCK_PHASE=successor
+            assert_qa_workspace_lock_held
           }
           release_qa_workspace_lock() {
             if [ -z "$QA_WORKSPACE_LOCK_PID" ]; then return; fi
@@ -872,6 +911,7 @@ jobs:
             if [ -n "$QA_CAPACITY_LOG" ]; then
               rm -f "$QA_CAPACITY_LOG"
             fi
+            remove_qa_target_probe || status=1
             if [ -n "$QA_REHEARSAL_DIR" ]; then
               rm -f "$QA_REHEARSAL_DIR/rollback-explorer-qa.mjs"
               rmdir "$QA_REHEARSAL_DIR" 2>/dev/null || true
@@ -1184,7 +1224,6 @@ jobs:
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import path from 'node:path';
-          import { execFileSync } from 'node:child_process';
 
           // BEGIN QA preservation admission
           const target = process.argv[2];
@@ -1234,16 +1273,13 @@ jobs:
                   const directory = path.join(target, relative), stat = present(directory);
                   if (!stat) continue;
                   assert(stat.isDirectory() && !stat.isSymbolicLink(), 'A managed source path needs explicit review');
-                  const git = args => execFileSync('git', ['-c', `safe.directory=${directory}`, '-C', directory, ...args], {
-                      encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-                  }).trim();
-                  assert.equal(git(['rev-parse', '--show-toplevel']), directory, 'Managed source must be its own repository');
-                  const origin = git(['remote', 'get-url', 'origin']);
-                  if (relative.startsWith('.ploinky/agentlib/generations/')) {
-                      assert.equal(origin, path.join(target, '.ploinky/agentlib/mirror.git'), 'Unreviewed shared-library source origin');
-                      assert.equal(git(['rev-parse', 'HEAD']), path.basename(relative).slice(0, 40), 'Shared-library generation commit changed');
-                  } else assert.match(origin, /^https:\/\/github\.com\/AssistOS-AI\/[A-Za-z0-9_.-]+(?:\.git)?$/i, 'Unreviewed managed source origin');
-                  assert.equal(git(['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none']), '', 'Local managed source edits require reconciliation before redeployment');
+                  const gitDirectory = present(path.join(directory, '.git'));
+                  assert(gitDirectory?.isDirectory() && !gitDirectory.isSymbolicLink(), 'Managed source must be its own repository');
+                  // This root step never runs Git: the Box can write these repositories and
+                  // their Git configuration. The capture under the workspace lock, before any
+                  // quiesce or stop, proves each one clean, at its reviewed origin and, for a
+                  // shared-library generation, at the commit its name records, with Git run
+                  // only in the sandbox (rollback-explorer-qa.mjs sourcePin).
               }
               const desiredFile = path.join(target, '.ploinky/edge-desired.json');
               if (present(desiredFile)) {
@@ -1492,6 +1528,117 @@ jobs:
             fi
             echo "[deploy-qa] Redeploy pinned to AchillesIDE/$QA_EXPLORER_BRANCH at $QA_EXPLORER_HEAD."
           fi
+
+          # BEGIN QA target lock generation
+          # A Ploinky whose mutation lock lives in the workspace also keeps Box host
+          # state there and refuses legacy ~/.ploinky-box records. Probe the lock module
+          # of the Ploinky this run deploys, from a shallow clone of its default branch,
+          # before anything is quiesced, stopped or moved.
+          qa_lock_location() {
+            env -i PATH="$PATH" HOME="$HOME" node --input-type=module - "$1/ploinky-box/locks.mjs" <<'NODE'
+          import { pathToFileURL } from 'node:url';
+          const module = await import(pathToFileURL(process.argv[2]).href);
+          process.stdout.write(module.MUTATION_LOCK_LOCATION === 'workspace' ? 'workspace' : 'legacy');
+          NODE
+          }
+          QA_TARGET_PROBE_DIR="$(mktemp -d /tmp/explorer_qa_target.XXXXXX)"
+          QA_TARGET_BRANCH="$(resolve_default_branch https://github.com/AssistOS-AI/ploinky.git)"
+          git clone --quiet --depth 1 --single-branch --branch "$QA_TARGET_BRANCH" \
+            https://github.com/AssistOS-AI/ploinky.git "$QA_TARGET_PROBE_DIR/ploinky"
+          QA_TARGET_COMMIT="$(git -C "$QA_TARGET_PROBE_DIR/ploinky" rev-parse HEAD)"
+          [[ "$QA_TARGET_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          QA_TARGET_LOCK_LOCATION="$(qa_lock_location "$QA_TARGET_PROBE_DIR/ploinky")"
+          remove_qa_target_probe
+          echo "[deploy-qa] Target Ploinky/$QA_TARGET_BRANCH at $QA_TARGET_COMMIT keeps its mutation lock: $QA_TARGET_LOCK_LOCATION."
+          # END QA target lock generation
+          assert_qa_legacy_host_state_preflight() {
+            node --input-type=module - "$HOME" "$BOX_INSTANCE" "$1" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+
+          // BEGIN QA legacy host-state preflight
+          // Read-only: lstat, readdir and bounded no-follow reads of this instance's
+          // records only. A blocking record fails admission before anything is retired.
+          const [home, instance, location] = process.argv.slice(2);
+          assert(path.isAbsolute(home) && path.normalize(home) === home, 'Invalid operator home');
+          assert.match(instance, /^ploinky-box-[a-z0-9-]+-[a-f0-9]{12}$/);
+          assert(['legacy', 'workspace'].includes(location), 'Unknown Ploinky lock generation');
+          if (location === 'legacy') {
+            console.log('[deploy-qa] Legacy host-state preflight not applicable: the deployed Ploinky keeps Box host state in ~/.ploinky-box.');
+          } else {
+            const present = file => { try { return fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
+            const readRecord = (file, stat) => {
+              if (!stat.isFile() || stat.nlink !== 1 || stat.size > 65536 || !file.endsWith('.json')) return null;
+              let descriptor;
+              try {
+                descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+                const opened = fs.fstatSync(descriptor);
+                if (opened.ino !== stat.ino || opened.dev !== stat.dev) return null;
+                return JSON.parse(fs.readFileSync(descriptor, 'utf8'));
+              } catch { return null; } finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
+            };
+            const root = path.join(home, '.ploinky-box');
+            const blocking = [];
+            for (const kind of ['gpu-grants', 'hardware-limits', 'update-recovery', 'update-pending']) {
+              const directory = path.join(root, kind), stat = present(directory);
+              if (!stat) continue;
+              if (!stat.isDirectory() || stat.isSymbolicLink()) { blocking.push({ kind, file: directory, stat, record: null }); continue; }
+              for (const name of fs.readdirSync(directory).filter(entry => entry.startsWith(instance)).sort()) {
+                const file = path.join(directory, name), entry = fs.lstatSync(file);
+                blocking.push({ kind, file, stat: entry, record: readRecord(file, entry) });
+              }
+            }
+            if (!blocking.length) {
+              console.log(`[deploy-qa] Legacy host-state preflight passed: ~/.ploinky-box holds no blocking record for ${instance}.`);
+            } else {
+              const agent = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+              const list = value => Array.isArray(value) ? value.filter(item => agent.test(item)) : [];
+              const say = line => console.error(`[deploy-qa] ${line}`);
+              // Printable ASCII only; record values are short, paths are kept whole.
+              const clean = (value, limit = 120) => String(value).replace(/[^\x20-\x7e]/g, '?').slice(0, limit);
+              const quoted = file => /^[A-Za-z0-9_.\/-]+$/.test(file) ? `'${file}'` : null;
+              say(`ERROR: the Ploinky this run deploys keeps Box host state in the workspace and refuses the legacy ~/.ploinky-box records of ${instance}. Nothing was quiesced, stopped or moved.`);
+              const denies = [], grants = [], updates = [];
+              let workspaceDenied = false, limits = false;
+              for (const { kind, file, stat, record } of blocking) {
+                const type = stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : 'other';
+                say(`Legacy record: ${clean(file, 4096)} (${type})${record === null && type === 'file' ? ': unreadable or not a bounded JSON record; inspect it before deleting' : ''}`);
+                if (kind === 'gpu-grants' && record) {
+                  for (const item of list(record.denied)) denies.push(item);
+                  for (const item of list(record.agents)) grants.push({ agent: item, vendor: /^[a-z0-9-]{1,32}$/.test(record.vendor || '') ? record.vendor : null });
+                  if (record.workspaceDenied === true) workspaceDenied = true;
+                }
+                if (kind === 'hardware-limits') limits = true;
+                if (kind.startsWith('update-') && record) updates.push({ file, operation: record.operation ?? record.kind ?? 'unknown',
+                  container: record.containerId ?? record.container ?? 'unknown', createdAt: record.createdAt ?? 'unknown' });
+              }
+              say('Remediation, in order:');
+              say('  1. Copy anything above you still need, then remove the legacy records as the operator:');
+              for (const { file, stat } of blocking) {
+                say(quoted(file) ? `       ${stat.isDirectory() && !stat.isSymbolicLink() ? 'rm -r' : 'rm'} -- ${quoted(file)}`
+                  : `       inspect and remove by hand: ${clean(file, 4096)}`);
+              }
+              say('  2. After the redeploy, apply the recorded GPU denies first (denies are honored without a Box):');
+              for (const item of denies) say(`       ploinky gpu revoke --agent ${item}`);
+              if (workspaceDenied) say('       ploinky gpu revoke');
+              if (!denies.length && !workspaceDenied) say('       none recorded');
+              say(`  3. The redeploy then starts QA${limits ? '; if the legacy hardware-limits gate was on, start with PLOINKY_BOX_HARDWARE_LIMITS=on' : ''}.`);
+              say('  4. After start, re-grant GPU access:');
+              for (const { agent: item, vendor } of grants) say(`       ploinky gpu grant --agent ${item}${vendor ? ` --vendor ${vendor}` : ''}`);
+              if (!grants.length) say('       none recorded');
+              if (limits) say('  5. Re-apply the per-agent hardware limits recorded under the hardware-limits store listed above.');
+              for (const item of updates) {
+                say(`  6. ${clean(item.file, 4096)}: operation ${clean(item.operation)}, container ${clean(item.container)}, created ${clean(item.createdAt)}; obsolete once the legacy Box is retired.`);
+              }
+              process.exitCode = 1;
+            }
+          }
+          // END QA legacy host-state preflight
+          NODE
+          }
+          assert_qa_legacy_host_state_preflight "$QA_TARGET_LOCK_LOCATION"
+
           if [ "$QA_OPERATION" = redeploy-rehearsal ]; then
             # BEGIN QA redeploy rehearsal
             # Every gate runs and reports; any failed gate fails the rehearsal.
@@ -1615,35 +1762,95 @@ jobs:
           // BEGIN QA archive lock holder
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
+          import path from 'node:path';
           import { fileURLToPath, pathToFileURL } from 'node:url';
 
+          // Records a workspace-lock custody boundary in the backup's recovery authority.
+          export function recordCustodyPhase(backup, phase) {
+              const file = path.join(backup, 'rollback-authority.json'), stat = fs.lstatSync(file);
+              assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1
+                  && stat.uid === process.getuid() && (stat.mode & 0o077) === 0, 'Unsafe recovery authority');
+              const authority = JSON.parse(fs.readFileSync(file, 'utf8'));
+              authority.custody = { location: 'workspace', phase, recordedAt: new Date().toISOString() };
+              const temporary = `${file}.${process.pid}.tmp`;
+              fs.writeFileSync(temporary, JSON.stringify(authority, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+              fs.renameSync(temporary, file);
+          }
+
+          // An earlier-generation lock is held unchanged until the release request.
+          // A workspace-generation lock lives in the workspace: once the preservation
+          // has moved it into the backup and recreated the workspace, the
+          // holder proves the old lock still ours there, takes the recreated
+          // workspace's lock with a fresh skeleton, then releases the old one at its
+          // new path. With no workspace yet the holder starts deferred and holds
+          // nothing until the recreated workspace exists.
           export async function holdArchiveLock({ adapters, scope, runtimeRoot, backup, parentPid, intervalMs = 100 }) {
               adapters.assertHost();
               assert.equal(process.ppid, parentPid, 'Archive lock holder must remain attached to the deploying shell');
-              let lock, reason, resolveStopped;
+              let lock, successor, reason, resolveStopped, resolveRelocated, relocationSeen = false;
               const stopped = new Promise(resolve => { resolveStopped = resolve; });
+              const relocation = new Promise(resolve => { resolveRelocated = resolve; });
               const stop = value => { if (!reason) { reason = value; resolveStopped(value); } };
               const interrupted = () => stop('interrupted');
+              const requested = (suffix, content) => {
+                  const file = `${backup}-${suffix}`, stat = fs.lstatSync(file);
+                  assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1
+                      && stat.uid === process.getuid() && (stat.mode & 0o077) === 0);
+                  assert.equal(fs.readFileSync(file, 'utf8'), content);
+              };
               process.on('SIGTERM', interrupted); process.on('SIGINT', interrupted);
               const timer = setInterval(() => {
                   if (process.ppid !== parentPid) return stop('parent-exited');
                   try {
-                      const file = `${backup}-lock-release`, stat = fs.lstatSync(file);
-                      assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1
-                          && stat.uid === process.getuid() && (stat.mode & 0o077) === 0);
-                      assert.equal(fs.readFileSync(file, 'utf8'), 'release\n');
+                      requested('lock-release', 'release\n');
                       stop('released');
                   } catch (error) { if (error.code !== 'ENOENT') stop('invalid-release'); }
+                  if (lock?.location === 'workspace' && !relocationSeen) {
+                      try {
+                          requested('lock-relocated', 'relocated\n');
+                          relocationSeen = true; resolveRelocated('relocated');
+                      } catch (error) { if (error.code !== 'ENOENT') stop('invalid-relocation'); }
+                  }
               }, intervalMs);
+              // A workspace lock that the preservation already moved is released where it now is.
+              const release = held => {
+                  if (held.location === 'workspace' && !held.deferred) {
+                      try { held.assertHeld(); } catch (error) {
+                          if (error?.code !== 'PLOINKY_BOX_LOCK_RELOCATED') throw error;
+                          return held.releaseRelocated(path.join(backup, 'workspace'));
+                      }
+                  }
+                  return held.release();
+              };
               try {
-                  lock = await adapters.acquireWorkspaceLock(runtimeRoot);
+                  lock = await adapters.acquireWorkspaceLock(runtimeRoot, { workspaceRoot: scope.workspace, deferIfAbsent: true });
                   assert.equal(reason, undefined, 'Archive lock acquisition was interrupted');
-                  fs.writeFileSync(`${backup}-lock-ready.json`, JSON.stringify({ held: true, pid: process.pid, instance: scope.box }), { flag: 'wx', mode: 0o600 });
+                  const custody = lock.location === 'workspace'
+                      ? { held: !lock.deferred, pid: process.pid, instance: scope.box, custody: 'workspace', deferred: lock.deferred === true }
+                      : { held: true, pid: process.pid, instance: scope.box };
+                  fs.writeFileSync(`${backup}-lock-ready.json`, JSON.stringify(custody), { flag: 'wx', mode: 0o600 });
+                  if (lock.location === 'workspace' && await Promise.race([stopped, relocation]) === 'relocated') {
+                      const relocatedRoot = lock.deferred ? null : path.join(backup, 'workspace');
+                      if (relocatedRoot) lock.assertHeldAt(relocatedRoot);
+                      successor = await lock.successor(scope.workspace);
+                      recordCustodyPhase(backup, 'replacement-lock-acquired');
+                      if (relocatedRoot) lock.releaseRelocated(relocatedRoot);
+                      [lock, successor] = [successor, undefined];
+                      if (relocatedRoot) recordCustodyPhase(backup, 'previous-lock-released');
+                      const ready = `${backup}-lock-ready2.json`;
+                      fs.writeFileSync(`${ready}.tmp`, JSON.stringify({ held: true, pid: process.pid, instance: scope.box,
+                          custody: 'workspace', phase: 'successor' }), { flag: 'wx', mode: 0o600 });
+                      fs.renameSync(`${ready}.tmp`, ready);
+                  }
                   assert.equal(await stopped, 'released', 'Archive operation ended without a deliberate release');
               } finally {
                   clearInterval(timer); process.removeListener('SIGTERM', interrupted); process.removeListener('SIGINT', interrupted);
+                  let failure;
+                  for (const held of [successor, lock].filter(Boolean)) {
+                      try { release(held); } catch (error) { failure ??= error; }
+                  }
+                  if (failure) throw failure;
                   if (lock) {
-                      lock.release();
                       fs.writeFileSync(`${backup}-lock-released.json`, JSON.stringify({ released: true, pid: process.pid, instance: scope.box }), { flag: 'wx', mode: 0o600 });
                   }
               }
@@ -1665,6 +1872,13 @@ jobs:
             sleep 0.1
           done
           assert_qa_workspace_lock_held
+          QA_WORKSPACE_LOCK_CUSTODY="$(node --input-type=module - "$QA_BACKUP_DIR-lock-ready.json" <<'NODE'
+          import fs from 'node:fs';
+          const receipt = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          process.stdout.write(receipt.custody === 'workspace' ? 'workspace' : 'legacy');
+          NODE
+          )"
+          echo "[deploy-qa] Workspace lock custody: $QA_WORKSPACE_LOCK_CUSTODY."
           # END QA outer archive lock acquisition
           assert_qa_preservation_admission
           assert_qa_workspace_lock_held
@@ -1705,6 +1919,60 @@ jobs:
             fi
           done
           QA_STOP_STARTED=1
+          sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" "$QA_BACKUP_DIR" "$QA_WORKSPACE_LOCK_CUSTODY" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+
+          // BEGIN QA durable workspace relocation
+          const [target, backup, custody = 'legacy'] = process.argv.slice(2);
+          assert.equal(target, '/home/admin/explorerQaWorkspace');
+          assert.equal(path.dirname(backup), '/home/admin/.qa-deployment-backups');
+          assert.match(path.basename(backup), /^redeploy-[A-Za-z0-9]{8}$/);
+          assert(['legacy', 'workspace'].includes(custody), 'Unknown workspace lock custody');
+          assert.equal(process.getuid(), 0);
+          const backupStat = fs.lstatSync(backup);
+          assert(backupStat.isDirectory() && !backupStat.isSymbolicLink());
+          assert.deepEqual(fs.readdirSync(backup).sort(), ['helpers', 'prior-containers.txt', 'rollback-authority.json'], 'The backup must contain only the early recovery authority and helpers');
+          for (const name of ['prior-containers.txt', 'rollback-authority.json']) {
+              const stat = fs.lstatSync(path.join(backup, name));
+              assert(stat.isFile() && stat.nlink === 1 && stat.uid === backupStat.uid && (stat.mode & 0o077) === 0, 'Unsafe early recovery authority');
+          }
+          // A workspace-generation lock moves with the renamed workspace; each custody
+          // boundary is recorded in the recovery authority, which keeps its owner and mode.
+          const recordPhase = phase => {
+              if (custody !== 'workspace') return;
+              const file = path.join(backup, 'rollback-authority.json'), stat = fs.lstatSync(file);
+              assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.uid === backupStat.uid && (stat.mode & 0o077) === 0, 'Unsafe early recovery authority');
+              const authority = JSON.parse(fs.readFileSync(file, 'utf8'));
+              authority.custody = { location: 'workspace', phase, recordedAt: new Date().toISOString() };
+              const temporary = `${file}.${process.pid}.tmp`;
+              fs.writeFileSync(temporary, JSON.stringify(authority, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+              fs.chownSync(temporary, stat.uid, stat.gid);
+              fs.renameSync(temporary, file);
+          };
+          const source = path.join(backup, 'workspace');
+          let original;
+          try { original = fs.lstatSync(target); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+          if (original) {
+              assert(original.isDirectory() && !original.isSymbolicLink(), 'The pinned QA workspace must be a directory');
+              if (fs.existsSync(path.join(target, '.data'))) {
+                  const keyed = ['.ploinky/data/master-key', '.ploinky/master-key'].some(relative => {
+                      try { return fs.lstatSync(path.join(target, relative)).isFile(); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+                  });
+                  assert(keyed, 'Durable QA data requires its original workspace master key');
+              }
+              fs.renameSync(target, source);
+              recordPhase('workspace-relocated');
+          }
+          fs.mkdirSync(target, { mode: 0o700 });
+          fs.chownSync(target, original?.uid ?? backupStat.uid, original?.gid ?? backupStat.gid);
+          fs.mkdirSync(path.join(target, '.ploinky'), { mode: 0o700 });
+          fs.chownSync(path.join(target, '.ploinky'), original?.uid ?? backupStat.uid, original?.gid ?? backupStat.gid);
+          recordPhase('workspace-recreated');
+          // END QA durable workspace relocation
+          NODE
+          hand_over_qa_workspace_lock
           sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" "$QA_BACKUP_DIR" <<'NODE'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
@@ -1719,28 +1987,17 @@ jobs:
           assert.equal(process.getuid(), 0);
           const backupStat = fs.lstatSync(backup);
           assert(backupStat.isDirectory() && !backupStat.isSymbolicLink());
-          assert.deepEqual(fs.readdirSync(backup).sort(), ['helpers', 'prior-containers.txt', 'rollback-authority.json'], 'The backup must contain only the early recovery authority and helpers');
-          for (const name of ['prior-containers.txt', 'rollback-authority.json']) {
-              const stat = fs.lstatSync(path.join(backup, name));
-              assert(stat.isFile() && stat.nlink === 1 && stat.uid === backupStat.uid && (stat.mode & 0o077) === 0, 'Unsafe early recovery authority');
-          }
+          // The relocation step retained the prior workspace, if there was one, inside the backup.
           const source = path.join(backup, 'workspace');
           let original;
-          try { original = fs.lstatSync(target); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
-          if (original) {
-              assert(original.isDirectory() && !original.isSymbolicLink(), 'The pinned QA workspace must be a directory');
-              if (fs.existsSync(path.join(target, '.data'))) {
-                  const keyed = ['.ploinky/data/master-key', '.ploinky/master-key'].some(relative => {
-                      try { return fs.lstatSync(path.join(target, relative)).isFile(); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
-                  });
-                  assert(keyed, 'Durable QA data requires its original workspace master key');
-              }
-              fs.renameSync(target, source);
-          }
-          fs.mkdirSync(target, { mode: 0o700 });
-          fs.chownSync(target, original?.uid ?? backupStat.uid, original?.gid ?? backupStat.gid);
-          fs.mkdirSync(path.join(target, '.ploinky'), { mode: 0o700 });
-          fs.chownSync(path.join(target, '.ploinky'), original?.uid ?? backupStat.uid, original?.gid ?? backupStat.gid);
+          try { original = fs.lstatSync(source); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+          if (original) assert(original.isDirectory() && !original.isSymbolicLink(), 'The retained QA workspace must be a directory');
+          assert.deepEqual(fs.readdirSync(backup).sort(), ['helpers', 'prior-containers.txt', 'rollback-authority.json', ...(original ? ['workspace'] : [])],
+              'The backup must contain only the recovery authority, helpers and the retained workspace');
+          const fresh = fs.lstatSync(target);
+          assert(fresh.isDirectory() && !fresh.isSymbolicLink(), 'The recreated QA workspace must be a directory');
+          assert(fs.readdirSync(target).every(name => ['.ploinky', '.ploinky-host'].includes(name))
+              && fs.readdirSync(path.join(target, '.ploinky')).length === 0, 'The recreated QA workspace must hold only its empty state and host-state skeleton');
           const copied = [];
           const compare = (from, to) => {
               const left = fs.lstatSync(from), right = fs.lstatSync(to);
@@ -1765,8 +2022,9 @@ jobs:
               copied.push(relative);
           };
           if (original) {
-              const regenerated = new Set(['.ploinky', '.runtime', 'AdvancedLanguageAgent']);
-              for (const name of fs.readdirSync(source)) if (!regenerated.has(name)) copy(name);
+              // Host state is never carried over: the recreated workspace has its own fresh skeleton.
+              const regenerated = new Set(['.ploinky', '.ploinky-host', '.runtime', 'AdvancedLanguageAgent']);
+              for (const name of fs.readdirSync(source)) if (!regenerated.has(name) && !name.startsWith('.ploinky-host.')) copy(name);
               // The repository maps name the previous graph. A stale unregistered name
               // makes agent resolution throw and a stale source entry pins a clone
               // branch, so Ploinky regenerates all three; the backup keeps the old ones.
@@ -1923,16 +2181,27 @@ jobs:
             exit 1
           fi
 
-          PLOINKY_URL='https://github.com/AssistOS-AI/ploinky.git'
-          PLOINKY_BRANCH="$(resolve_default_branch "$PLOINKY_URL")"
-          echo "[deploy-qa] Selected Ploinky/$PLOINKY_BRANCH."
+          # Stage exactly the Ploinky commit the target probe inspected before anything
+          # was retired, so the lock generation and legacy host-state preflight decided
+          # then hold for the deployed runtime. The branch may have moved on since the
+          # probe; the probed commit must still be on it.
+          PLOINKY_BRANCH="$QA_TARGET_BRANCH"
+          echo "[deploy-qa] Selected Ploinky/$PLOINKY_BRANCH at the probed commit $QA_TARGET_COMMIT."
 
+          # BEGIN QA pinned runtime staging
           git -C "$RUNTIME_DIR" fetch --prune origin \
             "refs/heads/$PLOINKY_BRANCH:refs/remotes/origin/$PLOINKY_BRANCH"
-          git -C "$RUNTIME_DIR" checkout -B "$PLOINKY_BRANCH" "refs/remotes/origin/$PLOINKY_BRANCH"
+          git -C "$RUNTIME_DIR" fetch origin "$QA_TARGET_COMMIT"
+          if ! git -C "$RUNTIME_DIR" merge-base --is-ancestor "$QA_TARGET_COMMIT" "refs/remotes/origin/$PLOINKY_BRANCH"; then
+            echo "[deploy-qa] ERROR: the probed Ploinky commit $QA_TARGET_COMMIT is no longer on $PLOINKY_BRANCH."
+            exit 1
+          fi
+          git -C "$RUNTIME_DIR" checkout -B "$PLOINKY_BRANCH" "$QA_TARGET_COMMIT"
           git -C "$RUNTIME_DIR" branch --set-upstream-to="origin/$PLOINKY_BRANCH" "$PLOINKY_BRANCH"
-          git -C "$RUNTIME_DIR" reset --hard "refs/remotes/origin/$PLOINKY_BRANCH"
+          git -C "$RUNTIME_DIR" reset --hard "$QA_TARGET_COMMIT"
           git -C "$RUNTIME_DIR" clean -ffd
+          test "$(git -C "$RUNTIME_DIR" rev-parse HEAD)" = "$QA_TARGET_COMMIT"
+          # END QA pinned runtime staging
 
           PLOINKY="$RUNTIME_DIR/bin/ploinky"
           if [ ! -x "$PLOINKY" ]; then
@@ -1940,6 +2209,8 @@ jobs:
             exit 1
           fi
           echo "[deploy-qa] Ploinky runtime: $(git -C "$RUNTIME_DIR" rev-parse --short HEAD) ($PLOINKY_BRANCH)"
+          # The staged runtime is the probed commit, so its lock generation is the one
+          # the preflight already decided on before anything was retired.
           # The Box image supplies achillesAgentLib, identified by that exact
           # image. It is verified with the image's own probe once the Box runs.
           echo "[deploy-qa] achillesAgentLib comes from the Box image; no commit is pinned."
@@ -1953,17 +2224,49 @@ jobs:
             exit 1
           fi
           git clone --single-branch --branch "$ALA_BRANCH" "$ALA_URL" "$ALA_DIR"
+          # Once a Box runs it can write the workspace checkouts and their Git
+          # configuration, so later Git checks run only in the source sandbox made
+          # from the running QA Box's exact image (rollback-explorer-qa.mjs).
+          qa_box_image() {
+            local image
+            image="$("$BOX_ENGINE" container inspect "$BOX_INSTANCE" --format '{{.Image}}')" || return 1
+            printf '%s\n' "${image#sha256:}"
+          }
+          qa_sandboxed_git() {
+            local directory="$1" image
+            shift
+            image="$(qa_box_image)" || return 1
+            node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$BOX_ENGINE" "$image" "$directory" "$@" <<'NODE'
+          // BEGIN QA sandboxed git
+          const [helper, engine, image, directory, ...args] = process.argv.slice(2);
+          const { createGitSandbox } = await import(helper);
+          const result = createGitSandbox()(directory, { engine, image }, args);
+          if (result.error || result.status !== 0) process.exit(1);
+          process.stdout.write(result.stdout.trim());
+          // END QA sandboxed git
+          NODE
+          }
           verify_ala_checkout() {
-            if [ "$(git -C "$ALA_DIR" rev-parse HEAD)" != "$ALA_COMMIT" ] ||
-              [ "$(git -C "$ALA_DIR" branch --show-current)" != "$ALA_BRANCH" ] ||
-              [ "$(git -C "$ALA_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')" != "origin/$ALA_BRANCH" ] ||
-              [ -n "$(git -C "$ALA_DIR" status --porcelain)" ]; then
+            local image
+            image="$(qa_box_image)" || return 1
+            if ! node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$BOX_ENGINE" "$image" "$ALA_DIR" "$ALA_COMMIT" "$ALA_BRANCH" <<'NODE'
+          // BEGIN QA sandboxed ALA verification
+          // One sandbox run proves the checkout clean, at its reviewed origin, on the
+          // selected branch at the selected commit, tracking that branch's upstream.
+          const [helper, engine, image, directory, commit, branch] = process.argv.slice(2);
+          const { productionAdapters } = await import(helper);
+          const { pin, upstream } = productionAdapters().sourceCheck(directory, { engine, image });
+          if (pin.commit !== commit || pin.branch !== branch || upstream !== `origin/${branch}`) process.exit(1);
+          // END QA sandboxed ALA verification
+          NODE
+            then
               echo "[deploy-qa] ERROR: ALA checkout must remain clean and track the selected default-branch commit."
               return 1
             fi
             echo "[deploy-qa] Verified AdvancedLanguageAgent/$ALA_BRANCH at $ALA_COMMIT."
           }
-          verify_ala_checkout
+          # The fresh clone is verified in the sandbox once the QA Box is prepared,
+          # before the graph starts.
 
           mkdir -p "$WORK_DIR/.ploinky"
           chmod 700 "$WORK_DIR/.ploinky"
@@ -2078,7 +2381,7 @@ jobs:
           # quiesce, exact outer stop, complete preservation and fresh source staging.
           assert_qa_workspace_lock_held
           release_qa_workspace_lock
-          for suffix in lock-ready.json lock-released.json lock-release lock.log lock-source.txt; do
+          for suffix in lock-ready.json lock-ready2.json lock-relocated lock-released.json lock-release lock.log lock-source.txt; do
             if [ -f "$QA_BACKUP_DIR-$suffix" ]; then mv "$QA_BACKUP_DIR-$suffix" "$QA_BACKUP_DIR/$suffix"; fi
           done
           if [ -d "$QA_HELPER_DIR/lock-runtime" ]; then
@@ -2601,8 +2904,10 @@ jobs:
           QA_VERIFY_BOX_ID="$("$BOX_ENGINE" container inspect "$BOX_INSTANCE" --format '{{.Id}}')"
           QA_VERIFY_IMAGE_ID="$("$BOX_ENGINE" container inspect "$BOX_INSTANCE" --format '{{.Image}}')"
           QA_VERIFY_IMAGE_ID="${QA_VERIFY_IMAGE_ID#sha256:}"
+          QA_RUNTIME_HEAD="$(qa_sandboxed_git "$RUNTIME_DIR" rev-parse HEAD)"
+          [[ "$QA_RUNTIME_HEAD" =~ ^[a-f0-9]{40}$ ]]
           QA_EXPECTED_SOURCES=(
-            ".runtime/ploinky|$PLOINKY_BRANCH|$(git -C "$RUNTIME_DIR" rev-parse HEAD)"
+            ".runtime/ploinky|$PLOINKY_BRANCH|$QA_RUNTIME_HEAD"
             "AdvancedLanguageAgent|$ALA_BRANCH|$ALA_COMMIT"
           )
           for repository_record in "${GRAPH_REPOSITORIES[@]}"; do

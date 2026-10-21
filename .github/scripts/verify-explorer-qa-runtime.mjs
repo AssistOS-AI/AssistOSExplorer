@@ -21,7 +21,7 @@ const run = (command, args, options = {}) => execFileSync(command, args, {
 });
 const adapters = productionAdapters();
 adapters.assertHost();
-const lock = await adapters.acquireWorkspaceLock(QA_SCOPE.workspace);
+const lock = await adapters.acquireWorkspaceLock(QA_SCOPE.workspace, { workspaceRoot: QA_SCOPE.workspace });
 try {
     const current = currentQaBox(adapters.boxes());
     assert.equal(current.box.name, QA_SCOPE.box);
@@ -33,10 +33,11 @@ try {
         const directory = path.join(QA_SCOPE.workspace, relative);
         const wanted = expected.sources[relative];
         assert.match(wanted.commit, /^[a-f0-9]{40}$/);
-        const actual = adapters.sourcePin(directory);
+        // The running Box can write these repositories: Git runs only in the
+        // source sandbox made from the current Box's own image.
+        const { pin: actual, upstream } = adapters.sourceCheck(directory, { engine: current.engine, image: current.box.image });
         assert.equal(actual.commit, wanted.commit);
         assert.equal(actual.branch, wanted.branch);
-        const upstream = run('git', ['-C', directory, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).trim();
         assert.equal(upstream, `origin/${wanted.branch}`);
         sources[relative] = { ...actual, upstream };
     }

@@ -39,6 +39,29 @@ const AUTH_FILES = ['.env', ...MASTER_KEY_FILES, '.ploinky/data/.secrets', '.plo
 const GENERATED_STATE = new Set(['agents.json', 'routing.json', 'running', 'run', 'logs', 'box', 'deps',
     'container-runtime', 'graph-skill-scope.json', 'data']);
 const GENERATED_DATA = new Set(['edge-routing', 'edge-publication', 'router-security']);
+// Ploinky's workspace host-state directory. It is never copied between
+// workspaces: a recreated workspace gets a fresh skeleton from its new lock.
+const HOST_STATE_DIRECTORY = '.ploinky-host';
+const HOST_STATE_LABEL = LABEL + 'host-state';
+const isHostStateEntry = name => name === HOST_STATE_DIRECTORY || name.startsWith(HOST_STATE_DIRECTORY + '.');
+// The read-only checks a source pin needs. They run inside a throwaway sandbox,
+// never in the host process, because the Box can write these repositories and
+// their Git configuration (core.fsmonitor, hooks, filters) would run on the host.
+const SOURCE_PATH = /^\/[A-Za-z0-9_.\/-]+$/;
+export const SOURCE_CHECK_SCRIPT = `import { spawnSync } from 'node:child_process';
+const directory = process.argv[2];
+const git = args => {
+    const result = spawnSync('git', ['-c', 'safe.directory=' + directory, '-c', 'core.fsmonitor=false',
+        '-c', 'core.untrackedCache=false', '-C', directory, ...args], { encoding: 'utf8',
+        timeout: 60000, maxBuffer: 8 * 1024 * 1024, env: { PATH: '/usr/bin:/bin', HOME: '/tmp', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } });
+    return { status: result.status, stdout: typeof result.stdout === 'string' ? result.stdout : '' };
+};
+process.stdout.write(JSON.stringify({ toplevel: git(['rev-parse', '--show-toplevel']),
+    status: git(['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none']),
+    head: git(['rev-parse', 'HEAD']), origin: git(['remote', 'get-url', 'origin']),
+    branch: git(['rev-parse', '--abbrev-ref', 'HEAD']),
+    upstream: git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']) }));
+`;
 // These reviewed files preserve existing and deliberately empty account stores.
 // Changed implementations require a new review before prior-code recovery is allowed.
 export const ACCOUNT_CAPABILITY = Object.freeze({
@@ -256,7 +279,7 @@ function sourceDirectories(root) {
 }
 
 function durableEntries(root) {
-    const entries = fs.readdirSync(root).filter(name => name !== '.ploinky');
+    const entries = fs.readdirSync(root).filter(name => name !== '.ploinky' && !isHostStateEntry(name));
     const state = path.join(root, '.ploinky');
     for (const name of fs.readdirSync(state)) if (!GENERATED_STATE.has(name)) entries.push(path.join('.ploinky', name));
     const data = path.join(state, 'data');
@@ -403,6 +426,19 @@ function inspectBoxIdentity(item, scope) {
         requireProof(found.length === 1 && found[0].RW === false && found[0].Type === 'bind'
             && found[0].Source.startsWith(scope.workspace + '/'), 'QA_BOX_SOURCE_INVALID');
     }
+    // A Box that keeps host state in the workspace also shadows the mounted
+    // checkout read-only at its own workspace path and masks the host-state
+    // directory. A Box without the label keeps the earlier proof above.
+    if (Object.hasOwn(labels, HOST_STATE_LABEL)) {
+        const checkout = mounts.find(mount => mount.Destination === '/opt/ploinky').Source;
+        const shadows = mounts.filter(mount => mount.Destination === checkout);
+        const hostState = path.join(scope.workspace, HOST_STATE_DIRECTORY);
+        const masks = mounts.filter(mount => mount.Destination === hostState);
+        requireProof(labels[HOST_STATE_LABEL] === '1'
+            && shadows.length === 1 && shadows[0].Source === checkout && shadows[0].RW === false && shadows[0].Type === 'bind'
+            && masks.length === 1 && masks[0].Source === path.join(hostState, 'empty') && masks[0].RW === false
+            && masks[0].Type === 'bind', 'QA_BOX_SOURCE_INVALID');
+    }
     if (agentLibMode === 'image') assertImageAgentLibMounts(mounts);
     return { labels, image, mounts, agentLibMode };
 }
@@ -445,6 +481,79 @@ export function currentQaBox(boxes, scope = QA_SCOPE) {
     return exact[0];
 }
 
+/**
+ * The lock generation an imported Ploinky `locks.mjs` implements. A module that
+ * keeps its mutation lock inside the workspace says so; any other module is the
+ * earlier generation, whose lock lives outside the workspace.
+ */
+export function lockGeneration(module) {
+    return module?.MUTATION_LOCK_LOCATION === 'workspace' ? 'workspace' : 'legacy';
+}
+
+/**
+ * Acquires the QA workspace mutation lock from one imported lock module. An
+ * earlier-generation module is called exactly as before. A workspace-generation
+ * lock lives in `<workspaceRoot>/.ploinky-host`, so it follows the workspace
+ * when the directory is renamed: the handle exposes the relocation and deletion
+ * custody operations, and `successor` takes the lock of a recreated workspace
+ * from the same module. With `deferIfAbsent`, an absent workspace yields a
+ * deferred handle that holds nothing; the caller's outer host lock serializes
+ * QA operations until the workspace exists.
+ */
+export async function acquireWorkspaceCustody(module, scope, { workspaceRoot = scope.workspace, deferIfAbsent = false } = {}) {
+    if (lockGeneration(module) === 'legacy') {
+        const lock = await module.createMutationLockManager().acquire(scope.box);
+        let released = false;
+        return { location: 'legacy', deferred: false, release() { if (!released) { lock.release(); released = true; } } };
+    }
+    const take = (root, requireNewSkeleton) => module.createMutationLockManager()
+        .acquire(scope.box, { workspaceRoot: root, requireNewSkeleton });
+    const handle = (lock, root) => {
+        let released = false;
+        const once = action => { requireProof(!released, 'QA_WORKSPACE_LOCK_RELEASED'); action(); released = true; };
+        return {
+            location: 'workspace', deferred: false, workspaceRoot: root,
+            assertHeld() { requireProof(!released, 'QA_WORKSPACE_LOCK_RELEASED'); lock.assertHeld(scope.box); },
+            assertHeldAt(relocatedRoot) { requireProof(!released, 'QA_WORKSPACE_LOCK_RELEASED'); lock.assertHeldAt(relocatedRoot); },
+            releaseRelocated(relocatedRoot) { once(() => lock.releaseRelocated(relocatedRoot)); },
+            relinquishDeleted() { once(() => lock.relinquishDeleted()); },
+            release() { if (!released) { lock.release(); released = true; } },
+            async successor(newRoot) { return handle(await take(newRoot, true), newRoot); },
+        };
+    };
+    if (deferIfAbsent && !present(workspaceRoot)) {
+        const refuse = () => requireProof(false, 'QA_WORKSPACE_LOCK_DEFERRED');
+        return { location: 'workspace', deferred: true, workspaceRoot, release() {}, assertHeld: refuse,
+            assertHeldAt: refuse, releaseRelocated: refuse, relinquishDeleted: refuse,
+            async successor(newRoot) { return handle(await take(newRoot, true), newRoot); } };
+    }
+    return handle(await take(workspaceRoot, false), workspaceRoot);
+}
+
+/**
+ * A recreated workspace holds only the fresh host-state skeleton its successor
+ * lock created: `locks/` with at most that held lock, an empty `quarantine/`,
+ * an empty `empty/` and, if present, an empty `tmp/`. Nothing was copied in.
+ */
+export function assertSkeletonOnlyHostState(root, heldLock = null) {
+    const hostState = path.join(root, HOST_STATE_DIRECTORY);
+    const entries = name => {
+        const stat = present(path.join(hostState, name));
+        requireProof(stat?.isDirectory() && !stat.isSymbolicLink(), 'QA_GENERATED_STATE_RESTORED');
+        return fs.readdirSync(path.join(hostState, name));
+    };
+    const stat = present(hostState);
+    requireProof(stat?.isDirectory() && !stat.isSymbolicLink(), 'QA_GENERATED_STATE_RESTORED');
+    const names = fs.readdirSync(hostState).sort();
+    requireProof(['empty', 'locks', 'quarantine'].every(name => names.includes(name))
+        && names.every(name => ['empty', 'locks', 'quarantine', 'tmp'].includes(name)), 'QA_GENERATED_STATE_RESTORED');
+    requireProof(entries('empty').length === 0 && entries('quarantine').length === 0
+        && (!names.includes('tmp') || entries('tmp').length === 0), 'QA_GENERATED_STATE_RESTORED');
+    const locks = entries('locks');
+    requireProof(locks.length === 0 || (locks.length === 1 && locks[0] === 'workspace.lock' && heldLock), 'QA_GENERATED_STATE_RESTORED');
+    if (locks.length) heldLock.assertHeld();
+}
+
 /** Filesystem behavior is real in tests; external runtime operations are injected. */
 export function createRollbackService(adapters, scope = QA_SCOPE) {
     const paths = backup => {
@@ -455,7 +564,11 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
         return { authority: path.join(backup, 'rollback-authority.json'), previous: path.join(backup, 'workspace'),
             failed: path.join(backup, 'failed-workspace'), journal: path.join(backup, 'rollback-result.json') };
     };
-    const pins = root => sourceDirectories(root).map(relative => ({ relative, ...adapters.sourcePin(path.join(root, relative)) }));
+    // Source checks run in a sandbox made from the exact image of the Box being
+    // captured or recovered; the image is already pinned and present locally.
+    const sandboxOf = item => item ? { engine: item.engine, image: item.box.image } : null;
+    const pins = (root, sandbox) => sourceDirectories(root)
+        .map(relative => ({ relative, ...adapters.sourcePin(path.join(root, relative), sandbox) }));
     const matches = (actual, expected, code) => requireProof(JSON.stringify(actual) === JSON.stringify(expected), code);
     const inventory = () => adapters.boxes();
 
@@ -470,7 +583,7 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
         requireProof(boxes.length <= 1, 'QA_BOX_AMBIGUOUS');
         const predecessor = boxes[0] || null;
         requireProof(!predecessor || stat, 'QA_PREDECESSOR_WORKSPACE_MISSING');
-        const sources = stat ? pins(scope.workspace) : [];
+        const sources = stat ? pins(scope.workspace, sandboxOf(predecessor)) : [];
         if (predecessor) requireProof(sources.some(source => source.relative === '.runtime/ploinky')
             && sources.some(source => source.relative === '.ploinky/repos/AchillesIDE'), 'QA_SOURCES_INCOMPLETE');
         if (predecessor) for (const destination of ['/opt/ploinky', ...(predecessor.box.agentLib?.mode === 'image' ? [] : [AGENTLIB_IMAGE_PATH])]) {
@@ -532,7 +645,7 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
         requireProof(currentId !== predecessorId, 'QA_CURRENT_IS_PREDECESSOR');
         const previous = present(files.previous) ? files.previous : scope.workspace;
         matches(identity(directory(previous)), authority.workspaceIdentity, 'QA_PREVIOUS_WORKSPACE_CHANGED');
-        matches(pins(previous), authority.sources, 'QA_PREVIOUS_SOURCES_CHANGED');
+        matches(pins(previous, sandboxOf(authority.predecessor)), authority.sources, 'QA_PREVIOUS_SOURCES_CHANGED');
         requireProof(adapters.accountCapability(previous), 'QA_PRIOR_CREDENTIAL_RUNTIME_UNSUPPORTED');
         matches(secretIdentities(previous), authority.auth, 'QA_PREVIOUS_AUTH_CHANGED');
         requireProof(validateDesired(previous) === authority.desiredDigest, 'QA_PREVIOUS_INTENT_CHANGED');
@@ -559,15 +672,29 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
 
     async function execute(backup, currentId) {
         let selected = plan(backup, currentId);
-        const workspaceLock = await adapters.acquireWorkspaceLock(selected.previous);
-        try { selected = plan(backup, currentId); }
-        catch (error) { workspaceLock.release(); throw error; }
+        // The previous runtime's lock module decides the custody. A workspace
+        // lock moves with the renamed workspace, so it is handed over to the
+        // recreated workspace and then released at its new path.
+        const initialLock = await adapters.acquireWorkspaceLock(selected.previous,
+            { workspaceRoot: scope.workspace, deferIfAbsent: true });
+        const workspaceCustody = initialLock.location === 'workspace';
+        let workspaceLock = initialLock, relocatedLock = null, relocatedRoot = null;
+        const releaseLocks = () => {
+            const relocated = relocatedLock; relocatedLock = null;
+            try { workspaceLock.release(); } finally { if (relocated) relocated.releaseRelocated(relocatedRoot); }
+        };
+        try {
+            selected = plan(backup, currentId);
+            // A deferred lock is valid only while the workspace stays absent.
+            requireProof(!initialLock.deferred || selected.targetIdentity === null, 'QA_CURRENT_WORKSPACE_CHANGED');
+        } catch (error) { releaseLocks(); throw error; }
         const { files, authority } = selected;
+        const sandbox = sandboxOf(authority.predecessor);
         const receipt = { version: 1, result: 'failed', phase: 'admitted', startedAt: new Date().toISOString(),
             predecessorId: authority.predecessor.box.id, failedId: selected.current?.box.id || null,
             backup, preservedPrevious: files.previous, failedWorkspace: files.failed, recoveryBoxId: null };
         try { writeNew(files.journal, receipt); }
-        catch (error) { workspaceLock.release(); throw error; }
+        catch (error) { releaseLocks(); throw error; }
         const checkpoint = phase => {
             receipt.phase = phase;
             const temporary = files.journal + '.' + crypto.randomBytes(8).toString('hex');
@@ -602,13 +729,35 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             checkpoint('preserving-workspaces');
             matches(present(scope.workspace) ? identity(directory(scope.workspace)) : null,
                 selected.targetIdentity, 'QA_CURRENT_WORKSPACE_CHANGED');
-            if (selected.previous === scope.workspace) fs.renameSync(scope.workspace, files.previous);
-            else if (present(scope.workspace)) fs.renameSync(scope.workspace, files.failed);
+            let renamedTo = null;
+            if (selected.previous === scope.workspace) renamedTo = files.previous;
+            else if (present(scope.workspace)) renamedTo = files.failed;
+            if (renamedTo) {
+                fs.renameSync(scope.workspace, renamedTo);
+                if (workspaceCustody && !initialLock.deferred) {
+                    relocatedLock = initialLock; relocatedRoot = renamedTo;
+                    workspaceLock = { release() {} };
+                    checkpoint('workspace-relocated');
+                }
+            }
             matches(identity(directory(files.previous)), authority.workspaceIdentity, 'QA_PREVIOUS_WORKSPACE_CHANGED');
-            matches(pins(files.previous), authority.sources, 'QA_PREVIOUS_SOURCES_CHANGED');
+            matches(pins(files.previous, sandbox), authority.sources, 'QA_PREVIOUS_SOURCES_CHANGED');
             matches(secretIdentities(files.previous), authority.auth, 'QA_PREVIOUS_AUTH_CHANGED');
             checkpoint('copying-durable-state');
             fs.mkdirSync(scope.workspace, { mode: 0o700 });
+            if (workspaceCustody) {
+                // L1 must still be ours at the renamed path before L2 is taken on
+                // the recreated workspace with a fresh skeleton; only then is L1
+                // released where it now lives.
+                if (relocatedLock) relocatedLock.assertHeldAt(relocatedRoot);
+                workspaceLock = await initialLock.successor(scope.workspace);
+                checkpoint('replacement-lock-acquired');
+                if (relocatedLock) {
+                    const relocated = relocatedLock; relocatedLock = null;
+                    relocated.releaseRelocated(relocatedRoot);
+                    checkpoint('previous-lock-released');
+                }
+            }
             const copy = relative => {
                 const from = path.join(files.previous, relative), to = path.join(scope.workspace, relative);
                 if (present(from)) adapters.copy(from, to);
@@ -616,11 +765,12 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             fs.mkdirSync(path.join(scope.workspace, '.ploinky'), { mode: 0o700 });
             for (const relative of durableEntries(files.previous)) copy(relative);
             matches(secretIdentities(scope.workspace), authority.auth, 'QA_RESTORED_AUTH_CHANGED');
-            matches(pins(scope.workspace), authority.sources, 'QA_RESTORED_SOURCES_CHANGED');
+            matches(pins(scope.workspace, sandbox), authority.sources, 'QA_RESTORED_SOURCES_CHANGED');
             requireProof(validateDesired(scope.workspace) === authority.desiredDigest, 'QA_RESTORED_INTENT_CHANGED');
             for (const relative of ['agents.json', 'running', 'run', 'box', 'data/edge-routing', 'data/edge-publication', 'data/router-security']) {
                 requireProof(!present(path.join(scope.workspace, '.ploinky', relative)), 'QA_GENERATED_STATE_RESTORED');
             }
+            if (workspaceCustody) assertSkeletonOnlyHostState(scope.workspace, workspaceLock);
             checkpoint('preparing-fresh-box');
             workspaceLock.release();
             const fresh = await adapters.prepare(authority);
@@ -642,7 +792,7 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             receipt.readiness = await adapters.ready(fresh, authority);
             requireProof(receipt.readiness?.ready === true, 'QA_RECOVERY_NOT_READY');
             requireProof(assertBox(fresh).box.running === true, 'QA_RECOVERY_BOX_STOPPED');
-            matches(pins(scope.workspace), authority.sources, 'QA_RECOVERY_SOURCES_CHANGED');
+            matches(pins(scope.workspace, sandbox), authority.sources, 'QA_RECOVERY_SOURCES_CHANGED');
             matches(secretIdentities(scope.workspace), authority.auth, 'QA_RECOVERY_AUTH_CHANGED');
             receipt.result = 'recovered';
             receipt.browserAcceptance = 'not-run';
@@ -653,7 +803,7 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             checkpoint(receipt.phase);
             throw Object.assign(new Error(receipt.code), { code: receipt.code, receipt });
         } finally {
-            workspaceLock.release();
+            releaseLocks();
         }
     }
     return { capture, previewCapture, plan, execute };
@@ -664,6 +814,133 @@ function command(program, args, options = {}) {
         stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024, ...options });
     requireProof(!result.error && result.status === 0, 'QA_EXTERNAL_COMMAND_FAILED');
     return result.stdout.trim();
+}
+
+/**
+ * Container arguments of the source-check sandbox: the exact local Box image,
+ * no network, no pull, a read-only root and repository, every capability
+ * dropped, no privilege gain, and the unprivileged image user (uid 1000) mapped
+ * to the invoking host user, so the sandbox reads exactly what that user reads.
+ */
+export function sourceSandboxArguments(directoryPath, image) {
+    return ['run', '--rm', '-i', '--network=none', '--pull=never', '--read-only', '--cap-drop=ALL',
+        '--security-opt=no-new-privileges', '--userns=keep-id:uid=1000,gid=1000', '--user=1000:1000',
+        '--pids-limit=64', '--tmpfs=/tmp:rw,nosuid,nodev,noexec,mode=1777', '--env=HOME=/tmp', '--workdir=/tmp',
+        `--volume=${directoryPath}:${directoryPath}:ro`, '--entrypoint=/usr/local/bin/node', image,
+        '--input-type=module', '-', directoryPath];
+}
+
+/**
+ * Runs SOURCE_CHECK_SCRIPT for one repository in a throwaway rootless Podman
+ * container. `sandbox` names the engine and exact image of the QA Box being
+ * handled; without one, or outside rootless Podman, nothing runs.
+ */
+export function createSourceSandbox({ env = process.env, run = command } = {}) {
+    let rootless = false;
+    return (directoryPath, sandbox) => {
+        const image = String(sandbox?.image || '').replace(/^sha256:/, '');
+        requireProof(sandbox?.engine === 'podman' && FULL_ID.test(image), 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+        requireProof(SOURCE_PATH.test(directoryPath) && path.normalize(directoryPath) === directoryPath, 'QA_SOURCE_SANDBOX_PATH_INVALID');
+        if (!rootless) {
+            requireProof(run('podman', ['info', '--format', '{{.Host.Security.Rootless}}'], { env }) === 'true',
+                'QA_SOURCE_SANDBOX_UNAVAILABLE');
+            rootless = true;
+        }
+        const output = run('podman', sourceSandboxArguments(directoryPath, image), { env, input: SOURCE_CHECK_SCRIPT, timeout: 120_000 });
+        try { return JSON.parse(output); } catch { return requireProof(false, 'QA_SOURCE_SANDBOX_FAILED'); }
+    };
+}
+
+/**
+ * Container arguments for one Git command on one repository the Box can write,
+ * with the same isolation as the source checks. Only that repository is
+ * mounted, read-only unless the command must write it; only a fetch or remote
+ * query gets a network. Hooks are disabled; Box-written fsmonitor, filter and
+ * other configuration can then run only inside this container.
+ */
+export function gitSandboxArguments(repository, image, args, { write = false, network = null, source = repository } = {}) {
+    return ['run', '--rm', '-i', `--network=${network ? sandboxNetwork(network) : 'none'}`, '--pull=never', '--read-only', '--cap-drop=ALL',
+        '--security-opt=no-new-privileges', '--userns=keep-id:uid=1000,gid=1000', '--user=1000:1000',
+        '--pids-limit=64', '--tmpfs=/tmp:rw,nosuid,nodev,noexec,mode=1777', '--env=HOME=/tmp',
+        '--env=GIT_OPTIONAL_LOCKS=0', '--env=GIT_TERMINAL_PROMPT=0', '--workdir=/tmp',
+        `--volume=${source}:${repository}:${write ? 'rw' : 'ro'}`, '--entrypoint=/usr/bin/git', image,
+        '-c', `safe.directory=${repository}`, '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+        '-c', 'core.untrackedCache=false', '-C', repository, ...args];
+}
+
+/**
+ * The network of a sandboxed fetch or remote query: outbound only, never the
+ * host loopback, rendered for the engine's configured rootless network.
+ * Anything else fails closed.
+ */
+export function sandboxNetwork(kind) {
+    if (kind === 'pasta') return 'pasta:--no-map-gw';
+    if (kind === 'slirp4netns') return 'slirp4netns:allow_host_loopback=false';
+    return requireProof(false, 'QA_SOURCE_SANDBOX_NETWORK_UNAVAILABLE');
+}
+
+/**
+ * The mount source of a repository the sandbox may write: every component is
+ * checked with lstat and none may be a symbolic link, so the mount is exactly
+ * the resolved directory that was checked.
+ */
+export function writableRepositorySource(repository, fsApi = fs) {
+    requireProof(path.isAbsolute(repository) && path.normalize(repository) === repository, 'QA_SOURCE_SANDBOX_PATH_INVALID');
+    let current = path.parse(repository).root;
+    for (const part of repository.slice(current.length).split(path.sep).filter(Boolean)) {
+        current = path.join(current, part);
+        const stat = fsApi.lstatSync(current);
+        requireProof(stat.isDirectory() && !stat.isSymbolicLink(), 'QA_SOURCE_SANDBOX_PATH_INVALID');
+    }
+    const resolved = fsApi.realpathSync(repository);
+    requireProof(resolved === repository, 'QA_SOURCE_SANDBOX_PATH_INVALID');
+    return resolved;
+}
+
+/**
+ * Runs Git commands in throwaway rootless Podman containers made from the exact
+ * image of the QA Box being handled. Returns the raw spawn result, so callers
+ * keep their own exit-status rules. Without a Podman Box image, or outside
+ * rootless Podman, nothing runs.
+ */
+export function createGitSandbox({ env = process.env, spawn = spawnSync, fsApi = fs } = {}) {
+    let engineInfo = null;
+    return (repository, sandbox, args, { write = false, network = false, timeout = 60_000, encoding = 'utf8' } = {}) => {
+        const image = String(sandbox?.image || '').replace(/^sha256:/, '');
+        requireProof(sandbox?.engine === 'podman' && FULL_ID.test(image), 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+        requireProof(SOURCE_PATH.test(repository) && path.normalize(repository) === repository, 'QA_SOURCE_SANDBOX_PATH_INVALID');
+        if (!engineInfo) {
+            const info = spawn('podman', ['info', '--format', '{{.Host.Security.Rootless}} {{.Host.RootlessNetworkCmd}}'],
+                { env, encoding: 'utf8', timeout: 60_000 });
+            const [rootless, networkCommand = ''] = String(info.stdout || '').trim().split(/\s+/);
+            requireProof(!info.error && info.status === 0 && rootless === 'true', 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+            engineInfo = { networkCommand };
+        }
+        // A networked run needs the engine's rootless network; without one it fails closed.
+        if (network) sandboxNetwork(engineInfo.networkCommand);
+        const source = write ? writableRepositorySource(repository, fsApi) : repository;
+        return spawn('podman', gitSandboxArguments(repository, image, args,
+            { write, network: network ? engineInfo.networkCommand : null, source }),
+        { env, encoding, timeout, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    };
+}
+
+/** Validates one sandbox report exactly as the former host-side Git checks did. */
+export function sourcePinFromReport(directoryPath, report, scope = QA_SCOPE) {
+    const value = key => {
+        const row = report?.[key];
+        requireProof(row && row.status === 0 && typeof row.stdout === 'string', 'QA_EXTERNAL_COMMAND_FAILED');
+        return row.stdout.trim();
+    };
+    requireProof(value('toplevel') === directoryPath && value('status') === '', 'QA_SOURCE_NOT_CLEAN');
+    const commit = value('head');
+    requireProof(/^[a-f0-9]{40}$/.test(commit), 'QA_SOURCE_COMMIT_INVALID');
+    const origin = value('origin');
+    if (directoryPath.includes('/.ploinky/agentlib/generations/')) {
+        requireProof(new RegExp(`^${commit}-[a-f0-9]{12}$`).test(path.basename(directoryPath))
+            && origin === path.join(scope.workspace, '.ploinky/agentlib/mirror.git'), 'QA_SOURCE_ORIGIN_INVALID');
+    } else requireProof(/^https:\/\/github\.com\/AssistOS-AI\/[A-Za-z0-9_.-]+(?:\.git)?$/i.test(origin), 'QA_SOURCE_ORIGIN_INVALID');
+    return { commit, branch: value('branch'), origin };
 }
 
 export function productionAdapters(scope = QA_SCOPE) {
@@ -733,14 +1010,22 @@ export function productionAdapters(scope = QA_SCOPE) {
         requireProof(records.length === 1, 'QA_INSPECTION_AMBIGUOUS');
         return sanitize(engine, records[0]);
     };
+    const sourceSandbox = createSourceSandbox({ env });
+    // One sandbox run yields the pin and, for the runtime verifier, the upstream.
+    const checkSource = (directoryPath, sandbox) => {
+        directory(directoryPath);
+        directory(path.join(directoryPath, '.git'));
+        const report = sourceSandbox(directoryPath, sandbox);
+        const upstream = report?.upstream?.status === 0 && typeof report.upstream.stdout === 'string' ? report.upstream.stdout.trim() : null;
+        return { pin: sourcePinFromReport(directoryPath, report, scope), upstream };
+    };
+    const lockModule = runtimeRoot => import(path.join(runtimeRoot, '.runtime/ploinky/ploinky-box/locks.mjs'));
     const adapters = {
         accountCapability,
-        async acquireWorkspaceLock(previous) {
-            const { createMutationLockManager } = await import(path.join(previous, '.runtime/ploinky/ploinky-box/locks.mjs'));
-            const lock = await createMutationLockManager().acquire(scope.box);
-            let released = false;
-            return { release() { if (!released) { lock.release(); released = true; } } };
+        async acquireWorkspaceLock(previous, options = {}) {
+            return acquireWorkspaceCustody(await lockModule(previous), scope, options);
         },
+        async lockGeneration(runtimeRoot) { return lockGeneration(await lockModule(runtimeRoot)); },
         assertHost() {
             requireProof(process.platform === 'linux' && os.userInfo().username === 'admin'
                 && os.homedir() === '/home/admin' && scope.workspace === QA_SCOPE.workspace, 'QA_HOST_INVALID');
@@ -750,22 +1035,10 @@ export function productionAdapters(scope = QA_SCOPE) {
             requireProof(/^[a-f0-9]{32}$/.test(value), 'QA_MACHINE_ID_INVALID');
             return value;
         },
-        sourcePin(directoryPath) {
-            directory(directoryPath);
-            directory(path.join(directoryPath, '.git'));
-            const git = args => command('git', ['-c', `safe.directory=${directoryPath}`, '-C', directoryPath, ...args],
-                { env: { ...env, GIT_OPTIONAL_LOCKS: '0' } });
-            requireProof(git(['rev-parse', '--show-toplevel']) === directoryPath
-                && git(['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none']) === '', 'QA_SOURCE_NOT_CLEAN');
-            const commit = git(['rev-parse', 'HEAD']);
-            requireProof(/^[a-f0-9]{40}$/.test(commit), 'QA_SOURCE_COMMIT_INVALID');
-            const origin = git(['remote', 'get-url', 'origin']);
-            if (directoryPath.includes('/.ploinky/agentlib/generations/')) {
-                requireProof(new RegExp(`^${commit}-[a-f0-9]{12}$`).test(path.basename(directoryPath))
-                    && origin === path.join(scope.workspace, '.ploinky/agentlib/mirror.git'), 'QA_SOURCE_ORIGIN_INVALID');
-            } else requireProof(/^https:\/\/github\.com\/AssistOS-AI\/[A-Za-z0-9_.-]+(?:\.git)?$/i.test(origin), 'QA_SOURCE_ORIGIN_INVALID');
-            return { commit, branch: git(['rev-parse', '--abbrev-ref', 'HEAD']), origin };
-        },
+        // The Box can write these repositories, so Git never runs on them in the
+        // host process; only structural lstat checks do.
+        sourcePin: (directoryPath, sandbox) => checkSource(directoryPath, sandbox).pin,
+        sourceCheck: checkSource,
         boxes() {
             const result = [];
             for (const engine of ['podman', 'docker']) {

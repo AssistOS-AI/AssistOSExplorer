@@ -6,6 +6,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import test from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
+import { createGitSandbox, gitSandboxArguments, sandboxNetwork, SOURCE_CHECK_SCRIPT, writableRepositorySource } from '../../../.github/scripts/rollback-explorer-qa.mjs';
 import { classifyChanges, createUpdateService, EXPLORER_SOURCE, freshLoopbackHttpGet, preSignalRestartFailure, recoverUnchangedAgentRoute,
     updateProductionAdapters } from '../../../.github/scripts/update-explorer-qa.mjs';
 
@@ -113,6 +114,9 @@ function fixture(t) {
             assert.equal(workspace, scope.workspace); assert.equal(held, false); held = true; events.push('lock');
             return { release() { assert.equal(held, true); held = false; events.push('unlock'); } };
         },
+        // QA runs a Ploinky whose lock lives outside the workspace.
+        lockGeneration: async () => 'legacy',
+        hostStateLabel: () => null,
     };
     const service = createUpdateService(adapters, scope);
     const unchangedData = () => {
@@ -598,12 +602,267 @@ test('Git adapter parses real additions, deletions and moves, fast-forwards, and
     write(path.join(root, 'explorer/src/a.mjs'), 'export const value = 1;');
     git(['add', '.']); git(['commit', '-m', 'Update source']); const candidate = git(['rev-parse', 'HEAD']);
     git(['reset', '--keep', previous]);
-    const adapters = updateProductionAdapters();
-    assert.deepEqual(adapters.agentRoots(root, previous), ['explorer']);
-    const classified = classifyChanges(adapters.changes(root, previous, candidate), adapters.agentRoots(root, previous));
+    // A transparent engine runs the sandboxed Git arguments with the real Git, so
+    // the production parsing is exercised on a benign fixture.
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-update-engine-'));
+    t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(bin, 'podman'), `#!${process.execPath}
+        const args = process.argv.slice(2);
+        if (args[0] === 'info') { process.stdout.write('true'); process.exit(0); }
+        const at = args.indexOf('--entrypoint=/usr/bin/git');
+        if (args[0] !== 'run' || at < 0) process.exit(40);
+        const result = require('node:child_process').spawnSync(${JSON.stringify(realGit)}, args.slice(at + 2), { stdio: 'inherit' });
+        process.exit(result.status);
+    `, { mode: 0o700 });
+    const PATH = process.env.PATH;
+    process.env.PATH = bin + path.delimiter + PATH;
+    let adapters;
+    try { adapters = updateProductionAdapters(); } finally { process.env.PATH = PATH; }
+    const sandbox = { engine: 'podman', image: 'f'.repeat(64) };
+    assert.deepEqual(adapters.agentRoots(root, previous, sandbox), ['explorer']);
+    const classified = classifyChanges(adapters.changes(root, previous, candidate, sandbox), adapters.agentRoots(root, previous, sandbox));
     assert.deepEqual(classified, { affected: ['explorer'], shared: false, browserPaths: [] });
-    assert.equal(adapters.hasCommit(root, candidate), true); assert.equal(adapters.isAncestor(root, previous, candidate), true);
-    adapters.fastForward(root, candidate); assert.equal(git(['rev-parse', 'HEAD']), candidate);
-    adapters.restore(root, previous); assert.equal(git(['rev-parse', 'HEAD']), previous);
+    assert.equal(adapters.hasCommit(root, candidate, sandbox), true); assert.equal(adapters.isAncestor(root, previous, candidate, sandbox), true);
+    adapters.fastForward(root, candidate, sandbox); assert.equal(git(['rev-parse', 'HEAD']), candidate);
+    adapters.restore(root, previous, sandbox); assert.equal(git(['rev-parse', 'HEAD']), previous);
     assert.equal(fs.existsSync(path.join(root, 'explorer/assets/old.svg')), true);
+});
+
+// E11: a Ploinky whose lock lives in the workspace cannot take over a Box the
+// earlier runtime created; the update refuses before any lock, receipt or source change.
+test('E11: a workspace-generation runtime refuses an unlabeled QA Box before lock, receipt, fast-forward or restart', async t => {
+    const f = fixture(t);
+    const reads = [];
+    f.adapters.lockGeneration = async root => { reads.push(['generation', root]); return 'workspace'; };
+    f.adapters.hostStateLabel = () => { reads.push(['label']); return null; };
+    await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_LEGACY_BOX' });
+    assert.deepEqual(reads, [['generation', f.scope.workspace], ['label']]);
+    assert.deepEqual(f.events, [], 'no lock acquisition, fetch, fast-forward or restart');
+    assert.equal(fs.existsSync(f.receipt), false, 'no receipt');
+    assert.equal(f.sourcePins[EXPLORER_SOURCE].commit, OLD, 'no fast-forward');
+    for (const label of ['0', '', 'true']) {
+        f.adapters.hostStateLabel = () => label;
+        await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_LEGACY_BOX' }, label);
+    }
+    f.adapters.lockGeneration = async () => 'unknown';
+    await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_LOCK_GENERATION_UNKNOWN' });
+    assert.deepEqual(f.events, []);
+});
+
+test('E11: a labeled QA Box updates under a workspace-generation lock taken with the workspace root', async t => {
+    const f = fixture(t), options = [];
+    f.adapters.lockGeneration = async () => 'workspace';
+    f.adapters.hostStateLabel = () => '1';
+    const acquire = f.adapters.acquireWorkspaceLock;
+    f.adapters.acquireWorkspaceLock = async (workspace, value) => { options.push(value); return acquire(workspace); };
+    assert.equal((await f.service.execute(f.receipt)).status, 'updated');
+    assert.ok(options.length >= 2);
+    for (const value of options) assert.deepEqual(value, { workspaceRoot: f.scope.workspace });
+});
+
+test('the legacy generation skips the host-state label read and keeps the former update path', async t => {
+    const f = fixture(t);
+    f.adapters.hostStateLabel = () => assert.fail('no label read for the earlier generation');
+    assert.equal((await f.service.execute(f.receipt)).status, 'updated');
+});
+
+test('production update adapters read the exact QA Box host-state label from one engine inspection', t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-update-label-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
+    const run = (labels, extra = '') => {
+        fs.writeFileSync(path.join(bin, 'podman'), `#!${process.execPath}
+            const args = process.argv.slice(2);
+            if (args.join(' ') !== 'container inspect fixture-qa-box') process.exit(41);
+            ${extra}
+            process.stdout.write(JSON.stringify([{ Name: '/fixture-qa-box', Config: { Labels: ${JSON.stringify(labels)} } }]));
+        `, { mode: 0o700 });
+        fs.writeFileSync(path.join(bin, 'docker'), '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+        const helper = new URL('../../../.github/scripts/update-explorer-qa.mjs', import.meta.url).href;
+        const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+            const { updateProductionAdapters } = await import(process.argv[1]);
+            try { process.stdout.write(JSON.stringify({ label: updateProductionAdapters({ workspace: '/w', box: 'fixture-qa-box' }).hostStateLabel() })); }
+            catch (error) { process.stdout.write(JSON.stringify({ code: error.code })); }
+        `, helper], { encoding: 'utf8', timeout: 10000, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
+        assert.equal(result.status, 0, result.stderr);
+        return JSON.parse(result.stdout);
+    };
+    assert.deepEqual(run({ 'io.assistos.ploinky-box.host-state': '1' }), { label: '1' });
+    assert.deepEqual(run({ 'io.assistos.ploinky-box.path-hash': '7a31ab7775eb' }), { label: null });
+    assert.deepEqual(run({}, 'process.exit(1);'), { code: 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED' });
+});
+
+// A fake engine on PATH answering sandboxed Git by subcommand, recording every
+// call, and a fake host `git` recording any host Git at all.
+function fakeGitEngine(root, network = '') {
+    const bin = path.join(root, 'fake-bin'), record = path.join(root, 'engine.jsonl'), hostGit = path.join(root, 'host-git.jsonl');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'podman'), `#!${process.execPath}
+        const fs = require('node:fs');
+        const args = process.argv.slice(2);
+        fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(args) + '\\n');
+        if (args[0] === 'info') { process.stdout.write('true ${network}'); process.exit(0); }
+        if (args[0] === 'container' && args[1] === 'exec') { process.stdout.write(JSON.stringify({ files: 1 })); process.exit(0); }
+        const sub = args[args.indexOf('-C') + 2];
+        const out = { 'ls-remote': 'ref: refs/heads/main\\tHEAD\\n' + 'b'.repeat(40) + '\\tHEAD\\n', 'rev-parse': args.includes('@{upstream}') ? 'origin/main\\n' : 'b'.repeat(40) + '\\n',
+            'ls-tree': 'explorer/manifest.json\\0', show: 'asset bytes' }[sub] || '';
+        process.stdout.write(out);
+        process.exit(sub === 'merge-base' ? 1 : 0);
+    `, { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}
+        require('node:fs').appendFileSync(${JSON.stringify(hostGit)}, JSON.stringify(process.argv.slice(2)) + '\\n'); process.exit(97);
+    `, { mode: 0o700 });
+    const lines = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+    return { bin, calls: () => lines(record), hostGitCalls: () => lines(hostGit) };
+}
+
+test('Q2: every updater Git operation on the Explorer checkout runs in the sandbox, writing and networking only where it must', t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-update-git-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const engine = fakeGitEngine(root, 'pasta'), repo = path.join(root, 'workspace/.ploinky/repos/AchillesIDE');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    const helper = new URL('../../../.github/scripts/update-explorer-qa.mjs', import.meta.url).href;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        const { updateProductionAdapters } = await import(process.argv[1]);
+        const [repo, image] = process.argv.slice(2), sandbox = { engine: 'podman', image };
+        const a = updateProductionAdapters({ workspace: '/w', box: 'fixture-qa-box' });
+        const out = {
+            remoteDefault: a.remoteDefault(repo, sandbox), upstream: a.upstream(repo, sandbox),
+            hasCommit: a.hasCommit(repo, 'b'.repeat(40), sandbox), isAncestor: a.isAncestor(repo, 'a'.repeat(40), 'b'.repeat(40), sandbox),
+            agentRoots: a.agentRoots(repo, 'a'.repeat(40), sandbox), changes: a.changes(repo, 'a'.repeat(40), 'b'.repeat(40), sandbox),
+        };
+        a.fetch(repo, 'main', 'b'.repeat(40), sandbox); a.fastForward(repo, 'b'.repeat(40), sandbox); a.restore(repo, 'a'.repeat(40), sandbox);
+        out.browser = await a.verifyBrowserFiles({ engine: 'podman', box: { id: 'e'.repeat(64), image } }, repo, 'b'.repeat(40),
+            [{ path: 'explorer/web-components/x.js', deleted: false }]);
+        let refused;
+        try { a.upstream(repo, null); } catch (error) { refused = error.code; }
+        out.refused = refused;
+        process.stdout.write(JSON.stringify(out));
+    `, helper, repo, 'f'.repeat(64)], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PATH: engine.bin + path.delimiter + process.env.PATH } });
+    assert.equal(result.status, 0, result.stderr);
+    const out = JSON.parse(result.stdout);
+    assert.deepEqual(out.remoteDefault, { branch: 'main', commit: 'b'.repeat(40) });
+    assert.deepEqual([out.upstream, out.hasCommit, out.isAncestor, out.agentRoots, out.changes, out.browser.files],
+        ['origin/main', true, false, ['explorer'], [], 1]);
+    assert.equal(out.refused, 'QA_SOURCE_SANDBOX_UNAVAILABLE', 'without the Box image nothing runs');
+    assert.deepEqual(engine.hostGitCalls(), [], 'no Git ran in the host process');
+    const runs = engine.calls().filter(args => args[0] === 'run');
+    const sub = args => args[args.indexOf('-C') + 2];
+    assert.deepEqual(runs.map(sub), ['ls-remote', 'check-ref-format', 'rev-parse', 'cat-file', 'merge-base', 'ls-tree', 'diff',
+        'fetch', 'rev-parse', 'merge', 'reset', 'show']);
+    for (const args of runs) {
+        const name = sub(args), writes = ['fetch', 'merge', 'reset'].includes(name), network = ['fetch', 'ls-remote'].includes(name);
+        assert.deepEqual(args.filter(arg => arg.startsWith('--volume')), [`--volume=${repo}:${repo}:${writes ? 'rw' : 'ro'}`], name);
+        assert.ok(args.includes(network ? '--network=pasta:--no-map-gw' : '--network=none'), name);
+        for (const flag of ['--rm', '--pull=never', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+            '--userns=keep-id:uid=1000,gid=1000', '--user=1000:1000', '--pids-limit=64', '--entrypoint=/usr/bin/git', 'f'.repeat(64)]) {
+            assert.ok(args.includes(flag), `${name} ${flag}`);
+        }
+        assert.deepEqual(args.slice(args.indexOf('f'.repeat(64)) + 1, args.indexOf('-C')), ['-c', `safe.directory=${repo}`,
+            '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false']);
+    }
+});
+
+// E9 (merge): a Box-written filter driver runs on checkout. A fast-forward in the
+// host process runs it; the sandboxed fast-forward cannot reach the host.
+function filterFixture(root, name) {
+    const repo = path.join(root, name), marker = path.join(root, `${name}-filter-ran-on-host`);
+    const git = args => {
+        const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', timeout: 10000, env: { ...process.env,
+            GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.test',
+            GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.test' } });
+        assert.equal(result.status, 0, result.stderr); return result.stdout.trim();
+    };
+    fs.mkdirSync(repo, { recursive: true });
+    git(['init', '--initial-branch=main']);
+    fs.writeFileSync(path.join(repo, 'README.md'), 'fixture\n');
+    git(['add', '.']); git(['commit', '-m', 'base']);
+    const base = git(['rev-parse', 'HEAD']);
+    fs.writeFileSync(path.join(repo, '.gitattributes'), '*.txt filter=x\n');
+    fs.writeFileSync(path.join(repo, 'notes.txt'), 'smudged on checkout\n');
+    git(['add', '.']); git(['commit', '-m', 'next']);
+    const next = git(['rev-parse', 'HEAD']);
+    git(['reset', '--hard', base]);
+    fs.appendFileSync(path.join(repo, '.git/config'), `[filter "x"]\n\tsmudge = "sh -c 'echo ran >> ${marker}; cat'"\n\tclean = cat\n`);
+    return { repo, marker, base, next, git };
+}
+
+test('E9 (merge) control: a fast-forward in the host process runs the Box-written filter driver', t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-update-filter-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const f = filterFixture(root, 'control');
+    f.git(['-c', 'core.hooksPath=/dev/null', 'merge', '--ff-only', '--no-edit', f.next]);
+    assert.equal(fs.existsSync(f.marker), true, 'the fixture triggers on the host');
+    assert.equal(f.git(['rev-parse', 'HEAD']), f.next);
+});
+
+test('E9 (merge): the production fast-forward runs only in the sandbox, so the filter driver never reaches the host', t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-update-filter-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const f = filterFixture(root, 'sandboxed'), engine = fakeGitEngine(root);
+    const helper = new URL('../../../.github/scripts/update-explorer-qa.mjs', import.meta.url).href;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        const { updateProductionAdapters } = await import(process.argv[1]);
+        updateProductionAdapters({ workspace: '/w', box: 'fixture-qa-box' }).fastForward(process.argv[2], process.argv[3], { engine: 'podman', image: process.argv[4] });
+    `, helper, f.repo, f.next, 'f'.repeat(64)], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PATH: engine.bin + path.delimiter + process.env.PATH } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.existsSync(f.marker), false);
+    assert.deepEqual(engine.hostGitCalls(), []);
+    const merge = engine.calls().find(args => args.includes('merge'));
+    assert.ok(merge.includes(`--volume=${f.repo}:${f.repo}:rw`) && merge.includes('--network=none'));
+});
+
+test('sandboxed fetch and remote queries never reach the host loopback, rendered for the engine network, and fail closed otherwise', () => {
+    assert.equal(sandboxNetwork('pasta'), 'pasta:--no-map-gw');
+    assert.equal(sandboxNetwork('slirp4netns'), 'slirp4netns:allow_host_loopback=false');
+    for (const kind of ['', 'bridge', 'host', undefined]) assert.throws(() => sandboxNetwork(kind), { code: 'QA_SOURCE_SANDBOX_NETWORK_UNAVAILABLE' });
+    assert.ok(gitSandboxArguments('/r', 'f'.repeat(64), ['fetch'], { network: 'slirp4netns' }).includes('--network=slirp4netns:allow_host_loopback=false'));
+    assert.ok(gitSandboxArguments('/r', 'f'.repeat(64), ['status']).includes('--network=none'));
+    const spawned = [];
+    const run = network => createGitSandbox({ spawn: (program, args) => {
+        spawned.push(args);
+        return args[0] === 'info' ? { status: 0, stdout: `true ${network}` } : { status: 0, stdout: '' };
+    } });
+    for (const [network, rendered] of [['pasta', '--network=pasta:--no-map-gw'], ['slirp4netns', '--network=slirp4netns:allow_host_loopback=false']]) {
+        spawned.length = 0;
+        run(network)('/r', { engine: 'podman', image: 'f'.repeat(64) }, ['ls-remote', 'origin'], { network: true });
+        assert.ok(spawned.at(-1).includes(rendered), network);
+    }
+    spawned.length = 0;
+    const unknown = run('');
+    assert.equal(unknown('/r', { engine: 'podman', image: 'f'.repeat(64) }, ['status']).status, 0, 'a local command needs no network');
+    assert.throws(() => unknown('/r', { engine: 'podman', image: 'f'.repeat(64) }, ['ls-remote'], { network: true }),
+        { code: 'QA_SOURCE_SANDBOX_NETWORK_UNAVAILABLE' });
+    assert.equal(spawned.filter(args => args[0] === 'run').length, 1, 'the networked run never started');
+});
+
+test('a repository the sandbox may write is mounted only from its symlink-free resolved path', t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-writable-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const repo = path.join(root, 'workspace/.ploinky/repos/AchillesIDE');
+    fs.mkdirSync(repo, { recursive: true });
+    assert.equal(writableRepositorySource(repo), repo);
+    fs.mkdirSync(path.join(root, 'elsewhere/AchillesIDE'), { recursive: true });
+    fs.renameSync(path.join(root, 'workspace/.ploinky/repos'), path.join(root, 'workspace/.ploinky/repos-real'));
+    fs.symlinkSync(path.join(root, 'elsewhere'), path.join(root, 'workspace/.ploinky/repos'));
+    assert.throws(() => writableRepositorySource(repo), { code: 'QA_SOURCE_SANDBOX_PATH_INVALID' }, 'symlinked component');
+    const spawned = [];
+    const sandboxed = createGitSandbox({ spawn: (program, args) => { spawned.push(args); return { status: 0, stdout: args[0] === 'info' ? 'true pasta' : '' }; } });
+    assert.throws(() => sandboxed(repo, { engine: 'podman', image: 'f'.repeat(64) }, ['merge', '--ff-only', 'x'], { write: true }),
+        { code: 'QA_SOURCE_SANDBOX_PATH_INVALID' });
+    assert.equal(spawned.filter(args => args[0] === 'run').length, 0, 'nothing is mounted writable through a link');
+    sandboxed(repo, { engine: 'podman', image: 'f'.repeat(64) }, ['status']);
+    assert.ok(spawned.at(-1).includes(`--volume=${repo}:${repo}:ro`), 'a read-only check still runs');
+    assert.throws(() => writableRepositorySource('relative/repo'), { code: 'QA_SOURCE_SANDBOX_PATH_INVALID' });
+    // Each component is checked itself, even where a realpath would still match.
+    const swapped = { lstatSync: file => (file === path.join(root, 'workspace') ? { isDirectory: () => false, isSymbolicLink: () => true }
+        : { isDirectory: () => true, isSymbolicLink: () => false }), realpathSync: file => file };
+    assert.throws(() => writableRepositorySource(repo, swapped), { code: 'QA_SOURCE_SANDBOX_PATH_INVALID' });
+});
+
+test('both sandbox Git paths disable Box-written fsmonitor and untracked-cache configuration', () => {
+    assert.match(SOURCE_CHECK_SCRIPT, /'-c', 'core\.fsmonitor=false',\s*'-c', 'core\.untrackedCache=false'/);
+    const args = gitSandboxArguments('/r', 'f'.repeat(64), ['status']);
+    assert.deepEqual(args.slice(args.indexOf('-C') - 4, args.indexOf('-C')), ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false']);
 });

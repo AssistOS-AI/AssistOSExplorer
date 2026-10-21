@@ -11,7 +11,9 @@ import {
     ACCOUNT_CAPABILITY, ACCOUNT_CAPABILITY_SETS, accountCapability, assertImageOwnedAgentLib, classifyPriorSelections,
     createRollbackService, currentQaBox, describeSelectionDispositions, enableArguments, EXPECTED_DEFAULT_GRAPH,
     imageAgentLibSourceId, productionAdapters, restorePriorSelections, sanitizeBox,
+    acquireWorkspaceCustody, assertSkeletonOnlyHostState, lockGeneration, SOURCE_CHECK_SCRIPT, sourcePinFromReport, sourceSandboxArguments,
 } from '../../../.github/scripts/rollback-explorer-qa.mjs';
+import { legacyLockModule, workspaceLockModule, writeLockModule } from './qa-fake-lock-modules.mjs';
 
 const OLD = 'a'.repeat(64), FAILED = 'b'.repeat(64), FRESH = 'c'.repeat(64), IMAGE = 'd'.repeat(64);
 const librarySource = '.ploinky/agentlib/generations/' + 'e'.repeat(40) + '-' + 'f'.repeat(12);
@@ -887,9 +889,46 @@ test('the expected default graph lists exactly what the Explorer manifests enabl
     assert.deepEqual([...EXPECTED_DEFAULT_GRAPH].sort(), [...graph.runtimes.keys()].sort());
 });
 
-test('production source admission requires a clean owned Git checkout at its captured origin', t => {
-    const f = fixture(t);
-    const repo = path.join(f.scope.workspace, '.runtime/ploinky');
+// A fake engine on PATH. `transparent` runs the sandbox script on the host,
+// which is safe only for benign fixtures; `canned` returns a fixed report and
+// runs nothing. Every invocation is recorded. A fake `git` records any host Git.
+function fakeSandboxEngine(root, { mode, report = null, rootless = 'true' }) {
+    const bin = path.join(root, 'fake-bin'), record = path.join(root, 'engine.jsonl'), hostGit = path.join(root, 'host-git.jsonl');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'podman'), `#!${process.execPath}
+        const fs = require('node:fs'); const { spawnSync } = require('node:child_process');
+        const args = process.argv.slice(2), input = args[0] === 'run' ? fs.readFileSync(0, 'utf8') : '';
+        fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args, input }) + '\\n');
+        if (args[0] === 'info') { process.stdout.write(${JSON.stringify(rootless)}); process.exit(0); }
+        if (args[0] !== 'run') process.exit(40);
+        if (${JSON.stringify(mode)} === 'transparent') {
+            const result = spawnSync(process.execPath, ['--input-type=module', '-', args.at(-1)], { input, encoding: 'utf8' });
+            process.stdout.write(result.stdout); process.exit(result.status);
+        }
+        process.stdout.write(${JSON.stringify(JSON.stringify(report))});
+    `, { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}
+        require('node:fs').appendFileSync(${JSON.stringify(hostGit)}, JSON.stringify(process.argv.slice(2)) + '\\n'); process.exit(97);
+    `, { mode: 0o700 });
+    const calls = () => fs.existsSync(record) ? fs.readFileSync(record, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+    const hostGitCalls = () => fs.existsSync(hostGit) ? fs.readFileSync(hostGit, 'utf8').trim().split('\n') : [];
+    return { bin, calls, hostGitCalls };
+}
+
+// Runs production `sourcePin` in a child whose PATH starts with the fake engine.
+function productionSourcePin(scope, bin, repo, sandbox) {
+    const helper = new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url).href;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        const { productionAdapters } = await import(process.argv[1]);
+        try { process.stdout.write(JSON.stringify({ pin: productionAdapters(JSON.parse(process.argv[2])).sourcePin(process.argv[3], JSON.parse(process.argv[4])) })); }
+        catch (error) { process.stdout.write(JSON.stringify({ code: error.code })); }
+    `, helper, JSON.stringify(scope), repo, JSON.stringify(sandbox)], { encoding: 'utf8', timeout: 20000,
+        env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH } });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+}
+
+function gitFixture(repo) {
     const git = args => {
         const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', timeout: 5000,
             env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
@@ -898,14 +937,107 @@ test('production source admission requires a clean owned Git checkout at its cap
     };
     git(['init', '--initial-branch=main']); git(['remote', 'add', 'origin', 'https://github.com/AssistOS-AI/ploinky.git']);
     git(['add', '.']); git(['commit', '-m', 'Fixture source']);
-    const adapters = productionAdapters(f.scope);
-    const pin = adapters.sourcePin(repo);
-    assert.equal(pin.commit, git(['rev-parse', 'HEAD'])); assert.equal(pin.branch, 'main');
+    return git;
+}
+
+test('production source admission requires a clean owned Git checkout at its captured origin, checked only in the sandbox', t => {
+    const f = fixture(t);
+    const repo = path.join(f.scope.workspace, '.runtime/ploinky');
+    const git = gitFixture(repo);
+    const engine = fakeSandboxEngine(f.root, { mode: 'transparent' });
+    const sandbox = { engine: 'podman', image: IMAGE };
+    assert.deepEqual(productionSourcePin(f.scope, engine.bin, repo, sandbox).pin,
+        { commit: git(['rev-parse', 'HEAD']), branch: 'main', origin: 'https://github.com/AssistOS-AI/ploinky.git' });
     write(path.join(repo, 'local-change'), 'uncommitted');
-    assert.throws(() => adapters.sourcePin(repo), { code: 'QA_SOURCE_NOT_CLEAN' });
+    assert.equal(productionSourcePin(f.scope, engine.bin, repo, sandbox).code, 'QA_SOURCE_NOT_CLEAN');
     fs.unlinkSync(path.join(repo, 'local-change'));
     git(['remote', 'set-url', 'origin', 'https://example.test/unreviewed.git']);
-    assert.throws(() => adapters.sourcePin(repo), { code: 'QA_SOURCE_ORIGIN_INVALID' });
+    assert.equal(productionSourcePin(f.scope, engine.bin, repo, sandbox).code, 'QA_SOURCE_ORIGIN_INVALID');
+    // Without the exact pinned image of a Podman Box nothing runs at all.
+    for (const missing of [null, { engine: 'docker', image: IMAGE }, { engine: 'podman', image: 'latest' }]) {
+        const before = engine.calls().length;
+        assert.equal(productionSourcePin(f.scope, engine.bin, repo, missing).code, 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+        assert.equal(engine.calls().length, before);
+    }
+    assert.deepEqual(engine.hostGitCalls(), [], 'no Git ran in the host process');
+});
+
+test('the source sandbox refuses a rootful engine before running any check', t => {
+    const f = fixture(t);
+    const repo = path.join(f.scope.workspace, '.runtime/ploinky');
+    gitFixture(repo);
+    const engine = fakeSandboxEngine(f.root, { mode: 'transparent', rootless: 'false' });
+    assert.equal(productionSourcePin(f.scope, engine.bin, repo, { engine: 'podman', image: IMAGE }).code, 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+    assert.deepEqual(engine.calls().map(call => call.args[0]), ['info']);
+});
+
+// E9: Box-written Git configuration never executes on the host.
+function fsmonitorFixture(f) {
+    const repo = path.join(f.scope.workspace, '.ploinky/repos/AchillesIDE');
+    const marker = path.join(f.root, 'fsmonitor-ran-on-host');
+    write(path.join(repo, 'README.md'), 'fixture');
+    gitFixture(repo);
+    const hook = path.join(repo, '.git/fsmonitor-hook');
+    fs.writeFileSync(hook, `#!/bin/sh\necho ran >> '${marker}'\nexit 1\n`, { mode: 0o755 });
+    fs.appendFileSync(path.join(repo, '.git/config'), `[core]\n\tfsmonitor = ${hook}\n`);
+    return { repo, marker };
+}
+
+// The status check exactly as the former host-side sourcePin ran it.
+const formerHostStatus = repo => spawnSync('git', ['-c', `safe.directory=${repo}`, '-C', repo, 'status', '--porcelain=v1',
+    '--untracked-files=all', '--ignore-submodules=none'], { encoding: 'utf8', timeout: 20000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
+
+test('E9 control: the former host-side status check executes Box-written core.fsmonitor', t => {
+    const f = fixture(t), { repo, marker } = fsmonitorFixture(f);
+    assert.equal(formerHostStatus(repo).status, 0);
+    assert.equal(fs.existsSync(marker), true, 'the fixture triggers: a host-side check runs the hook');
+});
+
+test('E9: the sandbox script disables Box-written fsmonitor even where it runs', t => {
+    const f = fixture(t), { repo, marker } = fsmonitorFixture(f);
+    const result = spawnSync(process.execPath, ['--input-type=module', '-', repo], { input: SOURCE_CHECK_SCRIPT, encoding: 'utf8', timeout: 20000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).status.status, 0, 'the check itself still reports');
+    assert.equal(fs.existsSync(marker), false);
+});
+
+test('E9: production source admission reports the pin through the sandbox and the host never runs the hook', t => {
+    const f = fixture(t), { repo, marker } = fsmonitorFixture(f);
+    const head = spawnSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
+    // The canned report is what the sandbox returns: the engine fake runs nothing.
+    const ok = stdout => ({ status: 0, stdout });
+    const report = { toplevel: ok(repo + '\n'), status: ok(''), head: ok(head.stdout), origin: ok('https://github.com/AssistOS-AI/ploinky.git\n'), branch: ok('main\n') };
+    const engine = fakeSandboxEngine(f.root, { mode: 'canned', report });
+    const pin = productionSourcePin(f.scope, engine.bin, repo, { engine: 'podman', image: `sha256:${IMAGE}` }).pin;
+    assert.deepEqual(pin, { commit: head.stdout.trim(), branch: 'main', origin: 'https://github.com/AssistOS-AI/ploinky.git' });
+    assert.equal(fs.existsSync(marker), false, 'the hook never ran on the host');
+    assert.deepEqual(engine.hostGitCalls(), [], 'no Git ran in the host process');
+    const run = engine.calls().find(call => call.args[0] === 'run');
+    assert.deepEqual(run.args, sourceSandboxArguments(repo, IMAGE));
+    for (const flag of ['--rm', '--network=none', '--pull=never', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+        '--user=1000:1000', `--volume=${repo}:${repo}:ro`]) assert.ok(run.args.includes(flag), flag);
+    assert.equal(run.input, SOURCE_CHECK_SCRIPT);
+    assert.equal(run.args.filter(arg => arg.startsWith('--volume') || arg.startsWith('--mount') || arg === '-v').length, 1, 'only the repository is mounted');
+    assert.equal(run.args.some(arg => /^--(?:privileged|cap-add|device|network=(?!none))/.test(arg)), false);
+});
+
+test('E9: a sandbox report that is incomplete or failed is refused with the former host-check codes', () => {
+    const repo = '/home/admin/explorerQaWorkspace/.runtime/ploinky';
+    const ok = stdout => ({ status: 0, stdout });
+    const base = { toplevel: ok(repo), status: ok(''), head: ok('e'.repeat(40)), origin: ok('https://github.com/AssistOS-AI/ploinky.git'), branch: ok('main') };
+    assert.deepEqual(sourcePinFromReport(repo, base), { commit: 'e'.repeat(40), branch: 'main', origin: 'https://github.com/AssistOS-AI/ploinky.git' });
+    for (const [change, code] of [
+        [report => { report.status = { status: 128, stdout: '' }; }, 'QA_EXTERNAL_COMMAND_FAILED'],
+        [report => { delete report.head; }, 'QA_EXTERNAL_COMMAND_FAILED'],
+        [report => { report.toplevel = ok('/elsewhere'); }, 'QA_SOURCE_NOT_CLEAN'],
+        [report => { report.status = ok('?? planted\n'); }, 'QA_SOURCE_NOT_CLEAN'],
+        [report => { report.head = ok('HEAD'); }, 'QA_SOURCE_COMMIT_INVALID'],
+        [report => { report.origin = ok('https://example.test/x.git'); }, 'QA_SOURCE_ORIGIN_INVALID'],
+    ]) {
+        const report = structuredClone(base); change(report);
+        assert.throws(() => sourcePinFromReport(repo, report), { code });
+    }
+    assert.throws(() => sourcePinFromReport(repo, null), { code: 'QA_EXTERNAL_COMMAND_FAILED' });
 });
 
 test('exact Box inspection rejects privilege, source-write and publication drift', t => {
@@ -1025,4 +1157,201 @@ test('production recovery permits the bounded full graph shutdown without the fo
         assert.equal(calls, 1);
     `, helper, FRESH], { encoding: 'utf8', timeout: 5000 });
     assert.equal(result.status, 0, result.stderr);
+});
+
+// E8: a Box that keeps host state in the workspace must also shadow the mounted
+// checkout read-only and mask the host-state directory; earlier Boxes keep the
+// earlier proof.
+function hostStateBox(f) {
+    const raw = f.raw(OLD), checkout = path.join(f.scope.workspace, '.runtime/ploinky');
+    raw.Config.Labels['io.assistos.ploinky-box.host-state'] = '1';
+    raw.Mounts.push({ Source: checkout, Destination: checkout, RW: false, Type: 'bind' },
+        { Source: path.join(f.scope.workspace, '.ploinky-host/empty'), Destination: path.join(f.scope.workspace, '.ploinky-host'), RW: false, Type: 'bind' });
+    return raw;
+}
+
+test('E8: Box identity requires the read-only checkout shadow and the host-state mask when the host-state label is present', t => {
+    const f = fixture(t);
+    assert.equal(sanitizeBox(hostStateBox(f), f.scope).id, OLD);
+    assert.equal(sanitizeBox(f.raw(OLD), f.scope).id, OLD, 'a Box without the label keeps the earlier proof');
+    const shadow = raw => raw.Mounts.find(mount => mount.Destination === path.join(f.scope.workspace, '.runtime/ploinky'));
+    const mask = raw => raw.Mounts.find(mount => mount.Destination === path.join(f.scope.workspace, '.ploinky-host'));
+    for (const [label, change] of [
+        ['shadow missing', raw => { raw.Mounts.splice(raw.Mounts.indexOf(shadow(raw)), 1); }],
+        ['shadow writable', raw => { shadow(raw).RW = true; }],
+        ['shadow from another source', raw => { shadow(raw).Source = path.join(f.scope.workspace, 'elsewhere'); }],
+        ['shadow duplicated', raw => { raw.Mounts.push({ ...shadow(raw) }); }],
+        ['shadow not a bind', raw => { shadow(raw).Type = 'volume'; }],
+        ['mask missing', raw => { raw.Mounts.splice(raw.Mounts.indexOf(mask(raw)), 1); }],
+        ['mask writable', raw => { mask(raw).RW = true; }],
+        ['mask from another source', raw => { mask(raw).Source = path.join(f.scope.workspace, '.ploinky-host'); }],
+        ['mask duplicated', raw => { raw.Mounts.push({ ...mask(raw) }); }],
+        ['label value', raw => { raw.Config.Labels['io.assistos.ploinky-box.host-state'] = 'yes'; }],
+    ]) {
+        const raw = hostStateBox(f); change(raw);
+        assert.throws(() => sanitizeBox(raw, f.scope), { code: 'QA_BOX_SOURCE_INVALID' }, label);
+    }
+});
+
+// The fixture's own lock adapter still gates every injected runtime operation;
+// the workspace-generation module adds the real custody on the fixture's files.
+async function workspaceCustody(f, module, record = []) {
+    const gate = f.adapters.acquireWorkspaceLock;
+    f.adapters.acquireWorkspaceLock = async (runtimeRoot, options) => {
+        record.push({ runtimeRoot, options });
+        const held = await gate();
+        const wrap = handle => ({ ...handle,
+            release() { handle.release(); held.release(); },
+            async successor(root) { return wrap(await handle.successor(root)); } });
+        return wrap(await acquireWorkspaceCustody(module, f.scope, options));
+    };
+    return record;
+}
+
+test('E5/E6: rollback relocates the workspace lock, takes the recreated workspace\'s lock on a fresh skeleton and never restores host state', async t => {
+    const f = fixture(t);
+    f.service.capture(f.backup); f.candidate();
+    const previous = path.join(f.backup, 'workspace');
+    write(path.join(previous, '.ploinky-host/router-bindings', `${f.scope.box}.json`), 'forged binding');
+    write(path.join(previous, '.ploinky-host/quarantine/1/x'), 'quarantined');
+    write(path.join(previous, '.ploinky-host.old/gpu-grants.json'), 'forged grant');
+    const module = workspaceLockModule(), record = await workspaceCustody(f, module);
+    const receipt = await f.service.execute(f.backup, FAILED);
+    assert.equal(receipt.result, 'recovered');
+    assert.deepEqual(record, [{ runtimeRoot: previous, options: { workspaceRoot: f.scope.workspace, deferIfAbsent: true } }]);
+    const failed = path.join(f.backup, 'failed-workspace');
+    assert.deepEqual(module.calls.map(call => [call.op, ...call.args]), [
+        ['acquire', f.scope.box, { workspaceRoot: f.scope.workspace, requireNewSkeleton: false }],
+        ['assertHeldAt', failed],
+        ['acquire', f.scope.box, { workspaceRoot: f.scope.workspace, requireNewSkeleton: true }],
+        ['releaseRelocated', failed],
+        ['assertHeld', f.scope.box],
+        ['release'],
+    ]);
+    assert.equal(f.events.filter(event => event.startsWith('copy:.ploinky-host')).length, 0, 'host state is never copied');
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-host.old')), false);
+    assertSkeletonOnlyHostState(f.scope.workspace);
+    assert.equal(fs.existsSync(path.join(failed, '.ploinky-host/locks/workspace.lock')), false, 'the relocated lock was released at its new path');
+    assert.equal(fs.readFileSync(path.join(previous, '.ploinky-host/router-bindings', `${f.scope.box}.json`), 'utf8'), 'forged binding', 'the backup keeps its tree');
+    assert.ok(f.events.indexOf('unlock') < f.events.indexOf('prepare'), 'the recreated workspace lock is released before preparation');
+});
+
+test('E6: the rollback journal records the custody boundary where a relocated lock fails to release', async t => {
+    const f = fixture(t);
+    f.service.capture(f.backup); f.candidate();
+    const module = workspaceLockModule();
+    await workspaceCustody(f, module);
+    const manager = module.createMutationLockManager;
+    module.createMutationLockManager = () => {
+        const real = manager();
+        return { async acquire(...args) {
+            const lock = await real.acquire(...args);
+            if (args[1]?.requireNewSkeleton) return lock;
+            return { ...lock, releaseRelocated() { throw Object.assign(new Error('injected'), { code: 'PLOINKY_BOX_LOCK_NOT_AT_PATH' }); } };
+        } };
+    };
+    await assert.rejects(f.service.execute(f.backup, FAILED), error => error.receipt?.phase === 'replacement-lock-acquired');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-result.json'))).phase, 'replacement-lock-acquired');
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-host/locks/workspace.lock')), false, 'the successor lock was released');
+    assert.equal(f.events.includes('prepare'), false);
+});
+
+test('E6: restored host state that is not the fresh skeleton is refused before preparation', async t => {
+    const f = fixture(t);
+    f.service.capture(f.backup); f.candidate();
+    await workspaceCustody(f, workspaceLockModule());
+    const copy = f.adapters.copy;
+    f.adapters.copy = (from, to) => { copy(from, to); write(path.join(f.scope.workspace, '.ploinky-host/router-bindings/planted.json'), '{}'); };
+    await assert.rejects(f.service.execute(f.backup, FAILED), { code: 'QA_GENERATED_STATE_RESTORED' });
+    assert.equal(f.events.includes('prepare'), false);
+});
+
+test('E6: with no current workspace the rollback lock is deferred, then taken on the recreated workspace', async t => {
+    const f = fixture(t);
+    f.service.capture(f.backup);
+    fs.renameSync(f.scope.workspace, path.join(f.backup, 'workspace'));
+    f.boxes[0].box.name += '-rollback-' + path.basename(f.backup); f.boxes[0].box.running = false;
+    const module = workspaceLockModule();
+    await workspaceCustody(f, module);
+    assert.equal((await f.service.execute(f.backup, 'absent')).result, 'recovered');
+    assert.deepEqual(module.calls.map(call => call.op), ['acquire', 'assertHeld', 'release']);
+    assert.equal(module.calls[0].args[1].requireNewSkeleton, true);
+    assertSkeletonOnlyHostState(f.scope.workspace);
+});
+
+test('E6: a deferred rollback lock refuses a workspace that appeared before the re-check', async t => {
+    const f = fixture(t);
+    f.service.capture(f.backup);
+    fs.renameSync(f.scope.workspace, path.join(f.backup, 'workspace'));
+    f.boxes[0].box.name += '-rollback-' + path.basename(f.backup); f.boxes[0].box.running = false;
+    const module = workspaceLockModule();
+    await workspaceCustody(f, module);
+    const acquire = f.adapters.acquireWorkspaceLock;
+    f.adapters.acquireWorkspaceLock = async (...args) => { const lock = await acquire(...args); fs.mkdirSync(f.scope.workspace); return lock; };
+    await assert.rejects(f.service.execute(f.backup, 'absent'), { code: 'QA_CURRENT_WORKSPACE_CHANGED' });
+    assert.deepEqual(module.calls, [], 'a deferred handle took no lock');
+    assert.deepEqual(fs.readdirSync(f.scope.workspace), []);
+});
+
+test('E6: an earlier-generation lock module keeps the former single-argument acquire and release, and no host state appears', async t => {
+    const f = fixture(t);
+    f.service.capture(f.backup); f.candidate();
+    const module = legacyLockModule({ stateRoot: path.join(f.root, 'home/.ploinky-box') });
+    await workspaceCustody(f, module);
+    assert.equal((await f.service.execute(f.backup, FAILED)).result, 'recovered');
+    assert.deepEqual(module.calls, [{ op: 'acquire', args: [f.scope.box] }, { op: 'release', args: [] }]);
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-host')), false);
+});
+
+test('production lock adapters detect the generation of the deployed lock module they import', async t => {
+    const f = fixture(t);
+    const adapters = productionAdapters(f.scope);
+    const legacyRoot = path.join(f.root, 'legacy-runtime'), workspaceRoot = path.join(f.root, 'workspace-runtime');
+    writeLockModule(legacyRoot, 'legacy', { stateRoot: path.join(f.root, 'home/.ploinky-box') });
+    const workspaceUrl = writeLockModule(workspaceRoot, 'workspace');
+    assert.equal(await adapters.lockGeneration(legacyRoot), 'legacy');
+    assert.equal(await adapters.lockGeneration(workspaceRoot), 'workspace');
+    assert.equal(lockGeneration({ MUTATION_LOCK_LOCATION: 'home' }), 'legacy');
+    const legacy = await adapters.acquireWorkspaceLock(legacyRoot);
+    assert.equal(legacy.location, 'legacy'); legacy.release();
+    const held = await adapters.acquireWorkspaceLock(workspaceRoot, { workspaceRoot: f.scope.workspace });
+    assert.equal(held.location, 'workspace');
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-host/locks/workspace.lock')), true);
+    held.release();
+    const { calls } = await import(workspaceUrl);
+    assert.deepEqual(calls.map(call => call.op), ['acquire', 'release']);
+    await assert.rejects(adapters.acquireWorkspaceLock(workspaceRoot, { workspaceRoot: path.join(f.root, 'absent') }),
+        { code: 'PLOINKY_BOX_WORKSPACE_ABSENT' });
+    const deferred = await adapters.acquireWorkspaceLock(workspaceRoot, { workspaceRoot: path.join(f.root, 'absent'), deferIfAbsent: true });
+    assert.deepEqual([deferred.location, deferred.deferred], ['workspace', true]);
+    assert.throws(() => deferred.assertHeldAt(f.scope.workspace), { code: 'QA_WORKSPACE_LOCK_DEFERRED' });
+});
+
+test('the runtime verifier\'s source check reports the upstream from the same sandbox run, never through host Git', t => {
+    const f = fixture(t);
+    const repo = path.join(f.scope.workspace, '.runtime/ploinky');
+    const git = gitFixture(repo);
+    const engine = fakeSandboxEngine(f.root, { mode: 'transparent' });
+    const helper = new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url).href;
+    const check = () => {
+        const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+            const { productionAdapters } = await import(process.argv[1]);
+            process.stdout.write(JSON.stringify(productionAdapters(JSON.parse(process.argv[2])).sourceCheck(process.argv[3], { engine: 'podman', image: process.argv[4] })));
+        `, helper, JSON.stringify(f.scope), repo, IMAGE], { encoding: 'utf8', timeout: 20000,
+            env: { ...process.env, PATH: engine.bin + path.delimiter + process.env.PATH } });
+        assert.equal(result.status, 0, result.stderr);
+        return JSON.parse(result.stdout);
+    };
+    assert.equal(check().upstream, null, 'no upstream configured');
+    git(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    git(['branch', '--set-upstream-to=origin/main', 'main']);
+    const checked = check();
+    assert.equal(checked.upstream, 'origin/main');
+    assert.deepEqual(checked.pin, { commit: git(['rev-parse', 'HEAD']), branch: 'main', origin: 'https://github.com/AssistOS-AI/ploinky.git' });
+    assert.equal(engine.calls().filter(call => call.args[0] === 'run').length, 2, 'one sandbox run per check');
+    assert.deepEqual(engine.hostGitCalls(), []);
+    const verifier = fs.readFileSync(new URL('../../../.github/scripts/verify-explorer-qa-runtime.mjs', import.meta.url), 'utf8');
+    assert.doesNotMatch(verifier, /run\('git'|execFileSync\('git'|spawnSync\('git'/, 'the verifier runs no host Git');
+    assert.match(verifier, /adapters\.sourceCheck\(directory, \{ engine: current\.engine, image: current\.box\.image \}\)/);
+    assert.match(verifier, /adapters\.acquireWorkspaceLock\(QA_SCOPE\.workspace, \{ workspaceRoot: QA_SCOPE\.workspace \}\)/);
 });
