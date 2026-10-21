@@ -1,3 +1,5 @@
+import { createDocumentDocx } from '../../../services/document/documentDocxExport.js';
+
 const documentModule = assistOS.loadModule("document");
 
 export class ExportDocumentModal {
@@ -70,48 +72,44 @@ export class ExportDocumentModal {
         }
     }
 
-    async exportDOCX() {
-        const documentId = this.documentId;
-
-        this.settings = await this.showCustomizationModal();
-        if (!this.settings) {
-            alert("Cancelled export");
+    async exportDOCX(button) {
+        if (this.docxExportInProgress) {
             return;
         }
-
-        let responseBuffer;
+        this.docxExportInProgress = true;
+        if (button) {
+            button.disabled = true;
+        }
+        let url;
+        let link;
         try {
-            console.log("Settings sent to server:", JSON.stringify(this.settings));
-
-            // Trimiterea request-ului cu settings în body
-            const response = await fetch(`/documents/export/docx/${documentId}`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({ settings: this.settings })
+            const documentModel = await documentModule.getDocument(this.documentId);
+            const bytes = createDocumentDocx(documentModel);
+            const blob = new Blob([bytes], {
+                type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             });
-
-            if (!response.ok) {
-                throw new Error(`Server error: ${response.statusText}`);
-            }
-
-            responseBuffer = await response.arrayBuffer();
+            url = URL.createObjectURL(blob);
+            link = document.createElement('a');
+            link.href = url;
+            const firstChapter = documentModel.chapters[0];
+            const title = [documentModel.title, this.documentTitle, firstChapter?.headingText, firstChapter?.title]
+                .find((value) => typeof value === 'string' && value.trim() && !['undefined', 'null'].includes(value));
+            const fileName = (title || 'document').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
+            link.download = `${fileName}.docx`;
+            document.body.appendChild(link);
+            link.click();
         } catch (error) {
-            alert(`Error exporting document as DOCX: ${error.message || error}`);
-            return;
+            await window.showApplicationError('Export failed', 'The DOCX file could not be created. Please try again.');
+        } finally {
+            link?.remove();
+            if (url) {
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }
+            this.docxExportInProgress = false;
+            if (button) {
+                button.disabled = false;
+            }
         }
-
-        const blob = new Blob([responseBuffer], {
-            type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        });
-
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${this.documentTitle || documentId}.docx`;
-        a.click();
-        window.URL.revokeObjectURL(url);
     }
 
     async exportHTML() {

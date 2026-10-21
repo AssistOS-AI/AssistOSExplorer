@@ -22,3 +22,5 @@ Media attached through workspace workflows must preserve the validation and stor
 [Explorer](wiki.html#definition-explorer) provides simple Markdown editing by default and explicit structured collaboration when the document requires it.
 
 The Advanced edit Export Document modal uses the shared button styling in a spaced two-column grid, switching to one column on narrow screens. Export actions remain explicit non-submit buttons; wrapping labels and the full-document option must not overlap adjacent controls.
+
+DOCX export reads the current structured document through the local document module and builds an Open XML package in the browser. It exports the title, information text, chapter headings and paragraph text, retaining Unicode and line breaks. Text is XML-escaped; commands, private metadata and attachments are not embedded or fetched. It must not call retired `/documents/export/docx` routes or depend on an undeclared customization dialog.
