@@ -1,0 +1,178 @@
+name: Roll back Explorer QA Box
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: plan (default, read-only) or execute the recovery of the newest redeploy backup
+        type: choice
+        default: plan
+        options:
+          - plan
+          - execute
+
+# The same group as the deploy workflow: a rollback never overlaps a deployment.
+concurrency:
+  group: deploy-explorer-qa
+  cancel-in-progress: false
+
+env:
+  SSH_USER: 'admin'
+  SSH_HOST: '45.136.70.141'
+  SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'
+
+jobs:
+  rollback:
+    name: Recover Explorer QA from the newest redeploy backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the reviewed deployment helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate the requested action
+        env:
+          ROLLBACK_ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          case "${ROLLBACK_ACTION:-plan}" in
+            plan|execute) ;;
+            *)
+              echo "::error::Unsupported rollback action '${ROLLBACK_ACTION:-}'"
+              exit 1
+              ;;
+          esac
+
+      - name: Pin the Explorer QA SSH identity
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$SSH_KEY"
+          if [ "$SSH_HOST" != '45.136.70.141' ] || [ "$SSH_USER" != 'admin' ]; then
+            echo "::error::Explorer QA target identity is not the pinned admin@45.136.70.141 target"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -T 10 -t ed25519 "$SSH_HOST" > ~/.ssh/explorer_qa_known_hosts
+          test "$({ ssh-keygen -lf ~/.ssh/explorer_qa_known_hosts -E sha256 || true; } | awk '{print $2}' | sort -u)" = "$SSH_ED25519_FINGERPRINT"
+          chmod 600 ~/.ssh/explorer_qa_known_hosts
+          echo "Validated the pinned Explorer QA SSH host identity."
+
+      - name: Select the newest backup and run its own recovery helper
+        env:
+          ROLLBACK_ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          umask 077
+          ACTION="${ROLLBACK_ACTION:-plan}"
+          case "$ACTION" in
+            plan|execute) ;;
+            *)
+              echo "::error::Unsupported rollback action '$ACTION'"
+              exit 1
+              ;;
+          esac
+          SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
+          REMOTE_DIR="$("${SSH[@]}" "${SSH_USER}@${SSH_HOST}" 'umask 077; mktemp -d /tmp/explorer-qa-rollback.XXXXXXXX')"
+          [[ "$REMOTE_DIR" =~ ^/tmp/explorer-qa-rollback\.[A-Za-z0-9]{8}$ ]]
+          cleanup_rollback() {
+            "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
+              "rm -f '$REMOTE_DIR/qa-backups.mjs' '$REMOTE_DIR/qa-backups-privileged.mjs' '$REMOTE_DIR/update-explorer-qa.mjs' '$REMOTE_DIR/rollback-explorer-qa.mjs'; rmdir '$REMOTE_DIR'" || true
+          }
+          trap cleanup_rollback EXIT
+          # The selector imports the update and rollback helpers beside it.
+          for helper in qa-backups.mjs qa-backups-privileged.mjs update-explorer-qa.mjs rollback-explorer-qa.mjs; do
+            scp -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
+              "$GITHUB_WORKSPACE/.github/scripts/$helper" "${SSH_USER}@${SSH_HOST}:$REMOTE_DIR/$helper"
+          done
+          # One locked session: the selection, the plan and the execution all see the
+          # same host state, and a deployment cannot start between them.
+          "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
+            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_DIR' '$ACTION'" <<'ROLLBACK'
+          set -euo pipefail
+          umask 077
+          rollback_dir="$1"
+          action="$2"
+          [[ "$rollback_dir" =~ ^/tmp/explorer-qa-rollback\.[A-Za-z0-9]{8}$ ]] || { echo 'Unsupported rollback directory' >&2; exit 1; }
+          case "$action" in
+            plan|execute) ;;
+            *) echo 'Unsupported rollback action' >&2; exit 1 ;;
+          esac
+          test "$(id -un)" = admin
+          test "$HOME" = /home/admin
+          case "$(uname -m)" in
+            x86_64) arch=x64 ;;
+            aarch64|arm64) arch=arm64 ;;
+            *) echo 'Unsupported QA architecture' >&2; exit 1 ;;
+          esac
+          tools_node="/home/admin/.qa-deployment-tools/node-v24.19.0-linux-$arch"
+          test -x "$tools_node/bin/node"
+          test "$("$tools_node/bin/node" --version)" = v24.19.0
+          if ! selection="$("$tools_node/bin/node" "$rollback_dir/qa-backups.mjs" rollback-target --lock-held)"; then
+            printf '%s\n' "$selection"
+            echo '[deploy-qa] ERROR: no redeploy backup is eligible for an automatic rollback.' >&2
+            exit 1
+          fi
+          printf '[deploy-qa] Rollback selection: %s\n' "$selection"
+          parsed="$(printf '%s' "$selection" | "$tools_node/bin/node" --input-type=module -e '
+            import fs from "node:fs";
+            const selection = JSON.parse(fs.readFileSync(0, "utf8"));
+            if (selection?.result !== "selected") process.exit(1);
+            process.stdout.write(`${selection.backup}\n${selection.currentId}\n`);
+          ')" || { echo '[deploy-qa] ERROR: the rollback selection is malformed.' >&2; exit 1; }
+          backup_name="$(printf '%s\n' "$parsed" | sed -n 1p)"
+          current_id="$(printf '%s\n' "$parsed" | sed -n 2p)"
+          [[ "$backup_name" =~ ^redeploy-[A-Za-z0-9]{8}$ ]] || { echo '[deploy-qa] ERROR: the selected backup name is malformed.' >&2; exit 1; }
+          [[ "$current_id" =~ ^([a-f0-9]{64}|absent)$ ]] || { echo '[deploy-qa] ERROR: the selected current Box ID is malformed.' >&2; exit 1; }
+          BACKUP="/home/admin/.qa-deployment-backups/$backup_name"
+          test -d "$BACKUP"
+          test ! -L "$BACKUP"
+          test -f "$BACKUP/helpers/node-runtime-path"
+          test ! -L "$BACKUP/helpers/node-runtime-path"
+          test -f "$BACKUP/helpers/rollback-explorer-qa.mjs"
+          test ! -L "$BACKUP/helpers/rollback-explorer-qa.mjs"
+          node_home="$(cat "$BACKUP/helpers/node-runtime-path")"
+          [[ "$node_home" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]] || { echo '[deploy-qa] ERROR: the backup names an unsupported Node runtime.' >&2; exit 1; }
+          test -x "$node_home/bin/node"
+          test "$("$node_home/bin/node" --version)" = v24.19.0
+          echo "[deploy-qa] Rollback plan for $backup_name against current=$current_id."
+          "$node_home/bin/node" "$BACKUP/helpers/rollback-explorer-qa.mjs" plan "$BACKUP" --current-id "$current_id" --lock-held
+          if [ "$action" = execute ]; then
+            echo "[deploy-qa] Executing the rollback of $backup_name."
+            "$node_home/bin/node" "$BACKUP/helpers/rollback-explorer-qa.mjs" execute "$BACKUP" --current-id "$current_id" --lock-held
+          fi
+          ROLLBACK
+
+      - name: Create summary
+        if: always()
+        env:
+          ROLLBACK_ACTION: ${{ inputs.action }}
+          DISPATCH_REF: ${{ github.ref_name }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "## Explorer QA Box Rollback"
+            echo ""
+            echo "- Host: \`${SSH_USER}@${SSH_HOST}\`"
+            echo "- Action: \`${ROLLBACK_ACTION:-plan}\`"
+            echo "- Helpers from \`${DISPATCH_REF}@${DISPATCH_SHA}\`; the recovery itself runs the helper stored in the selected backup"
+            echo "- The log carries the \`Rollback selection\` line with every candidate backup and its eligibility"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/deploy_key ~/.ssh/explorer_qa_known_hosts

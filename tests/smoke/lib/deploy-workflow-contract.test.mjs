@@ -324,10 +324,14 @@ test('Explorer QA workflow rejects unsafe identity and tunnel state before SSH',
   assert.doesNotMatch(source, /workspace_name|inputs\.workspace_name/);
   assert.doesNotMatch(source, /(?<![\w.-])\/workspace(?![\w-])/, 'QA deploy uses the same-path host workspace inside the Box');
   assert.doesNotMatch(source, /vars\.EXPLORER_QA_(?:SSH_USER|SSH_HOST|WORKSPACE)/);
-  const [deployJob, rollbackJob] = source.split('\n  rollback:\n');
-  assert.equal(deployJob.match(/ssh-keyscan/g)?.length, 1, 'host key must be scanned only in pinned preflight');
-  assert.equal(rollbackJob.match(/ssh-keyscan/g)?.length, 1, 'the rollback job pins the same host identity once before SSH');
-  assert.match(rollbackJob, /= "\$SSH_ED25519_FINGERPRINT"/);
+  assert.doesNotMatch(source, /\n  rollback:\n/, 'the rollback job moved to its own workflow');
+  assert.equal(source.match(/ssh-keyscan/g)?.length, 1, 'host key must be scanned only in pinned preflight');
+  const rollbackWorkflow = fs.readFileSync(
+    path.join(ROOT, '.github/workflows/rollback-explorer-qa.yml'),
+    'utf8',
+  );
+  assert.equal(rollbackWorkflow.match(/ssh-keyscan/g)?.length, 1, 'the rollback workflow pins the same host identity once before SSH');
+  assert.match(rollbackWorkflow, /= "\$SSH_ED25519_FINGERPRINT"/);
   assert.ok(
     source.indexOf('connector token claims do not match') < source.indexOf('          scp \\'),
     'connector identity must fail before the first SSH transfer',
@@ -388,7 +392,11 @@ test('Explorer QA takes AchillesAgentLib from the Box image and pins no commit',
   );
   // Ploinky no longer ships a dependency lock, so QA must neither read one nor
   // compare the image's library with a branch head.
-  assert.doesNotMatch(source, /dependencies\.lock|EXPECTED_AGENTLIB|Ploinky locks achillesAgentLib|--expected-commit/);
+  // The in-place step passes the pinned AssistOSExplorer commit to the updater as --expected-commit;
+  // the Reconcile script, which owns the AgentLib verification, takes no such option.
+  const reconcile = source.slice(source.indexOf("<<'REMOTE'"));
+  assert.doesNotMatch(source, /dependencies\.lock|EXPECTED_AGENTLIB|Ploinky locks achillesAgentLib/);
+  assert.doesNotMatch(reconcile, /--expected-commit/);
   const marker = '// BEGIN QA image-owned AgentLib verification';
   const markerIndex = source.indexOf(marker);
   const heredocStart = source.lastIndexOf("<<'NODE'\n", markerIndex);
@@ -622,6 +630,11 @@ test('Explorer QA cleanup handles an absent workspace with exact orphan resource
   assert.match(cleanup, /volume ls -q --filter "label=io\.assistos\.ploinky-box\.path-hash=\$BOX_PATH_HASH"/);
   assert.match(cleanup, /error\?\.code !== 'ENOENT'/);
   assert.doesNotMatch(cleanup, /rm\s+-rf|rm\s+-fr/, 'cleanup must use the exact guarded Node target');
+  // Superseded backups are removed by the reviewed retention helper, never by shell: the one prune
+  // call sits inside the redeploy-only block of this region.
+  assert.equal(cleanup.match(/qa-backups\.mjs" prune --current-id/g)?.length, 1, 'exactly one retention call');
+  const retention = cleanup.match(/# BEGIN QA superseded backup retention\n([\s\S]*?)# END QA superseded backup retention/)?.[1] ?? '';
+  assert.match(retention, /^(?: {10}#.*\n)* {10}if \[ "\$QA_OPERATION" = redeploy \]; then\n[\s\S]*qa-backups\.mjs" prune --current-id[\s\S]*\n {10}fi\n {10}$/);
 });
 
 test('Explorer QA cleanup canonicalizes short and full container identities before ambiguity checks', () => {
