@@ -32,3 +32,5 @@ Audio and video preview resolves Router-issued 48-digit hexadecimal blob IDs thr
 All visual document previews share the same scene rules for duration estimation and playback. Explicit zero-duration audio starts a background soundtrack at its scene and continues across subsequent scenes and chapters until replaced by another background track or the presentation ends. Images use their own duration (three seconds by default); positive-duration audio remains scene narration. Background audio obeys its loop flag, pauses and resumes with the preview, and seeks with scene navigation. Audio-only documents retain audio-ended playback. This interpretation does not rewrite stored document attachments.
 
 The references empty-state message uses the semantic secondary text color to remain readable against its panel in both light and dark themes.
+
+Reference rows place the citation and its actions in separate responsive columns. Edit and Delete reuse the shared compact chapter action styling and existing icons, with accessible names and keyboard focus indicators. Long citations wrap without pushing actions below the row.

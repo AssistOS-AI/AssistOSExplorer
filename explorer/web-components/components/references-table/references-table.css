@@ -86,11 +86,19 @@ references-table {
     justify-content: center;
 }
 
+references-table .tor-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: var(--space-md);
+    width: 100%;
+}
+
 .reference-content {
-    flex: 1;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
     gap: 6px;
 }
 
@@ -113,21 +121,9 @@ references-table {
 
 .reference-actions {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     flex-shrink: 0;
     align-items: center;
-}
-
-.edit-reference-btn,
-.delete-reference-btn {
-    background-color: var(--inactive-element);
-    color: var(--default-font-color);
-    border: 1px solid var(--light-gray-border);
-    cursor: pointer;
-    padding: 4px 8px;
-    font-size: 13px;
-    border-radius: 4px;
-    transition: all 0.2s ease;
 }
 
 .tor-empty {
@@ -153,6 +149,9 @@ references-table {
     border-bottom: 1px solid #ccc;
 }
 .reference-citation {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--text);
     font-size: 14px;
     line-height: 1.4;
 }

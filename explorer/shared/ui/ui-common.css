@@ -970,3 +970,60 @@ dialog.modal::backdrop {
     --gray-button-border: #CCCCCC;
     --backlog-status-approved-glow: rgba(59, 130, 246, 0.2);
 }
+
+/* Shared compact actions for chapter and document content controls. */
+.chapter-toolbar .icon-container,
+.document-icon-action {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    flex: 0 0 30px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 8%, transparent);
+    transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+}
+
+.chapter-toolbar .icon-container:hover,
+.document-icon-action:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+    background: var(--option-hover);
+    color: var(--accent);
+    box-shadow: 0 8px 18px rgba(var(--accent-rgb), 0.12);
+}
+
+.chapter-toolbar .icon-container:active,
+.document-icon-action:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(var(--accent-rgb), 0.14);
+}
+
+.chapter-toolbar .icon-container img,
+.document-icon-action img {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+    opacity: 0.9;
+    display: block;
+    margin: 0;
+}
+
+
+.document-icon-action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.theme-dark .chapter-toolbar .icon-container img,
+.theme-dark .document-icon-action img {
+    filter: brightness(0) invert(1) opacity(0.92);
+}
