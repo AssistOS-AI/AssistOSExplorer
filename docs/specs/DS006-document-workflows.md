@@ -20,3 +20,5 @@ The Markdown [CRDT](wiki.html#definition-crdt) is the collaboration mechanism fo
 Media attached through workspace workflows must preserve the validation and storage rules of the owning media service. Document insertion must reference an approved stored media item through the established server-side document mutation path.
 
 [Explorer](wiki.html#definition-explorer) provides simple Markdown editing by default and explicit structured collaboration when the document requires it.
+
+The Advanced edit Export Document modal uses the shared button styling in a spaced two-column grid, switching to one column on narrow screens. Export actions remain explicit non-submit buttons; wrapping labels and the full-document option must not overlap adjacent controls.

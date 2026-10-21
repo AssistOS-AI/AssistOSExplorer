@@ -16,3 +16,40 @@ export-document-modal{
     text-align: center;
     color: var(--white);
 }
+
+export-document-modal .expanded-row-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-sm);
+}
+
+export-document-modal .expanded-row-buttons .general-button {
+    min-width: 0;
+    min-height: 40px;
+    margin: 0;
+    white-space: normal;
+    line-height: var(--line-normal);
+    text-align: center;
+}
+
+export-document-modal .form-item-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+}
+
+export-document-modal .form-item-row .form-label {
+    min-width: 0;
+    flex: 1;
+}
+
+export-document-modal .form-item-row input[type="checkbox"] {
+    flex: 0 0 auto;
+    margin: var(--space-xs) 0 0;
+}
+
+@media (max-width: 440px) {
+    export-document-modal .expanded-row-buttons {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
