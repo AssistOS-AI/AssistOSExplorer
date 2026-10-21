@@ -590,3 +590,8 @@ html[theme="dark"] input.document-title {
     padding: 2px 5px 2px 1px;
     border-radius: 999px;
 }
+
+/* Hide the legacy script action until its execution integration is available. */
+document-view-page .infoText-plugins-container .run-script {
+    display: none;
+}

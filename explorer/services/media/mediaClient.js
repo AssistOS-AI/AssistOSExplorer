@@ -92,7 +92,9 @@ export function createMediaClient({
         if (!mediaId) {
             return '';
         }
-        if (await hasLegacyBlob(mediaId)) {
+        // Router uploads use 24-byte hexadecimal blob IDs. Resolve them through
+        // the authenticated blob route, without reading private sidecar metadata.
+        if (/^[a-f0-9]{48}$/i.test(mediaId) || await hasLegacyBlob(mediaId)) {
             return buildLegacyBlobPath(mediaId);
         }
         const context = getDocumentContext();

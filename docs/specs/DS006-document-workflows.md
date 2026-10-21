@@ -24,3 +24,9 @@ Media attached through workspace workflows must preserve the validation and stor
 The Advanced edit Export Document modal uses the shared button styling in a spaced two-column grid, switching to one column on narrow screens. Export actions remain explicit non-submit buttons; wrapping labels and the full-document option must not overlap adjacent controls.
 
 DOCX export reads the current structured document through the local document module and builds an Open XML package in the browser. It exports the title, information text, chapter headings and paragraph text, retaining Unicode and line breaks. Text is XML-escaped; commands, private metadata and attachments are not embedded or fetched. It must not call retired `/documents/export/docx` routes or depend on an undeclared customization dialog.
+
+The Advanced edit toolbar temporarily hides the legacy Run Script action while its execution integration is unavailable.
+
+Audio and video preview resolves Router-issued 48-digit hexadecimal blob IDs through the authenticated `/blobs/explorer/<id>` route. Blob resolution must not depend on reading private metadata sidecars through workspace file tools or invent a document-multimedia path for those IDs.
+
+All visual document previews share the same scene rules for duration estimation and playback. Explicit zero-duration audio starts a background soundtrack at its scene and continues across subsequent scenes and chapters until replaced by another background track or the presentation ends. Images use their own duration (three seconds by default); positive-duration audio remains scene narration. Background audio obeys its loop flag, pauses and resumes with the preview, and seeks with scene navigation. Audio-only documents retain audio-ended playback. This interpretation does not rewrite stored document attachments.
