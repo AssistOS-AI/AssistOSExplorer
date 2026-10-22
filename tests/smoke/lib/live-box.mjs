@@ -347,7 +347,7 @@ export function selectLocalScreenContainer(containerInspects, port, { expectedRo
     }
   });
   if (candidates.length !== 1) {
-    throw new Error(`Smoke evidence requires exactly one running Box outer container with the exact ${bindAddress}:${port}:8080/tcp and 0.0.0.0:<media-host-port label>:7882/udp publications; found ${candidates.length}.`);
+    throw new Error(`Smoke evidence requires exactly one running Box outer container with the exact ${bindAddress}:${port}:8080/tcp and 0.0.0.0:<media-host-port label>:<media-host-port label>/udp publications; found ${candidates.length}.`);
   }
   return candidates[0];
 }
