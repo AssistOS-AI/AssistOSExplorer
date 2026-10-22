@@ -717,9 +717,14 @@ Shared local Box discovery, including the headless acceptance gates, supports
 isolated deployments such as Router TCP `28080` and media UDP `27882` alongside
 another Box. Exactly one running Box must match the selected loopback Router
 port; its only other publication must be
-`0.0.0.0:<media-host-port label>:7882/udp`. Both host ports must match the
-immutable Box labels, and missing, malformed, mismatched, or additional
-publications fail. This does not change the fixed UDP `7882` scanner and ICE
+`0.0.0.0:<media-host-port label>:<media-host-port label>/udp` (`7882:7882/udp`
+by default, `N:N` otherwise; a legacy `N:7882` publication fails). The expected
+port comes from the single Box's media-host-port label, never from whichever
+UDP mapping appears. Both host ports must match the immutable Box labels, and
+missing, malformed, mismatched, or additional publications fail. When the label
+is not `7882`, the headless media gate also requires every selected pair to use
+a `host` remote candidate on that port and the set of all remote-candidate
+ports to equal the label. This does not change the fixed UDP `7882` scanner and ICE
 requirements of the screen-share and external-network gates below; those gates
 reject an alternate media host port.
 

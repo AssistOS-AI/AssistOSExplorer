@@ -326,7 +326,7 @@ export function assertOriginBindAddress(local, expectedRouterBindAddress, env = 
 function exactScreenBindings(port, mediaPort, expectedRouterBindAddress) {
   return normalizeOuterPortBindings({
     '8080/tcp': [{ HostIp: expectedRouterBindAddress, HostPort: port }],
-    '7882/udp': [{ HostIp: '0.0.0.0', HostPort: mediaPort }],
+    [`${mediaPort}/udp`]: [{ HostIp: '0.0.0.0', HostPort: mediaPort }],
   });
 }
 

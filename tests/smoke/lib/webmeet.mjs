@@ -2,6 +2,7 @@ import { expect, setPageDiagnosticsExpectedOffline } from './fixtures.mjs';
 import { signIn, trySignIn } from './auth.mjs';
 import { smokeConfig } from './config.mjs';
 import { requirePublicIpv4 } from './network.mjs';
+import { collectLiveBoxEvidence } from './live-box.mjs';
 import { screenRuntimeEvidenceProvesUdpMux } from './screen-runtime-evidence.mjs';
 import { findSecretLeaks } from './security.mjs';
 import { evaluateGuestPresence } from './webmeet-public-room.mjs';
@@ -810,6 +811,81 @@ export async function expectWebMeetNetworkLane(page, {
     selectedCandidatePairs: evidence,
     probe,
   });
+  return evidence;
+}
+
+// Headless media gate: the Box media-host-port label is read once from the single live Box and is
+// the only expected remote port. The screen and external-network gates stay fixed on 7882.
+export function readHeadlessMediaHostPort({
+  baseURL,
+  env = process.env,
+  collectLiveBox = collectLiveBoxEvidence,
+} = {}) {
+  const label = collectLiveBox({
+    baseURL,
+    requireFreshImage: false,
+    generationMaxAgeMs: env.SMOKE_BOX_MAX_GENERATION_AGE_MS,
+  })?.box?.semanticLabels?.mediaHostPort;
+  if (!/^[1-9][0-9]*$/.test(String(label ?? '')) || Number(label) > 65_535) {
+    throw new Error('The live Box media-host-port label must be an exact TCP/UDP port.');
+  }
+  return String(label);
+}
+
+export function assessHeadlessMediaCandidatePort({ selectedPairs, remoteCandidates, mediaHostPort }) {
+  const expectedPort = Number(mediaHostPort);
+  const active = Array.from(selectedPairs || []).filter((pair) => (
+    pair?.selected
+    && (!pair.peerConnectionState || pair.peerConnectionState === 'connected')
+    && (Number(pair.bytesSent || 0) > 0 || Number(pair.bytesReceived || 0) > 0)
+  ));
+  const remotePorts = Array.from(new Set(Array.from(remoteCandidates || [])
+    .map((candidate) => Number(candidate?.port || 0)))).sort((a, b) => a - b);
+  const accepted = Number.isSafeInteger(expectedPort)
+    && active.length > 0
+    && active.every((pair) => pair.remote?.candidateType === 'host' && Number(pair.remote?.port || 0) === expectedPort)
+    && remotePorts.length === 1
+    && remotePorts[0] === expectedPort;
+  return Object.freeze({ accepted, expectedPort, remotePorts: Object.freeze(remotePorts) });
+}
+
+async function rtcRemoteCandidates(page) {
+  return page.evaluate(async () => {
+    const candidates = [];
+    for (const [peerConnectionIndex, pc] of (window.__e2ePeerConnections || []).entries()) {
+      const stats = await pc.getStats();
+      stats.forEach((entry) => {
+        if (entry.type !== 'remote-candidate') return;
+        candidates.push({
+          peerConnectionIndex,
+          candidateType: String(entry.candidateType || ''),
+          protocol: String(entry.protocol || ''),
+          address: String(entry.address || entry.ip || ''),
+          port: Number(entry.port || 0),
+        });
+      });
+    }
+    return candidates;
+  });
+}
+
+export async function expectHeadlessMediaCandidatePort(page, { label, testInfo, mediaHostPort }) {
+  // The default 7882 behavior is unchanged: no additional assertion is made.
+  if (String(mediaHostPort) === '7882') return null;
+  let evidence = null;
+  await expect.poll(async () => {
+    evidence = {
+      mediaHostPort: String(mediaHostPort),
+      selectedPairs: await rtcCandidateEvidence(page),
+      remoteCandidates: await rtcRemoteCandidates(page),
+    };
+    return assessHeadlessMediaCandidatePort(evidence).accepted;
+  }, {
+    message: `${label} must select a host remote candidate on the Box media host port ${mediaHostPort} and see no other remote candidate port`,
+    timeout: smokeConfig.timeouts.media,
+    intervals: [500, 1_000, 2_000],
+  }).toBe(true);
+  await attachJsonEvidence(testInfo, `${label}-headless-media-candidate-port`, evidence);
   return evidence;
 }
 
