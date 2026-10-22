@@ -54,7 +54,7 @@ const RETIRED = [
     'userpersisto_totp_login_verify',
 ];
 
-const { ensureSeedData } = await import('../lib/bootstrap.mjs');
+const { ensureExplorerSeedData: ensureSeedData } = await import('./helpers/product-permissions.mjs');
 const { createUser, updateUser } = await import('../lib/users.mjs');
 const { runTool, hasTool } = await import('../tools/registry.mjs');
 const { resetStoreForTests } = await import('../lib/store.mjs');

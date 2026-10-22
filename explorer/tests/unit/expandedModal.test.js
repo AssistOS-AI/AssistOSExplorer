@@ -90,6 +90,29 @@ test('an embedded page header folds its breadcrumbs into the modal header', asyn
     assert.match(css, /\.expanded-modal-breadcrumbs/);
 });
 
+test('a marked select in folded breadcrumbs changes the embedded page and keeps its current choice', async () => {
+    const { relayBreadcrumbSelectEvent, syncBreadcrumbSelects } = await import('../../web-components/modals/expanded-modal/breadcrumbFields.js');
+    const dispatched = [];
+    const view = { Event: class { constructor(type, init) { this.type = type; this.bubbles = init?.bubbles; } } };
+    const original = { value: 'system', disabled: false, getAttribute: () => 'theme', ownerDocument: { defaultView: view },
+        dispatchEvent: event => dispatched.push([event.type, original.value]) };
+    const source = { isConnected: true, querySelectorAll: () => [original] };
+    const field = { value: 'dark', getAttribute: () => 'theme' };
+    field.closest = selector => selector === 'select[data-embed-field]' ? field : null;
+    assert.equal(relayBreadcrumbSelectEvent({ type: 'change', target: field }, source), true);
+    assert.deepEqual(dispatched, [['change', 'dark']]);
+    assert.equal(relayBreadcrumbSelectEvent({ type: 'input', target: field }, source), false);
+    const clone = { value: 'system', getAttribute: () => 'theme' };
+    syncBreadcrumbSelects({ querySelectorAll: () => [clone] }, source);
+    assert.equal(clone.value, 'dark');
+    const presenter = await readText('web-components/modals/expanded-modal/expanded-modal.js');
+    const css = await readText('web-components/modals/expanded-modal/expanded-modal.css');
+    assert.match(presenter, /syncBreadcrumbSelects\(this\.breadcrumbsNode, source\)/);
+    assert.match(presenter, /"data-embed-status"/);
+    assert.match(css, /\[data-embed-status="on"\]/);
+    assert.match(css, /select\[data-embed-field\]/);
+});
+
 test('modal action icons share one unified icon set', async () => {
     const css = await readText('web-components/modals/expanded-modal/expanded-modal.css');
 

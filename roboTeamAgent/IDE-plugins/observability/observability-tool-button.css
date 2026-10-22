@@ -1,0 +1,26 @@
+observability-tool-button {
+    display: block;
+    width: 100%;
+    text-align: center;
+}
+
+.app-toolbar-slot observability-tool-button,
+observability-tool-button[data-host-orientation="horizontal"] {
+    width: auto;
+    text-align: initial;
+}
+
+observability-tool-button .observability-tool {
+    display: inline-flex;
+    width: 100%;
+    justify-content: center;
+}
+
+.app-toolbar-slot observability-tool-button .observability-tool,
+observability-tool-button[data-host-orientation="horizontal"] .observability-tool {
+    width: auto;
+}
+
+observability-tool-button .observability-tool-button[hidden] {
+    display: none;
+}

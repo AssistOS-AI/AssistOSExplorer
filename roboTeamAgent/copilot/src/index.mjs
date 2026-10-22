@@ -1,0 +1,199 @@
+#!/usr/bin/env node
+import { registerProject } from '../../server/project-storage.mjs';
+import { PUBLIC_BASE_PATH } from '../../server/constants.mjs';
+
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { initializeCliOptions, isWebchatRuntime } from './lib/cli/cliOptions.mjs';
+import { resolveSkillCatalogRoots, builtInSkillsDir } from './lib/skills/cliSkillRoots.mjs';
+import { createAnthropicSkillCatalog } from './lib/skills/anthropicSkillCatalog.mjs';
+import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
+import { resolveAlaInstallation } from './lib/execution/alaInstallation.mjs';
+import { createAlaEngine } from './lib/execution/alaEngine.mjs';
+import * as settings from './lib/config/achillesSettings.mjs';
+import { ConversationSessionStore } from './lib/storage/conversationSessionStore.mjs';
+import { createWebchatBackgroundTaskManager } from './lib/webchat/webchatBackgroundTasks.mjs';
+import { createWebchatInteractionController } from './lib/webchat/webchatInteractionController.mjs';
+import { createNativeInteractions } from './lib/execution/nativeInteractions.mjs';
+import { HistoryManager } from './repl/HistoryManager.mjs';
+import { REPLSession } from './repl/REPLSession.mjs';
+import { createProvider, getProviderNames } from './ui/providers/index.mjs';
+import { UIContext } from './ui/UIContext.mjs';
+import { executeRuntimeCommand } from './lib/cli/cliRuntimeCommands.mjs';
+import { runWebchatInteractive, attachTaskToSession } from './lib/webchat/webchatRuntime.mjs';
+import { getRobotContext } from './lib/execution/robotContext.mjs';
+import { createRobotSkillCatalog } from './lib/skills/robotSkillCatalog.mjs';
+import { createCopilotPublisher } from './lib/liveSessions/publisher.mjs';
+import { logDiagnostic } from './lib/storage/copilotDiagnostics.mjs';
+
+export { REPLSession } from './repl/REPLSession.mjs';
+export { SlashCommandHandler } from './repl/SlashCommandHandler.mjs';
+export { CommandSelector, showCommandSelector, showSkillSelector, buildCommandList } from './ui/CommandSelector.mjs';
+export { HistoryManager } from './repl/HistoryManager.mjs';
+export { formatSlashResult } from './ui/ResultFormatter.mjs';
+export { printHelp as printREPLHelp, showHistory, searchHistory } from './ui/HelpPrinter.mjs';
+export { isWebchatEscapeControlChunk, handleWebchatControlChunk } from './lib/webchat/webchatControl.mjs';
+export { BUILT_IN_SKILLS } from './lib/constants.mjs';
+export { builtInSkillsDir, resolveSkillCatalogRoots } from './lib/skills/cliSkillRoots.mjs';
+export { parseCliOptions } from './lib/cli/cliOptions.mjs';
+
+// Only main() passes a Live Sessions publisher; robot tasks and other callers
+// of createCliRuntime never publish.
+export async function createCliRuntime(options, { webchat = false, reattachExistingTasks = true, livePublisher = null } = {}) {
+    const { workingDir } = options;
+    const installation = await resolveAlaInstallation();
+    const robotContext = getRobotContext();
+    if (robotContext) registerProject({ dataDir: robotContext.store.dataDir,
+        workspaceRoot: robotContext.skillsets.workspaceRoot }, workingDir);
+    const sessionStore = new ConversationSessionStore({ workingDir });
+    let initialSession;
+    if (options.sessionId) {
+        if (options.resumeSession) initialSession = sessionStore.loadSession(options.sessionId);
+        else initialSession = await sessionStore.createSession({ sessionId: options.sessionId, select: false });
+    } else initialSession = await sessionStore.ensureCurrentSession();
+    const robotCatalog = robotContext ? createRobotSkillCatalog({ context: robotContext, sessionStore,
+        workingDir, initialSessionId: initialSession.sessionId, workflowSkills: options.execution?.workflowSkills === true, workflowExecution: options.execution?.workflowExecution === true, discoverTaskSkills }) : null;
+    let catalog;
+    const refresh = async () => {
+        catalog = await createAnthropicSkillCatalog({
+            workingDir,
+            roots: await resolveSkillCatalogRoots(workingDir),
+            discoverTaskSkills,
+        });
+        return { skills: catalog.getSkills(), taskRepositories: catalog.getEnabledSkillDirectories() };
+    };
+    if (options.skillSelection && !initialSession.skillPolicyRef && !initialSession.skillSelection && !options.resumeSession) initialSession = await sessionStore.updateSession(initialSession.sessionId,
+        (session) => { session.skillSelection = options.skillSelection; });
+    if (robotCatalog) await robotCatalog.refresh(initialSession.sessionId);
+    else await refresh();
+    // Keep the host reference stable while configured skill files are refreshed.
+    const skillCatalog = robotCatalog || Object.freeze({
+        refresh,
+        getSkills: () => catalog.getSkills(),
+        getSkill: (name) => catalog.getSkill(name),
+        resolveSelectedSkill: (name) => catalog.resolveSelectedSkill(name),
+        getEnabledSkillDirectories: () => catalog.getEnabledSkillDirectories(),
+        readSkill: (name) => catalog.readSkill(name),
+        removeSkill: (name) => catalog.removeSkill(name),
+    });
+    if (options.requestedPermissionMode) await settings.setPermissionMode(workingDir, options.requestedPermissionMode);
+    const webchatController = webchat ? createWebchatInteractionController({ stdout: process.stdout }) : null;
+    const interactions = createNativeInteractions({ webchatController });
+    let backgroundTasks;
+    try {
+        backgroundTasks = fs.existsSync('/Agent/client/AgentMcpClient.mjs') ? await createWebchatBackgroundTaskManager({
+            workingDir,
+            emitProtocol: webchat,
+            reattachExistingTasks,
+            onTaskStarted: (task, origin) => attachTaskToSession(sessionStore, task, origin, { webchat }),
+            livePublisher,
+        }) : null;
+        const engine = createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, interactions, backgroundTasks, installation,
+            execution: { ...options.execution, robotId: robotContext?.robot.id },
+            webchatLogsBase: `${PUBLIC_BASE_PATH.replace(/\/+$/, '')}/webchat-logs`, livePublisher });
+        const historyManager = new HistoryManager({ workingDir });
+        return {
+            ...options, installation, skillCatalog, sessionStore, initialSession, engine,
+            historyManager, settings, interactions, webchatController, backgroundTasks, livePublisher,
+            listRobots: async () => {
+                if (!robotContext) throw new Error('Robot discovery requires the RoboTeam runtime.');
+                return (await robotContext.store.list()).map(({ name }) => ({ name }));
+            },
+            getPermissions: () => settings.getPermissionMode(workingDir),
+            setPermissions: (mode) => settings.setPermissionMode(workingDir, mode),
+            async close() {
+                try { await engine.close(); }
+                finally {
+                    interactions.dispose();
+                    webchatController?.dispose();
+                    backgroundTasks?.close();
+                    await livePublisher?.close();
+                }
+            },
+        };
+    } catch (error) {
+        interactions.dispose();
+        webchatController?.dispose();
+        backgroundTasks?.close();
+        await livePublisher?.close({ flushMs: 0 });
+        throw error;
+    }
+}
+
+export async function main(args = process.argv.slice(2), execution = {}) {
+    const options = initializeCliOptions(args);
+    options.execution = { ...options.execution, ...execution };
+    if (options.help) { printHelp(); return; }
+    if (options.version) { console.log('RoboTeam copilot v3.0.0'); return; }
+    process.chdir(options.workingDir);
+    if (!getProviderNames().includes(options.uiStyle)) throw new Error(`Invalid UI style '${options.uiStyle}'. Available: ${getProviderNames().join(', ')}`);
+    UIContext.setProvider(createProvider(options.uiStyle));
+    const webchat = !options.singleShot && isWebchatRuntime(args);
+    // server/robot-cli.mjs enables Live Sessions publishing for the copilot.
+    const livePublisher = createCopilotPublisher(process.env, {
+        log: (event, fields) => logDiagnostic(options.workingDir, event, fields) });
+    const runtime = await createCliRuntime(options, { webchat, livePublisher });
+    try {
+        if (webchat) await runWebchatInteractive(runtime);
+        else if (options.singleShot) {
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            process.once('SIGINT', abort);
+            process.once('SIGTERM', abort);
+            try {
+                const connection = { sessionId: runtime.initialSession.sessionId, markdownEnabled: options.renderMarkdown };
+                const context = { workingDir: options.workingDir, rawText: options.prompt };
+                const onEvent = (event) => {
+                    if (event.type === 'diagnostic' && (event.category === 'skill-catalog' || options.debug || options.verbose)) console.error(event.message);
+                };
+                const result = options.prompt.startsWith('/')
+                    ? await executeRuntimeCommand({ runtime, connection, input: options.prompt, context, signal: controller.signal, onEvent })
+                    : await runtime.engine.executeTurn({ sessionId: connection.sessionId, prompt: options.prompt, context, signal: controller.signal, onEvent });
+                if (!options.prompt.startsWith('/')) await runtime.historyManager.add(options.prompt);
+                const text = result.outputText ?? result.output ?? '';
+                if (text) console.log(text);
+            } finally {
+                process.removeListener('SIGINT', abort);
+                process.removeListener('SIGTERM', abort);
+            }
+        } else {
+            const session = new REPLSession(runtime.engine, { ...runtime, builtInSkillsDir });
+            await session.start();
+        }
+    } finally { await runtime.close(); }
+}
+
+function printHelp() {
+    console.log(`RoboTeam copilot v3.0
+
+USAGE: ploinky cli roboTeamAgent --robot <name> [options] [prompt or /command]
+
+  -d, --dir <path>          Workspace (default: current directory)
+  -v, --verbose            Verbose diagnostics
+  --debug                  Native execution diagnostics
+  --raw, --no-markdown      Disable Markdown rendering
+  --permissions <mode>     ask-for-approval or full-access
+  --skip-permissions       Alias for --permissions full-access
+  --ui <style>             claude-code or minimal
+  --ui-minimal             Minimal terminal interface
+  --ui-claude-code         Claude Code terminal interface
+  -h, --help               Show help
+  --version                Show version
+
+Run without a prompt for the terminal REPL. WebChat is selected by the
+Ploinky SSO runtime. /help lists retained commands; /list robots lists the
+workspace robots; /session manages robot conversations.
+Manage repositories and skill selection in RoboTeam or Explorer, not this CLI.
+/model selects a native backend model; /permissions controls native policy.
+
+RoboTeam supplies the ALA entrypoint, robot home and cached coding agents.
+Configure the robot's accounts through its Desktop. Independent CLI sessions
+can run concurrently; Desktop and Browser share one GUI container per robot.`);
+}
+
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    main().catch((error) => {
+        console.error('Fatal error:', error.message);
+        process.exitCode = error?.name === 'AbortError' || error?.exitCode === 130 ? 130 : 1;
+    });
+}

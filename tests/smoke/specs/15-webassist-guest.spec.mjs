@@ -3,6 +3,7 @@ import { smokeConfig } from '../lib/config.mjs';
 
 test.describe('webAssist guest access', () => {
   test('embedded chat and MCP initialize without prior authentication', async ({ page, context }) => {
+    test.skip(!smokeConfig.flags.webAssist, 'SMOKE_WEBASSIST is off; install legacy-agents and enable legacy-agents/webAssist first.');
     await context.clearCookies();
     const visitorStorageKey = `webassist-chat:visitorId:${smokeConfig.webAssistSiteId}`;
     await page.addInitScript(({ key, runId }) => {

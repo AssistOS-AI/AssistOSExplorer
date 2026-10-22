@@ -77,7 +77,8 @@ test('fresh SSO setup works without email delivery and produces an administrator
     assert.deepEqual(signedIn.roles, ['admin']);
     assert.equal(signedIn.user.email, 'first.owner@example.test');
     assert.equal(signedIn.user.emailVerifiedAt, '');
-    assert.equal(signedIn.capabilities.includes('explorer.access'), true);
+    assert.equal(signedIn.capabilities.includes('explorer.access'), false);
+    assert.equal(signedIn.capabilities.includes('admin.users.manage'), true);
     assert.equal((await getInstallationSetup()).method, 'initialPassword');
     assert.equal(hashes, 1);
     assert.equal(deliveries, 0);

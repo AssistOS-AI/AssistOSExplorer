@@ -13,7 +13,6 @@
 // evidence redaction.
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -898,36 +897,20 @@ export function createEvidenceWriter({ dir }) {
 // ---------------------------------------------------------------------------
 // Environment prerequisites (fail closed: a missing prerequisite is an error, never a skip)
 
-// Only variables the plan documents (C2 common environment): SMOKE_DEPLOYMENT_MODE, SMOKE_BASE_URL, SMOKE_PLOINKY_BOX_CONTAINER,
-// plus SMOKE_WORKSPACE_ROOT for the foreign-workspace guard (plan C7). The guard refuses the cleanup session's Box,
-// workspaces and Router port: the E2E deployment is an owned workspace on its own ports (18080/17882).
-const FOREIGN_BOX = /^ploinky-box-testexplorerfresh-/;
-const FOREIGN_WORKSPACES = Object.freeze(['work/testExplorerFresh', 'cleanup-repair-claude-20261002']);
-const FOREIGN_ROUTER_PORT = '8080';
-
-export function requireHardwareEnvironment(env = process.env, { home = env.HOME || os.homedir() } = {}) {
+// Only variables the plan documents (C2 common environment): SMOKE_DEPLOYMENT_MODE, SMOKE_BASE_URL and
+// SMOKE_PLOINKY_BOX_CONTAINER. The E2E deployment is the fresh fixture of ploinky/AGENTS.md (normally
+// ~/work/testExplorerFresh on Router port 8080). A spec that needs SMOKE_WORKSPACE_ROOT expects that same workspace;
+// this function does not check it.
+export function requireHardwareEnvironment(env = process.env) {
   const problems = [];
   if (String(env.SMOKE_DEPLOYMENT_MODE || '').trim() !== 'box') problems.push('SMOKE_DEPLOYMENT_MODE must be "box"');
   const baseUrl = String(env.SMOKE_BASE_URL || '').trim();
   if (!baseUrl) problems.push('SMOKE_BASE_URL must name the Router of the E2E deployment');
   else {
-    let port = null;
-    try { port = new URL(baseUrl).port; } catch { problems.push('SMOKE_BASE_URL must be a URL'); }
-    if (port === FOREIGN_ROUTER_PORT) problems.push(`SMOKE_BASE_URL uses port ${FOREIGN_ROUTER_PORT}, the cleanup session's Router port (foreign-workspace guard)`);
+    try { new URL(baseUrl); } catch { problems.push('SMOKE_BASE_URL must be a URL'); }
   }
   const box = String(env.SMOKE_PLOINKY_BOX_CONTAINER || '');
   if (!BOX_NAME.test(box)) problems.push('SMOKE_PLOINKY_BOX_CONTAINER must name the exact Box container');
-  else if (FOREIGN_BOX.test(box)) problems.push('SMOKE_PLOINKY_BOX_CONTAINER names the cleanup session\'s Box (foreign-workspace guard)');
-  const workspace = String(env.SMOKE_WORKSPACE_ROOT || '').trim();
-  if (workspace) {
-    // A path that exists is compared by its real path, so a symlink into a foreign workspace is refused too.
-    const real = (target) => { try { return fs.realpathSync(target); } catch { return path.resolve(target); } };
-    const resolved = real(workspace);
-    for (const relative of FOREIGN_WORKSPACES) {
-      const foreign = real(path.join(home, relative));
-      if (resolved === foreign || resolved.startsWith(`${foreign}${path.sep}`)) problems.push(`SMOKE_WORKSPACE_ROOT is under ${foreign}, the cleanup session's workspace (foreign-workspace guard)`);
-    }
-  }
   if (problems.length) throw new Error(`The hardware-limits executors cannot run: ${problems.join('; ')}.`);
   return { boxName: box };
 }

@@ -13,21 +13,18 @@
             "agent": "gitAgent global",
             "profile": "embedded"
         },
-        "userPersistoAgent",
+        {
+            "agent": "userPersistoAgent",
+            "profile": "explorer"
+        },
         "dpuAgent global",
-        "soplangAgent global no-wait",
-        "tasksAgent global",
-        "AchillesCLI/roboTeamAgent global no-wait",
-        "AchillesIDE/liveKitServerAgent no-wait",
-        "webmeetAgent global no-wait",
-        "multimedia global no-wait",
-        "proxies/soul-gateway no-wait",
-        "webAssist no-wait",
-        "UmamiAgent/umamiAgent no-wait",
+        "roboTeamAgent global no-wait",
+        "soul-gateway no-wait",
         "workspaceMonitorAgent no-wait",
         "local-llms/local-llm no-wait"
     ],
     "repos": {
+        "webmeet": "https://github.com/AssistOS-AI/webmeet.git",
         "OnlyOfficeAgent": "https://github.com/AssistOS-AI/OnlyOfficeAgent.git",
         "UmamiAgent": "https://github.com/AssistOS-AI/UmamiAgent.git",
         "local-llms": "https://github.com/AssistOS-AI/local-llms.git"
@@ -38,8 +35,6 @@
         "workspace-monitor": true,
         "live-sessions": true,
         "help": true,
-        "soplang-builder": true,
-        "tasks": true,
         "webmeet": true,
         "soul-gateway": true
     },

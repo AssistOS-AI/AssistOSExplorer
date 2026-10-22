@@ -13,6 +13,92 @@ export function liveSkillsHash(value) {
     return createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex');
 }
 
+// Self-contained for the serialized read-only observer and owned cleanup operation.
+export async function inspectSessionSkillLinks({ workspace, sessionId, execution }, { fsApi, allowMissing = false } = {}) {
+    const assert = (await import('node:assert/strict')).default;
+    const fs = fsApi || await import('node:fs');
+    const path = await import('node:path');
+    const { createHash } = await import('node:crypto');
+    const same = (a, b) => ['dev', 'ino', 'mode', 'size', 'mtimeMs', 'ctimeMs'].every(key => a[key] === b[key]);
+    const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}/`);
+    const canonicalDirectory = directory => {
+        assert.ok(fs.lstatSync(directory).isDirectory(), 'Skill path must be a real directory.');
+        assert.equal(fs.realpathSync(directory), directory, 'Skill directory must be canonical.');
+        return fs.lstatSync(directory);
+    };
+    const projectSkills = `${workspace}/.agents/skills`;
+    const projectState = () => {
+        canonicalDirectory(workspace);
+        assert.equal(fs.lstatSync(`${workspace}/.agents/.roboteam-links.json`, { throwIfNoEntry: false }), undefined,
+            'Legacy shared skill records are not session evidence.');
+        if (fs.lstatSync(`${workspace}/.agents`, { throwIfNoEntry: false })) canonicalDirectory(`${workspace}/.agents`);
+        if (fs.lstatSync(projectSkills, { throwIfNoEntry: false })) {
+            canonicalDirectory(projectSkills);
+            assert.deepEqual(fs.readdirSync(projectSkills), [], 'Fixture project skills must remain empty.');
+        }
+    };
+    projectState();
+    assert.match(sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    if (!execution) return { recheck: projectState };
+    const directory = `${workspace}/.roboteam/sessions/${sessionId}/skills`;
+    assert.equal(execution.live, true, 'Copied catalogs are not live execution evidence.');
+    assert.equal(execution.skillsDirectory, directory, 'Skill directory must belong to this session.');
+    assert.ok(Array.isArray(execution.entries) && Array.isArray(execution.mounts), 'Invalid execution entries or mounts.');
+    const links = [], mounts = [], sources = new Map(), names = new Set();
+    for (const entry of execution.entries) {
+        assert.match(entry.name, /^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+        assert.ok(!names.has(entry.name), 'Duplicate skill name.');
+        names.add(entry.name);
+        const source = entry.sourcePath;
+        assert.ok(typeof source === 'string' && path.isAbsolute(source) && path.normalize(source) === source);
+        canonicalDirectory(source);
+        if (entry.executionOnly) continue;
+        let target = sources.get(source);
+        if (!target) {
+            target = [projectSkills, `${workspace}/.claude/skills`, `${workspace}/.roboteam`].some(root => inside(root, source))
+                ? `/workspace/roboteam-skill-${sources.size}` : source;
+            sources.set(source, target);
+            mounts.push({ source, target, expose: true });
+        }
+        links.push({ name: entry.name, source, target });
+    }
+    assert.deepEqual(execution.mounts, mounts, 'Execution mounts differ from the ordered native source mapping.');
+    assert.equal(createHash('sha256').update(JSON.stringify(links)).digest('hex'), execution.revision,
+        'Execution revision differs from the ordered native links.');
+    const ancestors = [workspace, `${workspace}/.roboteam`, `${workspace}/.roboteam/sessions`, `${workspace}/.roboteam/sessions/${sessionId}`];
+    const ancestorStats = ancestors.map(canonicalDirectory);
+    const directoryStat = fs.lstatSync(directory, { throwIfNoEntry: false });
+    if (!directoryStat) {
+        assert.ok(allowMissing, 'Missing session skills directory.');
+        return { directory, links, missing: true, recheck: () => {
+            projectState();
+            ancestors.forEach((entry, index) => assert.ok(same(canonicalDirectory(entry), ancestorStats[index]), 'Session ancestor changed.'));
+            assert.equal(fs.lstatSync(directory, { throwIfNoEntry: false }), undefined, 'Removed session skills reappeared.');
+        } };
+    }
+    canonicalDirectory(directory);
+    const members = links.map(link => link.name).sort();
+    assert.deepEqual(fs.readdirSync(directory).sort(), members, 'Session skill membership differs.');
+    const linkStats = links.map(link => {
+        const file = `${directory}/${link.name}`, stat = fs.lstatSync(file);
+        assert.ok(stat.isSymbolicLink(), 'Installed skill must be an actual symlink.');
+        assert.equal(fs.readlinkSync(file), link.target, 'Session skill link was retargeted.');
+        return stat;
+    });
+    return { directory, links, missing: false, recheck: () => {
+        projectState();
+        ancestors.forEach((entry, index) => assert.ok(same(canonicalDirectory(entry), ancestorStats[index]), 'Session ancestor changed.'));
+        assert.ok(same(canonicalDirectory(directory), directoryStat), 'Session skills directory changed.');
+        assert.deepEqual(fs.readdirSync(directory).sort(), members, 'Session skill membership changed.');
+        links.forEach((link, index) => {
+            canonicalDirectory(link.source);
+            const file = `${directory}/${link.name}`;
+            assert.ok(same(fs.lstatSync(file), linkStats[index]), 'Session skill link changed.');
+            assert.equal(fs.readlinkSync(file), link.target, 'Session skill link was retargeted.');
+        });
+    } };
+}
+
 // Observer and native execution use the same canonical selected workspace path.
 export function liveSkillsWorkspace(workspaceRoot, folder) {
     assert.match(folder, /^copilot-live-skills-[0-9a-f-]{36}$/);
@@ -144,6 +230,8 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
     const identity = { sessionId, robotId: fixture.robotId, home: native.home, workspace: native.workspace, agent: native.agent, threadId: native.continuation.threadId };
     if (nativeIdentity) assert.deepEqual(identity, nativeIdentity, 'The native conversation changed between phases.');
     const execution = session.skillExecution;
+    const skillsDirectory = `${workspace}/.roboteam/sessions/${sessionId}/skills`;
+    assert.equal(execution.skillsDirectory, skillsDirectory);
     assert.match(execution.revision, HASH);
     assert.equal(execution.live, true, 'Execution must use installed live skills.');
     if (priorRevision) {
@@ -169,13 +257,12 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
         assert.match(entries[0].fingerprint, HASH);
         assert.equal(entries[0].source, fixture.repositoryName);
         assert.equal(entries[0].sourcePath, `${fixture.repositoryRoot}/skills/${skill.name}`);
-        const link = snapshot.catalog.links.filter(link => link.destination === `${workspace}/.agents/skills/${skill.name}`);
+        const link = snapshot.catalog.links.filter(link => link.name === skill.name);
         assert.equal(link.length, 1, 'Selected source lacks a managed installed link.');
-        assert.equal(link[0].repoName, fixture.repositoryName);
-        assert.equal(link[0].sourcePath, `skills/${skill.name}`);
-        assert.equal(path.posix.resolve(path.posix.dirname(link[0].destination), link[0].linkTarget), entries[0].sourcePath);
-        assert.equal(snapshot.liveLinks[skill.name].destination, link[0].destination);
-        assert.equal(snapshot.liveLinks[skill.name].linkTarget, link[0].linkTarget);
+        assert.equal(link[0].source, entries[0].sourcePath);
+        assert.equal(link[0].target, entries[0].sourcePath);
+        assert.equal(snapshot.liveLinks[skill.name].destination, `${skillsDirectory}/${skill.name}`);
+        assert.equal(snapshot.liveLinks[skill.name].linkTarget, link[0].target);
         assert.equal(snapshot.liveLinks[skill.name].resolvedSource, entries[0].sourcePath);
         const source = liveSkillSources(fixture, skill, workspaceRoot);
         assert.deepEqual(snapshot.capturedFiles[skill.name], { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 },
@@ -185,7 +272,7 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
         assert.ok(!execution.entries.some(entry => entry.name === skill.name || entry.identity === `${fixture.repositoryName}/${skill.name}`),
             `Disabled/deleted ${skill.name} remains in this turn's captured catalog.`);
         assert.equal(snapshot.capturedFiles[skill.name], undefined);
-        assert.ok(!snapshot.catalog.links.some(link => link.destination === `${workspace}/.agents/skills/${skill.name}`));
+        assert.ok(!snapshot.catalog.links.some(link => link.name === skill.name));
         assert.equal(snapshot.liveLinks[skill.name], undefined);
     }
     for (const [name, sha256] of Object.entries(priorReceiptHashes)) {

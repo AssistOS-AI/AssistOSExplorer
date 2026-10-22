@@ -37,10 +37,24 @@ For a same-Mac comparison, run `apple` and `apple-cpu` in separate fresh sequent
 
 Offline dispatcher checks use `node --test lib/local-llm-e2e.test.mjs` from this directory. Injected runner results prove argument binding and error handling only; they do not prove model execution.
 
+### DGX Spark suite
+
+`npm run test:dgx-spark` runs specs 93-97 on an NVIDIA DGX Spark (GB10, unified memory) against the Explorer deployment of one workspace, normally `~/work/testExplorerFresh` after `ploinky start explorer`. It runs on the Spark itself, through `scripts/run-dgx-spark-e2e.mjs`, with Chromium headless, one worker and no retries. It is a hardware E2E profile, not a Box release-acceptance gate, so it is not in `acceptance-ledger.json`. The wrapper records `provenance.json` (Ploinky and test checkouts, Box name, ID, image and start time) and `verdict.json`, and fails unless every discovered test passed with no skip.
+
+| Spec | What it proves | Changes the deployment |
+| --- | --- | --- |
+| 93 | GB10 host facts and no foreign GPU compute; the Box gets only `/dev/nvidia0`, `/dev/nvidiactl`, `/dev/nvidia-uvm` and read-only driver binds, no privilege and the two publications; local-llm is the only agent with `ploinky.local/gpu=all` and sees the host GB10; the `unified` profile with the host pool, 16 GiB host reserve and 8 GiB floor; admission previews; the dashboard's unified-memory card | No |
+| 94 | qwen2.5-0.5b on CUDA llama.cpp reaches ready with every layer on `CUDA0 (NVIDIA GB10)`, as uid 1000 with no MPS variables; three admin test prompts generate text; Stop frees the GPU and the weights are deleted | Runs and deletes a model |
+| 95 | The hardware-limits gate is on and prepared (turned on with `PLOINKY_BOX_HARDWARE_LIMITS=on ploinky restart` when off) and keeps the GPU wiring; a GPU share is refused for the unified GB10 (`gpu_sharing_unavailable`, policy unchanged, panel fields disabled); a 4 CPU budget with the smallest RAM percentage unified admission accepts is applied and read back from the agent's cgroup leaf and local-llm's own budget; admission sizes the model against that budget and it runs on the GB10 without an OOM kill (whether its GPU memory is charged to the agent's cgroup is recorded, not asserted: on the GB10 it is not, so a RAM budget does not bound CUDA allocations); a smaller RAM budget refuses the Run before launch with `admission_incompatible`; clearing restores the unlimited agent | Restarts the graph once if the gate is exactly off (an unreadable gate fails); recreates local-llm; the gate stays on |
+| 96 | `ploinky gpu revoke --agent local-llms/local-llm` leaves no GPU agent and local-llm falls back to the CPU profile and still answers; `ploinky gpu grant --agent local-llms/local-llm` restores the GB10 and the unified profile | Replaces the Box twice; ends with an explicit operator grant (`GPU grant: nvidia for local-llms/local-llm`), because the CLI lifts a per-agent deny only by granting |
+| 97 | vLLM, experimental on unified memory: a Hugging Face model pinned to one commit is added through `local_llm_model_lookup`/`local_llm_model_add`; with `LOCAL_LLM_VLLM_UNIFIED` off vLLM is refused with the switch's instructions; `ploinky var LOCAL_LLM_VLLM_UNIFIED experimental` plus `ploinky restart local-llm` enables it, it installs from the image's runner lock, admission sizes it from the requested 0.1 GPU memory share of the unified pool, the model runs with the vLLM engine as the Box's only GPU process, and three test prompts answer; Stop, then the weights, the model, the install and the switch are removed | Sets the `LOCAL_LLM_VLLM_UNIFIED` workspace variable and puts its earlier value back (an existing `experimental` stays; anything else ends as `off`, because there is no unset), restarts local-llm, downloads about 3.9 GB of vLLM and 1 GB of weights; refuses to start when its model is left over from an interrupted run |
+
+Inputs: `SMOKE_WORKSPACE_ROOT` (absolute workspace), `SMOKE_PLOINKY_BIN` (the `bin/ploinky` of the checkout that created the deployment), `SMOKE_BASE_URL=http://localhost:8080`, and the claimed installation's administrator sign-in inputs (`SMOKE_LOGIN_EMAIL`, `SMOKE_SIGN_IN_METHOD`, `SMOKE_ACCOUNT_PASSWORD` or its alternatives). The Box is derived from the workspace through `ploinky gpu status` and proved with its role and path-hash labels; `SMOKE_PLOINKY_BOX_CONTAINER` is refused. Select specs with `--spec 93` (repeatable); `--list` only discovers. The RAM percentages of spec 95 are computed from local-llm's own admission estimate, so they follow model or reserve changes. Spec 95 also records, in `dgx-spark/95-budget-run.json`, whether the runner's GPU memory is charged to the agent's memory cgroup on the unified GB10. Every `ploinky` call pins `PLOINKY_WORKSPACE_ROOT` to `SMOKE_WORKSPACE_ROOT` and drops an inherited `PLOINKY_BOX_HARDWARE_LIMITS`; `SMOKE_WORKSPACE_ROOT` must be its own real path. When a test fails, each spec's `afterAll` undoes only what that spec recorded (stops the model, deletes its weights, clears its limits, uninstalls a runner it installed, grants the GPU back) and writes `dgx-spark/9x-restore.json`. Offline checks: `node --test lib/dgx-spark.test.mjs`.
+
 Run `npm run test:optional-agents` in a separate fresh cohort to prove the unchanged
-three-agent default/activation workflow. This opt-in gate requires OnlyOffice, WebMeet Scribe, and
-WebMeet STT to be disabled in both Marketplace and the real runtime snapshot.
-It enables all three through the actual Marketplace UI (OnlyOffice in global
+four-agent default/activation workflow. This opt-in gate requires OnlyOffice, WebMeet Scribe,
+WebMeet STT, and Umami to be disabled in both Marketplace and the real runtime snapshot.
+It enables all four through the actual Marketplace UI (OnlyOffice in global
 mode), waits for Running in the UI and independent runtime evidence, and leaves
 them enabled for subsequent editor and meeting gates. It fails if any agent is
 already enabled; rerunning it requires another fresh deployment. Each service
@@ -58,8 +72,9 @@ This setup does not establish a spec03 pass or change default enablement.
 Use `npm test -- --project=chromium --workers=1 --retries=0` with complete
 `specs/*.spec.mjs` filenames and an escaped distinctive title grep when selecting
 one case. Never use `file:line`. `acceptance-ledger.json` preserves the 44
-original identities, including 25 required local outcomes and 19 separate or blocked
-profiles. The recorded failures and skips remain historical observations. The
+original identities, including 24 required local outcomes and 20 separate or blocked
+profiles. Spec 15 (WebAssist guest) moved to a separate profile when the default
+Explorer graph stopped including `legacy-agents`; see `SMOKE_WEBASSIST` below. The recorded failures and skips remain historical observations. The
 ledger and `--list` discovery authorize no live run.
 Execution without explicit spec filenames is refused before the legacy no-spec
 Copilot envelope can wrap a full suite. `test:quick` and `test:full` are therefore
@@ -97,7 +112,7 @@ requirement. The separately selected QA profile
 retains its fixed QA origin and existing optional edge-IP validator. A configured
 edge IP does not prove that the edge routes to the inspected Box. Common Box
 acceptance for that split-origin profile remains blocked until owner evidence
-establishes the binding. Separate QA artifacts cannot close the 25 local outcomes
+establishes the binding. Separate QA artifacts cannot close the 24 local outcomes
 or claim that common preflight proved edge-to-Box identity.
 
 Common preflight independently verifies the source manifest, inspected Box name,
@@ -122,7 +137,8 @@ username), `SMOKE_WEBTTY_WATCHER_PASSWORD`, `SMOKE_WEBTTY_WATCHER_ACCOUNT_PASSWO
 `SMOKE_WEBTTY_WATCHER_TOTP_SECRET` are supplied as the chosen sign-in method needs them. Never commit their values.
 Browser setup verifies the configured administrator and a distinct ordinary user
 through the authenticated identity endpoint. It does not print private values.
-Spec04 additionally requires the installed `proxies/searchAgent` catalog fixture;
+Spec04 additionally requires the installed `UmamiAgent/umamiAgent` catalog fixture, which
+Explorer installs but does not enable by default;
 its lifecycle interception proves UI gating, not real-agent startup.
 Umami requires both `SMOKE_UMAMI_USERNAME` and `SMOKE_UMAMI_PASSWORD`. OnlyOffice
 requires absolute `SMOKE_PLOINKY_BIN` for targeted restarts. Spec61 generates
@@ -132,7 +148,7 @@ required. The official meeting identity requires `SMOKE_WEBMEET_HEADLESS=1`,
 
 ### Deployed RoboTeam Live Sessions
 
-Run `npm run test:live-sessions` from this package on a fresh, owned Box. This is the separate `fresh-live-sessions` cohort. It adds two ledger identities and preserves the historical 44 identities and 25 required outcomes. Both browser and inspected Box origins must equal the selected loopback origin, including any custom port. Supply the existing Box/image/source-manifest inputs and an absolute `SMOKE_PLOINKY_BIN` from that exact source candidate.
+Run `npm run test:live-sessions` from this package on a fresh, owned Box. This is the separate `fresh-live-sessions` cohort. It adds two ledger identities and preserves the historical 44 identities, with 24 required outcomes and the WebAssist guest case in its separate opt-in profile. Both browser and inspected Box origins must equal the selected loopback origin, including any custom port. Supply the existing Box/image/source-manifest inputs and an absolute `SMOKE_PLOINKY_BIN` from that exact source candidate.
 
 The runtime guard requires the canonical RoboTeam source directly at `/code`, read-only, and `/Agent` staged under the full registered container key, read-only. It validates the current admitted dependency object through Ploinky's read-only dependency-store validator and requires its exact `node_modules` tree read-only at both `/code/node_modules` and its own canonical path. The dependency toolchain key is distinct from the container key. Inner and outer mounts must preserve these verified sources without shadows.
 
@@ -210,6 +226,7 @@ The first case launches an ordinary owner's real Copilot through Explorer. The n
 The second case closes readers and browser pages before restarting only RoboTeam. It verifies that the old runtime is absent, old run IDs do not reappear, and a newly opened WebChat turn has a new ID and verified ordinary owner on the same outer Box/source generation. Cleanup stops remaining marker-owned runs, waits for terminal state and zero viewers/native turn workers, removes the run folder, and closes every context. Browser diagnostics remain strict throughout.
 
 Acceptance requires exactly two discovered identities and two passed terminal outcomes on attempt zero, with zero skips, retries, or errors. Source discovery and helper checks do not prove deployed behavior. Provider readiness and all deployed observations remain pending until the actual run. This cohort complements the existing terminal WebTTY suite and does not cover every task/workflow producer or resolve the documented ALA socket limitations.
+The WebMeet specs open the WebMeet dashboard URL directly rather than through the Explorer toolbar, so the on-demand enablement does not apply. WebMeet is disabled in the default graph: enable `webmeet/webmeetAgent` in global mode (Marketplace or `ploinky enable agent webmeet/webmeetAgent global`) and wait for it and LiveKit to be Running before any WebMeet gate.
 
 The official release cohort has a second WebMeet gate, the public-room gate, which
 proves that anyone with the URL of a public room can join that room. It is
@@ -278,7 +295,7 @@ Scoped harness checks run with `node --test lib/acceptance-profile.test.mjs
 lib/readiness-diagnostics.test.mjs lib/playwright-config.test.mjs
 lib/webtty-core-profile.test.mjs lib/copilot-release-evidence.test.mjs`. They use
 fabricated/stubbed runtime evidence and source-only Playwright discovery. Actual
-Box deployment, account sign-in and the 25 live outcomes require a selected
+Box deployment, account sign-in and the 24 live outcomes require a selected
 deployment/E2E task.
 
 From this directory:
@@ -619,7 +636,7 @@ the administrator-only Explorer launcher, the native chooser's accessible
 name, Box-first ordering, and that the chooser renders exactly the bounded
 safe target rows independently derived from exact current registry, immutable
 container, ownership-label, and mount evidence. The fresh graph must include
-the global `gitAgent` and isolated `liveKitServerAgent`; the former must be
+the global `gitAgent` and isolated `workspaceMonitorAgent`; the former must be
 eligible and the latter must be absent for the selected folder. Any naturally
 present effective read-only or destination-shadowed mount is evaluated by the
 same independent physical inventory instead of being fabricated by the test.
@@ -939,6 +956,12 @@ On headed Linux without `DISPLAY`, the npm runner starts a deterministic 1920×1
   complete, error-free EOF with the same positive byte count for every member;
   partial or ambiguous siblings fail the gate. Raw browser failures remain in
   the diagnostic ledger.
+- `SMOKE_WEBASSIST=1` enables spec 15, the WebAssist guest gate: embedded chat and
+  an unauthenticated MCP initialize through the Router. The default Explorer graph
+  no longer includes webAssist, so first install the repository with
+  `ploinky install repo https://github.com/AssistOS-AI/legacy-agents.git` and run
+  `ploinky enable agent legacy-agents/webAssist`. Without the flag the spec is
+  skipped. It is a separate profile, not a required acceptance case.
 - `SMOKE_GPT_RESEARCHER=1` enables the real GPTResearcher Router gate for HTML,
   assets, reports API, same-origin redirect rewriting, and a browser WebSocket
   ping/pong under `/base-agent-additional-server/GPTResearcher/8000/`. Root-relative and private-origin
@@ -1084,10 +1107,10 @@ Run only the default non-external suite:
 npm run test:quick
 ```
 
-Run against production:
+Run against another deployed Explorer (for QA, use the `test:qa` gate above):
 
 ```bash
-SMOKE_BASE_URL=https://skills.axiologic.dev npm test
+SMOKE_BASE_URL=https://explorer.example.test npm test
 ```
 
 Run long relay and media checks:
@@ -1107,11 +1130,22 @@ SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
 `lib/explorer-graph.mjs` walks every manifest reachable from
 `explorer/manifest.json`. Qualified enable refs (`repo/agent`) resolve to
 checkouts placed **next to** this repository, except `AchillesIDE/...`, which
-names this repository itself. The known siblings are `AchillesCLI`, `proxies`,
-`UmamiAgent` and `local-llms` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
-repository's parent directory. `lib/deploy-qa-userpersisto.test.mjs` and
+names this repository itself. The known siblings are `legacy-agents`, `webmeet`,
+`UmamiAgent` (installed, not enabled, so the walk does not reach it) and `local-llms` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
+repository's parent directory. The default graph does not cross into `legacy-agents`,
+which Explorer no longer installs; it stays a known sibling so that a reintroduced
+legacy edge resolves and fails the explicit legacy-agents guards instead of being
+reported as an unknown repository. `lib/deploy-qa-userpersisto.test.mjs` and
 `explorer/tests/unit/retiredLocalModelGraph.test.js` (which runs under
 `cd explorer && npm test`) both use the helper.
+
+Tests that read the sources of moved agents (`direct-router-consumer-safety.test.mjs`, and the
+Explorer unit tests listed in the root `AGENTS.md`) locate the `legacy-agents`, `webmeet` and
+`ploinky` checkouts through `tests/helpers/sibling-roots.mjs`. It honors `LEGACY_AGENTS_ROOT`,
+`WEBMEET_ROOT` and `PLOINKY_ROOT`, defaults to the sibling directories, and throws when a checkout
+is missing instead of skipping, so `legacy-agents` remains a required sibling checkout for these
+source-reading tests even though no deployment installs it. No `MINIMUM_REVISIONS` entry is
+recorded for the `webmeet` agents yet: add them with the final merge commit of that repository.
 
 Minimum revisions are recorded per enabled agent ref (`MINIMUM_REVISIONS` in
 the helper). One is recorded: `local-llms/local-llm` needs a local-llms
@@ -1125,10 +1159,10 @@ three groups:
 
 | Finding | Group |
 | --- | --- |
-| A qualified ref whose repository is not a known sibling (and not `AchillesIDE`), for example the typo `proxy/soul-gateway` | defect |
+| A qualified ref whose repository is not a known sibling (and not `AchillesIDE`), for example the typo `webmee/webmeetAgent` | defect |
 | A known sibling absent from the parent directory | environment gap |
 | A present sibling lacking the manifest of an agent whose recorded minimum revision the checkout provably does not contain: the checkout is not shallow (`git -C <sibling> rev-parse --is-shallow-repository` prints `false`), and `git -C <sibling> merge-base --is-ancestor <revision> HEAD` exits 1 or the checkout does not have the revision object | environment gap |
-| A present sibling lacking the manifest in any other case: no minimum recorded for that ref (for example the typo `proxies/soul-gatewy`, or an agent renamed or removed in its sibling), the checkout contains the recorded revision, or containment cannot be determined (the sibling is not the top level of a git checkout, the checkout is shallow or `--is-shallow-repository` fails, or git fails). A shallow checkout cannot prove that a revision is absent: a missing object or a failed ancestry check may only mean the revision lies beyond the shallow boundary | defect |
+| A present sibling lacking the manifest in any other case: no minimum recorded for that ref (for example the typo `webmeet/webmeetAgnt`, or an agent renamed or removed in its sibling), the checkout contains the recorded revision, or containment cannot be determined (the sibling is not the top level of a git checkout, the checkout is shallow or `--is-shallow-repository` fails, or git fails). A shallow checkout cannot prove that a revision is absent: a missing object or a failed ancestry check may only mean the revision lies beyond the shallow boundary | defect |
 | A manifest missing inside the Explorer repository, an unsupported ref, an empty enable entry or an unreadable manifest | defect |
 | An enable edge to a retired runtime (for the retired-runtime test, `proxies/default-local-llm`) | retired-runtime violation |
 

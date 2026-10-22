@@ -20,7 +20,7 @@ const workspaceRoot = ${JSON.stringify(workspaceRoot)};
 const { selector, generation } = loadActiveEdgeRoutingGeneration({ workspaceRoot });
 const pick = (value, keys) => Object.fromEntries(keys.filter(key => value?.[key] !== undefined).map(key => [key, value[key]]));
 const bindings = {};
-for (const key of ['explorer', 'achilles-cli']) {
+for (const key of ['explorer', 'roboTeamAgent']) {
   const route = generation.routing.routes[key];
   bindings[key] = route ? {
     route: { ...pick(route, ['repo', 'agent', 'container', 'hostPath', 'alias', 'disabled', 'draining', 'hostPort']),
@@ -144,8 +144,8 @@ function readActiveGeneration(run, outerId, ports, workspace) {
   return result;
 }
 
-export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requireActiveAchillesCLI = true, run = command, fsApi = fs } = {}) {
-  if (typeof requireActiveAchillesCLI !== 'boolean') throw new Error('requireActiveAchillesCLI must be a boolean.');
+export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requireActiveRoboTeamAgent = true, run = command, fsApi = fs } = {}) {
+  if (typeof requireActiveRoboTeamAgent !== 'boolean') throw new Error('requireActiveRoboTeamAgent must be a boolean.');
   const mountedWorkspace = liveBox?.workspaceSourceMount?.source;
   const workspace = mountedWorkspace ? fsApi.realpathSync(mountedWorkspace) : '';
   const outerId = liveBox?.box?.containerId;
@@ -170,9 +170,9 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
     allowedOuter.push(requireMount(outerMounts, '/opt/ploinky/node_modules',
       fsApi.realpathSync(path.join(workspace, '.ploinky/box/dependencies')), { fsApi }));
   }
-  const sources = Object.fromEntries([['explorer', 'explorer'], ['achillesCLI', 'achilles-cli']].map(([name, routeKey]) => {
-    const source = fsApi.realpathSync(path.join(repositories[name].repositoryPath, routeKey));
-    return [name, { source, runtimeSource: inspectedWorkspaceSource(workspace, source), treeSha256: repositories[name].treeSha256, routeKey }];
+  const sources = Object.fromEntries(['explorer', 'roboTeamAgent'].map(routeKey => {
+    const source = fsApi.realpathSync(path.join(repositories.explorer.repositoryPath, routeKey));
+    return [routeKey, { source, runtimeSource: inspectedWorkspaceSource(workspace, source), treeSha256: repositories.explorer.treeSha256, routeKey }];
   }));
   const protectedOuter = ['/opt/ploinky', '/opt/ploinky-agentlib', libAlias, ...Object.values(sources).map(value => value.runtimeSource)];
   rejectShadows(outerMounts, protectedOuter, allowedOuter);
@@ -192,24 +192,24 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
     const selected = active.bindings[routeKey];
     const route = selected?.route;
     if (!route || route.disabled === true) {
-      if (name !== 'achillesCLI' || requireActiveAchillesCLI) throw new Error(`${name} requires an active source-bound route.`);
+      if (name !== 'roboTeamAgent' || requireActiveRoboTeamAgent) throw new Error(`${name} requires an active source-bound route.`);
       result[name] = Object.freeze({ active: false, ...identity });
       continue;
     }
     const record = selected.record;
-    if (route.draining === true || route.hostPath !== identity.runtimeSource || !route.container || !route.repo || route.agent !== routeKey
-        || record?.type !== 'agent' || record.repoName !== route.repo || record.agentName !== route.agent
+    if (route.draining === true || route.hostPath !== identity.runtimeSource || !route.container || route.repo !== 'AchillesIDE' || route.agent !== routeKey
+        || record?.type !== 'agent' || record.repoName !== 'AchillesIDE' || record.agentName !== route.agent
         || routeKey !== (record.alias || record.agentName) || (route.alias || '') !== (record.alias || '')
         || (record.runtime !== undefined && !['docker', 'podman'].includes(record.runtime))
         || typeof record.instanceId !== 'string' || !record.instanceId.trim()
         || typeof record.enableGeneration !== 'string' || !record.enableGeneration.trim()) {
       throw new Error(`${name} does not have an exact active route and captured runtime identity.`);
     }
-    // A semantic preparation can declare CLI before any exact container is
+    // A semantic preparation can declare RoboTeam before any exact container is
     // admitted. Preflight records that source without claiming it is ready.
     const targetlessPreparation = (record.containerId === undefined || record.containerId === null || record.containerId === '')
       && (route.hostPort === undefined || route.hostPort === null) && route.hasServiceTargets === false;
-    if (name === 'achillesCLI' && !requireActiveAchillesCLI && targetlessPreparation) {
+    if (name === 'roboTeamAgent' && !requireActiveRoboTeamAgent && targetlessPreparation) {
       result[name] = Object.freeze({ active: false, ...identity });
       continue;
     }

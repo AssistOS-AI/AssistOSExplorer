@@ -62,10 +62,11 @@ export class CustomSelect {
         this.applySelectedValue(this.defaultSelected || this.options[0]?.value || '', { emit: false });
         this.applyConfiguredWidth();
         this.applyDisabledState();
-        this.bindKeyboard();
+        this.bindTriggerEvents();
     }
 
     afterUnload() {
+        this.triggerController?.abort();
         this.closeSelect();
     }
 
@@ -78,18 +79,22 @@ export class CustomSelect {
         this.element.style.removeProperty('width');
     }
 
-    bindKeyboard() {
+    bindTriggerEvents() {
+        this.triggerController?.abort();
+        this.triggerController = new AbortController();
+        const { signal } = this.triggerController;
+        this.trigger?.addEventListener('click', (event) => this.openSelect(event), { signal });
         this.trigger?.addEventListener('keydown', (event) => {
             if (this.isDisabled()) return;
             if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
-                this.openSelect();
+                this.openSelect(event);
                 return;
             }
             if (event.key === 'Escape') {
                 this.closeSelect();
             }
-        });
+        }, { signal });
     }
 
     openSelect(event) {

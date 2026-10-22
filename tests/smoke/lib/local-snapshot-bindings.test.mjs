@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { activeRuntimeProbe, collectLocalSnapshotSourceBindings, inside, overlaps } from './local-snapshot-bindings.mjs';
+import { collectCopilotReleaseEvidence } from './copilot-release-evidence.mjs';
 
 const hash = character => character.repeat(64);
 const bind = (Source, Destination, RW = false) => ({ Type: 'bind', Source, Destination, RW });
@@ -25,8 +26,8 @@ function fixture(t, prefix = 'snapshot-bindings-') {
   fs.mkdirSync(path.join(root, '.ploinky/box/dependencies'), { recursive: true });
   const containers = [];
   const active = { generation: `sha256:${hash('1')}`, activationId: 'activation-1', bindings: {} };
-  for (const [name, dir] of [['explorer', 'explorer'], ['achillesCLI', 'achilles-cli']]) {
-    const repositoryPath = path.join(root, '.ploinky/repos', name);
+  for (const [name, dir] of [['explorer', 'explorer'], ['roboTeamAgent', 'roboTeamAgent']]) {
+    const repositoryPath = path.join(root, '.ploinky/repos/AchillesIDE');
     const source = path.join(repositoryPath, dir);
     const runtimeSource = source;
     const staging = path.join(root, '.ploinky/container-runtime', name);
@@ -40,12 +41,12 @@ function fixture(t, prefix = 'snapshot-bindings-') {
     const dependencies = `${root}/.ploinky/cache/${name}/node_modules`;
     fs.symlinkSync(dependencies, path.join(code, 'node_modules'));
     fs.symlinkSync(dependencies, path.join(staging, 'Agent/node_modules'));
-    repositories[name] = { repositoryPath, treeSha256: hash('a') };
+    repositories.explorer = { repositoryPath, treeSha256: hash('a') };
     const containerId = hash(name === 'explorer' ? 'b' : 'c');
     const containerName = `repo-${dir}`;
     active.bindings[dir] = {
-      route: { repo: name, agent: dir, container: containerName, hostPath: runtimeSource, hasServiceTargets: false },
-      record: { type: 'agent', repoName: name, agentName: dir, runtime: 'podman', containerId,
+      route: { repo: 'AchillesIDE', agent: dir, container: containerName, hostPath: runtimeSource, hasServiceTargets: false },
+      record: { type: 'agent', repoName: 'AchillesIDE', agentName: dir, runtime: 'podman', containerId,
         instanceId: `${dir}-instance`, enableGeneration: `${dir}-enable` },
     };
     containers.push({ id: containerId, running: true, mounts: [
@@ -98,7 +99,15 @@ test('snapshot binds the verified active route, exact container, shared library 
   assert.equal(result.explorer.containerId, hash('b'));
   assert.equal(result.explorer.instanceId, 'explorer-instance');
   assert.equal(result.explorer.enableGeneration, 'explorer-enable');
-  assert.equal(result.achillesCLI.treeSha256, hash('a'));
+  assert.equal(result.roboTeamAgent.treeSha256, hash('a'));
+  assert.deepEqual(Object.keys(f.options.repositories).sort(), ['achillesAgentLib', 'explorer', 'ploinky']);
+  assert.deepEqual(Object.keys(result).sort(), ['achillesAgentLib', 'explorer', 'ploinkyAgent', 'roboTeamAgent']);
+  for (const name of ['explorer', 'roboTeamAgent']) {
+    assert.equal(result[name].source, path.join(f.options.repositories.explorer.repositoryPath, name));
+    assert.equal(result[name].runtimeSource, result[name].source);
+    assert.equal(result[name].treeSha256, f.options.repositories.explorer.treeSha256);
+    assert.equal(result[name].routeKey, name);
+  }
   assert.equal(result.ploinkyAgent.source, f.agentSource);
   assert.equal(result.ploinkyAgent.runtimeSource, '/Agent');
   assert.match(result.ploinkyAgent.treeSha256, /^[a-f0-9]{64}$/);
@@ -113,6 +122,76 @@ test('snapshot binds the verified active route, exact container, shared library 
   assert.match(probes[0].at(-1), /loadActiveEdgeRoutingGeneration\(\{ workspaceRoot \}\)/);
   assert.doesNotMatch(probes[0].at(-1), /'\/workspace'/);
   assert.doesNotMatch(probes[0].at(-1), /JSON\.stringify\(generation\)/);
+  assert.match(probes[0].at(-1), /\['explorer', 'roboTeamAgent'\]/);
+  assert.doesNotMatch(probes[0].at(-1), /achilles-cli|AchillesCLI/);
+});
+
+test('release evidence collects real bindings from the three-repository current-owner schema', async t => {
+  const f = fixture(t);
+  const imageDigest = `sha256:${hash('f')}`;
+  const commit = '3'.repeat(40);
+  f.options.repositories.achillesAgentLib.commit = commit;
+  Object.assign(f.options.liveBox.box, { imageId: imageDigest });
+  Object.assign(f.options.liveBox.box.semanticLabels, { agentLibMode: 'local', agentLibCommit: commit });
+  f.options.liveBox.ploinkySourceMount = { source: f.options.repositories.ploinky.repositoryPath };
+  const source = { verificationMode: 'local-snapshot', imageDigest, repositories: f.options.repositories };
+  const options = {
+    manifestPath: path.join(f.root, 'snapshot.json'),
+    verifierPath: path.join(f.root, 'verifier.mjs'),
+    verificationMode: 'local-snapshot',
+    baseURL: 'http://127.0.0.1:38080',
+    loadVerifier: async () => ({ verifyManifestFile: () => source }),
+    collectLiveBox: () => f.options.liveBox,
+    collectSnapshotBindings: args => collectLocalSnapshotSourceBindings({ ...args, run: f.options.run }),
+  };
+  const evidence = await collectCopilotReleaseEvidence(options);
+  assert.deepEqual(Object.keys(evidence.repositories).sort(), ['achillesAgentLib', 'explorer', 'ploinky']);
+  for (const name of ['explorer', 'roboTeamAgent']) {
+    assert.equal(evidence.sourceBindings[name].active, true);
+    assert.equal(evidence.sourceBindings[name].source, path.join(source.repositories.explorer.repositoryPath, name));
+    assert.equal(evidence.sourceBindings[name].treeSha256, source.repositories.explorer.treeSha256);
+  }
+  f.active.bindings.roboTeamAgent = null;
+  const prepared = await collectCopilotReleaseEvidence({ ...options, requireActiveRoboTeamAgent: false });
+  assert.equal(prepared.sourceBindings.roboTeamAgent.active, false);
+  await assert.rejects(collectCopilotReleaseEvidence({ ...options, requireActiveRoboTeamAgent: true }), /roboTeamAgent requires an active/);
+});
+
+for (const name of ['explorer', 'roboTeamAgent']) {
+  for (const owner of ['AchillesCLI', 'explorer', 'other']) {
+    test(`${name} rejects mutually consistent routes and records owned by ${owner}`, t => {
+      const f = fixture(t);
+      f.active.bindings[name].route.repo = owner;
+      f.active.bindings[name].record.repoName = owner;
+      assert.throws(() => collect(f), /exact active route and captured runtime identity/);
+      f.options.requireActiveRoboTeamAgent = false;
+      assert.throws(() => collect(f), /exact active route and captured runtime identity/);
+    });
+  }
+}
+
+test('the retired CLI route cannot satisfy active RoboTeam evidence', t => {
+  const f = fixture(t);
+  f.active.bindings['achilles-cli'] = f.active.bindings.roboTeamAgent;
+  delete f.active.bindings.roboTeamAgent;
+  assert.throws(() => collect(f), /roboTeamAgent requires an active/);
+  f.active.bindings.roboTeamAgent = f.active.bindings['achilles-cli'];
+  f.active.bindings.roboTeamAgent.route.agent = 'achilles-cli';
+  f.active.bindings.roboTeamAgent.record.agentName = 'achilles-cli';
+  assert.throws(() => collect(f), /exact active route and captured runtime identity/);
+});
+
+test('RoboTeam rejects foreign source mounts, shadows and stale staged bytes', t => {
+  const f = fixture(t);
+  const source = f.containers[1].mounts[0];
+  source.Source = `${f.root}/old/roboTeamAgent`;
+  assert.throws(() => collect(f), /exact verified source mount/);
+  source.Source = source.Destination;
+  f.containers[1].mounts.push(bind(`${f.root}/foreign`, `${source.Destination}/index.mjs`));
+  assert.throws(() => collect(f), /mount shadowing/);
+  f.containers[1].mounts.pop();
+  fs.writeFileSync(path.join(f.root, '.ploinky/container-runtime/roboTeamAgent/Agent/index.mjs'), 'stale');
+  assert.throws(() => collect(f), /staged \/Agent differs/);
 });
 
 test('primary: a canonical same-path workspace containing a space and Unicode is accepted end to end', t => {
@@ -120,7 +199,7 @@ test('primary: a canonical same-path workspace containing a space and Unicode is
   assert.match(f.root, / ü /);
   const result = collect(f);
   assert.equal(result.explorer.active, true);
-  assert.equal(result.explorer.runtimeSource, path.join(f.root, '.ploinky/repos/explorer/explorer'));
+  assert.equal(result.explorer.runtimeSource, path.join(f.root, '.ploinky/repos/AchillesIDE/explorer'));
   assert.equal(result.explorer.codeRoot, path.join(f.root, '.ploinky/container-runtime/explorer/code'));
   assert.equal(result.achillesAgentLib.source, path.join(f.root, 'achillesAgentLib'));
 });
@@ -176,10 +255,10 @@ test('the shipped Explorer repository-parent self mount preserves the verified s
   assert.throws(() => collect(f), /mount shadowing/);
 });
 
-test('a global CLI workspace self mount preserves its exact source binding', t => {
+test('a global RoboTeam workspace self mount preserves its exact source binding', t => {
   const f = fixture(t);
   f.containers[1].mounts.push(bind(f.root, f.root, true));
-  assert.equal(collect(f).achillesCLI.active, true);
+  assert.equal(collect(f).roboTeamAgent.active, true);
   f.containers[1].mounts.at(-1).Source = `${f.root}-other`;
   assert.throws(() => collect(f), /mount shadowing/);
 });
@@ -211,65 +290,65 @@ for (const [label, mutate] of [
   });
 }
 
-test('inactive CLI is allowed only in preflight, has immutable source identity and no container fields', t => {
+test('inactive RoboTeam is allowed only in preflight, has immutable source identity and no container fields', t => {
   const f = fixture(t);
-  f.active.bindings['achilles-cli'] = null;
+  f.active.bindings['roboTeamAgent'] = null;
   f.containers.pop();
-  assert.throws(() => collect(f), /achillesCLI requires an active/);
-  f.options.requireActiveAchillesCLI = false;
+  assert.throws(() => collect(f), /roboTeamAgent requires an active/);
+  f.options.requireActiveRoboTeamAgent = false;
   const inactive = collect(f);
-  assert.deepEqual(Object.keys(inactive.achillesCLI).sort(), ['active', 'runtimeSource', 'source', 'treeSha256']);
-  assert.equal(inactive.achillesCLI.active, false);
-  assert.equal(Object.isFrozen(inactive.achillesCLI), true);
+  assert.deepEqual(Object.keys(inactive.roboTeamAgent).sort(), ['active', 'runtimeSource', 'source', 'treeSha256']);
+  assert.equal(inactive.roboTeamAgent.active, false);
+  assert.equal(Object.isFrozen(inactive.roboTeamAgent), true);
   f.active.bindings.explorer = null;
   assert.throws(() => collect(f), /explorer requires an active/);
 });
 
-test('an active CLI is verified even when preflight permits an inactive CLI', t => {
+test('an active RoboTeam is verified even when preflight permits an inactive CLI', t => {
   const f = fixture(t);
-  f.options.requireActiveAchillesCLI = false;
+  f.options.requireActiveRoboTeamAgent = false;
   f.containers[1].running = false;
-  assert.throws(() => collect(f), /achillesCLI active container is not running/);
+  assert.throws(() => collect(f), /roboTeamAgent active container is not running/);
 });
 
-test('targetless CLI preparation is inactive only for preflight and never hides an admitted mismatch', t => {
+test('targetless RoboTeam preparation is inactive only for preflight and never hides an admitted mismatch', t => {
   const f = fixture(t);
-  const cli = f.active.bindings['achilles-cli'];
-  delete cli.record.containerId;
-  delete cli.record.runtime;
-  f.options.requireActiveAchillesCLI = false;
+  const roboTeam = f.active.bindings['roboTeamAgent'];
+  delete roboTeam.record.containerId;
+  delete roboTeam.record.runtime;
+  f.options.requireActiveRoboTeamAgent = false;
   const result = collect(f);
-  assert.deepEqual(Object.keys(result.achillesCLI).sort(), ['active', 'runtimeSource', 'source', 'treeSha256']);
-  assert.equal(result.achillesCLI.active, false);
-  f.options.requireActiveAchillesCLI = true;
+  assert.deepEqual(Object.keys(result.roboTeamAgent).sort(), ['active', 'runtimeSource', 'source', 'treeSha256']);
+  assert.equal(result.roboTeamAgent.active, false);
+  f.options.requireActiveRoboTeamAgent = true;
   assert.throws(() => collect(f), /exact active route and captured runtime identity/);
-  f.options.requireActiveAchillesCLI = false;
-  cli.route.hostPort = 41001;
+  f.options.requireActiveRoboTeamAgent = false;
+  roboTeam.route.hostPort = 41001;
   assert.throws(() => collect(f), /exact active route and captured runtime identity/);
-  delete cli.route.hostPort;
-  cli.route.hasServiceTargets = true;
+  delete roboTeam.route.hostPort;
+  roboTeam.route.hasServiceTargets = true;
   assert.throws(() => collect(f), /exact active route and captured runtime identity/);
-  cli.route.hasServiceTargets = false;
-  cli.record.runtime = 'podman';
-  cli.record.containerId = hash('7');
+  roboTeam.route.hasServiceTargets = false;
+  roboTeam.record.runtime = 'podman';
+  roboTeam.record.containerId = hash('7');
   assert.throws(() => collect(f), /active container is not running/);
 });
 
-test('CLI lifecycle changes preserve stable source evidence and full Explorer evidence', t => {
+test('RoboTeam lifecycle changes preserve stable source evidence and full Explorer evidence', t => {
   const f = fixture(t);
   const before = collect(f);
-  const old = path.join(f.root, '.ploinky/container-runtime/achillesCLI');
-  const next = path.join(f.root, '.ploinky/container-runtime/achillesCLI-next');
+  const old = path.join(f.root, '.ploinky/container-runtime/roboTeamAgent');
+  const next = path.join(f.root, '.ploinky/container-runtime/roboTeamAgent-next');
   fs.renameSync(old, next);
-  f.containers[1].mounts.forEach(mount => { mount.Source = mount.Source.replace('/container-runtime/achillesCLI/', '/container-runtime/achillesCLI-next/'); });
+  f.containers[1].mounts.forEach(mount => { mount.Source = mount.Source.replace('/container-runtime/roboTeamAgent/', '/container-runtime/roboTeamAgent-next/'); });
   f.containers[1].id = hash('7');
-  Object.assign(f.active.bindings['achilles-cli'].record, { containerId: hash('7'), instanceId: 'new-instance', enableGeneration: 'new-enable' });
+  Object.assign(f.active.bindings['roboTeamAgent'].record, { containerId: hash('7'), instanceId: 'new-instance', enableGeneration: 'new-enable' });
   f.active.generation = `sha256:${hash('2')}`;
   f.active.activationId = 'activation-2';
   const after = collect(f);
-  for (const key of ['source', 'runtimeSource', 'treeSha256']) assert.equal(after.achillesCLI[key], before.achillesCLI[key]);
-  assert.notEqual(after.achillesCLI.containerId, before.achillesCLI.containerId);
-  assert.notEqual(after.achillesCLI.codeRoot, before.achillesCLI.codeRoot);
+  for (const key of ['source', 'runtimeSource', 'treeSha256']) assert.equal(after.roboTeamAgent[key], before.roboTeamAgent[key]);
+  assert.notEqual(after.roboTeamAgent.containerId, before.roboTeamAgent.containerId);
+  assert.notEqual(after.roboTeamAgent.codeRoot, before.roboTeamAgent.codeRoot);
   for (const key of ['explorer', 'ploinkyAgent', 'achillesAgentLib']) assert.deepEqual(after[key], before[key]);
 });
 
@@ -281,7 +360,7 @@ for (const field of ['generation', 'activationId']) {
   });
 }
 
-for (const relative of ['/code/index.mjs', '/code/node_modules', '/Agent/index.mjs', '/Agent/node_modules', '/opt', '/opt/ploinky-agentlib/lib.mjs', '<root>/.ploinky/repos/explorer', '<root>/.ploinky/repos/explorer/explorer/index.mjs']) {
+for (const relative of ['/code/index.mjs', '/code/node_modules', '/Agent/index.mjs', '/Agent/node_modules', '/opt', '/opt/ploinky-agentlib/lib.mjs', '<root>/.ploinky/repos/AchillesIDE', '<root>/.ploinky/repos/AchillesIDE/explorer/index.mjs']) {
   test(`inner mount shadow is rejected at ${relative}`, t => {
     const f = fixture(t);
     const destination = relative.replace('<root>', f.root);
@@ -290,7 +369,7 @@ for (const relative of ['/code/index.mjs', '/code/node_modules', '/Agent/index.m
   });
 }
 
-for (const relative of ['/opt', '/opt/ploinky/cli', '/opt/ploinky/Agent/index.mjs', '/opt/ploinky/node_modules/extra', '<root>/.ploinky', '<root>/.ploinky/repos/explorer/explorer/index.mjs', '<root>/.ploinky/container-runtime/explorer/Agent/index.mjs']) {
+for (const relative of ['/opt', '/opt/ploinky/cli', '/opt/ploinky/Agent/index.mjs', '/opt/ploinky/node_modules/extra', '<root>/.ploinky', '<root>/.ploinky/repos/AchillesIDE/explorer/index.mjs', '<root>/.ploinky/container-runtime/explorer/Agent/index.mjs']) {
   test(`outer mount shadow is rejected at ${relative}`, t => {
     const f = fixture(t);
     const destination = relative.replace('<root>', f.root);

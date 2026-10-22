@@ -26,3 +26,5 @@ Tests must be colocated under the owning agent's `tests/` tree. A change must ru
 AchillesAgentLib use is authorized only from the one source selected and supplied by the [Ploinky](wiki.html#definition-ploinky) runtime. Agent packages must not declare, install, or clone another AgentLib copy. Runtime configuration must support repository-level manual overrides in addition to environment defaults. All LLM interactions must use the runtime-configured `LLMAgent` class and its environment variables. Routing-sensitive documentation, specification, orchestration, bootstrap, and testing work must carry task metadata tags.
 
 Consistent module boundaries, safe data handling, and shared [WebSkel](wiki.html#definition-webskel) conventions keep the workspace maintainable across independently deployed agents.
+
+Shared action buttons must keep disabled labels legible in light and dark themes. The `.disabled`, native `disabled`, and `aria-disabled="true"` states use semantic text, background, and border tokens without fading the entire button. Disabled actions must not display active hover effects.

@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
+import { currentQaBox, productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
 
 export const EXPLORER_SOURCE = '.ploinky/repos/AchillesIDE';
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -15,6 +15,11 @@ const SOURCE_ORIGIN = /^https:\/\/github\.com\/AssistOS-AI\/AssistOSExplorer(?:\
 // In this reviewed lifecycle implementation the selector rejection precedes
 // control-socket retirement, signals, and all container mutations.
 const PRE_SIGNAL_LIFECYCLE_SHA256 = '267a0cd6eec97568bf5f72eaee0c52243a2a96b7a19c198732f466f0db3909cf';
+const MANIFEST_DIGEST = /^sha256:[a-f0-9]{64}$/;
+const pinnedCommit = value => typeof value === 'string' && COMMIT.test(value);
+// Only these classification results mean the Explorer change needs a full redeploy.
+const REDEPLOY_CLASSIFICATIONS = new Set(['QA_UPDATE_REQUIRES_RECONFIGURATION',
+    'QA_UPDATE_UNKNOWN_RUNTIME_PATH', 'QA_UPDATE_FILE_TYPE_CHANGED']);
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const present = file => { try { return fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
@@ -28,6 +33,12 @@ export function freshLoopbackHttpGet(options, callback) {
 
 function prove(condition, code) {
     if (!condition) throw Object.assign(new Error(code), { code });
+}
+
+/** Every selected runtime agent is running, ready and image-identified, and the edge generation is active. */
+export function assertRuntimeReady(value) {
+    prove(value.runtime.active === true && value.runtime.agents.every(agent => agent.ready === true
+        && ID.test(agent.id || '') && ID.test(String(agent.image || '').replace(/^sha256:/, ''))), 'QA_UPDATE_RUNTIME_NOT_READY');
 }
 
 function directory(file) {
@@ -97,7 +108,7 @@ export function classifyChanges(changes, agentRoots) {
             prove(agents.has(root), 'QA_UPDATE_UNKNOWN_RUNTIME_PATH');
             // These reviewed trees are browser modules/assets streamed directly
             // from the route's live hostPath by the Ploinky static handler.
-            const browser = /^(?:explorer|gitAgent|webmeetAgent)\/IDE-plugins\//.test(file)
+            const browser = /^(?:explorer|gitAgent)\/IDE-plugins\//.test(file)
                 || /^explorer\/(?:web-components\/|shared\/(?:ui|assets)\/|assets\/icons\/)/.test(file)
                 || file === 'explorer/services/infrastructure/explorerApi.js';
             if (browser) browserPaths.push({ path: file, deleted: change.newMode === '000000' });
@@ -172,9 +183,8 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
     async function snapshot() {
         adapters.assertHost();
         const workspaceIdentity = directory(scope.workspace);
-        const boxes = adapters.boxes();
-        prove(boxes.length === 1 && boxes[0].box.name === scope.box && boxes[0].box.running, 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED');
-        const current = boxes[0];
+        let current;
+        try { current = currentQaBox(adapters.boxes(), scope); } catch { prove(false, 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED'); }
         const sources = pins();
         prove(sources.some(source => source.relative === '.runtime/ploinky')
             && sources.some(source => source.relative === EXPLORER_SOURCE), 'QA_UPDATE_SOURCES_INCOMPLETE');
@@ -197,11 +207,6 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
 
     function source(snapshotValue) {
         return snapshotValue.sources.find(item => item.relative === EXPLORER_SOURCE);
-    }
-
-    function assertReady(value) {
-        prove(value.runtime.active === true && value.runtime.agents.every(agent => agent.ready === true
-            && ID.test(agent.id || '') && ID.test(String(agent.image || '').replace(/^sha256:/, ''))), 'QA_UPDATE_RUNTIME_NOT_READY');
     }
 
     function assertRetained(value, authority, commit, touched = [], recovering = false) {
@@ -235,12 +240,14 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         return affected;
     }
 
-    async function candidate(value, requireLocal = false) {
+    async function candidate(value, requireLocal = false, expectedCommit = null) {
         const prior = source(value);
         prove(SOURCE_ORIGIN.test(prior.origin), 'QA_UPDATE_DEFAULT_BRANCH_REQUIRED');
         const remote = adapters.remoteDefault(repository);
         prove(COMMIT.test(remote.commit)
             && prior.branch === remote.branch && prior.branch !== 'HEAD', 'QA_UPDATE_DEFAULT_BRANCH_REQUIRED');
+        // A head that moved after the pin proof is refused before it can be classified as the pinned change.
+        prove(expectedCommit === null || remote.commit === expectedCommit, 'QA_UPDATE_REMOTE_MOVED');
         prove(adapters.upstream(repository) === `origin/${remote.branch}`, 'QA_UPDATE_DEFAULT_UPSTREAM_REQUIRED');
         const available = adapters.hasCommit(repository, remote.commit);
         prove(!requireLocal || available, 'QA_UPDATE_CANDIDATE_MISSING');
@@ -258,7 +265,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
 
     async function plan() {
         const value = await snapshot();
-        assertReady(value);
+        assertRuntimeReady(value);
         await adapters.health(value.current);
         const next = await candidate(value);
         return { result: 'planned', mutations: false, boxId: value.current.box.id, imageId: value.current.box.image,
@@ -268,7 +275,63 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             browserAgents: next.browserAgents || null, browserPaths: next.browserPaths?.map(file => file.path) || null };
     }
 
-    async function execute(receiptFile) {
+    /**
+     * Read-only choice between an in-place update and a full redeploy. Drift in
+     * the Box image or in any managed source other than Explorer chooses redeploy
+     * before anything is fetched; only then is the Explorer change classified.
+     * It writes no receipt and never fast-forwards, restarts or restores.
+     */
+    async function select({ expectedCommit } = {}) {
+        prove(pinnedCommit(expectedCommit), 'QA_UPDATE_USAGE_INVALID');
+        // Deliberately no runtime readiness or health proof: a running but unhealthy QA can still be redeployed.
+        const authority = await snapshot();
+        const prior = source(authority);
+        prove(adapters.remoteDefault(repository)?.commit === expectedCommit, 'QA_UPDATE_REMOTE_MOVED');
+        const remoteImage = await adapters.remoteBoxImage();
+        const remoteImageId = String(remoteImage?.configDigest || '').replace(/^sha256:/, '');
+        prove(typeof remoteImage?.reference === 'string' && remoteImage.reference && ID.test(remoteImageId), 'QA_SELECT_IMAGE_UNRESOLVED');
+        const currentImageId = String(authority.current.box.image).replace(/^sha256:/, '');
+        const reasons = [];
+        if (currentImageId !== remoteImageId) reasons.push({ source: remoteImage.reference, kind: 'image', from: currentImageId, to: remoteImageId });
+        // AgentLib generations and achillesAgentLib are image-owned: never queried, never drift.
+        for (const item of authority.sources.filter(pin => pin.relative === '.runtime/ploinky'
+            || pin.relative === 'AdvancedLanguageAgent'
+            || (pin.relative.startsWith('.ploinky/repos/') && pin.relative !== EXPLORER_SOURCE))) {
+            const remote = adapters.remoteDefault(path.join(scope.workspace, item.relative));
+            prove(pinnedCommit(remote?.commit) && typeof remote.branch === 'string' && remote.branch, 'QA_UPDATE_REMOTE_DEFAULT_INVALID');
+            if (item.branch !== remote.branch) reasons.push({ source: item.relative, kind: 'branch', from: item.branch, to: remote.branch });
+            if (item.commit !== remote.commit) reasons.push({ source: item.relative, kind: 'commit', from: item.commit, to: remote.commit });
+        }
+        const report = (mode, fetched) => ({ result: 'selected', mode, mutations: fetched ? 'git-objects-only' : false,
+            expectedCommit, previousCommit: prior.commit,
+            boxImage: { reference: remoteImage.reference, current: currentImageId, remote: remoteImageId }, reasons });
+        if (reasons.length) return report('redeploy', false);
+        let fetched = false;
+        const lock = await adapters.acquireWorkspaceLock(scope.workspace);
+        try {
+            try {
+                const next = await candidate(authority, false, expectedCommit);
+                prove(next.commit === expectedCommit, 'QA_UPDATE_REMOTE_MOVED');
+                if (prior.commit !== next.commit) {
+                    // Fetch changes only Git objects/remote refs; no working tree, runtime or data mutations.
+                    adapters.fetch(repository, next.branch, next.commit);
+                    fetched = true;
+                    assertRetained(await snapshot(), authority, prior.commit);
+                    const selected = await candidate(authority, true, expectedCommit);
+                    prove(selected.branch === next.branch && selected.commit === next.commit, 'QA_UPDATE_REMOTE_MOVED');
+                }
+            } catch (error) {
+                if (!REDEPLOY_CLASSIFICATIONS.has(error?.code)) throw error;
+                reasons.push({ source: EXPLORER_SOURCE, kind: 'explorer-reconfiguration',
+                    from: prior.commit, to: expectedCommit, code: error.code });
+                return report('redeploy', fetched);
+            }
+            return report('in-place', fetched);
+        } finally { lock.release(); }
+    }
+
+    async function execute(receiptFile, { expectedCommit } = {}) {
+        prove(pinnedCommit(expectedCommit), 'QA_UPDATE_USAGE_INVALID');
         const receiptDirectory = path.dirname(receiptFile);
         prove(path.isAbsolute(receiptFile) && !present(receiptFile)
             && !receiptFile.startsWith(scope.workspace + '/'), 'QA_UPDATE_RECEIPT_PATH_INVALID');
@@ -297,14 +360,16 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             ...(receipt.rollbackOperation ? { rollbackOperation: receipt.rollbackOperation } : {}) });
         try {
             authority = await snapshot();
-            assertReady(authority);
+            assertRuntimeReady(authority);
             await adapters.health(authority.current);
-            next = await candidate(authority);
+            next = await candidate(authority, false, expectedCommit);
+            // Thrown before the receipt, any fetch or any change, so the catch below rethrows it without recovery.
+            prove(next.commit === expectedCommit, 'QA_UPDATE_REMOTE_MOVED');
             if (source(authority).commit !== next.commit) {
                 // Fetch changes only Git objects/remote refs; no working tree, runtime or data mutations.
                 adapters.fetch(repository, next.branch, next.commit);
                 assertRetained(await snapshot(), authority, source(authority).commit);
-                const selected = await candidate(authority, true);
+                const selected = await candidate(authority, true, expectedCommit);
                 prove(selected.branch === next.branch && selected.commit === next.commit, 'QA_UPDATE_REMOTE_MOVED');
                 next = selected;
             }
@@ -330,11 +395,11 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
                 finally { await acquire(); }
                 const current = await snapshot();
                 assertRetained(current, authority, next.commit, touched);
-                assertReady(current);
+                assertRuntimeReady(current);
             }
             const final = await snapshot();
             assertRetained(final, authority, next.commit, touched);
-            assertReady(final);
+            assertRuntimeReady(final);
             await adapters.health(final.current);
             if (next.browserPaths.length) {
                 receipt.browserVerification = await adapters.verifyBrowserFiles(final.current, repository, next.commit,
@@ -372,7 +437,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
                 }
                 const restored = await snapshot();
                 assertRetained(restored, authority, source(authority).commit, touched);
-                assertReady(restored);
+                assertRuntimeReady(restored);
                 await adapters.health(restored.current);
                 receipt.rollback = 'passed';
             } catch (rollbackError) {
@@ -384,7 +449,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             throw Object.assign(new Error(receipt.code), { code: receipt.code, receipt: report() });
         } finally { release(); }
     }
-    return { plan, execute };
+    return { plan, select, execute };
 }
 
 export function preSignalRestartFailure(result, target) {
@@ -407,7 +472,102 @@ function command(executable, args, options = {}) {
     return result.stdout;
 }
 
-export function updateProductionAdapters(scope = QA_SCOPE) {
+const UNRESOLVED = 'QA_SELECT_IMAGE_UNRESOLVED';
+const INDEX_MEDIA_TYPES = ['application/vnd.oci.image.index.v1+json', 'application/vnd.docker.distribution.manifest.list.v2+json'];
+const MANIFEST_MEDIA_TYPES = ['application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json'];
+const REGISTRY_TIMEOUT_MS = 15_000;
+const REGISTRY_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The image ID of a pulled image is its config digest. Resolve the one linux/amd64
+ * manifest of a root document (index or single manifest) and return that digest as
+ * 64 hex characters. `fetchByDigest(digest)` returns the raw bytes, which must hash
+ * to the digest they were requested by. Anything ambiguous or malformed throws.
+ */
+export async function platformConfigDigest(rootDoc, fetchByDigest, { os = 'linux', architecture = 'amd64' } = {}) {
+    const configOf = manifest => {
+        prove(manifest && typeof manifest === 'object' && !Array.isArray(manifest) && manifest.schemaVersion === 2
+            && !Array.isArray(manifest.manifests) && (manifest.mediaType === undefined || MANIFEST_MEDIA_TYPES.includes(manifest.mediaType))
+            && typeof manifest.config?.digest === 'string' && MANIFEST_DIGEST.test(manifest.config.digest), UNRESOLVED);
+        return manifest.config.digest.slice('sha256:'.length);
+    };
+    prove(rootDoc && typeof rootDoc === 'object' && !Array.isArray(rootDoc), UNRESOLVED);
+    if (!Array.isArray(rootDoc.manifests)) return configOf(rootDoc);
+    prove(rootDoc.schemaVersion === 2 && !rootDoc.config && (rootDoc.mediaType === undefined || INDEX_MEDIA_TYPES.includes(rootDoc.mediaType)), UNRESOLVED);
+    // Attestation entries are unknown/unknown and never match a real platform.
+    const matches = rootDoc.manifests.filter(entry => entry?.platform?.os === os && entry.platform.architecture === architecture);
+    prove(matches.length === 1 && typeof matches[0].digest === 'string' && MANIFEST_DIGEST.test(matches[0].digest), UNRESOLVED);
+    const fetched = await fetchByDigest(matches[0].digest);
+    const body = typeof fetched === 'string' ? Buffer.from(fetched) : fetched;
+    prove(body instanceof Uint8Array && body.length > 0 && body.length <= REGISTRY_MAX_BYTES
+        && `sha256:${digest(body)}` === matches[0].digest, UNRESOLVED);
+    let child;
+    try { child = JSON.parse(Buffer.from(body).toString('utf8')); } catch { prove(false, UNRESOLVED); }
+    return configOf(child);
+}
+
+const BOX_IMAGE_REFERENCE = /^docker\.io\/([a-z0-9]+(?:[._-][a-z0-9]+)*)\/([a-z0-9]+(?:[._-][a-z0-9]+)*)(?::([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})|@(sha256:[a-f0-9]{64}))$/;
+
+/** Only Docker Hub references of the form docker.io/<namespace>/<repository>:<tag> or ...@sha256:<64 hex>. */
+function parseBoxImageReference(reference) {
+    const match = typeof reference === 'string' ? BOX_IMAGE_REFERENCE.exec(reference) : null;
+    prove(match, 'QA_SELECT_IMAGE_REFERENCE_UNSUPPORTED');
+    return { namespace: match[1], repository: match[2], target: match[3] || match[4] };
+}
+
+/** The deployed Ploinky checkout names the Box image; the registry says which image that name currently resolves to. */
+function boxImageResolver(scope, registryFetch, arch) {
+    return async function remoteBoxImage() {
+        let reference, parsed;
+        try {
+            const constants = path.join(scope.workspace, '.runtime/ploinky/ploinky-box/constants.mjs');
+            prove(present(constants)?.isFile(), UNRESOLVED);
+            const { resolveBoxImageReference } = await import(pathToFileURL(constants).href);
+            prove(typeof resolveBoxImageReference === 'function', UNRESOLVED);
+            // An empty environment: the QA Box image is never taken from this process's PLOINKY_BOX_IMAGE.
+            reference = resolveBoxImageReference({});
+            parsed = parseBoxImageReference(reference);
+        } catch (error) {
+            if (error?.code === 'QA_SELECT_IMAGE_REFERENCE_UNSUPPORTED') throw error;
+            throw Object.assign(new Error(UNRESOLVED), { code: UNRESOLVED, operation: 'box-image-reference' });
+        }
+        try {
+            prove(arch === 'x64', UNRESOLVED);
+            const repository = `${parsed.namespace}/${parsed.repository}`;
+            const get = async (url, headers) => {
+                const response = await registryFetch(url, { headers, redirect: 'error', cache: 'no-store',
+                    signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS) });
+                prove(response.status === 200 && !(Number(response.headers?.get?.('content-length')) > REGISTRY_MAX_BYTES), UNRESOLVED);
+                const body = Buffer.from(await response.arrayBuffer());
+                prove(body.length > 0 && body.length <= REGISTRY_MAX_BYTES, UNRESOLVED);
+                return { body, contentDigest: response.headers?.get?.('docker-content-digest') || null };
+            };
+            const tokenBody = JSON.parse((await get(`https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repository}:pull`,
+                { Accept: 'application/json' })).body.toString('utf8'));
+            const token = tokenBody?.token ?? tokenBody?.access_token;
+            prove(typeof token === 'string' && /^[A-Za-z0-9._~+/=-]{1,8192}$/.test(token), UNRESOLVED);
+            const headers = { Authorization: `Bearer ${token}`, Accept: [...INDEX_MEDIA_TYPES, ...MANIFEST_MEDIA_TYPES].join(', ') };
+            const manifest = async target => {
+                const result = await get(`https://registry-1.docker.io/v2/${repository}/manifests/${target}`, headers);
+                const actual = `sha256:${digest(result.body)}`;
+                // A digest reference and any digest the registry reports must match the bytes received.
+                prove((!MANIFEST_DIGEST.test(target) || actual === target) && (!result.contentDigest || actual === result.contentDigest), UNRESOLVED);
+                return result.body;
+            };
+            const root = await manifest(parsed.target);
+            let rootDoc;
+            try { rootDoc = JSON.parse(root.toString('utf8')); } catch { prove(false, UNRESOLVED); }
+            const configDigest = await platformConfigDigest(rootDoc, manifest, { os: 'linux', architecture: 'amd64' });
+            return { reference, configDigest };
+        } catch {
+            // Registry and parse details are never reported.
+            throw Object.assign(new Error(UNRESOLVED), { code: UNRESOLVED, operation: 'box-image-resolution' });
+        }
+    };
+}
+
+export function updateProductionAdapters(scope = QA_SCOPE,
+    { fetch: registryFetch = (...args) => globalThis.fetch(...args), arch = process.arch } = {}) {
     const base = productionAdapters(scope);
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:PLOINKY_|CLOUDFLARE_|GIT_)/.test(key)));
     const git = (repo, args, options = {}) => command('git', ['-c', `safe.directory=${repo}`,
@@ -422,6 +582,7 @@ export function updateProductionAdapters(scope = QA_SCOPE) {
     return {
         assertHost: base.assertHost, machineId: base.machineId, boxes: base.boxes,
         sourcePin: base.sourcePin, verifyAgentLib: base.verifyAgentLib, acquireWorkspaceLock: base.acquireWorkspaceLock,
+        remoteBoxImage: boxImageResolver(scope, registryFetch, arch),
         remoteDefault(repo) {
             const output = git(repo, ['ls-remote', '--symref', 'origin', 'HEAD']);
             const lines = output.trim().split('\n');
@@ -595,18 +756,33 @@ export function updateProductionAdapters(scope = QA_SCOPE) {
     };
 }
 
-export async function main(argv = process.argv.slice(2)) {
+/** Usage is validated before any adapter, host or lock access. */
+export function parseArguments(argv) {
     const [mode, ...flags] = argv;
-    prove(mode === 'plan' && flags.length === 0
-        || mode === 'execute' && flags.length === 3 && flags[0] === '--receipt' && flags[2] === '--lock-held', 'QA_UPDATE_USAGE_INVALID');
+    if (mode === 'plan' && flags.length === 0) return { mode };
+    if (mode === 'select' && flags.length === 3 && flags[0] === '--expected-commit' && pinnedCommit(flags[1])
+        && flags[2] === '--lock-held') return { mode, expectedCommit: flags[1] };
+    if (mode === 'execute' && flags.length === 5 && flags[0] === '--receipt' && flags[1] && flags[2] === '--expected-commit'
+        && pinnedCommit(flags[3]) && flags[4] === '--lock-held') return { mode, receipt: flags[1], expectedCommit: flags[3] };
+    throw Object.assign(new Error('QA_UPDATE_USAGE_INVALID'), { code: 'QA_UPDATE_USAGE_INVALID' });
+}
+
+/** The caller must hold the host lock: a non-blocking attempt to take it has to fail with the busy status. */
+export function assertHostLockHeld(lock = QA_SCOPE.lock, spawn = spawnSync) {
+    const locked = spawn('flock', ['-n', '-E', '75', lock, 'true'], { encoding: 'utf8', timeout: 5000 });
+    prove(!locked.error && locked.status === 75, 'QA_UPDATE_HOST_LOCK_REQUIRED');
+}
+
+export async function main(argv = process.argv.slice(2)) {
+    const { mode, receipt, expectedCommit } = parseArguments(argv);
     const adapters = updateProductionAdapters();
     adapters.assertHost();
-    if (mode === 'execute') {
-        const locked = spawnSync('flock', ['-n', '-E', '75', QA_SCOPE.lock, 'true'], { encoding: 'utf8', timeout: 5000 });
-        prove(!locked.error && locked.status === 75, 'QA_UPDATE_HOST_LOCK_REQUIRED');
-    }
+    if (mode !== 'plan') assertHostLockHeld();
     const service = createUpdateService(adapters);
-    process.stdout.write(JSON.stringify(mode === 'plan' ? await service.plan() : await service.execute(flags[1])) + '\n');
+    const result = mode === 'plan' ? await service.plan()
+        : mode === 'select' ? await service.select({ expectedCommit })
+            : await service.execute(receipt, { expectedCommit });
+    process.stdout.write(JSON.stringify(result) + '\n');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

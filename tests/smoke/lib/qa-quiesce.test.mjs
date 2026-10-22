@@ -298,6 +298,129 @@ for (const scenario of ['redirected-data', 'data-symlink', 'database-overlay', '
     });
 }
 
+// Mount lists observed on the live QA Box under Ploinky 7d8c04d0. Sources the
+// observation did not record (edge topology, generated descriptor) are stand-ins:
+// the validator compares them with the registry and never inspects their values.
+function liveMountFixture(agent) {
+    const repo = agent === 'dpuAgent' ? 'AchillesIDE' : agent === 'soul-gateway' ? 'proxies' : 'UmamiAgent';
+    const name = `ploinky_${repo}_${agent}_explorerQaWorkspace_7a31ab77`;
+    const ploinky = `${WORKSPACE}/.ploinky`;
+    const code = `${ploinky}/repos/${repo}/${agent}`;
+    const modules = `${ploinky}/deps/store/objects/0a1b2c3d-1111-4222-8333-444455556666/payload/node_modules`;
+    const global = agent === 'dpuAgent';
+    const binds = [
+        { source: `${ploinky}/container-runtime/${name}/Agent-331-1`, target: '/Agent', ro: true },
+        { source: '/opt/ploinky-agentlib', target: '/opt/ploinky-agentlib', ro: true },
+        { source: `${ploinky}/run/edge-topology`, target: '/run/ploinky-edge-topology', ro: true },
+        { source: `${ploinky}/run/router-descriptor/${name}.json`, target: '/run/ploinky/router-descriptor.json', ro: true,
+            generatedRouterDescriptor: true },
+        { source: code, target: '/code', ro: true },
+        ...(global ? [{ source: code, target: code }] : []),
+        { source: modules, target: '/code/node_modules', ro: true },
+        { source: modules, target: modules, ro: true },
+        { source: `${WORKSPACE}/.data/shared`, target: '/shared' },
+        ...(global ? [{ source: WORKSPACE, target: WORKSPACE }] : []),
+        { source: `${WORKSPACE}/.data/${agent}`, target: '/root' },
+    ];
+    const volumes = agent === 'soul-gateway' ? { '.data/soul-gateway': '/data' } : {};
+    const manifest = { volumes, runtime: { resources: global
+        ? { persistentStorage: { key: 'dpu-data', containerPath: '/dpu-data' } } : {} } };
+    const Mounts = binds.map((bind) => ({ Type: 'bind', Source: bind.source, Destination: bind.target, RW: bind.ro !== true }));
+    if (global) Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data/dpu-data`, Destination: '/dpu-data', RW: true });
+    if (agent === 'soul-gateway') Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data/soul-gateway`, Destination: '/data', RW: true });
+    // Run-argument mounts that Ploinky does not record as binds.
+    Mounts.push(
+        { Type: 'bind', Source: `/tmp/ploinky-health-probes/${name}`, Destination: '/run/ploinky-health-probes', RW: true },
+        { Type: 'bind', Source: '/tmp/ploinky-runtime-guards/7a31ab7775eb642cfbb41dd3/data', Destination: `${ploinky}/data`, RW: false },
+    );
+    if (global) {
+        Mounts.push(
+            { Type: 'bind', Source: ploinky, Destination: ploinky, RW: false },
+            { Type: 'bind', Source: `${ploinky}/repos`, Destination: `${ploinky}/repos`, RW: true },
+        );
+    }
+    return { name, binding: { name, agent, record: { config: { binds }, profile: 'default' } }, inspected: { Mounts },
+        options: { manifest, realpath: (value) => value } };
+}
+
+for (const agent of ['dpuAgent', 'soul-gateway', 'umamiAgent']) {
+    test(`${agent} mount validation accepts the mount list observed under Ploinky 7d8c04d0`, () => {
+        const f = liveMountFixture(agent);
+        assert.ok(assertContainerMounts(f.binding, f.inspected, f.options));
+    });
+}
+
+const relayOf = (f) => f.inspected.Mounts.find((item) => item.Destination === '/run/ploinky-health-probes');
+
+test('the health relay stays accepted from the workspace of earlier Ploinky runtimes', () => {
+    const f = liveMountFixture('dpuAgent');
+    relayOf(f).Source = `${WORKSPACE}/.ploinky/run/health-probes/${f.name}`;
+    assert.ok(assertContainerMounts(f.binding, f.inspected, f.options));
+});
+
+for (const [scenario, edit] of [
+    ['a relay from another /tmp directory', (f) => { relayOf(f).Source = `/tmp/other/${f.name}`; }],
+    ['a relay below its own directory', (f) => { relayOf(f).Source = `/tmp/ploinky-health-probes/${f.name}/nested`; }],
+    ['a relay of another container', (f) => { relayOf(f).Source = '/tmp/ploinky-health-probes/ploinky_AchillesIDE_other_explorerQaWorkspace_7a31ab77'; }],
+    ['a relay in a prefixed sibling directory', (f) => { relayOf(f).Source = `/tmp/ploinky-health-probes/${f.name}-old`; }],
+    ['a writable mount at a relay-like destination', (f) => { relayOf(f).Destination = '/run/ploinky-health-probes/extra'; }],
+    ['an extra writable mount', (f) => { f.inspected.Mounts.push({ Type: 'bind', Source: '/tmp/foreign', Destination: '/scratch', RW: true }); }],
+    ['an extra writable workspace subdirectory', (f) => {
+        f.inspected.Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.ploinky/repos/other`, Destination: `${WORKSPACE}/.ploinky/repos/other`, RW: true });
+    }],
+    ['a repository projection from another source', (f) => {
+        f.inspected.Mounts.find((item) => item.Destination === `${WORKSPACE}/.ploinky/repos`).Source = '/tmp/foreign';
+    }],
+    ['a repository projection without a writable workspace grant', (f) => {
+        f.inspected.Mounts = f.inspected.Mounts.filter((item) => item.Destination !== WORKSPACE);
+        f.binding.record.config.binds = f.binding.record.config.binds.filter((bind) => bind.target !== WORKSPACE);
+    }],
+]) {
+    test(`mount preflight rejects ${scenario} as an unregistered writable mount`, () => {
+        const f = liveMountFixture('dpuAgent');
+        edit(f);
+        assert.throws(() => assertContainerMounts(f.binding, f.inspected, f.options), { code: 'QA_UNREGISTERED_WRITABLE_MOUNT' });
+    });
+}
+
+test('a container without a workspace grant cannot gain a writable repository projection', () => {
+    const f = liveMountFixture('soul-gateway');
+    f.inspected.Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.ploinky/repos`, Destination: `${WORKSPACE}/.ploinky/repos`, RW: true });
+    assert.throws(() => assertContainerMounts(f.binding, f.inspected, f.options), { code: 'QA_UNREGISTERED_WRITABLE_MOUNT' });
+});
+
+test('the observed relay does not relax the data and source checks', () => {
+    const redirected = liveMountFixture('dpuAgent');
+    redirected.inspected.Mounts.find((item) => item.Destination === '/root').Source = '/foreign/root';
+    assert.throws(() => assertContainerMounts(redirected.binding, redirected.inspected, redirected.options), { code: 'QA_MOUNT_CONTRACT_CHANGED' });
+    const writableSource = liveMountFixture('dpuAgent');
+    writableSource.inspected.Mounts.find((item) => item.Destination === '/code').RW = true;
+    assert.throws(() => assertContainerMounts(writableSource.binding, writableSource.inspected, writableSource.options), { code: 'QA_MOUNT_CONTRACT_CHANGED' });
+});
+
+test('a preflight-only pass proves the mounts without a lease, a lock or any stop', async () => {
+    const f = fixture();
+    f.adapters.withWorkspaceMutationLease = () => assert.fail('preflight takes no lease');
+    f.adapters.withMaintenanceLock = () => assert.fail('preflight takes no lock');
+    f.adapters.withNetworkLifecycleLock = () => assert.fail('preflight takes no lock');
+    const receipt = await quiesceExplorerQa(f.adapters, { preflightOnly: true });
+    assert.deepEqual(receipt, { version: 1, kind: 'qa-quiesce', result: 'preflight-passed', phase: 'preflight', stopped: [] });
+    assert.deepEqual(f.events, []);
+    assert.ok([...f.containers.values()].every((record) => record.State.Running));
+});
+
+test('a preflight-only pass fails closed on the refusal a real quiesce would raise', async () => {
+    const f = fixture();
+    f.adapters.assertMounts = () => { const error = new Error('QA_UNREGISTERED_WRITABLE_MOUNT'); error.code = error.message; throw error; };
+    await assert.rejects(quiesceExplorerQa(f.adapters, { preflightOnly: true }), (error) => {
+        assert.equal(error.code, 'QA_UNREGISTERED_WRITABLE_MOUNT');
+        assert.deepEqual(error.receipt, { version: 1, kind: 'qa-quiesce', result: 'failed', phase: 'preflight',
+            stopped: [], code: 'QA_UNREGISTERED_WRITABLE_MOUNT' });
+        return true;
+    });
+    assert.deepEqual(f.events, []);
+});
+
 test('DPU disappearance during the OnlyOffice drain aborts the sequence', async () => {
     const f = fixture();
     const signal = f.adapters.signalContainer;

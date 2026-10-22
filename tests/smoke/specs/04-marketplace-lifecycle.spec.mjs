@@ -20,22 +20,22 @@ test.describe('Marketplace lifecycle controls', () => {
       const response = await route.fetch();
       const payload = await response.json();
       const agents = payload?.marketplace?.agents;
-      const searchAgent = Array.isArray(agents)
-        ? agents.find((agent) => agent?.ref === 'proxies/searchAgent')
+      const fixtureAgent = Array.isArray(agents)
+        ? agents.find((agent) => agent?.ref === 'UmamiAgent/umamiAgent')
         : null;
-      if (!searchAgent) {
+      if (!fixtureAgent) {
         await route.fulfill({
           status: 500,
           contentType: 'application/json',
-          body: JSON.stringify({ ok: false, error: 'search_agent_fixture_missing' }),
+          body: JSON.stringify({ ok: false, error: 'marketplace_fixture_missing' }),
         });
         return;
       }
 
       marketplaceReads += 1;
-      Object.assign(searchAgent, lifecycle);
-      delete searchAgent.statusDetail;
-      if (lifecycle.status === 'starting') searchAgent.statusDetail = startingDetail;
+      Object.assign(fixtureAgent, lifecycle);
+      delete fixtureAgent.statusDetail;
+      if (lifecycle.status === 'starting') fixtureAgent.statusDetail = startingDetail;
 
       await route.fulfill({ response, json: payload });
     });
@@ -43,14 +43,14 @@ test.describe('Marketplace lifecycle controls', () => {
     const marketplace = page.locator('marketplace-modal');
     await expect(marketplace).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
 
-    const proxiesToggle = marketplace.locator('[data-repo-tree-toggle][data-repo-name="proxies"]');
-    await expect(proxiesToggle).toBeVisible();
-    if (await proxiesToggle.getAttribute('aria-expanded') !== 'true') await proxiesToggle.click();
+    const fixtureRepoToggle = marketplace.locator('[data-repo-tree-toggle][data-repo-name="UmamiAgent"]');
+    await expect(fixtureRepoToggle).toBeVisible();
+    if (await fixtureRepoToggle.getAttribute('aria-expanded') !== 'true') await fixtureRepoToggle.click();
 
-    const row = marketplace.locator('[data-marketplace-agent-ref="proxies/searchAgent"]');
+    const row = marketplace.locator('[data-marketplace-agent-ref="UmamiAgent/umamiAgent"]');
     const status = row.locator('.marketplace-agent-status');
     const configure = row.getByRole('button', { name: 'Configure' });
-    const mode = row.locator('[data-enable-mode-for="proxies/searchAgent"]');
+    const mode = row.locator('[data-enable-mode-for="UmamiAgent/umamiAgent"]');
 
     await expect(status).toHaveText('Starting up');
     await expect(status).toHaveAttribute('title', 'Background startup is in progress.');
@@ -64,7 +64,7 @@ test.describe('Marketplace lifecycle controls', () => {
 
     lifecycle = {active: true, status: 'running', running: true};
     await expect(status).toHaveText('Running', { timeout: 2 * smokeConfig.timeouts.expect });
-    await expect(status).toHaveAttribute('aria-label', 'searchAgent status: Running');
+    await expect(status).toHaveAttribute('aria-label', 'umamiAgent status: Running');
     await expect(status).not.toHaveAttribute('title');
     await expect(configure).toBeEnabled();
     await expect(configure).toHaveAttribute('aria-disabled', 'false');
@@ -81,7 +81,7 @@ test.describe('Marketplace lifecycle controls', () => {
     await expect(mode).toBeDisabled();
     lifecycle = {active: false, status: 'inactive', running: false};
     await expect(status).toHaveText('Disabled');
-    await expect(status).toHaveAttribute('aria-label', 'searchAgent status: Disabled');
+    await expect(status).toHaveAttribute('aria-label', 'umamiAgent status: Disabled');
     await expect(configure).toBeDisabled();
     await expect(mode).toBeEnabled();
     await expect(row.getByRole('button', {name: 'Enable', exact: true})).toBeEnabled();
@@ -92,7 +92,7 @@ test.describe('Marketplace lifecycle controls', () => {
     await expect.poll(() => marketplaceReads).toBeGreaterThan(disabledReads);
     await expect(mode).toHaveValue('global');
     await expect(mode).toBeFocused();
-    await expect(proxiesToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(fixtureRepoToggle).toHaveAttribute('aria-expanded', 'true');
     expect(privateStatusRequests).toEqual([]);
   });
 });

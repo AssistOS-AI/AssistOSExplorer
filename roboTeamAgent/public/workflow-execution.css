@@ -1,0 +1,102 @@
+.flow-execution-page { --panel: var(--surface); --muted: var(--text-soft); --ok: var(--success); --warn: var(--warning); height: 100dvh; min-height: 0; overflow: hidden; }
+.flow-execution-page .shell { height: 100%; min-height: 0; max-width: none; gap: 0; margin: 0; padding-bottom: 16px; overflow: hidden; }
+.flow-execution-page .hero { flex-shrink: 0; }
+.flow-execution-page .flow-workspace { flex: 1; height: 100%; min-height: 0; gap: 20px; overflow: auto; }
+.flow-execution-page .flow-header { flex-shrink: 0; flex-wrap: nowrap; padding: 4px 0 20px; border-bottom: 1px solid var(--border); }
+.flow-execution-page .flow-heading { flex: 1; }
+.flow-execution-page .flow-heading h2 { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 1.2rem; font-weight: 600; line-height: 1.4; letter-spacing: -.02em; overflow-wrap: anywhere; }
+.flow-title-row { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.flow-run-meta { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: nowrap; gap: 8px; margin: 3px 0 0; font-size: var(--font-xs); white-space: nowrap; }
+.flow-run-meta .phase-view-duration { margin: 0; font-size: inherit; font-variant-numeric: tabular-nums; }
+.flow-parent-link { display: inline-block; margin-top: 8px; color: var(--text-soft); font-size: var(--font-xs); text-underline-offset: 3px; }
+.flow-parent-link[hidden] { display: none; }
+.flow-parent-link:hover { color: var(--accent); }
+.flow-execution-page .flow-objective { font-size: var(--font-sm); }
+.flow-execution-page .flow-objective.is-expanded { max-height: 25dvh; overflow-y: auto; }
+.flow-execution-page .flow-actions { flex: 0 0 auto; }
+.flow-execution-page .status-badge, .flow-execution-page .phase-view-status { display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: var(--font-xs); text-transform: none; letter-spacing: normal; }
+.flow-execution-page .status-badge, .flow-execution-page .phase-view-status { color: var(--execution-text); padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--execution-color) 10%, var(--surface)); font-weight: 600; }
+.flow-execution-page .flow-columns { flex: 1; min-height: 0; grid-template-columns: minmax(260px, 310px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 20px; }
+/* The right column holds either the phase view or the execution graph. */
+.flow-execution-page .stage-pane[hidden], .flow-execution-page .execution-graph-pane[hidden] { display: none; }
+.flow-execution-page .phase-pane, .flow-execution-page .stage-pane { min-width: 0; padding: 16px; border-radius: var(--radius-lg); overflow: auto; }
+.flow-execution-page .stage-body { min-height: 0; overflow: auto; }
+.flow-execution-page .stage-toolbar { flex-shrink: 0; }
+.flow-execution-page .phase-pane > :not(.phase-list) { flex-shrink: 0; }
+.flow-execution-page .phase-pane { grid-column: 1; grid-row: 1 / -1; gap: 14px; background: color-mix(in srgb, var(--bg) 45%, var(--surface)); }
+.flow-execution-page .stage-pane { grid-column: 2; grid-row: 1; }
+.flow-execution-page .phase-pane #graphButton.is-active { color: var(--accent); font-weight: 600; }
+.flow-execution-page .phase-pane .section-heading { justify-content: space-between; margin: 0; gap: 8px; }
+.flow-execution-page .phase-pane .section-heading h3 { font-size: var(--font-sm); font-weight: 600; }
+.flow-execution-page .phase-pane #graphButton { display: flex; align-items: center; gap: 8px; width: auto; margin: 0; padding: 6px 0 12px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text-soft); font: inherit; font-size: var(--font-sm); font-weight: 500; text-align: left; text-underline-offset: 3px; cursor: pointer; }
+.flow-execution-page .phase-pane #graphButton:hover { color: var(--accent); text-decoration: underline; background: transparent; }
+.graph-navigation svg { flex-shrink: 0; }
+.flow-execution-page .phase-list { flex: 1; min-height: 0; gap: 6px; }
+.execution-graph-pane { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); scroll-margin-top: 12px; }
+.execution-graph-pane .stage-title { margin: 0; font-weight: 600; }
+.graph-caption { margin: 6px 0 0; color: var(--text-soft); font-size: var(--font-xs); }
+.execution-graph-pane .stage-board { overflow: hidden; }
+.execution-graph-pane:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.phase-list-row { flex-shrink: 0; margin: 0; }
+.flow-execution-page .phase-card { --task-color: var(--task-intermediate-color); display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; box-shadow: none; cursor: default; }
+.flow-execution-page .phase-card[data-node-role='start'], .flow-execution-page .phase-card[data-node-role='start-end'] { --task-color: var(--task-start-color); }
+.flow-execution-page .phase-card[data-node-role='end'] { --task-color: var(--task-end-color); }
+.flow-execution-page .phase-card.is-pending { border-style: solid; opacity: 1; }
+.phase-select { display: grid; grid-template-columns: 20px 18px minmax(0, 1fr) auto; align-items: start; gap: 6px 8px; min-width: 0; width: 100%; padding: 10px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--execution-color); font: inherit; text-align: left; cursor: pointer; }
+.phase-select:focus:not(:focus-visible) { outline: none; }
+.phase-card-number { grid-column: 1; grid-row: 1; color: var(--text-soft); font-size: var(--font-xs); font-variant-numeric: tabular-nums; text-align: center; line-height: 21px; }
+.phase-card-status-icon { grid-column: 2; grid-row: 1; display: inline-flex; align-items: center; margin-top: 2px; }
+.phase-card-status-icon .execution-state-icon { width: 18px; height: 18px; flex-basis: 18px; }
+.phase-card-name { grid-column: 3 / -1; grid-row: 1; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-width: 0; color: var(--execution-text); font-size: var(--font-sm); font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; text-underline-offset: 3px; }
+.phase-select:hover .phase-card-name, .phase-card.is-selected .phase-card-name { text-decoration: underline; }
+.phase-card.is-selected .phase-card-name { font-weight: 600; }
+.flow-execution-page .phase-card-meta { grid-column: 3; grid-row: 2; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; color: var(--text-soft); font-size: var(--font-xs); }
+.phase-card-meta:empty { display: none; }
+.phase-card-robot { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.phase-card-robot svg { width: 15px; height: 15px; flex: 0 0 15px; }
+.phase-card-robot-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-execution-page .phase-card { border-color: color-mix(in srgb, var(--execution-color) 35%, var(--border)); border-left: 3px solid var(--execution-color); background: color-mix(in srgb, var(--execution-color) 8%, var(--surface)); }
+.flow-execution-page .phase-card:hover, .flow-execution-page .phase-card.is-selected { border-color: var(--execution-color); background: color-mix(in srgb, var(--execution-color) 14%, var(--surface)); }
+.phase-card-duration { grid-column: 4; grid-row: 2; justify-self: end; color: var(--text-soft); font-size: var(--font-xs); line-height: 21px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.phase-state-legend { display: flex; align-items: center; gap: 10px; padding-top: 8px; border-top: 1px solid var(--border); margin-top: auto; }
+.phase-state-legend ul { margin: 0; padding: 0; list-style: none; }
+#phaseStateLegend { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+.phase-state-legend-item { display: flex; flex-shrink: 0; align-items: center; gap: 4px; color: var(--execution-text); font-size: var(--font-xs); white-space: nowrap; }
+.phase-state-legend-item[hidden] { display: none; }
+.phase-state-legend-item .execution-state-icon { width: 16px; height: 16px; flex-basis: 16px; }
+.phase-legend-more { flex: 0 0 auto; padding: 2px 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: var(--font-xs); cursor: pointer; text-underline-offset: 3px; }
+.phase-legend-more:hover { text-decoration: underline; }
+.phase-legend-popover { position: fixed; inset: auto; width: 260px; max-width: calc(100vw - 24px); margin: 0; padding: 12px; box-sizing: border-box; overflow-y: auto; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-xl); }
+.phase-legend-popover h4 { margin: 0 0 10px; font-size: var(--font-xs); font-weight: 600; }
+.phase-legend-popover ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.flow-execution-page .phase-list-pause { align-self: start; margin: 10px 8px 0 0; padding: 0; border: 0; background: transparent; color: var(--text-soft); font: inherit; font-size: var(--font-xs); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.flow-execution-page .phase-list-pause:hover { color: var(--accent); }
+.flow-execution-page .stage-toolbar { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.flow-execution-page .stage-title { font-size: var(--font-sm); }
+.flow-execution-page .phase-view-header { gap: 8px 12px; }
+.flow-execution-page .phase-status { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; }
+.flow-execution-page .phase-status[hidden] { display: none; }
+.flow-execution-page .phase-view-name { font-size: var(--font-sm); font-weight: 600; }
+.flow-execution-page .phase-tabs { gap: 16px; border-bottom: 1px solid var(--border); }
+.flow-execution-page .phase-tab { margin-bottom: -1px; padding: 8px 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--text-soft); font: inherit; font-size: var(--font-sm); }
+.flow-execution-page .phase-tab:hover { color: var(--accent); }
+.flow-execution-page .phase-tab.is-active { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; background: transparent; }
+.flow-execution-page .phase-log { background: var(--surface-soft); border-radius: var(--radius-md); }
+.flow-execution-page #flowError { flex-shrink: 0; max-height: 15dvh; margin: 0; overflow: auto; }
+.flow-execution-page #message { flex-shrink: 0; max-height: 15dvh; overflow: auto; }
+.flow-execution-page #message:empty { display: none; }
+
+@media (max-width: 720px) {
+    .flow-execution-page .flow-columns { flex: 0 0 auto; grid-template-columns: 1fr; grid-template-rows: auto 420px; }
+    .flow-execution-page .phase-pane { grid-column: 1; grid-row: 1; height: auto; max-height: none; overflow: visible; }
+    .flow-execution-page .phase-list { flex: 0 0 auto; max-height: none; overflow: visible; }
+    .flow-execution-page .stage-pane { grid-column: 1; grid-row: 2; }
+    .flow-execution-page .execution-graph-pane { grid-column: 1; grid-row: 2; }
+}
+@media (max-width: 600px) {
+    .flow-execution-page .flow-header { gap: 10px; }
+    .flow-execution-page .shell { padding-bottom: 12px; }
+    .flow-execution-page .flow-heading h2 { font-size: 1.05rem; }
+    .flow-execution-page .stage-pane { padding: 12px; }
+    .flow-execution-page .phase-tabs { flex-wrap: wrap; gap: 10px; }
+}

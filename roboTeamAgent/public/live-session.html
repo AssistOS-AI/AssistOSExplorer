@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTeam · Live session</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #ffffff; --text: #1f2328; --muted: #59636e; --line: #d1d9e0; --accent: #0969da; --error: #cf222e; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #0d1117; --text: #e6edf3; --muted: #9198a1; --line: #3d444d; --accent: #4493f8; --error: #f85149; } }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
+    main { display: flex; flex-direction: column; gap: 12px; min-height: 100vh; padding: 16px 20px 24px; box-sizing: border-box; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    h1 { margin: 0; font-size: 18px; }
+    .status { color: var(--muted); font-size: 13px; }
+    pre { flex: 1 1 auto; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 6px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .live-assistant { color: var(--text); }
+    .live-output { color: var(--text); }
+    .live-status { color: var(--muted); }
+    .live-user { color: var(--accent); }
+    .live-error { color: var(--error); }
+  </style>
+</head>
+<body>
+  <main>
+    <header><h1>Live session</h1><span id="status" class="status">Connecting…</span></header>
+    <pre id="output" aria-live="polite"></pre>
+  </main>
+  <script>
+(() => {
+  // Text-only live view: frames are rendered with textContent, never as markup.
+  const LIMIT = 1024 * 1024;
+  const RECOVERY_WINDOW_MS = 10 * 60 * 1000;
+  const STYLES = new Set(['assistant', 'output', 'status', 'user', 'error']);
+  const output = document.getElementById('output');
+  const status = document.getElementById('status');
+  const id = location.pathname.split('/').pop();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) { status.textContent = 'Invalid live session.'; return; }
+  const streamUrl = new URL(`api/live-sessions/${id}/stream`, document.baseURI).href;
+  const parts = [];
+  let bytes = 0, stream = null, ended = false, retries = 0, recoveryStartedAt = null;
+  const size = (text) => new TextEncoder().encode(text).length;
+  const clear = () => { output.replaceChildren(); parts.length = 0; bytes = 0; };
+  const append = (text, style) => {
+    const node = document.createElement('span');
+    node.className = `live-${style}`;
+    node.textContent = text;
+    output.appendChild(node);
+    parts.push({ node, bytes: size(text) });
+    bytes += parts[parts.length - 1].bytes;
+    while (bytes > LIMIT || parts.length > 4096) { const part = parts.shift(); bytes -= part.bytes; part.node.remove(); }
+    output.scrollTop = output.scrollHeight;
+  };
+  const connect = () => {
+    if (ended) return;
+    const current = new EventSource(streamUrl);
+    stream = current;
+    current.onopen = () => { retries = 0; recoveryStartedAt = null; };
+    const handle = (name, handler) => current.addEventListener(name, (event) => {
+      if (stream !== current) return;
+      try { handler(JSON.parse(event.data)); }
+      catch { status.textContent = 'The live session returned invalid data. Reload to try again.'; ended = true; current.close(); }
+    });
+    handle('output', (data) => {
+      if (typeof data.text !== 'string' || !STYLES.has(data.style)) throw new Error('invalid output');
+      append(data.text, data.style);
+    });
+    handle('status', (data) => { status.textContent = typeof data.text === 'string' && data.text ? data.text : String(data.status); });
+    handle('replay-truncated', () => { clear(); status.textContent = 'Earlier output is no longer available.'; });
+    handle('resync', () => { clear(); status.textContent = 'Replay restarted.'; });
+    handle('exit', (data) => {
+      ended = true;
+      status.textContent = `${data.status}: ${data.exit && data.exit.reason ? data.exit.reason : ''}`;
+      current.close();
+    });
+    current.onerror = () => {
+      if (ended || stream !== current) return;
+      status.textContent = 'Reconnecting…';
+      if (current.readyState !== EventSource.CLOSED) return;
+      current.close();
+      if (recoveryStartedAt === null) recoveryStartedAt = Date.now();
+      const remaining = RECOVERY_WINDOW_MS - (Date.now() - recoveryStartedAt);
+      if (remaining <= 0) { status.textContent = 'Disconnected. Reopen this session from Live Sessions.'; return; }
+      setTimeout(() => { clear(); connect(); }, Math.min(1000 * 2 ** Math.min(retries++, 4), 15000, remaining));
+    };
+  };
+  connect();
+})();
+  </script>
+</body>
+</html>

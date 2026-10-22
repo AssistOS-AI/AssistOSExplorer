@@ -344,6 +344,9 @@ test('canonical runner consumes SMOKE_RELEASE_MANIFEST and passes bound evidence
   assert.match(runner, /SMOKE_BOX_BASE_URL/);
   assert.match(runner, /collectCopilotReleaseEvidence/);
   assert.match(runner, /sameCopilotReleaseGeneration/);
+  assert.match(runner, /requireActiveRoboTeamAgent: false/);
+  assert.match(runner, /requireActiveRoboTeamAgent: true/);
+  assert.doesNotMatch(runner, /requireActiveAchillesCLI/);
   assert.match(spec, /SMOKE_COPILOT_RELEASE_EVIDENCE/);
   assert.match(spec, /routerResponses\.every\(\(entry\) => entry\.status >= 200 && entry\.status < 300\)/);
   assert.match(spec, /completionToken = `COPILOT_CHAT_OK_\$\{correlation\}`/);
@@ -370,7 +373,7 @@ test('local snapshot mode is explicit, loopback-only, and binds source digests a
     collectSnapshotBindings: ({ repositories }) => ({
       explorer: { active: true, containerId: 'e'.repeat(64), treeSha256: repositories.explorer.treeSha256 },
       ploinkyAgent: { source: '/candidate/ploinky/Agent', runtimeSource: '/Agent', treeSha256: 'a'.repeat(64) },
-      achillesCLI: { active: true, source: '/candidate/AchillesCLI/achilles-cli', runtimeSource: '/candidate/AchillesCLI/achilles-cli', treeSha256: 'b'.repeat(64), containerId: 'c'.repeat(64), codeRoot: '/candidate/runtime/old' },
+      roboTeamAgent: { active: true, source: '/candidate/AssistOSExplorer/roboTeamAgent', runtimeSource: '/candidate/AssistOSExplorer/roboTeamAgent', treeSha256: repositories.explorer.treeSha256, containerId: 'c'.repeat(64), codeRoot: '/candidate/runtime/old' },
     }),
     loadVerifier: async () => ({ verifyManifestFile: () => structuredClone(source) }),
     collectLiveBox: () => liveBox(),
@@ -378,23 +381,32 @@ test('local snapshot mode is explicit, loopback-only, and binds source digests a
   };
   const before = await collectCopilotReleaseEvidence(options);
   assert.equal(before.verificationMode, 'local-snapshot');
+  assert.equal(before.sourceBindings.roboTeamAgent.treeSha256, before.repositories.explorer.treeSha256);
+  assert.equal('roboTeamAgent' in before.repositories, false);
+  assert.equal('achillesCLI' in before.sourceBindings, false);
   assert.equal(sameCopilotReleaseGeneration(before, structuredClone(before)), true);
+  const retired = structuredClone(before);
+  retired.sourceBindings.achillesCLI = retired.sourceBindings.roboTeamAgent;
+  delete retired.sourceBindings.roboTeamAgent;
+  assert.equal(sameCopilotReleaseGeneration(retired, structuredClone(retired)), false);
+  assert.equal(sameCopilotReleaseGeneration(before, retired), false);
+  assert.equal(sameCopilotReleaseGeneration(retired, before), false);
   const after = structuredClone(before);
   after.repositories.explorer.treeSha256 = '0'.repeat(64);
   assert.equal(sameCopilotReleaseGeneration(before, after), false);
-  const launchedCLI = structuredClone(before);
-  launchedCLI.sourceBindings.achillesCLI.containerId = 'f'.repeat(64);
-  launchedCLI.sourceBindings.achillesCLI.codeRoot = '/candidate/runtime/new';
-  assert.equal(sameCopilotReleaseGeneration(before, launchedCLI), true);
+  const launchedRoboTeam = structuredClone(before);
+  launchedRoboTeam.sourceBindings.roboTeamAgent.containerId = 'f'.repeat(64);
+  launchedRoboTeam.sourceBindings.roboTeamAgent.codeRoot = '/candidate/runtime/new';
+  assert.equal(sameCopilotReleaseGeneration(before, launchedRoboTeam), true);
   const initiallyInactive = structuredClone(before);
-  initiallyInactive.sourceBindings.achillesCLI.active = false;
-  delete initiallyInactive.sourceBindings.achillesCLI.containerId;
-  delete initiallyInactive.sourceBindings.achillesCLI.codeRoot;
-  assert.equal(sameCopilotReleaseGeneration(initiallyInactive, launchedCLI), true);
+  initiallyInactive.sourceBindings.roboTeamAgent.active = false;
+  delete initiallyInactive.sourceBindings.roboTeamAgent.containerId;
+  delete initiallyInactive.sourceBindings.roboTeamAgent.codeRoot;
+  assert.equal(sameCopilotReleaseGeneration(initiallyInactive, launchedRoboTeam), true);
   assert.equal(sameCopilotReleaseGeneration(before, initiallyInactive), false);
   for (const key of ['source', 'runtimeSource', 'treeSha256']) {
-    const changed = structuredClone(launchedCLI);
-    changed.sourceBindings.achillesCLI[key] = 'changed';
+    const changed = structuredClone(launchedRoboTeam);
+    changed.sourceBindings.roboTeamAgent[key] = 'changed';
     assert.equal(sameCopilotReleaseGeneration(before, changed), false, key);
   }
   const replacedExplorer = structuredClone(before);
@@ -404,12 +416,13 @@ test('local snapshot mode is explicit, loopback-only, and binds source digests a
   changedAgentRuntime.sourceBindings.ploinkyAgent.treeSha256 = 'f'.repeat(64);
   assert.equal(sameCopilotReleaseGeneration(before, changedAgentRuntime), false);
   const lifecycleCalls = [];
-  for (const requireActiveAchillesCLI of [false, true]) {
+  for (const requireActiveRoboTeamAgent of [false, true]) {
     await collectCopilotReleaseEvidence({
       ...options,
-      requireActiveAchillesCLI,
+      requireActiveRoboTeamAgent,
       collectSnapshotBindings: args => {
-        lifecycleCalls.push(args.requireActiveAchillesCLI);
+        lifecycleCalls.push(args.requireActiveRoboTeamAgent);
+        assert.equal('requireActiveAchillesCLI' in args, false);
         return options.collectSnapshotBindings(args);
       },
     });
@@ -443,7 +456,7 @@ test('image-mode release evidence and local-snapshot source evidence never subst
     collectSnapshotBindings: () => {
       snapshotCollections += 1;
       return { explorer: { active: true, treeSha256: '9'.repeat(64) },
-        achillesCLI: { active: true, source: '/candidate/AchillesCLI/achilles-cli', runtimeSource: '/candidate/AchillesCLI/achilles-cli', treeSha256: 'b'.repeat(64) },
+        roboTeamAgent: { active: true, source: '/candidate/AssistOSExplorer/roboTeamAgent', runtimeSource: '/candidate/AssistOSExplorer/roboTeamAgent', treeSha256: '9'.repeat(64) },
         ploinkyAgent: { treeSha256: 'a'.repeat(64) } };
     },
     realpathSync: value => value,

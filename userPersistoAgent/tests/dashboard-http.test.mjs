@@ -96,7 +96,7 @@ test('restricted accounts get their own sanitized profile and cannot change anot
 });
 
 test('dashboard requires a valid signed request and a currently active user', async () => {
-    for (const path of [PROFILE, '/service/dashboard/', '/service/dashboard/main.js']) {
+    for (const path of [PROFILE, '/service/dashboard/', '/service/dashboard/main.js', '/service/dashboard/theme.js']) {
         const response = await fetch(`${base}${path}`);
         assert.equal(response.status, 401);
     }
@@ -285,4 +285,12 @@ test('policy changes disable enrollment immediately without losing configured-st
     } finally {
         process.env.USERPERSISTO_AUTH_METHODS = 'emailCode,passkey,totp';
     }
+});
+
+
+test('theme bootstrap is available to an active account without administrative or Explorer access', async () => {
+    const path = '/service/dashboard/theme.js';
+    const response = await fetch(`${base}${path}`, { headers: sign({ path, userId: member.id }) });
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /assistosExplorerTheme/);
 });

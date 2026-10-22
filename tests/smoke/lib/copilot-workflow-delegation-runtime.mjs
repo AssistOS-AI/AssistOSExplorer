@@ -212,7 +212,7 @@ function podman(args, input = '') {
 
 export async function createWorkflowDelegationReader({ env = process.env, baseURL, verifierPath }, { createGuard = createLiveSkillsRuntimeReader, runCommand = podman, fsApi = fs } = {}) {
     const guard = await createGuard({ env, baseURL, verifierPath });
-    const root = guard.workspaceRoot, repository = fsApi.realpathSync(guard.release.repositories.achillesCLI.repositoryPath);
+    const root = guard.workspaceRoot, repository = fsApi.realpathSync(guard.release.repositories.explorer.repositoryPath);
     const contractFiles = delegationContractFiles(repository, fsApi);
     const contractHashes = Object.fromEntries(contractFiles.map(file => [file, liveSkillsHash(fsApi.readFileSync(`${repository}/roboTeamAgent/${file}`))]));
     const initial = await guard.finish(), box = guard.release.liveBox.box, expectedAla = initial.alaBinding;

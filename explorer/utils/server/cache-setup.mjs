@@ -1,4 +1,4 @@
-import { describeDirectoryEntry, isProtectedSecretName } from '../filesystem-utils.mjs';
+import { describeDirectoryEntry, visibleEntriesByName } from '../filesystem-utils.mjs';
 
 export function createCacheConfig(env) {
   return {
@@ -9,7 +9,7 @@ export function createCacheConfig(env) {
   };
 }
 
-export function initCacheHelpers({ createCacheHelpers, readFileContent, cacheConfig, fs, path }) {
+export function initCacheHelpers({ createCacheHelpers, readFileContent, visibleEntries = visibleEntriesByName, cacheConfig, fs, path }) {
   let readFileWithCache = async (validPath, { skipReadForLarge = false } = {}) => {
     const stats = await fs.stat(validPath);
     if (stats.size > cacheConfig.maxFileSizeBytes && skipReadForLarge) {
@@ -20,15 +20,14 @@ export function initCacheHelpers({ createCacheHelpers, readFileContent, cacheCon
   };
 
   let listDirectoryDetailedWithCache = async (validPath) => {
-    const entries = await fs.readdir(validPath, { withFileTypes: true });
-    const visibleEntries = entries.filter((entry) => !isProtectedSecretName(entry?.name));
-    return Promise.all(visibleEntries.map((entry) => describeDirectoryEntry(validPath, entry)));
+    const entries = await visibleEntries(validPath, await fs.readdir(validPath, { withFileTypes: true }));
+    return Promise.all(entries.map((entry) => describeDirectoryEntry(validPath, entry)));
   };
 
   let invalidateCachesForPath = () => {};
   let updatedConfig = cacheConfig;
 
-  const cacheHelpers = createCacheHelpers({ readFileContent, config: cacheConfig });
+  const cacheHelpers = createCacheHelpers({ readFileContent, visibleEntries, config: cacheConfig });
   ({
     readFileWithCache,
     listDirectoryDetailedWithCache,

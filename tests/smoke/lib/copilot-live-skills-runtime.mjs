@@ -6,7 +6,7 @@ import path from 'node:path';
 import { assertBoxWorkspacePath, inspectBoxWorkspace } from './box-workspace.mjs';
 import { collectCopilotReleaseEvidence, sameCopilotReleaseGeneration } from './copilot-release-evidence.mjs';
 import { validateWorkspaceSourceMount } from './live-box.mjs';
-import { liveSkillsHash, liveSkillsWorkspace, UUID } from './copilot-live-skills.mjs';
+import { inspectSessionSkillLinks, liveSkillsHash, liveSkillsWorkspace, UUID } from './copilot-live-skills.mjs';
 import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
 import { inside, requireMount, rejectShadows } from './local-snapshot-bindings.mjs';
 
@@ -23,7 +23,7 @@ const CONTRACT_FILES = Object.freeze([
     'server/copilot-context.mjs', 'server/constants.mjs', 'server/robot-store.mjs',
     'server/live-skill-catalog.mjs', 'server/live-skill-install.mjs', 'server/skill-catalog-api.mjs',
     'copilot/src/lib/storage/conversationSessionStore.mjs', 'copilot/src/lib/skills/robotSkillCatalog.mjs',
-    'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
+    'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/execution/alaSkillMounts.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
 ]);
 
 export { CONTRACT_FILES as LIVE_SKILLS_CONTRACT_FILES };
@@ -55,7 +55,8 @@ function command(args, input = '') {
 
 // The function source is shipped to the Box, so it may reference no module binding. Every path travels as a JSON value.
 export function program(fn, args) {
-    const helpers = fn === readLiveSkillsSnapshot ? `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\n` : '';
+    const helpers = (fn === readLiveSkillsSnapshot ? `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\n` : '')
+        + ([readLiveSkillsSnapshot, operateLiveSkillsFixture].includes(fn) ? `const inspectSessionSkillLinks = ${inspectSessionSkillLinks.toString()};\n` : '');
     return `${helpers}(${fn.toString()})(${JSON.stringify(args)}).catch(() => { console.error('Invalid read-only runtime evidence'); process.exitCode = 1; });\n`;
 }
 
@@ -169,7 +170,7 @@ export async function readRegistryAndRuntime({ workspaceRoot }) {
         && workspaceRoot !== '/' && !workspaceRoot.endsWith('/'));
     assert.equal(fs.realpathSync(workspaceRoot), workspaceRoot);
     const rows = Object.entries(readAgentRegistrySnapshot({ workspaceRoot }))
-        .filter(([, row]) => row.type === 'agent' && row.repoName === 'AchillesCLI' && row.agentName === 'roboTeamAgent');
+        .filter(([, row]) => row.type === 'agent' && row.repoName === 'AchillesIDE' && row.agentName === 'roboTeamAgent');
     assert.equal(rows.length, 1);
     const [key, row] = rows[0];
     assert.match(row.containerId, /^[0-9a-f]{64}$/);
@@ -252,7 +253,7 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
     assert.equal(registered[0].source, repositoryRoot);
     assert.match(registered[0].generation, /^[0-9a-f-]{36}$/);
     const codeHashes = await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi });
-    const sessionFile = `${workspace}/.roboteam/sessions/${sessionId}.json`;
+    const sessionFile = `${workspace}/.roboteam/sessions/${sessionId}/config.json`;
     const sessionBytes = bytes(sessionFile, workspace);
     const saved = JSON.parse(sessionBytes);
     assert.equal(saved.version, 2);
@@ -305,49 +306,36 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
         turns: nativeSession.turns.map(({ turnId, user, final, status, startedAt, endedAt }) => ({ turnId, user, final, status, startedAt, endedAt })) };
     const capturedFiles = {}, liveLinks = {};
     let catalog = null;
+    const installed = await inspectSessionSkillLinks({ workspace, sessionId, execution: session.skillExecution }, { fsApi: fs });
     if (session.skillExecution) {
-        assert.equal(session.skillExecution.live, true, 'Copied catalogs are not live execution evidence.');
-        const recordFile = `${workspace}/.agents/.roboteam-links.json`;
-        const recordBytes = bytes(recordFile, workspace);
-        const links = JSON.parse(recordBytes);
-        assert.ok(Array.isArray(links));
-        assert.equal(hash(JSON.stringify(links)), session.skillExecution.revision);
-        const destinations = new Set();
-        for (const link of links) {
-            assert.equal(path.dirname(link.destination), `${workspace}/.agents/skills`);
-            assert.ok(!destinations.has(link.destination), 'Duplicate managed link destination.');
-            destinations.add(link.destination);
-            assert.ok(fs.lstatSync(link.destination).isSymbolicLink(), 'Installed skill must be an actual symlink.');
-            assert.equal(fs.readlinkSync(link.destination), link.linkTarget);
-        }
+        const { links, directory } = installed;
         catalog = { revision: session.skillExecution.revision, links, entries: session.skillExecution.entries };
         for (const name of skillNames) {
             assert.match(name, /^live-[a-f0-9]{8}-(control|probe|added)$/);
             const entries = catalog.entries.filter(entry => entry.name === name);
             if (!entries.length) {
-                assert.ok(!destinations.has(`${workspace}/.agents/skills/${name}`), 'Absent skill remains installed.');
-                assert.ok(!fs.existsSync(`${workspace}/.agents/skills/${name}`), 'Absent skill remains linked.');
+                assert.ok(!links.some(link => link.name === name), 'Absent skill remains installed.');
+                assert.equal(fs.lstatSync(`${directory}/${name}`, { throwIfNoEntry: false }), undefined, 'Absent skill remains linked.');
                 continue;
             }
             assert.equal(entries.length, 1);
             const source = `${repositoryRoot}/skills/${name}`;
-            const destination = `${workspace}/.agents/skills/${name}`;
-            const selected = links.filter(link => link.destination === destination);
+            const destination = `${directory}/${name}`;
+            const selected = links.filter(link => link.name === name);
             assert.equal(selected.length, 1, 'Selected fixture skill lacks its managed link.');
             const [link] = selected;
             assert.equal(entries[0].identity, `${repositoryName}/${name}`);
             assert.equal(entries[0].sourcePath, source);
-            assert.equal(link.repoName, repositoryName);
-            assert.equal(link.sourcePath, `skills/${name}`);
-            assert.equal(path.resolve(path.dirname(destination), link.linkTarget), source);
+            assert.equal(link.source, source);
+            assert.equal(link.target, source);
             assert.equal(fs.realpathSync(destination), source, 'Live skill link was retargeted.');
             capturedFiles[name] = { descriptorSha256: hash(bytes(`${source}/SKILL.md`, repositoryRoot)),
                 helperSha256: hash(bytes(`${source}/receipt.mjs`, repositoryRoot)) };
             assert.equal(fs.realpathSync(destination), source, 'Live link changed during source read.');
-            assert.equal(fs.readlinkSync(destination), link.linkTarget);
-            liveLinks[name] = { destination, linkTarget: link.linkTarget, resolvedSource: source };
+            assert.equal(fs.readlinkSync(destination), link.target);
+            liveLinks[name] = { destination, linkTarget: link.target, resolvedSource: source };
         }
-        assert.equal(hash(bytes(recordFile, workspace)), hash(recordBytes), 'Managed links changed during source read.');
+        installed.recheck();
     }
     const receipts = {};
     const receiptRoot = `${workspace}/.receipts`;
@@ -359,6 +347,8 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
     assert.equal(hash(bytes(robotFile, robotRoot)), hash(robotBytes), 'Owned robot registration changed during capture.');
     assert.deepEqual(await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi }), codeHashes, 'Copilot source changed during composition.');
     for (const file of Object.keys(expectedAla.hashes)) assert.equal(hash(bytes(`${expectedAla.root}/${file}`, expectedAla.root)), expectedAla.hashes[file], 'ALA source changed during composition.');
+    installed?.recheck();
+    assert.equal(hash(bytes(sessionFile, workspace)), hash(sessionBytes), 'Session metadata changed during capture.');
     emit({ workspaceRoot, robotRoot, robot: { id: robotId, name: robotName, repository: { name: registered[0].name, source: registered[0].source, generation: registered[0].generation } },
         session: { sessionId: session.sessionId, cwd: session.cwd, engine: session.engine,
             skillPolicyRef: session.skillPolicyRef, skillExecution: session.skillExecution, presentations,
@@ -394,7 +384,7 @@ export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository, { 
     assert.match(runtime.imageId, /^sha256:[0-9a-f]{64}$|^[0-9a-f]{64}$/);
     assert.match(String(runtime.key), RUNTIME_KEY, 'The runtime registry key is not a single path segment.');
     assert.ok(typeof expectedRepository === 'string' && expectedRepository.startsWith(`${root}/`)
-        && path.posix.normalize(expectedRepository) === expectedRepository, 'The verified AchillesCLI repository is outside the admitted root.');
+        && path.posix.normalize(expectedRepository) === expectedRepository, 'The verified AchillesIDE repository is outside the admitted root.');
     assert.ok(Array.isArray(runtime.mounts), 'The runtime must report its exact mount inventory.');
     const options = { fsApi: fsApi || undefined, lexical: true, subject: SUBJECT };
     const writable = (destination, source) => {
@@ -513,9 +503,9 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
     assert.match(box.containerId, /^[0-9a-f]{64}$/);
     assert.equal(release.liveBox.workspaceSourceMount?.source, hostWorkspace, 'The verified Box workspace is not the selected host workspace.');
     // The Box mounts the workspace at its own path, so the verified host repository is also its runtime path.
-    const hostRepository = fsApi.realpathSync(release.repositories.achillesCLI.repositoryPath);
+    const hostRepository = fsApi.realpathSync(release.repositories.explorer.repositoryPath);
     assert.ok(hostRepository.startsWith(`${hostWorkspace}/`) && path.posix.normalize(hostRepository) === hostRepository,
-        'Verified AchillesCLI must belong to the selected workspace.');
+        'Verified AchillesIDE must belong to the selected workspace.');
     const expectedRepository = hostRepository;
     assert.ok(env.SMOKE_ALA_COMMAND && path.isAbsolute(env.SMOKE_ALA_COMMAND), 'Set SMOKE_ALA_COMMAND to the exact selected deployed ALA bin/ala.mjs.');
     const alaCommand = fsApi.realpathSync(env.SMOKE_ALA_COMMAND);

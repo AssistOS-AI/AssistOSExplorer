@@ -480,13 +480,13 @@ test('dashboard API uses same-origin credentials and preserves structured enroll
     assert.deepEqual(JSON.parse(calls[1].options.body), { token: '123456' });
 });
 
-test('dashboard shows Explorer only with its capability and saves profile fields without trusting roles', async (t) => {
+test('dashboard remains application-neutral even with Explorer access and saves only profile fields', async (t) => {
     const nodes = new Map();
     const document = { querySelectorAll: () => [], getElementById: (id) => {
         if (!nodes.has(id)) nodes.set(id, new Element());
         return nodes.get(id);
     } };
-    let currentProfile = profile({ roles: ['admin'] });
+    let currentProfile = profile({ roles: ['admin'], capabilities: ['explorer.access'] });
     const calls = [];
     t.mock.method(globalThis, 'fetch', async (path, options) => {
         calls.push({ path, options });
@@ -495,13 +495,13 @@ test('dashboard shows Explorer only with its capability and saves profile fields
     });
     const dashboard = mountDashboard(document);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(nodes.get('open-explorer').hidden, true, 'an admin role alone is not an access grant');
-    assert.match(nodes.get('workspace-access-message').textContent, /administrator/);
+    assert.equal(nodes.has('open-explorer'), false);
+    assert.equal(nodes.has('workspace-access-message'), false);
     nodes.get('username').value = 'updated-user';
     nodes.get('display-name').value = 'Updated Name';
     await nodes.get('profile-form').listeners.submit({ preventDefault() {} });
     assert.deepEqual(JSON.parse(calls.at(-1).options.body), { username: 'updated-user', displayName: 'Updated Name' });
-    assert.equal(nodes.get('open-explorer').hidden, false);
+    assert.equal(nodes.has('open-explorer'), false);
     assert.equal(nodes.get('account-status').textContent, 'Profile saved.');
     dashboard.dispose();
 });

@@ -207,6 +207,16 @@ export class AvatarSettingsForm {
         return this.getValue().config;
     }
 
+    renderPreview({ enabled = this.state.previewEnabled, fallback = this.state.previewFallback } = {}) {
+        this.state.previewEnabled = enabled;
+        this.state.previewFallback = fallback;
+        if (this.state.showPreview === false) return;
+        const preview = this.root?.querySelector?.('.avatar-settings-preview');
+        if (preview) {
+            preview.innerHTML = renderPreviewMarkup(this.state.value, { enabled, fallback });
+        }
+    }
+
     normalizeFromDom() {
         const current = this.state.value && typeof this.state.value === 'object' ? this.state.value : {};
         const next = { ...current };
@@ -216,6 +226,7 @@ export class AvatarSettingsForm {
         this.element.querySelectorAll('[data-avatar-field]').forEach((input) => {
             const key = input.dataset.avatarField;
             if (!key) return;
+            if (input.matches('custom-select') && input.value === undefined) return;
             if (key === 'expressionMode') {
                 next[key] = input.checked ? 'audio' : 'manual';
             } else {
@@ -235,14 +246,8 @@ export class AvatarSettingsForm {
             || draft.sourceMode !== previousSourceMode;
         if (layoutChanged) {
             this.renderForm();
-        } else if (this.state.showPreview !== false) {
-            const preview = this.root?.querySelector?.('.avatar-settings-preview');
-            if (preview) {
-                preview.innerHTML = renderPreviewMarkup(draft.config, {
-                    enabled: this.state.previewEnabled,
-                    fallback: this.state.previewFallback
-                });
-            }
+        } else {
+            this.renderPreview();
         }
         this.element.dispatchEvent(new CustomEvent('avatar-settings-change', {
             bubbles: true,

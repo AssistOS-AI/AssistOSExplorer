@@ -9,7 +9,7 @@ summary: Defines Explorer-owned SCRIPTA identity, Markdown metadata, Automerge s
 
 SCRIPTA is [Explorer](wiki.html#definition-explorer)'s structured collaboration model for Markdown documents. [Explorer](wiki.html#definition-explorer) is the sole document authority. During editing, the canonical [Automerge](wiki.html#definition-automerge) document is the working state and Markdown is its durable, portable materialization. WebMeet, Advanced Editor, and other consumers use [Explorer](wiki.html#definition-explorer)'s semantic or collaboration APIs; they do not parse, overwrite, or independently reconcile SCRIPTA Markdown.
 
-This specification defines the Explorer-owned core. WebMeet board placement, room attachment, guest interaction, RoboTeam event mapping, Meeting Notes, and realtime presentation are integration concerns defined by WebMeet DS009.
+This specification defines the Explorer-owned core. WebMeet board placement, room attachment, guest interaction, RoboTeam event mapping, Meeting Notes, and realtime presentation are integration concerns defined by WebMeet DS009 in the `webmeet` repository.
 
 ## Core Content
 
@@ -87,3 +87,5 @@ Physical deletion is transactional across Markdown, canonical [Automerge](wiki.h
 Deletion stages live only under `.data/explorer/automerge/documents/pending-deletions/<transaction-id>`. Every phase, including recovery after an earlier successful initialization, revalidates the private directory chain, transaction metadata, staged files, and related private artifacts before accessing them. Symbolic links are rejected with `PLOINKY_AGENT_DATA_POLICY_VIOLATION`. Preparation preflights all artifact paths before moving originals; rollback preflights staged files and destinations before restoring anything. If preparation fails and restoration cannot complete safely, the remaining staged originals are retained rather than deleted.
 
 SCRIPTA remains portable because the visible winner and complete structured metadata are materialized in Markdown, while safe concurrent editing is governed by one Explorer-owned [Automerge](wiki.html#definition-automerge) authority and one explicit semantic contract.
+
+Advanced Editor variant images use the existing authenticated workspace Markdown upload flow: PNG, JPEG, WebP or GIF up to 20 MB is stored in the document’s sibling `<stem>.assets/` directory. The owner-only adapter persists image identity, text position and layout through the document presenter’s CRDT paragraph update. The shared normalizer accepts these safe workspace asset paths as well as validated WebMeet assets and rejects traversal, private folders and remote URLs. WebMeet retains its server-side room asset validation. Image controls must have working insert, replace, delete and layout handlers, preserve drafts when file selection is cancelled, and block duplicate mutations until completion.

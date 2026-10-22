@@ -45,7 +45,7 @@ test('deriveSameRepoAgentPrincipal maps the DPU principal to a sibling agent', (
   assert.equal(deriveSameRepoAgentPrincipal('gitAgent', { PLOINKY_AGENT_ID: 'not-an-agent-id' }), '');
   assert.equal(deriveSameRepoAgentPrincipal('gitAgent', {}), '');
   assert.deepEqual(defaultAgentPolicies({}), {
-    'agent:proxies/searchAgent': {
+    'agent:legacy-agents/searchAgent': {
       secrets: { allowedRoles: ['read'] },
       updatedAt: '1970-01-01T00:00:00.000Z'
     }
@@ -62,7 +62,7 @@ test('fresh data root seeds the same-repo gitAgent read policy', async () => {
         ['read']
       );
       assert.deepEqual(
-        manifest.agentPolicies['agent:proxies/searchAgent']?.secrets?.allowedRoles,
+        manifest.agentPolicies['agent:legacy-agents/searchAgent']?.secrets?.allowedRoles,
         ['read']
       );
     });
@@ -85,7 +85,7 @@ test('an existing manifest file receives missing default policies', async () => 
       }), 'utf8');
       const manifest = await loadPermissionsManifest();
       assert.deepEqual(
-        manifest.agentPolicies['agent:proxies/searchAgent']?.secrets?.allowedRoles,
+        manifest.agentPolicies['agent:legacy-agents/searchAgent']?.secrets?.allowedRoles,
         ['read']
       );
       assert.deepEqual(
@@ -118,7 +118,7 @@ test('an admin-customized policy survives reloads untouched', async () => {
         ['read', 'write']
       );
       assert.deepEqual(
-        manifest.agentPolicies['agent:proxies/searchAgent'].secrets.allowedRoles,
+        manifest.agentPolicies['agent:legacy-agents/searchAgent'].secrets.allowedRoles,
         ['read']
       );
     });
@@ -139,7 +139,7 @@ test('the seed persists once the manifest is first saved', async () => {
         ['read']
       );
       assert.deepEqual(
-        reloaded.agentPolicies['agent:proxies/searchAgent']?.secrets?.allowedRoles,
+        reloaded.agentPolicies['agent:legacy-agents/searchAgent']?.secrets?.allowedRoles,
         ['read']
       );
     });
@@ -152,10 +152,10 @@ test('applyFreshDefaultAgentPolicies never overwrites an existing entry in memor
   const manifest = {
     agentPolicies: {
       'agent:AchillesIDE/gitAgent': { secrets: { allowedRoles: [] }, updatedAt: '2026-01-01T00:00:00.000Z' },
-      'agent:proxies/searchAgent': { secrets: { allowedRoles: [] }, updatedAt: '2026-01-01T00:00:00.000Z' }
+      'agent:legacy-agents/searchAgent': { secrets: { allowedRoles: [] }, updatedAt: '2026-01-01T00:00:00.000Z' }
     }
   };
   applyFreshDefaultAgentPolicies(manifest, { PLOINKY_AGENT_ID: 'agent:AchillesIDE/dpuAgent' });
   assert.deepEqual(manifest.agentPolicies['agent:AchillesIDE/gitAgent'].secrets.allowedRoles, []);
-  assert.deepEqual(manifest.agentPolicies['agent:proxies/searchAgent'].secrets.allowedRoles, []);
+  assert.deepEqual(manifest.agentPolicies['agent:legacy-agents/searchAgent'].secrets.allowedRoles, []);
 });

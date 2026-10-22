@@ -19,12 +19,12 @@ after(async () => {
     await resetStoreForTests();
 });
 
-test('seed roles and capabilities match the product document', async () => {
+test('default roles grant provider administration without implicit application access', async () => {
     await ensureSeedData();
     const u = await users.createUser({ email: 'u1@x.com', displayName: 'U1', source: 'admin', roles: ['user'] });
     assert.deepEqual(await users.getUserRoles(u.id), ['user']);
     const caps = await authz.getUserCapabilities(u.id);
-    assert.ok(caps.includes('explorer.access'));
+    assert.deepEqual(caps, []);
     assert.ok(!caps.includes('admin.users.manage'));
 
     const decision = await authz.authorizeCapability({ userId: u.id, capability: 'admin.users.manage' });
@@ -33,7 +33,14 @@ test('seed roles and capabilities match the product document', async () => {
     await users.setUserRoles(u.id, ['admin']);
     const adminCaps = await authz.getUserCapabilities(u.id);
     assert.ok(adminCaps.includes('admin.users.manage'));
-    assert.ok(adminCaps.includes('explorer.access'));
+    assert.ok(!adminCaps.includes('explorer.access'));
+    const authorized = await authz.authorizeCapability({ userId: u.id, capability: 'admin.users.manage' });
+    assert.equal(authorized.allowed, true);
+    assert.deepEqual(authorized.roles, ['admin']);
+    await users.createUser({ email: 'second-admin@x.com', roles: ['admin'] });
+    await users.setUserRoles(u.id, ['user']);
+    assert.equal((await authz.authorizeCapability({ userId: u.id, capability: 'admin.users.manage' })).allowed, false);
+    await users.setUserRoles(u.id, ['admin']);
 });
 
 test('selfRegistered users lack explorer.access', async () => {

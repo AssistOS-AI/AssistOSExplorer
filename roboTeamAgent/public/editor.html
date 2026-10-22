@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTeam · Flow type</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="workflow-editor.css">
+  <script>
+    (() => {
+      const keys = ['assistosExplorerTheme', 'webchat_theme'];
+      const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      const syncTheme = () => {
+        let preference;
+        try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
+        catch { /* Browser settings may disable storage. */ }
+        const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+        const root = document.documentElement;
+        root.classList.toggle('theme-dark', dark);
+        root.classList.toggle('theme-light', !dark);
+        root.setAttribute('theme', dark ? 'dark' : 'light');
+      };
+      syncTheme();
+      browserTheme.addEventListener('change', syncTheme);
+      window.addEventListener('storage', event => { if (event.key === null || keys.includes(event.key)) syncTheme(); });
+      window.addEventListener('focus', syncTheme);
+      window.addEventListener('pageshow', syncTheme);
+    })();
+  </script>
+</head>
+<body class="editor-page">
+  <header class="hero" data-embed-header>
+    <nav class="breadcrumbs" aria-label="Breadcrumb" data-embed-breadcrumbs>
+      <a href="./?tab=workflow-types" data-return-control title="Back to Workflow types">RoboTeam</a>
+      <span id="breadcrumbGenerateSep" class="breadcrumb-sep" aria-hidden="true" hidden>/</span>
+      <a id="breadcrumbGenerate" href="flow-types/generate-new" hidden>generate</a>
+      <span class="breadcrumb-sep" aria-hidden="true">/</span>
+      <span id="breadcrumbLeaf" class="workflow-name-field" aria-current="page"><input id="workflowName" name="name" form="workflowForm" class="workflow-name" data-embed-field="workflow-name" maxlength="120" aria-label="Workflow name" placeholder="Name your workflow" title="Rename workflow · Enter to finish · Escape to cancel" disabled><svg class="workflow-edit-icon" data-embed-edit-icon width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4l5 5M4 20l5-1L20 8a3.5 3.5 0 0 0-5-5L4 14z"/></svg></span>
+    </nav>
+  </header>
+
+  <form id="workflowForm" class="workflow-builder">
+    <div class="builder-body">
+      <div class="workflow-workspace">
+        <aside class="task-sidebar">
+          <div class="task-sidebar-header">
+            <h3>Tasks</h3>
+            <button type="button" id="addTaskButton" class="button add-task" title="Add a task" aria-label="Add a task">+</button>
+          </div>
+          <ul id="taskList" class="task-list"></ul>
+          <div class="task-role-legend" aria-label="Node roles"><span class="task-role-legend-label">Legend</span><span data-node-role="start">Start</span><span data-node-role="intermediate">Intermediate</span><span data-node-role="end">End</span></div>
+        </aside>
+        <div class="workflow-main">
+          <div class="workflow-overview">
+            <label class="workflow-description-field">
+              <textarea name="description" class="workflow-description" rows="2" maxlength="4000" aria-label="Workflow description" placeholder="Add a workflow description…"></textarea>
+            </label>
+            <details class="workflow-help">
+              <summary title="Graph editing help" aria-label="Graph editing help"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01" stroke-linecap="round"/></svg></summary>
+              <p class="hint">Drag nodes to arrange them. Drag a left or right connection point to another node’s point to create a directed connection. Use Start node in the task editor to choose the start node. Select a connection and press Delete or Backspace to remove it.</p>
+            </details>
+          </div>
+          <div id="workflowContent" class="workflow-content">
+            <section id="taskPage" class="workflow-task-details" aria-label="Task details" hidden>
+              <button type="button" id="closeTaskEditor" class="task-editor-close" aria-label="Close task details" title="Close task details">×</button>
+              <div id="taskEditorPanel" class="task-editor-panel"></div>
+            </section>
+            <section id="graphPage" class="workflow-graph" aria-label="Graph"><div id="workflowBoard" aria-label="Workflow drawing board"></div></section>
+
+          </div>
+          <p id="workflowMessage" class="message" role="status"></p>
+        </div>
+      </div>
+    </div>
+    <footer class="dialog-actions">
+      <p id="workflowSource" class="workflow-source" hidden></p>
+      <input id="flowLocation" type="hidden">
+      <button type="button" id="workflowCancelButton" class="button">Close</button>
+      <button type="button" id="workflowSaveAsButton" class="button" title="Save as a JSON file in a workspace folder" hidden>Save as…</button>
+      <button type="submit" id="workflowCreateButton" class="button primary">Save</button>
+    </footer>
+  </form>
+  <dialog id="flowFolderDialog" class="create-robot-dialog cron-dialog folder-dialog" aria-labelledby="flowFolderDialogTitle">
+    <div class="create-robot-heading"><h2 id="flowFolderDialogTitle">Select the workflow file folder</h2><button id="flowFolderClose" class="button icon-button" type="button" aria-label="Close folder selector">×</button></div>
+    <div class="folder-browser">
+      <p class="hint">Choose a repository, or a folder directly inside one. The workflow is saved in its <code>flows</code> folder, where RoboFlow finds workflow files.</p>
+      <nav id="flowFolderBreadcrumbs" class="folder-breadcrumbs" aria-label="Workspace folders"></nav>
+      <div class="folder-toolbar"><button id="flowFolderUp" class="button secondary" type="button">↑ Up</button><button id="flowFolderNew" class="button secondary" type="button">+ New folder</button></div>
+      <form id="flowNewFolderForm" class="folder-new-form" hidden><label for="flowNewFolderName">Folder name</label><div><input id="flowNewFolderName" name="name" maxlength="255" required placeholder="New folder"><button class="button primary" type="submit">Create</button><button id="flowNewFolderCancel" class="button secondary" type="button">Cancel</button></div></form>
+      <p id="flowFolderMessage" class="message" role="status"></p>
+      <ul id="flowFolderList" class="folder-list" aria-label="Folders"></ul>
+      <template id="flowFolderIcon"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></svg></template>
+    </div>
+    <div class="folder-footer"><button id="flowFolderCancel" class="button secondary" type="button">Cancel</button><button id="flowFolderUse" class="button primary" type="button" disabled>Save</button></div>
+  </dialog>
+
+  <script src="config.js"></script>
+  <script type="module" src="editor.js"></script>
+</body>
+</html>

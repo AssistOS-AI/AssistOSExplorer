@@ -100,6 +100,12 @@ function inspectedIdentity(inspected) {
 }
 
 const DURABLE_AGENTS = new Set(['dpuAgent', 'onlyOffice', 'umamiAgent', 'soul-gateway']);
+const HEALTH_PROBE_RELAY = '/run/ploinky-health-probes';
+// Inside the Box the relay lives on its fresh /tmp; earlier runtimes kept it in the workspace.
+const healthRelaySources = (name) => [
+    `/tmp/ploinky-health-probes/${name}`,
+    `${WORKSPACE}/.ploinky/run/health-probes/${name}`,
+];
 
 /** Match the selected registry and manifest before trusting a database shutdown. */
 export function assertContainerMounts(binding, inspected, { manifest, realpath = fs.realpathSync } = {}) {
@@ -144,9 +150,15 @@ export function assertContainerMounts(binding, inspected, { manifest, realpath =
         if (contract) {
             requireProof(contract.source === mount.Source && contract.writable === mount.RW, 'QA_MOUNT_CONTRACT_CHANGED');
         } else {
-            const healthRelay = mount.Destination === '/run/ploinky-health-probes'
-                && mount.Source === `${WORKSPACE}/.ploinky/run/health-probes/${binding.name}`;
-            requireProof(!mount.RW || healthRelay, 'QA_UNREGISTERED_WRITABLE_MOUNT');
+            // Neither writable mount is a registry bind: Ploinky appends them to the
+            // run arguments only, the relay for the container's health probes and
+            // the repository projection that accompanies a writable workspace grant.
+            const healthRelay = mount.Destination === HEALTH_PROBE_RELAY
+                && healthRelaySources(binding.name).includes(mount.Source);
+            const repositoryProjection = mount.Destination === `${WORKSPACE}/.ploinky/repos`
+                && mount.Source === mount.Destination
+                && expected.get(WORKSPACE)?.source === WORKSPACE && expected.get(WORKSPACE).writable;
+            requireProof(!mount.RW || healthRelay || repositoryProjection, 'QA_UNREGISTERED_WRITABLE_MOUNT');
         }
         const dataTarget = [...requiredData.keys()].some((target) => mount.Destination === target
             || mount.Destination.startsWith(`${target}/`));
@@ -190,11 +202,17 @@ async function holdMaintenanceLocks(adapters, bindings, work, index = 0) {
     }, () => holdMaintenanceLocks(adapters, bindings, work, index + 1));
 }
 
-/** The production orchestration is shared with adapter-driven behavioral tests. */
-export async function quiesceExplorerQa(adapters) {
+/**
+ * The production orchestration is shared with adapter-driven behavioral tests.
+ * With preflightOnly it runs the first complete proof pass, takes no lease or
+ * lock and stops nothing, so a rehearsal can reveal what a quiesce would refuse.
+ */
+export async function quiesceExplorerQa(adapters, { preflightOnly = false } = {}) {
     const receipt = { version: 1, kind: 'qa-quiesce', result: 'failed', phase: 'preflight', stopped: [] };
+    const guarded = (work) => preflightOnly ? work()
+        : adapters.withWorkspaceMutationLease({ operation: 'qa-backup-quiesce', waitTimeoutMs: 5_000 }, work);
     try {
-        await adapters.withWorkspaceMutationLease({ operation: 'qa-backup-quiesce', waitTimeoutMs: 5_000 }, async () => {
+        await guarded(async () => {
             const bindings = registryBindings(adapters.readRegistry());
             const expectedRegistry = JSON.stringify(bindings.map(bindingIdentity));
             const expectedIds = bindings.map((binding) => binding.id).sort();
@@ -222,6 +240,10 @@ export async function quiesceExplorerQa(adapters) {
                 if (router) adapters.assertRouterAlive(processes);
             };
             revalidate();
+            if (preflightOnly) {
+                receipt.result = 'preflight-passed';
+                return;
+            }
             await holdMaintenanceLocks(adapters, bindings, () => adapters.withNetworkLifecycleLock(async (capability) => {
                 revalidate();
                 const onlyOffice = bindings.find((binding) => binding.agent === 'onlyOffice');
@@ -491,7 +513,9 @@ export async function main() {
     for (const key of originalConsole.keys()) console[key] = () => {};
     let receipt;
     try {
-        receipt = await quiesceExplorerQa(await createProductionAdapters());
+        receipt = await quiesceExplorerQa(await createProductionAdapters(), {
+            preflightOnly: process.env.QA_QUIESCE_PREFLIGHT_ONLY === '1',
+        });
     } catch (error) {
         receipt = error.receipt || { version: 1, kind: 'qa-quiesce', result: 'failed', phase: 'prerequisites',
             code: /^QA_[A-Z_]+$/.test(error?.code || '') ? error.code : 'QA_PREREQUISITE_FAILED', stopped: [] };

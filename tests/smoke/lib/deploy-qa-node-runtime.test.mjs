@@ -90,15 +90,22 @@ test('QA scoped Node refuses checksum mismatch and unsafe tool roots without pub
     assert.equal(fs.existsSync(path.join(f.folder, 'archive', `${dist}.tar.xz`)), false);
 });
 
-test('QA Node pinning precedes recovery capture and never replaces the shared host installation', () => {
+test('QA Node pinning precedes the helper staging, the route re-proof and the teardown, and never replaces the shared host installation', () => {
     assert.match(section, /https:\/\/nodejs\.org\/dist\/v24\.19\.0\//);
     assert.ok(section.includes(x64Sha));
     assert.ok(section.includes('01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc'));
     assert.match(section, /export PATH="\$QA_NODE_HOME\/bin:\$PATH"/);
     assert.match(section, /cmp -s/);
     assert.doesNotMatch(section, /sudo|apt-get|\/usr\/bin\/node|\/usr\/local\/bin\/node/);
-    const start = workflow.indexOf('# BEGIN QA isolated Node runtime');
-    assert(start > workflow.indexOf('// END QA capacity admission'));
-    assert(start < workflow.indexOf('capture "$QA_BACKUP_DIR" --lock-held'));
-    assert.match(workflow, /printf '%s\\n' "\$QA_NODE_HOME" > "\$QA_HELPER_DIR\/node-runtime-path"/);
+    const at = marker => { const index = workflow.indexOf(marker); assert.ok(index > 0, marker); return index; };
+    const start = at('# BEGIN QA isolated Node runtime');
+    // The staged helpers and the route run on the QA Node, so it is installed once, after the identity checks
+    // and the helper integrity proof and before everything that runs a helper.
+    assert(start > at('# END QA transferred helper integrity'));
+    assert(start > at('Explorer QA workspace hash does not match the pinned identity'));
+    for (const later of ['# BEGIN QA helper staging', '# BEGIN QA route re-proof', '// BEGIN QA preservation admission',
+        '# BEGIN QA explorer fast-forward proof', '// BEGIN QA capacity admission', '# BEGIN QA install marker', 'qa-teardown.mjs" execute --scope']) {
+        assert(start < at(later), `the QA Node precedes ${later}`);
+    }
+    assert.equal(workflow.match(/# BEGIN QA isolated Node runtime/g).length, 1, 'the QA Node is installed once');
 });

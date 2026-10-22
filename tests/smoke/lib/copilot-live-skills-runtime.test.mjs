@@ -12,11 +12,13 @@ import {
 } from './copilot-live-skills-runtime.mjs';
 import { createLiveSkillsFixture, liveSkillsHash, liveSkillSources, liveSkillsPrompt, policyEvidence, validateLiveSkillsTurn } from './copilot-live-skills.mjs';
 import { createOrchestrationReader } from './live-sessions-orchestration.mjs';
+import { withLiveSkillsProjection } from './copilot-live-skills-test-fixture.mjs';
+import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
 
 const digest = 'a'.repeat(64);
 const files = LIVE_SKILLS_CONTRACT_FILES;
 
-function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'AchillesCLI') {
+function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'AchillesIDE') {
     const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
     const repository = path.join(directory, repositoryRelative);
@@ -60,7 +62,7 @@ function readerSetup(f, { root = f.directory, image = 'sha256:' + digest } = {})
     const release = { applicationBaseURL: 'http://127.0.0.1:8080', boxBaseURL: 'http://127.0.0.1:8080', imageDigest: digest,
         agentLib: { commit: 'f'.repeat(40) },
         liveBox: { box: { containerId: 'b'.repeat(64), imageId: digest, startedAt, semanticLabels: {} }, workspaceSourceMount: { source: root } },
-        repositories: { achillesCLI: { repositoryPath: f.repository } } };
+        repositories: { explorer: { repositoryPath: f.repository } } };
     const codeSource = `${f.repository}/roboTeamAgent`;
     const objectId = '64a1dedd-e8bd-4f7b-8db4-1c08042a1dff';
     const payloadPath = `${root}/.ploinky/deps/store/objects/${objectId}/payload`;
@@ -128,7 +130,7 @@ test('primary: the reader admits a canonical same-path workspace containing a sp
 test('complete fresh07 production topology constructs and finishes twice without provider work', async t => {
     const f = fixture(t, 'production workspace ü '), setup = readerSetup(f);
     const root = f.directory, runtime = setup.runtime;
-    const key = 'ploinky_AchillesCLI_roboTeamAgent_feature-fresh-07-fixture_1ae9bce2';
+    const key = 'ploinky_AchillesIDE_roboTeamAgent_feature-fresh-07-fixture_1ae9bce2';
     runtime.key = key;
     const agent = `${root}/.ploinky/container-runtime/${key}/Agent-10645-1792085969146`;
     fs.mkdirSync(agent, { recursive: true });
@@ -230,7 +232,7 @@ test('serialized collector validates a real canonical object, projects only admi
     const manifestBytes = JSON.stringify(manifest);
     fs.writeFileSync(`${object}/manifest.json`, manifestBytes);
     fs.writeFileSync(`${object}/complete.json`, JSON.stringify({ manifestSha256: sha256Hex(manifestBytes), generationId: deps.generationId }));
-    const row = { type: 'agent', repoName: 'AchillesCLI', agentName: 'roboTeamAgent', runtime: 'podman',
+    const row = { type: 'agent', repoName: 'AchillesIDE', agentName: 'roboTeamAgent', runtime: 'podman',
         containerId: setup.runtime.containerId, instanceId: setup.runtime.instanceId, enableGeneration: setup.runtime.enableGeneration,
         dependencies: { ...deps, rebuildToken: 'PRIVATE_ADMISSION_SENTINEL' }, env: 'PRIVATE_ENV_SENTINEL' };
     const dataModule = source => `data:text/javascript,${encodeURIComponent(source)}`;
@@ -260,6 +262,9 @@ test('serialized collector validates a real canonical object, projects only admi
     assert.deepEqual(JSON.parse(success.stdout).dependencies, deps);
     assert.doesNotMatch(success.stdout, /PRIVATE_|manifest|contract/);
     assert.deepEqual(inventory(), before);
+    const retiredOwner = execute({ ...row, repoName: 'AchillesCLI' });
+    assert.equal(retiredOwner.status, 1, 'retired repository ownership must not identify the runtime');
+    assert.equal(retiredOwner.stdout, '');
     for (const bad of [undefined, { ...deps, mode: 'unknown' }, { ...deps, objectId: randomUUID() },
         { ...deps, generationId: digest }, { ...deps, payloadPath: `${deps.payloadPath}-evil` },
         { ...deps, runtimeKey: 'container-linux-arm64-node22' }]) {
@@ -336,7 +341,7 @@ test('code observer rejects empty, duplicate and escaping contract paths', async
 // ---------------------------------------------------------------------------------------------------------
 const bindMount = (Source, Destination, RW = true) => ({ Type: 'bind', Source, Destination, RW });
 
-function mountCase(t, { prefix = 'live skill ü mounts ', repositoryRelative = 'AchillesCLI' } = {}) {
+function mountCase(t, { prefix = 'live skill ü mounts ', repositoryRelative = 'AchillesIDE' } = {}) {
     const f = fixture(t, prefix, repositoryRelative);
     const setup = readerSetup(f);
     const root = f.directory;
@@ -367,7 +372,7 @@ test('runtime mounts accept the exact production tuples, including a space and U
 });
 
 test('the read-only controller pin is accepted only for a source that lives below it, and only as an exact read-only self bind', t => {
-    const c = mountCase(t, { repositoryRelative: '.ploinky/repos/AchillesCLI' });
+    const c = mountCase(t, { repositoryRelative: '.ploinky/repos/AchillesIDE' });
     const pin = path.join(c.root, '.ploinky');
     const pinned = c.clone(value => value.mounts.push(bindMount(pin, pin, false)));
     assert.equal(c.validate(pinned), pinned);
@@ -472,7 +477,7 @@ test('runtime mounts reject an unclean root before looking at any mount', t => {
     for (const workspaceRoot of [undefined, '', '/', `${c.root}/`, `${c.root}/../x`, `${c.root}:x`, `${c.root}\n`, 'relative']) {
         assert.throws(() => validateLiveSkillsRuntimeBinding(c.runtime, c.f.repository, { workspaceRoot }), /clean absolute host path/);
     }
-    assert.throws(() => validateLiveSkillsRuntimeBinding(c.runtime, `${c.root}-evil/AchillesCLI`, { workspaceRoot: c.root }), /outside the admitted root/);
+    assert.throws(() => validateLiveSkillsRuntimeBinding(c.runtime, `${c.root}-evil/AchillesIDE`, { workspaceRoot: c.root }), /outside the admitted root/);
     assert.throws(() => validateLiveSkillsRuntimeBinding(c.runtime, path.posix.dirname(c.root), { workspaceRoot: c.root }), /outside the admitted root/);
 });
 
@@ -554,8 +559,8 @@ test('the reader never starts a command for a root Box evidence cannot admit', a
     for (const name of ['fresh:workspace', 'fresh\nworkspace', 'fresh\\workspace']) {
         const f = fixture(t, 'parent ');
         const root = path.join(f.directory, name);
-        fs.mkdirSync(path.join(root, 'AchillesCLI/roboTeamAgent'), { recursive: true });
-        const setup = readerSetup({ ...f, directory: root, repository: path.join(root, 'AchillesCLI') }, { root });
+        fs.mkdirSync(path.join(root, 'AchillesIDE/roboTeamAgent'), { recursive: true });
+        const setup = readerSetup({ ...f, directory: root, repository: path.join(root, 'AchillesIDE') }, { root });
         let commands = 0;
         const run = async () => { commands += 1; return []; };
         await assert.rejects(createLiveSkillsRuntimeReader(setup.input, { collectRelease: async () => setup.release, runCommand: run }), /clean absolute host path/, name);
@@ -563,15 +568,15 @@ test('the reader never starts a command for a root Box evidence cannot admit', a
     }
 });
 
-test('the reader requires the verified AchillesCLI to be inside the admitted root and admits only canonical roots', async t => {
+test('the reader requires the verified AchillesIDE to be inside the admitted root and admits only canonical roots', async t => {
     const f = fixture(t, 'fresh workspace ü ');
     const setup = readerSetup(f);
     const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'outside-cli-')));
     t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
     fs.mkdirSync(path.join(outside, 'roboTeamAgent'));
-    setup.release.repositories.achillesCLI.repositoryPath = outside;
-    await assert.rejects(setup.create(), /Verified AchillesCLI must belong to the selected workspace/);
-    setup.release.repositories.achillesCLI.repositoryPath = `${f.directory}-evil`;
+    setup.release.repositories.explorer.repositoryPath = outside;
+    await assert.rejects(setup.create(), /Verified AchillesIDE must belong to the selected workspace/);
+    setup.release.repositories.explorer.repositoryPath = `${f.directory}-evil`;
     await assert.rejects(setup.create());
     // An alias of the root resolves to the canonical admitted root.
     const g = fixture(t, 'fresh workspace ü ');
@@ -631,7 +636,7 @@ const TRICKY_ROOTS = ["/srv/it's $HOME `x` ${y} \"q\"", '/Volumes/Ünïcode ws/�
 
 for (const root of TRICKY_ROOTS) {
     for (const [name, fn, args] of [
-        ['readLiveSkillsSnapshot', readLiveSkillsSnapshot, { sessionId: randomUUID(), folder: `copilot-live-skills-${randomUUID()}`, skillNames: [], contractFiles: [], expectedRepository: `${root}/AchillesCLI`, workspaceRoot: root }],
+        ['readLiveSkillsSnapshot', readLiveSkillsSnapshot, { sessionId: randomUUID(), folder: `copilot-live-skills-${randomUUID()}`, skillNames: [], contractFiles: [], expectedRepository: `${root}/AchillesIDE`, workspaceRoot: root }],
         ['readRegistryAndRuntime', readRegistryAndRuntime, { workspaceRoot: root }],
     ]) {
         test(`${name} serializes the root ${JSON.stringify(root)} as one JSON value that Node parses and runs without a ReferenceError`, t => {
@@ -657,7 +662,7 @@ for (const root of TRICKY_ROOTS) {
 // (/data robots and /code) are redirected to temporary directories; the workspace root is the admitted host path.
 function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thinkingLink = false } = {}) {
     const f = fixture(t, prefix);
-    assert.ok(process.env.SET2_ACHILLES_SOURCE && process.env.SET2_ALA_COMMAND && process.env.ACHILLES_ALA_COMMAND, 'Pin AchillesCLI and ALA source for SET2 tests.');
+    assert.ok(process.env.SET2_ACHILLES_SOURCE && process.env.SET2_ALA_COMMAND && process.env.ACHILLES_ALA_COMMAND, 'Pin AchillesIDE and ALA source for SET2 tests.');
     const selectedAlaCommand = fs.realpathSync(process.env.SET2_ALA_COMMAND);
     const selectedAlaRoot = path.dirname(path.dirname(selectedAlaCommand));
     const alaRoot = path.join(f.directory, 'AdvancedLanguageAgent');
@@ -682,8 +687,12 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
     fs.mkdirSync(path.join(workspace, '.receipts'), { recursive: true });
     fs.mkdirSync(path.join(workspace, '.roboteam/sessions'), { recursive: true });
     fs.mkdirSync(path.join(workspace, '.roboteam/.ala/sessions'), { recursive: true });
-    fs.mkdirSync(path.join(workspace, '.agents/skills'), { recursive: true });
-    const selected = [owned.control, owned.probe];
+    fs.mkdirSync(path.join(workspace, '.agents'), { recursive: true });
+    const sessionId = randomUUID(), turnId = randomUUID();
+    const skillsDirectory = path.join(workspace, '.roboteam/sessions', sessionId, 'skills');
+    fs.mkdirSync(skillsDirectory, { recursive: true });
+    // Native revision follows persisted selection order, not alphabetical names.
+    const selected = [owned.probe, owned.control];
     const links = [], entries = [];
     for (const skill of selected) {
         const sourcePath = path.join(owned.repositoryRoot, 'skills', skill.name);
@@ -691,13 +700,12 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
         const source = liveSkillSources(owned, skill, f.directory);
         fs.writeFileSync(path.join(sourcePath, 'SKILL.md'), source.descriptor);
         fs.writeFileSync(path.join(sourcePath, 'receipt.mjs'), source.helper);
-        const destination = path.join(workspace, '.agents/skills', skill.name);
+        const destination = path.join(skillsDirectory, skill.name);
         fs.symlinkSync(sourcePath, destination);
-        links.push({ repoName: owned.repositoryName, sourcePath: `skills/${skill.name}`, destination, linkTarget: sourcePath });
+        links.push({ name: skill.name, source: sourcePath, target: sourcePath });
         entries.push({ name: skill.name, identity: `${owned.repositoryName}/${skill.name}`, source: owned.repositoryName, sourcePath, fingerprint: liveSkillsHash(source) });
     }
-    fs.writeFileSync(path.join(workspace, '.agents/.roboteam-links.json'), JSON.stringify(links));
-    const dataRoot = path.join(f.directory, '_data'), sessionId = randomUUID(), turnId = randomUUID();
+    const dataRoot = path.join(f.directory, '_data');
     const robot = path.join(dataRoot, 'robots', owned.robotId);
     fs.mkdirSync(path.join(robot, 'home'), { recursive: true });
     fs.writeFileSync(path.join(robot, 'metadata.json'), JSON.stringify({ schema: 'roboteam-robot-v1', name: owned.robotName, id: owned.robotId,
@@ -708,9 +716,10 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
     const metadata = { version: 2, sessionId, cwd: workspace, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
         engine: { type: 'ala', version: 1, sessionId, cwd: workspace, home: path.join(robot, 'home'), backend: 'codex', robotId: owned.robotId },
         turns: [{ turnId, userMessageId: randomUUID(), assistantMessageId: randomUUID(), timestamp: new Date().toISOString(), status: 'completed', tasks: [] }],
-        skillPolicyRef: sessionId, skillExecution: { live: true, active: false, entries, revision: liveSkillsHash(links), policyVersion: 1, diagnostics: [] } };
+        skillPolicyRef: sessionId, skillExecution: { live: true, active: false, entries, revision: liveSkillsHash(links), policyVersion: 1, diagnostics: [],
+            skillsDirectory, mounts: links.map(link => ({ source: link.source, target: link.target, expose: true })) } };
     if (thinkingLink) metadata.turns[0].thinkingUrl = `/base-agent-additional-server/roboTeamAgent/3001/webchat-logs/${sessionId}/${metadata.turns[0].assistantMessageId}`;
-    const writeSession = (cwd = workspace) => fs.writeFileSync(path.join(workspace, `.roboteam/sessions/${sessionId}.json`), JSON.stringify({ ...metadata, cwd }));
+    const writeSession = (cwd = workspace) => fs.writeFileSync(path.join(workspace, `.roboteam/sessions/${sessionId}/config.json`), JSON.stringify({ ...metadata, cwd }));
     writeSession();
     const transcriptFile = path.join(workspace, `.roboteam/.ala/sessions/${sessionId}.jsonl`);
     fs.writeFileSync(transcriptFile, JSON.stringify({ seq: 1, type: 'session', id: sessionId, at: new Date().toISOString() }) + '\n');
@@ -738,7 +747,12 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
         await readLiveSkillsSnapshot({ ...args, ...overrides }, { dataRoot, codeRoot: f.code, fsApi: f.fsApi, emit: value => { emitted = value; }, ...options });
         return emitted;
     };
-    return { f, folder, workspace, dataRoot, sessionId, robot, writeSession, args, read, owned, metadata, transcriptFile, initialized, phase, selected, startedAt, finalText };
+    const project = async callback => {
+        const { pathToFileURL } = await import('node:url');
+        const { alaSkillMountArguments } = await import(pathToFileURL(`${f.source}/copilot/src/lib/execution/alaSkillMounts.mjs`).href);
+        return withLiveSkillsProjection({ fixture: owned, workspaceRoot: f.directory, sessionId, execution: metadata.skillExecution, alaSkillMountArguments }, callback);
+    };
+    return { f, folder, workspace, dataRoot, sessionId, robot, writeSession, args, read, owned, metadata, transcriptFile, initialized, phase, selected, startedAt, finalText, skillsDirectory, project };
 }
 
 test('the in-Box reader accepts a same-path root with a space and Unicode and reports the root it used', async t => {
@@ -764,7 +778,7 @@ test('the in-Box reader rejects unclean roots, repositories outside the root and
     for (const workspaceRoot of ['/workspace', `${c.f.directory}-evil`, `${c.f.directory}/`, `${c.f.directory}/../${path.basename(c.f.directory)}`, 'relative', '/', '']) {
         await assert.rejects(c.read({ workspaceRoot }), undefined, workspaceRoot);
     }
-    await assert.rejects(c.read({ expectedRepository: `${c.f.directory}-evil/AchillesCLI` }));
+    await assert.rejects(c.read({ expectedRepository: `${c.f.directory}-evil/AchillesIDE` }));
     await assert.rejects(c.read({ expectedRepository: path.dirname(c.f.directory) }));
     const alias = `${c.f.directory}-alias`;
     fs.symlinkSync(c.f.directory, alias);
@@ -824,12 +838,22 @@ test('SET2 real links expose helper byte edits with unchanged installed-link rev
 });
 
 for (const [name, corrupt] of Object.entries({
+    'missing session config': c => fs.unlinkSync(path.join(c.workspace, '.roboteam/sessions', c.sessionId, 'config.json')),
+    'missing private skills directory': c => fs.rmSync(c.skillsDirectory, { recursive: true }),
+    'missing private skill link': c => fs.unlinkSync(path.join(c.skillsDirectory, c.owned.probe.name)),
+    'wrong session skills directory': c => { c.metadata.skillExecution.skillsDirectory += '-foreign'; c.writeSession(); },
+    'unknown mount source': c => { c.metadata.skillExecution.mounts[0].source += '-foreign'; c.writeSession(); },
+    'malformed mounts': c => { c.metadata.skillExecution.mounts[0].expose = false; c.writeSession(); },
+    'incorrect native revision': c => { c.metadata.skillExecution.revision = '0'.repeat(64); c.writeSession(); },
+    'duplicate entry names': c => { c.metadata.skillExecution.entries.push(c.metadata.skillExecution.entries[0]); c.writeSession(); },
+    'nonempty project skills': c => { fs.mkdirSync(`${c.workspace}/.agents/skills`); fs.writeFileSync(`${c.workspace}/.agents/skills/foreign`, 'retain'); },
+    'legacy shared record': c => fs.writeFileSync(`${c.workspace}/.agents/.roboteam-links.json`, '[]'),
     'copy replacing installed link': c => {
-        const destination = path.join(c.workspace, '.agents/skills', c.owned.probe.name);
+        const destination = path.join(c.skillsDirectory, c.owned.probe.name);
         fs.unlinkSync(destination); fs.cpSync(path.join(c.owned.repositoryRoot, 'skills', c.owned.probe.name), destination, { recursive: true });
     },
     'retargeted link with identical source bytes': c => {
-        const destination = path.join(c.workspace, '.agents/skills', c.owned.probe.name), decoy = path.join(c.f.directory, 'decoy');
+        const destination = path.join(c.skillsDirectory, c.owned.probe.name), decoy = path.join(c.f.directory, 'decoy');
         fs.cpSync(path.join(c.owned.repositoryRoot, 'skills', c.owned.probe.name), decoy, { recursive: true });
         fs.unlinkSync(destination); fs.symlinkSync(decoy, destination);
     },
@@ -840,7 +864,7 @@ for (const [name, corrupt] of Object.entries({
     'malformed terminated ALA record': c => { fs.appendFileSync(c.transcriptFile, 'malformed\n'); },
     'missing completed ALA transcript': c => { fs.unlinkSync(c.transcriptFile); },
     'symlinked session metadata': c => {
-        const file = path.join(c.workspace, '.roboteam/sessions', c.sessionId + '.json');
+        const file = path.join(c.workspace, '.roboteam/sessions', c.sessionId, 'config.json');
         fs.renameSync(file, file + '.real'); fs.symlinkSync(file + '.real', file);
     },
 })) test(`SET2 reader rejects ${name}`, async t => {
@@ -854,12 +878,98 @@ test('SET2 supported transcript reader ignores only a trailing partial append', 
     assert.equal((await c.read()).native.turns[0].final, 'Current final answer');
 });
 
+test('native private links preserve entry order, duplicate-source sharing, execution-only entries and empty selections', async t => {
+    const c = snapshotCase(t), before = await c.read();
+    assert.deepEqual(before.catalog.links.map(link => link.name), [c.owned.probe.name, c.owned.control.name]);
+    const entry = c.metadata.skillExecution.entries[0];
+    c.metadata.skillExecution.entries.push({ ...entry, name: 'shared-source' }, { ...entry, name: 'execution-only', executionOnly: true });
+    const links = [...before.catalog.links, { name: 'shared-source', source: entry.sourcePath, target: entry.sourcePath }];
+    fs.symlinkSync(entry.sourcePath, `${c.skillsDirectory}/shared-source`);
+    c.metadata.skillExecution.revision = liveSkillsHash(links); c.writeSession();
+    const shared = await c.read();
+    assert.deepEqual(shared.catalog.links, links);
+    assert.equal(shared.session.skillExecution.mounts.length, 2);
+    c.metadata.skillExecution.entries = []; c.metadata.skillExecution.mounts = [];
+    c.metadata.skillExecution.revision = liveSkillsHash([]); c.writeSession();
+    for (const name of fs.readdirSync(c.skillsDirectory)) fs.unlinkSync(`${c.skillsDirectory}/${name}`);
+    assert.deepEqual((await c.read()).catalog.links, []);
+});
+
+test('native hidden-source aliases use first occurrence order and share mounts', async t => {
+    const c = snapshotCase(t), before = await c.read();
+    const source = `${c.workspace}/.roboteam/hidden source ü`; fs.mkdirSync(source);
+    c.metadata.skillExecution.entries.push({ name: 'hidden-one', sourcePath: source }, { name: 'hidden-two', sourcePath: source });
+    const target = '/workspace/roboteam-skill-2';
+    c.metadata.skillExecution.mounts.push({ source, target, expose: true });
+    const links = [...before.catalog.links, ...['hidden-one', 'hidden-two'].map(name => ({ name, source, target }))];
+    for (const name of ['hidden-one', 'hidden-two']) fs.symlinkSync(target, `${c.skillsDirectory}/${name}`);
+    c.metadata.skillExecution.revision = liveSkillsHash(links); c.writeSession();
+    assert.deepEqual((await c.read()).catalog.links, links);
+    await assert.rejects(c.project(() => assert.fail('Must reject an unrepresented mount')), /auxiliary source mounts/);
+    assert.equal(fs.lstatSync(`${c.workspace}/.agents/skills`, { throwIfNoEntry: false }), undefined);
+});
+
+for (const [name, mutate] of Object.entries({
+    'directory replacement': c => { fs.renameSync(c.skillsDirectory, c.skillsDirectory + '-old'); fs.mkdirSync(c.skillsDirectory); for (const entry of c.metadata.skillExecution.entries) fs.symlinkSync(entry.sourcePath, `${c.skillsDirectory}/${entry.name}`); },
+    'membership addition': c => fs.symlinkSync(c.metadata.skillExecution.entries[0].sourcePath, `${c.skillsDirectory}/extra`),
+    'membership removal': c => fs.unlinkSync(`${c.skillsDirectory}/${c.owned.control.name}`),
+    'link retarget': c => { const file = `${c.skillsDirectory}/${c.owned.control.name}`; fs.unlinkSync(file); fs.symlinkSync(c.metadata.skillExecution.entries[0].sourcePath, file); },
+    'session metadata mutation': c => { c.metadata.updatedAt = 'changed'; c.writeSession(); },
+})) test(`snapshot fails closed on ${name} during source capture`, async t => {
+    const c = snapshotCase(t); await c.initialized;
+    const source = `${c.owned.repositoryRoot}/skills/${c.owned.probe.name}/receipt.mjs`;
+    let injected = false;
+    const fsApi = { ...c.f.fsApi, openSync(file, flags) {
+        const fd = c.f.fsApi.openSync(file, flags);
+        if (file === source && !injected) { injected = true; mutate(c); }
+        return fd;
+    } };
+    await assert.rejects(c.read({}, { fsApi }));
+    assert.equal(injected, true);
+});
+
+test('offline helper failure removes its exact projection and snapshot reads do not mutate evidence', async t => {
+    const c = snapshotCase(t); await c.initialized;
+    await assert.rejects(c.project(() => { throw new Error('helper failed'); }), /helper failed/);
+    assert.equal(fs.lstatSync(`${c.workspace}/.agents/skills`, { throwIfNoEntry: false }), undefined);
+    const inventory = root => fs.readdirSync(root, { recursive: true }).sort().map(name => {
+        const file = path.join(root, name), stat = fs.lstatSync(file);
+        return [name, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs,
+            stat.isSymbolicLink() ? fs.readlinkSync(file) : stat.isFile() ? liveSkillsHash(fs.readFileSync(file)) : null];
+    });
+    const before = inventory(c.workspace);
+    await c.read(); await c.read();
+    assert.deepEqual(inventory(c.workspace), before);
+});
+
+test('pre-execution snapshot still refuses nonempty project skills', async t => {
+    const c = snapshotCase(t); delete c.metadata.skillExecution; c.writeSession();
+    fs.mkdirSync(`${c.workspace}/.agents/skills`); fs.writeFileSync(`${c.workspace}/.agents/skills/foreign`, 'retain');
+    await assert.rejects(c.read(), /project skills must remain empty/);
+});
+
+test('serialized observer and cleanup include the self-contained native link guard', async t => {
+    const c = snapshotCase(t); await c.initialized;
+    for (const fn of [readLiveSkillsSnapshot, operateLiveSkillsFixture]) {
+        const serialized = program(fn, {});
+        assert.match(serialized, /const inspectSessionSkillLinks = async function inspectSessionSkillLinks/);
+        // Execute the actual serialized helper, with no module imports or ambient bindings.
+        const guard = serialized.slice(serialized.indexOf('const inspectSessionSkillLinks = '), serialized.indexOf(`(${fn.toString()})`));
+        const result = spawnSync(process.execPath, ['--input-type=module', '-'], {
+            input: guard + `\nconst result = await inspectSessionSkillLinks(${JSON.stringify({ workspace: c.workspace, sessionId: c.sessionId, execution: c.metadata.skillExecution })}); result.recheck(); console.log(JSON.stringify(result.links));`,
+            encoding: 'utf8', timeout: 10_000,
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(JSON.parse(result.stdout).map(link => link.name), c.selected.map(skill => skill.name));
+    }
+});
+
 test('generated helper executes through a real live link and writes one exclusive canonical source receipt', async t => {
     const c = snapshotCase(t); await c.initialized;
     const phase = randomUUID(), skill = c.owned.probe;
     const link = path.join(c.workspace, '.agents/skills', skill.name, 'receipt.mjs');
     const invoke = filename => spawnSync(process.execPath, [filename, phase], { cwd: c.workspace, env: process.env, encoding: 'utf8', timeout: 10_000 });
-    const first = invoke(link);
+    const first = await c.project(() => invoke(link));
     assert.equal(first.status, 0, first.stderr);
     assert.equal(first.stdout.trim(), skill.helperMarker);
     const receiptFile = path.join(c.workspace, '.receipts', `${phase}-${skill.name}.json`);
@@ -870,7 +980,7 @@ test('generated helper executes through a real live link and writes one exclusiv
     assert.equal(receipt.cwd, c.workspace);
     assert.equal(receipt.helperSha256, liveSkillsHash(fs.readFileSync(receipt.resolvedSource)));
     assert.equal(receipt.runId, c.owned.runId);
-    assert.notEqual(invoke(link).status, 0, 'Replaying a phase must fail its exclusive receipt write.');
+    assert.notEqual((await c.project(() => invoke(link))).status, 0, 'Replaying a phase must fail its exclusive receipt write.');
     assert.deepEqual(fs.readFileSync(receiptFile), before);
     const copied = path.join(c.workspace, 'copied-helper.mjs');
     fs.copyFileSync(receipt.resolvedSource, copied);
@@ -913,11 +1023,11 @@ test('SET2 the reader rejects an outer Box mount over its selected ALA source', 
 async function presentationCase(t) {
     const c = snapshotCase(t, 'thinking link ü ', { liveTurn: true, thinkingLink: true });
     await c.initialized;
-    for (const skill of c.selected) {
+    await c.project(async () => { for (const skill of c.selected) {
         const invoked = spawnSync(process.execPath, [path.join(c.workspace, '.agents/skills', skill.name, 'receipt.mjs'), c.phase],
             { cwd: c.workspace, env: process.env, encoding: 'utf8', timeout: 10_000 });
         assert.equal(invoked.status, 0, invoked.stderr);
-    }
+    } });
     const snapshot = await c.read();
     const inventory = { robot: c.owned.robotName, scope: 'conversation', sessionId: c.sessionId, policyVersion: 1,
         policy: { mode: 'live', excludedSkills: [] }, cwd: c.workspace, lastRevision: snapshot.catalog.revision, activeRevision: null };

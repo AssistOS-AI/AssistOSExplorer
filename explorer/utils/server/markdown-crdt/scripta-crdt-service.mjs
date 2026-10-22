@@ -25,7 +25,10 @@ import {
   serializeMarkdownContent
 } from './markdown-crdt-model.mjs';
 import { createExplorerPrivateDataBoundary } from '../private-data-boundary.mjs';
+import { foldWorkspaceName, isProtectedWorkspaceSegments } from '../protected-workspace-paths.mjs';
 
+// Folded names: the workspace listing skips these folders and every protected
+// entry (`.data`, `.ploinky`, `.env`, `master-key`, `*.secrets`).
 const EXCLUDED_WORKSPACE_FOLDERS = new Set(['.data', '.git', '.ploinky', 'node_modules']);
 const MAX_COLLABORATION_CHANGES = 128;
 const MAX_COLLABORATION_BYTES = 2 * 1024 * 1024;
@@ -410,8 +413,10 @@ export function createScriptaCrdtService({
       if (depth > 8 || documents.length >= 500) return;
       const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
       for (const entry of entries) {
-        if (EXCLUDED_WORKSPACE_FOLDERS.has(entry.name) || documents.length >= 500) continue;
+        if (documents.length >= 500) continue;
         const target = path.join(directory, entry.name);
+        if (EXCLUDED_WORKSPACE_FOLDERS.has(foldWorkspaceName(entry.name))
+          || isProtectedWorkspaceSegments(path.relative(root, target).split(path.sep))) continue;
         const candidate = virtualPath(target);
         if (entry.isDirectory()) {
           if (folders.length < 500) folders.push(candidate);

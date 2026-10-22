@@ -27,7 +27,30 @@ export function relayBreadcrumbFieldEvent(event, source) {
     return true;
 }
 
+// A marked <select> (for example a theme choice) replays its change on the owning page's select.
+export function relayBreadcrumbSelectEvent(event, source) {
+    const field = event.target?.closest?.('select[data-embed-field]');
+    if (!field || event.type !== 'change' || !source || source.isConnected === false) return false;
+    const key = field.getAttribute('data-embed-field');
+    const original = [...source.querySelectorAll('select[data-embed-field]')]
+        .find(select => select.getAttribute('data-embed-field') === key);
+    if (!original || original.disabled) return false;
+    original.value = field.value;
+    original.dispatchEvent(new original.ownerDocument.defaultView.Event('change', { bubbles: true }));
+    field.value = original.value;
+    return true;
+}
+
+// Cloning copies a select's markup, not its current choice, so each mirrored select takes the owning page's value.
+export function syncBreadcrumbSelects(breadcrumbs, source) {
+    const originals = [...source.querySelectorAll('select[data-embed-field]')];
+    for (const select of breadcrumbs.querySelectorAll('select[data-embed-field]')) {
+        const original = originals.find(item => item.getAttribute('data-embed-field') === select.getAttribute('data-embed-field'));
+        if (original) select.value = original.value;
+    }
+}
+
 export function hasFocusedBreadcrumbField(breadcrumbs) {
     const active = breadcrumbs.ownerDocument.activeElement;
-    return Boolean(active?.matches?.('input[data-embed-field]') && breadcrumbs.contains(active));
+    return Boolean(active?.matches?.('input[data-embed-field], select[data-embed-field]') && breadcrumbs.contains(active));
 }

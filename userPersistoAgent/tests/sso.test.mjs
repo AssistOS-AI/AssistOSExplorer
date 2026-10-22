@@ -7,7 +7,7 @@ import { join } from 'node:path';
 process.env.PERSISTENCE_FOLDER = mkdtempSync(join(tmpdir(), 'userpersisto-sso-'));
 process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
 
-const { ensureSeedData } = await import('../lib/bootstrap.mjs');
+const { ensureExplorerSeedData: ensureSeedData } = await import('./helpers/product-permissions.mjs');
 const { createUser, updateUser } = await import('../lib/users.mjs');
 const sso = await import('../lib/sso.mjs');
 const { resetStoreForTests } = await import('../lib/store.mjs');

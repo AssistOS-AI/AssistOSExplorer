@@ -8,7 +8,7 @@ import { verifyAccountPassword } from '../lib/auth/userPassword.mjs';
 import { setAccountPassword } from '../lib/auth/passwordManagement.mjs';
 import { completeReauthentication } from '../lib/auth/operationGrants.mjs';
 import { credentialVersion } from '../lib/auth/credentialVersion.mjs';
-import { ensureSeedData } from '../lib/bootstrap.mjs';
+import { ensureExplorerSeedData as ensureSeedData } from './helpers/product-permissions.mjs';
 import { createUser, getUserById, getUserByEmail, getUserRoles, updateUser, setUserRoles, listUsers } from '../lib/users.mjs';
 import { getInstallationSetup } from '../lib/setup.mjs';
 import { completeGoogleIdentity, inspectGoogleIdentity, googleIdentityKey, mailboxVersion, GOOGLE_ISSUER } from '../lib/externalIdentities.mjs';

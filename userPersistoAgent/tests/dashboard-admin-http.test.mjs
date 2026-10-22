@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { createRouterSigner } from './helpers/router-fixture.mjs';
-import { ensureSeedData } from '../lib/bootstrap.mjs';
+import { ensureExplorerSeedData as ensureSeedData } from './helpers/product-permissions.mjs';
 import { createUser, getUserById, getUserRoles, updateUser, setUserRoles } from '../lib/users.mjs';
 import { getStore, resetStoreForTests } from '../lib/store.mjs';
 import { startService } from '../service/index.mjs';

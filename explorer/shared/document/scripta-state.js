@@ -34,6 +34,17 @@ export function normalizeScriptaVariantImageLayout(value = {}) {
     };
 }
 
+export function isScriptaImageWorkspaceUrl(value) {
+    const path = String(value || '');
+    if (!path.startsWith('/') || /[\\\u0000-\u001f?#%]/.test(path)) return false;
+    const segments = path.slice(1).split('/');
+    if (segments.some((segment, index) => !segment || (segment.startsWith('.') && !(index === 0 && segment === '.ploinky' && segments[1] === 'repos')))) return false;
+    if (/^\/WebMeet\/[a-zA-Z0-9._-]+\/assets\/asset_[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+\.(?:png|jpg|webp|gif)$/i.test(path)) return true;
+    return segments.length >= 2
+        && /^[a-zA-Z0-9_-]+\.assets$/.test(segments.at(-2))
+        && /^[a-zA-Z0-9_-]+\.(?:png|jpg|webp|gif)$/i.test(segments.at(-1));
+}
+
 export function normalizeScriptaVariantImages(value = [], fallbackPosition = 0) {
     if (!Array.isArray(value)) return [];
     return value
@@ -48,7 +59,7 @@ export function normalizeScriptaVariantImages(value = [], fallbackPosition = 0) 
                 : Math.max(0, Number(fallbackPosition) || 0),
             layout: normalizeScriptaVariantImageLayout(image.layout),
         }))
-        .filter((image) => image.assetId && /^\/WebMeet\/[a-zA-Z0-9._-]+\/assets\/asset_[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+\.(?:png|jpg|webp|gif)$/i.test(image.workspaceUrl));
+        .filter((image) => image.assetId && isScriptaImageWorkspaceUrl(image.workspaceUrl));
 }
 
 function markdownImage(image = {}) {

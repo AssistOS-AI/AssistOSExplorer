@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { installExplorerResourceLoader } from '../../services/runtime/explorerResourceLoader.js';
+import { ResourceManager, WebSkel } from '../../shared/libs/webskel/webskel.mjs';
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -70,7 +71,7 @@ test('T6: the presenter import starts while the template fetch is still pending 
     }
 });
 
-test('T6: two overlapping calls for one component share one fetch pair, one import and one WebSkel call', async () => {
+test('T6: overlapping mounts share asset fetches but each acquire a WebSkel resource reference', async () => {
     const imported = [];
     const harness = createHarness({
         importModule: async (url) => { imported.push(url); return { FileExp: class FileExp {} }; }
@@ -79,15 +80,46 @@ test('T6: two overlapping calls for one component share one fetch pair, one impo
         const first = harness.webSkel.ResourceManager.loadComponent(fileExp());
         const second = harness.webSkel.ResourceManager.loadComponent(fileExp());
         harness.releaseHtml();
-        const [firstResult, secondResult] = await Promise.all([first, second]);
+        const [firstResult] = await Promise.all([first, second]);
 
         assert.equal(harness.requested.length, 2, harness.requested.join(', '));
         assert.equal(imported.length, 1);
-        assert.equal(harness.loadCalls.length, 1);
-        assert.equal(firstResult, secondResult);
+        assert.equal(harness.loadCalls.length, 2);
+        assert.equal(firstResult.html, '<main>ready</main>');
+        assert.equal(harness.loadCalls[1].name, 'file-exp');
     } finally {
         harness.restore();
     }
+});
+
+test('overlapping selects retain their stylesheet through partial unmount and form replacement', async (t) => {
+    const manager = new ResourceManager();
+    const visibleStyles = new Set();
+    t.mock.method(manager, 'loadStyleSheet', async ({ identifier }) => {
+        manager.loadedStyleSheets.set(identifier, (manager.loadedStyleSheets.get(identifier) || 0) + 1);
+        visibleStyles.add(identifier);
+    });
+    t.mock.method(manager, 'removeStyleSheet', (identifier) => visibleStyles.delete(identifier));
+    t.mock.method(globalThis, 'fetch', async () => ({ ok: true, text: async () => '.custom-select-options-list { position: fixed; }' }));
+    const webSkel = { configs: { rootDir: '/explorer/web-components' }, ResourceManager: manager };
+    const originalInstance = Object.getOwnPropertyDescriptor(WebSkel, 'instance');
+    WebSkel.instance = webSkel;
+    t.after(() => {
+        if (originalInstance) Object.defineProperty(WebSkel, 'instance', originalInstance);
+        else delete WebSkel.instance;
+    });
+    installExplorerResourceLoader(webSkel);
+    const definition = { name: 'custom-select', type: 'components' };
+    await Promise.all(Array.from({ length: 10 }, () => manager.loadComponent(definition)));
+    assert.equal(manager.loadedStyleSheets.get('custom-select'), 10);
+    await manager.unloadStyleSheets('custom-select');
+    assert.equal(visibleStyles.has('custom-select'), true);
+    await Promise.all(Array.from({ length: 9 }, () => manager.loadComponent(definition)));
+    for (let i = 0; i < 9; i += 1) await manager.unloadStyleSheets('custom-select');
+    assert.equal(manager.loadedStyleSheets.get('custom-select'), 9);
+    assert.equal(visibleStyles.has('custom-select'), true);
+    for (let i = 0; i < 9; i += 1) await manager.unloadStyleSheets('custom-select');
+    assert.equal(visibleStyles.has('custom-select'), false);
 });
 
 test('T6: a failed load is not remembered, so the next call fetches again', async () => {

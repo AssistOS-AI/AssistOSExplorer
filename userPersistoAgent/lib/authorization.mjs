@@ -35,7 +35,11 @@ export async function authorizeCapability({ userId, capability, resource = '' })
     if (!caps.includes(String(capability))) {
         return { allowed: false, reason: 'capability_not_granted' };
     }
-    return { allowed: true, reason: resource ? `capability_granted:${resource}` : 'capability_granted' };
+    return {
+        allowed: true,
+        reason: resource ? `capability_granted:${resource}` : 'capability_granted',
+        roles: await getUserRoles(userId),
+    };
 }
 
 export async function requireActiveActor(userId, capability = '') {

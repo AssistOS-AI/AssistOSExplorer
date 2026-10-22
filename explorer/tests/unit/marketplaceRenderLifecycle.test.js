@@ -70,7 +70,7 @@ test('Marketplace reads omit admin proof and mutations attach a fresh proof', as
     const {MarketplaceModal} = await loadMarketplaceModal();
     const modal = Object.create(MarketplaceModal.prototype);
     await modal.requestMarketplace();
-    await modal.requestMarketplace({ action: 'enable_agent', agentRef: 'proxies/searchAgent' });
+    await modal.requestMarketplace({ action: 'enable_agent', agentRef: 'legacy-agents/searchAgent' });
 
     assert.equal(proofCalls, 1);
     assert.equal(calls.length, 3);
@@ -84,7 +84,7 @@ test('Marketplace reads omit admin proof and mutations attach a fresh proof', as
     assert.equal(calls[2].path, '/api/marketplace/agents');
     assert.equal(calls[2].headers['x-ploinky-csrf-token'], 'v1.proof-1');
     assert.equal(calls[2].headers['Content-Type'], 'application/json');
-    assert.equal(calls[2].body, JSON.stringify({ action: 'enable_agent', agentRef: 'proxies/searchAgent' }));
+    assert.equal(calls[2].body, JSON.stringify({ action: 'enable_agent', agentRef: 'legacy-agents/searchAgent' }));
 });
 
 test('Marketplace retries once with a new proof only after csrf_invalid', async (t) => {
@@ -121,7 +121,7 @@ test('Marketplace retries once with a new proof only after csrf_invalid', async 
 
     const {MarketplaceModal} = await loadMarketplaceModal();
     const modal = Object.create(MarketplaceModal.prototype);
-    await modal.requestMarketplace({ action: 'enable_agent', agentRef: 'proxies/searchAgent' });
+    await modal.requestMarketplace({ action: 'enable_agent', agentRef: 'legacy-agents/searchAgent' });
 
     assert.equal(proofCalls, 2);
     assert.deepEqual(suppliedProofs, ['v1.proof-1', 'v1.proof-2']);
@@ -161,7 +161,7 @@ test('Marketplace retries once with a new proof after browser_csrf_invalid on a 
 
     const {MarketplaceModal} = await loadMarketplaceModal();
     const modal = Object.create(MarketplaceModal.prototype);
-    await modal.requestMarketplace({ action: 'enable_agent', agentRef: 'proxies/searchAgent' });
+    await modal.requestMarketplace({ action: 'enable_agent', agentRef: 'legacy-agents/searchAgent' });
 
     assert.equal(proofCalls, 2);
     assert.deepEqual(suppliedProofs, ['v1.proof-1', 'v1.proof-2']);
@@ -194,7 +194,7 @@ test('Marketplace does not retry a rejected mutation for non-CSRF failures', asy
     const {MarketplaceModal} = await loadMarketplaceModal();
     const modal = Object.create(MarketplaceModal.prototype);
     await assert.rejects(
-        modal.requestMarketplace({ action: 'enable_agent', agentRef: 'proxies/searchAgent' }),
+        modal.requestMarketplace({ action: 'enable_agent', agentRef: 'legacy-agents/searchAgent' }),
         /Administrator access is required/
     );
 
@@ -237,7 +237,7 @@ test('Marketplace catalog transitions preserve normalized presentation and real 
         busy: false,
         marketplace: {
             permissions: {canManage: true},
-            agents: [{ref: 'AchillesIDE/webAssist', active: true, status: 'starting', running: false,
+            agents: [{ref: 'legacy-agents/webAssist', active: true, status: 'starting', running: false,
                 statusDetail: 'Background startup is in progress.'}]
         }
     };
@@ -248,7 +248,7 @@ test('Marketplace catalog transitions preserve normalized presentation and real 
     const status = {...attributes()};
     const settingsButton = {...attributes(), dataset: {agentSettingsKey: 'webassist-settings'}};
     const toggle = {
-        dataset: {agentRef: 'AchillesIDE/webAssist', active: 'true'},
+        dataset: {agentRef: 'legacy-agents/webAssist', active: 'true'},
         classList: {
             active: true,
             toggle(_name, enabled) {
@@ -258,12 +258,12 @@ test('Marketplace catalog transitions preserve normalized presentation and real 
         textContent: 'Disable'
     };
     const mode = {
-        dataset: {enableModeFor: 'AchillesIDE/webAssist'},
+        dataset: {enableModeFor: 'legacy-agents/webAssist'},
         closest: () => ({querySelector: () => toggle}),
         toggleAttribute(_name, disabled) { this.disabled = disabled; }
     };
     const row = {
-        dataset: {marketplaceAgentRef: 'AchillesIDE/webAssist'},
+        dataset: {marketplaceAgentRef: 'legacy-agents/webAssist'},
         querySelector(selector) {
             if (selector === '.marketplace-agent-status') return status;
             if (selector === '[data-agent-settings-key]') return settingsButton;
@@ -295,7 +295,7 @@ test('Marketplace catalog transitions preserve normalized presentation and real 
 
     const sendState = (active, runtimeState) => modal.applyMarketplaceSnapshot({
         ...modal.state.marketplace,
-        agents: [{ref: 'AchillesIDE/webAssist', active, ...runtimeState}],
+        agents: [{ref: 'legacy-agents/webAssist', active, ...runtimeState}],
     });
     sendState(true, {status: 'running', running: true});
     assert.equal(modal.state.marketplace.agents[0].status, 'running');
@@ -322,7 +322,7 @@ test('Marketplace catalog transitions preserve normalized presentation and real 
     assert.equal(status.textContent, 'Starting up');
     sendState(true, {status: 'running', running: true});
     assert.equal(settingsButton.disabled, false);
-    modal.state.agentMutationBusyRef = 'AchillesIDE/webAssist';
+    modal.state.agentMutationBusyRef = 'legacy-agents/webAssist';
     modal.state.agentMutationVerb = 'Disabling';
     sendState(false, {status: 'inactive', running: true});
     assert.equal(status.textContent, 'Disabled');

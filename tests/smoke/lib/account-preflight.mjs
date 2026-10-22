@@ -10,9 +10,9 @@ export function assertAccountRoles(primary, secondary, requirements) {
     }
 }
 
-export function assertSearchAgentFixture(payload) {
-    const matches = payload?.marketplace?.agents?.filter(agent => agent.ref === 'proxies/searchAgent');
-    if (matches?.length !== 1) throw new Error('Smoke Marketplace preflight requires exactly one installed proxies/searchAgent catalog fixture.');
+export function assertMarketplaceLifecycleFixture(payload) {
+    const matches = payload?.marketplace?.agents?.filter(agent => agent.ref === 'UmamiAgent/umamiAgent');
+    if (matches?.length !== 1) throw new Error('Smoke Marketplace preflight requires exactly one installed UmamiAgent/umamiAgent catalog fixture.');
 }
 
 export default async function accountPreflight() {
@@ -30,10 +30,10 @@ export default async function accountPreflight() {
                 const page = await context.newPage();
                 await signIn(page, account, '/explorer/index.html', { requireConfiguredPrincipal: true });
                 principals.push(await readAuthenticatedPrincipal(page, account));
-                if (principals.length === 1 && requirements.searchAgentFixture) {
+                if (principals.length === 1 && requirements.marketplaceLifecycleFixture) {
                     const response = await page.request.get('/api/marketplace/agents');
                     if (!response.ok()) throw new Error('Marketplace catalog preflight failed.');
-                    assertSearchAgentFixture(await response.json());
+                    assertMarketplaceLifecycleFixture(await response.json());
                 }
             } finally { await context.close(); }
         }

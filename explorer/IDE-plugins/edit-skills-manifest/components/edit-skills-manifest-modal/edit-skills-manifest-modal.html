@@ -1,15 +1,40 @@
 <header class="skills-dialog-heading">
-    <h2>Manage skills</h2>
-    <button type="button" class="button secondary" data-local-action="closeModal">Close</button>
+    <div><h2 id="explorer-skills-manager-title">Manage skills</h2><p class="muted skills-folder-context" data-folder-context></p></div>
+    <button type="button" class="button secondary" data-close-manager data-local-action="closeModal">Close</button>
 </header>
-<div data-repository-list></div>
-<section class="skill-recommendations">
-    <h3>Recommended repositories</h3>
-    <p class="muted">Detected in the workspace or registered in Ploinky. Workspace checkouts are preferred.</p>
-    <div data-preset-list></div>
-</section>
-<form class="repository-form" data-add-form>
-    <label>Repository URL<input id="editSkillsManifestRepoInput" name="repositoryUrl" type="text" required autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/skills.git"></label>
-    <button class="button primary" type="submit">Add repo</button>
-</form>
-<p class="message" data-status hidden></p>
+<div class="skills-manager-layout">
+    <nav class="skills-repository-nav" aria-label="Skill repositories">
+        <div class="skills-repository-nav-heading">
+            <h3>Repositories</h3>
+            <button type="button" class="skills-add-option" data-add-repository data-skills-focus="add" aria-label="Add repository" aria-haspopup="dialog" aria-controls="explorer-skills-add-dialog" aria-expanded="false"><span aria-hidden="true">+</span> Add repo</button>
+        </div>
+        <div class="skills-repository-list" data-repository-list></div>
+    </nav>
+    <div class="skills-manager-content" data-skills-content>
+        <section id="explorer-skills-repository-detail" data-repository-detail aria-labelledby="explorer-skills-repository-title"></section>
+    </div>
+</div>
+<footer class="skills-manager-footer">
+    <p class="muted">Enabled skills are exported to this folder's .agents/skills. Changes are saved immediately.</p>
+    <p class="message" data-status role="status" aria-live="polite" hidden></p>
+</footer>
+<dialog id="explorer-skills-add-dialog" class="skills-add-dialog" data-add-dialog aria-labelledby="explorer-skills-add-title">
+    <header class="skills-dialog-heading">
+        <h2 id="explorer-skills-add-title">Add repository</h2>
+        <button type="button" class="button secondary" data-add-close>Close</button>
+    </header>
+    <div class="skills-add-content">
+        <form class="repository-form" data-add-form>
+            <label>Repository URL or name<input id="editSkillsManifestRepoInput" name="repositoryUrl" type="text" required autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/skills.git" data-skills-focus="repository-url" autofocus></label>
+            <button class="button primary" type="submit">Add repo</button>
+        </form>
+        <section class="skill-recommendations" aria-labelledby="explorer-skills-recommendations-title">
+            <h3 id="explorer-skills-recommendations-title">Recommended repositories</h3>
+            <p class="muted">Detected in the workspace or registered in Ploinky. Workspace checkouts are preferred.</p>
+            <div data-preset-list></div>
+        </section>
+    </div>
+    <footer class="skills-add-footer">
+        <p class="message" data-add-status role="status" aria-live="polite" hidden></p>
+    </footer>
+</dialog>

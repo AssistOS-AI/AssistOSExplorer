@@ -1,3 +1,5 @@
+import { inspectSessionSkillLinks } from './copilot-live-skills.mjs';
+
 // Shipped only to the verified RoboTeam runtime. Actions are finite and confined to one run's paths.
 export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot, expectedRepository, contractHashes }, {
     codeRoot = '/code', dataRoot = '/data', service: suppliedService, runGit,
@@ -48,16 +50,51 @@ export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot,
             assert.deepEqual(json(`${root}/${markerName}`, root), ownership, 'Fixture ownership marker differs.');
         }
     }
-    function quiescent() {
-        const directory = `${fixture.workspace}/.roboteam/sessions`;
-        if (!fs.existsSync(directory)) return;
-        assert.equal(fs.realpathSync(directory), directory);
-        for (const name of fs.readdirSync(directory)) {
-            assert.match(name, /^[a-f0-9-]{36}\.json$/);
-            const session = json(`${directory}/${name}`, fixture.workspace);
-            assert.notEqual(session.skillExecution?.active, true, 'Fixture has active execution.');
-            assert.ok(!(session.turns || []).some(turn => !turn.status || turn.status === 'pending'), 'Fixture has unfinished native turns.');
+    async function quiescent() {
+        const project = `${fixture.workspace}/.agents`;
+        if (fs.lstatSync(project, { throwIfNoEntry: false })) {
+            assert.ok(fs.lstatSync(project).isDirectory());
+            assert.equal(fs.realpathSync(project), project);
+            assert.equal(fs.lstatSync(`${project}/.roboteam-links.json`, { throwIfNoEntry: false }), undefined, 'Legacy shared links are not owned session skills.');
+            if (fs.lstatSync(`${project}/skills`, { throwIfNoEntry: false })) {
+                assert.ok(fs.lstatSync(`${project}/skills`).isDirectory());
+                assert.equal(fs.realpathSync(`${project}/skills`), `${project}/skills`);
+                assert.deepEqual(fs.readdirSync(`${project}/skills`), [], 'Fixture project skills must remain empty.');
+            }
         }
+        const directory = `${fixture.workspace}/.roboteam/sessions`;
+        const targets = [];
+        if (!fs.lstatSync(directory, { throwIfNoEntry: false })) return targets;
+        assert.equal(fs.realpathSync(directory), directory);
+        const names = fs.readdirSync(directory).sort(), directoryStat = fs.lstatSync(directory);
+        for (const name of names) {
+            assert.match(name, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+            assert.ok(fs.lstatSync(`${directory}/${name}`).isDirectory());
+            assert.equal(fs.realpathSync(`${directory}/${name}`), `${directory}/${name}`);
+            const file = `${directory}/${name}/config.json`, before = readRegular(file, fixture.workspace);
+            const session = JSON.parse(before);
+            assert.equal(session.version, 2);
+            assert.equal(session.sessionId, name);
+            assert.equal(session.cwd, fixture.workspace);
+            if (session.engine) assert.equal(session.engine.robotId, fixture.robotId, 'Session belongs to another robot.');
+            assert.notEqual(session.skillExecution?.active, true, 'Fixture has active execution.');
+            assert.ok(!(session.turns || []).some(turn => !['completed', 'failed', 'interrupted'].includes(turn.status)), 'Fixture has unfinished native turns.');
+            const installed = session.skillExecution
+                ? await inspectSessionSkillLinks({ workspace: fixture.workspace, sessionId: name, execution: session.skillExecution }, { allowMissing: true }) : null;
+            if (!installed) assert.equal(fs.lstatSync(`${directory}/${name}/skills`, { throwIfNoEntry: false }), undefined, 'Unowned session skills directory.');
+            targets.push({ installed, recheck: () => {
+                assert.equal(fs.realpathSync(directory), directory);
+                const current = fs.lstatSync(directory);
+                assert.ok(current.dev === directoryStat.dev && current.ino === directoryStat.ino, 'Session directory changed before cleanup.');
+                assert.deepEqual(fs.readdirSync(directory).sort(), names, 'Session membership changed before cleanup.');
+                assert.equal(hash(readRegular(file, fixture.workspace)), hash(before), 'Session metadata changed before cleanup.');
+                installed?.recheck();
+                if (!installed) assert.equal(fs.lstatSync(`${directory}/${name}/skills`, { throwIfNoEntry: false }), undefined, 'Unowned session skills appeared.');
+            } });
+        }
+        // Every target is admitted before any deletion, including later active sessions.
+        targets.forEach(target => target.recheck());
+        return targets;
     }
     if (action === 'prepare') {
         assert.equal(fixture.robotId, null, 'Prepare before creating the owned robot.');
@@ -76,20 +113,25 @@ export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot,
     }
     ownedPaths();
     if (action === 'remove-folders') {
-        quiescent();
+        const targets = await quiescent();
         if (fixture.robotId) assert.equal(fs.lstatSync(`${dataRoot}/robots/${fixture.robotId}/metadata.json`, { throwIfNoEntry: false }), undefined,
             'Delete the owned robot before removing its folders.');
         const projectFile = `${dataRoot}/projects/${hash(fixture.workspace)}.json`;
         if (fs.existsSync(projectFile)) {
             assert.deepEqual(json(projectFile, dataRoot), { cwd: fixture.workspace }, 'Owned project registry reference changed.');
+            targets.forEach(target => target.recheck());
+            ownedPaths();
             fs.unlinkSync(projectFile);
         }
+        targets.forEach(target => target.recheck());
+        ownedPaths();
         for (const root of [fixture.workspace, fixture.repositoryRoot]) fs.rmSync(root, { recursive: true });
         return emit({ removed: [fixture.workspace, fixture.repositoryRoot] });
     }
     assert.match(fixture.robotId || '', /^[a-z0-9][a-z0-9-]{2,63}$/);
     const robotRoot = `${dataRoot}/robots/${fixture.robotId}`;
     assert.equal(fs.realpathSync(robotRoot), robotRoot, 'Owned robot storage must remain canonical.');
+    const robotFile = `${robotRoot}/metadata.json`, robotBytes = readRegular(robotFile, robotRoot);
     let service = suppliedService;
     if (!service) {
         const { RobotStore } = await import(pathToFileURL(`${codeRoot}/server/robot-store.mjs`).href);
@@ -123,20 +165,19 @@ export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot,
         return emit({ robotId: robot.id, source: registered[0].source, generation: registered[0].generation,
             policyId, policyVersion: policy.policyVersion, policySha256: hash(policy), seeded: true });
     }
-    quiescent();
+    const targets = await quiescent();
     // Remove links only while registration still proves their original run-owned source.
     assert.equal(registered.length, 1);
     assert.equal(registered[0].source, fixture.repositoryRoot);
-    const file = `${fixture.workspace}/.agents/.roboteam-links.json`;
-    const links = fs.existsSync(file) ? json(file, fixture.workspace) : [];
-    assert.ok(Array.isArray(links));
-    for (const link of links) {
-        assert.equal(path.dirname(link.destination), `${fixture.workspace}/.agents/skills`);
-        assert.ok(fs.lstatSync(link.destination).isSymbolicLink());
-        assert.equal(fs.readlinkSync(link.destination), link.linkTarget, 'Owned link was retargeted.');
+    targets.forEach(target => target.recheck());
+    ownedPaths();
+    assert.equal(hash(readRegular(robotFile, robotRoot)), hash(robotBytes), 'Robot registration changed before cleanup.');
+    const removedLinks = [];
+    for (const target of targets) {
+        target.recheck();
+        if (!target.installed || target.installed.missing) continue;
+        removedLinks.push(...target.installed.links.map(link => `${target.installed.directory}/${link.name}`));
+        fs.rmSync(target.installed.directory, { recursive: true });
     }
-    const client = service.repositoriesClient || await (await import(pathToFileURL(`${codeRoot}/server/repository-client.mjs`).href)).repositoryClient();
-    const result = links.length ? await client.remove(links.map(link => link.destination)) : { conflicts: [] };
-    assert.deepEqual(result.conflicts, [], 'Owned skill removal conflicts with existing files.');
-    return emit({ removedLinks: links.map(link => link.destination) });
+    return emit({ removedLinks });
 }

@@ -28,12 +28,12 @@ test('computeComponentBaseUrl resolves custom dependency paths from owner asset 
         ownerComponent: 'webmeet-tool-button',
         isDependency: true,
         customPath: 'components/webmeet-dashboard/webmeet-dashboard',
-        pluginsBaseUrl: '/workspace-files/.ploinky/repos/AchillesIDE/webmeetAgent/IDE-plugins',
-        ownerAssetBaseUrl: '/workspace-files/.ploinky/repos/AchillesIDE/webmeetAgent/IDE-plugins/webmeet-tool-button'
+        pluginsBaseUrl: '/workspace-files/.ploinky/repos/webmeet/webmeetAgent/IDE-plugins',
+        ownerAssetBaseUrl: '/workspace-files/.ploinky/repos/webmeet/webmeetAgent/IDE-plugins/webmeet-tool-button'
     });
     assert.equal(
         base,
-        '/workspace-files/.ploinky/repos/AchillesIDE/webmeetAgent/IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/webmeet-dashboard'
+        '/workspace-files/.ploinky/repos/webmeet/webmeetAgent/IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/webmeet-dashboard'
     );
 });
 

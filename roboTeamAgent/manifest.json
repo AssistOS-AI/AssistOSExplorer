@@ -1,0 +1,58 @@
+{
+  "container": "docker.io/assistos/roboteam-agent:runtime",
+  "about": "Manages persistent robots and starts authenticated browser or Linux desktop containers with nested Podman.",
+  "containerSecurity": {
+    "nestedPodman": true
+  },
+  "agent": "exec sh /code/scripts/startAgent.sh",
+  "cli": "node /code/server/robot-cli.mjs",
+  "enable": [
+    "soul-gateway no-wait"
+  ],
+  "webchat": {
+    "auth": "static",
+    "forwardEnvelope": true
+  },
+  "readiness": {
+    "protocol": "mcp",
+    "timeoutSeconds": 45
+  },
+  "health": {
+    "readiness": {
+      "interval": 1,
+      "timeout": 1,
+      "failureThreshold": 45,
+      "successThreshold": 1
+    }
+  },
+  "routerAccess": {
+    "httpRoutes": [
+      {
+        "path": "/base-agent-additional-server/roboTeamAgent/3001/*",
+        "access": "authenticated"
+      }
+    ]
+  },
+  "volumes": {
+    ".data/roboTeamAgent": "/data"
+  },
+  "profiles": {
+    "default": {
+      "openPorts": [
+        "7000:7000",
+        "3001:3001"
+      ],
+      "install": "sh /code/scripts/install.sh",
+      "env": [
+        "ROBOTEAM_CODEX_VERSION",
+        "ROBOTEAM_OPENCODE_VERSION",
+        "ROBOTEAM_PI_VERSION",
+        "ROBOTEAM_CLAUDE_VERSION"
+      ]
+    }
+  },
+  "link-install": [
+    "https://github.com/AssistOS-AI/AdvancedLanguageAgent.git",
+    "https://github.com/AssistOS-AI/DocumentationSkills.git"
+  ]
+}

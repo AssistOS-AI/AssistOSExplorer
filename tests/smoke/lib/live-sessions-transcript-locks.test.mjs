@@ -13,7 +13,7 @@ import { projectLiveSessionError, createLiveSessionFinalizer } from './live-sess
 const repository = process.env.LIVE_SESSIONS_ORCHESTRATION_SOURCE;
 const alaRoot = process.env.LIVE_SESSIONS_ORCHESTRATION_ALA;
 assert.ok(repository && path.isAbsolute(repository) && fs.existsSync(`${repository}/roboTeamAgent/server/ala-command.mjs`),
-    'Qualified transcript-lock checks require LIVE_SESSIONS_ORCHESTRATION_SOURCE with pinned canonical AchillesCLI sources.');
+    'Qualified transcript-lock checks require LIVE_SESSIONS_ORCHESTRATION_SOURCE with pinned canonical Explorer sources.');
 assert.ok(alaRoot && path.isAbsolute(alaRoot) && fs.existsSync(`${alaRoot}/src/session-state.mjs`),
     'Qualified transcript-lock checks require LIVE_SESSIONS_ORCHESTRATION_ALA with pinned canonical ALA sources.');
 const transcript = await import(pathToFileURL(`${alaRoot}/src/transcript.mjs`));
@@ -352,7 +352,7 @@ test('reader budgets every lightweight command and preserves initialization/norm
     const outer = { Id: outerId, State: { Running: true, StartedAt: 'neutral-generation' }, Image: 'neutral-image', Mounts: [mount] };
     const contractFiles = delegationContractFiles(repository);
     const actualHashes = Object.fromEntries(contractFiles.map(file => [file, hash(fs.readFileSync(`${repository}/roboTeamAgent/${file}`))]));
-    const input = { release: { applicationBaseURL: 'http://localhost:19082', repositories: { achillesCLI: { repositoryPath: repository } } },
+    const input = { release: { applicationBaseURL: 'http://localhost:19082', repositories: { explorer: { repositoryPath: repository } } },
         evidence: { outerContainerId: outerId, workspaceRoot, workspaceHash: hash(workspaceRoot).slice(0, 12) }, runtime: { containerId: innerId },
         cwd: `${workspaceRoot}/selected`, robotId: 'default-123456', ownerPrincipal: 'user:fixture' };
     for (const mode of ['normal', 'frontOnly', 'slow-fence', 'binding-change', 'source-change']) await t.test(mode, async () => {

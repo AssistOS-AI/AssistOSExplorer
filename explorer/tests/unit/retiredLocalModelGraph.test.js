@@ -19,10 +19,10 @@ const RETIRED_AGENT = 'default-local-llm';
 const RETIRED_REPO = 'proxies';
 // The synthetic workspaces use a real known sibling, so the controls exercise
 // the production known-sibling list rather than a test-only one.
-const SIBLING = 'AchillesCLI';
+const SIBLING = 'legacy-agents';
 // No agent in the real graph needs a minimum revision, so the controls inject
-// one for a synthetic agent in the synthetic proxies sibling.
-const PENDING_REF = 'proxies/pending-agent';
+// one for a synthetic agent in the synthetic webmeet sibling.
+const PENDING_REF = 'webmeet/pending-agent';
 const PENDING_MINIMUM = Object.freeze({
     revision: '0123456789abcdef0123456789abcdef01234567',
     why: 'first revision with the synthetic pending-agent manifest',
@@ -64,7 +64,8 @@ function syntheticWorkspace(t, externalEnable) {
     writeManifest(explorerRepo, 'helper', {});
     writeManifest(root, `${SIBLING}/relay`, { enable: [{ agent: 'nested global' }, ...externalEnable] });
     writeManifest(root, `${SIBLING}/nested`, {});
-    writeManifest(root, `${RETIRED_REPO}/${RETIRED_AGENT}`, {});
+    // The synthetic webmeet sibling exists (it holds the pending-agent cases) but has no agent by default.
+    writeManifest(root, 'webmeet/placeholder-agent', {});
     return explorerRepo;
 }
 
@@ -75,8 +76,11 @@ test('the recursive Explorer graph never enables the retired local model runtime
     if (!graph) return;
     const { runtimes, violations } = graph;
     assert.deepEqual(violations, [], `The retired ${RETIRED_REPO}/${RETIRED_AGENT} runtime is still enabled:\n${violations.join('\n')}`);
-    assert.ok(runtimes.has('proxies/soul-gateway'), 'the walk must cross into the sibling proxies repository');
-    assert.ok(runtimes.has('AchillesCLI/roboTeamAgent'), 'the walk must cross into the sibling AchillesCLI repository');
+    assert.ok(runtimes.has('AchillesIDE/soul-gateway'), 'the walk must reach soul-gateway in this repository');
+    assert.ok(runtimes.has('AchillesIDE/roboTeamAgent'), 'the walk must reach roboTeamAgent in this repository');
+    assert.equal([...runtimes.keys()].some((key) => key.startsWith('legacy-agents/')), false,
+        'no legacy-agents runtime may be part of an Explorer deployment; an administrator installs that repository explicitly');
+    assert.equal([...runtimes.keys()].some((key) => key.startsWith('webmeet/')), false, 'the WebMeet agents are installed but disabled by default');
     assert.equal([...runtimes.keys()].some((key) => key.endsWith(`/${RETIRED_AGENT}`)), false);
 });
 
@@ -90,9 +94,6 @@ test('QA readiness constants match the recursive Explorer graph', (t) => {
     const expectedNoWait = Number(workflow.match(/EXPECTED_NO_WAIT_AGENTS=(\d+)/)[1]);
     assert.deepEqual([...new Set(tracked)], [runtimes.size], `graph runtimes: ${[...runtimes.keys()].join(', ')}`);
     assert.equal(expectedNoWait, noWait.length, `graph no-wait agents: ${noWait.join(', ')}`);
-    const verifier = fs.readFileSync(path.join(repoRoot, '.github/scripts/verify-explorer-qa-runtime.mjs'), 'utf8');
-    assert.equal(Number(verifier.match(/assert\.equal\(records\.length, (\d+)\)/)[1]), runtimes.size);
-    assert.equal(Number(verifier.match(/'\.ploinky\/running\/no-wait'\), '(\d+)'/)[1]), noWait.length);
 });
 
 test('with every known sibling checked out at its minimum revision, the real graph resolves without a skip', (t) => {
@@ -112,7 +113,9 @@ test('with every known sibling checked out at its minimum revision, the real gra
         { explorerRepo: repoRoot, isRetired: isRetiredLocalModel });
     assert.deepEqual(skipped, []);
     assert.ok(graph, 'the helper must return the graph');
-    for (const repo of KNOWN_SIBLINGS) {
+    // UmamiAgent and webmeet are known siblings that are installed but not enabled, and legacy-agents is not
+    // installed at all, so the walk reaches none of them.
+    for (const repo of KNOWN_SIBLINGS.filter((name) => !['UmamiAgent', 'webmeet', 'legacy-agents'].includes(name))) {
         assert.ok([...graph.runtimes.keys()].some((key) => key.startsWith(`${repo}/`)), `the walk must reach ${repo}`);
     }
 });
@@ -122,7 +125,7 @@ test('negative control: a clean synthetic graph passes', (t) => {
     const { runtimes, violations } = resolveExplorerGraph({ explorerRepo });
     assert.deepEqual(violations, []);
     assert.deepEqual([...runtimes.keys()].sort(),
-        ['AchillesCLI/nested', 'AchillesCLI/relay', 'AchillesIDE/explorer', 'AchillesIDE/helper']);
+        ['AchillesIDE/explorer', 'AchillesIDE/helper', 'legacy-agents/nested', 'legacy-agents/relay']);
 });
 
 for (const injected of [`${RETIRED_REPO}/${RETIRED_AGENT} no-wait`, RETIRED_AGENT, { agent: `${RETIRED_REPO}/${RETIRED_AGENT}` }]) {
@@ -130,7 +133,7 @@ for (const injected of [`${RETIRED_REPO}/${RETIRED_AGENT} no-wait`, RETIRED_AGEN
         const explorerRepo = syntheticWorkspace(t, [injected]);
         const { violations } = resolveExplorerGraph({ explorerRepo });
         assert.equal(violations.length, 1);
-        assert.match(violations[0], /^AchillesCLI\/relay .* enables (proxies\/)?default-local-llm$/);
+        assert.match(violations[0], /^legacy-agents\/relay .* enables (proxies\/)?default-local-llm$/);
     });
 }
 
@@ -142,7 +145,7 @@ test('negative control: a retired edge inside a profile enable list is detected'
     });
     const { violations } = resolveExplorerGraph({ explorerRepo });
     assert.equal(violations.length, 1);
-    assert.match(violations[0], /^AchillesCLI\/relay .* enables proxies\/default-local-llm$/);
+    assert.match(violations[0], /^legacy-agents\/relay .* enables proxies\/default-local-llm$/);
 });
 
 test('negative control: a missing sibling repository fails with a clear typed message', (t) => {
@@ -150,8 +153,8 @@ test('negative control: a missing sibling repository fails with a clear typed me
     fs.rmSync(path.join(path.dirname(explorerRepo), SIBLING), { recursive: true, force: true });
     assert.throws(() => resolveExplorerGraph({ explorerRepo }), (error) => {
         assert.equal(error.code, SIBLING_MISSING_CODE);
-        assert.match(error.message, /Sibling repository "AchillesCLI" enabled by AchillesIDE\/explorer is missing at /);
-        assert.match(error.message, /check out "AchillesCLI" next to the Explorer repository \(siblings root /);
+        assert.match(error.message, /Sibling repository "legacy-agents" enabled by AchillesIDE\/explorer is missing at /);
+        assert.match(error.message, /check out "legacy-agents" next to the Explorer repository \(siblings root /);
         assert.match(error.message, /tests\/smoke\/README\.md/);
         return true;
     });
@@ -159,12 +162,12 @@ test('negative control: a missing sibling repository fails with a clear typed me
 
 test('negative control (a): an edge to an agent a present sibling does not have, with no recorded minimum, is a hard failure', (t) => {
     const explorerRepo = syntheticWorkspace(t, []);
-    writeManifest(explorerRepo, 'explorer', { enable: ['helper global', 'proxies/soul-gatewy no-wait'] });
+    writeManifest(explorerRepo, 'explorer', { enable: ['helper global', 'webmeet/webmeetAgnt no-wait'] });
     const skipped = [];
     assert.throws(() => resolveGraphOrSkip({ skip: (message) => skipped.push(message) },
         { explorerRepo, isRetired: isRetiredLocalModel, containsRevision: neverAsked, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
         assert.notEqual(error.code, SIBLING_MISSING_CODE);
-        assert.match(error.message, /Agent "proxies\/soul-gatewy" enabled by AchillesIDE\/explorer has no manifest at /);
+        assert.match(error.message, /Agent "webmeet\/webmeetAgnt" enabled by AchillesIDE\/explorer has no manifest at /);
         assert.match(error.message, /no minimum revision is recorded for it, so the enable edge is wrong or the agent was renamed or removed/);
         return true;
     });
@@ -174,12 +177,12 @@ test('negative control (a): an edge to an agent a present sibling does not have,
 test('negative control (b): a qualified edge to a repository that is not a known sibling is a hard failure', (t) => {
     const explorerRepo = syntheticWorkspace(t, []);
     // Neither the typo'd repository nor any directory of that name exists.
-    writeManifest(explorerRepo, 'explorer', { enable: ['helper global', 'proxy/soul-gateway no-wait'] });
+    writeManifest(explorerRepo, 'explorer', { enable: ['helper global', 'webmee/webmeetAgent no-wait'] });
     assert.throws(() => resolveGraphOrSkip({ skip: () => assert.fail('an unknown repository must not be skipped') },
         { explorerRepo, isRetired: isRetiredLocalModel, containsRevision: neverAsked }), (error) => {
         assert.notEqual(error.code, SIBLING_MISSING_CODE);
-        assert.match(error.message, /AchillesIDE\/explorer enables "proxy\/soul-gateway", but "proxy" is not a known sibling repository/);
-        assert.match(error.message, /known: AchillesCLI, proxies, UmamiAgent, local-llms; "AchillesIDE" names the Explorer repository itself/);
+        assert.match(error.message, /AchillesIDE\/explorer enables "webmee\/webmeetAgent", but "webmee" is not a known sibling repository/);
+        assert.match(error.message, /known: legacy-agents, webmeet, UmamiAgent, local-llms; "AchillesIDE" names the Explorer repository itself/);
         return true;
     });
 });
@@ -196,17 +199,17 @@ function pendingAgentCase(t, containment) {
 
 test('negative control (c): a sibling checkout that provably predates a recorded minimum revision is a gap naming the ref, path and minimum', (t) => {
     const { explorerRepo, asked, containsRevision } = pendingAgentCase(t, false);
-    const proxiesDir = path.join(path.dirname(explorerRepo), 'proxies');
+    const webmeetDir = path.join(path.dirname(explorerRepo), 'webmeet');
     assert.throws(() => resolveExplorerGraph({ explorerRepo, containsRevision, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
         assert.equal(error.code, SIBLING_MISSING_CODE);
-        assert.match(error.message, /Agent "proxies\/pending-agent" enabled by AchillesCLI\/relay has no manifest at /);
-        assert.ok(error.message.includes(path.join(proxiesDir, 'pending-agent', 'manifest.json')));
-        assert.match(error.message, /the sibling repository "proxies" is checked out at .* but does not contain 0123456/);
+        assert.match(error.message, /Agent "webmeet\/pending-agent" enabled by legacy-agents\/relay has no manifest at /);
+        assert.ok(error.message.includes(path.join(webmeetDir, 'pending-agent', 'manifest.json')));
+        assert.match(error.message, /the sibling repository "webmeet" is checked out at .* but does not contain 0123456/);
         assert.match(error.message, /must contain at least 0123456 \(first revision with the synthetic pending-agent manifest\); 89abcde/);
         assert.equal(error.message.includes('\n'), false, 'the gap message must stay a single reporter line');
         return true;
     });
-    assert.deepEqual(asked, [{ dir: proxiesDir, revision: PENDING_MINIMUM.revision }]);
+    assert.deepEqual(asked, [{ dir: webmeetDir, revision: PENDING_MINIMUM.revision }]);
     const skipped = [];
     assert.equal(resolveGraphOrSkip({ skip: (message) => skipped.push(message) },
         { explorerRepo, isRetired: isRetiredLocalModel, containsRevision, minimumRevisions: SYNTHETIC_MINIMUMS }), null);
@@ -223,7 +226,7 @@ for (const [label, containment, reason] of [
         assert.throws(() => resolveGraphOrSkip({ skip: () => assert.fail('this must not be skipped') },
             { explorerRepo, isRetired: isRetiredLocalModel, containsRevision, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
             assert.notEqual(error.code, SIBLING_MISSING_CODE);
-            assert.match(error.message, /Agent "proxies\/pending-agent" enabled by AchillesCLI\/relay has no manifest at /);
+            assert.match(error.message, /Agent "webmeet\/pending-agent" enabled by legacy-agents\/relay has no manifest at /);
             assert.match(error.message, reason);
             return true;
         });
@@ -233,7 +236,7 @@ for (const [label, containment, reason] of [
 
 test('negative control: the default containment check treats a non-git sibling as undetermined', (t) => {
     const explorerRepo = syntheticWorkspace(t, [`${PENDING_REF} no-wait`]);
-    assert.equal(gitContainsRevision(path.join(path.dirname(explorerRepo), 'proxies'), 'HEAD'), null);
+    assert.equal(gitContainsRevision(path.join(path.dirname(explorerRepo), 'webmeet'), 'HEAD'), null);
     assert.throws(() => resolveExplorerGraph({ explorerRepo, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
         assert.notEqual(error.code, SIBLING_MISSING_CODE);
         assert.match(error.message, /cannot be checked for the minimum revision 0123456/);
@@ -256,7 +259,7 @@ test('negative control: an inherited GIT_DIR never makes another repository answ
     // As inside a git hook of this repository.
     process.env.GIT_DIR = gitDir.stdout.trim();
     const revision = PENDING_MINIMUM.revision;
-    assert.equal(gitContainsRevision(path.join(path.dirname(explorerRepo), 'proxies'), revision), null);
+    assert.equal(gitContainsRevision(path.join(path.dirname(explorerRepo), 'webmeet'), revision), null);
 });
 
 // Git for the synthetic repositories only: no inherited location variables
@@ -279,7 +282,7 @@ test('negative control: a shallow sibling cannot prove that it lacks a revision,
     const explorerRepo = syntheticWorkspace(t, [`${PENDING_REF} no-wait`]);
     const siblingsRoot = path.dirname(explorerRepo);
     // A synthetic upstream that once had the agent and then removed it.
-    const upstream = path.join(siblingsRoot, 'upstream-proxies');
+    const upstream = path.join(siblingsRoot, 'upstream-webmeet');
     fs.mkdirSync(upstream);
     syntheticGit(upstream, ['init', '--quiet']);
     writeManifest(upstream, 'pending-agent', {});
@@ -290,21 +293,21 @@ test('negative control: a shallow sibling cannot prove that it lacks a revision,
     fs.rmSync(path.join(upstream, 'pending-agent'), { recursive: true, force: true });
     syntheticGit(upstream, ['add', '--all']);
     syntheticGit(upstream, ['commit', '--quiet', '--message', 'Remove pending-agent']);
-    const proxiesDir = path.join(siblingsRoot, 'proxies');
-    fs.rmSync(proxiesDir, { recursive: true, force: true });
-    syntheticGit(siblingsRoot, ['clone', '--quiet', '--depth', '1', pathToFileURL(upstream).href, proxiesDir]);
+    const webmeetDir = path.join(siblingsRoot, 'webmeet');
+    fs.rmSync(webmeetDir, { recursive: true, force: true });
+    syntheticGit(siblingsRoot, ['clone', '--quiet', '--depth', '1', pathToFileURL(upstream).href, webmeetDir]);
 
     const minimum = PENDING_MINIMUM.revision;
-    assert.equal(syntheticGit(proxiesDir, ['rev-parse', '--is-shallow-repository']), 'true');
+    assert.equal(syntheticGit(webmeetDir, ['rev-parse', '--is-shallow-repository']), 'true');
     assert.equal(syntheticGit(upstream, ['rev-parse', '--is-shallow-repository']), 'false');
     // The complete upstream history answers both ways.
     assert.equal(gitContainsRevision(upstream, withAgent), true);
     assert.equal(gitContainsRevision(upstream, minimum), false);
     // The shallow clone proves what it has, but never an absence.
-    assert.equal(gitContainsRevision(proxiesDir, 'HEAD'), true);
-    assert.equal(gitContainsRevision(proxiesDir, withAgent), null);
-    assert.equal(gitContainsRevision(proxiesDir, minimum), null);
-    assert.equal(fs.existsSync(path.join(proxiesDir, 'pending-agent', 'manifest.json')), false);
+    assert.equal(gitContainsRevision(webmeetDir, 'HEAD'), true);
+    assert.equal(gitContainsRevision(webmeetDir, withAgent), null);
+    assert.equal(gitContainsRevision(webmeetDir, minimum), null);
+    assert.equal(fs.existsSync(path.join(webmeetDir, 'pending-agent', 'manifest.json')), false);
 
     const skipped = [];
     assert.throws(() => resolveGraphOrSkip({ skip: (message) => skipped.push(message) },
@@ -312,7 +315,7 @@ test('negative control: a shallow sibling cannot prove that it lacks a revision,
         assert.equal(error.code, undefined, 'a shallow sibling must never be skipped as an outdated checkout');
         assert.deepEqual(error.gaps, []);
         assert.equal(error.defects.length, 1);
-        assert.match(error.defects[0], /^Agent "proxies\/pending-agent" enabled by AchillesCLI\/relay has no manifest at /);
+        assert.match(error.defects[0], /^Agent "webmeet\/pending-agent" enabled by legacy-agents\/relay has no manifest at /);
         assert.match(error.defects[0], /cannot be checked for the minimum revision 0123456 \(not a git checkout, a shallow checkout that cannot prove the revision is absent, or git failed\)/);
         return true;
     });
@@ -342,7 +345,7 @@ test('negative control (g): an Explorer-internal defect after an absent sibling 
         assert.deepEqual(error.defects.length, 1);
         assert.match(error.defects[0], /^Agent "helper" enabled by AchillesIDE\/explorer has no manifest at /);
         assert.equal(error.gaps.length, 1);
-        assert.match(error.gaps[0], /^Sibling repository "AchillesCLI" enabled by AchillesIDE\/explorer is missing at /);
+        assert.match(error.gaps[0], /^Sibling repository "legacy-agents" enabled by AchillesIDE\/explorer is missing at /);
         assert.match(error.message, /Environment gaps also found:/);
         return true;
     });
@@ -380,7 +383,7 @@ test('negative control: a defect error also lists the retired edges the walk fou
         assert.equal(error.defects.length, 1);
         assert.equal(error.violations.length, 1);
         assert.deepEqual(error.gaps, []);
-        assert.match(error.message, /^The Explorer graph has 1 defect\(s\):\n- Agent "helper" .*\nThe Explorer graph enables 1 retired runtime\(s\):\n- AchillesCLI\/relay .* enables proxies\/default-local-llm$/);
+        assert.match(error.message, /^The Explorer graph has 1 defect\(s\):\n- Agent "helper" .*\nThe Explorer graph enables 1 retired runtime\(s\):\n- legacy-agents\/relay .* enables proxies\/default-local-llm$/);
         return true;
     });
 });
@@ -393,7 +396,7 @@ test('negative control: every gap is listed, and a gap stops only the branch bel
         assert.equal(error.code, SIBLING_MISSING_CODE);
         assert.equal(error.gaps.length, 2);
         assert.match(error.gaps[0], /^Sibling repository "UmamiAgent" enabled by AchillesIDE\/explorer is missing at /);
-        assert.match(error.gaps[1], /^Agent "proxies\/pending-agent" enabled by AchillesCLI\/relay has no manifest at /);
+        assert.match(error.gaps[1], /^Agent "webmeet\/pending-agent" enabled by legacy-agents\/relay has no manifest at /);
         assert.ok(error.message.includes(path.join(siblingsRoot, 'UmamiAgent')));
         return true;
     });
@@ -408,7 +411,7 @@ test('the skip wrapper converts only the sibling gap into a skip and passes othe
         { explorerRepo, isRetired: isRetiredLocalModel });
     assert.equal(result, null);
     assert.equal(skipped.length, 1);
-    assert.match(skipped[0], /^Skipped: the Explorer graph cannot be resolved in this checkout\. Sibling repository "AchillesCLI" enabled by AchillesIDE\/explorer is missing at /);
+    assert.match(skipped[0], /^Skipped: the Explorer graph cannot be resolved in this checkout\. Sibling repository "legacy-agents" enabled by AchillesIDE\/explorer is missing at /);
     assert.equal(skipped[0].includes('\n'), false, 'the skip message must stay a single reporter line');
     assert.ok(skipped[0].includes(path.join(siblingsRoot, SIBLING)), 'the skip message must name the expected path');
     fs.rmSync(path.join(explorerRepo, 'helper'), { recursive: true, force: true });

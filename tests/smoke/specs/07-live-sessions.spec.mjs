@@ -26,7 +26,7 @@ const BOT = '#chatList > .wa-message.in:not(.wa-typing):not(.wa-task-item) .wa-m
 const nativeTimeout = 120_000;
 
 function processSelection(fixture, kind = 'census', sessionId, turnId) {
-    return { kind, codeRoot: '/code', workflowCodeRoot: path.posix.join(fixture.release.repositories.achillesCLI.repositoryPath, 'roboTeamAgent'),
+    return { kind, codeRoot: '/code', workflowCodeRoot: path.posix.join(fixture.release.repositories.explorer.repositoryPath, 'roboTeamAgent'),
         alaBinding: fixture.capture.alaBinding,
         ...(sessionId ? { sessionId, turnId } : {}) };
 }

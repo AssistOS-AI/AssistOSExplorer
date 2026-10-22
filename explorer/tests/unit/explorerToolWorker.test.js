@@ -477,7 +477,7 @@ test('B-T1: invocation tokens and identities never reach another call, the outpu
     assert.equal(JSON.parse(afterEmpty.stdout).canManageAgents, false, 'empty metadata must not inherit the previous admin');
 
     // SCRIPTA caller gate: an allowed caller does not leave the permission behind for the next call.
-    const scriptaAllowed = await call('scripta_crdt_workspace_list', metadataFor('user:alpha', ['admin'], secrets[3], 'agent:AchillesIDE/webmeetAgent'), { defaultFolder: '/' });
+    const scriptaAllowed = await call('scripta_crdt_workspace_list', metadataFor('user:alpha', ['admin'], secrets[3], 'agent:webmeet/webmeetAgent'), { defaultFolder: '/' });
     assert.equal(scriptaAllowed.code, 0, scriptaAllowed.stderr);
     for (const metadata of [undefined, {}, metadataFor('user:alpha', ['admin'], secrets[3], 'agent:AchillesIDE/otherAgent')]) {
         const denied = await call('scripta_crdt_workspace_list', metadata, { defaultFolder: '/' });

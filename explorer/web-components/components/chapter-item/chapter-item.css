@@ -215,47 +215,6 @@ html[theme="dark"] input.chapter-title{
     gap: 6px;
 }
 
-.chapter-toolbar .icon-container{
-    width: 30px;
-    height: 30px;
-    min-width: 30px;
-    min-height: 30px;
-    flex: 0 0 30px;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text);
-    box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 8%, transparent);
-    transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    padding: 0;
-}
-
-.chapter-toolbar .icon-container:hover{
-    transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
-    background: var(--option-hover);
-    color: var(--accent);
-    box-shadow: 0 8px 18px rgba(var(--accent-rgb), 0.12);
-}
-
-.chapter-toolbar .icon-container:active{
-    transform: translateY(0);
-    box-shadow: 0 2px 6px rgba(var(--accent-rgb), 0.14);
-}
-
-.chapter-toolbar .icon-container img{
-    width: 16px;
-    height: 16px;
-    object-fit: contain;
-    opacity: 0.9;
-    display: block;
-    margin: 0;
-}
-
 .chapter-toolbar .icon-container:hover img{
     opacity: 1;
 }

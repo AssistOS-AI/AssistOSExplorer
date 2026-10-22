@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CookieBrowser } from './helpers/googleProvider.mjs';
+import { explorerPermissions } from './helpers/product-permissions.mjs';
 
 const agentRoot = fileURLToPath(new URL('..', import.meta.url));
 const runtimeRoot = process.env.PLOINKY_AGENT_RUNTIME_ROOT
@@ -71,6 +72,7 @@ async function startRuntime(t, root, options = {}) {
         USERPERSISTO_RUNTIME_SECRET: 'runtime-test-bridge-secret',
         USERPERSISTO_OIDC_ISSUER: '',
         USERPERSISTO_DEV_BOOTSTRAP: '',
+        USERPERSISTO_PRODUCT_PERMISSIONS: JSON.stringify(explorerPermissions),
         RUNTIME_TEST_MAIL: join(root, 'delivered-mail.json'),
         NODE_OPTIONS: [process.env.NODE_OPTIONS, '--import=' + JSON.stringify(pathToFileURL(join(root, 'emailLoader.mjs')).href)].filter(Boolean).join(' '),
         USERPERSISTO_AUTH_METHODS: '',

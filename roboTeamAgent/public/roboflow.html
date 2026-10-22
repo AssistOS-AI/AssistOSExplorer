@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboFlow</title>
+  <link rel="stylesheet" href="roboflow.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="workflow-editor.css">
+  <link rel="stylesheet" href="workflow-execution.css">
+  <script>
+    (() => {
+      const keys = ['assistosExplorerTheme', 'webchat_theme'];
+      const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      const syncTheme = () => {
+        let preference;
+        try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
+        catch { /* Browser settings may disable storage. */ }
+        const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+        const root = document.documentElement;
+        root.classList.toggle('theme-dark', dark);
+        root.classList.toggle('theme-light', !dark);
+        root.setAttribute('theme', dark ? 'dark' : 'light');
+      };
+      syncTheme();
+      browserTheme.addEventListener('change', syncTheme);
+      window.addEventListener('storage', event => { if (event.key === null || keys.includes(event.key)) syncTheme(); });
+      window.addEventListener('focus', syncTheme);
+      window.addEventListener('pageshow', syncTheme);
+    })();
+  </script>
+  <link rel="stylesheet" href="/webchat/assets/logMarkdown.css">
+</head>
+<body class="flow-execution-page">
+  <main class="shell">
+    <header class="hero" data-embed-header>
+      <nav class="breadcrumbs" aria-label="Breadcrumb" data-embed-breadcrumbs>
+        <a href="./?tab=workflow-types" data-return-control title="Back to Workflow types">RoboTeam</a>
+        <span class="breadcrumb-sep" aria-hidden="true">/</span>
+        <a href="flows">flows</a>
+        <span class="breadcrumb-sep" aria-hidden="true">/</span>
+        <span id="breadcrumbLeaf" aria-current="page"></span>
+      </nav>
+    </header>
+
+    <section id="detail" class="flow-workspace" aria-labelledby="detail-title">
+      <header class="flow-header">
+        <div class="flow-heading">
+          <div class="flow-title-row">
+            <h2 id="detail-title">Flow</h2>
+            <div class="flow-run-meta">
+              <span id="flowStatus" class="status-badge" role="status" aria-live="polite"></span>
+              <span id="flowDuration" class="phase-view-duration"></span>
+            </div>
+          </div>
+          <div class="flow-objective-container">
+            <p id="flowObjective" class="flow-objective"></p>
+            <button id="toggleFlowObjective" class="flow-objective-toggle" type="button" aria-controls="flowObjective" aria-expanded="false" aria-label="View more" title="View more" hidden>
+              <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m5 7 5 5 5-5"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="flow-actions">
+          <div id="flowActionsMenu" class="robot-manage">
+            <button class="button secondary icon-button manage-toggle" type="button" aria-expanded="false" aria-label="More workflow actions" title="More workflow actions" data-robot-menu-toggle><span aria-hidden="true">⋮</span></button>
+            <div class="manage-options" data-robot-menu-options hidden>
+              <button id="pauseFlowButton" class="button secondary" type="button">Pause workflow</button>
+              <div class="robot-danger-actions"><button id="terminateFlowButton" class="button danger" type="button">Terminate workflow</button></div>
+            </div>
+          </div>
+        </div>
+      </header>
+      <p id="flowError" class="message is-error" hidden></p>
+      <div class="flow-columns">
+        <aside class="phase-pane" aria-label="Workflow phases">
+          <button id="graphButton" class="graph-navigation" type="button" aria-controls="executionGraph"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M9 3h6v5H9z M3 16h6v5H3z M15 16h6v5h-6z M12 8v4 M6 16v-4h12v4"/></svg>View execution graph</button>
+          <div class="section-heading"><h3>Phases</h3><span id="phaseCount" class="robot-count">0</span></div>
+          <ol id="phaseList" class="phase-list"></ol>
+          <section class="phase-state-legend" aria-label="Status legend">
+            <ul id="phaseStateLegend" aria-label="Common execution states"></ul>
+            <button id="phaseLegendToggle" class="phase-legend-more" type="button" popovertarget="phaseLegendPopover" aria-controls="phaseLegendPopover" aria-expanded="false" aria-label="Show all execution states">More…</button>
+            <div id="phaseLegendPopover" class="phase-legend-popover" popover role="region" aria-labelledby="phaseLegendTitle">
+              <h4 id="phaseLegendTitle">Status legend</h4>
+              <ul id="phaseStateLegendMore"></ul>
+            </div>
+          </section>
+        </aside>
+        <section class="stage-pane" aria-label="Phase detail" tabindex="-1">
+          <div class="stage-toolbar">
+            <span id="stageTitle" class="stage-title">Select a phase to view its log</span>
+          </div>
+          <div id="stageBody" class="stage-body"></div>
+        </section>
+        <section id="executionGraph" class="execution-graph-pane" aria-labelledby="executionGraphTitle" tabindex="-1">
+          <div class="stage-toolbar">
+            <h3 id="executionGraphTitle" class="stage-title">Execution graph</h3>
+            <p class="graph-caption">Select a task to view its details and log.</p>
+          </div>
+          <div id="executionGraphBoard" class="stage-board"></div>
+        </section>
+      </div>
+    </section>
+
+    <p id="message" class="message" role="status"></p>
+  </main>
+  <dialog id="terminateFlowDialog" class="terminate-dialog" aria-labelledby="terminateDialogTitle" aria-describedby="terminateDialogDescription">
+    <h2 id="terminateDialogTitle">Terminate workflow?</h2>
+    <p id="terminateDialogDescription">Are you sure you want to terminate this workflow? This will also terminate its sub-flows. Resume will not be possible.</p>
+    <p id="terminateDialogError" class="message is-error" role="alert" hidden></p>
+    <div class="terminate-dialog-actions">
+      <button id="cancelTerminateButton" class="button" type="button" autofocus>Cancel</button>
+      <button id="confirmTerminateButton" class="button danger" type="button">Terminate workflow</button>
+    </div>
+  </dialog>
+  <script type="module" src="roboflow.js"></script>
+</body>
+</html>

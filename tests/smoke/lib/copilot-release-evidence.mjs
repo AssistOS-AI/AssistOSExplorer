@@ -60,7 +60,7 @@ export function readImageAgentLibProvenance(imageId, { spawn = spawnSync } = {})
 export async function collectCopilotReleaseEvidence({
   manifestPath,
   verificationMode = 'release',
-  requireActiveAchillesCLI = true,
+  requireActiveRoboTeamAgent = true,
   verifierPath,
   baseURL,
   boxBaseURL = baseURL,
@@ -156,7 +156,7 @@ export async function collectCopilotReleaseEvidence({
     commitEvidence: imageMode ? 'image-provenance' : 'box-label',
   });
   const sourceBindings = verificationMode === 'local-snapshot'
-    ? collectSnapshotBindings({ liveBox, repositories: verified.repositories, requireActiveAchillesCLI })
+    ? collectSnapshotBindings({ liveBox, repositories: verified.repositories, requireActiveRoboTeamAgent })
     : null;
   return Object.freeze({
     verificationMode,
@@ -175,13 +175,13 @@ export async function collectCopilotReleaseEvidence({
 }
 
 function sameSnapshotBindings(before, after) {
-  if (!before || !after || after.achillesCLI?.active !== true) return false;
-  const { achillesCLI: priorCLI, ...priorBindings } = before;
-  const { achillesCLI: currentCLI, ...currentBindings } = after;
-  if (!priorCLI || !currentCLI) return false;
-  // Folder launch may activate or replace AchillesCLI, while its source stays pinned.
+  if (!before || !after || after.roboTeamAgent?.active !== true) return false;
+  const { roboTeamAgent: priorRoboTeam, ...priorBindings } = before;
+  const { roboTeamAgent: currentRoboTeam, ...currentBindings } = after;
+  if (!priorRoboTeam || !currentRoboTeam) return false;
+  // Folder launch may activate or replace RoboTeam, while its source stays pinned.
   return ['source', 'runtimeSource', 'treeSha256'].every(key => (
-    typeof priorCLI[key] === 'string' && priorCLI[key].length > 0 && priorCLI[key] === currentCLI[key]
+    typeof priorRoboTeam[key] === 'string' && priorRoboTeam[key].length > 0 && priorRoboTeam[key] === currentRoboTeam[key]
   )) && JSON.stringify(priorBindings) === JSON.stringify(currentBindings);
 }
 

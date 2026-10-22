@@ -3,9 +3,9 @@ name: Destroy Explorer QA Box
 on:
   workflow_dispatch:
     inputs:
-      confirm_destroy:
-        description: 'Confirm removal of the QA Box, its Ploinky-managed tunnel, and all QA data volumes'
-        required: true
+      delete_data:
+        description: 'Also delete the QA data (.data, workspace documents, encryption identity). Unchecked keeps them for the next deploy.'
+        required: false
         default: false
         type: boolean
 
@@ -18,11 +18,11 @@ env:
   SSH_HOST: '45.136.70.141'
   SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'
   WORKSPACE: 'explorerQaWorkspace'
-  CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
+  DELETE_DATA: ${{ inputs.delete_data }}
   ROUTER_PORT: '8097'
   PUBLIC_HOST: 'explorer-qa.axiologic.dev'
   CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'
-  CLOUDFLARE_API_SECRET_HANDLE: 'publication/explorer-qa-api'
+  CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'
   SOUL_GATEWAY_WORKSPACE: 'soulGateway'
   SOUL_GATEWAY_ROUTER_PORT: '8080'
 
@@ -30,11 +30,26 @@ jobs:
   destroy:
     name: Destroy Explorer QA outer Box
     runs-on: ubuntu-latest
+    # A keep-data destroy quiesces the nested services first, which takes up to about 15 minutes.
     timeout-minutes: 50
     permissions:
       contents: read
 
     steps:
+      - name: Check out the reviewed teardown helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up the teardown test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Test the teardown helpers and this workflow
+        run: |
+          QA_TEARDOWN_PRIVILEGED_TESTS=1 node --test tests/smoke/lib/qa-teardown.test.mjs tests/smoke/lib/deploy-qa-destroy-workflow.test.mjs
+
       - name: Validate GitHub configuration
         env:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
@@ -83,14 +98,21 @@ jobs:
             echo "::error::Refusing to destroy the production Soul Gateway workspace"
             exit 1
           fi
-          if [ "$CONFIRM_DESTROY" != "true" ]; then
-            echo "::error::confirm_destroy must be enabled"
-            exit 1
-          fi
+          case "${DELETE_DATA:-}" in
+            true|false) ;;
+            *)
+              echo "::error::delete_data must be true or false"
+              exit 1
+              ;;
+          esac
           if [ "$PUBLIC_HOST" != 'explorer-qa.axiologic.dev' ] ||
             [ "$CLOUDFLARE_TUNNEL_NAME" != 'explorer-qa' ] ||
             [ "$ROUTER_PORT" != '8097' ]; then
             echo "::error::Explorer QA destroy publication identity is not pinned"
+            exit 1
+          fi
+          if [ "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" != '091c4096-d1c8-4dbc-bb12-0c6357431d96' ]; then
+            echo "::error::The protected shared Cloudflare tunnel identity is not pinned"
             exit 1
           fi
           HOST_KEY_CANDIDATE="$RUNNER_TEMP/explorer_qa_known_hosts"
@@ -114,141 +136,86 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           install -m 600 "$RUNNER_TEMP/explorer_qa_known_hosts" ~/.ssh/explorer_qa_known_hosts
 
-      - name: Destroy Explorer QA Box
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+      - name: Tear down the Explorer QA Box on the host
         run: |
           set -euo pipefail
           umask 077
-
-          LOCAL_ENV_FILE=''
-          REMOTE_ENV_FILE=''
-          REMOTE_ENV_UPLOADED='false'
+          case "$DELETE_DATA" in
+            true) TEARDOWN_MODE='delete-data' ;;
+            false) TEARDOWN_MODE='keep-data' ;;
+            *)
+              echo "::error::delete_data must be true or false"
+              exit 1
+              ;;
+          esac
+          SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
+          SCP=(scp -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts")
+          REMOTE_DIR=''
           cleanup_destroy_files() {
-            if [ -n "$LOCAL_ENV_FILE" ]; then rm -f "$LOCAL_ENV_FILE"; fi
-            if [ "$REMOTE_ENV_UPLOADED" = 'true' ]; then
-              case "$REMOTE_ENV_FILE" in
-                /tmp/explorer_qa_destroy.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
-                  ssh \
-                    -i ~/.ssh/deploy_key \
-                    -o BatchMode=yes \
-                    -o StrictHostKeyChecking=yes \
-                    -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
-                    "${SSH_USER}@${SSH_HOST}" \
-                    "rm -f -- '$REMOTE_ENV_FILE'" >/dev/null 2>&1 || true
-                  ;;
-              esac
-            fi
+            case "$REMOTE_DIR" in
+              /tmp/explorer-qa-destroy.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+                "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
+                  "rm -f '$REMOTE_DIR/qa-teardown.mjs' '$REMOTE_DIR/qa-teardown-privileged.mjs' '$REMOTE_DIR/quiesce-explorer-qa.mjs' '$REMOTE_DIR/protected-before.json' '$REMOTE_DIR/protected-after.json'; rmdir '$REMOTE_DIR'" >/dev/null 2>&1 || true
+                ;;
+            esac
           }
           trap cleanup_destroy_files EXIT
+          REMOTE_DIR="$("${SSH[@]}" "${SSH_USER}@${SSH_HOST}" 'umask 077; mktemp -d /tmp/explorer-qa-destroy.XXXXXXXX')"
+          [[ "$REMOTE_DIR" =~ ^/tmp/explorer-qa-destroy\.[A-Za-z0-9]{8}$ ]]
+          # The helpers are uploaded to a private directory and verified by SHA-256 under the host lock.
+          # No Cloudflare credential is sent to the host: the runner deletes the publication afterwards.
+          for helper in qa-teardown.mjs qa-teardown-privileged.mjs quiesce-explorer-qa.mjs; do
+            "${SCP[@]}" "$GITHUB_WORKSPACE/.github/scripts/$helper" "${SSH_USER}@${SSH_HOST}:$REMOTE_DIR/$helper"
+          done
+          SHA_TEARDOWN="$(sha256sum "$GITHUB_WORKSPACE/.github/scripts/qa-teardown.mjs" | awk '{print $1}')"
+          SHA_PRIVILEGED="$(sha256sum "$GITHUB_WORKSPACE/.github/scripts/qa-teardown-privileged.mjs" | awk '{print $1}')"
+          SHA_QUIESCE="$(sha256sum "$GITHUB_WORKSPACE/.github/scripts/quiesce-explorer-qa.mjs" | awk '{print $1}')"
+          for sha in "$SHA_TEARDOWN" "$SHA_PRIVILEGED" "$SHA_QUIESCE"; do
+            [[ "$sha" =~ ^[a-f0-9]{64}$ ]]
+          done
+          [[ "$SOUL_GATEWAY_ROUTER_PORT" =~ ^[0-9]{1,5}$ ]]
 
-          write_shell_var() {
-            local name="$1"
-            local value="${!name:-}"
-            printf '%s=' "$name"
-            printf '%q\n' "$value"
-          }
-
-          LOCAL_ENV_FILE="$(mktemp /tmp/explorer_qa_destroy.XXXXXX)"
-          REMOTE_ENV_FILE="/tmp/$(basename "$LOCAL_ENV_FILE")"
-          {
-            write_shell_var WORKSPACE
-            write_shell_var ROUTER_PORT
-            write_shell_var PUBLIC_HOST
-            write_shell_var CLOUDFLARE_TUNNEL_NAME
-            write_shell_var CLOUDFLARE_API_SECRET_HANDLE
-            write_shell_var CLOUDFLARE_API_TOKEN
-            write_shell_var CLOUDFLARE_ACCOUNT_ID
-            write_shell_var CLOUDFLARE_ZONE_ID
-            write_shell_var SOUL_GATEWAY_WORKSPACE
-            write_shell_var SOUL_GATEWAY_ROUTER_PORT
-          } > "$LOCAL_ENV_FILE"
-
-          REMOTE_ENV_UPLOADED='true'
-          scp \
-            -i ~/.ssh/deploy_key \
-            -o StrictHostKeyChecking=yes \
-            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
-            "$LOCAL_ENV_FILE" \
-            "${SSH_USER}@${SSH_HOST}:$REMOTE_ENV_FILE"
-          rm -f "$LOCAL_ENV_FILE"
-          LOCAL_ENV_FILE=''
-
-          ssh \
-            -i ~/.ssh/deploy_key \
-            -o StrictHostKeyChecking=yes \
-            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=10 \
-            "${SSH_USER}@${SSH_HOST}" "bash -s -- '$REMOTE_ENV_FILE'" <<'REMOTE'
+          status=0
+          "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
+            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_DIR' '$TEARDOWN_MODE' '$SHA_TEARDOWN' '$SHA_PRIVILEGED' '$SHA_QUIESCE' '$SOUL_GATEWAY_ROUTER_PORT'" <<'REMOTE' | tee "$RUNNER_TEMP/explorer-qa-destroy.log" || status=$?
           set -euo pipefail
-          REMOTE_ENV_FILE="${1:-}"
-          CLOUDFLARE_CREDENTIAL_FILE=""
-          cleanup_remote_files() {
-            rm -f "$REMOTE_ENV_FILE"
-            if [ -n "$CLOUDFLARE_CREDENTIAL_FILE" ]; then
-              rm -f "$CLOUDFLARE_CREDENTIAL_FILE"
-            fi
-          }
-          case "$REMOTE_ENV_FILE" in
-            /tmp/explorer_qa_destroy.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+          HELPERS_DIR="${1:-}"
+          TEARDOWN_MODE="${2:-}"
+          SHA_TEARDOWN="${3:-}"
+          SHA_PRIVILEGED="${4:-}"
+          SHA_QUIESCE="${5:-}"
+          SOUL_PORT="${6:-}"
+          if [[ ! "$HELPERS_DIR" =~ ^/tmp/explorer-qa-destroy\.[A-Za-z0-9]{8}$ ]]; then
+            echo "[destroy-qa] ERROR: invalid teardown helper directory."
+            exit 1
+          fi
+          case "$TEARDOWN_MODE" in
+            keep-data) QUIESCE_POLICY=fatal ;;
+            delete-data) QUIESCE_POLICY=skip ;;
             *)
-              echo "[destroy-qa] ERROR: invalid destroy configuration path."
+              echo "[destroy-qa] ERROR: unsupported teardown mode '$TEARDOWN_MODE'."
               exit 1
               ;;
           esac
-          trap cleanup_remote_files EXIT
-
-          if [ ! -f "$REMOTE_ENV_FILE" ] || [ -L "$REMOTE_ENV_FILE" ]; then
-            echo "[destroy-qa] ERROR: destroy configuration was not transferred."
-            exit 1
-          fi
-          set -a
-          . "$REMOTE_ENV_FILE"
-          set +a
-          rm -f "$REMOTE_ENV_FILE"
-
-          case "${WORKSPACE:-}" in
-            ''|.|..|*[!A-Za-z0-9._-]*)
-              echo "[destroy-qa] ERROR: invalid workspace name '${WORKSPACE:-}'."
+          for sha in "$SHA_TEARDOWN" "$SHA_PRIVILEGED" "$SHA_QUIESCE"; do
+            if [[ ! "$sha" =~ ^[a-f0-9]{64}$ ]]; then
+              echo "[destroy-qa] ERROR: malformed helper checksum."
               exit 1
-              ;;
-          esac
-          if [ "$WORKSPACE" = "${SOUL_GATEWAY_WORKSPACE:-soulGateway}" ]; then
-            echo "[destroy-qa] ERROR: refusing to operate on the production Soul Gateway workspace."
-            exit 1
-          fi
-          case "${ROUTER_PORT:-}" in
-            ''|*[!0-9]*)
-              echo "[destroy-qa] ERROR: invalid router port '${ROUTER_PORT:-}'."
-              exit 1
-              ;;
-          esac
-          if [ "$ROUTER_PORT" -lt 1 ] || [ "$ROUTER_PORT" -gt 65535 ]; then
-            echo "[destroy-qa] ERROR: router port must be between 1 and 65535."
-            exit 1
-          fi
-          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-            echo "[destroy-qa] ERROR: a scoped Cloudflare API token is required."
-            exit 1
-          fi
-          if [[ "$CLOUDFLARE_API_TOKEN" == cfk_* ]]; then
-            echo "[destroy-qa] ERROR: the configured Cloudflare credential is a Global API Key, not a scoped Bearer API Token."
-            exit 1
-          fi
-          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ ]] ||
-            [[ ! "$CLOUDFLARE_ZONE_ID" =~ ^[a-f0-9]{32}$ ]]; then
-            echo "[destroy-qa] ERROR: Cloudflare account or zone identifiers are malformed."
-            exit 1
-          fi
-          if [[ ! "$CLOUDFLARE_TUNNEL_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$ ]]; then
-            echo "[destroy-qa] ERROR: managed Cloudflare tunnel name is malformed."
+            fi
+          done
+          if [[ ! "$SOUL_PORT" =~ ^[0-9]{1,5}$ ]] || [ "$SOUL_PORT" -lt 1 ] || [ "$SOUL_PORT" -gt 65535 ]; then
+            echo "[destroy-qa] ERROR: invalid Soul Gateway router port '$SOUL_PORT'."
             exit 1
           fi
 
-          for tool in git node curl; do
+          if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ]; then
+            echo "[destroy-qa] ERROR: remote Explorer QA identity is not the pinned admin account."
+            exit 1
+          fi
+          for tool in node curl sha256sum cmp; do
             if ! command -v "$tool" >/dev/null 2>&1; then
               echo "[destroy-qa] ERROR: missing required host tool '$tool'."
               exit 1
@@ -258,7 +225,7 @@ jobs:
             echo "[destroy-qa] ERROR: neither Podman nor Docker is installed."
             exit 1
           fi
-          # The shared host Node can be older than the Ploinky minimum, so prefer
+          # The shared host Node can be older than the helpers' minimum, so prefer
           # the QA-scoped Node that the deploy workflow installs and verifies.
           case "$(uname -m)" in
             x86_64) QA_NODE_ARCH=x64 ;;
@@ -272,16 +239,11 @@ jobs:
             echo '[destroy-qa] Using the QA-scoped Node v24.19.0 installed by the deploy workflow.'
           fi
           if [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
-            echo "[destroy-qa] ERROR: Ploinky needs Node.js 22 or newer; the QA-scoped Node is missing and the host has $(node --version)."
+            echo "[destroy-qa] ERROR: the teardown helpers need Node.js 22 or newer; the QA-scoped Node is missing and the host has $(node --version)."
             exit 1
           fi
 
-          WORK_DIR="$HOME/$WORKSPACE"
-          if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ] ||
-            [ "$WORK_DIR" != '/home/admin/explorerQaWorkspace' ]; then
-            echo "[destroy-qa] ERROR: remote Explorer QA identity is not the pinned admin workspace."
-            exit 1
-          fi
+          WORK_DIR=/home/admin/explorerQaWorkspace
           PINNED_BOX_PATH_HASH="$(
             node --input-type=module -e '
               import crypto from "node:crypto";
@@ -299,421 +261,229 @@ jobs:
             echo "[destroy-qa] ERROR: workspace identity path must not be a symlink: $WORK_DIR"
             exit 1
           fi
-          if [ -L "$WORK_DIR/.ploinky" ]; then
-            echo "[destroy-qa] ERROR: workspace authority directory must not be a symlink: $WORK_DIR/.ploinky"
+          if [ -e "$WORK_DIR" ] && [ ! -d "$WORK_DIR" ]; then
+            echo "[destroy-qa] ERROR: workspace identity path is not a directory: $WORK_DIR"
             exit 1
           fi
-          if [ ! -d "$WORK_DIR" ]; then
-            echo "[destroy-qa] No QA identity directory exists at $WORK_DIR; nothing to destroy."
-            exit 0
-          fi
 
-          RUNTIME_DIR="$WORK_DIR/.runtime/ploinky"
-          PLOINKY="$RUNTIME_DIR/bin/ploinky"
-          if [ ! -d "$RUNTIME_DIR/.git" ] || [ ! -x "$PLOINKY" ]; then
-            echo "[destroy-qa] ERROR: the dedicated QA Ploinky runtime is missing or invalid."
-            echo "[destroy-qa] Refusing to substitute a shared host runtime for exact Box destruction."
+          if [ -L "$HELPERS_DIR" ] || [ ! -d "$HELPERS_DIR" ]; then
+            echo "[destroy-qa] ERROR: the teardown helper directory is missing."
             exit 1
           fi
-          inspect_outer_box_status() {
-            env PLOINKY_WORKSPACE_ROOT="$WORK_DIR" \
-              node --input-type=module - \
-                "$RUNTIME_DIR/ploinky-box/supervisor.mjs" <<'NODE'
-          import { pathToFileURL } from 'node:url';
-
-          const supervisorModule = process.argv[2];
-          const {
-            createBoxSupervisor,
-            formatBoxStatus,
-          } = await import(pathToFileURL(supervisorModule).href);
-          const status = createBoxSupervisor().inspectBoxStatus();
-          process.stdout.write(formatBoxStatus(status));
-          NODE
-          }
-          RUNTIME_ORIGIN="$(git -C "$RUNTIME_DIR" remote get-url origin)"
-          case "${RUNTIME_ORIGIN%.git}" in
-            https://github.com/AssistOS-AI/ploinky) ;;
-            *)
-              echo "[destroy-qa] ERROR: unexpected Ploinky runtime origin '$RUNTIME_ORIGIN'."
+          for helper in qa-teardown.mjs qa-teardown-privileged.mjs quiesce-explorer-qa.mjs; do
+            if [ -L "$HELPERS_DIR/$helper" ] || [ ! -f "$HELPERS_DIR/$helper" ]; then
+              echo "[destroy-qa] ERROR: teardown helper '$helper' was not transferred."
               exit 1
-              ;;
-          esac
-
-          resolve_default_branch() {
-            local repository_url="$1"
-            local symref_record default_ref default_branch
-            if ! symref_record="$(git ls-remote --symref "$repository_url" HEAD)"; then
-              echo "[destroy-qa] ERROR: unable to resolve the default branch for $repository_url." >&2
-              return 1
             fi
-            default_ref="$({
-              printf '%s\n' "$symref_record" |
-                awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }'
-            })"
-            case "$default_ref" in
-              refs/heads/*) ;;
-              *)
-                echo "[destroy-qa] ERROR: remote HEAD for $repository_url is not a branch." >&2
-                return 1
-                ;;
-            esac
-            default_branch="${default_ref#refs/heads/}"
-            git check-ref-format --branch "$default_branch" >/dev/null
-            printf '%s\n' "$default_branch"
+          done
+          printf '%s  %s\n' "$SHA_TEARDOWN" "$HELPERS_DIR/qa-teardown.mjs" | sha256sum -c - >/dev/null
+          printf '%s  %s\n' "$SHA_PRIVILEGED" "$HELPERS_DIR/qa-teardown-privileged.mjs" | sha256sum -c - >/dev/null
+          printf '%s  %s\n' "$SHA_QUIESCE" "$HELPERS_DIR/quiesce-explorer-qa.mjs" | sha256sum -c - >/dev/null
+
+          # The log and the step summary of this public repository only ever show these fields. The
+          # helpers' own JSON can carry user file names (workspace.keep) and identity checksums.
+          summarize() {
+            node --input-type=module -e '
+              import fs from "node:fs";
+              const kind = process.argv[1];
+              const lines = fs.readFileSync(0, "utf8").split("\n").filter(Boolean);
+              let value = null;
+              if (lines.length === 1) {
+                try { value = JSON.parse(lines[0]); } catch { value = null; }
+              }
+              const word = (item) => (typeof item === "string" && /^[A-Za-z0-9_.:-]{1,64}$/.test(item) ? item : null);
+              const code = (item) => (typeof item === "string" && /^QA_[A-Z0-9_]{1,80}$/.test(item) ? item : null);
+              const hex = (item) => (typeof item === "string" && /^[a-f0-9]{12,64}$/.test(item) ? item : null);
+              const digest = (item) => (typeof item === "string" && /^sha256:[a-f0-9]{64}$/.test(item) ? item : null);
+              // A name is printed only when it has exactly the form that the teardown itself generates:
+              // a backup, one of its sibling files, a pruning tombstone, or a delete-data tombstone.
+              // Every other entry of the backup root or of /home/admin is counted, never named.
+              const GENERATED_BACKUP = /^(?:redeploy-[A-Za-z0-9]{8}(?:-(?:helpers|lock-ready\.json|lock-released\.json|lock-release|lock\.log|lock-source\.txt|quiesce\.log))?|\.pruning-redeploy-[A-Za-z0-9]{8})$/;
+              const GENERATED_DELETING = /^\.(?:explorerQaWorkspace|qa-deployment-state)\.deleting-[0-9]{1,10}$/;
+              const sift = (items, pattern) => {
+                if (!Array.isArray(items)) return { names: [], other: Number.isSafeInteger(items) ? items : 0 };
+                const entries = items.map((item) => (typeof item === "string" ? item : item?.name));
+                const named = entries.filter((entry) => typeof entry === "string" && pattern.test(entry));
+                return { names: named, other: entries.length - named.length };
+              };
+              const list = (items) => (Array.isArray(items) ? items : []);
+              const ids = (items) => list(items).map((item) => hex(item?.id)).filter(Boolean);
+              const count = (items) => (Array.isArray(items) ? items.length : (Number.isSafeInteger(items) ? items : null));
+              const backups = (items) => sift(items, GENERATED_BACKUP);
+              const deletions = (items) => sift(items, GENERATED_DELETING);
+              const retainedBackups = (items) => {
+                const entries = list(items);
+                const unrecognized = entries.filter((item) => item?.reason === "unrecognized").length;
+                const others = entries.filter((item) => item?.reason !== "unrecognized");
+                const named = others.filter((item) => typeof item?.name === "string" && GENERATED_BACKUP.test(item.name));
+                return {
+                  named: named.map((item) => ({ name: item.name, reason: word(item.reason) })),
+                  unrecognized,
+                  other: others.length - named.length,
+                };
+              };
+              if (kind === "code") {
+                process.stdout.write(code(value?.code) || "unknown");
+                process.exit(0);
+              }
+              if (!value || typeof value !== "object") {
+                process.stdout.write(JSON.stringify({ unreadable: true }));
+                process.exit(0);
+              }
+              const common = { result: word(value.result), scope: word(value.scope), mode: word(value.mode), phase: word(value.phase), code: code(value.code) };
+              const stash = typeof value.stash === "boolean" ? value.stash : word(value.stash);
+              let summary;
+              if (kind === "plan") {
+                summary = {
+                  ...common,
+                  digest: digest(value.digest),
+                  containers: ids(value.containers),
+                  volumes: count(value.volumes),
+                  images: { remove: ids(value.images?.remove), retained: ids(value.images?.retained) },
+                  stash,
+                  marker: word(value.marker?.operation),
+                  capacitySufficient: typeof value.capacity?.sufficient === "boolean" ? value.capacity.sufficient : null,
+                  pendingDeletions: deletions(value.workspace?.pendingDeletions),
+                  legacyBackups: {
+                    remove: backups(value.legacyBackups?.remove),
+                    replayTombstones: backups(value.legacyBackups?.replayTombstones),
+                    retained: backups(value.legacyBackups?.retained),
+                    retainedSiblings: backups(value.legacyBackups?.retainedSiblings),
+                    unrecognized: list(value.legacyBackups?.unrecognized).length,
+                  },
+                };
+              } else {
+                summary = {
+                  ...common,
+                  removedContainers: ids(value.removedContainers),
+                  removedImages: ids(value.removedImages),
+                  retainedImages: list(value.retainedImages).map((item) => ({ id: hex(item?.id), reason: word(item?.reason) })),
+                  removedVolumes: count(value.removedVolumes),
+                  quiesce: word(value.quiesce?.result),
+                  quiescePreflight: word(value.quiesce?.preflight?.result),
+                  stash,
+                  marker: word(value.marker?.operation),
+                  workspace: { result: word(value.workspace?.result), keepDigest: digest(value.workspace?.keep?.digest) },
+                  finishedDeletions: deletions(value.finishedDeletions),
+                  legacyBackups: { removed: backups(value.legacyBackups?.removed), replayedTombstones: backups(value.legacyBackups?.replayedTombstones) },
+                  retainedBackups: retainedBackups(value.retainedBackups),
+                  warnings: count(value.warnings),
+                };
+              }
+              process.stdout.write(JSON.stringify(summary));
+            ' "$1"
           }
 
-          PLOINKY_URL='https://github.com/AssistOS-AI/ploinky.git'
-          PLOINKY_BRANCH="$(resolve_default_branch "$PLOINKY_URL")"
-          AGENTLIB_URL='https://github.com/AssistOS-AI/achillesAgentLib.git'
-          export PLOINKY_AGENTLIB_REF="$(resolve_default_branch "$AGENTLIB_URL")"
-          git -C "$RUNTIME_DIR" fetch --prune origin \
-            "refs/heads/$PLOINKY_BRANCH:refs/remotes/origin/$PLOINKY_BRANCH"
-
-          SOUL_HEALTH_URL="http://127.0.0.1:${SOUL_GATEWAY_ROUTER_PORT:-8080}/base-agent-additional-server/soul-gateway/7000/healthz/"
+          SOUL_HEALTH_URL="http://127.0.0.1:${SOUL_PORT}/base-agent-additional-server/soul-gateway/7000/healthz/"
           SOUL_UP_BEFORE=0
           if curl -sf "$SOUL_HEALTH_URL" >/dev/null 2>&1; then
             SOUL_UP_BEFORE=1
             echo "[destroy-qa] Protected Soul Gateway was healthy before destruction."
           fi
 
-          export PLOINKY_WORKSPACE_ROOT="$WORK_DIR"
-          echo "[destroy-qa] Exact Box status before destruction:"
-          inspect_outer_box_status || true
+          PROTECTED_BEFORE_FILE="$HELPERS_DIR/protected-before.json"
+          PROTECTED_AFTER_FILE="$HELPERS_DIR/protected-after.json"
+          node "$HELPERS_DIR/qa-teardown.mjs" protected-snapshot < /dev/null > "$PROTECTED_BEFORE_FILE" || {
+            echo "[destroy-qa] Snapshot failure code: $(summarize code < "$PROTECTED_BEFORE_FILE")"
+            echo "[destroy-qa] ERROR: unable to record the protected host resource identities."
+            exit 1
+          }
+          echo "[destroy-qa] Protected host resource identity sha256=$(sha256sum "$PROTECTED_BEFORE_FILE" | awk '{print $1}')"
 
-          DEPLOYED_PLOINKY_HEAD="$(git -C "$RUNTIME_DIR" rev-parse HEAD)"
-          if ! git -C "$RUNTIME_DIR" merge-base --is-ancestor \
-            "$DEPLOYED_PLOINKY_HEAD" \
-            "refs/remotes/origin/$PLOINKY_BRANCH"; then
-            echo "[destroy-qa] ERROR: deployed Ploinky runtime is not from '$PLOINKY_BRANCH'."
+          PLAN="$(node "$HELPERS_DIR/qa-teardown.mjs" plan --scope destroy --mode "$TEARDOWN_MODE" --lock-held < /dev/null)" || {
+            printf '[destroy-qa] Teardown plan summary: %s\n' "$(printf '%s' "$PLAN" | summarize plan)"
+            echo "[destroy-qa] ERROR: the teardown plan was refused; nothing was changed."
+            exit 1
+          }
+          printf '[destroy-qa] Teardown plan summary: %s\n' "$(printf '%s' "$PLAN" | summarize plan)"
+          PLAN_DIGEST="$(
+            printf '%s' "$PLAN" | node --input-type=module -e '
+              import fs from "node:fs";
+              const lines = fs.readFileSync(0, "utf8").split("\n").filter(Boolean);
+              if (lines.length !== 1) process.exit(1);
+              const plan = JSON.parse(lines[0]);
+              if (plan?.result !== "planned" || !/^sha256:[a-f0-9]{64}$/.test(String(plan.digest))) process.exit(1);
+              process.stdout.write(plan.digest);
+            '
+          )" || {
+            echo "[destroy-qa] ERROR: the teardown plan output is malformed; nothing was changed."
+            exit 1
+          }
+
+          echo "[destroy-qa] Tearing down the Explorer QA Box (mode $TEARDOWN_MODE, quiesce $QUIESCE_POLICY)."
+          EXECUTE_OUT="$(
+            node "$HELPERS_DIR/qa-teardown.mjs" execute --scope destroy --mode "$TEARDOWN_MODE" --quiesce "$QUIESCE_POLICY" --plan-digest "$PLAN_DIGEST" --lock-held < /dev/null
+          )" || {
+            printf '[destroy-qa] Teardown summary: %s\n' "$(printf '%s' "$EXECUTE_OUT" | summarize execute)"
+            FAILURE_CODE="$(printf '%s' "$EXECUTE_OUT" | summarize code)"
+            case "$FAILURE_CODE" in
+              QA_TEARDOWN_QUIESCE_PREFLIGHT_FAILED|QA_TEARDOWN_QUIESCE_FAILED)
+                echo "[destroy-qa] ERROR: the nested services could not be quiesced ($FAILURE_CODE). No container was stopped and nothing was deleted; Explorer QA is still up (its nested services may need a restart)."
+                echo "[destroy-qa] Options: fix Explorer QA and dispatch the destroy workflow again, dispatch it with delete_data ticked (that skips the quiesce), or run the deploy workflow."
+                ;;
+              *)
+                echo "[destroy-qa] ERROR: the Explorer QA teardown failed ($FAILURE_CODE). Re-run the destroy workflow to finish it."
+                ;;
+            esac
+            exit 1
+          }
+          printf '[destroy-qa] Teardown summary: %s\n' "$(printf '%s' "$EXECUTE_OUT" | summarize execute)"
+          printf '%s' "$EXECUTE_OUT" | node --input-type=module -e '
+            import fs from "node:fs";
+            const lines = fs.readFileSync(0, "utf8").split("\n").filter(Boolean);
+            if (lines.length !== 1 || JSON.parse(lines[0])?.result !== "torn-down") process.exit(1);
+          ' || {
+            echo "[destroy-qa] ERROR: the teardown receipt is malformed."
+            exit 1
+          }
+
+          node "$HELPERS_DIR/qa-teardown.mjs" protected-snapshot < /dev/null > "$PROTECTED_AFTER_FILE" || {
+            echo "[destroy-qa] Snapshot failure code: $(summarize code < "$PROTECTED_AFTER_FILE")"
+            echo "[destroy-qa] ERROR: unable to record the protected host resource identities after teardown."
+            exit 1
+          }
+          if ! cmp -s "$PROTECTED_BEFORE_FILE" "$PROTECTED_AFTER_FILE"; then
+            echo "[destroy-qa] ERROR: protected host resources changed during QA teardown."
             exit 1
           fi
-          echo "[destroy-qa] Using deployed Ploinky runtime $(git -C "$RUNTIME_DIR" rev-parse --short HEAD) from $PLOINKY_BRANCH."
-          echo "[destroy-qa] The deployed runtime remains authoritative for its immutable edge generation during teardown."
+          echo "[destroy-qa] Protected host resource identities remained unchanged."
 
-          mkdir -p "$WORK_DIR/.ploinky"
-          chmod 700 "$WORK_DIR/.ploinky"
-          EDGE_DESIRED_FILE="$WORK_DIR/.ploinky/edge-desired.json"
-          node --input-type=module - \
-            "$EDGE_DESIRED_FILE" \
-            "$CLOUDFLARE_ACCOUNT_ID" \
-            "$CLOUDFLARE_ZONE_ID" \
-            "$CLOUDFLARE_TUNNEL_NAME" \
-            "$CLOUDFLARE_API_SECRET_HANDLE" <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-
-          const target = path.resolve(process.argv[2]);
-          const [
-            accountId,
-            zoneId,
-            tunnelName,
-            apiTokenSecret,
-          ] = process.argv.slice(3);
-          const desired = {
-            hosts: {},
-            cloudflare: {
-              accountId,
-              zoneId,
-              tunnelName,
-              apiTokenSecret,
-              deleteTunnelOnTeardown: true,
-            },
-          };
-          try {
-            const current = fs.lstatSync(target);
-            if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1) {
-              throw new Error(`refusing unsafe edge desired target: ${target}`);
-            }
-          } catch (error) {
-            if (error?.code !== 'ENOENT') throw error;
-          }
-          const temporary = `${target}.${process.pid}.tmp`;
-          try {
-            fs.writeFileSync(temporary, `${JSON.stringify(desired, null, 2)}\n`, {
-              encoding: 'utf8',
-              flag: 'wx',
-              mode: 0o600,
-            });
-            fs.renameSync(temporary, target);
-            fs.chmodSync(target, 0o600);
-          } finally {
-            try { fs.unlinkSync(temporary); } catch (error) {
-              if (error?.code !== 'ENOENT') throw error;
-            }
-          }
-          NODE
-
-          GRAPH_REPOSITORIES=(
-            'AchillesIDE|https://github.com/AssistOS-AI/AssistOSExplorer.git'
-            'UmamiAgent|https://github.com/AssistOS-AI/UmamiAgent.git'
-            'OnlyOfficeAgent|https://github.com/AssistOS-AI/OnlyOfficeAgent.git'
-            'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'
-            'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'
-            'proxies|https://github.com/AssistOS-AI/proxies.git'
-          )
-          BRANCH_ARGS=(
-            --branch-fallback fail
-            --reset-repos
-          )
-          for repository_record in "${GRAPH_REPOSITORIES[@]}"; do
-            IFS='|' read -r repository_name repository_url <<< "$repository_record"
-            default_branch="$(resolve_default_branch "$repository_url")"
-            BRANCH_ARGS+=(--repo-branch "$repository_name=$default_branch")
-            echo "[destroy-qa] Selected $repository_name/$default_branch for teardown reconciliation."
-          done
-
-          PLAN_JSON="$(
-            "$PLOINKY" --dry-run --port "$ROUTER_PORT" start explorer \
-              --profile=default \
-              "${BRANCH_ARGS[@]}"
-          )"
-          BOX_INSTANCE="$(
-            printf '%s' "$PLAN_JSON" |
-              node -e '
-                let input = "";
-                process.stdin.on("data", (chunk) => { input += chunk; });
-                process.stdin.on("end", () => {
-                  const plan = JSON.parse(input);
-                  if (!/^ploinky-box-[a-z0-9-]+-[a-f0-9]{12}$/.test(plan.identity || "")) {
-                    throw new Error("invalid Box identity in dry-run plan");
-                  }
-                  process.stdout.write(plan.identity);
-                });
-              '
-          )"
-          if [ "$BOX_INSTANCE" != "ploinky-box-explorerqaworkspace-$PINNED_BOX_PATH_HASH" ]; then
-            echo "[destroy-qa] ERROR: dry-run Box identity is not the pinned Explorer QA instance."
+          if [ "$SOUL_UP_BEFORE" = "1" ] && ! curl -sf "$SOUL_HEALTH_URL" >/dev/null 2>&1; then
+            echo "[destroy-qa] ERROR: protected Soul Gateway became unhealthy during QA destruction."
             exit 1
           fi
-
-          node --input-type=module - \
-            "$RUNTIME_DIR/ploinky-box/supervisor.mjs" \
-            "$ROUTER_PORT" <<'NODE'
-          import { pathToFileURL } from 'node:url';
-
-          const supervisorModule = process.argv[2];
-          const routerPort = Number(process.argv[3]);
-          if (!Number.isSafeInteger(routerPort) || routerPort < 1 || routerPort > 65535) {
-            throw new Error('invalid Router port');
-          }
-          const { createBoxSupervisor } = await import(pathToFileURL(supervisorModule).href);
-          await createBoxSupervisor().prepareBoxForCommand({ explicitPort: routerPort });
-          NODE
-
-          BOX_ENGINE=""
-          for candidate in podman docker; do
-            if command -v "$candidate" >/dev/null 2>&1 &&
-              "$candidate" container inspect "$BOX_INSTANCE" >/dev/null 2>&1; then
-              if [ -n "$BOX_ENGINE" ]; then
-                echo "[destroy-qa] ERROR: Box identity exists in more than one container engine."
-                exit 1
-              fi
-              BOX_ENGINE="$candidate"
-            fi
-          done
-          if [ -z "$BOX_ENGINE" ]; then
-            echo "[destroy-qa] ERROR: exact Box instance '$BOX_INSTANCE' was not found."
-            exit 1
+          echo "[destroy-qa] Explorer QA teardown finished (mode $TEARDOWN_MODE)."
+          REMOTE
+          if [ "$status" -eq 75 ]; then
+            echo "::error::Another Explorer QA deployment operation holds the host lock; nothing was changed. Dispatch the destroy workflow again when it finishes."
+          fi
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
           fi
 
-          "$BOX_ENGINE" container exec \
-            --user podman \
-            "$BOX_INSTANCE" \
-            node --input-type=module --eval '
-              import fs from "node:fs";
-              const target = "/home/admin/explorerQaWorkspace/.ploinky";
-              try {
-                const current = fs.lstatSync(target);
-                if (!current.isDirectory() || current.isSymbolicLink()) {
-                  throw new Error(`refusing unsafe Ploinky authority directory: ${target}`);
-                }
-                if (typeof process.getuid === "function" && current.uid !== process.getuid()) {
-                  throw new Error(`Ploinky authority directory has the wrong owner: ${target}`);
-                }
-              } catch (error) {
-                if (error?.code !== "ENOENT") throw error;
-                fs.mkdirSync(target, { mode: 0o700 });
-              }
-              fs.chmodSync(target, 0o700);
-            '
-
-          STAGED_EDGE_DESIRED="$WORK_DIR/.ploinky/.explorer-qa-edge-desired.json"
-          "$BOX_ENGINE" container exec \
-            --user podman \
-            "$BOX_INSTANCE" \
-            node --input-type=module --eval '
-              import fs from "node:fs";
-              const staged = "/home/admin/explorerQaWorkspace/.ploinky/.explorer-qa-edge-desired.json";
-              try {
-                const current = fs.lstatSync(staged);
-                if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1) {
-                  throw new Error(`refusing unsafe staged edge desired file: ${staged}`);
-                }
-                if (typeof process.getuid === "function" && current.uid !== process.getuid()) {
-                  throw new Error(`staged edge desired file has the wrong owner: ${staged}`);
-                }
-                fs.unlinkSync(staged);
-              } catch (error) {
-                if (error?.code !== "ENOENT") throw error;
-              }
-            '
-          "$BOX_ENGINE" container cp \
-            "$EDGE_DESIRED_FILE" \
-            "$BOX_INSTANCE:$STAGED_EDGE_DESIRED"
-          "$BOX_ENGINE" container exec \
-            --user podman \
-            "$BOX_INSTANCE" \
-            node --input-type=module --eval '
-              import fs from "node:fs";
-              const staged = "/home/admin/explorerQaWorkspace/.ploinky/.explorer-qa-edge-desired.json";
-              const target = "/home/admin/explorerQaWorkspace/.ploinky/edge-desired.json";
-              try {
-                const stagedStat = fs.lstatSync(staged);
-                if (!stagedStat.isFile() || stagedStat.isSymbolicLink() || stagedStat.nlink !== 1) {
-                  throw new Error(`refusing unsafe staged edge desired file: ${staged}`);
-                }
-                if (typeof process.getuid === "function" && stagedStat.uid !== process.getuid()) {
-                  throw new Error(`staged edge desired file has the wrong owner: ${staged}`);
-                }
-                JSON.parse(fs.readFileSync(staged, "utf8"));
-                try {
-                  const current = fs.lstatSync(target);
-                  if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1) {
-                    throw new Error(`refusing unsafe edge desired target: ${target}`);
-                  }
-                  if (typeof process.getuid === "function" && current.uid !== process.getuid()) {
-                    throw new Error(`edge desired target has the wrong owner: ${target}`);
-                  }
-                } catch (error) {
-                  if (error?.code !== "ENOENT") throw error;
-                }
-                fs.renameSync(staged, target);
-                fs.chmodSync(target, 0o600);
-              } finally {
-                try { fs.unlinkSync(staged); } catch (error) {
-                  if (error?.code !== "ENOENT") throw error;
-                }
-              }
-            '
-
-          CLOUDFLARE_CREDENTIAL_FILE="$(mktemp /tmp/explorer_qa_cloudflare.XXXXXX)"
-          node --input-type=module - "$CLOUDFLARE_CREDENTIAL_FILE" <<'NODE'
-          import fs from 'node:fs';
-
-          const target = process.argv[2];
-          const values = {
-            'publication/explorer-qa-api': String(process.env.CLOUDFLARE_API_TOKEN || ''),
-          };
-          if (Object.values(values).some((value) => !value)) {
-            throw new Error('Cloudflare credentials are missing');
-          }
-          fs.writeFileSync(target, JSON.stringify(values), {
-            encoding: 'utf8',
-            flag: 'w',
-            mode: 0o600,
-          });
-          fs.chmodSync(target, 0o600);
-          NODE
-          STAGED_CREDENTIAL_FILE="$WORK_DIR/.ploinky/.explorer-qa-cloudflare-credentials.json"
-          CREDENTIAL_STATUS=0
-          "$BOX_ENGINE" container cp \
-            "$CLOUDFLARE_CREDENTIAL_FILE" \
-            "$BOX_INSTANCE:$STAGED_CREDENTIAL_FILE" || CREDENTIAL_STATUS=$?
-          if [ "$CREDENTIAL_STATUS" = "0" ]; then
-            "$BOX_ENGINE" container exec \
-              --user podman \
-              --workdir "$WORK_DIR" \
-              --env "PLOINKY_WORKSPACE_ROOT=$WORK_DIR" \
-              "$BOX_INSTANCE" \
-              node --input-type=module --eval '
-                import fs from "node:fs";
-                import { setSecretValue } from "/opt/ploinky/cli/utils/security/encryptedSecretsFile.js";
-                const file = process.argv.at(-1);
-                const values = JSON.parse(fs.readFileSync(file, "utf8"));
-                const expected = [
-                  "publication/explorer-qa-api",
-                ];
-                if (JSON.stringify(Object.keys(values).sort()) !== JSON.stringify(expected)) {
-                  throw new Error("unexpected Cloudflare credential handles");
-                }
-                for (const [name, value] of Object.entries(values)) {
-                  if (!String(value || "")) throw new Error(`empty Cloudflare credential ${name}`);
-                  setSecretValue(name, value);
-                }
-              ' "$STAGED_CREDENTIAL_FILE" || CREDENTIAL_STATUS=$?
-          fi
-          "$BOX_ENGINE" container exec \
-            --user podman \
-            "$BOX_INSTANCE" \
-            rm -f "$STAGED_CREDENTIAL_FILE" >/dev/null 2>&1 || true
-          rm -f "$CLOUDFLARE_CREDENTIAL_FILE"
-          CLOUDFLARE_CREDENTIAL_FILE=""
-          if [ "$CREDENTIAL_STATUS" != "0" ]; then
-            echo "[destroy-qa] ERROR: unable to persist Cloudflare credentials in the encrypted Ploinky store."
-            exit "$CREDENTIAL_STATUS"
-          fi
-
-          echo "[destroy-qa] Reconciling the empty Ploinky route set before destruction..."
-          PLOINKY_RECONCILE_STATUS=0
-          "$PLOINKY" --port "$ROUTER_PORT" start explorer \
-            --profile=default \
-            "${BRANCH_ARGS[@]}" || PLOINKY_RECONCILE_STATUS=$?
-          CLOUDFLARE_REMOVED=0
-          BOX_STATUS="$(inspect_outer_box_status || true)"
-          if [ "$PLOINKY_RECONCILE_STATUS" = "0" ]; then
-            for _ in $(seq 1 60); do
-              BOX_STATUS="$(inspect_outer_box_status || true)"
-              if [[ "$BOX_STATUS" == *"Cloudflare mode: local-only"* ]] &&
-                [[ "$BOX_STATUS" == *"Cloudflare management: none"* ]] &&
-                [[ "$BOX_STATUS" == *"Cloudflare publication: local-only"* ]] &&
-                [[ "$BOX_STATUS" == *"Cloudflare connector: absent"* ]]; then
-                CLOUDFLARE_REMOVED=1
-                break
-              fi
-              sleep 2
-            done
-          fi
-          printf '%s\n' "$BOX_STATUS"
-          if [ "$CLOUDFLARE_REMOVED" = "1" ]; then
-            echo "[destroy-qa] Ploinky removed the exact Explorer QA Cloudflare publication."
-          else
-            echo "[destroy-qa] WARNING: managed empty-route reconciliation did not converge; using the exact-identity teardown fallback."
-          fi
-
-          PLOINKY_DESTROY_STATUS=1
-          if [ "$CLOUDFLARE_REMOVED" = "1" ]; then
-            echo "[destroy-qa] Destroying the exact outer Box for $WORK_DIR through Ploinky..."
-            PLOINKY_DESTROY_STATUS=0
-            printf 'yes\n' | "$PLOINKY" destroy || PLOINKY_DESTROY_STATUS=$?
-          fi
-          if [ "$PLOINKY_DESTROY_STATUS" != "0" ] ||
-            "$BOX_ENGINE" container inspect "$BOX_INSTANCE" >/dev/null 2>&1; then
-            echo "[destroy-qa] Removing only the pinned outer Box '$BOX_INSTANCE' through $BOX_ENGINE."
-            "$BOX_ENGINE" container rm -f "$BOX_INSTANCE"
-          fi
-
-          BOX_STATUS="$(inspect_outer_box_status)"
-          printf '%s\n' "$BOX_STATUS"
-          case "$BOX_STATUS" in
-            *"Ploinky Box: absent"*|*"Ploinky Box: absent-retained-volumes"*) ;;
-            *)
-              echo "[destroy-qa] ERROR: outer Box still appears to exist."
-              exit 1
-              ;;
-          esac
-
-          if [ "$CLOUDFLARE_REMOVED" != "1" ]; then
-            echo "[destroy-qa] Removing only the exact dedicated Explorer QA Cloudflare publication..."
-            node --input-type=module <<'NODE'
+      - name: Delete the dedicated Cloudflare publication
+        if: success()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          echo "Removing only the exact dedicated Explorer QA Cloudflare publication..."
+          node --input-type=module <<'NODE'
           const accountId = String(process.env.CLOUDFLARE_ACCOUNT_ID || '');
           const zoneId = String(process.env.CLOUDFLARE_ZONE_ID || '');
           const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || '');
           const publicHost = String(process.env.PUBLIC_HOST || '');
           const apiToken = String(process.env.CLOUDFLARE_API_TOKEN || '');
+          const protectedTunnelId = String(process.env.CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID || '');
           if (!/^[a-f0-9]{32}$/.test(accountId) || !/^[a-f0-9]{32}$/.test(zoneId)
             || tunnelName !== 'explorer-qa' || publicHost !== 'explorer-qa.axiologic.dev'
             || !apiToken) {
             throw new Error('exact Explorer QA Cloudflare identity is not pinned');
+          }
+          if (protectedTunnelId !== '091c4096-d1c8-4dbc-bb12-0c6357431d96') {
+            throw new Error('the protected shared Cloudflare tunnel identity is not pinned');
           }
           const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
           const request = async (pathname, { method = 'GET' } = {}) => {
@@ -754,7 +524,7 @@ jobs:
             if (records.length !== 0) {
               throw new Error('Explorer QA DNS exists without its exact dedicated tunnel');
             }
-            process.stdout.write('[destroy-qa] Exact Explorer QA Cloudflare publication was already absent.\n');
+            process.stdout.write('Exact Explorer QA Cloudflare publication was already absent.\n');
             process.exit(0);
           }
           const tunnel = tunnels[0];
@@ -763,6 +533,9 @@ jobs:
             || tunnel?.deleted_at != null
             || (tunnel?.account_tag != null && tunnel.account_tag !== accountId)) {
             throw new Error('Explorer QA dedicated tunnel identity changed');
+          }
+          if (tunnelId === protectedTunnelId) {
+            throw new Error('refusing to delete the protected shared Cloudflare tunnel');
           }
           const detail = await request(`/accounts/${accountId}/cfd_tunnel/${tunnelId}`);
           const configuration = await request(
@@ -804,129 +577,13 @@ jobs:
             const [remainingTunnels, remainingRecords] = await Promise.all([listTunnels(), listRecords()]);
             if (Array.isArray(remainingTunnels) && remainingTunnels.length === 0
               && Array.isArray(remainingRecords) && remainingRecords.length === 0) {
-              process.stdout.write('[destroy-qa] Exact Explorer QA Cloudflare publication deletion verified.\n');
+              process.stdout.write('Exact Explorer QA Cloudflare publication deletion verified.\n');
               process.exit(0);
             }
             await wait(2000);
           }
           throw new Error('Explorer QA Cloudflare publication deletion did not verify');
           NODE
-          fi
-          unset CLOUDFLARE_API_TOKEN
-
-          if [ "$SOUL_UP_BEFORE" = "1" ] && ! curl -sf "$SOUL_HEALTH_URL" >/dev/null 2>&1; then
-            echo "[destroy-qa] ERROR: protected Soul Gateway became unhealthy during QA destruction."
-            exit 1
-          fi
-
-          BOX_PATH_HASH="${BOX_INSTANCE##*-}"
-          if [ "$BOX_PATH_HASH" != "$PINNED_BOX_PATH_HASH" ]; then
-            echo "[destroy-qa] ERROR: refusing to derive QA volume ownership from malformed Box identity '$BOX_INSTANCE'."
-            exit 1
-          fi
-          QA_VOLUME_ROLES=(workspace containers ploinky-deps)
-          QA_VOLUME_RECORDS=()
-          for engine in podman docker; do
-            command -v "$engine" >/dev/null 2>&1 || continue
-            while IFS= read -r volume_name; do
-              [ -n "$volume_name" ] || continue
-              volume_role="$(
-                "$engine" volume inspect "$volume_name" \
-                  --format '{{ index .Labels "io.assistos.ploinky-box.role" }}'
-              )"
-              role_allowed=0
-              for allowed_role in "${QA_VOLUME_ROLES[@]}"; do
-                if [ "$volume_role" = "$allowed_role" ]; then role_allowed=1; fi
-              done
-              if [ "$role_allowed" != "1" ] || [ "$volume_name" != "$BOX_INSTANCE-$volume_role" ]; then
-                echo "[destroy-qa] ERROR: refusing a volume with conflicting exact QA ownership: $volume_name"
-                exit 1
-              fi
-              observed_role="$(
-                "$engine" volume inspect "$volume_name" \
-                  --format '{{ index .Labels "io.assistos.ploinky-box.role" }}'
-              )"
-              observed_hash="$(
-                "$engine" volume inspect "$volume_name" \
-                  --format '{{ index .Labels "io.assistos.ploinky-box.path-hash" }}'
-              )"
-              if [ "$observed_role" != "$volume_role" ] || [ "$observed_hash" != "$BOX_PATH_HASH" ]; then
-                echo "[destroy-qa] ERROR: refusing to remove volume with mismatched Ploinky ownership: $volume_name"
-                exit 1
-              fi
-              QA_VOLUME_RECORDS+=("$engine|$volume_name")
-            done < <(
-              {
-                "$engine" volume ls -q --filter "label=io.assistos.ploinky-box.path-hash=$BOX_PATH_HASH"
-                for volume_role in "${QA_VOLUME_ROLES[@]}"; do
-                  volume_name="$BOX_INSTANCE-$volume_role"
-                  if "$engine" volume inspect "$volume_name" >/dev/null 2>&1; then
-                    printf '%s\n' "$volume_name"
-                  fi
-                done
-              } | sort -u
-            )
-          done
-          for record in "${QA_VOLUME_RECORDS[@]}"; do
-            IFS='|' read -r engine volume_name <<< "$record"
-            "$engine" volume rm "$volume_name"
-            if "$engine" volume inspect "$volume_name" >/dev/null 2>&1; then
-              echo "[destroy-qa] ERROR: QA volume deletion did not verify: $volume_name"
-              exit 1
-            fi
-          done
-          if ! node --input-type=module - "$WORK_DIR" <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-
-          const target = path.resolve(process.argv[2]);
-          if (target !== '/home/admin/explorerQaWorkspace') {
-            throw new Error(`refusing recursive cleanup outside exact QA identity: ${target}`);
-          }
-          try {
-            const current = fs.lstatSync(target);
-            if (!current.isDirectory() || current.isSymbolicLink()
-              || (typeof process.getuid === 'function' && current.uid !== process.getuid())) {
-              throw new Error(`refusing unsafe QA identity directory: ${target}`);
-            }
-            fs.rmSync(target, { recursive: true, force: false, maxRetries: 3 });
-          } catch (error) {
-            if (error?.code !== 'ENOENT') throw error;
-          }
-          NODE
-          then
-            echo "[destroy-qa] Root-owned nested runtime data requires the pinned privileged cleanup fallback."
-            sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-
-          if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
-            throw new Error('privileged QA cleanup did not run as root');
-          }
-          const target = path.resolve(process.argv[2]);
-          if (target !== '/home/admin/explorerQaWorkspace') {
-            throw new Error(`refusing privileged cleanup outside exact QA identity: ${target}`);
-          }
-          try {
-            const current = fs.lstatSync(target);
-            if (!current.isDirectory() || current.isSymbolicLink()) {
-              throw new Error(`refusing unsafe privileged QA identity directory: ${target}`);
-            }
-            fs.rmSync(target, { recursive: true, force: false, maxRetries: 3 });
-          } catch (error) {
-            if (error?.code !== 'ENOENT') throw error;
-          }
-          NODE
-          fi
-          if [ -e "$WORK_DIR" ] || [ -L "$WORK_DIR" ]; then
-            echo "[destroy-qa] ERROR: QA identity directory deletion did not verify: $WORK_DIR"
-            exit 1
-          fi
-
-          echo "[destroy-qa] Outer Box and its exact dedicated Cloudflare route, DNS record, and managed tunnel were removed."
-          echo "[destroy-qa] QA workspace, nested-container, dependency volumes, and host identity directory were removed."
-          REMOTE
-          REMOTE_ENV_UPLOADED='false'
 
       - name: Create summary
         if: success()
@@ -936,13 +593,29 @@ jobs:
             echo ""
             echo "- Host: \`${SSH_USER}@${SSH_HOST}\`"
             echo "- Identity directory: \`~/${WORKSPACE}\`"
-            echo "- Outer Box: removed when present"
-            echo "- Ploinky branch: configured repository default, verified against the deployed runtime"
-            echo "- Ploinky Cloudflare route and managed tunnel: removed"
+            if [ "$DELETE_DATA" = 'true' ]; then
+              echo "- Mode: delete data (the whole QA workspace and its state were removed)"
+            else
+              echo "- Mode: keep data (the documents, \`.data\` and the encryption identity stay for the next deploy)"
+            fi
+            if [ "$DELETE_DATA" != 'true' ]; then
+              echo "- Router access policy: parked for the next deploy, which restores it"
+            fi
+            echo "- Outer Box and QA containers: removed when present"
+            echo "- QA Box image: removed when present; retained when another container still uses it or when it is not the QA image"
+            echo "- Legacy QA backups: removed when recognised as complete"
+            echo "- Dedicated Cloudflare route, DNS record and managed tunnel: removed"
             echo "- Unrelated Cloudflare tunnels and routes: preserved"
             echo "- Public hostname: \`${PUBLIC_HOST}\`"
-            echo "- Named QA data volumes: removed"
-            echo "- Host identity directory: removed"
+            # Only the sanitized summary line is copied; the helpers' raw receipts are never logged.
+            if grep -q '^\[destroy-qa\] Teardown summary: ' "$RUNNER_TEMP/explorer-qa-destroy.log" 2>/dev/null; then
+              echo ""
+              echo "### Teardown receipt (safe fields only)"
+              echo ""
+              echo '```json'
+              sed -n 's/^\[destroy-qa\] Teardown summary: //p' "$RUNNER_TEMP/explorer-qa-destroy.log" | tail -n 1
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup
@@ -950,5 +623,4 @@ jobs:
         run: |
           rm -f \
             ~/.ssh/deploy_key \
-            ~/.ssh/explorer_qa_known_hosts \
-            /tmp/explorer_qa_destroy.env
+            ~/.ssh/explorer_qa_known_hosts

@@ -105,7 +105,7 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
         || entry.cohort === 'fresh-webtty' || entry.cohort === 'fresh-live-sessions' || entry.cohort === 'supporting-61');
     const guestOnly = selection.cases.length > 0 && selection.cases.every(entry => entry.cohort === 'supporting-15');
     const accounts = { enabled: acceptance && !guestOnly, secondary: dualAccounts, primaryAdmin: true,
-        searchAgentFixture: selection.specs.includes('specs/04-marketplace-lifecycle.spec.mjs'),
+        marketplaceLifecycleFixture: selection.specs.includes('specs/04-marketplace-lifecycle.spec.mjs'),
     };
     if (!listing) {
         for (const entry of selection.cases) {
@@ -171,7 +171,7 @@ export async function collectAcceptancePreflight({ profile, env, manifestPath, v
     const evidence = await collect({
         manifestPath, verifierPath, baseURL, boxBaseURL,
         verificationMode: env.SMOKE_SOURCE_VERIFICATION || 'release',
-        requireActiveAchillesCLI: false,
+        requireActiveRoboTeamAgent: false,
         expectedContainerName: env.SMOKE_PLOINKY_BOX_CONTAINER,
         expectedImageRef: env.SMOKE_EXPECT_BOX_IMAGE_REF,
         generationMaxAgeMs: 30 * 60_000,

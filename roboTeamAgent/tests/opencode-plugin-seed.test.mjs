@@ -1,0 +1,484 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { OPENCODE_PLUGIN_PACKAGE, openCodePluginState, seedOpenCodePlugin } from '../server/opencode-plugin-seed.mjs';
+import { prepareRobotShell } from '../server/robot-shell.mjs';
+import { prepareCopilotContext } from '../server/copilot-context.mjs';
+import { RobotStore } from '../server/robot-store.mjs';
+import { RuntimeManager } from '../server/runtime-manager.mjs';
+import { ToolCache, toolCacheInternals } from '../server/tool-cache.mjs';
+
+const PLUGIN = OPENCODE_PLUGIN_PACKAGE;
+
+// Writes what `npm install @opencode-ai/plugin@<version>` leaves in a directory.
+async function writeInstall(directory, version, { extra = [] } = {}) {
+    const dependencies = { [PLUGIN]: version };
+    await fs.mkdir(path.join(directory, 'node_modules', PLUGIN), { recursive: true });
+    await fs.mkdir(path.join(directory, 'node_modules', '.bin'), { recursive: true });
+    await fs.writeFile(path.join(directory, 'node_modules', PLUGIN, 'package.json'), JSON.stringify({ name: PLUGIN, version }));
+    await fs.writeFile(path.join(directory, 'node_modules', PLUGIN, `marker-${version}.txt`), version);
+    await fs.symlink('../@opencode-ai/plugin/package.json', path.join(directory, 'node_modules', '.bin', 'plugin-link'));
+    await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify({ dependencies: { ...dependencies, ...Object.fromEntries(extra) } }));
+    await fs.writeFile(path.join(directory, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+        '': { dependencies }, [`node_modules/${PLUGIN}`]: { version } } }));
+}
+
+// OpenCode's Npm.install, as read from the OpenCode 1.18.35 binary: it installs only when
+// node_modules is missing, or a dependency name is absent from the lock's root record. It
+// never compares versions.
+async function openCodeWouldInstall(directory) {
+    const exists = await fs.stat(path.join(directory, 'node_modules')).then(() => true, () => false);
+    if (!exists) return true;
+    const read = file => fs.readFile(path.join(directory, file), 'utf8').then(JSON.parse, () => ({}));
+    const manifest = await read('package.json');
+    const lock = await read('package-lock.json');
+    const wanted = new Set([...Object.keys(manifest.dependencies || {}), PLUGIN]);
+    const locked = new Set(Object.keys(lock.packages?.['']?.dependencies || {}));
+    return [...wanted].some(name => !locked.has(name));
+}
+
+async function fixture(t) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-seed-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const home = path.join(root, 'home');
+    await fs.mkdir(path.join(home, '.config', 'opencode'), { recursive: true });
+    const templatePath = path.join(root, 'template');
+    await fs.mkdir(templatePath);
+    await writeInstall(templatePath, '2.0.0');
+    return { root, home, config: path.join(home, '.config', 'opencode'), template: { path: templatePath, version: '2.0.0' } };
+}
+
+const installedVersion = async config => JSON.parse(await fs.readFile(path.join(config, 'node_modules', PLUGIN, 'package.json'), 'utf8')).version;
+const leftovers = async config => (await fs.readdir(config)).filter(name => name.startsWith('.roboteam-'));
+
+test('a home with no install is seeded so OpenCode finds nothing to install', async (t) => {
+    const { home, config, template } = await fixture(t);
+    assert.equal(await openCodeWouldInstall(config), true);
+    assert.deepEqual(await seedOpenCodePlugin(home, template), { status: 'seeded' });
+    assert.equal(await openCodeWouldInstall(config), false);
+    assert.equal(await installedVersion(config), '2.0.0');
+    assert.deepEqual((await openCodePluginState(config, '2.0.0')).current, true);
+    assert.equal((await fs.lstat(path.join(config, 'node_modules'))).isSymbolicLink(), false);
+    // Relative links inside the tree survive the copy and keep resolving inside the home.
+    assert.equal(await fs.readlink(path.join(config, 'node_modules', '.bin', 'plugin-link')), '../@opencode-ai/plugin/package.json');
+    assert.deepEqual(await leftovers(config), []);
+});
+
+test('a matching version is left untouched and writes nothing', async (t) => {
+    const { home, config, template } = await fixture(t);
+    await seedOpenCodePlugin(home, template);
+    const before = await Promise.all(['node_modules', 'package.json', 'package-lock.json'].map(name => fs.stat(path.join(config, name))));
+    assert.deepEqual(await seedOpenCodePlugin(home, template), { status: 'current' });
+    const after = await Promise.all(['node_modules', 'package.json', 'package-lock.json'].map(name => fs.stat(path.join(config, name))));
+    assert.deepEqual(after.map(entry => [entry.ino, entry.mtimeMs]), before.map(entry => [entry.ino, entry.mtimeMs]));
+    assert.deepEqual(await leftovers(config), []);
+});
+
+test('an install left by another OpenCode version is replaced, since OpenCode never checks versions', async (t) => {
+    const { home, config, template } = await fixture(t);
+    await writeInstall(config, '1.0.0');
+    // OpenCode would not repair this by itself: the dependency name is already in the lock.
+    assert.equal(await openCodeWouldInstall(config), false);
+    assert.deepEqual(await seedOpenCodePlugin(home, template), { status: 'reseeded' });
+    assert.equal(await installedVersion(config), '2.0.0');
+    assert.equal(JSON.parse(await fs.readFile(path.join(config, 'package.json'), 'utf8')).dependencies[PLUGIN], '2.0.0');
+    await assert.rejects(fs.access(path.join(config, 'node_modules', PLUGIN, 'marker-1.0.0.txt')));
+    await fs.access(path.join(config, 'node_modules', PLUGIN, 'marker-2.0.0.txt'));
+    assert.deepEqual(await leftovers(config), []);
+});
+
+test('a missing or unusable template falls back to normal OpenCode behaviour and leaves the home alone', async (t) => {
+    const { home, config, template } = await fixture(t);
+    assert.deepEqual(await seedOpenCodePlugin(home, null), { status: 'unavailable' });
+    const failed = await seedOpenCodePlugin(home, { path: path.join(template.path, 'absent'), version: '2.0.0' });
+    assert.equal(failed.status, 'failed');
+    assert.deepEqual(await fs.readdir(config), []);
+    assert.equal(await openCodeWouldInstall(config), true);
+});
+
+test('dependencies the user added are never overwritten', async (t) => {
+    const { home, config, template } = await fixture(t);
+    await writeInstall(config, '1.0.0', { extra: [['left-pad', '1.3.0']] });
+    const before = await fs.readFile(path.join(config, 'package.json'), 'utf8');
+    assert.deepEqual(await seedOpenCodePlugin(home, template), { status: 'customized' });
+    assert.equal(await fs.readFile(path.join(config, 'package.json'), 'utf8'), before);
+    assert.equal(await installedVersion(config), '1.0.0');
+    await fs.rm(path.join(config, 'package.json'));
+    assert.deepEqual(await seedOpenCodePlugin(home, template), { status: 'customized' }, 'node_modules without a manifest is not ours');
+    assert.equal(await installedVersion(config), '1.0.0');
+});
+
+test('links where the seed would read or write are refused and never followed', async (t) => {
+    const { root, home, config, template } = await fixture(t);
+    const outside = path.join(root, 'outside');
+    await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, 'sentinel'), 'keep');
+    await fs.symlink(outside, path.join(config, 'node_modules'));
+    assert.deepEqual(await seedOpenCodePlugin(home, template), { status: 'unsafe' });
+    assert.deepEqual(await fs.readdir(outside), ['sentinel']);
+    await fs.rm(path.join(config, 'node_modules'));
+    await fs.symlink(path.join(outside, 'sentinel'), path.join(config, 'package.json'));
+    assert.deepEqual(await seedOpenCodePlugin(home, template), { status: 'unsafe' });
+    assert.equal(await fs.readFile(path.join(outside, 'sentinel'), 'utf8'), 'keep');
+    // A hard-linked manifest is not read either.
+    await fs.rm(path.join(config, 'package.json'));
+    await fs.link(path.join(outside, 'sentinel'), path.join(config, 'package.json'));
+    assert.deepEqual(await seedOpenCodePlugin(home, template), { status: 'unsafe' });
+    assert.equal(await fs.readFile(path.join(outside, 'sentinel'), 'utf8'), 'keep');
+});
+
+test('seeding copies the template: changes in the home never reach the shared cache', async (t) => {
+    const { home, config, template } = await fixture(t);
+    await seedOpenCodePlugin(home, template);
+    await fs.writeFile(path.join(config, 'node_modules', PLUGIN, 'package.json'), '{"version":"tampered"}');
+    await fs.access(path.join(template.path, 'node_modules', PLUGIN, 'marker-2.0.0.txt'));
+    assert.equal(JSON.parse(await fs.readFile(path.join(template.path, 'node_modules', PLUGIN, 'package.json'), 'utf8')).version, '2.0.0');
+    // The tampered home reads as stale and is repaired from the template.
+    assert.deepEqual(await seedOpenCodePlugin(home, template), { status: 'reseeded' });
+    assert.equal(await installedVersion(config), '2.0.0');
+});
+
+test('concurrent preparations of one home converge on one complete install', async (t) => {
+    const { home, config, template } = await fixture(t);
+    const results = await Promise.all(Array.from({ length: 6 }, () => seedOpenCodePlugin(home, template)));
+    assert.ok(results.every(result => ['seeded', 'current'].includes(result.status)), JSON.stringify(results));
+    assert.ok(results.some(result => result.status === 'seeded'));
+    assert.equal(await installedVersion(config), '2.0.0');
+    assert.equal(await openCodeWouldInstall(config), false);
+    assert.deepEqual(await leftovers(config), []);
+});
+
+test('prepareRobotShell seeds the plugin template alongside the Soul Gateway plugin', async (t) => {
+    const { home, config, template } = await fixture(t);
+    await prepareRobotShell(home);
+    assert.equal(await openCodeWouldInstall(config), true, 'no template: unchanged behaviour');
+    await prepareRobotShell(home, { openCodePlugin: template });
+    assert.equal(await openCodeWouldInstall(config), false);
+    assert.equal(await installedVersion(config), '2.0.0');
+    await fs.access(path.join(config, 'plugins', 'soul-gateway.js'));
+});
+
+// A fake npm that installs the requested plugin the way the real one does.
+function fakeNpm(calls, { failWith } = {}) {
+    return async (command, args) => {
+        calls.push([command, ...args]);
+        if (failWith) throw new Error(failWith);
+        const prefix = args[args.indexOf('--prefix') + 1];
+        const manifest = JSON.parse(await fs.readFile(path.join(prefix, 'package.json'), 'utf8'));
+        await writeInstall(prefix, manifest.dependencies[PLUGIN]);
+        return { stdout: '', stderr: '' };
+    };
+}
+
+test('the tool cache prepares one plugin template per exact OpenCode version', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-template-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const cache = new ToolCache({ root, execFileImpl: fakeNpm(calls), log: () => {}, versionPins: {} });
+    assert.equal(await cache.peekOpenCodePlugin('1.18.35'), null, 'nothing is installed by a peek');
+    assert.equal(calls.length, 0);
+    const [first, second] = await Promise.all([cache.prepareOpenCodePlugin('1.18.35'), cache.prepareOpenCodePlugin('1.18.35')]);
+    assert.equal(first.path, second.path);
+    assert.equal(calls.length, 1, 'concurrent callers share one install');
+    const install = calls[0];
+    assert.ok(install.includes('--ignore-scripts'));
+    assert.ok(!install.includes('--no-package-lock'), 'the lock is what makes OpenCode skip its own install');
+    assert.deepEqual(await cache.peekOpenCodePlugin('1.18.35'), { path: first.path, version: '1.18.35' });
+    assert.ok((await openCodePluginState(first.path, '1.18.35')).current);
+    // A different OpenCode version never sees this template, and gets its own on demand.
+    assert.equal(await cache.peekOpenCodePlugin('1.18.36'), null);
+    const next = await cache.prepareOpenCodePlugin('1.18.36');
+    assert.notEqual(next.path, first.path);
+    assert.equal(calls.length, 2);
+    assert.equal((await cache.peekOpenCodePlugin('1.18.35')).path, first.path);
+    // Another process finds the prepared generation without installing.
+    const other = new ToolCache({ root, execFileImpl: fakeNpm(calls), log: () => {}, versionPins: {} });
+    assert.equal((await other.prepareOpenCodePlugin('1.18.35')).path, first.path);
+    assert.equal(calls.length, 2);
+});
+
+test('plugin template validation runs on every peek and rejects damaged or unsafe versions', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-template-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const cache = new ToolCache({ root, execFileImpl: fakeNpm([]), log: () => {}, versionPins: {} });
+    const prepared = await cache.prepareOpenCodePlugin('1.18.35');
+    await fs.writeFile(path.join(prepared.path, 'node_modules', PLUGIN, 'package.json'), JSON.stringify({ version: '1.18.34' }));
+    assert.equal(await cache.peekOpenCodePlugin('1.18.35'), null, 'an installed version that differs invalidates the template');
+    for (const bad of ['', 'latest', '1.2', '../../x', '1.2.3; rm', null, undefined]) {
+        assert.equal(await cache.peekOpenCodePlugin(bad), null);
+        await assert.rejects(cache.prepareOpenCodePlugin(bad), TypeError);
+    }
+});
+
+test('a failed plugin install leaves no generation and no fallback to another version', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-template-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const good = new ToolCache({ root, execFileImpl: fakeNpm([]), log: () => {}, versionPins: {} });
+    await good.prepareOpenCodePlugin('1.18.35');
+    const offline = new ToolCache({ root, execFileImpl: fakeNpm([], { failWith: 'offline' }), log: () => {}, versionPins: {} });
+    await assert.rejects(offline.prepareOpenCodePlugin('1.18.36'), /offline/);
+    assert.equal(await offline.peekOpenCodePlugin('1.18.36'), null);
+    const generations = path.join(root, 'opencode-plugin', 'generations');
+    assert.equal((await fs.readdir(generations)).length, 1, 'no staging directory or partial generation remains');
+});
+
+async function robotManager(t, toolCache, version = '1.18.35') {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-manager-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robotId = 'seeded-a1b2c3';
+    const home = path.join(root, 'robots', robotId, 'home');
+    await fs.mkdir(home, { recursive: true });
+    const prepared = [];
+    const manager = new RuntimeManager({ dataDir: root, toolCache, workspaceRoot: root,
+        soulGateway: { prepare: async directory => prepared.push(directory), close: async () => {} } });
+    return { manager, robotId, home, config: path.join(home, '.config', 'opencode'), prepared, version };
+}
+
+test('the runtime seeds a ready template without installing and installs one on request', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-manager-cache-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const cache = new ToolCache({ root, execFileImpl: fakeNpm(calls), log: () => {}, versionPins: {} });
+    const shell = { agents: { opencode: { versions: { opencode: '1.18.35' } } } };
+    cache.peekShellTools = async () => shell;
+    cache.prepareCodingAgents = async () => shell.agents;
+    const { manager, robotId, config, prepared } = await robotManager(t, cache);
+    await manager.prepareOpenCode(robotId);
+    assert.equal(await openCodeWouldInstall(config), true, 'no template is ready, so nothing is installed here');
+    assert.equal(calls.length, 0);
+    await manager.prepareOpenCode(robotId, { prepare: true });
+    assert.equal(calls.length, 1);
+    assert.equal(await openCodeWouldInstall(config), false);
+    assert.equal(await installedVersion(config), '1.18.35');
+    // An OpenCode upgrade reseeds the existing home.
+    shell.agents.opencode.versions.opencode = '1.18.40';
+    await manager.prepareOpenCode(robotId, { prepare: true });
+    assert.equal(calls.length, 2);
+    assert.equal(await installedVersion(config), '1.18.40');
+    assert.equal(prepared.length, 3);
+});
+
+test('startup warming seeds every OpenCode robot once and tolerates a failed preparation', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-warm-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const cache = new ToolCache({ root: path.join(root, 'cache'), execFileImpl: fakeNpm(calls), log: () => {}, versionPins: {} });
+    cache.prepareCodingAgents = async () => ({ opencode: { versions: { opencode: '1.18.35' } } });
+    const robots = [{ id: 'one-a1b2c3', codingAgents: ['opencode'] }, { id: 'two-a1b2c3', codingAgents: ['codex'] },
+        { id: 'three-a1b2c3', codingAgents: ['opencode'] }];
+    for (const robot of robots) await fs.mkdir(path.join(root, 'robots', robot.id, 'home'), { recursive: true });
+    const manager = new RuntimeManager({ dataDir: root, toolCache: cache, workspaceRoot: root,
+        soulGateway: { prepare: async () => {}, close: async () => {} } });
+    await manager.warmOpenCodePlugins(robots);
+    assert.equal(calls.length, 1, 'one install serves every robot');
+    const configOf = id => path.join(root, 'robots', id, 'home', '.config', 'opencode');
+    assert.equal(await openCodeWouldInstall(configOf('one-a1b2c3')), false);
+    assert.equal(await openCodeWouldInstall(configOf('three-a1b2c3')), false);
+    await assert.rejects(fs.access(path.join(configOf('two-a1b2c3'), 'node_modules')), 'a robot without OpenCode is not seeded');
+    assert.ok(toolCacheInternals.PLUGIN_TEMPLATE_NPM_ARGS.includes('--ignore-scripts'));
+});
+
+// What a service leaves on disk: per-agent generations, current.json, stamps and the shell selection.
+async function writePreparedShell(cacheRoot, opencodeVersion, tag = 'a') {
+    const schema = toolCacheInternals.CACHE_SCHEMA;
+    const generation = path.join(cacheRoot, 'shell-generations', `g-${tag}`);
+    await fs.mkdir(path.join(generation, 'bin'), { recursive: true });
+    await fs.mkdir(path.join(cacheRoot, 'shell-selections'), { recursive: true });
+    for (const name of Object.keys(toolCacheInternals.CODING_AGENT_PACKAGES)) {
+        const id = (tag + name).padEnd(64, '0').replace(/[^0-9a-f]/g, 'f');
+        const bin = path.join(cacheRoot, name, 'generations', id, 'bin');
+        await fs.mkdir(bin, { recursive: true });
+        await fs.writeFile(path.join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+        const stamp = JSON.stringify({ schema, name, generation: id, versions: { [name]: name === 'opencode' ? opencodeVersion : '1.0.0' } });
+        await fs.writeFile(path.join(cacheRoot, name, 'generations', id, 'stamp.json'), stamp);
+        await fs.writeFile(path.join(cacheRoot, name, 'current.json'), stamp);
+        await fs.symlink(path.relative(path.join(generation, 'bin'), path.join(bin, name)), path.join(generation, 'bin', name));
+    }
+    await fs.rm(path.join(cacheRoot, 'shell-selections', 'shell'), { force: true });
+    await fs.symlink(`../shell-generations/g-${tag}`, path.join(cacheRoot, 'shell-selections', 'shell'));
+}
+
+async function snapshot(directory) {
+    const entries = [];
+    for (const entry of await fs.readdir(directory, { withFileTypes: true, recursive: true })) {
+        const file = path.join(entry.parentPath, entry.name);
+        const metadata = await fs.lstat(file);
+        entries.push([path.relative(directory, file), metadata.mode, entry.isFile() ? (await fs.readFile(file)).toString('base64') : '']);
+    }
+    return JSON.stringify(entries.sort());
+}
+
+test('the catalog process never seeds, with or without a ready template, and never runs npm', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-catalog-'));
+    const keys = ['ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID', 'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME',
+        'ACHILLES_ALA_COMMAND', 'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH', 'PLOINKY_WORKSPACE_ROOT'];
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    t.after(async () => {
+        for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
+        await fs.rm(root, { recursive: true, force: true });
+    });
+    process.env.PLOINKY_WORKSPACE_ROOT = root;
+    const store = new RobotStore({ dataDir: root });
+    await store.ensureDefaultRobot();
+    const robot = await store.getByName('default');
+    const home = path.join(store.robotPath(robot.id), 'home');
+    const config = path.join(home, '.config', 'opencode');
+    const cacheRoot = path.join(root, 'tool-cache');
+    await writePreparedShell(cacheRoot, '1.18.35');
+    const calls = [];
+    const make = () => new ToolCache({ root: cacheRoot, log: () => {}, versionPins: {}, execFileImpl: fakeNpm(calls) });
+    const context = () => prepareCopilotContext('default', { dataDir: root, usePreparedTools: true, toolCache: make() });
+
+    await context();
+    const unseeded = await snapshot(home);
+    // A template is ready for exactly this OpenCode version: only the service may use it.
+    await make().prepareOpenCodePlugin('1.18.35');
+    calls.length = 0;
+    await context();
+    await context();
+    assert.equal(await snapshot(home), unseeded, 'the home is byte-identical');
+    assert.equal(await openCodeWouldInstall(config), true);
+    for (const name of ['node_modules', 'package.json', 'package-lock.json']) {
+        await assert.rejects(fs.access(path.join(config, name)), { code: 'ENOENT' }, name);
+    }
+    assert.deepEqual(calls, [], 'no npm in the catalog process');
+    // The service seeds the same home from the same template.
+    assert.equal((await seedOpenCodePlugin(home, await make().peekOpenCodePlugin('1.18.35'))).status, 'seeded');
+    assert.equal(await installedVersion(config), '1.18.35');
+});
+
+async function readyRuntime(t, robots) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-plugin-async-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const cache = new ToolCache({ root: path.join(root, 'cache'), execFileImpl: fakeNpm(calls), log: () => {}, versionPins: {} });
+    const shell = { agents: { opencode: { versions: { opencode: '1.18.35' } } } };
+    cache.peekShellTools = async () => shell;
+    cache.prepareCodingAgents = async () => shell.agents;
+    await cache.prepareOpenCodePlugin('1.18.35');
+    for (const robot of robots) await fs.mkdir(path.join(root, 'robots', robot.id, 'home'), { recursive: true });
+    const manager = new RuntimeManager({ dataDir: root, toolCache: cache, workspaceRoot: root,
+        soulGateway: { prepare: async () => {}, remove: async () => {}, close: async () => {} } });
+    const configOf = id => path.join(root, 'robots', id, 'home', '.config', 'opencode');
+    return { root, manager, configOf, calls };
+}
+
+test('startup preparation skips the seed; the seed runs after the service is listening', async (t) => {
+    const robot = { id: 'early-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    await fs.access(path.join(configOf(robot.id), 'plugins', 'soul-gateway.js'));
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), true, 'nothing was copied before listen');
+    await manager.warmOpenCodePlugins([robot]);
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), false);
+});
+
+test('robot creation schedules the copy instead of blocking on it, and a task that starts sooner shares it', async (t) => {
+    const robot = { id: 'fresh-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    const returned = manager.seedOpenCodeInBackground(robot);
+    assert.equal(returned, undefined, 'nothing to wait for');
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), true, 'the response would not have waited for the copy');
+    // A first task on the same robot: waits on the same chain; exactly one of the two copies.
+    const task = await manager.seedOpenCode(robot.id, { prepare: true });
+    assert.equal(task.status, 'current');
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), false);
+    const both = await Promise.all([manager.seedOpenCode(robot.id, { prepare: true }), manager.seedOpenCode(robot.id, { prepare: true })]);
+    assert.deepEqual(both.map(result => result.status), ['current', 'current']);
+});
+
+test('concurrent seeds of one robot copy once', async (t) => {
+    const robot = { id: 'once-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    const results = await Promise.all([manager.seedOpenCode(robot.id), manager.seedOpenCode(robot.id), manager.seedOpenCode(robot.id)]);
+    assert.deepEqual(results.map(result => result.status).sort(), ['current', 'current', 'seeded']);
+    assert.equal(await openCodeWouldInstall(configOf(robot.id)), false);
+});
+
+test('robots whose coding agents exclude OpenCode are not seeded (OpenCode installs for itself there)', async (t) => {
+    const robot = { id: 'other-a1b2c3', codingAgents: ['codex'] };
+    const { manager, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    manager.seedOpenCodeInBackground(robot);
+    await manager.warmOpenCodePlugins([robot]);
+    await assert.rejects(fs.access(path.join(configOf(robot.id), 'node_modules')));
+});
+
+test('deleting a robot removes its server-side model-list cache', async (t) => {
+    const robot = { id: 'gone-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, root } = await readyRuntime(t, [robot]);
+    const cache = path.join(root, 'server-state', 'model-catalog', robot.id);
+    const kept = path.join(root, 'server-state', 'model-catalog', 'kept-a1b2c3');
+    await write(path.join(cache, 'model-listing.json'), '{}');
+    await write(path.join(kept, 'model-listing.json'), '{}');
+    await manager.deleteRobot(robot.id, async () => {});
+    await assert.rejects(fs.access(cache));
+    await fs.access(path.join(kept, 'model-listing.json'));
+});
+
+async function write(file, content) {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, content);
+}
+
+// N1-R: deleting a robot while its background seed is copying. fs.cp is slowed so the copy is
+// certainly in flight when the delete starts.
+function slowCopy(t) {
+    const real = fs.cp;
+    let started;
+    const copying = new Promise(resolve => { started = resolve; });
+    t.mock.method(fs, 'cp', async (...args) => {
+        started();
+        await new Promise(resolve => setTimeout(resolve, 150));
+        return real.apply(fs, args);
+    });
+    return copying;
+}
+
+async function deleteWith(manager, root, robotId) {
+    return manager.deleteRobot(robotId, () => fs.rm(path.join(root, 'robots', robotId), { recursive: true }));
+}
+
+test('deleting a robot waits for an in-flight seed, which aborts without leaving anything', async (t) => {
+    const robot = { id: 'racing-a1b2c3', codingAgents: ['opencode'] };
+    const { manager, root, configOf } = await readyRuntime(t, [robot]);
+    await manager.prepareOpenCode(robot.id, { seed: false });
+    const copying = slowCopy(t);
+    const seeding = manager.seedOpenCode(robot.id, { prepare: true });
+    await copying;
+    await deleteWith(manager, root, robot.id);
+    assert.equal((await seeding).status, 'aborted');
+    await assert.rejects(fs.access(path.join(root, 'robots', robot.id)), { code: 'ENOENT' }, 'no robot folder remains');
+    assert.equal(manager.seedChain.size, 0);
+    assert.deepEqual((await manager.seedOpenCode(robot.id)).status, 'unavailable', 'a later seed does nothing');
+    await assert.rejects(fs.access(configOf(robot.id)), { code: 'ENOENT' });
+});
+
+test('deleting a robot during the startup warm-up and during robot creation also succeeds', async (t) => {
+    for (const start of [(manager, robot) => manager.warmOpenCodePlugins([robot]), (manager, robot) => manager.seedOpenCodeInBackground(robot)]) {
+        const robot = { id: `late-${Math.random().toString(16).slice(2, 8)}`, codingAgents: ['opencode'] };
+        const { manager, root } = await readyRuntime(t, [robot]);
+        await manager.prepareOpenCode(robot.id, { seed: false });
+        const copying = slowCopy(t);
+        const running = start(manager, robot);
+        await copying;
+        await deleteWith(manager, root, robot.id);
+        await running;
+        await assert.rejects(fs.access(path.join(root, 'robots', robot.id)), { code: 'ENOENT' });
+        t.mock.restoreAll();
+    }
+});
+
+test('a seed aborts before moving anything into a home when the robot is being deleted', async (t) => {
+    const { home, config, template } = await fixture(t);
+    assert.deepEqual(await seedOpenCodePlugin(home, template, { isCancelled: () => true }), { status: 'aborted' });
+    assert.deepEqual(await fs.readdir(config), []);
+    let checks = 0;
+    const result = await seedOpenCodePlugin(home, template, { isCancelled: () => ++checks > 1 });
+    assert.equal(result.status, 'aborted', 'the check also runs after the copy, before the renames');
+    assert.deepEqual(await fs.readdir(config), [], 'staging was removed');
+});

@@ -22,12 +22,12 @@ test('resolveSettingsComponentBase reuses runtime component URL for matching set
     const base = resolveSettingsComponentBase({
         component: 'soul-gateway-settings',
         settingsComponent: 'soul-gateway-settings',
-        componentBaseUrl: '/workspace-files/.ploinky/repos/proxies/soul-gateway/IDE-plugins/soul-gateway-settings/soul-gateway-settings/'
+        componentBaseUrl: '/workspace-files/.ploinky/repos/AchillesIDE/soul-gateway/IDE-plugins/soul-gateway-settings/soul-gateway-settings/'
     });
 
     assert.equal(
         base,
-        '/workspace-files/.ploinky/repos/proxies/soul-gateway/IDE-plugins/soul-gateway-settings/soul-gateway-settings'
+        '/workspace-files/.ploinky/repos/AchillesIDE/soul-gateway/IDE-plugins/soul-gateway-settings/soul-gateway-settings'
     );
 });
 
@@ -35,12 +35,12 @@ test('resolveSettingsComponentBase derives the root component URL when runtime b
     const base = resolveSettingsComponentBase({
         component: 'gpt-researcher-settings',
         settingsComponent: 'gpt-researcher-settings',
-        assetRootPath: '.ploinky/repos/AchillesCLI/GPTResearcher/IDE-plugins/gpt-researcher-settings'
+        assetRootPath: '.ploinky/repos/legacy-agents/GPTResearcher/IDE-plugins/gpt-researcher-settings'
     });
 
     assert.equal(
         base,
-        '/workspace-files/.ploinky/repos/AchillesCLI/GPTResearcher/IDE-plugins/gpt-researcher-settings/gpt-researcher-settings'
+        '/workspace-files/.ploinky/repos/legacy-agents/GPTResearcher/IDE-plugins/gpt-researcher-settings/gpt-researcher-settings'
     );
 });
 
@@ -328,7 +328,7 @@ test('applyAgentRuntimeStatuses maps settings owners to unique marketplace agent
         { key: 'search-settings', ownerAgent: 'searchAgent' },
         { key: 'analytics-settings', ownerAgent: 'example/analytics' }
     ], [
-        { ref: 'proxies/searchAgent', name: 'searchAgent', running: false, active: true },
+        { ref: 'legacy-agents/searchAgent', name: 'searchAgent', running: false, active: true },
         { ref: 'example/analytics', name: 'analytics', running: true, status: 'running' }
     ]);
 
@@ -337,7 +337,7 @@ test('applyAgentRuntimeStatuses maps settings owners to unique marketplace agent
         runtimeAvailable,
         runtimeStatus
     })), [
-        { agentRef: 'proxies/searchAgent', runtimeAvailable: true, runtimeStatus: 'stopped' },
+        { agentRef: 'legacy-agents/searchAgent', runtimeAvailable: true, runtimeStatus: 'stopped' },
         { agentRef: 'example/analytics', runtimeAvailable: true, runtimeStatus: 'running' }
     ]);
 });

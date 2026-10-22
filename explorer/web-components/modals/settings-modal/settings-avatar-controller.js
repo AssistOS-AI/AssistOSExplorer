@@ -265,7 +265,16 @@ export const avatarController = {
                 seed: nextConfig.seed || this.state.selectedAgentAvatar.seed || this.state.selectedAgentAvatar.agentId
             }, this.state.selectedAgentAvatar.agentId);
         }
-        this.renderAvatarPreviews();
+    },
+
+    renderAvatarPreviews() {
+        this.profileAvatarControlsEl?.webSkelPresenter?.renderPreview?.({
+            enabled: this.state.profileAvatarEnabled,
+            fallback: this.state.avatarUser?.username?.[0] || '?'
+        });
+        this.agentAvatarControlsEl?.webSkelPresenter?.renderPreview?.({
+            enabled: Boolean(this.state.selectedAvatarAgentId)
+        });
     },
 
     selectAvatarAgent(_target, agentId) {
@@ -280,11 +289,11 @@ export const avatarController = {
     async saveProfileAvatar() {
         if (this.state.avatarBusy) return;
         this.state.avatarBusy = true;
-        this.state.avatarStatus = "Saving profile avatar...";
-        this.state.avatarStatusType = "";
-        this.renderAvatarSettings();
         try {
             this.state.profileAvatar = this.readAvatarControls('profile');
+            this.state.avatarStatus = "Saving profile avatar...";
+            this.state.avatarStatusType = "";
+            this.renderAvatarSettings();
             const payload = await saveCurrentProfileAvatar({
                 enabled: this.state.profileAvatarEnabled,
                 config: this.state.profileAvatar
@@ -307,11 +316,11 @@ export const avatarController = {
     async saveAgentAvatar() {
         if (this.state.avatarBusy || !this.state.selectedAvatarAgentId) return;
         this.state.avatarBusy = true;
-        this.state.avatarStatus = `Saving ${this.state.selectedAvatarAgentId} avatar...`;
-        this.state.avatarStatusType = "";
-            this.renderAvatarSettings();
         try {
             this.state.selectedAgentAvatar = this.readAvatarControls('agent');
+            this.state.avatarStatus = `Saving ${this.state.selectedAvatarAgentId} avatar...`;
+            this.state.avatarStatusType = "";
+            this.renderAvatarSettings();
             await this.callAvatarSettingsTool('update_avatar_settings_agent', {
                 agentId: this.state.selectedAvatarAgentId,
                 config: this.state.selectedAgentAvatar

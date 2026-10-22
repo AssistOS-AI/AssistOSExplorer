@@ -3,6 +3,48 @@ import test from 'node:test';
 
 import { CustomSelect } from '../../web-components/components/custom-select/custom-select.js';
 
+test('custom select handles clicks locally once after repeated render binding', () => {
+    const select = Object.create(CustomSelect.prototype);
+    select.trigger = new EventTarget();
+    let opened = 0;
+    select.openSelect = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        opened += 1;
+    };
+    select.bindTriggerEvents();
+    select.bindTriggerEvents();
+    const click = new Event('click', { bubbles: true, cancelable: true });
+    select.trigger.dispatchEvent(click);
+    assert.equal(opened, 1);
+    assert.equal(click.defaultPrevented, true);
+    select.closeSelect = () => {};
+    select.afterUnload();
+    select.trigger.dispatchEvent(new Event('click'));
+    assert.equal(opened, 1);
+});
+
+test('custom select keyboard opens once and respects disabled state', () => {
+    const select = Object.create(CustomSelect.prototype);
+    select.trigger = new EventTarget();
+    let disabled = false;
+    let opened = 0;
+    select.isDisabled = () => disabled;
+    select.openSelect = () => { opened += 1; };
+    select.bindTriggerEvents();
+    const key = () => {
+        const event = new Event('keydown', { cancelable: true });
+        event.key = 'Enter';
+        return event;
+    };
+    select.trigger.dispatchEvent(key());
+    assert.equal(opened, 1);
+    disabled = true;
+    select.trigger.dispatchEvent(key());
+    assert.equal(opened, 1);
+    select.triggerController.abort();
+});
+
 test('custom select portals its options list to the containing dialog and restores it', () => {
     const origin = {
         append(node) {

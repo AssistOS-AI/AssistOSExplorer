@@ -28,6 +28,8 @@ test('UserPersisto handoffs retain client-error semantics through the Ploinky Ro
         USERPERSISTO_SETTINGS_KEY: randomBytes(32).toString('hex'),
         USERPERSISTO_RUNTIME_SECRET: randomBytes(32).toString('hex'),
         USERPERSISTO_AUTH_METHODS: 'password',
+        USERPERSISTO_SELF_REGISTRATION_ENABLED: 'true',
+        USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED: 'false',
         USERPERSISTO_ALLOWED_REDIRECT_ORIGINS: '',
         USERPERSISTO_OIDC_ISSUER: '',
     };
@@ -62,13 +64,17 @@ test('UserPersisto handoffs retain client-error semantics through the Ploinky Ro
         fs.writeFileSync(path.join(providerDirectory, 'runtime/index.mjs'), `export * from ${JSON.stringify(runtimeUrl)};\n`);
 
         const { ensureSeedData } = await import('../../userPersistoAgent/lib/bootstrap.mjs');
-        const { createUser, updateUser } = await import('../../userPersistoAgent/lib/users.mjs');
+        const { setUserRoles, updateUser } = await import('../../userPersistoAgent/lib/users.mjs');
+        const { signUpDirect } = await import('../../userPersistoAgent/tests/helpers/setup.mjs');
         ({ resetStoreForTests: resetStore } = await import('../../userPersistoAgent/lib/store.mjs'));
         const { startService } = await import('../../userPersistoAgent/service/index.mjs');
         await ensureSeedData();
         const password = randomBytes(24).toString('base64url');
-        const user = await createUser({ email: 'callback-user@example.test', password, roles: ['user'] });
-        const blockedUser = await createUser({ email: 'callback-blocked@example.test', password, roles: ['user'] });
+        await signUpDirect('callback-admin@example.test', { password });
+        const { user } = await signUpDirect('callback-user@example.test', { password });
+        const { user: blockedUser } = await signUpDirect('callback-blocked@example.test', { password });
+        await setUserRoles(user.id, ['user']);
+        await setUserRoles(blockedUser.id, ['user']);
         providerServer = startService({ port: 0, host: '127.0.0.1' });
         if (!providerServer.listening) await once(providerServer, 'listening');
         providerOrigin = `http://127.0.0.1:${providerServer.address().port}`;

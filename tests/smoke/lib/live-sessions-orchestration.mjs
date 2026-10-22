@@ -621,7 +621,7 @@ export async function createOrchestrationReader({ release, evidence, runtime, cw
     const initial = await guard.finish();
     assert.equal(initial.runtime.containerId, runtime.containerId);
     const initialInspection = inspectNested(evidence.outerContainerId, runtime.containerId, nestedCommand);
-    const repository = fs.realpathSync(release.repositories.achillesCLI.repositoryPath);
+    const repository = fs.realpathSync(release.repositories.explorer.repositoryPath);
     assert.ok(!repository.includes(`${path.sep}.ploinky${path.sep}repos${path.sep}`));
     const contractFiles = delegationContractFiles(repository);
     const contractHashes = Object.fromEntries(contractFiles.map(file => [file, crypto.createHash('sha256')

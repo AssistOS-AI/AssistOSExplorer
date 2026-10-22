@@ -1180,6 +1180,14 @@ export class FileExp {
         const saveButton = this.element?.querySelector?.('#saveButton');
         if (saveButton) {
             saveButton.classList.toggle('hidden', Boolean(this.state.selectedIsMarkdown && this.state.documentId));
+            const saving = Boolean(this.state.savePending || this._saveFileInProgress);
+            saveButton.disabled = saving;
+            saveButton.textContent = saving ? 'Saving…' : 'Save';
+            if (saving) {
+                saveButton.setAttribute('aria-busy', 'true');
+            } else {
+                saveButton.removeAttribute('aria-busy');
+            }
         }
 
         const cancelButton = this.element?.querySelector?.('#cancelButton');

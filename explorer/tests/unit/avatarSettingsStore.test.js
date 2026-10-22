@@ -16,12 +16,13 @@ async function createTempWorkspace() {
     await fs.writeFile(path.join(root, 'explorer/manifest.json'), JSON.stringify({
         enable: [
             'gitAgent global',
-            { agent: 'webAssist', profile: 'embedded' },
-            'webmeetAgent global'
+            { agent: 'legacy-agents/webAssist', profile: 'embedded' },
+            'webmeet/webmeetAgent global'
         ]
     }, null, 2));
-    await fs.mkdir(path.join(root, 'webAssist'), { recursive: true });
-    await fs.writeFile(path.join(root, 'webAssist/manifest.json'), JSON.stringify({
+    // webAssist now lives in the legacy-agents repository; the allowlist is name-based.
+    await fs.mkdir(path.join(root, '.ploinky/repos/legacy-agents/webAssist'), { recursive: true });
+    await fs.writeFile(path.join(root, '.ploinky/repos/legacy-agents/webAssist/manifest.json'), JSON.stringify({
         avatar: {
             generated: true,
             style: 'emoji',
@@ -101,7 +102,7 @@ test('rejects avatar persistence when workspace .data is a symlink and preserves
     const outsideRoot = path.join(fixtureRoot, 'outside');
     await fs.mkdir(path.join(workspaceRoot, 'explorer'), { recursive: true });
     await fs.writeFile(path.join(workspaceRoot, 'explorer', 'manifest.json'), JSON.stringify({
-        enable: [{ agent: 'webAssist', profile: 'embedded' }]
+        enable: [{ agent: 'legacy-agents/webAssist', profile: 'embedded' }]
     }));
     await fs.mkdir(outsideRoot, { recursive: true });
     await fs.writeFile(path.join(outsideRoot, 'sentinel.txt'), 'outside', 'utf8');
@@ -121,7 +122,7 @@ test('reads manifest from Ploinky repo workspace layout', async () => {
     const manifestDir = path.join(workspaceRoot, '.ploinky/repos/AchillesIDE/explorer');
     await fs.mkdir(manifestDir, { recursive: true });
     await fs.writeFile(path.join(manifestDir, 'manifest.json'), JSON.stringify({
-        enable: [{ agent: 'webAssist', profile: 'embedded' }]
+        enable: [{ agent: 'legacy-agents/webAssist', profile: 'embedded' }]
     }, null, 2));
 
     const store = createAvatarSettingsStore({ fs: await import('node:fs'), path, workspaceRoot });

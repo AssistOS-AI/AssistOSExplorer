@@ -12,6 +12,8 @@
 // This covers the structured tool responses only. It is not a filesystem
 // secrecy boundary: authorized file tools can still read the manifest itself.
 
+import { BOUND_OPEN_REFUSAL, PROTECTED_PATH_ERROR_CODE, protectedPathError } from './protected-workspace-paths.mjs';
+
 async function loadInvocationAuth() {
     const candidates = [
         process.env.PLOINKY_INVOCATION_AUTH_MODULE,
@@ -100,6 +102,8 @@ export function skillsManifestError(message, publicMessage = message) {
 }
 
 export function restrictedSkillsManifestError(error) {
+    // A protected-path refusal stays an explicit denial, without the path.
+    if (error?.code === PROTECTED_PATH_ERROR_CODE) return protectedPathError(BOUND_OPEN_REFUSAL);
     const message = error && typeof error === 'object' && typeof error[PUBLIC_MESSAGE] === 'string'
         ? error[PUBLIC_MESSAGE]
         : GENERIC_SKILLS_MANIFEST_ERROR;

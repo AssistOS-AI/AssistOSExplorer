@@ -1,5 +1,31 @@
 import { randomUUID } from 'node:crypto';
-import { createLiveSkillsFixture, liveSkillSources, liveSkillsHash, liveSkillsPrompt } from './copilot-live-skills.mjs';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createLiveSkillsFixture, inspectSessionSkillLinks, liveSkillSources, liveSkillsHash, liveSkillsPrompt } from './copilot-live-skills.mjs';
+
+// This owned offline projection exercises real helper paths; it does not emulate sandbox enforcement.
+export async function withLiveSkillsProjection({ fixture, workspaceRoot, sessionId, execution, alaSkillMountArguments }, callback) {
+    assert.equal(fixture.workspace, `${workspaceRoot}/copilot-live-skills-${fixture.runId}`);
+    assert.equal(fs.realpathSync(fixture.workspace), fixture.workspace);
+    const parent = `${fixture.workspace}/.agents`, destination = `${parent}/skills`;
+    fs.mkdirSync(parent, { recursive: true });
+    assert.equal(fs.realpathSync(parent), parent);
+    assert.equal(fs.lstatSync(destination, { throwIfNoEntry: false }), undefined, 'Offline projection requires absent project skills.');
+    await inspectSessionSkillLinks({ workspace: fixture.workspace, sessionId, execution });
+    const args = alaSkillMountArguments({ snapshot: execution, workspaceRoot, cwd: fixture.workspace, includeClaude: false });
+    assert.deepEqual(args, ['--folder', execution.skillsDirectory, 'at', destination, 'expose'],
+        'Offline projection cannot represent auxiliary source mounts.');
+    fs.symlinkSync(args[1], args[3]);
+    const installed = fs.lstatSync(destination);
+    try { return await callback(); }
+    finally {
+        const current = fs.lstatSync(destination);
+        assert.ok(current.isSymbolicLink() && current.dev === installed.dev && current.ino === installed.ino,
+            'Offline projection was replaced; preserve the foreign path.');
+        assert.equal(fs.readlinkSync(destination), execution.skillsDirectory, 'Offline projection was retargeted.');
+        fs.unlinkSync(destination);
+    }
+}
 
 // Synthetic browser/reader evidence follows current public contracts. Real files and ALA-produced
 // transcript checks live in the runtime suite; none of these helpers invokes a native backend.
@@ -13,8 +39,9 @@ export function currentLiveSkillsCase({ disabled = false, root = '/srv/fresh wor
     const entries = selected.map(skill => ({ identity: `${fixture.repositoryName}/${skill.name}`, name: skill.name,
         source: fixture.repositoryName, sourcePath: `${fixture.repositoryRoot}/skills/${skill.name}`,
         fingerprint: liveSkillsHash(liveSkillSources(fixture, skill, root)) }));
-    const links = selected.map(skill => ({ repoName: fixture.repositoryName, sourcePath: `skills/${skill.name}`,
-        destination: `${fixture.workspace}/.agents/skills/${skill.name}`, linkTarget: `${fixture.repositoryRoot}/skills/${skill.name}` }));
+    const skillsDirectory = `${fixture.workspace}/.roboteam/sessions/${sessionId}/skills`;
+    const links = selected.map(skill => ({ name: skill.name, source: `${fixture.repositoryRoot}/skills/${skill.name}`,
+        target: `${fixture.repositoryRoot}/skills/${skill.name}` }));
     const revision = liveSkillsHash(links);
     const policy = { mode: 'live', excludedSkills: disabled ? [`${fixture.repositoryName}/${fixture.probe.name}`] : [] };
     const inventory = { robot: fixture.robotName, scope: 'conversation', sessionId, policy, policyVersion: 3,
@@ -32,10 +59,11 @@ export function currentLiveSkillsCase({ disabled = false, root = '/srv/fresh wor
             engine: { type: 'ala', version: 1, backend: 'codex', sessionId, robotId: fixture.robotId, home: native.home, cwd: fixture.workspace },
             messages: [{ role: 'user', id: randomUUID(), text: prompt, turnId },
                 { role: 'assistant', id: randomUUID(), text: final, turnId, status: 'completed' }],
-            skillExecution: { active: false, live: true, revision, policyVersion: 3, entries, diagnostics: [] } },
+            skillExecution: { active: false, live: true, revision, policyVersion: 3, entries, skillsDirectory,
+                mounts: links.map(link => ({ source: link.source, target: link.target, expose: true })), diagnostics: [] } },
         catalog: { revision, links, entries: structuredClone(entries) },
-        liveLinks: Object.fromEntries(links.map(link => [link.destination.split('/').at(-1),
-            { destination: link.destination, linkTarget: link.linkTarget, resolvedSource: link.linkTarget }])),
+        liveLinks: Object.fromEntries(links.map(link => [link.name,
+            { destination: `${skillsDirectory}/${link.name}`, linkTarget: link.target, resolvedSource: link.source }])),
         capturedFiles: Object.fromEntries(selected.map(skill => {
             const source = liveSkillSources(fixture, skill, root);
             return [skill.name, { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 }];

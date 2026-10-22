@@ -33,7 +33,7 @@
         {
             "name": "userpersisto_authorize_capability",
             "title": "Authorize capability",
-            "description": "Agent-to-agent authorization decision for a user capability on an optional resource.",
+            "description": "Agent-to-agent authorization decision for a user capability on an optional resource. Allowed decisions include the user's current role names for consumers with an explicit role requirement.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -511,6 +511,25 @@
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
             "tags": ["admin"],
             "env": { "TOOL_NAME": "userpersisto_google_status" }
+        },
+        {
+            "name": "userpersisto_signin_readiness",
+            "title": "Get sign-in readiness for an origin",
+            "description": "Admin, read-only: count active accounts that have no usable non-passkey sign-in method on the given exact origin (usable password, enabled TOTP, email code to a verified mailbox with delivery available, or a valid Google binding whose configured callback origin equals the origin). Returns activeUsers, atRisk, atRiskUserIds, passkeyUsers and emailDeliveryAvailable; never emails, credentials or provider configuration.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "origin": { "type": "string", "minLength": 1, "maxLength": 2048 }
+                },
+                "required": ["origin"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_signin_readiness" }
         },
         {
             "name": "userpersisto_billing_checkout_create",

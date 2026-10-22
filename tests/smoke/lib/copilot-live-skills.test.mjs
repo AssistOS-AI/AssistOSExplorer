@@ -100,6 +100,8 @@ const corruptions = {
         home: input.snapshot.native.home, workspace: input.fixture.workspace, agent: 'codex', threadId: randomUUID() }; },
     'fresh inventory substituted for captured catalog': input => { input.snapshot.catalog.revision = 'b'.repeat(64); },
     'different captured path': input => { input.snapshot.liveLinks[input.fixture.probe.name].destination += '-other'; },
+    'project path substituted for private skills directory': input => { input.snapshot.session.skillExecution.skillsDirectory = `${input.fixture.workspace}/.agents/skills`; },
+    'host session path forged as receipt invocation': input => { input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].invokedPath = `${input.snapshot.session.skillExecution.skillsDirectory}/${input.fixture.probe.name}/receipt.mjs`; },
     'stale catalog descriptor bytes': input => { input.snapshot.capturedFiles[input.fixture.probe.name].descriptorSha256 = 'b'.repeat(64); },
     'stale catalog helper bytes': input => { input.snapshot.capturedFiles[input.fixture.probe.name].helperSha256 = 'b'.repeat(64); },
     'catalog selection mismatch': input => { input.snapshot.session.skillExecution.entries = []; },
@@ -157,7 +159,7 @@ test('pending polling never treats a previous completed assistant as a new nativ
 });
 
 function runtimeFixture(root = ROOT) {
-    const repository = `${root}/.ploinky/repos/AchillesCLI`;
+    const repository = `${root}/.ploinky/repos/AchillesIDE`;
     const objectId = '64a1dedd-e8bd-4f7b-8db4-1c08042a1dff';
     const payloadPath = `${root}/.ploinky/deps/store/objects/${objectId}/payload`;
     const nodeModulesPath = `${payloadPath}/node_modules`;

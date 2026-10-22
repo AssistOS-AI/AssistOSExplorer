@@ -518,7 +518,7 @@ if (process.env.LIVE_SESSIONS_ORCHESTRATION_SOURCE || process.env.LIVE_SESSIONS_
     const alaRoot = process.env.LIVE_SESSIONS_ORCHESTRATION_ALA;
     try {
         assert.ok(repository && path.isAbsolute(repository) && alaRoot && path.isAbsolute(alaRoot), 'The external metadata probe needs both exact source paths.');
-        assert.ok(fs.existsSync(`${repository}/roboTeamAgent/server/roboflow/task-flow-store.mjs`), 'Canonical AchillesCLI source fixture prerequisite is missing.');
+        assert.ok(fs.existsSync(`${repository}/roboTeamAgent/server/roboflow/task-flow-store.mjs`), 'Canonical Explorer source fixture prerequisite is missing.');
         assert.ok(fs.existsSync(`${alaRoot}/bin/ala.mjs`), 'Canonical ALA transcript source fixture prerequisite is missing.');
         const args = { root, repository, alaRoot, evidenceDirectory: process.env.LIVE_SESSIONS_ORCHESTRATION_EVIDENCE_DIR,
             readerURL: new URL('./live-sessions-orchestration.mjs', import.meta.url).href,
