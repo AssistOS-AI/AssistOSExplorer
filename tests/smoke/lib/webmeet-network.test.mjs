@@ -224,8 +224,9 @@ test('join-material advancement requires identity continuity, a newer expiry, a 
   })), false);
 });
 
-function headlessPair(port, candidateType = 'host') {
+function headlessPair(port, candidateType = 'host', peerConnectionIndex = 0) {
   return {
+    peerConnectionIndex,
     selected: true,
     peerConnectionState: 'connected',
     bytesReceived: 10,
@@ -234,26 +235,40 @@ function headlessPair(port, candidateType = 'host') {
   };
 }
 
-test('headless media accepts only a host remote candidate on the Box media host port and no other remote port', () => {
-  const accepted = assessHeadlessMediaCandidatePort({
+function remoteHost(port, peerConnectionIndex = 0, candidateType = 'host') {
+  return { peerConnectionIndex, candidateType, port };
+}
+
+test('headless media accepts a host or prflx selected remote on the Box media host port per connection', () => {
+  const assess = (input) => assessHeadlessMediaCandidatePort({ ...input, mediaHostPort: '27882' });
+  assert.equal(assess({
     selectedPairs: [headlessPair(27882)],
-    remoteCandidates: [{ port: 27882 }, { port: 27882 }],
-    mediaHostPort: '27882',
-  });
-  assert.equal(accepted.accepted, true);
+    remoteCandidates: [remoteHost(27882), remoteHost(27882)],
+  }).accepted, true);
+  // Two connections: pc0 selected prflx:N (learned from STUN checks), pc1 selected host:N.
+  assert.equal(assess({
+    selectedPairs: [headlessPair(27882, 'prflx', 0), headlessPair(27882, 'host', 1)],
+    remoteCandidates: [
+      remoteHost(27882, 0, 'prflx'), remoteHost(27882, 0, 'host'), remoteHost(27882, 1, 'host'),
+    ],
+  }).accepted, true);
   for (const input of [
-    { selectedPairs: [headlessPair(7882)], remoteCandidates: [{ port: 7882 }] },
-    { selectedPairs: [headlessPair(27883)], remoteCandidates: [{ port: 27883 }] },
-    { selectedPairs: [headlessPair(27882, 'prflx')], remoteCandidates: [{ port: 27882 }] },
-    { selectedPairs: [headlessPair(27882)], remoteCandidates: [{ port: 27882 }, { port: 7882 }] },
-    { selectedPairs: [headlessPair(27882)], remoteCandidates: [{ port: 27882 }, { port: 7892 }] },
-    { selectedPairs: [headlessPair(27882)], remoteCandidates: [{ port: 27882 }, { port: 0 }] },
+    // prflx:N without the signaled host:N on that same connection.
+    { selectedPairs: [headlessPair(27882, 'prflx', 0)], remoteCandidates: [remoteHost(27882, 0, 'prflx'), remoteHost(27882, 1, 'host')] },
+    { selectedPairs: [headlessPair(27882, 'prflx', 0), headlessPair(27882, 'host', 1)], remoteCandidates: [remoteHost(27882, 0, 'prflx'), remoteHost(27882, 1, 'host')] },
+    { selectedPairs: [headlessPair(27882, 'srflx')], remoteCandidates: [remoteHost(27882)] },
+    { selectedPairs: [headlessPair(27882, 'relay')], remoteCandidates: [remoteHost(27882)] },
+    { selectedPairs: [headlessPair(7882)], remoteCandidates: [remoteHost(7882)] },
+    { selectedPairs: [headlessPair(27883)], remoteCandidates: [remoteHost(27883)] },
+    { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(7882, 1)] },
+    { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(7892, 1)] },
+    { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(0, 1)] },
     { selectedPairs: [headlessPair(27882)], remoteCandidates: [] },
-    { selectedPairs: [], remoteCandidates: [{ port: 27882 }] },
-    { selectedPairs: [{ ...headlessPair(27882), bytesSent: 0, bytesReceived: 0 }], remoteCandidates: [{ port: 27882 }] },
-    { selectedPairs: [headlessPair(27882), headlessPair(7882)], remoteCandidates: [{ port: 27882 }] },
+    { selectedPairs: [], remoteCandidates: [remoteHost(27882)] },
+    { selectedPairs: [{ ...headlessPair(27882), bytesSent: 0, bytesReceived: 0 }], remoteCandidates: [remoteHost(27882)] },
+    { selectedPairs: [headlessPair(27882, 'host', 0), headlessPair(7882, 'host', 1)], remoteCandidates: [remoteHost(27882, 0), remoteHost(27882, 1)] },
   ]) {
-    assert.equal(assessHeadlessMediaCandidatePort({ ...input, mediaHostPort: '27882' }).accepted, false);
+    assert.equal(assess(input).accepted, false);
   }
 });
 

@@ -841,9 +841,23 @@ export function assessHeadlessMediaCandidatePort({ selectedPairs, remoteCandidat
   ));
   const remotePorts = Array.from(new Set(Array.from(remoteCandidates || [])
     .map((candidate) => Number(candidate?.port || 0)))).sort((a, b) => a - b);
+  // Per connected peer connection: the selected remote port equals the label, its type is host or
+  // prflx (a prflx is learned from LiveKit's authenticated STUN checks before the signaled host
+  // candidate arrives; never relay or srflx), and that same connection holds the signaled host
+  // candidate on the label port.
+  const remotes = Array.from(remoteCandidates || []);
+  const perConnectionAccepted = active.every((pair) => (
+    ['host', 'prflx'].includes(pair.remote?.candidateType)
+    && Number(pair.remote?.port || 0) === expectedPort
+    && remotes.some((candidate) => (
+      candidate?.peerConnectionIndex === pair.peerConnectionIndex
+      && candidate?.candidateType === 'host'
+      && Number(candidate?.port || 0) === expectedPort
+    ))
+  ));
   const accepted = Number.isSafeInteger(expectedPort)
     && active.length > 0
-    && active.every((pair) => pair.remote?.candidateType === 'host' && Number(pair.remote?.port || 0) === expectedPort)
+    && perConnectionAccepted
     && remotePorts.length === 1
     && remotePorts[0] === expectedPort;
   return Object.freeze({ accepted, expectedPort, remotePorts: Object.freeze(remotePorts) });
@@ -873,19 +887,28 @@ export async function expectHeadlessMediaCandidatePort(page, { label, testInfo, 
   // The default 7882 behavior is unchanged: no additional assertion is made.
   if (String(mediaHostPort) === '7882') return null;
   let evidence = null;
-  await expect.poll(async () => {
-    evidence = {
-      mediaHostPort: String(mediaHostPort),
-      selectedPairs: await rtcCandidateEvidence(page),
-      remoteCandidates: await rtcRemoteCandidates(page),
-    };
-    return assessHeadlessMediaCandidatePort(evidence).accepted;
-  }, {
-    message: `${label} must select a host remote candidate on the Box media host port ${mediaHostPort} and see no other remote candidate port`,
-    timeout: smokeConfig.timeouts.media,
-    intervals: [500, 1_000, 2_000],
-  }).toBe(true);
-  await attachJsonEvidence(testInfo, `${label}-headless-media-candidate-port`, evidence);
+  try {
+    await expect.poll(async () => {
+      evidence = {
+        mediaHostPort: String(mediaHostPort),
+        selectedPairs: await rtcCandidateEvidence(page),
+        remoteCandidates: await rtcRemoteCandidates(page),
+      };
+      return assessHeadlessMediaCandidatePort(evidence).accepted;
+    }, {
+      message: `${label} must select a host or prflx remote candidate on the Box media host port ${mediaHostPort}, with the signaled host candidate on the same connection, and see no other remote candidate port`,
+      timeout: smokeConfig.timeouts.media,
+      intervals: [500, 1_000, 2_000],
+    }).toBe(true);
+  } finally {
+    // Attach on failure too, so a failed gate shows the full remote-port set.
+    if (evidence) {
+      await attachJsonEvidence(testInfo, `${label}-headless-media-candidate-port`, {
+        ...evidence,
+        assessment: assessHeadlessMediaCandidatePort(evidence),
+      });
+    }
+  }
   return evidence;
 }
 

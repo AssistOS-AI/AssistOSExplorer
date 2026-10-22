@@ -722,9 +722,11 @@ by default, `N:N` otherwise; a legacy `N:7882` publication fails). The expected
 port comes from the single Box's media-host-port label, never from whichever
 UDP mapping appears. Both host ports must match the immutable Box labels, and
 missing, malformed, mismatched, or additional publications fail. When the label
-is not `7882`, the headless media gate also requires every selected pair to use
-a `host` remote candidate on that port and the set of all remote-candidate
-ports to equal the label. This does not change the fixed UDP `7882` scanner and ICE
+is not `7882`, the headless media gate also requires, per connected peer
+connection, a selected remote on that port of type `host` or `prflx` (never
+`relay` or `srflx`) alongside a signaled `host` remote candidate on that port
+for the same connection, and the set of all remote-candidate ports on the page
+to equal the label. This does not change the fixed UDP `7882` scanner and ICE
 requirements of the screen-share and external-network gates below; those gates
 reject an alternate media host port.
 
