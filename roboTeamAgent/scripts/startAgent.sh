@@ -20,17 +20,11 @@ agent_server_script="${ROBOTEAM_AGENT_SERVER_SCRIPT:-/Agent/server/AgentServer.s
 service_main="${ROBOTEAM_SERVICE_MAIN:-/code/server/main.mjs}"
 service_check="${ROBOTEAM_SERVICE_CHECK:-/code/scripts/check-service.mjs}"
 
-# Only the HTTP service seals and opens stored secrets; AgentServer and the processes it starts
-# never receive the vault key.
-roboteam_vault_key="${ROBOTEAM_VAULT_KEY:-}"
-unset ROBOTEAM_VAULT_KEY
-
 PORT="$ROBOTEAM_MCP_PORT" sh "$agent_server_script" &
 MCP_PID="$!"
 
-ROBOTEAM_VAULT_KEY="$roboteam_vault_key" node "$service_main" &
+node "$service_main" &
 SERVICE_PID="$!"
-unset roboteam_vault_key
 
 cleanup() {
     kill "$SERVICE_PID" "$MCP_PID" 2>/dev/null || true

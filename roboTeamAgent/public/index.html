@@ -50,9 +50,6 @@
         <button class="dashboard-tab" id="kronJobsTab" type="button" role="tab" aria-selected="false"
                 aria-controls="kronJobsPanel" tabindex="-1">Cron jobs
         </button>
-        <button class="dashboard-tab" id="proxiesTab" type="button" role="tab" aria-selected="false"
-                aria-controls="proxiesPanel" tabindex="-1">Proxies
-        </button>
         <button class="dashboard-tab" id="emailsTab" type="button" role="tab" aria-selected="false"
                 aria-controls="emailsPanel" tabindex="-1">Emails
         </button>
@@ -125,28 +122,6 @@
             <div id="cronList" class="robot-list"></div>
         </section>
     </div>
-    <div id="proxiesPanel" role="tabpanel" aria-labelledby="proxiesTab" tabindex="0" hidden>
-        <section aria-labelledby="proxies-title">
-            <div class="section-heading">
-                <div class="heading-main"><h2 id="proxies-title">Proxies</h2><span id="proxyCount" class="robot-count"></span></div>
-                <button id="addProxyAccountButton" class="button primary" type="button" aria-haspopup="dialog" aria-controls="proxyAccountDialog" disabled><span class="button-plus" aria-hidden="true">+</span>Add account</button>
-            </div>
-            <p class="lede">Robot browsers reach the internet through one proxy from this shared pool. While any account is enabled or draining, every Browser or Desktop workstation receives a proxy and keeps it across sessions; when none is free, the workstation does not start. With every account disabled, workstations connect directly.</p>
-            <p id="proxyPoolState" class="proxy-pool-state" hidden></p>
-            <p id="proxyMessage" class="message" role="status"></p>
-            <div id="proxyAdminContent" hidden>
-                <h3 class="proxy-subheading">Accounts</h3>
-                <div id="proxyAccountsList" class="robot-list"></div>
-                <h3 class="proxy-subheading">Proxies</h3>
-                <div id="proxyTableWrap" class="proxy-table-wrap">
-                    <table class="proxy-table">
-                        <thead><tr><th scope="col">Country</th><th scope="col">Address</th><th scope="col">Account</th><th scope="col">State</th><th scope="col">Robot</th><th scope="col">Last check</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
-                        <tbody id="proxyTableBody"></tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
-    </div>
     <div id="emailsPanel" role="tabpanel" aria-labelledby="emailsTab" tabindex="0" hidden>
         <section aria-labelledby="emails-title">
             <div class="section-heading">
@@ -177,18 +152,6 @@
             <p class="cron-hint">Only the email column is kept; passwords or other columns are ignored and never sent.</p>
             <p id="emailFormMessage" class="message" role="status"></p>
             <div class="create-robot-actions"><button id="emailCancel" class="button secondary" type="button">Cancel</button><button id="emailSave" class="button primary" type="submit">Add emails</button></div>
-        </form>
-    </dialog>
-    <dialog id="proxyAccountDialog" class="create-robot-dialog" aria-labelledby="proxyAccountDialogTitle">
-        <div class="create-robot-heading"><h2 id="proxyAccountDialogTitle">Add proxy account</h2><button id="proxyAccountClose" class="button icon-button" type="button" aria-label="Close proxy account dialog" title="Close">×</button></div>
-        <form id="proxyAccountForm" class="robot-form">
-            <label><span>Provider</span><select name="provider" required></select></label>
-            <label><span>Name</span><input name="label" maxlength="80" placeholder="Webshare main"></label>
-            <label><span>Priority</span><select name="priority"><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></label>
-            <p class="cron-hint">Robots take free proxies from High accounts first, then Medium, then Low, spreading across accounts of the same priority.</p>
-            <div id="proxyAccountFields" class="robot-form"></div>
-            <p id="proxyAccountMessage" class="message" role="status"></p>
-            <div class="create-robot-actions"><button id="proxyAccountCancel" class="button secondary" type="button">Cancel</button><button id="proxyAccountSave" class="button primary" type="submit">Add account</button></div>
         </form>
     </dialog>
     <dialog id="cronDialog" class="create-robot-dialog cron-dialog" aria-labelledby="cronDialogTitle">
@@ -261,31 +224,6 @@
     </article>
 </template>
 
-<template id="proxyAccountTemplate">
-    <article class="robot-card proxy-account-card">
-        <div class="robot-main">
-            <div class="robot-identity"><div class="avatar" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3Z"/></svg></div><span class="run-state proxy-account-status"></span></div>
-            <div class="robot-info">
-                <div class="robot-title-row"><h3 class="proxy-account-label"></h3><span class="robot-id proxy-account-provider"></span></div>
-                <p class="proxy-account-counts"></p>
-                <p class="proxy-account-sync"></p>
-                <p class="proxy-account-error" hidden></p>
-            </div>
-        </div>
-        <div class="robot-actions proxy-account-actions">
-            <div class="robot-manage"><button class="button secondary icon-button manage-toggle" type="button" aria-expanded="false" aria-label="More account actions" title="More actions" data-robot-menu-toggle><span aria-hidden="true">⋮</span></button>
-                <div class="manage-options" data-robot-menu-options hidden>
-                    <button class="button secondary proxy-account-sync-now" type="button">Sync now</button>
-                    <button class="button secondary proxy-account-enable" type="button">Enable</button>
-                    <button class="button secondary proxy-account-drain" type="button" title="Keep current robots, assign no new ones">Drain</button>
-                    <button class="button secondary proxy-account-disable" type="button">Disable</button>
-                    <div class="robot-danger-actions"><button class="button danger proxy-account-delete" type="button">Delete account</button></div>
-                </div>
-            </div>
-        </div>
-    </article>
-</template>
-
 <template id="robotTemplate">
     <article class="robot-card">
         <div class="robot-main">
@@ -298,6 +236,7 @@
                 <div class="robot-meta">
                     <p class="active-coding-agent"></p>
                     <span class="robot-mode" hidden></span>
+                    <span class="robot-proxy" hidden></span>
                     <a class="view-logs" target="_blank" rel="noopener noreferrer" title="Open logs in a new tab">Logs</a>
                 </div>
             </div>
@@ -321,6 +260,7 @@
                 <div class="manage-options" data-robot-menu-options hidden>
                     <button class="button secondary manage-skills" type="button">Manage skills</button>
                     <button class="button secondary configure-coding-agent" type="button" hidden>Coding agent</button>
+                    <button class="button secondary release-proxy" type="button" hidden title="The robot receives a proxy again when its workstation next starts">Release proxy</button>
                     <div class="robot-danger-actions" hidden>
                         <button class="button danger delete-robot" type="button" hidden>Delete robot</button>
                     </div>

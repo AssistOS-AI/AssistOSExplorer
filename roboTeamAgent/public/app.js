@@ -5,7 +5,6 @@ import { initDashboardTabs } from './dashboard-tabs.js';
 import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
 import { initPageNavigation, restoreNavigationFocus } from './page-navigation.js';
 import { initCronJobs } from './cron-jobs.js';
-import { initProxyPool } from './proxy-pool.js';
 import { initEmailPool } from './email-pool.js';
 
 const robotsList = document.querySelector('#robotsList');
@@ -39,12 +38,11 @@ const navigation = initPageNavigation({
 });
 const initialView = navigation.view;
 const cronJobs = initCronJobs({ api, endpoint, bindLink: navigation.bindLink, closeMenus: closeOpenMenus });
-const proxyPool = initProxyPool({ api, closeMenus: closeOpenMenus });
 const emailPool = initEmailPool({ api, closeMenus: closeOpenMenus });
 const requestedTab = new URL(location.href).searchParams.get('tab');
-const requestedTabIds = { 'workflow-types': 'workflowTypesTab', 'cron-jobs': 'kronJobsTab', proxies: 'proxiesTab', emails: 'emailsTab' };
+const requestedTabIds = { 'workflow-types': 'workflowTypesTab', 'cron-jobs': 'kronJobsTab', emails: 'emailsTab' };
 initDashboardTabs({ initialTabId: initialView?.tabId || requestedTabIds[requestedTab],
-    onChange: () => { closeOpenMenus(); void cronJobs.refresh(); void proxyPool.refresh(); void emailPool.refresh(); } });
+    onChange: () => { closeOpenMenus(); void cronJobs.refresh(); void emailPool.refresh(); } });
 navigation.bindLink(addWorkflowButton);
 navigation.bindLink(document.querySelector('#flowsHistoryButton'));
 
@@ -196,6 +194,19 @@ function renderRobots(robots, canAdmin = false) {
         card.querySelector('.robot-id').textContent = robot.id;
         const codingAgents = robot.codingAgents || ['codex', 'opencode', 'pi', 'claude'];
         card.querySelector('.active-coding-agent').textContent = `Coding agent: ${codingAgentLabel(codingAgents)}`;
+        card.dataset.robotId = robot.id;
+        const releaseProxy = card.querySelector('.release-proxy');
+        releaseProxy.disabled = robot.run.state !== 'stopped';
+        releaseProxy.title = robot.run.state === 'stopped' ? 'The robot receives a proxy again when its workstation next starts' : 'Stop the workstation before releasing its proxy';
+        releaseProxy.addEventListener('click', async () => {
+            releaseProxy.disabled = true;
+            try {
+                await api(`api/robots/${encodeURIComponent(robot.id)}/proxy`, { method: 'DELETE' });
+                formMessage.textContent = `${robot.name} no longer holds a proxy.`;
+                formMessage.className = 'message success';
+                await loadRobotProxies();
+            } catch (error) { showError(error); releaseProxy.disabled = false; }
+        });
         const codingButton = card.querySelector('.configure-coding-agent');
         codingButton.hidden = !canAdmin;
         codingButton.addEventListener('click', () => openCodingAgentsDialog(robot, { api, onChanged: loadRobots }));
@@ -377,14 +388,35 @@ async function loadWorkflows(canAdmin) {
     }
 }
 
+function robotProxyLabel(proxy) {
+    const place = [proxy.country, proxy.city].filter(Boolean).join(' · ');
+    const locale = proxy.locale ? `${proxy.locale.timezone} · ${proxy.locale.lang}` : '';
+    const label = ['Proxy:', [place, `${proxy.host}:${proxy.port}`, proxy.exitIp, locale].filter(Boolean).join(' · ')].join(' ');
+    return proxy.usable === false ? `${label} (unusable; replaced at the next start)` : label;
+}
+
+async function loadRobotProxies() {
+    let listing;
+    try { listing = await api('api/robot-proxies'); } catch { return; }
+    for (const card of robotsList.querySelectorAll('[data-robot-id]')) {
+        const proxy = listing.proxies?.[card.dataset.robotId];
+        const label = card.querySelector('.robot-proxy');
+        label.hidden = !proxy;
+        label.textContent = proxy ? robotProxyLabel(proxy) : '';
+        if (proxy) label.title = `Account: ${proxy.account}`;
+        card.querySelector('.release-proxy').hidden = !proxy;
+    }
+}
+
 async function loadRobots() {
     try {
         const result = await api('api/robots');
         canCreateRobots = result.canAdmin === true;
-        proxyPool.setContext(canCreateRobots);
         emailPool.setContext(canCreateRobots);
         updateCreateControls();
         renderRobots(result.robots || [], result.canAdmin === true);
+        // Leases live in the optional proxyAgent, so a slow or missing one never holds the robot list.
+        if (result.canAdmin === true) void loadRobotProxies();
         await loadWorkflows(result.canAdmin === true);
     } catch (error) {
         robotsList.textContent = `Robots unavailable: ${error.message}`;

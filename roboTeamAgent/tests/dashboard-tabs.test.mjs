@@ -74,20 +74,20 @@ test('dashboard tabs support wrapped arrows, Home, End and listener cleanup', ()
     state.tabs.forEach(tab => assert.equal(tab.listeners.size, 0));
 });
 
-test('dashboard markup groups robot, workflow, scheduling, proxy and email controls into exactly five linked tabs', async () => {
+test('dashboard markup groups robot, workflow, scheduling and email controls into exactly four linked tabs', async () => {
     const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
-    assert.equal((html.match(/role="tab"/g) || []).length, 5);
-    assert.equal((html.match(/role="tabpanel"/g) || []).length, 5);
-    for (const [tab, panel, label] of [['robotsTab', 'robotsPanel', 'Robots'], ['workflowTypesTab', 'workflowTypesPanel', 'Workflow types'], ['kronJobsTab', 'kronJobsPanel', 'Cron jobs'], ['proxiesTab', 'proxiesPanel', 'Proxies'], ['emailsTab', 'emailsPanel', 'Emails']]) {
+    assert.equal((html.match(/role="tab"/g) || []).length, 4);
+    assert.equal((html.match(/role="tabpanel"/g) || []).length, 4);
+    for (const [tab, panel, label] of [['robotsTab', 'robotsPanel', 'Robots'], ['workflowTypesTab', 'workflowTypesPanel', 'Workflow types'], ['kronJobsTab', 'kronJobsPanel', 'Cron jobs'], ['emailsTab', 'emailsPanel', 'Emails']]) {
         assert.match(html, new RegExp(`id="${tab}"[^>]*aria-controls="${panel}"[^>]*>\\s*${label}\\s*</button>`));
         assert.match(html, new RegExp(`id="${panel}"[^>]*aria-labelledby="${tab}"`));
     }
     const robots = html.slice(html.indexOf('<div id="robotsPanel"'), html.indexOf('<div id="workflowTypesPanel"'));
     const workflows = html.slice(html.indexOf('<div id="workflowTypesPanel"'), html.indexOf('<div id="kronJobsPanel"'));
     const kron = html.slice(html.indexOf('<div id="kronJobsPanel"'), html.indexOf('</main>'));
-    const proxies = html.slice(html.indexOf('<div id="proxiesPanel"'), html.indexOf('<dialog id="cronDialog"'));
-    for (const id of ['proxyAccountsList', 'proxyTableBody', 'proxyCount', 'addProxyAccountButton', 'proxyMessage']) assert.ok(proxies.includes(`id="${id}"`));
-    const emails = html.slice(html.indexOf('<div id="emailsPanel"'), html.indexOf('<dialog id="proxyAccountDialog"'));
+    // The shared proxy pool is administered in proxyAgent; robots only show the proxy they hold.
+    assert.doesNotMatch(html, /proxiesPanel|proxyAccountDialog/);
+    const emails = html.slice(html.indexOf('<div id="emailsPanel"'), html.indexOf('<dialog id="cronDialog"'));
     for (const id of ['emailTableBody', 'emailCount', 'addEmailsButton', 'importEmailsButton', 'emailCsvFile', 'emailMessage', 'emailDialog', 'emailForm']) assert.ok(emails.includes(`id="${id}"`));
     for (const id of ['createForm', 'formMessage', 'robotsList', 'robotCount']) assert.ok(robots.includes(`id="${id}"`));
     for (const id of ['workflowsList', 'workflowCount', 'workflowListMessage', 'addWorkflowButton', 'flowsHistoryButton']) assert.ok(workflows.includes(`id="${id}"`));

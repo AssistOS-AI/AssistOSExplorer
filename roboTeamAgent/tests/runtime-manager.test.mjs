@@ -928,12 +928,12 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
     await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
     t.after(() => listener.close());
     const port = listener.address().port;
-    const calls = [], relays = [];
+    const calls = [], relays = [], leases = [];
     let upstream = { id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' };
     const manager = new RuntimeManager({
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
-        proxyPool: { acquire: () => upstream, release: () => true, localeFor: async () => ({ timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' }) },
+        proxyPool: { lease: async (...args) => { leases.push(args); return { upstream, locale: { timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' } }; }, release: async () => true },
         createRelay: (target) => {
             const relay = { target, closed: false, port: 45000 + relays.length, listen: async () => relay.port, close: async () => { relay.closed = true; } };
             relays.push(relay);
@@ -951,6 +951,7 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
     const robot = { id: 'proxied-a1b2c3', name: 'Proxied', codingAgents: ['opencode'] };
 
     await manager.start(robot, 'browser');
+    assert.deepEqual(leases[0], ['proxied-a1b2c3', 'Proxied'], 'the lease names the robot for the pool page');
     const run = calls.find(args => args[0] === 'create');
     assert.equal(calls.some(args => args[0] === 'run'), false, 'a proxied browser is created, not started, before its firewall');
     assert.equal(run[run.indexOf('--network') + 1], 'pasta:-T,3128:45000');
@@ -994,8 +995,8 @@ test('a proxied desktop keeps its network for other programs and a failed firewa
     const manager = new RuntimeManager({
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
-        proxyPool: { acquire: () => ({ id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' }), release: () => true,
-            localeFor: async () => ({ timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' }) },
+        proxyPool: { lease: async () => ({ upstream: { id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' },
+            locale: { timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' } }), release: async () => true },
         createRelay: () => {
             const relay = { closed: false, listen: async () => 45000, close: async () => { relay.closed = true; } };
             relays.push(relay);
@@ -1037,7 +1038,7 @@ test('an active pool without a free proxy keeps the workstation from starting', 
     const manager = new RuntimeManager({
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
-        proxyPool: { acquire: () => { throw Object.assign(new Error('No free proxy is available in the shared proxy pool.'), { statusCode: 409 }); } },
+        proxyPool: { lease: async () => { throw Object.assign(new Error('No free proxy is available in the shared proxy pool.'), { statusCode: 409 }); } },
         createRelay: () => assert.fail('no relay without a proxy'),
         execFileImpl: async (_command, args) => { calls.push(args); return { stdout: '', stderr: '' }; },
         toolCache: preparedToolCache,
@@ -1046,4 +1047,34 @@ test('an active pool without a free proxy keeps the workstation from starting', 
         error => error.statusCode === 409);
     assert.equal(calls.some(args => args[0] === 'run'), false);
     assert.equal(manager.status('unproxied-a1b2c3').state, 'stopped');
+});
+
+test('without a proxy lease the workstation connects directly with the service timezone', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-direct-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const listener = http.createServer((_request, response) => response.end());
+    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+    t.after(() => listener.close());
+    const port = listener.address().port;
+    const calls = [];
+    const manager = new RuntimeManager({
+        dataDir: path.join(root, 'data'),
+        workspaceRoot: root,
+        // What the proxyAgent client answers when the agent is missing, unreachable or has no usable proxy.
+        proxyPool: { lease: async () => null, release: async () => false },
+        createRelay: () => assert.fail('no relay without a proxy'),
+        execFileImpl: async (_command, args) => {
+            calls.push(args);
+            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
+            return { stdout: '', stderr: '' };
+        },
+        toolCache: preparedToolCache,
+    });
+    t.after(() => manager.stopAll());
+    await manager.start({ id: 'direct-a1b2c3', name: 'Direct', codingAgents: ['opencode'] }, 'browser');
+    const run = calls.find(args => args[0] === 'run');
+    assert.equal(run[run.indexOf('--network') + 1], 'pasta');
+    assert.ok(run.includes('TZ=UTC'));
+    assert.equal(run.some(value => value.startsWith('LC_ALL=')), false);
+    assert.equal(run.some(value => value.includes('roboteam-proxy.json')), false);
 });

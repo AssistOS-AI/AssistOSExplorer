@@ -5,10 +5,8 @@ import { RuntimeManager } from './runtime-manager.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
 import { RoboFlowService } from './roboflow/roboflow-service.mjs';
 import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
-import { ProxyPool } from './proxy-pool/proxy-pool.mjs';
+import { ProxyAgentClient } from './proxy-pool/proxy-client.mjs';
 import { EmailPool, emailPoolFile } from './email-pool.mjs';
-import { secretBoxFromEnvironment, VAULT_KEY_ENV } from './secret-box.mjs';
-import path from 'node:path';
 import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
@@ -16,9 +14,6 @@ const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
 const port = Number(process.env.ROBOTEAM_SERVICE_PORT) || 3001;
 const dataDir = DATA_DIR;
 const internalToken = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
-// Removed from the environment before any child process starts.
-const secretBox = secretBoxFromEnvironment();
-if (!secretBox) console.warn(`[roboTeamAgent] ${VAULT_KEY_ENV} is missing; proxy accounts cannot be added or used`);
 
 if (!internalToken) {
     throw new Error('ROBOTEAM_INTERNAL_TOKEN is required');
@@ -30,8 +25,8 @@ const robotStore = new RobotStore({ dataDir });
 await robotStore.initialize();
 await robotStore.ensureDefaultRobot();
 
-const proxyPool = new ProxyPool({ file: path.join(dataDir, 'proxy-pool', 'proxy-pool.sqlite'), secretBox });
-proxyPool.initialize();
+// The shared proxy pool lives in the optional proxyAgent; without it robots connect directly.
+const proxyPool = new ProxyAgentClient();
 const emailPool = new EmailPool({ file: emailPoolFile(dataDir) });
 emailPool.initialize();
 
@@ -72,7 +67,6 @@ const server = createRoboTeamServer({
 server.listen(port, host, () => {
     console.log(`RoboTeamAgent listening on ${host}:${port}`);
     roboflow.scheduler.start();
-    proxyPool.startAutoSync(undefined, (line) => console.warn(`[roboTeamAgent] ${line}`));
     // Downloads must not delay service readiness; requests share this cache's pending preparations.
     void runtimeManager.toolCache.warmup()
         .then(async () => runtimeManager.warmOpenCodePlugins(await robotStore.list()))
@@ -88,7 +82,6 @@ async function shutdown() {
     server.close();
     await roboflow.close();
     await runtimeManager.stopAll();
-    proxyPool.close();
     emailPool.close();
     process.exit(0);
 }

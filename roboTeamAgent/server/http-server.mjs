@@ -449,53 +449,36 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     return false;
 }
 
-const PROXY_ACCOUNT_PATH = '/api/proxy-pool/accounts/(pxa_[0-9a-f]{12})';
-
-// Shared proxy pool administration. Every route is administrator-only: the pool spans all robots
-// and its records name the outer infrastructure. Responses never carry credentials.
-async function handleProxyPool({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager }) {
-    if (!pathname.startsWith('/api/proxy-pool')) return false;
-    if (!proxyPool) { sendError(res, 404, 'not found'); return true; }
+// The proxy each robot holds in the shared pool, which proxyAgent administers. Administrator-only:
+// the records name the outer infrastructure. Responses never carry credentials. Listing also
+// releases leases of robots deleted while proxyAgent was unreachable.
+async function handleRobotProxies({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager }) {
+    const releaseId = pathname.match(new RegExp(`^/api/robots/(${ROBOT_ID})/proxy$`))?.[1];
+    if (pathname !== '/api/robot-proxies' && !releaseId) return false;
     if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
-    if (pathname === '/api/proxy-pool' && req.method === 'GET') {
-        const robots = new Map((await robotStore.list()).map(robot => [robot.id, robot.name]));
-        const snapshot = proxyPool.snapshot();
-        for (const proxy of snapshot.proxies) proxy.robotName = proxy.robotId ? robots.get(proxy.robotId) || null : null;
-        sendJson(res, 200, { ok: true, providers: proxyPool.providers(), ...snapshot }); return true;
+    if (pathname === '/api/robot-proxies' && req.method === 'GET') {
+        if (!proxyPool) { sendJson(res, 200, { ok: true, available: false, active: false, proxies: {} }); return true; }
+        const robots = new Set((await robotStore.list()).map(robot => robot.id));
+        const listing = await proxyPool.assignments(null);
+        const proxies = {};
+        for (const assignment of listing.assignments) {
+            if (robots.has(assignment.subject)) proxies[assignment.subject] = assignment;
+            else void proxyPool.release(assignment.subject);
+        }
+        sendJson(res, 200, { ok: true, available: listing.available, active: listing.active, proxies }); return true;
     }
-    if (pathname === '/api/proxy-pool/accounts' && req.method === 'POST') {
-        const accountId = proxyPool.addAccount(await readJsonBody(req));
-        sendJson(res, 201, { ok: true, accountId, sync: await proxyPool.syncAccount(accountId) }); return true;
-    }
-    const syncId = pathname.match(new RegExp(`^${PROXY_ACCOUNT_PATH}/sync$`))?.[1];
-    if (syncId && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, sync: await proxyPool.syncAccount(syncId) }); return true;
-    }
-    const accountId = pathname.match(new RegExp(`^${PROXY_ACCOUNT_PATH}$`))?.[1];
-    if (accountId && req.method === 'PATCH') {
-        proxyPool.updateAccount(accountId, await readJsonBody(req));
-        sendJson(res, 200, { ok: true }); return true;
-    }
-    if (accountId && req.method === 'DELETE') {
-        proxyPool.removeAccount(accountId);
-        sendJson(res, 200, { ok: true }); return true;
-    }
-    const checkId = pathname.match(/^\/api\/proxy-pool\/proxies\/(pxp_[0-9a-f]{16})\/check$/)?.[1];
-    if (checkId && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, check: await proxyPool.checkProxy(checkId) }); return true;
-    }
-    const releaseId = pathname.match(new RegExp(`^/api/proxy-pool/assignments/(${ROBOT_ID})$`))?.[1];
     if (releaseId && req.method === 'DELETE') {
+        if (!proxyPool || !await robotStore.get(releaseId)) { sendError(res, 404, 'robot not found'); return true; }
         if (runtimeManager.status(releaseId).state !== 'stopped') {
             sendError(res, 409, 'stop the robot workstation before releasing its proxy'); return true;
         }
-        sendJson(res, 200, { ok: true, released: proxyPool.release(releaseId) }); return true;
+        sendJson(res, 200, { ok: true, released: await proxyPool.release(releaseId) }); return true;
     }
     sendError(res, 404, 'not found');
     return true;
 }
 
-// Shared email addresses for robots, administrator-only like the proxy pool. Only addresses are
+// Shared email addresses for robots, administrator-only like the robot proxies. Only addresses are
 // stored; a person signs each mailbox in to the robot's Chromium.
 async function handleEmailPool({ req, res, pathname, actor, emailPool, robotStore, runtimeManager }) {
     if (!pathname.startsWith('/api/email-pool')) return false;
@@ -599,7 +582,6 @@ export function createRoboTeamServer(options) {
             if (pathname === '/page-navigation.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'page-navigation.js');
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'app.js');
             if (pathname === '/cron-jobs.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'cron-jobs.js');
-            if (pathname === '/proxy-pool.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'proxy-pool.js');
             if (pathname === '/email-pool.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'email-pool.js');
             if (pathname === '/schedule-folder-picker.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'schedule-folder-picker.js');
             if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'skills-dialog.js');
@@ -826,7 +808,7 @@ export function createRoboTeamServer(options) {
                 if (!robot) return sendError(res, 404, 'robot not found');
                 return sendJson(res, 200, { ok: true, logs: await runtimeManager.logs(robot.id, url.searchParams.get('tail')) });
             }
-            if (await handleProxyPool({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager })) return;
+            if (await handleRobotProxies({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager })) return;
             if (await handleEmailPool({ req, res, pathname, actor, emailPool, robotStore, runtimeManager })) return;
             if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath })) return;
             sendError(res, 404, 'not found');

@@ -17,7 +17,7 @@ Paths below are relative to `roboTeamAgent/`. Folders group modules by responsib
 | --- | --- |
 | `server/` | HTTP service, robot configuration, skill policies, runtime preparation and execution lifecycle. |
 | `server/roboflow/` | Workflow definitions, matching robots to tasks, graph execution, run persistence and durable recurring schedules. |
-| `server/proxy-pool/` | Shared proxy pool storage and assignment, proxy providers, the per-robot proxy relay and the managed Chromium proxy policy. |
+| `server/proxy-pool/` | The proxyAgent lease client, the per-robot proxy relay, the managed Chromium proxy policy and the Browser container firewall. |
 | `server/plugins/` | Integrations loaded by native coding-agent runtimes. |
 | `public/` | Browser pages, styles and scripts for robots, workflow editing, Cron jobs, runs and output views. |
 | `tools/` | MCP command entrypoints that expose RoboTeam operations. |

@@ -424,12 +424,14 @@ export class RuntimeManager {
             const existing = this.sessions.get(robot.id);
             const codingAgents = robotCodingAgents(robot);
             const codingAgentsKey = codingAgents.join(',');
-            // Null while the shared pool is inactive; throws while it is active and has nothing free.
-            const upstream = this.proxyPool ? this.proxyPool.acquire(robot.id) : null;
+            // Null for a direct connection (no proxyAgent, or no usable proxy in its pool); throws only
+            // while the pool is active and has nothing free. The lease carries its exit-address locale.
+            const lease = this.proxyPool ? await this.proxyPool.lease(robot.id, robot.name) : null;
+            const upstream = lease?.upstream || null;
             // A person opening the workstation signs the robot's mailbox in, so the robot holds its address from here on.
             this.emailPool?.acquire(robot.id);
             const proxyKey = upstream ? `${upstream.id}@${upstream.host}:${upstream.port}` : '';
-            const locale = upstream && this.proxyPool.localeFor ? await this.proxyPool.localeFor(upstream) : null;
+            const locale = upstream ? lease.locale : null;
             const localeKey = locale ? `${locale.timezone}|${locale.locale}` : '';
             if (existing) {
                 if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
@@ -926,7 +928,8 @@ export class RuntimeManager {
         try { await remove(); }
         catch (error) { this.deletedRobots.delete(robotId); throw error; }
         await this.soulGateway.remove(path.join(this.dataDir, 'robots', robotId, 'home'));
-        this.proxyPool?.release(robotId);
+        // Never throws; a lease left behind by an unreachable proxyAgent is released when the dashboard next lists proxies.
+        void this.proxyPool?.release(robotId);
         this.emailPool?.release(robotId);
         // Server-only model-list cache for this robot (never inside the robot's mounted folder).
         if (/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) {
