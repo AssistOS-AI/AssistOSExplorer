@@ -11,9 +11,9 @@ import {
     ACCOUNT_CAPABILITY, ACCOUNT_CAPABILITY_SETS, accountCapability, assertImageOwnedAgentLib, classifyPriorSelections,
     createRollbackService, currentQaBox, describeSelectionDispositions, enableArguments, EXPECTED_DEFAULT_GRAPH,
     imageAgentLibSourceId, productionAdapters, restorePriorSelections, sanitizeBox,
-    acquireWorkspaceCustody, assertSkeletonOnlyHostState, lockGeneration, SOURCE_CHECK_SCRIPT, sourcePinFromReport, sourceSandboxArguments,
+    acquireWorkspaceCustody, assertSkeletonOnlyHostState, SOURCE_CHECK_SCRIPT, sourcePinFromReport, sourceSandboxArguments,
 } from '../../../.github/scripts/rollback-explorer-qa.mjs';
-import { legacyLockModule, workspaceLockModule, writeLockModule } from './qa-fake-lock-modules.mjs';
+import { workspaceLockModule, writeLockModule } from './qa-fake-lock-modules.mjs';
 
 const OLD = 'a'.repeat(64), FAILED = 'b'.repeat(64), FRESH = 'c'.repeat(64), IMAGE = 'd'.repeat(64);
 const librarySource = '.ploinky/agentlib/generations/' + 'e'.repeat(40) + '-' + 'f'.repeat(12);
@@ -72,6 +72,10 @@ function fixture(t, { predecessor = true, supported = true } = {}) {
             { Source: scope.workspace, Destination: scope.workspace, RW: true, Type: 'bind' },
             { Source: path.join(scope.workspace, '.runtime/ploinky'), Destination: '/opt/ploinky', RW: false, Type: 'bind' },
             { Source: path.join(scope.workspace, librarySource), Destination: '/opt/ploinky-agentlib', RW: false, Type: 'bind' },
+            // D6: the mounted checkout is shadowed read-only at its own workspace path, and the
+            // Box state directory is masked by its read-only `empty/` directory.
+            { Source: path.join(scope.workspace, '.runtime/ploinky'), Destination: path.join(scope.workspace, '.runtime/ploinky'), RW: false, Type: 'bind' },
+            { Source: path.join(scope.workspace, '.ploinky-box/empty'), Destination: path.join(scope.workspace, '.ploinky-box'), RW: false, Type: 'bind' },
         ] });
     const box = id => ({ engine: 'podman', box: sanitizeBox(raw(id), scope) });
     const boxes = predecessor ? [box(OLD)] : [];
@@ -81,10 +85,6 @@ function fixture(t, { predecessor = true, supported = true } = {}) {
         assertHost() {}, machineId: () => 'machine-fixture', accountCapability: fixtureCapability,
         sourcePin: directory => ({ commit: fs.readFileSync(path.join(directory, '.source-pin'), 'utf8'), branch: 'main', origin: 'fixture' }),
         boxes: () => structuredClone(boxes), imageId: () => IMAGE, checkPrerequisites() {},
-        async acquireWorkspaceLock() {
-            assert.equal(held, false); held = true; events.push('lock');
-            return { release() { if (held) { held = false; events.push('unlock'); } } };
-        },
         async quiesce(item) { assert.equal(held, true); events.push(`quiesce:${item.box.id}`); },
         stop(item) { assert.equal(held, true); events.push(`stop:${item.box.id}`); boxes.find(row => row.box.id === item.box.id).box.running = false; },
         rename(item, name) { assert.equal(held, true); events.push(`rename:${item.box.id}`); boxes.find(row => row.box.id === item.box.id).box.name = name; },
@@ -111,6 +111,21 @@ function fixture(t, { predecessor = true, supported = true } = {}) {
         },
         async ready() { events.push('ready'); return { ready: true, generation: 'fresh', count: 1 }; },
     };
+    // The fixture's own lock state gates every injected runtime operation, and the
+    // workspace lock module supplies the real custody on the fixture's files.
+    const installCustody = (module, record = []) => {
+        adapters.acquireWorkspaceLock = async (runtimeRoot, options) => {
+            record.push({ runtimeRoot, options });
+            assert.equal(held, false); held = true; events.push('lock');
+            const unlock = () => { if (held) { held = false; events.push('unlock'); } };
+            const wrap = handle => ({ ...handle,
+                release() { handle.release(); unlock(); },
+                async successor(root) { return wrap(await handle.successor(root)); } });
+            return wrap(await acquireWorkspaceCustody(module, scope, options));
+        };
+        return record;
+    };
+    installCustody(workspaceLockModule());
     const service = createRollbackService(adapters, scope);
     const candidate = () => {
         fs.renameSync(scope.workspace, path.join(backup, 'workspace'));
@@ -118,7 +133,7 @@ function fixture(t, { predecessor = true, supported = true } = {}) {
         write(path.join(scope.workspace, 'failed-state'), 'failed generation retained');
         boxes.push(box(FAILED));
     };
-    return { root, scope, backup, service, adapters, boxes, events, raw, candidate };
+    return { root, scope, backup, service, adapters, boxes, events, raw, candidate, installCustody };
 }
 
 const AGENTLIB_REPORT = Object.freeze({ schema: 'ploinky.box.library-inspect/v1', library: 'achillesAgentLib',
@@ -1159,62 +1174,82 @@ test('production recovery permits the bounded full graph shutdown without the fo
     assert.equal(result.status, 0, result.stderr);
 });
 
-// E8: a Box that keeps host state in the workspace must also shadow the mounted
-// checkout read-only and mask the host-state directory; earlier Boxes keep the
-// earlier proof.
-function hostStateBox(f) {
-    const raw = f.raw(OLD), checkout = path.join(f.scope.workspace, '.runtime/ploinky');
-    raw.Config.Labels['io.assistos.ploinky-box.host-state'] = '1';
-    raw.Mounts.push({ Source: checkout, Destination: checkout, RW: false, Type: 'bind' },
-        { Source: path.join(f.scope.workspace, '.ploinky-host/empty'), Destination: path.join(f.scope.workspace, '.ploinky-host'), RW: false, Type: 'bind' });
+// D6: every Box must shadow the mounted checkout read-only at its own workspace
+// path and mask the Box state directory with its read-only `empty/` directory.
+// There is no label or version exception: a Box built by an earlier runtime has
+// neither mount and is refused.
+const shadowOf = (f, raw) => raw.Mounts.find(mount => mount.Destination === path.join(f.scope.workspace, '.runtime/ploinky'));
+const maskOf = (f, raw) => raw.Mounts.find(mount => mount.Destination === path.join(f.scope.workspace, '.ploinky-box'));
+const oldRuntimeBox = f => {
+    const raw = f.raw(OLD);
+    raw.Mounts = raw.Mounts.filter(mount => mount !== shadowOf(f, raw) && mount !== maskOf(f, raw));
     return raw;
-}
+};
 
-test('E8: Box identity requires the read-only checkout shadow and the host-state mask when the host-state label is present', t => {
+test('D6: Box identity requires exactly one read-only checkout shadow and one read-only mask of the Box state directory', t => {
     const f = fixture(t);
-    assert.equal(sanitizeBox(hostStateBox(f), f.scope).id, OLD);
-    assert.equal(sanitizeBox(f.raw(OLD), f.scope).id, OLD, 'a Box without the label keeps the earlier proof');
-    const shadow = raw => raw.Mounts.find(mount => mount.Destination === path.join(f.scope.workspace, '.runtime/ploinky'));
-    const mask = raw => raw.Mounts.find(mount => mount.Destination === path.join(f.scope.workspace, '.ploinky-host'));
+    assert.equal(sanitizeBox(f.raw(OLD), f.scope).id, OLD);
     for (const [label, change] of [
-        ['shadow missing', raw => { raw.Mounts.splice(raw.Mounts.indexOf(shadow(raw)), 1); }],
-        ['shadow writable', raw => { shadow(raw).RW = true; }],
-        ['shadow from another source', raw => { shadow(raw).Source = path.join(f.scope.workspace, 'elsewhere'); }],
-        ['shadow duplicated', raw => { raw.Mounts.push({ ...shadow(raw) }); }],
-        ['shadow not a bind', raw => { shadow(raw).Type = 'volume'; }],
-        ['mask missing', raw => { raw.Mounts.splice(raw.Mounts.indexOf(mask(raw)), 1); }],
-        ['mask writable', raw => { mask(raw).RW = true; }],
-        ['mask from another source', raw => { mask(raw).Source = path.join(f.scope.workspace, '.ploinky-host'); }],
-        ['mask duplicated', raw => { raw.Mounts.push({ ...mask(raw) }); }],
-        ['label value', raw => { raw.Config.Labels['io.assistos.ploinky-box.host-state'] = 'yes'; }],
+        ['shadow missing', raw => { raw.Mounts.splice(raw.Mounts.indexOf(shadowOf(f, raw)), 1); }],
+        ['shadow writable', raw => { shadowOf(f, raw).RW = true; }],
+        ['shadow from another source', raw => { shadowOf(f, raw).Source = path.join(f.scope.workspace, 'elsewhere'); }],
+        ['shadow duplicated', raw => { raw.Mounts.push({ ...shadowOf(f, raw) }); }],
+        ['shadow not a bind', raw => { shadowOf(f, raw).Type = 'volume'; }],
+        ['mask missing', raw => { raw.Mounts.splice(raw.Mounts.indexOf(maskOf(f, raw)), 1); }],
+        ['mask writable', raw => { maskOf(f, raw).RW = true; }],
+        ['mask from another source', raw => { maskOf(f, raw).Source = path.join(f.scope.workspace, '.ploinky-box'); }],
+        ['mask from the old home store', raw => { maskOf(f, raw).Source = '/home/admin/.ploinky-box/empty'; }],
+        ['mask duplicated', raw => { raw.Mounts.push({ ...maskOf(f, raw) }); }],
+        ['mask not a bind', raw => { maskOf(f, raw).Type = 'volume'; }],
     ]) {
-        const raw = hostStateBox(f); change(raw);
+        const raw = f.raw(OLD); change(raw);
         assert.throws(() => sanitizeBox(raw, f.scope), { code: 'QA_BOX_SOURCE_INVALID' }, label);
     }
 });
 
-// The fixture's own lock adapter still gates every injected runtime operation;
-// the workspace-generation module adds the real custody on the fixture's files.
+test('Q1: an old-runtime Box (no checkout shadow, no mask) is refused with QA_BOX_SOURCE_INVALID before any quiesce, stop, move or copy', async t => {
+    const f = fixture(t);
+    assert.throws(() => sanitizeBox(oldRuntimeBox(f), f.scope), { code: 'QA_BOX_SOURCE_INVALID' });
+    // The service-level paths consume Boxes only through the adapter that runs the proof.
+    const refuseOldRuntime = fx => { fx.adapters.boxes = () => [{ engine: 'podman', box: sanitizeBox(oldRuntimeBox(fx), fx.scope) }]; };
+    for (const [label, run] of [['capture', fx => fx.service.capture(fx.backup)], ['capture preview', fx => fx.service.previewCapture()]]) {
+        const fx = fixture(t); refuseOldRuntime(fx);
+        await assert.rejects(Promise.resolve().then(() => run(fx)), { code: 'QA_BOX_SOURCE_INVALID' }, label);
+        assert.deepEqual(fx.events, [], `${label} quiesced, stopped, locked, moved or copied nothing`);
+        assert.equal(fs.existsSync(path.join(fx.backup, 'rollback-authority.json')), false, `${label} wrote no recovery authority`);
+    }
+    // Recovery of a backup captured earlier from a current Box, with an old-runtime Box now in place.
+    for (const [label, run] of [['rollback plan', fx => fx.service.plan(fx.backup, FAILED)], ['rollback execute', fx => fx.service.execute(fx.backup, FAILED)]]) {
+        const fx = fixture(t); fx.service.capture(fx.backup); refuseOldRuntime(fx);
+        await assert.rejects(Promise.resolve().then(() => run(fx)), { code: 'QA_BOX_SOURCE_INVALID' }, label);
+        assert.deepEqual(fx.events, [], `${label} quiesced, stopped, locked, moved or copied nothing`);
+    }
+});
+
+test('Q1: the production Box inspection refuses an old-runtime Box before it executes anything inside it', t => {
+    const f = imageFixture(t), engine = fakeEngine(t, f);
+    const raw = f.rawImage(OLD);
+    engine.setInput(raw, AGENTLIB_REPORT);
+    assert.equal(productionAdapters(f.scope).boxes().length, 1, 'the current-runtime Box is admitted');
+    raw.Mounts = raw.Mounts.filter(mount => mount !== shadowOf(f, raw) && mount !== maskOf(f, raw));
+    engine.setInput(raw, AGENTLIB_REPORT); engine.reset();
+    assert.throws(() => productionAdapters(f.scope).boxes(), { code: 'QA_BOX_SOURCE_INVALID' });
+    assert.equal(engine.calls().some(args => args[0] === 'run' || (args[0] === 'container' && args[1] === 'exec')), false,
+        'the alleged verifier is never executed inside a Box that fails the mount proof');
+});
+
+// Re-installs the fixture's custody over another instance of the lock module.
 async function workspaceCustody(f, module, record = []) {
-    const gate = f.adapters.acquireWorkspaceLock;
-    f.adapters.acquireWorkspaceLock = async (runtimeRoot, options) => {
-        record.push({ runtimeRoot, options });
-        const held = await gate();
-        const wrap = handle => ({ ...handle,
-            release() { handle.release(); held.release(); },
-            async successor(root) { return wrap(await handle.successor(root)); } });
-        return wrap(await acquireWorkspaceCustody(module, f.scope, options));
-    };
-    return record;
+    return f.installCustody(module, record);
 }
 
-test('E5/E6: rollback relocates the workspace lock, takes the recreated workspace\'s lock on a fresh skeleton and never restores host state', async t => {
+test('E5/E6: rollback relocates the workspace lock, takes the recreated workspace\'s lock on a fresh skeleton and never restores Box state', async t => {
     const f = fixture(t);
     f.service.capture(f.backup); f.candidate();
     const previous = path.join(f.backup, 'workspace');
-    write(path.join(previous, '.ploinky-host/router-bindings', `${f.scope.box}.json`), 'forged binding');
-    write(path.join(previous, '.ploinky-host/quarantine/1/x'), 'quarantined');
-    write(path.join(previous, '.ploinky-host.old/gpu-grants.json'), 'forged grant');
+    write(path.join(previous, '.ploinky-box/router-bindings', `${f.scope.box}.json`), 'forged binding');
+    write(path.join(previous, '.ploinky-box/quarantine/1/x'), 'quarantined');
+    write(path.join(previous, '.ploinky-box.old/gpu-grants.json'), 'forged grant');
     const module = workspaceLockModule(), record = await workspaceCustody(f, module);
     const receipt = await f.service.execute(f.backup, FAILED);
     assert.equal(receipt.result, 'recovered');
@@ -1228,11 +1263,11 @@ test('E5/E6: rollback relocates the workspace lock, takes the recreated workspac
         ['assertHeld', f.scope.box],
         ['release'],
     ]);
-    assert.equal(f.events.filter(event => event.startsWith('copy:.ploinky-host')).length, 0, 'host state is never copied');
-    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-host.old')), false);
+    assert.equal(f.events.filter(event => event.startsWith('copy:.ploinky-box')).length, 0, 'Box state is never copied');
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-box.old')), false);
     assertSkeletonOnlyHostState(f.scope.workspace);
-    assert.equal(fs.existsSync(path.join(failed, '.ploinky-host/locks/workspace.lock')), false, 'the relocated lock was released at its new path');
-    assert.equal(fs.readFileSync(path.join(previous, '.ploinky-host/router-bindings', `${f.scope.box}.json`), 'utf8'), 'forged binding', 'the backup keeps its tree');
+    assert.equal(fs.existsSync(path.join(failed, '.ploinky-box/locks/workspace.lock')), false, 'the relocated lock was released at its new path');
+    assert.equal(fs.readFileSync(path.join(previous, '.ploinky-box/router-bindings', `${f.scope.box}.json`), 'utf8'), 'forged binding', 'the backup keeps its tree');
     assert.ok(f.events.indexOf('unlock') < f.events.indexOf('prepare'), 'the recreated workspace lock is released before preparation');
 });
 
@@ -1252,16 +1287,16 @@ test('E6: the rollback journal records the custody boundary where a relocated lo
     };
     await assert.rejects(f.service.execute(f.backup, FAILED), error => error.receipt?.phase === 'replacement-lock-acquired');
     assert.equal(JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-result.json'))).phase, 'replacement-lock-acquired');
-    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-host/locks/workspace.lock')), false, 'the successor lock was released');
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-box/locks/workspace.lock')), false, 'the successor lock was released');
     assert.equal(f.events.includes('prepare'), false);
 });
 
-test('E6: restored host state that is not the fresh skeleton is refused before preparation', async t => {
+test('E6: restored Box state that is not the fresh skeleton is refused before preparation', async t => {
     const f = fixture(t);
     f.service.capture(f.backup); f.candidate();
     await workspaceCustody(f, workspaceLockModule());
     const copy = f.adapters.copy;
-    f.adapters.copy = (from, to) => { copy(from, to); write(path.join(f.scope.workspace, '.ploinky-host/router-bindings/planted.json'), '{}'); };
+    f.adapters.copy = (from, to) => { copy(from, to); write(path.join(f.scope.workspace, '.ploinky-box/router-bindings/planted.json'), '{}'); };
     await assert.rejects(f.service.execute(f.backup, FAILED), { code: 'QA_GENERATED_STATE_RESTORED' });
     assert.equal(f.events.includes('prepare'), false);
 });
@@ -1293,37 +1328,23 @@ test('E6: a deferred rollback lock refuses a workspace that appeared before the 
     assert.deepEqual(fs.readdirSync(f.scope.workspace), []);
 });
 
-test('E6: an earlier-generation lock module keeps the former single-argument acquire and release, and no host state appears', async t => {
-    const f = fixture(t);
-    f.service.capture(f.backup); f.candidate();
-    const module = legacyLockModule({ stateRoot: path.join(f.root, 'home/.ploinky-box') });
-    await workspaceCustody(f, module);
-    assert.equal((await f.service.execute(f.backup, FAILED)).result, 'recovered');
-    assert.deepEqual(module.calls, [{ op: 'acquire', args: [f.scope.box] }, { op: 'release', args: [] }]);
-    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-host')), false);
-});
-
-test('production lock adapters detect the generation of the deployed lock module they import', async t => {
+test('production lock adapters import the deployed runtime\'s lock module and take its workspace lock with the workspace root', async t => {
     const f = fixture(t);
     const adapters = productionAdapters(f.scope);
-    const legacyRoot = path.join(f.root, 'legacy-runtime'), workspaceRoot = path.join(f.root, 'workspace-runtime');
-    writeLockModule(legacyRoot, 'legacy', { stateRoot: path.join(f.root, 'home/.ploinky-box') });
-    const workspaceUrl = writeLockModule(workspaceRoot, 'workspace');
-    assert.equal(await adapters.lockGeneration(legacyRoot), 'legacy');
-    assert.equal(await adapters.lockGeneration(workspaceRoot), 'workspace');
-    assert.equal(lockGeneration({ MUTATION_LOCK_LOCATION: 'home' }), 'legacy');
-    const legacy = await adapters.acquireWorkspaceLock(legacyRoot);
-    assert.equal(legacy.location, 'legacy'); legacy.release();
-    const held = await adapters.acquireWorkspaceLock(workspaceRoot, { workspaceRoot: f.scope.workspace });
-    assert.equal(held.location, 'workspace');
-    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-host/locks/workspace.lock')), true);
+    const runtimeRoot = path.join(f.root, 'workspace-runtime');
+    const moduleUrl = writeLockModule(runtimeRoot);
+    const held = await adapters.acquireWorkspaceLock(runtimeRoot, { workspaceRoot: f.scope.workspace });
+    assert.equal(held.deferred, false);
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-box/locks/workspace.lock')), true);
     held.release();
-    const { calls } = await import(workspaceUrl);
+    const { calls } = await import(moduleUrl);
     assert.deepEqual(calls.map(call => call.op), ['acquire', 'release']);
-    await assert.rejects(adapters.acquireWorkspaceLock(workspaceRoot, { workspaceRoot: path.join(f.root, 'absent') }),
+    assert.deepEqual(calls[0].args, [f.scope.box, { workspaceRoot: f.scope.workspace, requireNewSkeleton: false }]);
+    assert.equal(calls[0].args.length, 2, 'the instance and the options, nothing else');
+    await assert.rejects(adapters.acquireWorkspaceLock(runtimeRoot, { workspaceRoot: path.join(f.root, 'absent') }),
         { code: 'PLOINKY_BOX_WORKSPACE_ABSENT' });
-    const deferred = await adapters.acquireWorkspaceLock(workspaceRoot, { workspaceRoot: path.join(f.root, 'absent'), deferIfAbsent: true });
-    assert.deepEqual([deferred.location, deferred.deferred], ['workspace', true]);
+    const deferred = await adapters.acquireWorkspaceLock(runtimeRoot, { workspaceRoot: path.join(f.root, 'absent'), deferIfAbsent: true });
+    assert.equal(deferred.deferred, true);
     assert.throws(() => deferred.assertHeldAt(f.scope.workspace), { code: 'QA_WORKSPACE_LOCK_DEFERRED' });
 });
 

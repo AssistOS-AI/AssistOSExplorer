@@ -114,9 +114,6 @@ function fixture(t) {
             assert.equal(workspace, scope.workspace); assert.equal(held, false); held = true; events.push('lock');
             return { release() { assert.equal(held, true); held = false; events.push('unlock'); } };
         },
-        // QA runs a Ploinky whose lock lives outside the workspace.
-        lockGeneration: async () => 'legacy',
-        hostStateLabel: () => null,
     };
     const service = createUpdateService(adapters, scope);
     const unchangedData = () => {
@@ -629,31 +626,8 @@ test('Git adapter parses real additions, deletions and moves, fast-forwards, and
     assert.equal(fs.existsSync(path.join(root, 'explorer/assets/old.svg')), true);
 });
 
-// E11: a Ploinky whose lock lives in the workspace cannot take over a Box the
-// earlier runtime created; the update refuses before any lock, receipt or source change.
-test('E11: a workspace-generation runtime refuses an unlabeled QA Box before lock, receipt, fast-forward or restart', async t => {
-    const f = fixture(t);
-    const reads = [];
-    f.adapters.lockGeneration = async root => { reads.push(['generation', root]); return 'workspace'; };
-    f.adapters.hostStateLabel = () => { reads.push(['label']); return null; };
-    await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_LEGACY_BOX' });
-    assert.deepEqual(reads, [['generation', f.scope.workspace], ['label']]);
-    assert.deepEqual(f.events, [], 'no lock acquisition, fetch, fast-forward or restart');
-    assert.equal(fs.existsSync(f.receipt), false, 'no receipt');
-    assert.equal(f.sourcePins[EXPLORER_SOURCE].commit, OLD, 'no fast-forward');
-    for (const label of ['0', '', 'true']) {
-        f.adapters.hostStateLabel = () => label;
-        await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_LEGACY_BOX' }, label);
-    }
-    f.adapters.lockGeneration = async () => 'unknown';
-    await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_LOCK_GENERATION_UNKNOWN' });
-    assert.deepEqual(f.events, []);
-});
-
-test('E11: a labeled QA Box updates under a workspace-generation lock taken with the workspace root', async t => {
+test('the update takes the workspace lock with the workspace root every time', async t => {
     const f = fixture(t), options = [];
-    f.adapters.lockGeneration = async () => 'workspace';
-    f.adapters.hostStateLabel = () => '1';
     const acquire = f.adapters.acquireWorkspaceLock;
     f.adapters.acquireWorkspaceLock = async (workspace, value) => { options.push(value); return acquire(workspace); };
     assert.equal((await f.service.execute(f.receipt)).status, 'updated');
@@ -661,36 +635,13 @@ test('E11: a labeled QA Box updates under a workspace-generation lock taken with
     for (const value of options) assert.deepEqual(value, { workspaceRoot: f.scope.workspace });
 });
 
-test('the legacy generation skips the host-state label read and keeps the former update path', async t => {
+test('a Box that fails the identity proof (an earlier runtime built it) is refused before any receipt, fetch, fast-forward or restart', async t => {
     const f = fixture(t);
-    f.adapters.hostStateLabel = () => assert.fail('no label read for the earlier generation');
-    assert.equal((await f.service.execute(f.receipt)).status, 'updated');
-});
-
-test('production update adapters read the exact QA Box host-state label from one engine inspection', t => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-update-label-')));
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
-    const run = (labels, extra = '') => {
-        fs.writeFileSync(path.join(bin, 'podman'), `#!${process.execPath}
-            const args = process.argv.slice(2);
-            if (args.join(' ') !== 'container inspect fixture-qa-box') process.exit(41);
-            ${extra}
-            process.stdout.write(JSON.stringify([{ Name: '/fixture-qa-box', Config: { Labels: ${JSON.stringify(labels)} } }]));
-        `, { mode: 0o700 });
-        fs.writeFileSync(path.join(bin, 'docker'), '#!/bin/sh\nexit 1\n', { mode: 0o700 });
-        const helper = new URL('../../../.github/scripts/update-explorer-qa.mjs', import.meta.url).href;
-        const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
-            const { updateProductionAdapters } = await import(process.argv[1]);
-            try { process.stdout.write(JSON.stringify({ label: updateProductionAdapters({ workspace: '/w', box: 'fixture-qa-box' }).hostStateLabel() })); }
-            catch (error) { process.stdout.write(JSON.stringify({ code: error.code })); }
-        `, helper], { encoding: 'utf8', timeout: 10000, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
-        assert.equal(result.status, 0, result.stderr);
-        return JSON.parse(result.stdout);
-    };
-    assert.deepEqual(run({ 'io.assistos.ploinky-box.host-state': '1' }), { label: '1' });
-    assert.deepEqual(run({ 'io.assistos.ploinky-box.path-hash': '7a31ab7775eb' }), { label: null });
-    assert.deepEqual(run({}, 'process.exit(1);'), { code: 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED' });
+    f.adapters.boxes = () => { throw Object.assign(new Error('QA_BOX_SOURCE_INVALID'), { code: 'QA_BOX_SOURCE_INVALID' }); };
+    await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED' });
+    assert.deepEqual(f.events, ['lock', 'unlock'], 'only the lock was taken, and it was released');
+    assert.equal(fs.existsSync(f.receipt), false, 'no receipt');
+    assert.equal(f.sourcePins[EXPLORER_SOURCE].commit, OLD, 'no fast-forward');
 });
 
 // A fake engine on PATH answering sandboxed Git by subcommand, recording every

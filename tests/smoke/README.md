@@ -1035,6 +1035,15 @@ Allow known browser noise temporarily while triaging:
 SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
 ```
 
+### QA tooling opt-ins
+
+Two environment variables widen the QA deploy, rollback, update and cleanup library tests. Without them those tests use a fake lock module and skip the live check; a skip is not a pass.
+
+| Variable | Effect |
+| --- | --- |
+| `QA_REAL_LOCK_MODULE=<absolute path of ploinky-box/locks.mjs>` | The custody fixtures (`deploy-qa-archive-lock`, `deploy-qa-preservation`, `qa-rollback`, `explorer-host-cleanup`) run against Ploinky's own lock module through a recording shim with a short `timeoutMs`. Read-only: nothing in that checkout is edited. |
+| `QA_SOURCE_SANDBOX_LIVE_IMAGE=<full ID of a local Box image>` | `qa-source-sandbox-live.test.mjs` runs the sandboxed source checks and fast-forward against real rootless Podman. Nothing is pulled; a stopped Podman machine must be started and stopped again by the operator. |
+
 ## Sibling checkouts for the Explorer graph helper
 
 `lib/explorer-graph.mjs` walks every manifest reachable from

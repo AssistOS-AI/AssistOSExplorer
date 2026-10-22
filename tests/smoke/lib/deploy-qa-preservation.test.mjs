@@ -33,19 +33,19 @@ function fixture(t) {
         fs.writeFileSync(destination, value);
     };
     const read = relative => fs.readFileSync(path.join(target, relative), 'utf8');
-    const execute = (name, command = execFileSync, { custody, alone = false } = {}) => {
+    const execute = (name, command = execFileSync, { alone = false } = {}) => {
         // The workflow runs the preservation as two root steps: the relocation
         // renames and recreates the workspace, then, after any lock handover,
         // the preservation copies durable state. Unless `alone`, running the
         // preservation here runs both.
-        if (name === 'durable workspace preservation' && !alone) execute('durable workspace relocation', command, { custody });
+        if (name === 'durable workspace preservation' && !alone) execute('durable workspace relocation', command);
         const source = block(name)
             .replace("'/home/admin/explorerQaWorkspace'", JSON.stringify(target))
             .replace("'/home/admin/.qa-deployment-backups'", JSON.stringify(backups));
         // The workflow runs this helper as root for mixed-UID database files.
         // The fixture uses its current owner; only the operator-ID prerequisite
         // is substituted, while all filesystem operations run on real files.
-        const operator = { argv: ['node', '-', target, backup, ...(custody ? [custody] : [])], getuid: () => 0, pid: process.pid };
+        const operator = { argv: ['node', '-', target, backup], getuid: () => 0, pid: process.pid };
         const run = (program, args, options) => command(program,
             program === 'cp' && process.platform === 'darwin'
                 ? args.filter(argument => argument !== '--reflink=auto') : args, options);
@@ -527,7 +527,7 @@ function durableManifest(root) {
     return manifest;
 }
 
-test('A16(b): a workspace-generation redeploy keeps every durable file byte for byte, regenerates generated state and starts from a fresh host-state skeleton', async t => {
+test('A16(b): a redeploy keeps every durable file byte for byte, regenerates generated state and starts from a fresh Box state skeleton', async t => {
     const f = fixture(t);
     const durable = ['.data/userPersistoAgent/persisto/.userpersisto.snapshot.json', '.data/dpu-data/blobs/one', '.env',
         '.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc',
@@ -535,16 +535,16 @@ test('A16(b): a workspace-generation redeploy keeps every durable file byte for 
     const generated = ['.ploinky/data/edge-routing/active.json', '.ploinky/data/edge-publication/lease',
         '.ploinky/data/router-security/policy-state.json', '.ploinky/agents.json', '.ploinky/run/edge-topology/current.json'];
     for (const name of [...durable, ...generated]) f.write(name, `original:${name}`);
-    f.write('.ploinky-host/quarantine/x', 'quarantined');
-    f.write('.ploinky-host/router-bindings/ploinky-box-qa-7a31ab7775eb.json', '{"address":"0.0.0.0"}');
-    f.write('.ploinky-host.previous/gpu-grants.json', '{"agents":["R/A"]}');
+    f.write('.ploinky-box/quarantine/x', 'quarantined');
+    f.write('.ploinky-box/router-bindings/ploinky-box-qa-7a31ab7775eb.json', '{"address":"0.0.0.0"}');
+    f.write('.ploinky-box.previous/gpu-grants.json', '{"agents":["R/A"]}');
     const before = durableManifest(f.target);
     assert.equal(Object.keys(before).length, durable.length, 'the fixture seeds every durable file');
-    // The holder takes the workspace-generation lock through the production adapter.
+    // The holder takes the workspace lock through the production adapter.
     const { holdArchiveLock } = await import('data:text/javascript;base64,' + Buffer.from(holderSource).toString('base64'));
     const scope = { box: 'ploinky-box-qa-7a31ab7775eb', workspace: f.target };
     const runtimeRoot = path.join(f.root, 'runtime');
-    writeLockModule(runtimeRoot, 'workspace');
+    writeLockModule(runtimeRoot);
     const holder = holdArchiveLock({ adapters: { assertHost() {}, acquireWorkspaceLock: productionAdapters(scope).acquireWorkspaceLock },
         scope, runtimeRoot, backup: f.backup, parentPid: process.ppid, intervalMs: 5 }).then(() => null, error => error);
     // Whatever fails below, the holder is asked to release before the test ends,
@@ -552,7 +552,7 @@ test('A16(b): a workspace-generation redeploy keeps every durable file byte for 
     try {
         const until = async file => { for (let i = 0; i < 400 && !fs.existsSync(file); i++) await delay(5); assert.ok(fs.existsSync(file), file); };
         await until(`${f.backup}-lock-ready.json`);
-        f.execute('durable workspace relocation', execFileSync, { custody: 'workspace' });
+        f.execute('durable workspace relocation', execFileSync);
         fs.writeFileSync(`${f.backup}-lock-relocated`, 'relocated\n', { mode: 0o600 });
         await until(`${f.backup}-lock-ready2.json`);
         f.execute('durable workspace preservation', execFileSync, { alone: true });
@@ -561,10 +561,10 @@ test('A16(b): a workspace-generation redeploy keeps every durable file byte for 
         assert.deepEqual(durableManifest(f.target), before, 'durable data is byte-identical');
         for (const name of generated) assert.equal(fs.existsSync(path.join(f.target, name)), false, name);
         assertSkeletonOnlyHostState(f.target);
-        assert.equal(fs.existsSync(path.join(f.target, '.ploinky-host.previous')), false);
+        assert.equal(fs.existsSync(path.join(f.target, '.ploinky-box.previous')), false);
         const receipt = JSON.parse(fs.readFileSync(path.join(f.backup, 'preservation.json')));
-        assert.equal(receipt.copied.some(name => name.startsWith('.ploinky-host')), false, 'host state is never copied');
-        assert.equal(fs.readFileSync(path.join(f.backup, 'workspace/.ploinky-host/router-bindings/ploinky-box-qa-7a31ab7775eb.json'), 'utf8'),
+        assert.equal(receipt.copied.some(name => name.startsWith('.ploinky-box')), false, 'Box state is never copied');
+        assert.equal(fs.readFileSync(path.join(f.backup, 'workspace/.ploinky-box/router-bindings/ploinky-box-qa-7a31ab7775eb.json'), 'utf8'),
             '{"address":"0.0.0.0"}', 'the backup keeps the prior tree');
         const authority = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json')));
         assert.equal(authority.custody.phase, 'previous-lock-released');
@@ -575,20 +575,22 @@ test('A16(b): a workspace-generation redeploy keeps every durable file byte for 
     }
 });
 
-test('E5: the earlier-generation redeploy also leaves host state behind and records no custody phase', t => {
+test('E5: only the exact top-level Box state names are left behind, and every custody phase is recorded', t => {
     const f = fixture(t);
     f.write('.data/dpu-data/blobs/one', 'ciphertext');
     f.write('.ploinky/data/master-key', 'seed');
-    f.write('.ploinky-host/router-bindings/forged.json', 'forged');
-    f.write('.ploinky-host.old/x', 'forged');
-    f.write('project/.ploinky-host-notes.md', 'operator notes stay');
+    f.write('.ploinky-box/router-bindings/forged.json', 'forged');
+    f.write('.ploinky-box.old/x', 'forged');
+    f.write('project/.ploinky-box-notes.md', 'operator notes stay');
+    f.write('.ploinky-box-notes.md', 'top-level notes with a longer name stay');
     f.execute('durable workspace preservation');
-    assert.deepEqual(fs.readdirSync(f.target).sort(), ['.data', '.ploinky', 'project']);
-    assert.equal(f.read('project/.ploinky-host-notes.md'), 'operator notes stay');
-    assert.equal(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'), 'utf8'), '{}', 'the authority is untouched');
+    assert.deepEqual(fs.readdirSync(f.target).sort(), ['.data', '.ploinky', '.ploinky-box-notes.md', 'project']);
+    assert.equal(f.read('project/.ploinky-box-notes.md'), 'operator notes stay');
+    assert.equal(f.read('.ploinky-box-notes.md'), 'top-level notes with a longer name stay');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'), 'utf8')).custody.phase, 'workspace-recreated');
 });
 
-test('the copy step refuses a recreated workspace holding anything but its empty state and host-state skeleton', t => {
+test('the copy step refuses a recreated workspace holding anything but its empty state and Box state skeleton', t => {
     const f = fixture(t);
     f.write('.data/dpu-data/blobs/one', 'ciphertext');
     f.write('.ploinky/data/master-key', 'seed');

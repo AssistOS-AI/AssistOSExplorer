@@ -39,10 +39,9 @@ const AUTH_FILES = ['.env', ...MASTER_KEY_FILES, '.ploinky/data/.secrets', '.plo
 const GENERATED_STATE = new Set(['agents.json', 'routing.json', 'running', 'run', 'logs', 'box', 'deps',
     'container-runtime', 'graph-skill-scope.json', 'data']);
 const GENERATED_DATA = new Set(['edge-routing', 'edge-publication', 'router-security']);
-// Ploinky's workspace host-state directory. It is never copied between
+// Ploinky's workspace Box state directory. It is never copied between
 // workspaces: a recreated workspace gets a fresh skeleton from its new lock.
-const HOST_STATE_DIRECTORY = '.ploinky-host';
-const HOST_STATE_LABEL = LABEL + 'host-state';
+const HOST_STATE_DIRECTORY = '.ploinky-box';
 const isHostStateEntry = name => name === HOST_STATE_DIRECTORY || name.startsWith(HOST_STATE_DIRECTORY + '.');
 // The read-only checks a source pin needs. They run inside a throwaway sandbox,
 // never in the host process, because the Box can write these repositories and
@@ -426,19 +425,15 @@ function inspectBoxIdentity(item, scope) {
         requireProof(found.length === 1 && found[0].RW === false && found[0].Type === 'bind'
             && found[0].Source.startsWith(scope.workspace + '/'), 'QA_BOX_SOURCE_INVALID');
     }
-    // A Box that keeps host state in the workspace also shadows the mounted
-    // checkout read-only at its own workspace path and masks the host-state
-    // directory. A Box without the label keeps the earlier proof above.
-    if (Object.hasOwn(labels, HOST_STATE_LABEL)) {
-        const checkout = mounts.find(mount => mount.Destination === '/opt/ploinky').Source;
-        const shadows = mounts.filter(mount => mount.Destination === checkout);
-        const hostState = path.join(scope.workspace, HOST_STATE_DIRECTORY);
-        const masks = mounts.filter(mount => mount.Destination === hostState);
-        requireProof(labels[HOST_STATE_LABEL] === '1'
-            && shadows.length === 1 && shadows[0].Source === checkout && shadows[0].RW === false && shadows[0].Type === 'bind'
-            && masks.length === 1 && masks[0].Source === path.join(hostState, 'empty') && masks[0].RW === false
-            && masks[0].Type === 'bind', 'QA_BOX_SOURCE_INVALID');
-    }
+    // Every Box shadows the mounted checkout read-only at its own workspace path
+    // and masks the Box state directory with its read-only `empty/` directory.
+    const checkout = mounts.find(mount => mount.Destination === '/opt/ploinky').Source;
+    const shadows = mounts.filter(mount => mount.Destination === checkout);
+    const hostState = path.join(scope.workspace, HOST_STATE_DIRECTORY);
+    const masks = mounts.filter(mount => mount.Destination === hostState);
+    requireProof(shadows.length === 1 && shadows[0].Source === checkout && shadows[0].RW === false && shadows[0].Type === 'bind'
+        && masks.length === 1 && masks[0].Source === path.join(hostState, 'empty') && masks[0].RW === false
+        && masks[0].Type === 'bind', 'QA_BOX_SOURCE_INVALID');
     if (agentLibMode === 'image') assertImageAgentLibMounts(mounts);
     return { labels, image, mounts, agentLibMode };
 }
@@ -482,37 +477,22 @@ export function currentQaBox(boxes, scope = QA_SCOPE) {
 }
 
 /**
- * The lock generation an imported Ploinky `locks.mjs` implements. A module that
- * keeps its mutation lock inside the workspace says so; any other module is the
- * earlier generation, whose lock lives outside the workspace.
- */
-export function lockGeneration(module) {
-    return module?.MUTATION_LOCK_LOCATION === 'workspace' ? 'workspace' : 'legacy';
-}
-
-/**
- * Acquires the QA workspace mutation lock from one imported lock module. An
- * earlier-generation module is called exactly as before. A workspace-generation
- * lock lives in `<workspaceRoot>/.ploinky-host`, so it follows the workspace
- * when the directory is renamed: the handle exposes the relocation and deletion
- * custody operations, and `successor` takes the lock of a recreated workspace
- * from the same module. With `deferIfAbsent`, an absent workspace yields a
- * deferred handle that holds nothing; the caller's outer host lock serializes
- * QA operations until the workspace exists.
+ * Acquires the QA workspace mutation lock from one imported Ploinky lock
+ * module. The lock lives in `<workspaceRoot>/.ploinky-box`, so it follows the
+ * workspace when the directory is renamed: the handle exposes the relocation and
+ * deletion custody operations, and `successor` takes the lock of a recreated
+ * workspace from the same module. With `deferIfAbsent`, an absent workspace
+ * yields a deferred handle that holds nothing; the caller's outer host lock
+ * serializes QA operations until the workspace exists.
  */
 export async function acquireWorkspaceCustody(module, scope, { workspaceRoot = scope.workspace, deferIfAbsent = false } = {}) {
-    if (lockGeneration(module) === 'legacy') {
-        const lock = await module.createMutationLockManager().acquire(scope.box);
-        let released = false;
-        return { location: 'legacy', deferred: false, release() { if (!released) { lock.release(); released = true; } } };
-    }
     const take = (root, requireNewSkeleton) => module.createMutationLockManager()
         .acquire(scope.box, { workspaceRoot: root, requireNewSkeleton });
     const handle = (lock, root) => {
         let released = false;
         const once = action => { requireProof(!released, 'QA_WORKSPACE_LOCK_RELEASED'); action(); released = true; };
         return {
-            location: 'workspace', deferred: false, workspaceRoot: root,
+            deferred: false, workspaceRoot: root,
             assertHeld() { requireProof(!released, 'QA_WORKSPACE_LOCK_RELEASED'); lock.assertHeld(scope.box); },
             assertHeldAt(relocatedRoot) { requireProof(!released, 'QA_WORKSPACE_LOCK_RELEASED'); lock.assertHeldAt(relocatedRoot); },
             releaseRelocated(relocatedRoot) { once(() => lock.releaseRelocated(relocatedRoot)); },
@@ -523,7 +503,7 @@ export async function acquireWorkspaceCustody(module, scope, { workspaceRoot = s
     };
     if (deferIfAbsent && !present(workspaceRoot)) {
         const refuse = () => requireProof(false, 'QA_WORKSPACE_LOCK_DEFERRED');
-        return { location: 'workspace', deferred: true, workspaceRoot, release() {}, assertHeld: refuse,
+        return { deferred: true, workspaceRoot, release() {}, assertHeld: refuse,
             assertHeldAt: refuse, releaseRelocated: refuse, relinquishDeleted: refuse,
             async successor(newRoot) { return handle(await take(newRoot, true), newRoot); } };
     }
@@ -531,7 +511,7 @@ export async function acquireWorkspaceCustody(module, scope, { workspaceRoot = s
 }
 
 /**
- * A recreated workspace holds only the fresh host-state skeleton its successor
+ * A recreated workspace holds only the fresh Box state skeleton its successor
  * lock created: `locks/` with at most that held lock, an empty `quarantine/`,
  * an empty `empty/` and, if present, an empty `tmp/`. Nothing was copied in.
  */
@@ -672,12 +652,10 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
 
     async function execute(backup, currentId) {
         let selected = plan(backup, currentId);
-        // The previous runtime's lock module decides the custody. A workspace
-        // lock moves with the renamed workspace, so it is handed over to the
-        // recreated workspace and then released at its new path.
+        // The workspace lock moves with the renamed workspace, so it is handed
+        // over to the recreated workspace and then released at its new path.
         const initialLock = await adapters.acquireWorkspaceLock(selected.previous,
             { workspaceRoot: scope.workspace, deferIfAbsent: true });
-        const workspaceCustody = initialLock.location === 'workspace';
         let workspaceLock = initialLock, relocatedLock = null, relocatedRoot = null;
         const releaseLocks = () => {
             const relocated = relocatedLock; relocatedLock = null;
@@ -734,7 +712,7 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             else if (present(scope.workspace)) renamedTo = files.failed;
             if (renamedTo) {
                 fs.renameSync(scope.workspace, renamedTo);
-                if (workspaceCustody && !initialLock.deferred) {
+                if (!initialLock.deferred) {
                     relocatedLock = initialLock; relocatedRoot = renamedTo;
                     workspaceLock = { release() {} };
                     checkpoint('workspace-relocated');
@@ -745,18 +723,16 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             matches(secretIdentities(files.previous), authority.auth, 'QA_PREVIOUS_AUTH_CHANGED');
             checkpoint('copying-durable-state');
             fs.mkdirSync(scope.workspace, { mode: 0o700 });
-            if (workspaceCustody) {
-                // L1 must still be ours at the renamed path before L2 is taken on
-                // the recreated workspace with a fresh skeleton; only then is L1
-                // released where it now lives.
-                if (relocatedLock) relocatedLock.assertHeldAt(relocatedRoot);
-                workspaceLock = await initialLock.successor(scope.workspace);
-                checkpoint('replacement-lock-acquired');
-                if (relocatedLock) {
-                    const relocated = relocatedLock; relocatedLock = null;
-                    relocated.releaseRelocated(relocatedRoot);
-                    checkpoint('previous-lock-released');
-                }
+            // L1 must still be ours at the renamed path before L2 is taken on the
+            // recreated workspace with a fresh skeleton; only then is L1 released
+            // where it now lives.
+            if (relocatedLock) relocatedLock.assertHeldAt(relocatedRoot);
+            workspaceLock = await initialLock.successor(scope.workspace);
+            checkpoint('replacement-lock-acquired');
+            if (relocatedLock) {
+                const relocated = relocatedLock; relocatedLock = null;
+                relocated.releaseRelocated(relocatedRoot);
+                checkpoint('previous-lock-released');
             }
             const copy = relative => {
                 const from = path.join(files.previous, relative), to = path.join(scope.workspace, relative);
@@ -770,7 +746,7 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             for (const relative of ['agents.json', 'running', 'run', 'box', 'data/edge-routing', 'data/edge-publication', 'data/router-security']) {
                 requireProof(!present(path.join(scope.workspace, '.ploinky', relative)), 'QA_GENERATED_STATE_RESTORED');
             }
-            if (workspaceCustody) assertSkeletonOnlyHostState(scope.workspace, workspaceLock);
+            assertSkeletonOnlyHostState(scope.workspace, workspaceLock);
             checkpoint('preparing-fresh-box');
             workspaceLock.release();
             const fresh = await adapters.prepare(authority);
@@ -1025,7 +1001,6 @@ export function productionAdapters(scope = QA_SCOPE) {
         async acquireWorkspaceLock(previous, options = {}) {
             return acquireWorkspaceCustody(await lockModule(previous), scope, options);
         },
-        async lockGeneration(runtimeRoot) { return lockGeneration(await lockModule(runtimeRoot)); },
         assertHost() {
             requireProof(process.platform === 'linux' && os.userInfo().username === 'admin'
                 && os.homedir() === '/home/admin' && scope.workspace === QA_SCOPE.workspace, 'QA_HOST_INVALID');

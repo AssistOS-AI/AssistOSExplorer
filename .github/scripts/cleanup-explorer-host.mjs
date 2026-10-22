@@ -10,9 +10,6 @@ const HOST_HOME = '/home/admin';
 const UID = 1001;
 const INSTANCE = 'ploinky-box-explorerqaworkspace-7a31ab7775eb';
 const QA_WORKSPACE = `${HOST_HOME}/explorerQaWorkspace`;
-const QA_BACKUPS = `${HOST_HOME}/.qa-deployment-backups`;
-// A Box a preserving redeploy retired and kept stopped for rollback.
-const RETAINED_BOX = new RegExp(`^${INSTANCE}-rollback-(redeploy-[A-Za-z0-9]{8})$`);
 const CONTEXTS = ['podman', 'podmanRoot', 'docker', 'dockerRoot'];
 const PATH_NAMES = ['explorerQaWorkspace', '.qa-e2e', '.qa-reset-20260911-onlyoffice-webmeet', '.qa-reset-20260911-onlyoffice-webmeet-2'];
 function fail(code) { throw Object.assign(new Error(code), { code: `HOST_CLEANUP_${code}` }); }
@@ -123,68 +120,55 @@ function assertNoReferences(paths, engines, { afterContainers = false } = {}) {
 
 /**
  * Acquires the QA workspace mutation lock from the deployed runtime's lock
- * module. An earlier-generation module is called exactly as before. A
- * workspace-generation lock lives inside the QA workspace, so its handle also
- * offers `relinquishDeleted` for the deletion of that workspace.
+ * module. The lock lives inside the QA workspace, so the handle also offers
+ * `relinquishDeleted` for the deletion of that workspace.
  */
 export async function acquireCleanupLock(module, { instance = INSTANCE, workspaceRoot = QA_WORKSPACE } = {}) {
-    const manager = module.createMutationLockManager();
-    if (module.MUTATION_LOCK_LOCATION !== 'workspace') {
-        const lock = await manager.acquire(instance);
-        return { location: 'legacy', assertHeld: value => lock.assertHeld(value), release: () => lock.release() };
-    }
-    const lock = await manager.acquire(instance, { workspaceRoot });
-    return { location: 'workspace', assertHeld: value => lock.assertHeld(value), release: () => lock.release(),
+    const lock = await module.createMutationLockManager().acquire(instance, { workspaceRoot });
+    return { assertHeld: value => lock.assertHeld(value), release: () => lock.release(),
         releaseRelocated: root => lock.releaseRelocated(root), relinquishDeleted: () => lock.relinquishDeleted() };
 }
 
 /**
- * Whether Ploinky has latched evidence of an unmasked writer in the workspace:
- * a `.ploinky-host/latch.json` marker or a non-empty `.ploinky-host/quarantine/`.
- * Read with lstat and open only; a symlinked, linked or odd entry is no evidence.
- * A forged marker only makes Ploinky distrust the workspace, never trust it.
+ * Structural proof that the lock just acquired is the workspace-resident lock:
+ * `.ploinky-box`, `locks` and `workspace.lock` under the QA workspace are real
+ * directories, none a symlink. An earlier runtime keeps its lock outside the
+ * workspace, so none of this exists there. This is a layout check, not a probe
+ * of which methods the lock module offers.
  */
-export function latchEvidence(workspace = QA_WORKSPACE, fsApi = fs) {
-    const lstat = file => { try { return fsApi.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
-    const hostState = path.join(workspace, '.ploinky-host'), root = lstat(hostState);
-    if (!root?.isDirectory() || root.isSymbolicLink()) return false;
-    const latch = lstat(path.join(hostState, 'latch.json'));
-    if (latch?.isFile() && !latch.isSymbolicLink() && latch.nlink === 1) return true;
-    const quarantine = lstat(path.join(hostState, 'quarantine'));
-    if (!quarantine?.isDirectory() || quarantine.isSymbolicLink()) return false;
-    const directory = fsApi.opendirSync(path.join(hostState, 'quarantine'));
-    try { return directory.readSync() !== null; } finally { directory.closeSync(); }
+export function workspaceLockLayout(workspace = QA_WORKSPACE, fsApi = fs) {
+    let current = workspace;
+    for (const name of ['.ploinky-box', 'locks', 'workspace.lock']) {
+        current = path.join(current, name);
+        let stat;
+        try { stat = fsApi.lstatSync(current); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+        if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    }
+    return true;
 }
 
 /**
- * A retained rollback Box started after its retirement may have written the
- * workspace without the host-state mask. Removing it would erase the evidence
- * Ploinky needs to stop trusting that workspace, so cleanup refuses, unless the
- * same run deletes that workspace or Ploinky has already latched the evidence.
- * The retirement time is the creation time of the backup's recovery authority,
- * written while that Box still ran and before it was stopped and renamed.
+ * The Box mount proof for the exact-name QA Box (the same D6 clauses the rollback
+ * tooling applies): the mounted `/opt/ploinky` checkout is shadowed read-only at
+ * its own path, and `.ploinky-box` is masked by its read-only `empty/` directory.
+ * `mounts` are engine `Mounts` records. A Box built by an earlier runtime has neither.
  */
-export function assertRetainedBoxesUnstarted(boxes, retirementTime, { deletesWorkspace = false, latched = () => false } = {}) {
-    for (const box of boxes) {
-        const match = RETAINED_BOX.exec(box.name);
-        if (!match) continue;
-        const retired = retirementTime(match[1]);
-        const started = Date.parse(box.startedAt);
-        const describe = retired === null ? 'its retirement time cannot be proven'
-            : `it was started at ${box.startedAt}, after its retirement at ${new Date(retired).toISOString()}`;
-        if (retired !== null && Number.isFinite(started) && started <= retired) continue;
-        if (deletesWorkspace || latched()) continue;
-        throw Object.assign(new Error(`Refusing to remove the retained rollback Box ${box.name} (${box.id}): ${describe}. `
-            + `Run \`ploinky stop\` in ${QA_WORKSPACE} first, so the next Ploinky transaction records this unmasked writer; `
-            + 'cleanup leaves the container, its image and every path in place.'),
-        { code: retired === null ? 'HOST_CLEANUP_RETAINED_BOX_UNPROVEN' : 'HOST_CLEANUP_RETAINED_BOX_STARTED' });
-    }
+export function assertQaBoxMounts(mounts, workspace = QA_WORKSPACE) {
+    const list = Array.isArray(mounts) ? mounts : [];
+    const checkout = list.find(mount => mount.Destination === '/opt/ploinky')?.Source;
+    requireProof(typeof checkout === 'string' && checkout !== '', 'QA_BOX_SOURCE_INVALID');
+    const state = path.join(workspace, '.ploinky-box');
+    const shadows = list.filter(mount => mount.Destination === checkout);
+    const masks = list.filter(mount => mount.Destination === state);
+    requireProof(shadows.length === 1 && shadows[0].Source === checkout && shadows[0].RW === false && shadows[0].Type === 'bind'
+        && masks.length === 1 && masks[0].Source === path.join(state, 'empty') && masks[0].RW === false
+        && masks[0].Type === 'bind', 'QA_BOX_SOURCE_INVALID');
 }
 
 export async function applyCleanup(plan, adapters = productionAdapters()) {
     const { engines: expected, paths, aliases } = validateCleanupPlan(plan, adapters.host());
     const receipt = { version: 1, result: 'started', stopped: [], containers: [], images: [], paths: [] };
-    let lock, renamedWorkspace = null, relinquished = false;
+    let lock, renamedWorkspace = null, relinquished = false, primary = null, completed = null;
     const checkInventory = () => {
         const current = inventory(adapters.inventory());
         requireProof(same(current, expected), 'INVENTORY_CHANGED');
@@ -201,13 +185,16 @@ export async function applyCleanup(plan, adapters = productionAdapters()) {
     try {
         checkInventory(); checkPaths(); assertNoReferences(paths, expected);
         lock = await adapters.acquireLock();
-        const workspaceCustody = lock.location === 'workspace';
         checkInventory(); checkPaths(); assertNoReferences(paths, expected);
-        if (workspaceCustody) {
-            assertRetainedBoxesUnstarted(adapters.retainedBoxes(['podman', 'podmanRoot']
-                .flatMap(context => (expected[context].containers || []).map(row => ({ context, id: row.id })))),
-            backup => adapters.retirementTime(backup), { deletesWorkspace: paths.some(row => row.path === QA_WORKSPACE),
-                latched: () => adapters.latchEvidence() });
+        // Refuse before the first mutation unless the runtime keeps its lock in the
+        // workspace. An earlier runtime's lock would be left held and the workspace
+        // stranded at its renamed path.
+        requireProof(adapters.workspaceLockLayout(), 'WORKSPACE_LOCK_LAYOUT_INVALID');
+        if (paths.some(row => row.path === QA_WORKSPACE)) {
+            const planned = ['podman', 'podmanRoot'].flatMap(context => (expected[context].containers || []).map(row => ({ context, id: row.id })));
+            for (const box of adapters.qaBoxes(planned)) {
+                try { assertQaBoxMounts(box.mounts); } catch (error) { fail('QA_BOX_SOURCE_INVALID'); }
+            }
         }
         for (const context of ['podman', 'podmanRoot']) {
             for (const container of [...(expected[context].containers || [])]) {
@@ -232,16 +219,15 @@ export async function applyCleanup(plan, adapters = productionAdapters()) {
                 checkInventory();
             }
         }
-        // A workspace-generation lock lives inside the QA workspace, so that row
-        // runs last: rename it away, prove it absent through the lock, then
-        // delete the renamed tree. The lock is never asserted or released again.
-        const ordered = workspaceCustody
-            ? [...paths.filter(row => row.path !== QA_WORKSPACE), ...paths.filter(row => row.path === QA_WORKSPACE)] : paths;
+        // The lock lives inside the QA workspace, so that row runs last: rename it
+        // away, prove it absent through the lock, then delete the renamed tree.
+        // The lock is never asserted or released again.
+        const ordered = [...paths.filter(row => row.path !== QA_WORKSPACE), ...paths.filter(row => row.path === QA_WORKSPACE)];
         for (const row of ordered) {
             lock.assertHeld(INSTANCE);
             assertNoReferences([row], checkInventory(), { afterContainers: true });
             adapters.inspectPath(row); assertUnmounted(row.path, adapters.mountPoints());
-            if (workspaceCustody && row.path === QA_WORKSPACE) {
+            if (row.path === QA_WORKSPACE) {
                 const renamed = `${row.path}.deleting-${crypto.randomBytes(6).toString('hex')}`;
                 renamedWorkspace = renamed;
                 adapters.renameWorkspace(row, renamed);
@@ -255,18 +241,33 @@ export async function applyCleanup(plan, adapters = productionAdapters()) {
             receipt.paths.push(row.path);
         }
         checkInventory();
-        return { ...receipt, result: 'complete' };
+        completed = { ...receipt, result: 'complete' };
     } catch (error) {
         error.receipt = { ...receipt, result: 'failed', code: error.code || 'HOST_CLEANUP_FAILED' };
-        throw error;
-    } finally {
-        // After relinquishment the lock is gone with its workspace. A renamed
-        // but still present workspace holds the lock at its new path.
-        if (!relinquished) {
-            if (renamedWorkspace && adapters.pathExists(renamedWorkspace)) lock.releaseRelocated(renamedWorkspace);
-            else lock?.release();
-        }
+        primary = error;
     }
+    // After relinquishment the lock is gone with its workspace. A renamed but still
+    // present workspace holds the lock at its new path. A release failure is
+    // secondary information on the primary error and never replaces it or its receipt.
+    let releaseFailure = null;
+    if (lock && !relinquished) {
+        try {
+            if (renamedWorkspace && adapters.pathExists(renamedWorkspace)) lock.releaseRelocated(renamedWorkspace);
+            else lock.release();
+        } catch (error) { releaseFailure = error; }
+    }
+    if (primary) {
+        if (releaseFailure) {
+            primary.receipt.releaseFailure = releaseFailure.code || 'HOST_CLEANUP_LOCK_RELEASE_FAILED';
+            primary.secondary = releaseFailure;
+        }
+        throw primary;
+    }
+    if (releaseFailure) {
+        releaseFailure.receipt = { ...receipt, result: 'failed', code: releaseFailure.code || 'HOST_CLEANUP_LOCK_RELEASE_FAILED' };
+        throw releaseFailure;
+    }
+    return completed;
 }
 
 export function productionAdapters() {
@@ -312,23 +313,13 @@ export function productionAdapters() {
             const module = await import(pathToFileURL(`${HOST_HOME}/explorerQaWorkspace/.runtime/ploinky/ploinky-box/locks.mjs`).href);
             return acquireCleanupLock(module);
         },
-        retainedBoxes(rows) {
-            return rows.map(({ context, id: containerId }) => {
-                const records = JSON.parse(engine(context, ['container', 'inspect', containerId]));
-                requireProof(records.length === 1 && records[0].Id === containerId, 'INVALID_INVENTORY');
-                return { context, id: containerId, name: String(records[0].Name).replace(/^\//, ''),
-                    startedAt: String(records[0].State?.StartedAt || '') };
-            });
-        },
-        latchEvidence: () => latchEvidence(QA_WORKSPACE),
-        retirementTime(backup) {
-            try {
-                const file = path.join(QA_BACKUPS, backup, 'rollback-authority.json'), stat = fs.lstatSync(file);
-                if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== UID || stat.size > 4 * 1024 * 1024) return null;
-                const createdAt = Date.parse(JSON.parse(fs.readFileSync(file, 'utf8')).createdAt);
-                return Number.isFinite(createdAt) ? createdAt : null;
-            } catch { return null; }
-        },
+        workspaceLockLayout: () => workspaceLockLayout(QA_WORKSPACE),
+        qaBoxes: rows => rows.flatMap(({ context, id: containerId }) => {
+            const records = JSON.parse(engine(context, ['container', 'inspect', containerId]));
+            requireProof(records.length === 1 && records[0].Id === containerId, 'INVALID_INVENTORY');
+            if (String(records[0].Name).replace(/^\//, '') !== INSTANCE) return [];
+            return [{ context, id: containerId, mounts: (records[0].Mounts || []).map(({ Source, Destination, RW, Type }) => ({ Source, Destination, RW, Type })) }];
+        }),
         stopContainer: (context, container) => engine(context, ['container', 'stop', '--time', '30', container]),
         removeContainer: (context, container) => engine(context, ['container', 'rm', container]),
         removeImage: (context, image) => engine(context, ['image', 'rm', image]),
@@ -352,7 +343,7 @@ export function productionAdapters() {
 }
 
 /**
- * The root scripts for the workspace row of a workspace-generation lock: an
+ * The root scripts for the workspace row, whose lock lives inside it: an
  * exact same-parent rename to an absent reserved name, then, only after the lock
  * has been relinquished, deletion of that renamed tree with the same identity.
  * Tests run the same source with their own home and uid and without root.
@@ -390,8 +381,6 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
         const result = await applyCleanup(JSON.parse(Buffer.concat(chunks).toString('utf8')));
         process.stdout.write(`${JSON.stringify(result)}\n`);
     } catch (error) {
-        // Only this refusal carries an operator remedy; other failures stay generic.
-        if (/^HOST_CLEANUP_RETAINED_BOX_/.test(error.code || '')) process.stderr.write(`[cleanup] ${error.message}\n`);
         process.stdout.write(`${JSON.stringify(error.receipt || { result: 'failed', code: /^HOST_CLEANUP_/.test(error.code) ? error.code : 'HOST_CLEANUP_FAILED' })}\n`);
         process.exitCode = 1;
     }

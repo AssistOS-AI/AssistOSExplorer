@@ -1,10 +1,14 @@
-// Fake Ploinky lock modules for the QA custody fixtures. Both work on real
-// directories. The legacy module keeps its lock outside the workspace, as
-// Ploinky did before host state moved into the workspace; the workspace module
-// follows the D4 contract of BOX_STATE_IN_WORKSPACE_PLAN_R2: its lock lives in
-// `<workspaceRoot>/.ploinky-host/locks/workspace.lock/` and so follows a
-// renamed workspace. Error codes match D4 except PLOINKY_BOX_HOST_STATE_NOT_NEW
-// and PLOINKY_BOX_LOCK_BUSY, which only these fakes define.
+// Fake Ploinky lock module for the QA custody fixtures. It works on real
+// directories and follows the D4 contract of BOX_STATE_IN_WORKSPACE_PLAN_R2:
+// its lock lives in `<workspaceRoot>/.ploinky-box/locks/workspace.lock/` and so
+// follows a renamed workspace. Error codes match D4 and Ploinky's own module,
+// except PLOINKY_BOX_LOCK_BUSY: the fake fails at once on a held lock, where
+// the real module waits up to its `timeoutMs`.
+//
+// Opt-in real run: with `QA_REAL_LOCK_MODULE=<absolute path of locks.mjs>` the
+// same fixtures run against Ploinky's own lock module instead. A recording
+// shim keeps the fake's `calls` log and passes a short `timeoutMs` to the real
+// manager, so a contended lock fails fast instead of waiting 30 seconds.
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -12,32 +16,22 @@ import { pathToFileURL } from 'node:url';
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const lstat = file => { try { return fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 
-export function legacyLockModule({ stateRoot, calls = [] }) {
+export const REAL_LOCK_MODULE = process.env.QA_REAL_LOCK_MODULE || null;
+export const REAL_LOCK_TIMEOUT_MS = 500;
+const realModule = REAL_LOCK_MODULE ? await import(pathToFileURL(REAL_LOCK_MODULE).href) : null;
+
+function recordingShim(real, calls) {
     return {
         calls,
-        createMutationLockManager() {
+        createMutationLockManager(managerOptions = {}) {
+            const manager = real.createMutationLockManager({ timeoutMs: REAL_LOCK_TIMEOUT_MS, retryMs: 10, ...managerOptions });
             return {
-                async acquire(...args) {
-                    calls.push({ op: 'acquire', args });
-                    const [instance] = args;
-                    const lockPath = path.join(stateRoot, 'locks', `${instance}.lock`);
-                    fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-                    try { fs.mkdirSync(lockPath, { mode: 0o700 }); } catch (error) { if (error.code === 'EEXIST') fail('PLOINKY_BOX_LOCK_BUSY'); throw error; }
-                    const owner = JSON.stringify({ instance, pid: process.pid });
-                    fs.writeFileSync(path.join(lockPath, 'owner.json'), owner, { mode: 0o600 });
-                    let released = false;
-                    return {
-                        assertHeld(value) {
-                            calls.push({ op: 'assertHeld', args: [value] });
-                            if (released || value !== instance || fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8') !== owner) fail('PLOINKY_BOX_LOCK_LOST');
-                        },
-                        release() {
-                            calls.push({ op: 'release', args: [] });
-                            // Like the real module, release re-reads the owner record.
-                            if (fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8') !== owner) fail('PLOINKY_BOX_LOCK_LOST');
-                            fs.rmSync(lockPath, { recursive: true }); released = true;
-                        },
-                    };
+                async acquire(instance, options = {}) {
+                    calls.push({ op: 'acquire', args: [instance, options] });
+                    const lock = await manager.acquire(instance, options);
+                    const through = op => (...args) => { calls.push({ op, args }); return lock[op](...args); };
+                    return { assertHeld: through('assertHeld'), assertHeldAt: through('assertHeldAt'), release: through('release'),
+                        releaseRelocated: through('releaseRelocated'), relinquishDeleted: through('relinquishDeleted') };
                 },
             };
         },
@@ -45,9 +39,9 @@ export function legacyLockModule({ stateRoot, calls = [] }) {
 }
 
 export function workspaceLockModule({ calls = [] } = {}) {
-    const lockPathOf = root => path.join(root, '.ploinky-host', 'locks', 'workspace.lock');
+    if (realModule) return recordingShim(realModule, calls);
+    const lockPathOf = root => path.join(root, '.ploinky-box', 'locks', 'workspace.lock');
     return {
-        MUTATION_LOCK_LOCATION: 'workspace',
         calls,
         createMutationLockManager() {
             return {
@@ -58,13 +52,13 @@ export function workspaceLockModule({ calls = [] } = {}) {
                     const root = lstat(workspaceRoot);
                     if (!root) fail('PLOINKY_BOX_WORKSPACE_ABSENT');
                     if (!root.isDirectory()) fail('PLOINKY_BOX_WORKSPACE_INVALID');
-                    const hostState = path.join(workspaceRoot, '.ploinky-host');
-                    try { fs.mkdirSync(hostState, { mode: 0o700 }); } catch (error) {
+                    const boxState = path.join(workspaceRoot, '.ploinky-box');
+                    try { fs.mkdirSync(boxState, { mode: 0o700 }); } catch (error) {
                         if (error.code !== 'EEXIST') throw error;
                         if (requireNewSkeleton) fail('PLOINKY_BOX_HOST_STATE_NOT_NEW');
                     }
                     for (const [name, mode] of [['locks', 0o700], ['quarantine', 0o700], ['empty', 0o555]]) {
-                        try { fs.mkdirSync(path.join(hostState, name), { mode }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+                        try { fs.mkdirSync(path.join(boxState, name), { mode }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
                     }
                     const lockPath = lockPathOf(workspaceRoot);
                     try { fs.mkdirSync(lockPath, { mode: 0o700 }); } catch (error) { if (error.code === 'EEXIST') fail('PLOINKY_BOX_LOCK_BUSY'); throw error; }
@@ -101,18 +95,16 @@ export function workspaceLockModule({ calls = [] } = {}) {
 }
 
 /**
- * Writes `<runtimeRoot>/.runtime/ploinky/ploinky-box/locks.mjs` re-exporting one
- * fake generation, so production adapters import and detect it as they would the
- * deployed runtime's module. Returns the module URL; importing it again yields
- * the same instance and its `calls` log.
+ * Writes `<runtimeRoot>/.runtime/ploinky/ploinky-box/locks.mjs` re-exporting the
+ * fake (or, in the opt-in real run, the recording shim), so production adapters
+ * import it as they would the deployed runtime's module. Returns the module
+ * URL; importing it again yields the same instance and its `calls` log.
  */
-export function writeLockModule(runtimeRoot, generation, options = {}) {
+export function writeLockModule(runtimeRoot, options = {}) {
     const file = path.join(runtimeRoot, '.runtime/ploinky/ploinky-box/locks.mjs');
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    const factory = generation === 'workspace' ? 'workspaceLockModule' : 'legacyLockModule';
-    const exports = generation === 'workspace' ? 'MUTATION_LOCK_LOCATION, createMutationLockManager, calls' : 'createMutationLockManager, calls';
-    fs.writeFileSync(file, `import { ${factory} } from ${JSON.stringify(import.meta.url)};\n`
-        + `const module = ${factory}(${JSON.stringify(options)});\n`
-        + `export const { ${exports} } = module;\n`);
+    fs.writeFileSync(file, `import { workspaceLockModule } from ${JSON.stringify(import.meta.url)};\n`
+        + `const module = workspaceLockModule(${JSON.stringify(options)});\n`
+        + 'export const { createMutationLockManager, calls } = module;\n');
     return pathToFileURL(file).href;
 }

@@ -8,7 +8,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createGitSandbox, currentQaBox, productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
 
 export const EXPLORER_SOURCE = '.ploinky/repos/AchillesIDE';
-const HOST_STATE_LABEL = 'io.assistos.ploinky-box.host-state';
 const COMMIT = /^[a-f0-9]{40}$/;
 const ID = /^[a-f0-9]{64}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -275,18 +274,6 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             browserAgents: next.browserAgents || null, browserPaths: next.browserPaths?.map(file => file.path) || null };
     }
 
-    /**
-     * A Ploinky runtime whose lock lives in the workspace refuses a Box created
-     * by the earlier runtime, so an in-place update cannot cross that boundary;
-     * QA crosses it by a preserving redeploy. This reads the engine itself,
-     * before any lock, receipt or source mutation.
-     */
-    async function admitLockGeneration() {
-        const generation = await adapters.lockGeneration(scope.workspace);
-        prove(['legacy', 'workspace'].includes(generation), 'QA_UPDATE_LOCK_GENERATION_UNKNOWN');
-        if (generation === 'workspace') prove(adapters.hostStateLabel() === '1', 'QA_UPDATE_LEGACY_BOX');
-    }
-
     async function execute(receiptFile) {
         const receiptDirectory = path.dirname(receiptFile);
         prove(path.isAbsolute(receiptFile) && !present(receiptFile)
@@ -294,7 +281,6 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         directory(receiptDirectory);
         const stat = fs.statSync(receiptDirectory);
         prove(stat.uid === process.getuid() && (stat.mode & 0o077) === 0, 'QA_UPDATE_RECEIPT_NOT_PRIVATE');
-        await admitLockGeneration();
         const lockOptions = { workspaceRoot: scope.workspace };
         let lock = await adapters.acquireWorkspaceLock(scope.workspace, lockOptions);
         let authority, next, receipt;
@@ -449,23 +435,6 @@ export function updateProductionAdapters(scope = QA_SCOPE) {
     return {
         assertHost: base.assertHost, machineId: base.machineId, boxes: base.boxes,
         sourcePin: base.sourcePin, verifyAgentLib: base.verifyAgentLib, acquireWorkspaceLock: base.acquireWorkspaceLock,
-        lockGeneration: base.lockGeneration,
-        // The exact-name QA Box's host-state label, from one engine inspection.
-        hostStateLabel() {
-            const labels = [];
-            for (const engine of ['podman', 'docker']) {
-                if (spawnSync('sh', ['-c', 'command -v "$1"', 'sh', engine], { encoding: 'utf8' }).status !== 0) continue;
-                const result = spawnSync(engine, ['container', 'inspect', scope.box],
-                    { env, encoding: 'utf8', timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
-                if (result.error || result.status !== 0) continue;
-                const rows = JSON.parse(result.stdout);
-                prove(rows.length === 1 && String(rows[0].Name).replace(/^\//, '') === scope.box, 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED');
-                const value = rows[0].Config?.Labels?.[HOST_STATE_LABEL];
-                labels.push(typeof value === 'string' ? value : null);
-            }
-            prove(labels.length === 1, 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED');
-            return labels[0];
-        },
         remoteDefault(repo, sandbox) {
             const output = boxGit(repo, sandbox, ['ls-remote', '--symref', 'origin', 'HEAD'], { network: true });
             const lines = output.trim().split('\n');

@@ -27,15 +27,13 @@ const REVIEWED = [
     ['.github/workflows/deploy-explorer-qa.yml', /git ls-remote/, 6, 'remote query; no local repository'],
     ['.github/workflows/deploy-explorer-qa.yml', /^for tool in git node curl; do$/, 1, 'prerequisite presence check'],
     ['.github/workflows/deploy-explorer-qa.yml', /^git check-ref-format --branch "\$default_branch"/, 1, 'ref-name syntax; no repository'],
-    ['.github/workflows/deploy-explorer-qa.yml', /^git clone --quiet --depth 1 --single-branch --branch "\$QA_TARGET_BRANCH"/, 1, 'target probe clone in /tmp'],
-    ['.github/workflows/deploy-explorer-qa.yml', /git -C "\$QA_TARGET_PROBE_DIR\/ploinky" rev-parse HEAD/, 1, 'target probe clone in /tmp'],
     ['.github/workflows/deploy-explorer-qa.yml', /"\$QA_LOCK_SOURCE"/, 5, 'cold lock runtime in the private helper directory, outside any workspace'],
     ['.github/workflows/deploy-explorer-qa.yml', /ERROR: managed runtime path is not a Ploinky git checkout/, 1, 'message text'],
-    ['.github/workflows/deploy-explorer-qa.yml', /git (?:clone --no-checkout https:\/\/github\.com\/AssistOS-AI\/ploinky\.git |-C )"\$RUNTIME_DIR"/, 11, 'PRE_BOX'],
+    ['.github/workflows/deploy-explorer-qa.yml', /git (?:clone --no-checkout https:\/\/github\.com\/AssistOS-AI\/ploinky\.git |-C )"\$RUNTIME_DIR"/, 8, 'PRE_BOX'],
     ['.github/workflows/deploy-explorer-qa.yml', /^git clone --single-branch --branch "\$ALA_BRANCH" "\$ALA_URL" "\$ALA_DIR"$/, 1, 'PRE_BOX'],
     ['.github/workflows/deploy-explorer-qa.yml', /^git -C "\$WORK_DIR\/\.ploinky\/repos\/\$repository_name" /, 4, 'IN_BOX'],
     // Destroy reads the dedicated runtime checkout whose Ploinky code the host then
-    // runs for teardown. A host-state Box mounts that checkout read-only (D6).
+    // runs for teardown. Every Box mounts that checkout read-only (D6).
     ['.github/workflows/destroy-explorer-qa.yml', /git -C "\$RUNTIME_DIR"/, 5, 'invoking Ploinky checkout executed by the host'],
     ['.github/workflows/destroy-explorer-qa.yml', /git ls-remote/, 1, 'remote query; no local repository'],
     ['.github/workflows/destroy-explorer-qa.yml', /^git check-ref-format --branch "\$default_branch"/, 1, 'ref-name syntax; no repository'],
@@ -126,7 +124,7 @@ test('Q1: every Git mention in that code is a reviewed site that cannot run Git 
 test('Q1: the fresh runtime and ALA checkouts staged on the host are never copied from the retired workspace', () => {
     const workflow = fs.readFileSync(new URL('.github/workflows/deploy-explorer-qa.yml', ROOT), 'utf8');
     const preservation = workflow.split('// BEGIN QA durable workspace preservation')[1].split('// END QA durable workspace preservation')[0];
-    assert.match(preservation, /const regenerated = new Set\(\['\.ploinky', '\.ploinky-host', '\.runtime', 'AdvancedLanguageAgent'\]\);/);
+    assert.match(preservation, /const regenerated = new Set\(\['\.ploinky', '\.ploinky-box', '\.runtime', 'AdvancedLanguageAgent'\]\);/);
     assert.match(workflow, /\[ -e "\$ALA_DIR" \] \|\| \[ -L "\$ALA_DIR" \]; then\n\s+echo "\[deploy-qa\] ERROR: ALA requires an exact default-branch commit and an absent fresh checkout\."/);
     // After the Box is prepared, the workflow checks those checkouts only in the sandbox.
     const prepared = workflow.indexOf('prepareBoxForCommand');
