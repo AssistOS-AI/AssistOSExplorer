@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
 import { ROBOFLOW_ENTITLEMENT_ERROR, ROBOTEAM_ENTITLEMENT_ERROR, authorizeRobotListing, authorizeWorkspaceRequest } from './listing-access.mjs';
 import { projectRobotView } from './robot-projection.mjs';
+import { importEmailRobots } from './robot-import.mjs';
+import { createCodingAgentStatus } from './coding-agent-status.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
 import { robotTerminalDirectory } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
@@ -478,43 +480,11 @@ async function handleRobotProxies({ req, res, pathname, actor, proxyPool, robotS
     return true;
 }
 
-// Shared email addresses for robots, administrator-only like the robot proxies. Only addresses are
-// stored; a person signs each mailbox in to the robot's Chromium.
-async function handleEmailPool({ req, res, pathname, actor, emailPool, robotStore, runtimeManager }) {
-    if (!pathname.startsWith('/api/email-pool')) return false;
-    if (!emailPool) { sendError(res, 404, 'not found'); return true; }
-    if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
-    if (pathname === '/api/email-pool' && req.method === 'GET') {
-        const robots = new Map((await robotStore.list()).map(robot => [robot.id, robot.name]));
-        const snapshot = emailPool.snapshot();
-        for (const email of snapshot.emails) email.robotName = email.robotId ? robots.get(email.robotId) || null : null;
-        sendJson(res, 200, { ok: true, ...snapshot }); return true;
-    }
-    if (pathname === '/api/email-pool/emails' && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, ...emailPool.add((await readJsonBody(req)).addresses) }); return true;
-    }
-    const emailId = pathname.match(/^\/api\/email-pool\/emails\/(eml_[0-9a-f]{12})$/)?.[1];
-    if (emailId && req.method === 'DELETE') {
-        sendJson(res, 200, { ok: true, removed: emailPool.remove(emailId) }); return true;
-    }
-    const releaseId = pathname.match(new RegExp(`^/api/email-pool/assignments/(${ROBOT_ID})$`))?.[1];
-    if (releaseId && req.method === 'DELETE') {
-        // A running workstation or task was told this address; it moves only once the robot is idle.
-        if (runtimeManager.status(releaseId).state !== 'stopped' || runtimeManager.hasUnfinishedTasks(releaseId)) {
-            sendError(res, 409, 'stop the robot workstation and its tasks before releasing its email'); return true;
-        }
-        sendJson(res, 200, { ok: true, released: emailPool.release(releaseId) }); return true;
-    }
-    sendError(res, 404, 'not found');
-    return true;
-}
-
 export function createRoboTeamServer(options) {
     const robotStore = options.robotStore;
     const runtimeManager = options.runtimeManager;
     const roboflow = options.roboflow || null;
     const proxyPool = options.proxyPool || runtimeManager.proxyPool || null;
-    const emailPool = options.emailPool || runtimeManager.emailPool || null;
     const robotModels = options.robotModels || new RobotModels({ robotStore, runtimeManager });
     const skillsets = options.skillsets || runtimeManager.skillsets || new RobotSkillsets({ robotStore,
         workspaceRoot: runtimeManager.workspaceRoot, alaCommand: runtimeManager.alaCommand });
@@ -524,6 +494,7 @@ export function createRoboTeamServer(options) {
     const routeKey = String(options.routeKey || 'roboTeamAgent');
     const publicDir = path.resolve(options.publicDir || DEFAULT_PUBLIC_DIR);
     const mcpPort = Number(options.mcpPort) || 7000;
+    const codingAgentStatus = options.codingAgentStatus || createCodingAgentStatus();
 
     // The family gate verified this request once; its signed decision is reused.
     const robotView = (req) => ({
@@ -545,7 +516,14 @@ export function createRoboTeamServer(options) {
                 const listing = await authorizeRobotListing(req, url, { internalToken });
                 if (!listing.ok) return sendError(res, listing.status, listing.error);
                 const robots = await robotStore.list();
-                return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: robots.map((robot) => publicRobot(robot, runtimeManager.status(robot.id), { privileged: listing.canAdmin, workspaceRoot: runtimeManager.workspaceRoot })) });
+                const views = await Promise.all(robots.map(async (robot) => {
+                    const view = publicRobot(robot, runtimeManager.status(robot.id), { privileged: listing.canAdmin, workspaceRoot: runtimeManager.workspaceRoot });
+                    const home = path.join(robotStore.robotPath(robot.id), 'home');
+                    // Logins name the outer accounts a robot holds, so only administrators see them.
+                    return { ...view, codingAgent: await codingAgentStatus.activeAgent(home, view.codingAgents),
+                        ...(listing.canAdmin ? { codingAgentLogins: await codingAgentStatus.logins(home) } : {}) };
+                }));
+                return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: views });
             }
             // Every other route needs an internal token or a verified, Explorer-entitled user.
             const access = await authorizeWorkspaceRequest(req, url, {
@@ -582,7 +560,8 @@ export function createRoboTeamServer(options) {
             if (pathname === '/page-navigation.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'page-navigation.js');
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'app.js');
             if (pathname === '/cron-jobs.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'cron-jobs.js');
-            if (pathname === '/email-pool.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'email-pool.js');
+            if (pathname === '/robot-import.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'robot-import.js');
+            if (pathname === '/robot-filters.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'robot-filters.js');
             if (pathname === '/schedule-folder-picker.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'schedule-folder-picker.js');
             if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'skills-dialog.js');
             if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(req, res, publicDir, 'terminal.js');
@@ -660,6 +639,18 @@ export function createRoboTeamServer(options) {
                 runtimeManager.seedOpenCodeInBackground?.(robot);
                 await roboflow?.refreshCoverage();
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)) });
+            }
+            if (pathname === '/api/robots/import-emails' && req.method === 'POST') {
+                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
+                const body = await readJsonBody(req);
+                const result = await importEmailRobots(robotStore, body.addresses, { codingAgents: body.codingAgents });
+                for (const robot of result.created) {
+                    await runtimeManager.prepareOpenCode?.(robot.id, { seed: false });
+                    runtimeManager.seedOpenCodeInBackground?.(robot);
+                }
+                if (result.created.length) await roboflow?.refreshCoverage();
+                return sendJson(res, 200, { ok: true, created: result.created.map(robot => ({ id: robot.id, name: robot.name })),
+                    existing: result.existing, invalid: result.invalid });
             }
             const modelsId = matchRobotPath(pathname, '/models');
             if (modelsId && req.method === 'GET') {
@@ -809,7 +800,6 @@ export function createRoboTeamServer(options) {
                 return sendJson(res, 200, { ok: true, logs: await runtimeManager.logs(robot.id, url.searchParams.get('tail')) });
             }
             if (await handleRobotProxies({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager })) return;
-            if (await handleEmailPool({ req, res, pathname, actor, emailPool, robotStore, runtimeManager })) return;
             if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath })) return;
             sendError(res, 404, 'not found');
         } catch (error) {

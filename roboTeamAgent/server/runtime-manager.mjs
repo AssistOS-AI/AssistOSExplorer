@@ -17,7 +17,7 @@ import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE
 import { prepareRobotShell } from './robot-shell.mjs';
 import { prepareDesktopLaunchers } from './desktop-launchers.mjs';
 import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
-import { emailInstructions } from './email-pool.mjs';
+import { emailInstructions, robotEmailAddress } from './robot-email.mjs';
 import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
 import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
@@ -234,7 +234,6 @@ export class RuntimeManager {
         };
         this.timezone = options.timezone || TIMEZONE;
         this.proxyPool = options.proxyPool || null;
-        this.emailPool = options.emailPool || null;
         this.proxyPolicyDir = options.proxyPolicyDir || path.join(this.dataDir, 'proxy-pool');
         this.createRelay = options.createRelay || ((upstream) => new ProxyRelay(upstream, {
             log: (line) => console.warn(`[roboTeamAgent] proxy relay: ${line}`),
@@ -428,8 +427,6 @@ export class RuntimeManager {
             // while the pool is active and has nothing free. The lease carries its exit-address locale.
             const lease = this.proxyPool ? await this.proxyPool.lease(robot.id, robot.name) : null;
             const upstream = lease?.upstream || null;
-            // A person opening the workstation signs the robot's mailbox in, so the robot holds its address from here on.
-            this.emailPool?.acquire(robot.id);
             const proxyKey = upstream ? `${upstream.id}@${upstream.host}:${upstream.port}` : '';
             const locale = upstream ? lease.locale : null;
             const localeKey = locale ? `${locale.timezone}|${locale.locale}` : '';
@@ -681,7 +678,7 @@ export class RuntimeManager {
             delete childEnv.ROBOTEAM_INTERNAL_TOKEN;
             delete childEnv.ROBOTEAM_TASK_SKILL_SELECTION;
             // Only Browser and Desktop tasks work in the robot's Chromium, where its mailbox is signed in.
-            const emailAddress = GUI_MODES.has(task.type) ? this.emailPool?.acquire(robot.id) : null;
+            const emailAddress = GUI_MODES.has(task.type) ? robotEmailAddress(robot) : null;
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
                 '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
@@ -930,7 +927,6 @@ export class RuntimeManager {
         await this.soulGateway.remove(path.join(this.dataDir, 'robots', robotId, 'home'));
         // Never throws; a lease left behind by an unreachable proxyAgent is released when the dashboard next lists proxies.
         void this.proxyPool?.release(robotId);
-        this.emailPool?.release(robotId);
         // Server-only model-list cache for this robot (never inside the robot's mounted folder).
         if (/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) {
             await fs.rm(path.join(this.dataDir, 'server-state', 'model-catalog', robotId), { recursive: true, force: true }).catch(() => {});

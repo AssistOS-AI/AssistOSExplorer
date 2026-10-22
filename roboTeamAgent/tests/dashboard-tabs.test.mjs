@@ -74,11 +74,11 @@ test('dashboard tabs support wrapped arrows, Home, End and listener cleanup', ()
     state.tabs.forEach(tab => assert.equal(tab.listeners.size, 0));
 });
 
-test('dashboard markup groups robot, workflow, scheduling and email controls into exactly four linked tabs', async () => {
+test('dashboard markup groups robot, workflow and scheduling controls into exactly three linked tabs', async () => {
     const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
-    assert.equal((html.match(/role="tab"/g) || []).length, 4);
-    assert.equal((html.match(/role="tabpanel"/g) || []).length, 4);
-    for (const [tab, panel, label] of [['robotsTab', 'robotsPanel', 'Robots'], ['workflowTypesTab', 'workflowTypesPanel', 'Workflow types'], ['kronJobsTab', 'kronJobsPanel', 'Cron jobs'], ['emailsTab', 'emailsPanel', 'Emails']]) {
+    assert.equal((html.match(/role="tab"/g) || []).length, 3);
+    assert.equal((html.match(/role="tabpanel"/g) || []).length, 3);
+    for (const [tab, panel, label] of [['robotsTab', 'robotsPanel', 'Robots'], ['workflowTypesTab', 'workflowTypesPanel', 'Workflow types'], ['kronJobsTab', 'kronJobsPanel', 'Cron jobs']]) {
         assert.match(html, new RegExp(`id="${tab}"[^>]*aria-controls="${panel}"[^>]*>\\s*${label}\\s*</button>`));
         assert.match(html, new RegExp(`id="${panel}"[^>]*aria-labelledby="${tab}"`));
     }
@@ -87,9 +87,9 @@ test('dashboard markup groups robot, workflow, scheduling and email controls int
     const kron = html.slice(html.indexOf('<div id="kronJobsPanel"'), html.indexOf('</main>'));
     // The shared proxy pool is administered in proxyAgent; robots only show the proxy they hold.
     assert.doesNotMatch(html, /proxiesPanel|proxyAccountDialog/);
-    const emails = html.slice(html.indexOf('<div id="emailsPanel"'), html.indexOf('<dialog id="cronDialog"'));
-    for (const id of ['emailTableBody', 'emailCount', 'addEmailsButton', 'importEmailsButton', 'emailCsvFile', 'emailMessage', 'emailDialog', 'emailForm']) assert.ok(emails.includes(`id="${id}"`));
-    for (const id of ['createForm', 'formMessage', 'robotsList', 'robotCount']) assert.ok(robots.includes(`id="${id}"`));
+    // Robots are created from an email CSV in the Robots tab; there is no separate Emails tab.
+    assert.doesNotMatch(html, /emailsPanel|emailDialog/);
+    for (const id of ['createForm', 'formMessage', 'robotsList', 'robotCount', 'importRobotsButton', 'robotCsvFile']) assert.ok(robots.includes(`id="${id}"`));
     for (const id of ['workflowsList', 'workflowCount', 'workflowListMessage', 'addWorkflowButton', 'flowsHistoryButton']) assert.ok(workflows.includes(`id="${id}"`));
     assert.doesNotMatch(robots, /id="workflowsList"/);
     assert.doesNotMatch(workflows, /id="createForm"/);

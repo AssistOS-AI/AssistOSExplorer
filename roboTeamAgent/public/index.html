@@ -50,9 +50,6 @@
         <button class="dashboard-tab" id="kronJobsTab" type="button" role="tab" aria-selected="false"
                 aria-controls="kronJobsPanel" tabindex="-1">Cron jobs
         </button>
-        <button class="dashboard-tab" id="emailsTab" type="button" role="tab" aria-selected="false"
-                aria-controls="emailsPanel" tabindex="-1">Emails
-        </button>
     </div>
 
     <div id="robotsPanel" role="tabpanel" aria-labelledby="robotsTab" tabindex="0">
@@ -60,10 +57,23 @@
             <div class="section-heading robots-heading">
                 <div class="heading-main"><h2 id="robots-title">Robots</h2>
                     <h3 id="robotCount" class="robot-count">0 robots</h3></div>
-                <button id="createRobotButton" class="button primary" type="button" aria-haspopup="dialog"
-                        aria-controls="createRobotDialog" disabled><span
-                        aria-hidden="true">+</span><span>Create robot</span></button>
+                <div class="heading-actions">
+                    <button id="importRobotsButton" class="button secondary" type="button" disabled
+                            title="Create one robot per email address in a CSV file, named exactly by the address">Import CSV</button>
+                    <button id="createRobotButton" class="button primary" type="button" aria-haspopup="dialog"
+                            aria-controls="createRobotDialog" disabled><span
+                            aria-hidden="true">+</span><span>Create robot</span></button>
+                </div>
+                <input id="robotCsvFile" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
             </div>
+            <div class="robot-filters" role="search" aria-label="Filter robots">
+                <input id="robotSearch" type="search" placeholder="Search name or ID" aria-label="Search robots by name or ID" autocomplete="off" spellcheck="false">
+                <label id="robotLoginFilterField" class="robot-filter-field" hidden><span>Login</span>
+                    <select id="robotLoginFilter"><option value="">Any</option><option value="any">Logged into any</option><option value="none">Not logged in</option><option value="codex">Logged into Codex</option><option value="opencode">Logged into OpenCode</option><option value="pi">Logged into Pi</option><option value="claude">Logged into Claude Code</option></select></label>
+                <label class="robot-filter-field"><span>Agent in use</span>
+                    <select id="robotAgentFilter"><option value="">Any</option><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="pi">Pi</option><option value="claude">Claude Code</option></select></label>
+            </div>
+            <p id="robotFilterSummary" class="robot-filter-summary" hidden><span></span> <button id="robotFilterClear" class="folder-text-action" type="button">Clear filters</button></p>
             <p id="formMessage" class="message" role="status"></p>
             <div id="robotsList" class="robot-list" aria-live="polite"></div>
         </section>
@@ -122,38 +132,6 @@
             <div id="cronList" class="robot-list"></div>
         </section>
     </div>
-    <div id="emailsPanel" role="tabpanel" aria-labelledby="emailsTab" tabindex="0" hidden>
-        <section aria-labelledby="emails-title">
-            <div class="section-heading">
-                <div class="heading-main"><h2 id="emails-title">Emails</h2><span id="emailCount" class="robot-count"></span></div>
-                <div class="heading-actions">
-                    <button id="importEmailsButton" class="button secondary" type="button" disabled>Import CSV</button>
-                    <button id="addEmailsButton" class="button primary" type="button" aria-haspopup="dialog" aria-controls="emailDialog" disabled><span class="button-plus" aria-hidden="true">+</span>Add emails</button>
-                </div>
-                <input id="emailCsvFile" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
-            </div>
-            <p class="lede">Each robot receives one free address from this list, at random, the first time it starts a Browser or Desktop, and keeps it until it is released or the robot is deleted. Browser and Desktop tasks receive the address in their instructions. Only addresses are stored: a person signs each mailbox in to the robot's Chromium, and robots never receive passwords.</p>
-            <p id="emailMessage" class="message" role="status"></p>
-            <div id="emailAdminContent" hidden>
-                <div id="emailEmpty" class="empty-state" hidden><h3>No emails yet</h3><p>Import a CSV with an email column, or add addresses one per line.</p></div>
-                <div id="emailTableWrap" class="proxy-table-wrap">
-                    <table class="proxy-table">
-                        <thead><tr><th scope="col">Address</th><th scope="col">Robot</th><th scope="col">Assigned</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
-                        <tbody id="emailTableBody"></tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
-    </div>
-    <dialog id="emailDialog" class="create-robot-dialog" aria-labelledby="emailDialogTitle">
-        <div class="create-robot-heading"><h2 id="emailDialogTitle">Add emails</h2><button id="emailClose" class="button icon-button" type="button" aria-label="Close email dialog" title="Close">×</button></div>
-        <form id="emailForm" class="robot-form">
-            <label><span>Addresses, one per line or pasted CSV</span><textarea name="addresses" rows="8" required autocomplete="off" spellcheck="false" placeholder="robot.one@example.com"></textarea></label>
-            <p class="cron-hint">Only the email column is kept; passwords or other columns are ignored and never sent.</p>
-            <p id="emailFormMessage" class="message" role="status"></p>
-            <div class="create-robot-actions"><button id="emailCancel" class="button secondary" type="button">Cancel</button><button id="emailSave" class="button primary" type="submit">Add emails</button></div>
-        </form>
-    </dialog>
     <dialog id="cronDialog" class="create-robot-dialog cron-dialog" aria-labelledby="cronDialogTitle">
         <div class="create-robot-heading"><h2 id="cronDialogTitle">Create Cron job</h2><button id="cronClose" class="button icon-button" type="button" aria-label="Close Cron job dialog" title="Close">×</button></div>
         <form id="cronForm" class="robot-form">
@@ -237,7 +215,6 @@
                     <p class="active-coding-agent"></p>
                     <span class="robot-mode" hidden></span>
                     <span class="robot-proxy" hidden></span>
-                    <a class="view-logs" target="_blank" rel="noopener noreferrer" title="Open logs in a new tab">Logs</a>
                 </div>
             </div>
         </div>
@@ -258,6 +235,7 @@
                         aria-label="More robot actions" title="More actions" data-robot-menu-toggle><span
                         aria-hidden="true">⋮</span></button>
                 <div class="manage-options" data-robot-menu-options hidden>
+                    <a class="button secondary robot-logs-link" target="_blank" rel="noopener noreferrer" title="Open logs in a new tab">Logs</a>
                     <button class="button secondary manage-skills" type="button">Manage skills</button>
                     <button class="button secondary configure-coding-agent" type="button" hidden>Coding agent</button>
                     <button class="button secondary release-proxy" type="button" hidden title="The robot receives a proxy again when its workstation next starts">Release proxy</button>

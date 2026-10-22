@@ -6,7 +6,6 @@ import { RobotSkillsets } from './robot-skillsets.mjs';
 import { RoboFlowService } from './roboflow/roboflow-service.mjs';
 import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
 import { ProxyAgentClient } from './proxy-pool/proxy-client.mjs';
-import { EmailPool, emailPoolFile } from './email-pool.mjs';
 import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
@@ -27,15 +26,12 @@ await robotStore.ensureDefaultRobot();
 
 // The shared proxy pool lives in the optional proxyAgent; without it robots connect directly.
 const proxyPool = new ProxyAgentClient();
-const emailPool = new EmailPool({ file: emailPoolFile(dataDir) });
-emailPool.initialize();
 
 const runtimeManager = new RuntimeManager({
     dataDir,
     publicBasePath,
     workspaceRoot,
     proxyPool,
-    emailPool,
 });
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot, alaCommand: runtimeManager.alaCommand });
@@ -57,7 +53,6 @@ const server = createRoboTeamServer({
     runtimeManager,
     roboflow,
     proxyPool,
-    emailPool,
     internalToken,
     mcpPort: process.env.ROBOTEAM_MCP_PORT,
     publicBasePath,
@@ -82,7 +77,6 @@ async function shutdown() {
     server.close();
     await roboflow.close();
     await runtimeManager.stopAll();
-    emailPool.close();
     process.exit(0);
 }
 

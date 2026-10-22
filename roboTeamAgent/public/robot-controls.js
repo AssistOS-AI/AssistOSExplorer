@@ -47,7 +47,8 @@ export function initRobotMenu({ menu, id, label, closeMenus, windowRef = window 
         toggle.setAttribute('aria-label', label);
         toggle.title = label;
     }
-    const availableButtons = () => Array.from(options.querySelectorAll('button')).filter(button => !button.hidden && !button.disabled && !button.closest('[hidden]'));
+    // Menu entries are buttons and links (such as Logs, which opens a new tab).
+    const availableButtons = () => Array.from(options.querySelectorAll('button, a[href]')).filter(button => !button.hidden && !button.disabled && !button.closest('[hidden]'));
     const open = () => {
         closeMenus();
         options.hidden = false;
@@ -86,7 +87,7 @@ export function initRobotMenu({ menu, id, label, closeMenus, windowRef = window 
         buttons[next].focus();
     });
     options.addEventListener('click', event => {
-        if (event.target.closest('button:not(:disabled)')) {
+        if (event.target.closest('button:not(:disabled), a[href]')) {
             const restoreFocus = menu.contains(menu.ownerDocument?.activeElement);
             closeMenus();
             // A dialog or logs opened by the action keeps its own focus.

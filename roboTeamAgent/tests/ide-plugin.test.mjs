@@ -166,8 +166,8 @@ test('opens a pending robot session before awaiting startup and offers session r
     assert.match(source, /session\.hidden = false/);
     assert.doesNotMatch(html, /take-control|Take control|resume-task|>Resume</);
     assert.match(html, /class="robot-manage"/);
-    assert.match(html, /<a class="view-logs"[^>]+target="_blank"[^>]+rel="noopener noreferrer"/);
-    assert.ok(html.indexOf('view-logs') < html.indexOf('<div class="robot-actions"'));
+    assert.match(html, /<a class="button secondary robot-logs-link"[^>]+target="_blank"[^>]+rel="noopener noreferrer"/);
+    assert.ok(html.indexOf('robot-logs-link') > html.indexOf('<div class="robot-manage"'), 'Logs is in the More actions menu');
     assert.match(source, /logsLink\.href = endpoint\(`robots\/\$\{encodeURIComponent\(robot\.id\)\}\/logs`\)/);
     assert.doesNotMatch(html, /robot-log-section|hide-logs/);
     assert.doesNotMatch(source, /logPollers|refreshContainerLogs/);

@@ -391,6 +391,12 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .robot-meta .active-coding-agent { margin: 0; font-size: inherit; }
 .robot-mode { font-size: inherit; }
 .robot-proxy { font-size: inherit; overflow-wrap: anywhere; }
+.robot-logins { color: var(--text-soft); cursor: help; }
+.robot-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; }
+.robot-filters input[type="search"] { flex: 0 1 280px; width: 280px; padding: 8px 12px; }
+.robot-filter-field { display: inline-flex; align-items: center; gap: 6px; color: var(--text-soft); font-size: var(--font-sm); }
+.robot-filter-field select { padding: 8px 10px; color: var(--text); background: var(--input-bg); border: 1px solid var(--border-strong); border-radius: var(--radius-md); font: inherit; }
+.robot-filter-summary { margin: 0 0 8px; color: var(--text-soft); font-size: var(--font-sm); }
 .state-running { color: var(--success); }
 .state-starting { color: var(--warning); }
 .state-stopping { color: var(--danger); }

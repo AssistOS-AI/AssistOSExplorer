@@ -5,7 +5,8 @@ import { initDashboardTabs } from './dashboard-tabs.js';
 import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
 import { initPageNavigation, restoreNavigationFocus } from './page-navigation.js';
 import { initCronJobs } from './cron-jobs.js';
-import { initEmailPool } from './email-pool.js';
+import { initRobotImport } from './robot-import.js';
+import { filterRobots, filtersActive, loginSummary, readRobotFilters, writeRobotFilters } from './robot-filters.js';
 
 const robotsList = document.querySelector('#robotsList');
 const robotTemplate = document.querySelector('#robotTemplate');
@@ -15,6 +16,12 @@ const formMessage = document.querySelector('#formMessage');
 const createFormMessage = document.querySelector('#createFormMessage');
 const createRobotButton = document.querySelector('#createRobotButton');
 let canCreateRobots = false;
+let allRobots = [];
+const robotFilters = readRobotFilters(location.search);
+const robotSearch = document.querySelector('#robotSearch');
+const robotLoginFilter = document.querySelector('#robotLoginFilter');
+const robotAgentFilter = document.querySelector('#robotAgentFilter');
+const robotFilterSummary = document.querySelector('#robotFilterSummary');
 let creatingRobot = false;
 const workflowsList = document.querySelector('#workflowsList');
 const workflowTemplate = document.querySelector('#workflowTemplate');
@@ -38,11 +45,10 @@ const navigation = initPageNavigation({
 });
 const initialView = navigation.view;
 const cronJobs = initCronJobs({ api, endpoint, bindLink: navigation.bindLink, closeMenus: closeOpenMenus });
-const emailPool = initEmailPool({ api, closeMenus: closeOpenMenus });
 const requestedTab = new URL(location.href).searchParams.get('tab');
-const requestedTabIds = { 'workflow-types': 'workflowTypesTab', 'cron-jobs': 'kronJobsTab', emails: 'emailsTab' };
+const requestedTabIds = { 'workflow-types': 'workflowTypesTab', 'cron-jobs': 'kronJobsTab' };
 initDashboardTabs({ initialTabId: initialView?.tabId || requestedTabIds[requestedTab],
-    onChange: () => { closeOpenMenus(); void cronJobs.refresh(); void emailPool.refresh(); } });
+    onChange: () => { closeOpenMenus(); void cronJobs.refresh(); } });
 navigation.bindLink(addWorkflowButton);
 navigation.bindLink(document.querySelector('#flowsHistoryButton'));
 
@@ -64,6 +70,14 @@ const createDialog = initCreateRobotDialog({
         closeOpenMenus();
         createFormMessage.textContent = '';
     },
+});
+
+const robotImport = initRobotImport({
+    button: document.querySelector('#importRobotsButton'),
+    fileInput: document.querySelector('#robotCsvFile'),
+    api,
+    report(text, tone) { formMessage.textContent = text; formMessage.className = `message ${tone}`; },
+    onImported: () => loadRobots(),
 });
 
 function closeOpenMenus(except) {
@@ -149,13 +163,39 @@ async function stopRobot(robot, button) {
     }
 }
 
-function renderRobots(robots, canAdmin = false) {
+function applyRobotFilters() {
+    // Only administrators receive login state, so the login filter does not apply to anyone else.
+    document.querySelector('#robotLoginFilterField').hidden = !canCreateRobots;
+    if (!canCreateRobots) robotFilters.login = '';
+    robotSearch.value = robotFilters.query;
+    robotLoginFilter.value = robotFilters.login;
+    robotAgentFilter.value = robotFilters.agent;
+    const visible = filterRobots(allRobots, robotFilters);
+    robotFilterSummary.hidden = !filtersActive(robotFilters);
+    robotFilterSummary.querySelector('span').textContent = `Showing ${visible.length} of ${allRobots.length} ${allRobots.length === 1 ? 'robot' : 'robots'}`;
+    renderRobots(visible, canCreateRobots, allRobots.length);
+    showRobotProxies();
+}
+
+function updateRobotFilters(change) {
+    Object.assign(robotFilters, change);
+    history.replaceState(history.state, '', writeRobotFilters(location.href, robotFilters));
+    applyRobotFilters();
+}
+
+robotSearch.addEventListener('input', () => updateRobotFilters({ query: robotSearch.value }));
+robotLoginFilter.addEventListener('change', () => updateRobotFilters({ login: robotLoginFilter.value }));
+robotAgentFilter.addEventListener('change', () => updateRobotFilters({ agent: robotAgentFilter.value }));
+document.querySelector('#robotFilterClear').addEventListener('click', () => updateRobotFilters({ query: '', login: '', agent: '' }));
+
+function renderRobots(robots, canAdmin = false, total = robots.length) {
     robotsList.replaceChildren();
-    robotCount.textContent = `${robots.length} ${robots.length === 1 ? 'robot' : 'robots'}`;
+    robotCount.textContent = `${total} ${total === 1 ? 'robot' : 'robots'}`;
     if (!robots.length) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.innerHTML = '<h3>No robots yet</h3><p>Use Create robot to add your first persistent robot.</p>';
+        empty.innerHTML = total ? '<h3>No robots match these filters</h3><p>Change the search or the filters, or clear them.</p>'
+            : '<h3>No robots yet</h3><p>Use Create robot to add your first persistent robot.</p>';
         robotsList.append(empty);
         return;
     }
@@ -193,7 +233,16 @@ function renderRobots(robots, canAdmin = false) {
         card.querySelector('h3').textContent = robot.name;
         card.querySelector('.robot-id').textContent = robot.id;
         const codingAgents = robot.codingAgents || ['codex', 'opencode', 'pi', 'claude'];
-        card.querySelector('.active-coding-agent').textContent = `Coding agent: ${codingAgentLabel(codingAgents)}`;
+        const agentLine = card.querySelector('.active-coding-agent');
+        agentLine.textContent = `Coding agent: ${codingAgentLabel(codingAgents)}`;
+        const logins = loginSummary(robot);
+        if (logins) {
+            const marker = document.createElement('span');
+            marker.className = 'robot-logins';
+            marker.textContent = ` · ${logins.text}`;
+            marker.title = logins.title;
+            agentLine.append(marker);
+        }
         card.dataset.robotId = robot.id;
         const releaseProxy = card.querySelector('.release-proxy');
         releaseProxy.disabled = robot.run.state !== 'stopped';
@@ -248,7 +297,7 @@ function renderRobots(robots, canAdmin = false) {
             if (ready && desktopRunning) navigateToSession(openPendingSession(robot, 'desktop'), robot.run);
             else startRobot(robot, 'desktop', event.currentTarget);
         });
-        const logsLink = card.querySelector('.view-logs');
+        const logsLink = card.querySelector('.robot-logs-link');
         logsLink.href = endpoint(`robots/${encodeURIComponent(robot.id)}/logs`);
         logsLink.setAttribute('aria-label', `Open logs for ${robot.name} (new tab)`);
         robotsList.append(card);
@@ -395,11 +444,17 @@ function robotProxyLabel(proxy) {
     return proxy.usable === false ? `${label} (unusable; replaced at the next start)` : label;
 }
 
+let robotProxies = {};
+
 async function loadRobotProxies() {
-    let listing;
-    try { listing = await api('api/robot-proxies'); } catch { return; }
+    if (!canCreateRobots) return;
+    try { robotProxies = (await api('api/robot-proxies')).proxies || {}; } catch { return; }
+    showRobotProxies();
+}
+
+function showRobotProxies() {
     for (const card of robotsList.querySelectorAll('[data-robot-id]')) {
-        const proxy = listing.proxies?.[card.dataset.robotId];
+        const proxy = robotProxies[card.dataset.robotId];
         const label = card.querySelector('.robot-proxy');
         label.hidden = !proxy;
         label.textContent = proxy ? robotProxyLabel(proxy) : '';
@@ -412,11 +467,12 @@ async function loadRobots() {
     try {
         const result = await api('api/robots');
         canCreateRobots = result.canAdmin === true;
-        emailPool.setContext(canCreateRobots);
+        robotImport.setContext(canCreateRobots);
         updateCreateControls();
-        renderRobots(result.robots || [], result.canAdmin === true);
+        allRobots = result.robots || [];
+        applyRobotFilters();
         // Leases live in the optional proxyAgent, so a slow or missing one never holds the robot list.
-        if (result.canAdmin === true) void loadRobotProxies();
+        void loadRobotProxies();
         await loadWorkflows(result.canAdmin === true);
     } catch (error) {
         robotsList.textContent = `Robots unavailable: ${error.message}`;
