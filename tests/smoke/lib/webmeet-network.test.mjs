@@ -263,6 +263,7 @@ test('headless media accepts a host or prflx selected remote on the Box media ho
     { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(7882, 1)] },
     { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(7892, 1)] },
     { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(0, 1)] },
+    { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(27883, 1)] },
     { selectedPairs: [headlessPair(27882)], remoteCandidates: [] },
     { selectedPairs: [], remoteCandidates: [remoteHost(27882)] },
     { selectedPairs: [{ ...headlessPair(27882), bytesSent: 0, bytesReceived: 0 }], remoteCandidates: [remoteHost(27882)] },
