@@ -25,6 +25,8 @@ import {
   expectGuestVisibleToOwner,
   expectBidirectionalAudioVideoRtp,
   expectWebMeetMediaState,
+  expectHeadlessMediaCandidatePort,
+  readHeadlessMediaHostPort,
   expectWebMeetReady,
   expectIncreasingRtpStats,
   expectJoinMaterialRefreshLifecycle,
@@ -416,6 +418,12 @@ test.describe('WebMeet rooms', () => {
       await expect(ownerPage.locator('#webmeetChatList', { hasText: memberMessage })).toBeVisible();
 
       if (smokeConfig.flags.webmeetMedia) {
+        // The single live Box media-host-port label is the expected headless remote port.
+        const headlessMediaHostPort = smokeConfig.flags.webmeetHeadless
+          ? readHeadlessMediaHostPort({
+            baseURL: String(process.env.SMOKE_BOX_BASE_URL || smokeConfig.baseURL).trim(),
+          })
+          : null;
         await enableMedia(ownerPage);
         await enableMedia(memberPage);
         if (smokeConfig.flags.webmeetHeadless) {
@@ -437,6 +445,18 @@ test.describe('WebMeet rooms', () => {
             expectWebMeetMediaState(memberPage, {
               label: 'headless-member',
               testInfo,
+            }),
+          ]);
+          await Promise.all([
+            expectHeadlessMediaCandidatePort(ownerPage, {
+              label: 'headless-owner',
+              testInfo,
+              mediaHostPort: headlessMediaHostPort,
+            }),
+            expectHeadlessMediaCandidatePort(memberPage, {
+              label: 'headless-member',
+              testInfo,
+              mediaHostPort: headlessMediaHostPort,
             }),
           ]);
         } else {

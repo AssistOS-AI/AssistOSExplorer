@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assessHeadlessMediaCandidatePort,
   assessSelectedPairsUseLocalUdpMux,
   joinMaterialAdvanced,
   newConnectedPeerConnectionIndices,
+  readHeadlessMediaHostPort,
   selectedPairsUseLocalUdpMux,
 } from './webmeet.mjs';
 
@@ -220,4 +222,78 @@ test('join-material advancement requires identity continuity, a newer expiry, a 
       { index: 3, connectionState: 'connected' },
     ],
   })), false);
+});
+
+function headlessPair(port, candidateType = 'host', peerConnectionIndex = 0) {
+  return {
+    peerConnectionIndex,
+    selected: true,
+    peerConnectionState: 'connected',
+    bytesReceived: 10,
+    bytesSent: 10,
+    remote: { candidateType, protocol: 'udp', address: '203.0.113.7', port },
+  };
+}
+
+function remoteHost(port, peerConnectionIndex = 0, candidateType = 'host') {
+  return { peerConnectionIndex, candidateType, port };
+}
+
+test('headless media accepts a host or prflx selected remote on the Box media host port per connection', () => {
+  const assess = (input) => assessHeadlessMediaCandidatePort({ ...input, mediaHostPort: '27882' });
+  assert.equal(assess({
+    selectedPairs: [headlessPair(27882)],
+    remoteCandidates: [remoteHost(27882), remoteHost(27882)],
+  }).accepted, true);
+  // Two connections: pc0 selected prflx:N (learned from STUN checks), pc1 selected host:N.
+  assert.equal(assess({
+    selectedPairs: [headlessPair(27882, 'prflx', 0), headlessPair(27882, 'host', 1)],
+    remoteCandidates: [
+      remoteHost(27882, 0, 'prflx'), remoteHost(27882, 0, 'host'), remoteHost(27882, 1, 'host'),
+    ],
+  }).accepted, true);
+  for (const input of [
+    // prflx:N without the signaled host:N on that same connection.
+    { selectedPairs: [headlessPair(27882, 'prflx', 0)], remoteCandidates: [remoteHost(27882, 0, 'prflx'), remoteHost(27882, 1, 'host')] },
+    { selectedPairs: [headlessPair(27882, 'prflx', 0), headlessPair(27882, 'host', 1)], remoteCandidates: [remoteHost(27882, 0, 'prflx'), remoteHost(27882, 1, 'host')] },
+    { selectedPairs: [headlessPair(27882, 'srflx')], remoteCandidates: [remoteHost(27882)] },
+    { selectedPairs: [headlessPair(27882, 'relay')], remoteCandidates: [remoteHost(27882)] },
+    { selectedPairs: [headlessPair(7882)], remoteCandidates: [remoteHost(7882)] },
+    { selectedPairs: [headlessPair(27883)], remoteCandidates: [remoteHost(27883)] },
+    { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(7882, 1)] },
+    { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(7892, 1)] },
+    { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(0, 1)] },
+    { selectedPairs: [headlessPair(27882)], remoteCandidates: [remoteHost(27882), remoteHost(27883, 1)] },
+    { selectedPairs: [headlessPair(27882)], remoteCandidates: [] },
+    { selectedPairs: [], remoteCandidates: [remoteHost(27882)] },
+    { selectedPairs: [{ ...headlessPair(27882), bytesSent: 0, bytesReceived: 0 }], remoteCandidates: [remoteHost(27882)] },
+    { selectedPairs: [headlessPair(27882, 'host', 0), headlessPair(7882, 'host', 1)], remoteCandidates: [remoteHost(27882, 0), remoteHost(27882, 1)] },
+  ]) {
+    assert.equal(assess(input).accepted, false);
+  }
+});
+
+test('headless media port comes from the single Box media-host-port label', () => {
+  const calls = [];
+  const collectLiveBox = (options) => {
+    calls.push(options);
+    return { box: { semanticLabels: { mediaHostPort: '27882' } } };
+  };
+  assert.equal(readHeadlessMediaHostPort({
+    baseURL: 'http://127.0.0.1:28080', env: {}, collectLiveBox,
+  }), '27882');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].baseURL, 'http://127.0.0.1:28080');
+  for (const label of [undefined, '', '0', '65536', '027882', ' 27882 ']) {
+    assert.throws(() => readHeadlessMediaHostPort({
+      baseURL: 'http://127.0.0.1:28080',
+      env: {},
+      collectLiveBox: () => ({ box: { semanticLabels: { mediaHostPort: label } } }),
+    }), /exact TCP\/UDP port/);
+  }
+  assert.equal(readHeadlessMediaHostPort({
+    baseURL: 'http://127.0.0.1:8080',
+    env: {},
+    collectLiveBox: () => ({ box: { semanticLabels: { mediaHostPort: '7882' } } }),
+  }), '7882');
 });

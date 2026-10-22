@@ -38,7 +38,6 @@ const GPU_GRANT_MARKER_PATH = '/etc/ploinky-box-gpu-grant.json';
 const GPU_GRANT_CDI_SPEC_PATH = '/etc/cdi/ploinky-gpu.json';
 const GPU_DRIVER_DIRECTORY = '/usr/local/nvidia';
 const ROUTER_TARGET = '8080/tcp';
-const MEDIA_TARGET = '7882/udp';
 const TCP_SCAN_START = 1;
 const TCP_SCAN_END = 65_535;
 
@@ -487,25 +486,32 @@ export function normalizeOuterPortBindings(bindings) {
   return sortedObject(normalized);
 }
 
+// The media publication key is `<media-host-port label>/udp`: the label is the
+// expected port and is never taken from whichever UDP mapping is observed.
+function mediaTarget(mediaHostPort) {
+  return `${exactPort(mediaHostPort, 'Box media host port')}/udp`;
+}
+
 function expectedBindings(selectedRouterHostPort, selectedMediaHostPort, expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS) {
   return normalizeOuterPortBindings({
     [ROUTER_TARGET]: [{ HostIp: validateRouterBindAddress(expectedRouterBindAddress), HostPort: selectedRouterHostPort }],
-    [MEDIA_TARGET]: [{ HostIp: '0.0.0.0', HostPort: selectedMediaHostPort }],
+    [mediaTarget(selectedMediaHostPort)]: [{ HostIp: '0.0.0.0', HostPort: selectedMediaHostPort }],
   });
 }
 
-function assertExactBindings(bindings, expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS) {
+function assertExactBindings(bindings, expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS, expectedMediaHostPort) {
   const normalized = normalizeOuterPortBindings(bindings);
   const router = normalized[ROUTER_TARGET];
   if (!router || router.length !== 1) {
     throw new Error(`Box PortBindings must contain exactly one ${ROUTER_TARGET} mapping.`);
   }
-  const media = normalized[MEDIA_TARGET];
+  const selectedMediaHostPort = exactPort(expectedMediaHostPort, 'expected Box media host port');
+  const mediaKey = mediaTarget(selectedMediaHostPort);
+  const media = normalized[mediaKey];
   if (!media || media.length !== 1) {
-    throw new Error(`Box PortBindings must contain exactly one ${MEDIA_TARGET} mapping.`);
+    throw new Error(`Box PortBindings must contain exactly one ${mediaKey} mapping.`);
   }
   const selectedRouterHostPort = router[0].HostPort;
-  const selectedMediaHostPort = media[0].HostPort;
   const expected = expectedBindings(selectedRouterHostPort, selectedMediaHostPort, expectedRouterBindAddress);
   if (JSON.stringify(normalized) !== JSON.stringify(expected)) {
     throw new Error(`Box normalized PortBindings must equal ${JSON.stringify(expected)}; got ${JSON.stringify(normalized)}.`);
@@ -566,7 +572,11 @@ export function buildBoxEvidence({
   if (JSON.stringify(imageConfig.Entrypoint || []) !== JSON.stringify(['/usr/local/bin/ploinky-box-entrypoint'])) {
     throw new Error('Box image entrypoint is invalid.');
   }
-  const { normalized, selectedRouterHostPort, selectedMediaHostPort } = assertExactBindings(container?.HostConfig?.PortBindings, expectedRouterBindAddress);
+  const { normalized, selectedRouterHostPort, selectedMediaHostPort } = assertExactBindings(
+    container?.HostConfig?.PortBindings,
+    expectedRouterBindAddress,
+    container?.Config?.Labels?.[BOX_LABELS.mediaHostPort],
+  );
   const securityOptions = exactBoxSecurityOptions(container?.HostConfig?.SecurityOpt);
   const semanticLabels = exactBoxLabels(container?.Config?.Labels || {}, {
     expectedImageRef,
@@ -637,7 +647,11 @@ export function validateBoxEvidence(input, {
   if (evidence.publicIPv4 !== publicIPv4) throw new Error('Box evidence public IPv4 mismatch.');
   const startedAt = isoTime(evidence.startedAt, 'Box evidence startedAt');
   const selectedRouterHostPort = exactPort(evidence.selectedRouterHostPort, 'Box evidence selectedRouterHostPort');
-  const { normalized, selectedMediaHostPort } = assertExactBindings(evidence.normalizedPortBindings, expectedRouterBindAddress);
+  const { normalized, selectedMediaHostPort } = assertExactBindings(
+    evidence.normalizedPortBindings,
+    expectedRouterBindAddress,
+    evidence.semanticLabels?.mediaHostPort,
+  );
   if (JSON.stringify(normalized) !== JSON.stringify(expectedBindings(selectedRouterHostPort, selectedMediaHostPort, expectedRouterBindAddress))) {
     throw new Error('Box evidence normalized PortBindings are not the exact two-publication boundary.');
   }

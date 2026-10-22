@@ -478,16 +478,18 @@ test('live collection reads the GPU grant expectation from SMOKE_BOX_GPU_GRANT',
 });
 
 function isolatedContainerInspect(mediaPort = '27882') {
+  // The publication key is the container port, which equals the media-host-port label (N:N).
+  const mediaTarget = /^\d+$/.test(String(mediaPort)) ? `${mediaPort}/udp` : '7882/udp';
   const inspection = containerInspect({
     '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '28080' }],
-    '7882/udp': [{ HostIp: '0.0.0.0', HostPort: mediaPort }],
+    [mediaTarget]: [{ HostIp: '0.0.0.0', HostPort: mediaPort }],
   });
   inspection[0].Config.Labels['io.assistos.ploinky-box.router-host-port'] = '28080';
   inspection[0].Config.Labels['io.assistos.ploinky-box.media-host-port'] = mediaPort;
   return inspection;
 }
 
-test('box evidence accepts a distinct labeled media host port while retaining the fixed UDP target', () => {
+test('box evidence accepts a distinct labeled media host port published as N:N', () => {
   for (const mediaPort of ['1', '27882', '65535']) {
     const evidence = buildBoxEvidence({
       containerInspect: isolatedContainerInspect(mediaPort),
@@ -498,20 +500,45 @@ test('box evidence accepts a distinct labeled media host port while retaining th
     assert.equal(evidence.semanticLabels.mediaHostPort, mediaPort);
     assert.deepEqual(evidence.normalizedPortBindings, normalizeOuterPortBindings({
       '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '28080' }],
-      '7882/udp': [{ HostIp: '0.0.0.0', HostPort: mediaPort }],
+      [`${mediaPort}/udp`]: [{ HostIp: '0.0.0.0', HostPort: mediaPort }],
     }));
     assert.deepEqual(validateBoxEvidence(evidence, expected()), evidence);
 
     for (const mutation of [
       (value) => { value.semanticLabels.mediaHostPort = '7882'; },
-      (value) => { value.normalizedPortBindings['7882/udp'][0].HostPort = '7882'; },
+      (value) => { value.normalizedPortBindings[`${mediaPort}/udp`][0].HostPort = '7882'; },
+      (value) => { value.semanticLabels.mediaHostPort = mediaPort === '1' ? '2' : '1'; },
       (value) => { value.semanticLabels.routerHostPort = '18080'; },
       (value) => { value.selectedRouterHostPort = '18080'; },
     ]) {
       const changed = structuredClone(evidence);
       mutation(changed);
-      assert.throws(() => validateBoxEvidence(changed, expected()), /label does not match|exact two-publication/);
+      assert.throws(() => validateBoxEvidence(changed, expected()), /label does not match|exact two-publication|must contain exactly one|must equal/);
     }
+  }
+});
+
+test('legacy N:7882, a label/binding mismatch, a wrong port and a second publication are rejected for an alternate media port', () => {
+  const legacy = isolatedContainerInspect();
+  legacy[0].HostConfig.PortBindings = {
+    '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '28080' }],
+    '7882/udp': [{ HostIp: '0.0.0.0', HostPort: '27882' }],
+  };
+  const mismatch = isolatedContainerInspect();
+  mismatch[0].Config.Labels['io.assistos.ploinky-box.media-host-port'] = '27883';
+  const wrongPort = isolatedContainerInspect();
+  wrongPort[0].HostConfig.PortBindings = {
+    '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '28080' }],
+    '27883/udp': [{ HostIp: '0.0.0.0', HostPort: '27883' }],
+  };
+  const extra = isolatedContainerInspect();
+  extra[0].HostConfig.PortBindings['7882/udp'] = [{ HostIp: '0.0.0.0', HostPort: '7882' }];
+  for (const inspection of [legacy, mismatch, wrongPort, extra]) {
+    assert.throws(() => buildBoxEvidence({
+      containerInspect: inspection,
+      imageInspect: imageInspect(),
+      ...expected(),
+    }), /must contain exactly one|must equal/);
   }
 });
 
@@ -536,20 +563,20 @@ test('alternate media ports require canonical port values and the exact semantic
       containerInspect: inspection,
       imageInspect: imageInspect(),
       ...expected(),
-    }), /Box labels must be exactly|40 lowercase hexadecimal|media-host-port label/);
+    }), /Box labels must be exactly|40 lowercase hexadecimal|media-host-port label|must contain exactly one 27883\/udp|exact TCP\/UDP port/);
   }
 });
 
 test('alternate media port evidence rejects extra mappings, wrong protocols and targets, and widened listener boundaries', () => {
   for (const mutate of [
     (bindings) => { bindings['8081/tcp'] = [{ HostIp: '127.0.0.1', HostPort: '28081' }]; },
-    (bindings) => { bindings['7882/udp'].push({ HostIp: '0.0.0.0', HostPort: '37882' }); },
+    (bindings) => { bindings['27882/udp'].push({ HostIp: '0.0.0.0', HostPort: '37882' }); },
     (bindings) => { bindings['8080/tcp'].push({ HostIp: '127.0.0.1', HostPort: '38080' }); },
-    (bindings) => { bindings['7882/tcp'] = bindings['7882/udp']; delete bindings['7882/udp']; },
-    (bindings) => { bindings['7881/udp'] = bindings['7882/udp']; delete bindings['7882/udp']; },
+    (bindings) => { bindings['27882/tcp'] = bindings['27882/udp']; delete bindings['27882/udp']; },
+    (bindings) => { bindings['7881/udp'] = bindings['27882/udp']; delete bindings['27882/udp']; },
     (bindings) => { bindings['8080/tcp'][0].HostIp = '0.0.0.0'; },
-    (bindings) => { bindings['7882/udp'][0].HostIp = '127.0.0.1'; },
-    (bindings) => { bindings['7882/udp'][0].HostIp = '::'; },
+    (bindings) => { bindings['27882/udp'][0].HostIp = '127.0.0.1'; },
+    (bindings) => { bindings['27882/udp'][0].HostIp = '::'; },
   ]) {
     const inspection = isolatedContainerInspect();
     mutate(inspection[0].HostConfig.PortBindings);
@@ -679,7 +706,7 @@ test('box evidence rejects a third publication, wrong semantic ownership, and wr
     containerInspect: wrongMediaPort,
     imageInspect: imageInspect(),
     ...expected(),
-  }), /media-host-port label does not match/);
+  }), /must contain exactly one 7881\/udp mapping/);
 
   assert.throws(() => buildBoxEvidence({
     containerInspect: containerInspect(),
