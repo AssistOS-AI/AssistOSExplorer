@@ -61,7 +61,7 @@ The modal owns cleanup directly: closing marks it closed, aborts HTTP probes, cl
 
 Once the panel is visible, the toolbar control remains in its normal state. Its presenter may finish mounting in a hidden sibling and replaces the host button only after rendering completes; this background work must not reapply toolbar loading indicators.
 
-The `live-sessions` application plugin mounts `live-sessions-tool-button` in `file-exp:toolbar` at order 380, before Help. Its fullscreen component descriptor loads `live-sessions-modal` for authenticated users and does not opt into refresh resume. [Live Sessions](wiki.html#definition-live-sessions) lists existing WebTTY shells for administrators and agent runs returned by discovered sources. It never creates a shell or run. Ploinky remains the authority for shell ownership, input and Kill. Attach URLs are constructed inside the component and never passed to the expanded-modal descriptor or storage. An older Router's shell-list 404 disables only shell polling and shows an upgrade notice; agent sources continue independently.
+The `live-sessions` application plugin mounts `live-sessions-tool-button` in `file-exp:toolbar` at order 380, before Help. It sets `mountOnStart: true`, so the toolbar mounts it when Explorer starts instead of on first click; this lets an administrator's start-time shell-list read restore an embedded terminal and show the count badge for shells that are set to stop on close but still running or whose stop is not confirmed. Its fullscreen component descriptor loads `live-sessions-modal` for authenticated users and does not opt into refresh resume. [Live Sessions](wiki.html#definition-live-sessions) lists existing WebTTY shells for administrators and agent runs returned by discovered sources. It never creates a shell or run. Ploinky remains the authority for shell ownership, input, close policy and Kill; the tool validates the optional shell row fields `closePolicy`, `pendingStopUntil`, `ownerViewOpen`, `profileLabel`, `closure`, `closureScope` and `recordCleanup` and the optional top-level `available` flag of the shell list response (not a row field); the row fields are accepted only on shell rows, and agent rows reject all of them. Attach URLs are constructed inside the component and never passed to the expanded-modal descriptor or storage. An older Router's shell-list 404 disables only shell polling and shows an upgrade notice; agent sources continue independently.
 
 ### Live Session sources
 
@@ -85,3 +85,20 @@ The `live-session-stream-view` WebSkel component renders monospace output throug
 The runtime plugin contract makes one workspace interface extensible while keeping each domain implementation independent.
 
 Concurrent component mounts may share template, stylesheet and presenter fetches, but every mounted element must acquire its own WebSkel resource reference. Removing or replacing some elements must not unload CSS while any instance still uses it. Dropdown lists portaled into a dialog retain their shared fixed positioning and visual styles.
+
+### Toolbar mount on start
+
+A toolbar plugin normally mounts on its first click. A plugin config may set `mountOnStart: true` to have the toolbar mount it at start instead. The value must be a boolean: server discovery drops a config with any other value, and the browser's runtime normalization rejects the entry. Only `live-sessions` sets it. Other toolbar plugins keep their on-demand triggers, and on the mobile layout the dropdown slot already mounts every toolbar plugin.
+
+### Terminal profile sources
+
+An owning agent declares an application contribution with `id`, `label`, `contributionType: 'terminal-profile-source'`, `location: ['terminal-profiles:source']` and `terminalProfiles: {version: 1, base}` in its `IDE-plugins/*/config.json`. It needs no component, and the `location` array must hold exactly that one value. Server discovery assigns the declaring agent from the source directory, applies the same `base` validation as a Live Session source, including both route forms `/<agent>/...` and `/base-agent-additional-server/<agent>/<port>/...`, and drops invalid declarations. Browser normalization preserves this contribution type and repeats the validation without registering a component. The agent's own `manifest.json` declaration that lets Ploinky resolve a profile into a home folder is a separate contract and names only the agent-port form; see [DS002](specsLoader.html?spec=DS002-ploinky-runtime.md).
+
+Explorer's Open Terminal Here dialog reads each source and requires administrator access. Every source authorizes each call from its verified Router identity, never from a client-declared actor.
+
+| Endpoint | Contract |
+| --- | --- |
+| `GET {base}` | `{ok: true, profiles: [{id, label}]}` sorted by label. The dialog lists them as the required robot choice and appends the source label in parentheses when more than one source exists. |
+| `POST {base}/{id}/prepare` | Sent with the browser mutation proof Explorer attaches to every agent route and the body `{}`. The agent prepares the profile and returns `{ok: true, id, label, root}`, where `root` is the robot's workspace-relative root folder. Open Terminal Here validates the response but keeps the folder the administrator selected, while the RoboTeam card opens its terminal in `root`. Explorer calls it from the Open button, after discovery and before it navigates the isolated pop-up to the launch. |
+
+With no source, a source error or no profile, the dialog keeps its target list visible, disables Open and shows the reason. Choosing a profile sends `{dir, profile: {provider, id}}` to WebTTY discovery, where `provider` is the declaring agent. The dialog never sends a HOME path, and discovery refuses a profile that its provider does not confirm.

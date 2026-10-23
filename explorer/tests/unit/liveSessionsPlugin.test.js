@@ -1,13 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { aggregateIdePlugins } from '../../utils/ide-plugins.mjs';
 import { normalizeRuntimePlugins } from '../../utils/pluginUtils.core.js';
 import { openExpandedModal } from '../../shared/ui/expanded-modal.js';
 import { LiveSessionsToolButton } from '../../IDE-plugins/live-sessions/live-sessions-tool-button.js';
 import { LiveSessionsModal } from '../../IDE-plugins/live-sessions/components/live-sessions-modal/live-sessions-modal.js';
-import { killLiveSession, listLiveSessions, mintLiveSessionAttach, normalizeLiveSessionsPayload } from '../../IDE-plugins/live-sessions/live-sessions-api.js';
+import {
+    aggregateLiveSessions, killLiveSession, listLiveSessions, listLiveSessionsDetailed, mintLiveSessionAttach,
+    normalizeAgentSessionsPayload, normalizeLiveSessionsPayload, parseLiveSessionsPayload, sendLiveSessionCloseIntent,
+    setLiveSessionClosePolicy,
+} from '../../IDE-plugins/live-sessions/live-sessions-api.js';
+import {
+    clearEmbeddedTerminalKey, countNeedsAttention, currentCue, EMBEDDED_TERMINAL_KEY, publishCue,
+    queueEmbeddedRestore, readEmbeddedTerminalKey, takeEmbeddedRestore, writeEmbeddedTerminalKey,
+} from '../../IDE-plugins/live-sessions/live-sessions-state.js';
+import { closePolicyStatusText, closureText } from '../../IDE-plugins/live-sessions/components/live-sessions-modal/live-sessions-modal.js';
 
 const ID = 'S'.repeat(32);
 const TOKEN = 'T'.repeat(32);
@@ -78,6 +88,17 @@ test('Live Sessions survives real discovery and normalization as an authenticate
     assert.equal(plugin.component, 'live-sessions-tool-button');
     assert.equal(plugin.dependencies[0].component, 'live-sessions-modal');
     assert.equal(plugin.adminOnly, false);
+    assert.equal(config.mountOnStart, true);
+    assert.equal(plugin.mountOnStart, true, 'the opt-in survives discovery and browser normalization');
+    // The toolbar button and the panel are loaded from different URLs; the shared state module must resolve to one instance.
+    assert.equal(
+        new URL('./live-sessions-state.js', `https://explorer.test${plugin.componentBaseUrl}.js`).href,
+        new URL('../../live-sessions-state.js', `https://explorer.test${plugin.dependencies[0].baseUrl}.js`).href,
+    );
+    assert.equal(
+        new URL('./live-sessions-state.js', `https://explorer.test${plugin.componentBaseUrl}.js`).pathname,
+        '/workspace-files/explorer/IDE-plugins/live-sessions/live-sessions-state.js',
+    );
 });
 
 test('strict shell normalizer rejects unknown keys, kinds, capabilities, duplicate IDs and unsafe text', () => {
@@ -548,4 +569,740 @@ test('confirm-stop on a watched agent row keeps the stream view while confirm-ki
     shell.modal.confirmId = ID;
     await shell.modal.performAction(ID, 'confirm-kill');
     assert.equal(shell.modal.viewerId, '');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Close policy, closure outcomes, embedded owner view, Explorer restore and the return cue (plan r3 3.6, A11).
+// ---------------------------------------------------------------------------------------------------------------
+
+const ORIGIN = 'https://explorer.test';
+const VIEW = 'V'.repeat(32);
+const SECOND_ID = 'Q'.repeat(32);
+const settle = async () => { for (let index = 0; index < 6; index += 1) await new Promise((resolve) => setImmediate(resolve)); };
+
+function fakeWindow(origin = ORIGIN) {
+    const listeners = new Map();
+    return {
+        location: { origin },
+        addEventListener(type, handler) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(handler); },
+        removeEventListener(type, handler) { listeners.get(type)?.delete(handler); },
+        dispatch(type, event) { for (const handler of [...(listeners.get(type) || [])]) handler(event); },
+        count(type) { return listeners.get(type)?.size || 0; },
+    };
+}
+
+function memoryStorage(initial = {}) {
+    const data = new Map(Object.entries(initial));
+    return {
+        data,
+        getItem: (key) => (data.has(key) ? data.get(key) : null),
+        setItem: (key, value) => { data.set(key, String(value)); },
+        removeItem: (key) => { data.delete(key); },
+    };
+}
+
+const unattended = (changes = {}) => row({
+    closePolicy: 'stop', pendingStopUntil: null, ownerViewOpen: false, profileLabel: 'Robot A', ...changes,
+});
+const tombstone = (changes = {}) => row({
+    status: 'exited', endedAt: 3000, exitReason: 'tab_closed', closePolicy: 'stop', pendingStopUntil: null,
+    ownerViewOpen: false, closure: 'proven', ...changes,
+});
+const listText = (elements, index) => {
+    const walk = (node) => `${node.textContent || ''}${(node.children || []).map(walk).join('|')}`;
+    return walk(elements.get('#liveSessionsList').children[index]);
+};
+
+test('shell payload accepts an optional boolean available flag and the shell-only optional keys', () => {
+    assert.equal(parseLiveSessionsPayload(payload()).available, true);
+    assert.equal(parseLiveSessionsPayload({ ...payload(), available: true }).available, true);
+    const disabled = parseLiveSessionsPayload({ ...payload([tombstone({ closure: 'unconfirmed', closureScope: 'global', recordCleanup: 'failed' })]), available: false });
+    assert.equal(disabled.available, false);
+    assert.equal(disabled.rows[0].closureScope, 'global');
+    assert.equal(normalizeLiveSessionsPayload({ ...payload(), available: false }).length, 1);
+    for (const available of ['no', 0, null, undefined]) {
+        assert.throws(() => parseLiveSessionsPayload({ ...payload(), available }), /Invalid/);
+    }
+    assert.throws(() => parseLiveSessionsPayload({ ...payload(), unavailable: true }), /Invalid/);
+
+    const live = normalizeLiveSessionsPayload(payload([
+        unattended({ pendingStopUntil: 5000, ownerViewOpen: true }),
+    ]))[0];
+    assert.deepEqual([live.closePolicy, live.pendingStopUntil, live.ownerViewOpen, live.profileLabel], ['stop', 5000, true, 'Robot A']);
+    assert.equal(normalizeLiveSessionsPayload(payload([row({ profileLabel: null, pendingStopUntil: null })]))[0].profileLabel, null);
+    for (const closure of ['pending', 'proven']) {
+        assert.equal(normalizeLiveSessionsPayload(payload([tombstone({ closure, recordCleanup: 'failed' })]))[0].closure, closure);
+    }
+});
+
+test('shell-only optional keys are rejected when mistyped, misplaced or carried by an agent row', () => {
+    for (const changes of [
+        { closePolicy: 'maybe' }, { pendingStopUntil: -1 }, { pendingStopUntil: 1.5 }, { pendingStopUntil: '5' }, { pendingStopUntil: 0 },
+        { ownerViewOpen: 'yes' }, { profileLabel: '' }, { profileLabel: 'bad\nlabel' }, { profileLabel: 'x'.repeat(129) },
+        { closure: 'pending' }, // a live row has no closure
+        { closureScope: 'global' }, { recordCleanup: 'failed' }, { principal: 'private' },
+    ]) assert.throws(() => normalizeLiveSessionsPayload(payload([row(changes)])), /Invalid/, JSON.stringify(changes));
+    for (const changes of [
+        { closure: 'done' }, { closure: 'proven', closureScope: 'global' }, { closure: 'unconfirmed', closureScope: 'planet' },
+        { closureScope: 'global' }, { recordCleanup: 'ok' }, { recordCleanup: true },
+    ]) assert.throws(() => normalizeLiveSessionsPayload(payload([tombstone(changes)])), /Invalid/, JSON.stringify(changes));
+
+    const source = { agent: 'roboTeamAgent', liveSessions: { version: 1, base: '/roboTeamAgent/runs' } };
+    const agent = { ...row(), id: 'ls_task', source: 'roboTeamAgent', kind: 'robot-task', status: 'running', ownerState: 'verified', exit: null,
+        attach: { mode: 'event-stream' }, capabilities: { watch: true, input: false, stop: true, message: false } };
+    assert.equal(normalizeAgentSessionsPayload(payload([agent]), source).length, 1);
+    for (const extra of [
+        { closePolicy: 'stop' }, { pendingStopUntil: null }, { ownerViewOpen: false }, { profileLabel: 'Robot A' },
+        { closure: 'proven' }, { closureScope: 'global' }, { recordCleanup: 'failed' },
+    ]) assert.throws(() => normalizeAgentSessionsPayload(payload([{ ...agent, ...extra }]), source), /Invalid/, JSON.stringify(extra));
+    assert.throws(() => normalizeAgentSessionsPayload({ ...payload([agent]), available: false }, source), /Invalid/);
+});
+
+test('close-policy request is an exact owner POST and its response is validated', async () => {
+    const calls = [];
+    globalThis.document = { cookie: 'ploinky_browser_csrf=v1.policy-proof' };
+    const fetchImpl = async (url, request) => {
+        calls.push({ url, request });
+        return response({ ok: true, closePolicy: 'keep', pendingStopUntil: null });
+    };
+    const result = await setLiveSessionClosePolicy(ID, 'keep', { fetchImpl });
+    assert.deepEqual(result, { closePolicy: 'keep', pendingStopUntil: null });
+    assert.equal(calls[0].url, `/webtty/sessions/${ID}/close-policy`);
+    assert.equal(calls[0].request.method, 'POST');
+    assert.equal(calls[0].request.body, '{"policy":"keep"}');
+    assert.equal(calls[0].request.headers['X-Ploinky-Browser-CSRF-Token'], 'v1.policy-proof');
+    assert.equal(calls[0].request.credentials, 'same-origin');
+    delete globalThis.document;
+
+    for (const body of [
+        { ok: true, closePolicy: 'keep' }, { ok: true, closePolicy: 'later', pendingStopUntil: null },
+        { ok: true, closePolicy: 'stop', pendingStopUntil: 'soon' }, { ok: true, closePolicy: 'stop', pendingStopUntil: null, extra: 1 },
+        { ok: false, closePolicy: 'keep', pendingStopUntil: null },
+    ]) await assert.rejects(setLiveSessionClosePolicy(ID, 'keep', { fetchImpl: async () => response(body) }), /Invalid/);
+    await assert.rejects(setLiveSessionClosePolicy(ID, 'later', { fetchImpl }), /Invalid/);
+    await assert.rejects(setLiveSessionClosePolicy('../x', 'keep', { fetchImpl }), /Invalid/);
+    await assert.rejects(setLiveSessionClosePolicy(ID, 'keep', { fetchImpl: async () => response({}, 409) }), (error) => error.status === 409);
+});
+
+test('close intent is one keepalive POST with the mutation proof and exact {view, policy}', async () => {
+    globalThis.document = { cookie: 'ploinky_browser_csrf=v1.intent-proof' };
+    const calls = [];
+    try {
+        await sendLiveSessionCloseIntent(ID, VIEW, 'stop', { fetchImpl: async (url, request) => { calls.push({ url, request }); return response({ ok: true }, 202); } });
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].url, `/webtty/sessions/${ID}/close-intents`);
+        assert.equal(calls[0].request.method, 'POST');
+        assert.equal(calls[0].request.keepalive, true);
+        assert.equal(calls[0].request.credentials, 'same-origin');
+        assert.equal(calls[0].request.headers['X-Ploinky-Browser-CSRF-Token'], 'v1.intent-proof');
+        assert.deepEqual(JSON.parse(calls[0].request.body), { view: VIEW, policy: 'stop' });
+        assert.deepEqual(Object.keys(JSON.parse(calls[0].request.body)), ['view', 'policy']);
+        // Invalid views and policies send nothing; a lost request is swallowed because a missing signal stops nothing.
+        assert.equal(sendLiveSessionCloseIntent(ID, 'short', 'stop', { fetchImpl: async () => { throw new Error('unreachable'); } }), undefined);
+        assert.equal(sendLiveSessionCloseIntent(ID, VIEW, 'later', { fetchImpl: async () => { throw new Error('unreachable'); } }), undefined);
+        await sendLiveSessionCloseIntent(ID, VIEW, 'keep', { fetchImpl: async () => { throw new Error('offline'); } });
+        assert.equal(sendLiveSessionCloseIntent(ID, VIEW, 'keep', { fetchImpl: () => { throw new Error('sync'); } }), undefined);
+    } finally {
+        delete globalThis.document;
+    }
+});
+
+test('status texts: pending countdown, still running after a missed signal, and each closure scope', () => {
+    const now = 1_000_000;
+    assert.equal(closePolicyStatusText(unattended({ pendingStopUntil: now + 12_500 }), now), 'Stops in 13 s unless reopened');
+    assert.equal(closePolicyStatusText(unattended({ pendingStopUntil: now - 5 }), now), 'Stops in 0 s unless reopened');
+    assert.equal(closePolicyStatusText(unattended(), now), 'Set to stop on close, still running');
+    assert.equal(closePolicyStatusText(unattended({ ownerViewOpen: true }), now), '');
+    assert.equal(closePolicyStatusText(row({ closePolicy: 'keep', ownerViewOpen: false, pendingStopUntil: null }), now), '');
+    assert.equal(closePolicyStatusText(row(), now), '', 'a row from an older Ploinky reports nothing');
+    assert.equal(closePolicyStatusText(tombstone(), now), '');
+
+    assert.equal(closureText(tombstone({ closure: 'pending' })), 'Stopping…');
+    assert.equal(closureText(tombstone({ closure: 'proven' })), 'Stopped (confirmed)');
+    assert.equal(closureText(tombstone({ closure: 'unconfirmed', closureScope: 'global' })), 'Stop not confirmed; terminal service disabled for safety');
+    assert.equal(closureText(tombstone({ closure: 'unconfirmed', closureScope: 'provider' })), 'Stop not confirmed; agent terminals disabled for safety');
+    assert.equal(closureText(tombstone({ closure: 'unconfirmed', closureScope: 'target' })), 'Stop not confirmed; this agent is quarantined for terminals');
+    assert.equal(closureText(tombstone({ closure: 'unconfirmed' })), 'Stop not confirmed');
+    assert.equal(closureText(tombstone({ closure: undefined })), '');
+    assert.doesNotMatch(closureText(tombstone({ closure: 'pending' })), /confirmed/i);
+});
+
+test('rows show the profile, the close policy, closure outcomes, the cleanup flag and the disabled banner', async (t) => {
+    const { modal, elements } = environment(t);
+    const rows = [
+        unattended({ id: ID, title: 'Terminal A', profileLabel: 'Robot A' }),
+        unattended({ id: SECOND_ID, title: 'Terminal B', profileLabel: null, pendingStopUntil: Date.now() + 20_000 }),
+        tombstone({ id: 'A'.repeat(32), closure: 'unconfirmed', closureScope: 'target', recordCleanup: 'failed' }),
+        tombstone({ id: 'B'.repeat(32), closure: 'pending' }),
+        tombstone({ id: 'C'.repeat(32) }),
+        row({ id: 'D'.repeat(32), title: 'Legacy' }),
+    ];
+    let body = { ...payload(rows), available: false };
+    globalThis.fetch = async () => response(body);
+    modal.afterRender();
+    await settle();
+
+    const list = elements.get('#liveSessionsList').children;
+    assert.equal(list[0].textContent, 'Terminals are disabled for safety. Only retained stop results are listed.');
+    assert.equal(list[0].role, 'alert');
+    assert.equal(list.length, 7);
+    const texts = [1, 2, 3, 4, 5, 6].map((index) => listText(elements, index));
+    assert.match(texts[0], /Profile: Robot A · When its tab closes: Stop it/);
+    assert.match(texts[0], /Set to stop on close, still running/);
+    assert.match(texts[1], /^.*Terminal B/);
+    assert.doesNotMatch(texts[1], /Profile:/);
+    assert.match(texts[1], /Stops in (19|20) s unless reopened/);
+    assert.doesNotMatch(texts[1], /Set to stop on close, still running/);
+    assert.match(texts[2], /Stop not confirmed; this agent is quarantined for terminals/);
+    assert.match(texts[2], /Record cleanup failed/);
+    assert.match(texts[3], /Stopping…/);
+    assert.match(texts[4], /Stopped \(confirmed\)/);
+    assert.doesNotMatch(texts[5], /When its tab closes|Set to stop|Stopped|Stopping/);
+    for (const index of [3, 4, 5]) assert.equal(elements.get('#liveSessionsList').children[index].children.some((child) => child.className === 'live-sessions-actions'), false);
+
+    body = payload(rows);
+    await modal.refresh();
+    assert.notEqual(elements.get('#liveSessionsList').children[0].role, 'alert', 'the banner disappears with available');
+    assert.equal(elements.get('#liveSessionsList').children.length, 6);
+});
+
+test('aggregate reports the shell available flag and never invents one for agent sources', async () => {
+    const source = { agent: 'roboTeamAgent', id: 'runs', label: 'Runs', contributionType: 'live-sessions-source', liveSessions: { version: 1, base: '/roboTeamAgent/runs' } };
+    const fetchImpl = async (url) => response(url === '/webtty/live-sessions' ? { ...payload([tombstone()]), available: false } : payload([]));
+    const results = await aggregateLiveSessions([source], { admin: true, fetchImpl });
+    const shell = results.find((result) => result.source.shell);
+    const agent = results.find((result) => !result.source.shell);
+    assert.equal(shell.available, false);
+    assert.equal(shell.rows.length, 1);
+    assert.equal(Object.hasOwn(agent, 'available'), false);
+    assert.equal((await listLiveSessionsDetailed({ fetchImpl })).available, false);
+    assert.equal((await listLiveSessions({ fetchImpl })).length, 1);
+});
+
+test('Keep running posts close-policy keep once for an owner; Kill keeps its confirmation; others cannot keep', async (t) => {
+    const { modal, elements } = environment(t);
+    const calls = [];
+    globalThis.fetch = async (url, options) => {
+        calls.push([options.method, url, options.body]);
+        if (options.method === 'POST') return response({ ok: true, closePolicy: 'keep', pendingStopUntil: null });
+        return response(payload([
+            unattended(),
+            unattended({ id: SECOND_ID, isOwner: false, capabilities: { watch: true, input: false, stop: true, message: false } }),
+            row({ id: 'K'.repeat(32), closePolicy: 'keep', ownerViewOpen: false, pendingStopUntil: null }),
+        ]));
+    };
+    modal.afterRender();
+    await settle();
+    const buttons = (index) => elements.get('#liveSessionsList').children[index].children
+        .find((child) => child.className === 'live-sessions-actions').children.map((button) => button.textContent);
+    assert.deepEqual(buttons(0), ['Attach', 'Keep running', 'Pop out', 'Kill']);
+    assert.deepEqual(buttons(1), ['Attach', 'Pop out', 'Kill']);
+    assert.deepEqual(buttons(2), ['Attach', 'Pop out', 'Kill']);
+
+    await modal.performAction(SECOND_ID, 'keep-running');
+    await modal.performAction('K'.repeat(32), 'keep-running');
+    assert.deepEqual(calls.filter((call) => call[0] !== 'GET'), []);
+
+    await modal.performAction(ID, 'keep-running');
+    await settle();
+    assert.deepEqual(calls.filter((call) => call[0] !== 'GET'), [['POST', `/webtty/sessions/${ID}/close-policy`, '{"policy":"keep"}']]);
+    assert.ok(calls.filter((call) => call[0] === 'GET').length >= 2, 'the list is refreshed after the action');
+    assert.ok(!calls.some((call) => call[0] === 'DELETE'));
+});
+
+function embeddedEnvironment(t, rows = [unattended()]) {
+    const env = environment(t);
+    const win = fakeWindow();
+    globalThis.window = win;
+    globalThis.sessionStorage = memoryStorage();
+    const calls = [];
+    globalThis.fetch = async (url, options) => {
+        calls.push({ url, options });
+        if (options.method === 'GET') return response(payload(rows));
+        if (url.endsWith('/attach-tokens')) return response({ ok: true, attach: TOKEN, expiresAt: Date.now() + 60000 }, 201);
+        return response({ ok: true }, 202);
+    };
+    globalThis.document.cookie = 'ploinky_browser_csrf=v1.embedded-proof';
+    const frame = () => env.elements.get('#liveSessionsFrame').children[0];
+    const announce = (overrides = {}, event = {}) => win.dispatch('message', {
+        source: frame().contentWindow, origin: ORIGIN,
+        data: { type: 'ploinky-webtty:view', sessionId: ID, viewId: VIEW, role: 'owner', policy: 'stop', ...overrides },
+        ...event,
+    });
+    return { ...env, win, calls, frame, announce, storage: globalThis.sessionStorage };
+}
+
+test('embedded owner view ignores foreign windows, origins, shapes and roles; a valid announcement registers pagehide and the key', async (t) => {
+    const page = embeddedEnvironment(t);
+    page.modal.afterRender();
+    await settle();
+    await page.modal.performAction(ID, 'attach');
+    const frame = page.frame();
+    frame.contentWindow = { name: 'iframe' };
+    assert.equal(frame.src, `/webtty/#attach=${TOKEN}`);
+    assert.equal(page.win.count('message'), 1);
+    const { data } = { data: { type: 'ploinky-webtty:view', sessionId: ID, viewId: VIEW, role: 'owner', policy: 'stop' } };
+
+    const forged = [
+        { source: { name: 'another window' } }, { source: null }, { source: undefined },
+        { origin: 'https://evil.test' }, { origin: 'null' },
+        { data: { ...data, extra: 1 } }, { data: { type: data.type, sessionId: ID, viewId: VIEW, role: 'owner' } },
+        { data: { ...data, type: 'other' } }, { data: { ...data, sessionId: SECOND_ID } }, { data: { ...data, role: 'watcher' } },
+        { data: { ...data, viewId: 'short' } }, { data: { ...data, viewId: 'bad id'.padEnd(32, 'x') } }, { data: { ...data, policy: 'later' } },
+        { data: null }, { data: 'ploinky-webtty:view' }, { data: [] },
+    ];
+    for (const event of forged) {
+        page.win.dispatch('message', { source: frame.contentWindow, origin: ORIGIN, data, ...event });
+    }
+    assert.equal(page.win.count('pagehide'), 0);
+    assert.equal(page.storage.data.size, 0);
+    page.win.dispatch('pagehide', {});
+    assert.equal(page.calls.filter((call) => call.options.method === 'POST' && call.url.includes('close-intents')).length, 0);
+
+    page.announce();
+    assert.equal(page.win.count('pagehide'), 1);
+    assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), JSON.stringify({ sessionId: ID, viewId: VIEW }));
+    assert.deepEqual(readEmbeddedTerminalKey(), { sessionId: ID, viewId: VIEW });
+    // A later announcement (policy change, bfcache re-attach) updates the view without a second listener.
+    const second = 'W'.repeat(32);
+    page.announce({ viewId: second, policy: 'keep' });
+    assert.equal(page.win.count('pagehide'), 1);
+
+    const before = page.calls.length;
+    page.win.dispatch('pagehide', { persisted: false });
+    const intents = page.calls.slice(before);
+    assert.equal(intents.length, 1);
+    assert.equal(intents[0].url, `/webtty/sessions/${ID}/close-intents`);
+    assert.equal(intents[0].options.method, 'POST');
+    assert.equal(intents[0].options.keepalive, true);
+    assert.equal(intents[0].options.headers['X-Ploinky-Browser-CSRF-Token'], 'v1.embedded-proof');
+    assert.deepEqual(JSON.parse(intents[0].options.body), { view: second, policy: 'keep' });
+    assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), JSON.stringify({ sessionId: ID, viewId: second }), 'page hide must not clear the restore key');
+    assert.equal(page.win.count('pagehide'), 1);
+});
+
+test('detaching, switching, refreshing away and closing the panel clear the key and listeners without any request', async (t) => {
+    const second = unattended({ id: SECOND_ID, title: 'Terminal B' });
+    const page = embeddedEnvironment(t, [unattended(), second]);
+    page.modal.afterRender();
+    await settle();
+    await page.modal.performAction(ID, 'attach');
+    page.frame().contentWindow = { name: 'first' };
+    page.announce();
+    assert.equal(page.storage.data.size, 1);
+    let before = page.calls.length;
+
+    // Switching to another session replaces the embedded view and clears the previous registration first.
+    await page.modal.performAction(SECOND_ID, 'attach');
+    const switched = page.calls.slice(before);
+    assert.deepEqual(switched.map((call) => call.url), [`/webtty/live-sessions/${SECOND_ID}/attach-tokens`]);
+    assert.equal(page.win.count('pagehide'), 0);
+    assert.equal(page.storage.data.size, 0);
+    assert.equal(page.win.count('message'), 1);
+    page.frame().contentWindow = { name: 'second' };
+    page.announce({ sessionId: SECOND_ID });
+    assert.equal(readEmbeddedTerminalKey().sessionId, SECOND_ID);
+    page.win.dispatch('message', { source: { name: 'first' }, origin: ORIGIN, data: { type: 'ploinky-webtty:view', sessionId: ID, viewId: VIEW, role: 'owner', policy: 'stop' } });
+    assert.equal(readEmbeddedTerminalKey().sessionId, SECOND_ID, 'the old frame can no longer register anything');
+
+    // Detach view.
+    before = page.calls.length;
+    page.modal.detachViewer();
+    assert.equal(page.calls.length, before);
+    assert.equal(page.storage.data.size, 0);
+    assert.equal(page.win.count('pagehide'), 0);
+    assert.equal(page.win.count('message'), 0);
+    page.win.dispatch('pagehide', {});
+    assert.equal(page.calls.length, before, 'a detached view sends no close intent');
+
+    // Closing the panel while attached.
+    await page.modal.performAction(ID, 'attach');
+    page.frame().contentWindow = { name: 'third' };
+    page.announce();
+    assert.equal(page.storage.data.size, 1);
+    before = page.calls.length;
+    page.modal.afterUnload();
+    page.win.dispatch('pagehide', {});
+    assert.equal(page.calls.length, before);
+    assert.equal(page.storage.data.size, 0);
+    assert.equal(page.win.count('message') + page.win.count('pagehide'), 0);
+});
+
+test('a watcher or an exited shell never registers a close intent', async (t) => {
+    const page = embeddedEnvironment(t, [unattended({ isOwner: false, capabilities: { watch: true, input: false, stop: true, message: false } })]);
+    page.modal.afterRender();
+    await settle();
+    await page.modal.performAction(ID, 'attach');
+    page.frame().contentWindow = { name: 'watcher' };
+    assert.equal(page.win.count('message'), 0, 'a foreign administrator is only watching');
+    page.announce({ role: 'watcher' });
+    page.announce({ role: 'owner' });
+    page.win.dispatch('pagehide', {});
+    assert.equal(page.storage.data.size, 0);
+    assert.equal(page.calls.filter((call) => call.url.includes('close-intents')).length, 0);
+});
+
+test('a viewed shell that exits or disappears clears the key and listeners', async (t) => {
+    let rows = [unattended()];
+    const page = embeddedEnvironment(t, rows);
+    globalThis.fetch = async (url, options) => {
+        page.calls.push({ url, options });
+        if (options.method === 'GET') return response(payload(rows));
+        return response({ ok: true, attach: TOKEN, expiresAt: Date.now() + 60000 }, 201);
+    };
+    page.modal.afterRender();
+    await settle();
+    await page.modal.performAction(ID, 'attach');
+    page.frame().contentWindow = { name: 'first' };
+    page.announce();
+    assert.equal(page.storage.data.size, 1);
+    rows = [tombstone()];
+    await page.modal.refresh();
+    assert.equal(page.modal.viewerId, '');
+    assert.equal(page.storage.data.size, 0);
+    assert.equal(page.win.count('pagehide') + page.win.count('message'), 0);
+});
+
+function startupEnvironment(t, { admin = true, rows = [unattended()], key = { sessionId: ID, viewId: VIEW }, fetchImpl = null } = {}) {
+    const env = environment(t, { admin });
+    const win = fakeWindow();
+    globalThis.window = win;
+    globalThis.sessionStorage = memoryStorage(key ? { [EMBEDDED_TERMINAL_KEY]: JSON.stringify(key) } : {});
+    clearPendingRestore();
+    publishCue(0);
+    const calls = [];
+    const opened = [];
+    globalThis.assistOS.UI = { openExpandedModal: (descriptor) => { opened.push(descriptor); return Promise.resolve(); } };
+    globalThis.fetch = fetchImpl || (async (url, options) => {
+        calls.push({ url, method: options.method, ...(options.body === undefined ? {} : { body: options.body }) });
+        if (options.method === 'GET') return response(payload(rows));
+        return response({ ok: true, attach: TOKEN, expiresAt: Date.now() + 60000 }, 201);
+    });
+    const badge = new Element('span');
+    badge.hidden = true;
+    const button = new Element('button');
+    const host = new Element();
+    host.querySelector = (selector) => ({ '#liveSessionsToolButton': button, '#liveSessionsBadge': badge })[selector] || null;
+    const toolButton = new LiveSessionsToolButton(host, () => {});
+    t.after(() => { toolButton.afterUnload(); clearPendingRestore(); publishCue(0); });
+    return { ...env, calls, opened, badge, button, toolButton, host, storage: globalThis.sessionStorage };
+}
+
+function clearPendingRestore() { takeEmbeddedRestore(); }
+
+test('Explorer start makes one shell-list read, restores a still-owned embedded terminal through attach tokens, and shows the badge', async (t) => {
+    const page = startupEnvironment(t, { rows: [unattended(), tombstone({ id: 'U'.repeat(32), closure: 'unconfirmed', closureScope: 'global' })] });
+    page.toolButton.afterRender();
+    await settle();
+
+    assert.deepEqual(page.calls, [{ url: '/webtty/live-sessions', method: 'GET' }], 'exactly one GET at start');
+    assert.equal(page.badge.textContent, '2');
+    assert.equal(page.badge.hidden, false);
+    assert.equal(currentCue(), 2);
+    assert.equal(page.opened.length, 1);
+    assert.deepEqual(page.opened[0], { mode: 'component', component: 'live-sessions-modal', title: 'Live Sessions', fullscreen: true });
+    assert.ok(!JSON.stringify(page.opened).includes(ID), 'the descriptor carries no session identifier');
+
+    // The panel the host opens takes over the one-shot restore and re-attaches with a fresh attach token.
+    globalThis.assistOS.user = { roles: ['admin'] };
+    const frameHost = page.elements.get('#liveSessionsFrame');
+    page.modal.afterRender();
+    await settle();
+    const posts = page.calls.filter((call) => call.method === 'POST');
+    // The recovered view is named in the claim, and nothing else is.
+    assert.deepEqual(posts, [{ url: `/webtty/live-sessions/${ID}/attach-tokens`, method: 'POST', body: JSON.stringify({ supersedes: VIEW }) }]);
+    assert.equal(frameHost.children[0].src, `/webtty/#attach=${TOKEN}`);
+    assert.equal(page.modal.viewerId, ID);
+    assert.equal(takeEmbeddedRestore(), null, 'the restore request is consumed once');
+
+    // A second toolbar mount in the same page does not read again.
+    const again = new LiveSessionsToolButton(page.host, () => {});
+    t.after(() => again.afterUnload());
+    again.afterRender();
+    await settle();
+    assert.equal(page.calls.filter((call) => call.url === '/webtty/live-sessions' && call.method === 'GET').length, 2, 'start read plus the panel read only');
+});
+
+test('Explorer start clears the key when the session is gone, exited or not owned, and opens nothing', async (t) => {
+    for (const rows of [
+        [], [tombstone()], [unattended({ isOwner: false, capabilities: { watch: true, input: false, stop: true, message: false } })],
+        [unattended({ id: SECOND_ID })],
+    ]) {
+        const page = startupEnvironment(t, { rows });
+        page.toolButton.afterRender();
+        await settle();
+        assert.equal(page.calls.length, 1);
+        assert.deepEqual(page.opened, []);
+        assert.equal(page.storage.data.size, 0, 'the stale key is cleared');
+        assert.equal(takeEmbeddedRestore(), null);
+        page.toolButton.afterUnload();
+    }
+});
+
+test('Explorer start without a stored terminal still reads once for the badge and opens nothing', async (t) => {
+    const page = startupEnvironment(t, { key: null, rows: [unattended(), unattended({ id: SECOND_ID, ownerViewOpen: true })] });
+    page.toolButton.afterRender();
+    await settle();
+    assert.equal(page.calls.length, 1);
+    assert.equal(page.badge.textContent, '1');
+    assert.deepEqual(page.opened, []);
+    const garbage = startupEnvironment(t, { key: null });
+    garbage.storage.setItem(EMBEDDED_TERMINAL_KEY, '{"sessionId":"x","extra":1}');
+    garbage.toolButton.afterRender();
+    await settle();
+    assert.deepEqual(garbage.opened, []);
+});
+
+test('Explorer start for a non-administrator, a failed read, or a panel closed meanwhile reads nothing or restores nothing', async (t) => {
+    const user = startupEnvironment(t, { admin: false });
+    user.toolButton.afterRender();
+    user.toolButton.updateHostContext({});
+    await settle();
+    assert.deepEqual(user.calls, []);
+    assert.deepEqual(user.opened, []);
+
+    const failed = startupEnvironment(t, { fetchImpl: async () => response({}, 503) });
+    failed.toolButton.afterRender();
+    await settle();
+    assert.deepEqual(failed.opened, []);
+    assert.equal(failed.storage.data.size, 0);
+
+    let release;
+    const closing = startupEnvironment(t, {
+        fetchImpl: async () => { await new Promise((resolve) => { release = resolve; }); return response(payload([unattended()])); },
+    });
+    closing.toolButton.afterRender();
+    await settle();
+    clearEmbeddedTerminalKey();
+    release();
+    await settle();
+    assert.deepEqual(closing.opened, [], 'closing the panel during the read wins over the restore');
+    assert.equal(takeEmbeddedRestore(), null);
+});
+
+test('the return cue counts owned unattended stop-policy shells and unconfirmed tombstones, and adds no timer', async (t) => {
+    const owned = unattended();
+    assert.equal(countNeedsAttention([
+        owned,
+        unattended({ id: '1'.repeat(32), pendingStopUntil: 9000 }),
+        unattended({ id: '2'.repeat(32), ownerViewOpen: true }),
+        row({ id: '3'.repeat(32), closePolicy: 'keep', ownerViewOpen: false, pendingStopUntil: null }),
+        unattended({ id: '4'.repeat(32), isOwner: false, capabilities: { watch: true, input: false, stop: true, message: false } }),
+        row({ id: '5'.repeat(32) }),
+        tombstone({ id: '6'.repeat(32), closure: 'unconfirmed', closureScope: 'provider' }),
+        tombstone({ id: '7'.repeat(32), closure: 'unconfirmed' }),
+        tombstone({ id: 'c'.repeat(32), closure: 'unconfirmed', closureScope: 'global', isOwner: false, capabilities: { watch: true, input: false, stop: true, message: false } }),
+        tombstone({ id: '8'.repeat(32), closure: 'proven' }),
+        tombstone({ id: '9'.repeat(32), closure: 'pending' }),
+        tombstone({ id: 'a'.repeat(32), closure: undefined }),
+        tombstone({ id: 'b'.repeat(32), closure: 'proven', closePolicy: 'stop', ownerViewOpen: false }),
+    ]), 5);
+    assert.equal(countNeedsAttention([]), 0);
+
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    const page = startupEnvironment(t, { key: null, rows: [owned] });
+    page.toolButton.afterRender();
+    await settle();
+    assert.equal(page.badge.textContent, '1');
+    assert.match(page.button['aria-label'] || '', /1 to review/);
+    t.mock.timers.tick(120_000);
+    await settle();
+    assert.equal(page.calls.length, 1, 'start schedules no poller of its own');
+
+    // The panel's existing five-second poll refreshes the badge.
+    page.modal.afterRender();
+    await settle();
+    assert.equal(page.calls.length, 2);
+    page.modal.rows.clear();
+    const fetched = [unattended(), unattended({ id: SECOND_ID }), unattended({ id: 'T'.repeat(32), ownerViewOpen: true })];
+    globalThis.fetch = async () => response(payload(fetched));
+    t.mock.timers.tick(5000);
+    await settle();
+    assert.equal(page.badge.textContent, '2');
+    fetched.length = 0;
+    t.mock.timers.tick(5000);
+    await settle();
+    assert.equal(page.badge.hidden, true);
+    assert.equal(currentCue(), 0);
+    publishCue(150);
+    assert.equal(page.badge.textContent, '99+');
+});
+
+test('mountOnStart is opt-in per plugin, boolean only, and set only by Live Sessions', async () => {
+    const pluginsRoot = path.join(root, 'IDE-plugins');
+    const optedIn = [];
+    for (const name of await fs.readdir(pluginsRoot)) {
+        const config = JSON.parse(await fs.readFile(path.join(pluginsRoot, name, 'config.json'), 'utf8').catch(() => 'null') || 'null');
+        if (config && Object.hasOwn(config, 'mountOnStart')) optedIn.push([name, config.mountOnStart]);
+    }
+    assert.deepEqual(optedIn, [['live-sessions', true]]);
+
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mount-on-start-'));
+    const declare = async (name, extra) => {
+        const folder = path.join(directory, 'sample', 'IDE-plugins', name);
+        await fs.mkdir(folder, { recursive: true });
+        await fs.writeFile(path.join(folder, 'config.json'), JSON.stringify({
+            pluginCategory: 'application', id: name, component: `sample-${name}`, location: ['file-exp:toolbar'], ...extra,
+        }));
+    };
+    try {
+        await declare('absent', {});
+        await declare('on', { mountOnStart: true });
+        await declare('off', { mountOnStart: false });
+        for (const [name, value] of [['string', 'true'], ['number', 1], ['null', null], ['object', {}], ['array', [true]]]) {
+            await declare(`bad-${name}`, { mountOnStart: value });
+        }
+        const catalog = await aggregateIdePlugins(directory);
+        const found = catalog.application['file-exp:toolbar'];
+        assert.deepEqual(found.map((entry) => entry.id).sort(), ['absent', 'off', 'on'], 'non-boolean values are rejected on the server');
+        const normalized = normalizeRuntimePlugins(catalog).application['file-exp:toolbar'];
+        assert.deepEqual(Object.fromEntries(normalized.map((entry) => [entry.id, entry.mountOnStart])), { absent: false, off: false, on: true });
+        // The browser repeats the check for catalogs it did not build itself.
+        for (const bad of ['true', 1, null, {}, []]) {
+            const entry = { ...found.find((candidate) => candidate.id === 'on'), mountOnStart: bad };
+            assert.equal(normalizeRuntimePlugins({ application: { 'file-exp:toolbar': [entry] } }).application['file-exp:toolbar'].length, 0, JSON.stringify(bad));
+        }
+    } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('the start work runs once when the opted-in toolbar button mounts, however often it renders or gets context', async (t) => {
+    const page = startupEnvironment(t, { key: null, rows: [unattended()] });
+    page.toolButton.afterRender();
+    page.toolButton.afterRender();
+    page.toolButton.updateHostContext({ pluginLabel: 'Live Sessions' });
+    await settle();
+    page.toolButton.afterRender();
+    page.toolButton.updateHostContext({});
+    await settle();
+    assert.deepEqual(page.calls, [{ url: '/webtty/live-sessions', method: 'GET' }]);
+    assert.equal(page.button.hidden, false, 'the mounted button is visible');
+    assert.equal(page.badge.textContent, '1');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Addendum A1 (explicit recovery supersession): A11-S.
+// ---------------------------------------------------------------------------------------------------------------
+
+test('A11-S: the attach-token body is exactly {} or exactly {supersedes}, and a bad claim sends nothing', async () => {
+    const bodies = [];
+    const fetchImpl = async (_url, request) => {
+        bodies.push(request.body);
+        return response({ ok: true, attach: TOKEN, expiresAt: Date.now() + 60000 }, 201);
+    };
+    assert.equal(await mintLiveSessionAttach(ID, { fetchImpl }), TOKEN);
+    assert.equal(await mintLiveSessionAttach(ID, { fetchImpl, supersedes: VIEW }), TOKEN);
+    assert.deepEqual(bodies, ['{}', JSON.stringify({ supersedes: VIEW })]);
+    assert.deepEqual(Object.keys(JSON.parse(bodies[1])), ['supersedes']);
+    for (const supersedes of ['short', 'V'.repeat(33), 'V'.repeat(31), 'bad id'.padEnd(32, 'x'), '', null, 7, {}, ['V'.repeat(32)]]) {
+        await assert.rejects(mintLiveSessionAttach(ID, { fetchImpl, supersedes }), /Invalid superseded view/, String(supersedes));
+    }
+    assert.equal(bodies.length, 2, 'rejected claims never reach the network');
+});
+
+test('A11-S: the embedded key is exactly {sessionId, viewId} and is rewritten on every validated announcement', async (t) => {
+    const page = embeddedEnvironment(t);
+    const writes = [];
+    const setItem = page.storage.setItem;
+    page.storage.setItem = (key, value) => { writes.push([key, value]); setItem(key, value); };
+    page.modal.afterRender();
+    await settle();
+    await page.modal.performAction(ID, 'attach');
+    page.frame().contentWindow = { name: 'frame' };
+
+    page.announce({ viewId: 'A'.repeat(32), policy: 'stop' });
+    page.announce({ viewId: 'B'.repeat(32), policy: 'keep' });
+    page.announce({ viewId: 'B'.repeat(32), policy: 'keep' });
+    page.announce({ viewId: 'C'.repeat(32), policy: 'stop' });
+    assert.deepEqual(writes, [
+        [EMBEDDED_TERMINAL_KEY, JSON.stringify({ sessionId: ID, viewId: 'A'.repeat(32) })],
+        [EMBEDDED_TERMINAL_KEY, JSON.stringify({ sessionId: ID, viewId: 'B'.repeat(32) })],
+        [EMBEDDED_TERMINAL_KEY, JSON.stringify({ sessionId: ID, viewId: 'B'.repeat(32) })],
+        [EMBEDDED_TERMINAL_KEY, JSON.stringify({ sessionId: ID, viewId: 'C'.repeat(32) })],
+    ]);
+    assert.deepEqual(readEmbeddedTerminalKey(), { sessionId: ID, viewId: 'C'.repeat(32) });
+    assert.equal(page.win.count('pagehide'), 1);
+
+    // Rejected announcements write nothing.
+    page.announce({ viewId: 'D'.repeat(33) });
+    page.announce({ viewId: 'short' });
+    page.announce({ role: 'watcher' });
+    page.announce({ sessionId: SECOND_ID });
+    page.announce({}, { origin: 'https://evil.test' });
+    assert.equal(writes.length, 4);
+    assert.equal(readEmbeddedTerminalKey().viewId, 'C'.repeat(32));
+});
+
+test('A11-S: a legacy, malformed or unreadable key is absent, and a bad write stores nothing', (t) => {
+    const storage = memoryStorage();
+    const previous = globalThis.sessionStorage;
+    globalThis.sessionStorage = storage;
+    t.after(() => { globalThis.sessionStorage = previous; });
+    const good = JSON.stringify({ sessionId: ID, viewId: VIEW });
+    storage.setItem(EMBEDDED_TERMINAL_KEY, good);
+    assert.deepEqual(readEmbeddedTerminalKey(), { sessionId: ID, viewId: VIEW });
+    assert.equal(storage.data.get(EMBEDDED_TERMINAL_KEY), good, 'a valid key is left in place');
+
+    for (const value of [
+        JSON.stringify({ sessionId: ID }), // the earlier shape
+        JSON.stringify({ sessionId: ID, viewId: 'short' }), JSON.stringify({ sessionId: ID, viewId: 'V'.repeat(33) }),
+        JSON.stringify({ sessionId: 'short', viewId: VIEW }), JSON.stringify({ sessionId: ID, viewId: VIEW, extra: 1 }),
+        JSON.stringify({ sessionId: ID, viewId: 7 }), JSON.stringify([ID, VIEW]), JSON.stringify(ID), 'null', '{not json', '',
+    ]) {
+        storage.setItem(EMBEDDED_TERMINAL_KEY, value);
+        assert.equal(readEmbeddedTerminalKey(), null, value);
+        assert.equal(storage.data.has(EMBEDDED_TERMINAL_KEY), false, `${value} is cleared`);
+    }
+    assert.equal(readEmbeddedTerminalKey(), null);
+
+    writeEmbeddedTerminalKey(ID, 'short');
+    writeEmbeddedTerminalKey('short', VIEW);
+    writeEmbeddedTerminalKey(ID, undefined);
+    assert.equal(storage.data.size, 0);
+    writeEmbeddedTerminalKey(ID, VIEW);
+    assert.equal(storage.data.get(EMBEDDED_TERMINAL_KEY), good);
+
+    queueEmbeddedRestore({ sessionId: ID });
+    assert.equal(takeEmbeddedRestore(), null);
+    queueEmbeddedRestore({ sessionId: ID, viewId: VIEW });
+    assert.deepEqual(takeEmbeddedRestore(), { sessionId: ID, viewId: VIEW });
+    assert.equal(takeEmbeddedRestore(), null);
+
+    globalThis.sessionStorage = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };
+    assert.equal(readEmbeddedTerminalKey(), null);
+    writeEmbeddedTerminalKey(ID, VIEW);
+    clearEmbeddedTerminalKey();
+});
+
+test('A11-S: Explorer start with a legacy key restores nothing and clears it', async (t) => {
+    const page = startupEnvironment(t, { key: { sessionId: ID }, rows: [unattended()] });
+    page.toolButton.afterRender();
+    await settle();
+    assert.deepEqual(page.calls.map((call) => call.method), ['GET']);
+    assert.deepEqual(page.opened, []);
+    assert.equal(page.storage.data.size, 0);
+    assert.equal(takeEmbeddedRestore(), null);
+});
+
+test('A11-S: only the Explorer restore names a superseded view; plain attach and pop-out send {}', async (t) => {
+    const page = embeddedEnvironment(t);
+    globalThis.window.open = () => ({
+        opener: {}, close() {}, document: { createElement: () => ({ click() {} }), body: { appendChild() {} } },
+    });
+    page.modal.afterRender();
+    await settle();
+    const mintBodies = () => page.calls.filter((call) => call.url.endsWith('/attach-tokens')).map((call) => call.options.body);
+
+    await page.modal.performAction(ID, 'attach');
+    await page.modal.performAction(ID, 'pop-out');
+    assert.deepEqual(mintBodies(), ['{}', '{}']);
+    // Even a caller that tries to pass a claim cannot make pop-out or transcript carry one.
+    await page.modal.performAction(ID, 'pop-out', { supersedes: VIEW });
+    assert.deepEqual(mintBodies(), ['{}', '{}', '{}']);
+    // A restore is a plain attach that names the recovered view.
+    queueEmbeddedRestore({ sessionId: ID, viewId: VIEW });
+    await page.modal.restoreEmbedded();
+    assert.deepEqual(mintBodies(), ['{}', '{}', '{}', JSON.stringify({ supersedes: VIEW })]);
+    assert.equal(page.modal.viewerId, ID);
 });

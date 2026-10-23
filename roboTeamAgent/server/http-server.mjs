@@ -15,7 +15,7 @@ import { projectRobotView } from './robot-projection.mjs';
 import { importEmailRobots } from './robot-import.mjs';
 import { createCodingAgentStatus } from './coding-agent-status.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
-import { robotTerminalDirectory } from './robot-terminal.mjs';
+import { listTerminalProfiles, resolveTerminalProfile, robotTerminalDirectory, terminalProfileAccess } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
 import { findProjectRecord, projectForSessionRecord } from './project-storage.mjs';
@@ -650,6 +650,59 @@ async function handleRobotProxies({ req, res, pathname, actor, proxyPool, robotS
     return true;
 }
 
+// Terminal profiles let the Explorer and the Ploinky router pick a robot for a
+// WebTTY shell. All three routes are decided on the access that the family
+// gate verified for this very request; the compatibility actor and the
+// internal token never grant anything here. Bodies were read, size-limited and
+// signature-checked by the gate and are only parsed here.
+const TERMINAL_PROFILES_PATH = /^\/api\/terminal-profiles(?:\/|$)/;
+const TERMINAL_PROFILE_PREPARE = new RegExp(`^/api/terminal-profiles/(${ROBOT_ID})/prepare$`);
+
+function emptyJsonBody(raw) {
+    if (!raw.length) return true;
+    const parsed = JSON.parse(raw.toString('utf8'));
+    return Boolean(parsed) && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
+}
+
+async function handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager }) {
+    if (!TERMINAL_PROFILES_PATH.test(pathname)) return false;
+    const decision = terminalProfileAccess(access);
+    if (!decision.ok) { sendError(res, decision.status, decision.error); return true; }
+    const workspaceRoot = runtimeManager.workspaceRoot;
+    if (pathname === '/api/terminal-profiles' && req.method === 'GET') {
+        sendJson(res, 200, { ok: true, profiles: await listTerminalProfiles(robotStore) });
+        return true;
+    }
+    if (pathname === '/api/terminal-profiles/resolve' && req.method === 'POST') {
+        let body;
+        try { body = JSON.parse((await readRawBody(req)).toString('utf8')); } catch { body = null; }
+        const keys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : [];
+        if (keys.join() !== 'id,version' || body.version !== 1 || typeof body.id !== 'string') {
+            sendError(res, 400, 'a version 1 profile id is required');
+            return true;
+        }
+        sendJson(res, 200, await resolveTerminalProfile(robotStore, body.id, workspaceRoot));
+        return true;
+    }
+    const prepareId = pathname.match(TERMINAL_PROFILE_PREPARE)?.[1];
+    if (prepareId && req.method === 'POST') {
+        if (!emptyJsonBody(await readRawBody(req))) { sendError(res, 400, 'prepare takes an empty JSON object'); return true; }
+        const robot = await robotStore.get(prepareId);
+        if (!robot) { sendError(res, 404, 'robot not found'); return true; }
+        const root = await robotTerminalDirectory(robotStore, prepareId, workspaceRoot);
+        const codingAgents = robotCodingAgents(robot);
+        const tools = await runtimeManager.toolCache.prepareShellTools();
+        await prepareRobotShell(path.join(robotStore.robotPath(prepareId), 'home'), {
+            codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
+        });
+        await runtimeManager.prepareOpenCode?.(prepareId, { prepare: codingAgents.includes('opencode') });
+        sendJson(res, 200, { ok: true, id: robot.id, label: robot.name, root });
+        return true;
+    }
+    sendError(res, 404, 'not found');
+    return true;
+}
+
 export function createRoboTeamServer(options) {
     const robotStore = options.robotStore;
     const runtimeManager = options.runtimeManager;
@@ -715,6 +768,7 @@ export function createRoboTeamServer(options) {
                 return await handleLiveSessions({ req, res, pathname, viewer: { principal: live.principal, canAdmin: live.canAdmin },
                     registry: liveSessions, publicDir, publicBasePath, streamLifetimeMs: liveStreamLifetimeMs });
             }
+            if (await handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager })) return;
             const actor = requestActor(req, internalToken);
             if (!actor) return sendError(res, 401, 'authenticated Ploinky user is required');
 
@@ -796,21 +850,6 @@ export function createRoboTeamServer(options) {
                     res.setHeader('x-log-final-length', String(finalResponse.length));
                 }
                 return sendText(res, 200, log);
-            }
-
-            const terminalRobotId = matchRobotPath(pathname, '/terminal');
-            if (terminalRobotId && req.method === 'POST') {
-                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
-                const robot = await robotStore.get(terminalRobotId);
-                if (!robot) return sendError(res, 404, 'robot not found');
-                const directory = await robotTerminalDirectory(robotStore, terminalRobotId, runtimeManager.workspaceRoot);
-                const codingAgents = robotCodingAgents(robot);
-                const tools = await runtimeManager.toolCache.prepareShellTools();
-                await prepareRobotShell(path.join(robotStore.robotPath(terminalRobotId), 'home'), {
-                    codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
-                });
-                await runtimeManager.prepareOpenCode?.(terminalRobotId, { prepare: codingAgents.includes('opencode') });
-                return sendJson(res, 200, { ok: true, directory });
             }
 
             if (pathname === '/api/robots' && req.method === 'POST') {

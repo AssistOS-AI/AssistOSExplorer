@@ -7,7 +7,8 @@ import { captureRouterRecoveryAuthentication, expectedRouterRecoveryDiagnostics 
 const principal = Object.freeze({ id: 'USER.Owner', roles: ['admin'] });
 const oldCookies = Object.freeze([{ name: 'ploinky_sso', value: 'private-old-session' }]);
 const newCookies = Object.freeze([{ name: 'ploinky_sso', value: 'private-new-session' }]);
-const streamPath = '/webtty/sessions/prior-terminal/stream';
+const viewId = 'V'.repeat(32);
+const streamPath = `/webtty/sessions/prior-terminal/stream?view=${viewId}`;
 
 function response(status, payload) {
     return new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
@@ -132,13 +133,24 @@ test('unproven or ambiguous cookies fail closed and diagnostic sets retain every
         assert.throws(() => proof(fetch, { cookies }), /exactly one authenticated/);
     }
     for (const mode of ['sso', 'local']) {
-        const diagnostics = expectedRouterRecoveryDiagnostics('http://localhost:8080', 'prior-terminal', mode);
+        const diagnostics = expectedRouterRecoveryDiagnostics('http://localhost:8080', 'prior-terminal', mode, viewId);
         assert.equal(diagnostics.length, 4);
         assert.equal(diagnostics[0].failure, 'net::ERR_INCOMPLETE_CHUNKED_ENCODING');
         assert.equal(diagnostics[1].text, 'Failed to load resource: net::ERR_INCOMPLETE_CHUNKED_ENCODING');
         assert.equal(diagnostics[2].status, mode === 'sso' ? 401 : 404);
         assert.match(diagnostics[3].text, mode === 'sso' ? /401 \(Unauthorized\)/ : /404 \(Not Found\)/);
-        assert.equal(diagnostics.every((item) => (item.url || item.locationUrl) === 'http://localhost:8080/webtty/sessions/prior-terminal/stream'), true);
+        assert.equal(diagnostics.every((item) => (item.url || item.locationUrl) === `http://localhost:8080/webtty/sessions/prior-terminal/stream?view=${viewId}`), true);
     }
-    assert.throws(() => expectedRouterRecoveryDiagnostics('http://localhost:8080', 'prior-terminal', 'guest'), /Unproven/);
+    assert.throws(() => expectedRouterRecoveryDiagnostics('http://localhost:8080', 'prior-terminal', 'guest', viewId), /Unproven/);
+});
+
+test('the prior stream path must carry its view and the diagnostics need one', async () => {
+    const recovery = proof(async () => response(401, { ok: false, error: 'session_expired' }));
+    await recovery.proveRestartedAuthentication();
+    for (const bad of ['/webtty/sessions/prior-terminal/stream', '/webtty/sessions/prior-terminal/stream?view=short',
+        `/webtty/sessions/prior-terminal/stream?view=${viewId}&x=1`, `/webtty/sessions/prior-terminal/input?view=${viewId}`]) {
+        await assert.rejects(recovery.recoverAfterCleanup({ ...callbacks(), streamPath: bad }), /exact prior terminal stream path/);
+    }
+    assert.throws(() => expectedRouterRecoveryDiagnostics('http://localhost:8080', 'prior-terminal', 'sso'), /view identifier/);
+    assert.throws(() => expectedRouterRecoveryDiagnostics('http://localhost:8080', 'prior-terminal', 'sso', 'short'), /view identifier/);
 });

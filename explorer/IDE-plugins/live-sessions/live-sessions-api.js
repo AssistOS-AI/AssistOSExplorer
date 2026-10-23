@@ -4,9 +4,20 @@ import { isOwnedLiveSessionUrl, normalizeLiveSessionSource } from '../../utils/l
 const LIST_PATH = '/webtty/live-sessions';
 const SESSION_ID = /^[A-Za-z0-9_-]{32,128}$/;
 const ATTACH_TOKEN = /^[A-Za-z0-9_-]{32}$/;
+const VIEW_ID = /^[A-Za-z0-9_-]{32,128}$/;
+const SUPERSEDED_VIEW_ID = /^[A-Za-z0-9_-]{32}$/;
+const CLOSE_POLICIES = ['keep', 'stop'];
+const CLOSURES = ['pending', 'proven', 'unconfirmed'];
+const CLOSURE_SCOPES = ['global', 'provider', 'target'];
 const ROW_KEYS = [
     'id', 'source', 'kind', 'title', 'detail', 'cwdDisplay', 'access', 'status',
     'isOwner', 'ownerLabel', 'viewerCount', 'startedAt', 'lastActivityAt', 'capabilities', 'attach',
+];
+
+// Shell-only optional keys. Agent rows keep the shared required set and reject all of these.
+const SHELL_OPTIONAL_KEYS = [
+    'endedAt', 'exitReason', 'closePolicy', 'pendingStopUntil', 'ownerViewOpen', 'profileLabel',
+    'closure', 'closureScope', 'recordCleanup',
 ];
 
 function exactKeys(value, required, optional = []) {
@@ -29,12 +40,14 @@ function sessionId(value) {
     return value;
 }
 
-export function normalizeLiveSessionsPayload(payload) {
-    if (!exactKeys(payload, ['ok', 'version', 'sessions']) || payload.ok !== true || payload.version !== 1
-        || !Array.isArray(payload.sessions)) throw new Error('Invalid live sessions response.');
+// `available` is false only while WebTTY is disabled and the list carries just the retained stop outcomes.
+export function parseLiveSessionsPayload(payload) {
+    if (!exactKeys(payload, ['ok', 'version', 'sessions'], ['available']) || payload.ok !== true || payload.version !== 1
+        || !Array.isArray(payload.sessions)
+        || (Object.hasOwn(payload, 'available') && typeof payload.available !== 'boolean')) throw new Error('Invalid live sessions response.');
     const ids = new Set();
     const sessions = payload.sessions.map((row) => {
-        if (!exactKeys(row, ROW_KEYS, ['endedAt', 'exitReason'])
+        if (!exactKeys(row, ROW_KEYS, SHELL_OPTIONAL_KEYS)
             || row.source !== 'webtty' || row.kind !== 'shell' || !['rw', 'ro'].includes(row.access)
             || !['attached', 'detached', 'exited'].includes(row.status)
             || typeof row.isOwner !== 'boolean'
@@ -48,7 +61,15 @@ export function normalizeLiveSessionsPayload(payload) {
             || row.capabilities.stop !== true || row.capabilities.message !== false
             || !exactKeys(row.attach, ['mode']) || row.attach.mode !== 'webtty'
             || (Object.hasOwn(row, 'endedAt') && (row.status !== 'exited' || !timestamp(row.endedAt)))
-            || (Object.hasOwn(row, 'exitReason') && (row.status !== 'exited' || !displayText(row.exitReason, 128)))) {
+            || (Object.hasOwn(row, 'exitReason') && (row.status !== 'exited' || !displayText(row.exitReason, 128)))
+            || (Object.hasOwn(row, 'closePolicy') && !CLOSE_POLICIES.includes(row.closePolicy))
+            || (Object.hasOwn(row, 'pendingStopUntil') && row.pendingStopUntil !== null && !timestamp(row.pendingStopUntil))
+            || (Object.hasOwn(row, 'ownerViewOpen') && typeof row.ownerViewOpen !== 'boolean')
+            || (Object.hasOwn(row, 'profileLabel') && row.profileLabel !== null
+                && (!row.profileLabel || !displayText(row.profileLabel, 128)))
+            || (Object.hasOwn(row, 'closure') && (row.status !== 'exited' || !CLOSURES.includes(row.closure)))
+            || (Object.hasOwn(row, 'closureScope') && (row.closure !== 'unconfirmed' || !CLOSURE_SCOPES.includes(row.closureScope)))
+            || (Object.hasOwn(row, 'recordCleanup') && (row.status !== 'exited' || row.recordCleanup !== 'failed'))) {
             throw new Error('Invalid live session row.');
         }
         const id = sessionId(row.id);
@@ -60,7 +81,11 @@ export function normalizeLiveSessionsPayload(payload) {
             attach: Object.freeze({ ...row.attach }),
         });
     });
-    return Object.freeze(sessions);
+    return Object.freeze({ rows: Object.freeze(sessions), available: payload.available !== false });
+}
+
+export function normalizeLiveSessionsPayload(payload) {
+    return parseLiveSessionsPayload(payload).rows;
 }
 
 async function request(path, method, options = {}) {
@@ -159,9 +184,9 @@ export async function aggregateLiveSessions(sources, { admin = false, signal, fe
                 if (controller.signal.aborted) reject(new Error('Live session source closed.'));
             });
             const options = { signal: controller.signal, fetchImpl };
-            const rows = await Promise.race([timeout, source.shell ? listLiveSessions(options) :
-                request(source.liveSessions.base, 'GET', options).then((payload) => normalizeAgentSessionsPayload(payload, source))]);
-            const result = { source, rows };
+            const outcome = await Promise.race([timeout, source.shell ? listLiveSessionsDetailed(options) :
+                request(source.liveSessions.base, 'GET', options).then((payload) => ({ rows: normalizeAgentSessionsPayload(payload, source) }))]);
+            const result = { source, rows: outcome.rows, ...(source.shell ? { available: outcome.available } : {}) };
             if (!signal?.aborted) onResult?.(result);
             return result;
         } catch (error) {
@@ -227,8 +252,55 @@ export async function listLiveSessions(options = {}) {
     return normalizeLiveSessionsPayload(await request(LIST_PATH, 'GET', options));
 }
 
+// Same read, with the top-level `available` flag: {rows, available}.
+export async function listLiveSessionsDetailed(options = {}) {
+    return parseLiveSessionsPayload(await request(LIST_PATH, 'GET', options));
+}
+
+// Owner-only. Resolves with the server's resulting policy and, when keep did not apply, nothing pending.
+export async function setLiveSessionClosePolicy(id, policy, options = {}) {
+    if (!CLOSE_POLICIES.includes(policy)) throw new Error('Invalid close policy.');
+    const payload = await request(`/webtty/sessions/${sessionId(id)}/close-policy`, 'POST', { ...options, body: { policy } });
+    if (!exactKeys(payload, ['ok', 'closePolicy', 'pendingStopUntil']) || payload.ok !== true
+        || !CLOSE_POLICIES.includes(payload.closePolicy)
+        || (payload.pendingStopUntil !== null && !timestamp(payload.pendingStopUntil))) {
+        throw new Error('Invalid close policy response.');
+    }
+    return Object.freeze({ closePolicy: payload.closePolicy, pendingStopUntil: payload.pendingStopUntil });
+}
+
+// Best-effort page-close signal for the embedded owner view. keepalive lets it outlive the page; any failure
+// stops nothing, because only an accepted intent arms the server's grace period.
+export function sendLiveSessionCloseIntent(id, viewId, policy, options = {}) {
+    if (typeof viewId !== 'string' || !VIEW_ID.test(viewId) || !CLOSE_POLICIES.includes(policy)) return undefined;
+    try {
+        return Promise.resolve((options.fetchImpl || globalThis.fetch)(`/webtty/sessions/${sessionId(id)}/close-intents`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            cache: 'no-store',
+            keepalive: true,
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Ploinky-Browser-CSRF-Token': readBrowserCsrfToken(),
+            },
+            body: JSON.stringify({ view: viewId, policy }),
+        })).catch(() => {});
+    } catch (_) {
+        return undefined;
+    }
+}
+
+// `options.supersedes` is the 32-character id of a view this attachment recovers (an Explorer restore after a reload).
+// The body is exactly {} or {supersedes}; ordinary attach and pop-out never pass it.
 export async function mintLiveSessionAttach(id, options = {}) {
-    const payload = await request(`${LIST_PATH}/${sessionId(id)}/attach-tokens`, 'POST', options);
+    const { supersedes, ...requestOptions } = options;
+    if (supersedes !== undefined && (typeof supersedes !== 'string' || !SUPERSEDED_VIEW_ID.test(supersedes))) {
+        throw new Error('Invalid superseded view identifier.');
+    }
+    const payload = await request(`${LIST_PATH}/${sessionId(id)}/attach-tokens`, 'POST', {
+        ...requestOptions,
+        body: supersedes === undefined ? {} : { supersedes },
+    });
     if (!exactKeys(payload, ['ok', 'attach', 'expiresAt']) || payload.ok !== true
         || typeof payload.attach !== 'string' || !ATTACH_TOKEN.test(payload.attach)
         || !timestamp(payload.expiresAt)) {

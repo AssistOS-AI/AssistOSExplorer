@@ -91,3 +91,12 @@ live-sessions-modal iframe {
         flex-direction: column;
     }
 }
+
+live-sessions-modal .live-sessions-notice {
+    color: var(--warning, #b45309);
+    font-weight: var(--font-semibold, 600);
+}
+
+live-sessions-modal .live-sessions-banner {
+    color: var(--danger, #b91c1c);
+}

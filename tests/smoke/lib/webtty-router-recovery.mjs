@@ -23,9 +23,13 @@ export function recoveryConsoleText(mode) {
     return `Failed to load resource: the server responded with a status of ${mode === 'sso' ? '401 (Unauthorized)' : '404 (Not Found)'}`;
 }
 
-export function expectedRouterRecoveryDiagnostics(baseURL, sessionId, mode) {
+const VIEW_ID = /^[A-Za-z0-9_-]{32,128}$/;
+
+// A terminal stream is bound to the server-issued view of its create or attach response.
+export function expectedRouterRecoveryDiagnostics(baseURL, sessionId, mode, viewId) {
     const text = recoveryConsoleText(mode);
-    const url = new URL(`/webtty/sessions/${encodeURIComponent(sessionId)}/stream`, baseURL).toString();
+    if (typeof viewId !== 'string' || !VIEW_ID.test(viewId)) throw new Error('Router recovery requires the terminal view identifier.');
+    const url = new URL(`/webtty/sessions/${encodeURIComponent(sessionId)}/stream?view=${encodeURIComponent(viewId)}`, baseURL).toString();
     return [
         diagnosticEventSignature({ kind: 'requestfailed', type: 'error', url, method: 'GET', failure: 'net::ERR_INCOMPLETE_CHUNKED_ENCODING' }),
         diagnosticEventSignature({ kind: 'console', type: 'error', text: 'Failed to load resource: net::ERR_INCOMPLETE_CHUNKED_ENCODING', location: { url } }),
@@ -84,8 +88,8 @@ export function captureRouterRecoveryAuthentication({ baseURL, cookies, principa
         },
         async recoverAfterCleanup({ verifyCleanup, closeTerminal, signIn, readCookies, streamPath }) {
             if (!priorAuthenticationProved || completed) throw new Error('Router recovery authentication transition is out of order.');
-            if (!/^\/webtty\/sessions\/[A-Za-z0-9_-]+\/stream$/.test(streamPath)) {
-                throw new Error('Router recovery requires the exact prior terminal stream path.');
+            if (!/^\/webtty\/sessions\/[A-Za-z0-9_-]+\/stream\?view=[A-Za-z0-9_-]{32,128}$/.test(streamPath)) {
+                throw new Error('Router recovery requires the exact prior terminal stream path with its view.');
             }
             await verifyCleanup();
             await closeTerminal();

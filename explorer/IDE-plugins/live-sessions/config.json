@@ -11,6 +11,7 @@
   "type": "embedded",
   "adminOnly": false,
   "autoPin": false,
+  "mountOnStart": true,
   "toolbarModal": {
     "mode": "component",
     "component": "live-sessions-modal",

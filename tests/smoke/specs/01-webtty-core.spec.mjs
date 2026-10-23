@@ -268,7 +268,10 @@ function isWebttyNavigation(request) {
     && target.pathname === '/webtty/';
 }
 
-async function readTargetDiscovery(response, expectedDirectory) {
+// A plain {dir} discovery carries a launch on every row. A discovery for a chosen robot also echoes its profile, and a
+// row whose target cannot reach the robot's home has no launch and a precise `unavailable` reason instead.
+// The returned `targets` are the launchable rows; the others are returned as `unavailableTargets`.
+async function readTargetDiscovery(response, expectedDirectory, { profiled = false } = {}) {
   expect(response.status()).toBe(201);
   const payload = await response.json();
   expect(Object.keys(payload).sort()).toEqual(['discovery', 'ok']);
@@ -278,6 +281,7 @@ async function readTargetDiscovery(response, expectedDirectory) {
     'directory',
     'expiresAt',
     'id',
+    ...(profiled ? ['profile'] : []),
     'targets',
   ]);
   expect(payload.discovery).toMatchObject({
@@ -286,34 +290,50 @@ async function readTargetDiscovery(response, expectedDirectory) {
     expiresAt: expect.any(Number),
     agentTargetsAvailable: expect.any(Boolean),
   });
+  if (profiled) {
+    expect(Object.keys(payload.discovery.profile).sort()).toEqual(['id', 'label', 'provider']);
+    expect(payload.discovery.profile).toMatchObject({
+      provider: expect.any(String), id: expect.any(String), label: expect.any(String),
+    });
+  }
   expect(Number.isSafeInteger(payload.discovery.expiresAt)).toBe(true);
   expect(payload.discovery.targets.length).toBeGreaterThan(0);
   expect(payload.discovery.targets[0].kind).toBe('box');
   expect(payload.discovery.targets.filter((target) => target.kind === 'box')).toHaveLength(1);
+  const launchable = [];
+  const unavailable = [];
   for (const target of payload.discovery.targets) {
+    const isUnavailable = profiled && !Object.hasOwn(target, 'launch');
     expect(Object.keys(target).sort()).toEqual([
       'access',
       'cwdDisplay',
       'detail',
       'kind',
       'label',
-      'launch',
-    ]);
+      isUnavailable ? 'unavailable' : 'launch',
+    ].sort());
     expect(target).toMatchObject({
-      launch: expect.stringMatching(/^[A-Za-z0-9_-]{32,128}$/),
+      ...(isUnavailable
+        ? { unavailable: expect.stringMatching(/^(?:home-unreachable|home-read-only)$/) }
+        : { launch: expect.stringMatching(/^[A-Za-z0-9_-]{32,128}$/) }),
       kind: expect.stringMatching(/^(?:box|agent)$/),
       label: expect.any(String),
       detail: expect.any(String),
       access: expect.stringMatching(/^(?:rw|ro)$/),
       cwdDisplay: expect.any(String),
     });
+    (isUnavailable ? unavailable : launchable).push(target);
   }
-  return payload.discovery;
+  return { ...payload.discovery, targets: launchable, unavailableTargets: unavailable };
 }
 
 function assertSessionCreation(payload) {
-  expect(Object.keys(payload).sort()).toEqual(['ok', 'session']);
-  expect(Object.keys(payload.session).sort()).toEqual(['cols', 'cwd', 'id', 'role', 'rows', 'state', 'target']);
+  expect(Object.keys(payload).sort()).toEqual(['ok', 'session', 'view']);
+  expect(Object.keys(payload.view)).toEqual(['id']);
+  expect(payload.view.id).toMatch(/^[A-Za-z0-9_-]{32,128}$/);
+  expect(Object.keys(payload.session).sort()).toEqual([
+    'closePolicy', 'cols', 'cwd', 'id', 'pendingStopUntil', 'profileLabel', 'role', 'rows', 'state', 'target',
+  ]);
   expect(Object.keys(payload.session.target).sort()).toEqual([
     'access',
     'cwdDisplay',
@@ -327,6 +347,9 @@ function assertSessionCreation(payload) {
       id: expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/),
       role: 'owner',
       state: 'detached',
+      closePolicy: 'keep',
+      pendingStopUntil: null,
+      profileLabel: expect.any(String),
       target: {
         kind: expect.stringMatching(/^(?:box|agent)$/),
         label: expect.any(String),
@@ -343,6 +366,60 @@ async function waitForConnectedTerminal(page) {
     timeout: smokeConfig.timeouts.navigation,
   });
   await expect(page.locator('#terminal .xterm-helper-textarea')).toBeAttached();
+}
+
+// Every row of the chooser: launchable rows keep their launch, the others show why they are disabled.
+async function assertChooserRows(chooser, discovery) {
+  const unavailableTargets = discovery.unavailableTargets || [];
+  await expect(chooser.locator('.terminal-target-button')).toHaveCount(
+    discovery.targets.length + unavailableTargets.length,
+  );
+  for (const target of discovery.targets) {
+    const targetButton = chooser.locator(`.terminal-target-button[data-launch="${target.launch}"]`);
+    await expect(targetButton).toHaveCount(1);
+    await expect(targetButton).toHaveAttribute('data-launch', target.launch);
+    await expect(targetButton.locator('.terminal-target-label')).toHaveText(target.label);
+    await expect(targetButton.locator('.terminal-target-detail')).toHaveText(target.detail);
+    await expect(targetButton.locator('.terminal-target-cwd')).toHaveText(target.cwdDisplay);
+    await expect(targetButton.locator('.terminal-target-access')).toHaveText(
+      target.access === 'ro' ? 'Read only' : 'Read and write',
+    );
+  }
+  for (const target of unavailableTargets) {
+    const row = chooser.locator('.terminal-target-button:not([data-launch])').filter({ hasText: target.detail });
+    await expect(row).toHaveCount(1);
+    await expect(row).toBeDisabled();
+    await expect(row.locator('.terminal-target-reason')).toContainText(
+      target.unavailable === 'home-read-only' ? "can only read" : "cannot see",
+    );
+  }
+}
+
+// The dialog starts with no robot: the {dir} discovery is listed but every row is disabled until a robot is chosen.
+// The chooser then replaces that discovery with the one for the chosen robot. This needs at least one robot in the
+// deployment (created in RoboTeam); the spec does not create one.
+async function chooseTerminalRobot(chooserState, expectedDirectory) {
+  const { chooser, page } = chooserState;
+  const select = chooser.locator('#terminalTargetRobot');
+  await expect(select).toBeEnabled({ timeout: smokeConfig.timeouts.navigation });
+  const robotOptions = select.locator('option:not([disabled])');
+  expect(await robotOptions.count(), 'a RoboTeam robot must exist before a terminal can be opened').toBeGreaterThan(0);
+  await expect(select.locator('option[disabled]')).toHaveText('Choose a robot');
+  await expect(chooser.locator('#terminalTargetOpen')).toBeDisabled();
+  const robotValue = await robotOptions.first().getAttribute('value');
+  const plainDiscoveryId = chooserState.discovery.id;
+  const cancelled = page.waitForResponse((response) => (
+    response.url() === new URL(`/webtty/target-discoveries/${encodeURIComponent(plainDiscoveryId)}`, smokeConfig.baseURL).toString()
+    && response.request().method() === 'DELETE'
+  ), { timeout: smokeConfig.timeouts.action });
+  const profiledResponse = page.waitForResponse(isTargetDiscovery, { timeout: smokeConfig.timeouts.navigation });
+  await select.selectOption(robotValue);
+  expect((await cancelled).status()).toBe(200);
+  chooserState.plainDiscovery = chooserState.discovery;
+  chooserState.discovery = await readTargetDiscovery(await profiledResponse, expectedDirectory.replace(/^\/+/, ''), { profiled: true });
+  chooserState.profiled = true;
+  await assertChooserRows(chooser, chooserState.discovery);
+  return chooserState.discovery;
 }
 
 async function openTerminalChooser(page, directoryPath) {
@@ -365,22 +442,16 @@ async function openTerminalChooser(page, directoryPath) {
   const chooser = page.getByRole('dialog', { name: 'Open terminal in' });
   await expect(chooser).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
   await expect(chooser.locator('#terminalTargetDirectory')).toHaveText(directoryPath);
-  await expect(chooser.locator('.terminal-target-button')).toHaveCount(discovery.targets.length);
+  await assertChooserRows(chooser, discovery);
+  for (const button of await chooser.locator('.terminal-target-button').all()) {
+    await expect(button, 'rows are disabled until a robot is chosen').toBeDisabled();
+    await expect(button.locator('.terminal-target-reason')).toHaveText('Choose a robot first');
+  }
   expect(context.pages().length, 'opening the chooser must not open or navigate a terminal tab').toBe(initialPageCount);
 
-  for (const target of discovery.targets) {
-    const targetButton = chooser.locator(`.terminal-target-button[data-launch="${target.launch}"]`);
-    await expect(targetButton).toHaveCount(1);
-    await expect(targetButton).toHaveAttribute('data-launch', target.launch);
-    await expect(targetButton.locator('.terminal-target-label')).toHaveText(target.label);
-    await expect(targetButton.locator('.terminal-target-detail')).toHaveText(target.detail);
-    await expect(targetButton.locator('.terminal-target-cwd')).toHaveText(target.cwdDisplay);
-    await expect(targetButton.locator('.terminal-target-access')).toHaveText(
-      target.access === 'ro' ? 'Read only' : 'Read and write',
-    );
-  }
-
-  return { page, chooser, discovery, context };
+  const chooserState = { page, chooser, discovery, context, profiled: false };
+  await chooseTerminalRobot(chooserState, directoryPath);
+  return chooserState;
 }
 
 async function selectTerminalTarget(chooserState, predicate, terminals) {
@@ -400,7 +471,10 @@ async function selectTerminalTarget(chooserState, predicate, terminals) {
     predicate: isSessionCreation,
     timeout: smokeConfig.timeouts.navigation,
   });
+  // A row only selects the target; Open prepares the robot, reserves the tab and starts the terminal.
   await selectedButton.click();
+  await expect(selectedButton).toHaveAttribute('aria-pressed', 'true');
+  await chooserState.chooser.getByRole('button', { name: 'Open', exact: true }).click();
   const createResponse = await createPromise;
   // Register the shell for DELETE cleanup before any later wait or assertion can fail; shells survive detach.
   // A 201 body is registered by its raw session id first; the strict shape checks run afterwards.
@@ -409,6 +483,8 @@ async function selectTerminalTarget(chooserState, predicate, terminals) {
   if (createStatus !== 201) expect(createStatus).toBe(201);
   return registerCreatedTerminal(terminals, createPayload, async (terminal) => {
     terminal.session = assertSessionCreation(createPayload);
+    // The server issues a view with each created session; its stream is only served for that view.
+    terminal.viewId = createPayload?.view?.id;
     terminal.terminalPage = await popupPromise;
     terminal.navigationRequest = await navigationPromise;
     terminal.discovery = chooserState.discovery;
@@ -431,10 +507,10 @@ async function refreshTerminalChooser(chooserState, expectedDirectory) {
     timeout: smokeConfig.timeouts.navigation,
   });
   await chooserState.chooser.getByRole('button', { name: 'Refresh' }).click();
-  chooserState.discovery = await readTargetDiscovery(await responsePromise, expectedDirectory.replace(/^\/+/, ''));
-  await expect(chooserState.chooser.locator('.terminal-target-button')).toHaveCount(
-    chooserState.discovery.targets.length,
-  );
+  chooserState.discovery = await readTargetDiscovery(await responsePromise, expectedDirectory.replace(/^\/+/, ''), {
+    profiled: chooserState.profiled,
+  });
+  await assertChooserRows(chooserState.chooser, chooserState.discovery);
   return chooserState.discovery;
 }
 
@@ -502,7 +578,9 @@ async function attachFromLiveSessions(page, id, role) {
   await row.getByRole('button', { name: 'Attach', exact: true }).click();
   const response = await attachment;
   expect(response.status()).toBe(200);
-  expect(await response.json()).toMatchObject({ ok: true, session: { id, role } });
+  const attached = await response.json();
+  expect(attached).toMatchObject({ ok: true, session: { id, role } });
+  expect(attached.view.id).toMatch(/^[A-Za-z0-9_-]{32,128}$/);
   const tokenResponse = await minted;
   expect(tokenResponse.status()).toBe(201);
   const attach = (await tokenResponse.json()).attach;
@@ -703,7 +781,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         origin: canonicalOrigin,
         includeCsrfCookie: false,
         includeCsrfHeader: false,
-        body: { launch: 'A'.repeat(32), cols: 80, rows: 24 },
+        body: { launch: 'A'.repeat(32), cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(missingCsrf).toMatchObject({
         status: 403,
@@ -711,7 +789,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       });
       const forgedOrigin = await directAuthenticatedMutation(page, '/webtty/sessions', {
         origin: 'http://webtty-cross-origin.invalid',
-        body: { launch: 'A'.repeat(32), cols: 80, rows: 24 },
+        body: { launch: 'A'.repeat(32), cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(forgedOrigin).toMatchObject({
         status: 403,
@@ -753,7 +831,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         hash: fixture.explorerHash,
       });
       const foreignLaunchAttempt = await browserMutation(foreignAdminPage, '/webtty/sessions', {
-        body: { launch: ownedAgentLaunch, cols: 80, rows: 24 },
+        body: { launch: ownedAgentLaunch, cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(foreignLaunchAttempt).toMatchObject({
         status: 404,
@@ -792,7 +870,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       const replayCheckpoint = checkpointPageDiagnostics(page, 'single-use launch replay rejection');
       const replayConsole = waitForExact404Console(page, '/webtty/sessions');
       const replay = await browserMutation(page, '/webtty/sessions', {
-        body: { launch: first.launch, cols: 80, rows: 24 },
+        body: { launch: first.launch, cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(replay).toMatchObject({
         status: 404,
@@ -1138,7 +1216,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         replacementBeforeStale.execIds,
         replacementMarkersBeforeStale,
         () => browserMutation(page, '/webtty/sessions', {
-          body: { launch: staleGitTarget.launch, cols: 80, rows: 24 },
+          body: { launch: staleGitTarget.launch, cols: 80, rows: 24, closePolicy: 'keep' },
         }),
       );
       const staleLaunchObservedAt = Date.now();
@@ -1452,7 +1530,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       const explorerQuiescedAt = new Date().toISOString();
       expect(recoveryDiagnostics.actionableEvents(), 'the recovery terminal must remain error-free before Router crash').toEqual([]);
       const recoveryCheckpoint = recoveryDiagnostics.checkpoint('exact prior-epoch Router stream invalidation');
-      const recoveryStreamPath = `/webtty/sessions/${encodeURIComponent(restartRecoveryTerminal.session.id)}/stream`;
+      const recoveryStreamPath = `/webtty/sessions/${encodeURIComponent(restartRecoveryTerminal.session.id)}/stream?view=${encodeURIComponent(restartRecoveryTerminal.viewId)}`;
       const recoveryConsole = restartRecoveryTerminal.terminalPage.waitForEvent('console', {
         predicate: (message) => message.type() === 'error'
           && message.text() === recoveryConsoleText(recoveryAuthentication.mode)
@@ -1509,7 +1587,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
           await recoveryConsole;
           recoveryDiagnostics.acknowledgeExact(
             recoveryCheckpoint,
-            expectedRouterRecoveryDiagnostics(smokeConfig.baseURL, restartRecoveryTerminal.session.id, recoveryAuthentication.mode),
+            expectedRouterRecoveryDiagnostics(smokeConfig.baseURL, restartRecoveryTerminal.session.id, recoveryAuthentication.mode, restartRecoveryTerminal.viewId),
           );
           expect(recoveryDiagnostics.actionableEvents(), 'Router recovery diagnostics must match the exact prior-epoch stream').toEqual([]);
           // The exact backend cleanup was proved above. SSO is still expired here;
@@ -1615,7 +1693,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         payload: { ok: false, error: 'administrator_required' },
       });
       const deniedCreation = await browserMutation(userPage, '/webtty/sessions', {
-        body: { launch: 'A'.repeat(32), cols: 80, rows: 24 },
+        body: { launch: 'A'.repeat(32), cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(deniedCreation).toMatchObject({
         status: 403,

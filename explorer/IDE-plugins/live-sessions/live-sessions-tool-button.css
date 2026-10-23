@@ -18,3 +18,26 @@ live-sessions-tool-button .live-sessions-tool {
 live-sessions-tool-button button[hidden] {
     display: none;
 }
+
+live-sessions-tool-button .app-plugin-tool-button {
+    position: relative;
+}
+
+live-sessions-tool-button .live-sessions-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    color: var(--surface, #fff);
+    background: var(--danger, #b91c1c);
+    font-size: var(--font-xs, 11px);
+    font-weight: var(--font-semibold, 600);
+    line-height: 18px;
+    text-align: center;
+}
+
+live-sessions-tool-button .live-sessions-badge[hidden] {
+    display: none;
+}

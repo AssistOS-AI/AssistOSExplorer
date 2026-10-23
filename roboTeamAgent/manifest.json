@@ -25,6 +25,12 @@
       "successThreshold": 1
     }
   },
+  "webtty": {
+    "homeProfiles": {
+      "version": 1,
+      "resolve": "/base-agent-additional-server/roboTeamAgent/3001/api/terminal-profiles/resolve"
+    }
+  },
   "routerAccess": {
     "httpRoutes": [
       {

@@ -157,7 +157,8 @@ npm run test:webtty
 
 It requires the canonical local `admin` and `user` accounts and a fresh Box.
 The gate exercises the local administrator browser-mutation path through the
-Explorer-owned target chooser. It proves Ploinky Box is first, checks the exact
+Explorer-owned target chooser, which requires a robot choice and an
+explicit Open. It proves Ploinky Box is first, checks the exact
 eligible-agent rows returned for the selected folder, and opens WebTTY only
 through an opaque fragment launch. It proves the selected Box or agent working
 directory and bidirectional PTY behavior, closes the terminal, and creates a

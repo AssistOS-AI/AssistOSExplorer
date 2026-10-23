@@ -24,7 +24,7 @@ Paths below are relative to `roboTeamAgent/`. Folders group modules by responsib
 | `tools/` | MCP command entrypoints that expose RoboTeam operations. |
 | `scripts/` | Installation, startup, data preparation and service checks. |
 | `shared/` | Shared processing used by the server and copilot, including summary markers and indexes. |
-| `IDE-plugins/` | Explorer contributions for launching Copilot, opening RoboTeam and declaring RoboTeam's Live Sessions source; each subfolder owns one contribution. |
+| `IDE-plugins/` | Explorer contributions for launching Copilot, opening RoboTeam and declaring RoboTeam's Live Sessions and terminal profile sources; each subfolder owns one contribution. |
 | `copilot/` | Conversational CLI package and its integration with RoboTeam. |
 | `copilot/bin/` | Executable package entrypoints. |
 | `copilot/scripts/` | Package setup and maintenance scripts. |

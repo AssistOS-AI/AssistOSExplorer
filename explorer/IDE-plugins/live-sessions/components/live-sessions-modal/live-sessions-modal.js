@@ -6,11 +6,23 @@ import {
 } from '../../../../web-components/modals/terminal-target-modal/terminal-target-modal.js';
 import {
     aggregateLiveSessions, discoverLiveSessionSources, ENDED_STATUSES, killLiveSession,
-    mintLiveSessionAttach, navigateLiveSessionWindow, stopAgentSession,
+    mintLiveSessionAttach, navigateLiveSessionWindow, sendLiveSessionCloseIntent, setLiveSessionClosePolicy,
+    stopAgentSession,
 } from '../../live-sessions-api.js';
+import {
+    clearEmbeddedTerminalKey, countNeedsAttention, publishCue, takeEmbeddedRestore, writeEmbeddedTerminalKey,
+} from '../../live-sessions-state.js';
 
 const POLL_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10000;
+const VIEW_MESSAGE = 'ploinky-webtty:view';
+const VIEW_MESSAGE_KEYS = ['type', 'sessionId', 'viewId', 'role', 'policy'];
+const VIEW_ID = /^[A-Za-z0-9_-]{32}$/;
+const CLOSURE_SCOPE_TEXT = {
+    global: 'Stop not confirmed; terminal service disabled for safety',
+    provider: 'Stop not confirmed; agent terminals disabled for safety',
+    target: 'Stop not confirmed; this agent is quarantined for terminals',
+};
 
 function textElement(tag, text, className = '') {
     const element = document.createElement(tag);
@@ -27,6 +39,30 @@ function failureMessage(error) {
     return 'Live Sessions could not complete the request. Try again.';
 }
 
+// What a stopped shell's retained record says about the stop. Only a proven exit is called confirmed.
+export function closureText(row) {
+    if (row.closure === 'pending') return 'Stopping…';
+    if (row.closure === 'proven') return 'Stopped (confirmed)';
+    if (row.closure === 'unconfirmed') return CLOSURE_SCOPE_TEXT[row.closureScope] || 'Stop not confirmed';
+    return '';
+}
+
+// The close-policy state of a live shell, or '' when the server reported nothing noteworthy.
+export function closePolicyStatusText(row, now = Date.now()) {
+    if (row.status === 'exited') return '';
+    if (Number.isSafeInteger(row.pendingStopUntil)) {
+        return `Stops in ${Math.max(0, Math.ceil((row.pendingStopUntil - now) / 1000))} s unless reopened`;
+    }
+    return row.closePolicy === 'stop' && row.ownerViewOpen === false ? 'Set to stop on close, still running' : '';
+}
+
+function sameOriginMessage(event, frame) {
+    const win = globalThis.window;
+    const origin = win?.location?.origin ?? globalThis.location?.origin;
+    return Boolean(frame?.contentWindow) && event?.source === frame.contentWindow
+        && typeof origin === 'string' && event.origin === origin;
+}
+
 export class LiveSessionsModal {
     constructor(element, invalidate) {
         this.element = element;
@@ -40,7 +76,11 @@ export class LiveSessionsModal {
         this.confirmId = '';
         this.viewerId = '';
         this.attachSequence = 0;
+        this.embedded = null;
+        this.shellAvailable = true;
         this.handleClick = this.handleClick.bind(this);
+        this.handleViewMessage = this.handleViewMessage.bind(this);
+        this.handlePageHide = this.handlePageHide.bind(this);
         invalidate();
     }
 
@@ -72,6 +112,8 @@ export class LiveSessionsModal {
         this.pendingPopups.clear();
         this.listElement?.removeEventListener('click', this.handleClick);
         this.detachViewer();
+        // Closing the panel is an explicit detach: a later Explorer start must not restore this view.
+        clearEmbeddedTerminalKey();
     }
 
     async withRequest(callback) {
@@ -110,6 +152,10 @@ export class LiveSessionsModal {
                 if (result.source.shell && !isAdminUser(globalThis.assistOS?.user)) return;
                 if (result.error?.status === 404 && result.source.shell) this.unsupported = true;
                 if (result.error) this.sourceErrors.push(result);
+                if (result.source.shell && !result.error) {
+                    this.shellAvailable = result.available !== false;
+                    publishCue(countNeedsAttention(result.rows));
+                }
                 // A temporary read failure does not establish that a running session disappeared.
                 // Successful reads and authorization refusals replace only their own source rows.
                 if (!result.error || [401, 403].includes(result.error.status)) {
@@ -136,6 +182,7 @@ export class LiveSessionsModal {
             continuePolling = sources.length > 0 || (admin && !this.unsupported);
             this.statusElement.textContent = this.unsupported && sources.length === 0 ? 'Live Sessions needs a newer Ploinky'
                 : this.rows.size ? `${this.rows.size} live session${this.rows.size === 1 ? '' : 's'}.` : 'No live sessions.';
+            void this.restoreEmbedded();
         } catch (error) {
             if (this.closed) return;
             if (error?.status === 404) {
@@ -167,14 +214,28 @@ export class LiveSessionsModal {
             fragment.appendChild(textElement('li', `${source.label || source.agent}: ${error.status === 404 && source.shell
                 ? 'Live Sessions needs a newer Ploinky' : 'This session source is unavailable.'}`, 'live-sessions-row'));
         }
+        if (!this.shellAvailable) {
+            const banner = textElement('li', 'Terminals are disabled for safety. Only retained stop results are listed.', 'live-sessions-row live-sessions-banner');
+            banner.setAttribute('role', 'alert');
+            fragment.appendChild(banner);
+        }
         for (const row of this.rows.values()) {
             const item = textElement('li', '', 'live-sessions-row');
             item.dataset.sessionId = row.key || row.id;
             item.appendChild(textElement('h3', row.title));
             item.appendChild(textElement('p', `${row.detail} · ${row.cwdDisplay}`, 'live-sessions-detail'));
             item.appendChild(textElement('p', `${row.status} · ${row.ownerLabel} · ${row.viewerCount} viewer${row.viewerCount === 1 ? '' : 's'} · ${row.status === 'exited' ? 'Input closed' : row.kind === 'shell' && row.isOwner ? 'You can type' : row.kind !== 'shell' && row.isOwner && row.capabilities.message ? 'You can message' : 'Watch only'} · ${row.access === 'ro' ? 'Read-only folder' : 'Read/write folder'}`));
+            if (row.kind === 'shell') {
+                const policy = [row.profileLabel ? `Profile: ${row.profileLabel}` : '',
+                    row.closePolicy ? `When its tab closes: ${row.closePolicy === 'stop' ? 'Stop it' : 'Keep running'}` : ''].filter(Boolean);
+                if (policy.length) item.appendChild(textElement('p', policy.join(' · '), 'live-sessions-detail'));
+                const policyStatus = closePolicyStatusText(row);
+                if (policyStatus) item.appendChild(textElement('p', policyStatus, 'live-sessions-notice'));
+            }
             if (row.status === 'exited') {
                 item.appendChild(textElement('p', `Ended: ${row.exitReason || 'exited'}`));
+                if (row.closure) item.appendChild(textElement('p', closureText(row), `live-sessions-notice live-sessions-closure-${row.closure}`));
+                if (row.recordCleanup === 'failed') item.appendChild(textElement('p', 'Record cleanup failed', 'live-sessions-notice'));
             } else {
                 const actions = textElement('div', '', 'live-sessions-actions');
                 const key = row.key || row.id;
@@ -182,6 +243,7 @@ export class LiveSessionsModal {
                 if (confirmation) item.appendChild(textElement('p', row.kind === 'shell' ? 'Kill this terminal and its running processes?'
                     : row.kind === 'workflow-phase' ? 'Pause the whole workflow? It can be resumed from Observability.' : 'Stop this run?'));
                 const rowActions = [['attach', row.kind === 'shell' ? 'Attach' : 'Watch']];
+                if (row.kind === 'shell' && row.isOwner && row.closePolicy === 'stop') rowActions.push(['keep-running', 'Keep running']);
                 if (row.kind === 'shell' || row.viewUrl) rowActions.push(['pop-out', 'Pop out']);
                 if (row.transcriptUrl) rowActions.push(['transcript', 'Transcript']);
                 if (row.capabilities.stop && !ENDED_STATUSES.includes(row.status)) rowActions.push(['kill', row.kind === 'shell' ? 'Kill' : row.kind === 'workflow-phase' ? 'Pause workflow' : 'Stop']);
@@ -214,7 +276,8 @@ export class LiveSessionsModal {
         void this.performAction(button.dataset.sessionId, button.dataset.sessionAction);
     }
 
-    async performAction(id, action) {
+    // `supersedes` is the view an Explorer restore recovers; only a plain attach can carry it.
+    async performAction(id, action, { supersedes } = {}) {
         if (this.closed || this.pendingId || !this.canUseSessions()) return;
         const row = this.rows.get(id);
         if (!row || row.status === 'exited') return;
@@ -226,7 +289,8 @@ export class LiveSessionsModal {
             this.listElement.querySelector(`[data-session-id="${id}"][data-session-action="${action === 'kill' ? 'confirm-kill' : 'kill'}"]`)?.focus();
             return;
         }
-        if (!['attach', 'pop-out', 'transcript', 'confirm-kill'].includes(action) || (action === 'confirm-kill' && this.confirmId !== id)) return;
+        if (!['attach', 'pop-out', 'transcript', 'confirm-kill', 'keep-running'].includes(action) || (action === 'confirm-kill' && this.confirmId !== id)) return;
+        if (action === 'keep-running' && (row.kind !== 'shell' || !row.isOwner || row.closePolicy !== 'stop')) return;
         if (action === 'confirm-kill' && (!row.capabilities.stop || ENDED_STATUSES.includes(row.status))) return;
         if (action === 'pop-out' && row.kind !== 'shell' && !row.viewUrl) return;
         if (action === 'transcript' && !row.transcriptUrl) return;
@@ -241,7 +305,11 @@ export class LiveSessionsModal {
         this.pendingId = id;
         this.renderRows();
         try {
-            if (action === 'confirm-kill') {
+            if (action === 'keep-running') {
+                const result = await this.withRequest((options) => setLiveSessionClosePolicy(row.id, 'keep', options));
+                if (this.closed) return;
+                if (this.embedded?.sessionId === row.id) this.embedded.policy = result.closePolicy;
+            } else if (action === 'confirm-kill') {
                 await this.withRequest((options) => row.kind === 'shell' ? killLiveSession(row.id, options) : stopAgentSession(row.sessionSource, row, options));
                 if (this.closed) return;
                 this.confirmId = '';
@@ -267,7 +335,8 @@ export class LiveSessionsModal {
                     this.streamPresenter.updateSession(row, row.sessionSource);
                 }
             } else {
-                const attach = await this.withRequest((options) => mintLiveSessionAttach(row.id, options));
+                const claim = action === 'attach' && supersedes ? { supersedes } : {};
+                const attach = await this.withRequest((options) => mintLiveSessionAttach(row.id, { ...options, ...claim }));
                 if (this.closed || sequence !== this.attachSequence || !this.canUseSessions()) return;
                 if (action === 'pop-out') {
                     if (!navigateTerminalWindow(popup, { attach })) throw new Error('Terminal tab could not be opened.');
@@ -282,6 +351,7 @@ export class LiveSessionsModal {
                     this.viewerId = id;
                     this.viewerTitle.textContent = frame.title;
                     this.viewerElement.hidden = false;
+                    this.beginEmbedded(frame, row);
                 }
             }
         } catch (error) {
@@ -293,11 +363,68 @@ export class LiveSessionsModal {
             this.pendingId = '';
             if (!this.closed) this.renderRows();
         }
-        if (!this.closed && action === 'confirm-kill') void this.refresh();
+        if (!this.closed && ['confirm-kill', 'keep-running'].includes(action)) void this.refresh();
+    }
+
+    // Re-attaches the terminal that was embedded when Explorer last unloaded, through the ordinary attach-token flow.
+    async restoreEmbedded() {
+        const restore = takeEmbeddedRestore();
+        if (!restore || this.closed) return;
+        const id = restore.sessionId;
+        const row = this.rows.get(id);
+        if (!row || row.kind !== 'shell' || !row.isOwner || row.status === 'exited') {
+            clearEmbeddedTerminalKey();
+            return;
+        }
+        await this.performAction(id, 'attach', { supersedes: restore.viewId });
+        if (!this.closed && this.viewerId !== id) clearEmbeddedTerminalKey();
+    }
+
+    beginEmbedded(frame, row) {
+        this.clearEmbedded();
+        this.embedded = { sessionId: row.id, frame, viewId: '', policy: '', registered: false };
+        // Only the owner's view can stop the terminal on page close; a watcher's view never registers anything.
+        if (row.isOwner) globalThis.window?.addEventListener?.('message', this.handleViewMessage);
+    }
+
+    // Accepts the embedded WebTTY page's announcement of its server-issued view and close policy.
+    handleViewMessage(event) {
+        const embedded = this.embedded;
+        if (!embedded || this.closed || !sameOriginMessage(event, embedded.frame)) return;
+        const data = event.data;
+        if (!data || typeof data !== 'object' || Array.isArray(data)
+            || Object.keys(data).length !== VIEW_MESSAGE_KEYS.length
+            || !VIEW_MESSAGE_KEYS.every((key) => Object.hasOwn(data, key))
+            || data.type !== VIEW_MESSAGE || data.role !== 'owner' || data.sessionId !== embedded.sessionId
+            || typeof data.viewId !== 'string' || !VIEW_ID.test(data.viewId)
+            || !['keep', 'stop'].includes(data.policy)) return;
+        embedded.viewId = data.viewId;
+        embedded.policy = data.policy;
+        if (!embedded.registered) {
+            embedded.registered = true;
+            globalThis.window?.addEventListener?.('pagehide', this.handlePageHide);
+        }
+        // Every announcement replaces the stored view: a policy change or a back/forward re-attach issues a new one.
+        writeEmbeddedTerminalKey(embedded.sessionId, embedded.viewId);
+    }
+
+    // Closing or reloading the whole Explorer tab is the only trigger. Nothing here clears the storage key, so a reload can restore.
+    handlePageHide() {
+        const embedded = this.embedded;
+        if (embedded?.viewId) sendLiveSessionCloseIntent(embedded.sessionId, embedded.viewId, embedded.policy);
+    }
+
+    clearEmbedded() {
+        const embedded = this.embedded;
+        this.embedded = null;
+        globalThis.window?.removeEventListener?.('message', this.handleViewMessage);
+        globalThis.window?.removeEventListener?.('pagehide', this.handlePageHide);
+        if (embedded) clearEmbeddedTerminalKey();
     }
 
     detachViewer() {
         this.attachSequence += 1;
+        this.clearEmbedded();
         this.viewerId = '';
         this.streamPresenter?.afterUnload();
         this.streamPresenter = null;

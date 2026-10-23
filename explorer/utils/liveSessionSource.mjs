@@ -30,3 +30,6 @@ export function normalizeLiveSessionSource(config, agent) {
         || config.version !== 1 || !isOwnedLiveSessionUrl(config.base, agent)) return null;
     return Object.freeze({ version: 1, base: config.base.replace(/\/$/, '') });
 }
+
+// A terminal profile source declares {version: 1, base} under the same owning-agent rules as a Live Session source.
+export const normalizeTerminalProfileSource = normalizeLiveSessionSource;
