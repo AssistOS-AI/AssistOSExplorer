@@ -25,9 +25,10 @@ import {
 import {
   AUTHENTICATION_SURFACES,
   LEGACY_LOGIN_PATH,
-  USERPERSISTO_LOGIN_PATH,
-  assertAuthenticationLocation,
+  bindAuthenticationDocument,
+  clickInBoundDocument,
   completeThroughWizard,
+  fillInBoundDocument,
   prepareUserPersistoAccount,
   waitForAuthenticationSurface,
 } from '../lib/auth-wizard.mjs';
@@ -762,20 +763,22 @@ async function measureStep(state, name, action) {
 }
 
 // Fills the local Ploinky form outside the measured steps and returns its
-// submit action. The origin and path are checked before any credential.
+// submit action. Every credential and the submit are bound to the validated
+// login document at its exact address.
 async function prepareLegacyLogin(page, config, expectedOrigin) {
-  const username = page.locator('input#username, input[name="username"]').first();
-  const password = page.locator('input#password, input[name="password"]').first();
-  assertAuthenticationLocation(page, { expectedOrigin, pathname: LEGACY_LOGIN_PATH });
-  await username.fill(config.username);
-  assertAuthenticationLocation(page, { expectedOrigin, pathname: LEGACY_LOGIN_PATH });
-  await password.fill(config.password);
+  const binding = await bindAuthenticationDocument(page, {
+    expectedOrigin,
+    pathname: LEGACY_LOGIN_PATH,
+    timeoutMs: config.timeoutMs,
+  });
+  await fillInBoundDocument(binding, page.locator('input#username, input[name="username"]').first(), config.username);
+  await fillInBoundDocument(binding, page.locator('input#password, input[name="password"]').first(), config.password);
   return async () => {
-    assertAuthenticationLocation(page, { expectedOrigin, pathname: LEGACY_LOGIN_PATH });
     const navigation = page.waitForNavigation({ waitUntil: 'load', timeout: config.timeoutMs });
-    await page.locator(
+    navigation.catch(() => {});
+    await clickInBoundDocument(binding, page.locator(
       'form[action="/auth/login"] button[type="submit"], button[type="submit"], .auth-btn',
-    ).first().click();
+    ).first());
     await navigation;
     if (new URL(page.url()).origin !== expectedOrigin) {
       throw new Error('Authentication left the expected origin.');
@@ -793,7 +796,7 @@ async function prepareUserPersistoLogin(page, config, expectedOrigin) {
   if (!config.accountPassword) {
     throw new Error('BLOCKED: UserPersisto benchmark login needs UI_BENCHMARK_ACCOUNT_PASSWORD or SMOKE_ACCOUNT_PASSWORD for an existing password account.');
   }
-  const { state, content } = await prepareUserPersistoAccount(page, { loginEmail: config.loginEmail }, {
+  const { state, content, binding } = await prepareUserPersistoAccount(page, { loginEmail: config.loginEmail }, {
     expectedOrigin,
     timeoutMs: config.timeoutMs,
     allowSignup: false,
@@ -805,11 +808,10 @@ async function prepareUserPersistoLogin(page, config, expectedOrigin) {
   if (await passwordInput.isDisabled()) {
     throw new Error('BLOCKED: password sign-in is not available for the configured benchmark account.');
   }
-  assertAuthenticationLocation(page, { expectedOrigin, pathname: USERPERSISTO_LOGIN_PATH });
-  await passwordInput.fill(config.accountPassword);
+  await fillInBoundDocument(binding, passwordInput, config.accountPassword);
   const loginButton = content.getByRole('button', { name: 'Log in', exact: true });
   return () => completeThroughWizard(page, content, loginButton, config.timeoutMs, {
-    expectedOrigin,
+    binding,
     safeRefusal: true,
   });
 }

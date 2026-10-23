@@ -8,7 +8,10 @@ import { smokeConfig } from './config.mjs';
 import { getWithoutKeepAlive } from './api-probe.mjs';
 import {
   USERPERSISTO_LOGIN_PATH,
+  bindAuthenticationDocument,
+  clickInBoundDocument,
   completeThroughWizard,
+  fillInBoundDocument,
   prepareUserPersistoAccount,
 } from './auth-wizard.mjs';
 
@@ -79,7 +82,7 @@ export async function freshTotpToken(secret, {
     }
 }
 
-async function fillFreshTotpToken(page, input, secret, timeout, clock = {}) {
+async function fillFreshTotpToken(page, binding, input, secret, timeout, clock = {}) {
     const controller = new AbortController();
     const abort = () => controller.abort(new Error('Authenticator sign-in stopped because its page closed or crashed.'));
     page.on('close', abort);
@@ -88,7 +91,7 @@ async function fillFreshTotpToken(page, input, secret, timeout, clock = {}) {
         if (page.isClosed()) abort();
         await input.waitFor({ state: 'visible', timeout });
         const token = await freshTotpToken(secret, { ...clock, signal: controller.signal, timeoutMs: timeout });
-        await input.fill(token);
+        await fillInBoundDocument(binding, input, token);
     } finally {
         page.off('close', abort);
         page.off('crash', abort);
@@ -143,10 +146,6 @@ async function currentEmailCode(email, run) {
   }
 }
 
-function configuredSmokeOrigin() {
-  return new URL(smokeConfig.baseURL).origin;
-}
-
 function requireEmailCodeCommand(purpose) {
   if (!smokeConfig.emailCodeCommand) {
     throw new Error(`BLOCKED: SMOKE_EMAIL_CODE_COMMAND is not configured, so ${purpose} cannot be automated.`);
@@ -157,13 +156,13 @@ function requireEmailCodeCommand(purpose) {
 // the default policy the account is created and signed in by **Create
 // account** directly; when the workspace requires email verification the same
 // click opens the code screen, whose code comes from SMOKE_EMAIL_CODE_COMMAND.
-async function signUpThroughUserPersisto(page, content, { email, password, timeout, codeCommandRunner }) {
+async function signUpThroughUserPersisto(page, content, { binding, email, password, timeout, codeCommandRunner }) {
   const baseline = await currentEmailCode(email, codeCommandRunner);
-  await content.getByRole('button', { name: 'Sign up', exact: true }).click();
+  await clickInBoundDocument(binding, content.getByRole('button', { name: 'Sign up', exact: true }));
   const passwordInput = content.locator('input[name="password"]');
   await passwordInput.waitFor({ state: 'visible', timeout });
-  await passwordInput.fill(password);
-  await content.locator('input[name="passwordConfirmation"]').fill(password);
+  await fillInBoundDocument(binding, passwordInput, password);
+  await fillInBoundDocument(binding, content.locator('input[name="passwordConfirmation"]'), password);
   const codeInput = content.locator('input[name="code"]');
   const refusal = content.locator('[role="alert"]').filter({ hasText: /\S/ }).first();
   const collision = content.getByRole('heading', { name: 'Log in instead?', exact: true });
@@ -175,7 +174,7 @@ async function signUpThroughUserPersisto(page, content, { email, password, timeo
   refused.catch(() => {});
   collided.catch(() => {});
   codeScreen.catch(() => {});
-  await content.getByRole('button', { name: 'Create account', exact: true }).click();
+  await clickInBoundDocument(binding, content.getByRole('button', { name: 'Create account', exact: true }));
   const outcome = await Promise.race([navigated, refused, collided, codeScreen]);
   if (outcome === 'navigated') return;
   if (outcome === 'collision') throw new Error('An account already uses the configured sign-up email.');
@@ -187,9 +186,9 @@ async function signUpThroughUserPersisto(page, content, { email, password, timeo
   }
   requireEmailCodeCommand('the sign-up verification code');
   const code = await readEmailCode(email, { after: baseline, ...(codeCommandRunner ? { run: codeCommandRunner } : {}) });
-  await codeInput.fill(code);
+  await fillInBoundDocument(binding, codeInput, code);
   await completeThroughWizard(page, content, content.getByRole('button', { name: 'Verify', exact: true }), timeout,
-    { expectedOrigin: configuredSmokeOrigin() });
+    { binding });
 }
 
 // Drives the email-first wizard for administrators and other accounts: Email
@@ -199,7 +198,7 @@ async function signUpThroughUserPersisto(page, content, { email, password, timeo
 // signs up.
 export async function signInThroughUserPersisto(page, account, { codeCommandRunner, totpClock } = {}) {
   const timeout = smokeConfig.timeouts.navigation;
-  const expectedOrigin = configuredSmokeOrigin();
+  const expectedOrigin = new URL(smokeConfig.baseURL).origin;
   await page.locator('#auth_content').locator('h1').first().waitFor({ state: 'visible', timeout });
   if (!SIGN_IN_METHODS.has(account.signInMethod)) {
     throw new Error('BLOCKED: automated UserPersisto sign-in requires password, emailCode or totp.');
@@ -210,14 +209,15 @@ export async function signInThroughUserPersisto(page, account, { codeCommandRunn
   const email = String(account.loginEmail || account.username || '').trim();
   const password = String(account.accountPassword || smokeConfig.runAccountPassword || '');
   // The smoke suite signs unknown emails up; the shared helper refuses an
-  // unclaimed installation and checks the origin before the email is entered.
-  const { state, content } = await prepareUserPersistoAccount(page, { loginEmail: account.loginEmail, username: account.username }, {
+  // unclaimed installation and binds every credential action to the
+  // validated login document.
+  const { state, content, binding } = await prepareUserPersistoAccount(page, { loginEmail: account.loginEmail, username: account.username }, {
     expectedOrigin,
     timeoutMs: timeout,
     allowSignup: true,
   });
   if (state === 'signup') {
-    await signUpThroughUserPersisto(page, content, { email, password, timeout, codeCommandRunner });
+    await signUpThroughUserPersisto(page, content, { binding, email, password, timeout, codeCommandRunner });
     return;
   }
   if (account.signInMethod === 'password') {
@@ -225,32 +225,32 @@ export async function signInThroughUserPersisto(page, account, { codeCommandRunn
     if (await passwordInput.isDisabled()) {
       throw new Error('BLOCKED: password sign-in is not available for the configured account.');
     }
-    await passwordInput.fill(password);
+    await fillInBoundDocument(binding, passwordInput, password);
     await completeThroughWizard(page, content, content.getByRole('button', { name: 'Log in', exact: true }), timeout,
-      { expectedOrigin });
+      { binding });
     return;
   }
   const totp = account.signInMethod === 'totp';
   if (!totp) requireEmailCodeCommand('email-code sign-in');
-  await content.getByRole('button', { name: 'Try another way', exact: true }).click();
+  await clickInBoundDocument(binding, content.getByRole('button', { name: 'Try another way', exact: true }));
   const choice = content.getByRole('button', { name: totp ? 'Use an authenticator app' : 'Email me a code', exact: true });
   await choice.waitFor({ state: 'visible', timeout });
   if (await choice.isDisabled()) {
     throw new Error(`BLOCKED: ${totp ? 'authenticator' : 'email-code'} sign-in is not available for the configured account.`);
   }
   if (totp) {
-    await choice.click();
-    await fillFreshTotpToken(page, content.locator('input[name="token"]'), account.totpSecret, timeout, totpClock);
+    await clickInBoundDocument(binding, choice);
+    await fillFreshTotpToken(page, binding, content.locator('input[name="token"]'), account.totpSecret, timeout, totpClock);
   } else {
     const baseline = await currentEmailCode(email, codeCommandRunner);
-    await choice.click();
+    await clickInBoundDocument(binding, choice);
     const codeInput = content.locator('input[name="code"]');
     await codeInput.waitFor({ state: 'visible', timeout });
     const code = await readEmailCode(email, { after: baseline, ...(codeCommandRunner ? { run: codeCommandRunner } : {}) });
-    await codeInput.fill(code);
+    await fillInBoundDocument(binding, codeInput, code);
   }
   await completeThroughWizard(page, content, content.getByRole('button', { name: 'Verify', exact: true }), timeout,
-    { expectedOrigin });
+    { binding });
 }
 
 function loginForm(page) {
@@ -399,12 +399,18 @@ export async function signIn(
     }
     if (loginUrl.pathname === '/auth/login'
       && await loginForm(page).isVisible().catch(() => false)) {
-      await page.locator('input#username, input[name="username"]').first().fill(account.username);
-      await page.locator('input#password, input[name="password"]').first().fill(account.password);
+      const binding = await bindAuthenticationDocument(page, {
+        expectedOrigin: smokeOrigin,
+        pathname: '/auth/login',
+        timeoutMs: smokeConfig.timeouts.navigation,
+      });
+      await fillInBoundDocument(binding, page.locator('input#username, input[name="username"]').first(), account.username);
+      await fillInBoundDocument(binding, page.locator('input#password, input[name="password"]').first(), account.password);
       stage = 'login-submit-navigation';
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'load' }),
-        page.locator('form[action="/auth/login"] button[type="submit"], button[type="submit"], .auth-btn').first().click(),
+        clickInBoundDocument(binding,
+          page.locator('form[action="/auth/login"] button[type="submit"], button[type="submit"], .auth-btn').first()),
       ]);
     } else if (loginUrl.pathname === USERPERSISTO_LOGIN_PATH) {
       stage = 'login-submit-navigation';
