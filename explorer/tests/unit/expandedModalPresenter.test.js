@@ -381,3 +381,39 @@ test('a native dialog cancel cannot remove a guarded frame without asking; other
     p.handleDialogCancel(plain);
     assert.equal(plain.defaultPrevented, false, 'an unguarded panel is unchanged');
 });
+
+test('host Escape on a guarded iframe panel goes through the guarded close; nested, handled and unguarded Escape do not', async () => {
+    const reasons = [];
+    const { p, closes } = closingPresenter(async (reason) => { reasons.push(reason); return false; });
+    p.dialog = { id: 'host' };
+    const key = (target, changes = {}) => ({
+        key: 'Escape', target, defaultPrevented: false, stopped: false,
+        preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }, ...changes,
+    });
+    const onHost = key({ closest: () => p.dialog });
+    p.handleComponentEscape(onHost);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(onHost.defaultPrevented, true);
+    assert.equal(onHost.stopped, true);
+    assert.deepEqual(reasons, ['close'], 'the same question as X');
+    assert.equal(closes.length, 0, 'a refusal keeps the panel');
+    for (const event of [
+        key({ closest: () => ({ id: 'nested dialog' }) }),
+        key({ closest: () => p.dialog }, { defaultPrevented: true }),
+        key({ closest: () => p.dialog }, { key: 'Enter' }),
+    ]) {
+        const handled = event.defaultPrevented;
+        p.handleComponentEscape(event);
+        assert.equal(event.defaultPrevented, handled);
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(reasons, ['close']);
+    // An unguarded iframe panel keeps its previous Escape behaviour: nothing here closes it.
+    delete p.frame.contentWindow.__beforeExpandedModalClose;
+    p.guardedDocuments = new WeakSet();
+    p.frameGuarded = false;
+    const plain = key({ closest: () => p.dialog });
+    p.handleComponentEscape(plain);
+    assert.equal(plain.defaultPrevented, false);
+    assert.equal(closes.length, 0);
+});

@@ -195,10 +195,17 @@ export class ExpandedModal {
         void this.closeModal();
     };
 
+    // Escape on this dialog's own controls closes a component with a discard check, or a frame whose page guards its
+    // closing, through closeModal(). It runs before the shell's preventModalEscape, which suppresses the native cancel.
+    // Escape handled elsewhere first, and Escape in a nested dialog, are left alone.
     handleComponentEscape = (event) => {
-        if (event.key !== 'Escape' || event.defaultPrevented || this.mode !== 'component') return;
+        if (event.key !== 'Escape' || event.defaultPrevented) return;
         if (event.target?.closest?.('dialog') !== this.dialog) return;
-        if (typeof this.componentPresenter()?.confirmDiscardChanges !== 'function') return;
+        if (this.mode === 'component') {
+            if (typeof this.componentPresenter()?.confirmDiscardChanges !== 'function') return;
+        } else if (this.mode !== 'iframe' || !this.hasCloseGuard()) {
+            return;
+        }
         event.preventDefault();
         event.stopPropagation();
         void this.closeModal();
