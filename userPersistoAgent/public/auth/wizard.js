@@ -17,6 +17,8 @@ const RETRY_NOW_DELIVERIES = new Set(['failed', 'pending']);
 const GOOGLE_SCREENS = new Set(['start', 'googleRegistration']);
 const GOOGLE_REFRESH_MARGIN_MS = 30_000;
 const GOOGLE_UNAVAILABLE = 'Google sign-in is not available right now.';
+// A new start waits at most this long for an abandoned transaction's cancel.
+const GOOGLE_CLEANUP_WAIT_MS = 5_000;
 
 function defaultGis() {
     const view = globalThis.window;
@@ -76,6 +78,9 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     let googleInitializedFor = '';
     let submission = null; // null | 'discovery' | 'google'
     let googleCompletion = null; // AbortController of the in-flight credential POST
+    // Cancellation of an abandoned transaction that a new start must wait for,
+    // so retries never stack live transactions against the server's cap.
+    let googleCleanup = null;
     // Leaving the page abandons pending Google work; a page restored from the
     // back/forward cache discards it and renders a fresh transaction.
     const removePageHide = google.onPageHide?.(() => {
@@ -278,8 +283,19 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         return !disposed && op === googleOp && mount === googleMount && mount?.epoch === epoch;
     }
     function cancelGoogleHandle(transaction) {
-        if (typeof transaction !== 'string' || !transaction) return;
-        try { void Promise.resolve(adapter.cancelGoogle?.({ transaction })).catch(() => {}); } catch { /* expires server-side */ }
+        if (typeof transaction !== 'string' || !transaction) return Promise.resolve();
+        try { return Promise.resolve(adapter.cancelGoogle?.({ transaction })).then(() => {}, () => {}); } catch { return Promise.resolve(); /* expires server-side */ }
+    }
+    // Cancels `transaction` and makes the next start wait (bounded) for it.
+    function retireGoogleHandle(transaction) {
+        let timer;
+        const bound = new Promise((resolve) => { timer = globalThis.setTimeout?.(resolve, GOOGLE_CLEANUP_WAIT_MS); });
+        const cleanup = Promise.race([cancelGoogleHandle(transaction), bound]).finally(() => globalThis.clearTimeout?.(timer));
+        const previous = googleCleanup;
+        const chained = Promise.all([previous, cleanup]).then(() => {});
+        googleCleanup = chained;
+        chained.then(() => { if (googleCleanup === chained) googleCleanup = null; });
+        return chained;
     }
     // A verified credential awaiting resume is never cancelled.
     function cancelGoogleSession() {
@@ -302,6 +318,10 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         if (googleStarting) return googleStarting;
         cancelGoogleSession();
         const starting = (async () => {
+            if (googleCleanup) {
+                await googleCleanup;
+                if (disposed || googleStarting !== starting) throw new Error('google_start_unusable');
+            }
             const result = await adapter.startGoogle();
             if (disposed || googleStarting !== starting || screen === 'expired' || screen === 'completing'
                 || (expiresAt && ticker.now() >= expiresAt) || !usableGoogleStart(result)) {
@@ -380,9 +400,14 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             if (!current()) return abandon();
             googleCompletion = null;
             submission = null;
-            // A failed, refused or timed-out credential consumed this transaction.
+            // A failed, refused or timed-out request may still be pending or
+            // verified server-side: cancel this exact transaction before a
+            // replacement starts. Email sign-in is usable meanwhile.
             googleSession = null;
             googleInitializedFor = '';
+            mount.statusNode.textContent = 'Google sign-in could not be completed. Try again or use another sign-in method.';
+            await retireGoogleHandle(session.transaction);
+            if (disposed || op !== googleOp || mount !== googleMount || mount.epoch !== epoch || googleSession) return;
             void prepareGoogle('Google sign-in could not be completed. Try again or use another sign-in method.');
             return;
         }

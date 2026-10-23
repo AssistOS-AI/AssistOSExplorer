@@ -469,6 +469,82 @@ test('a timed-out credential completion releases email sign-in and offers a fres
     assert.equal(h1(root).textContent, 'Enter your password');
 });
 
+test('repeated failed credentials cancel each abandoned transaction before its replacement starts', async () => {
+    const google = fakeGis();
+    const live = new Set();
+    let starts = 0;
+    let maxLiveAtStart = 0;
+    const { adapter, calls } = googleAdapter((c) => ({
+        startGoogle: async () => {
+            maxLiveAtStart = Math.max(maxLiveAtStart, live.size);
+            starts += 1; c.start += 1;
+            const transaction = String(starts).repeat(64);
+            live.add(transaction);
+            return gisStart(transaction);
+        },
+        cancelGoogle: async ({ transaction }) => { c.cancel.push(transaction); live.delete(transaction); return { ok: true }; },
+        completeGoogle: async (args) => { c.complete.push(args); throw fail('google_request_timeout'); },
+    }));
+    const { root } = await mount({ adapter, gis: google.gis });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        await google.credential(`credential-${attempt}`);
+        await settle();
+        await settle();
+    }
+    assert.deepEqual(calls.complete.map((call) => call.transaction), ['1'.repeat(64), '2'.repeat(64), '3'.repeat(64)]);
+    assert.deepEqual(calls.cancel, ['1'.repeat(64), '2'.repeat(64), '3'.repeat(64)], 'each abandoned transaction is cancelled exactly once');
+    assert.equal(calls.start, 4);
+    assert.equal(maxLiveAtStart, 0, 'no replacement starts while an abandoned transaction is live');
+    assert.deepEqual([...live], ['4'.repeat(64)]);
+    await submitEmail(root);
+    assert.equal(h1(root).textContent, 'Enter your password');
+});
+
+test('a delayed cancellation holds the replacement start while email sign-in stays usable', async () => {
+    const google = fakeGis();
+    const cancellation = deferred();
+    let starts = 0;
+    const { adapter, calls } = googleAdapter((c) => ({
+        startGoogle: async () => { starts += 1; c.start += 1; return gisStart(String(starts).repeat(64)); },
+        cancelGoogle: ({ transaction }) => { c.cancel.push(transaction); return cancellation.promise; },
+        completeGoogle: async (args) => { c.complete.push(args); throw fail('google_request_timeout'); },
+    }));
+    const { root } = await mount({ adapter, gis: google.gis });
+    await google.credential();
+    await settle();
+    assert.deepEqual(calls.cancel, ['1'.repeat(64)]);
+    assert.equal(calls.start, 1, 'no replacement before the abandoned transaction is cancelled');
+    assert.match(root.textContent, /Google sign-in could not be completed/);
+    await submitEmail(root);
+    assert.equal(calls.discover, 1, 'email Next works while the cancellation is pending');
+    await button(root, 'Back').fire('click');
+    await settle();
+    assert.equal(calls.start, 1, 'a remount also waits for the pending cancellation');
+    cancellation.resolve({ ok: true });
+    await settle();
+    await settle();
+    assert.equal(calls.start, 2);
+    assert.deepEqual(google.state.inits.map((options) => options.nonce), ['nonce-111111', 'nonce-222222']);
+    assert.equal(root.querySelector('.google-signin').textContent, 'Sign in with Google');
+});
+
+test('disposal during a pending cancellation starts no replacement', async () => {
+    const google = fakeGis();
+    const cancellation = deferred();
+    const { adapter, calls } = googleAdapter((c) => ({
+        cancelGoogle: ({ transaction }) => { c.cancel.push(transaction); return cancellation.promise; },
+        completeGoogle: async (args) => { c.complete.push(args); throw fail('google_request_timeout'); },
+    }));
+    const { dispose } = await mount({ adapter, gis: google.gis });
+    await google.credential();
+    await settle();
+    dispose();
+    cancellation.resolve({ ok: true });
+    await settle();
+    await settle();
+    assert.equal(calls.start, 1);
+});
+
 test('a page restored from the back/forward cache renders a fresh transaction and drops the old callback', async () => {
     const google = fakeGis();
     let starts = 0;
