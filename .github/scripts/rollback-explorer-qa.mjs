@@ -27,6 +27,26 @@ const LEGACY_AGENTLIB_IMAGE_PROBE = '/usr/local/share/ploinky/agentlib/image-bun
 const AGENTLIB_IMAGE_PATH = '/opt/ploinky-agentlib';
 const AGENTLIB_PACKAGE_NAME = 'ploinky-agent-lib';
 const BOX_IMAGE_ID_ENV = 'PLOINKY_BOX_IMAGE_ID';
+// Ploinky's workspace Box state directory, which holds the workspace mutation lock.
+const HOST_STATE_DIRECTORY = '.ploinky-box';
+// The read-only checks a source pin needs. They run inside a throwaway sandbox,
+// never in the host process, because the Box can write these repositories and
+// their Git configuration (core.fsmonitor, hooks, filters) would run on the host.
+const SOURCE_PATH = /^\/[A-Za-z0-9_.\/-]+$/;
+export const SOURCE_CHECK_SCRIPT = `import { spawnSync } from 'node:child_process';
+const directory = process.argv[2];
+const git = args => {
+    const result = spawnSync('git', ['-c', 'safe.directory=' + directory, '-c', 'core.fsmonitor=false',
+        '-c', 'core.untrackedCache=false', '-C', directory, ...args], { encoding: 'utf8',
+        timeout: 60000, maxBuffer: 8 * 1024 * 1024, env: { PATH: '/usr/bin:/bin', HOME: '/tmp', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } });
+    return { status: result.status, stdout: typeof result.stdout === 'string' ? result.stdout : '' };
+};
+process.stdout.write(JSON.stringify({ toplevel: git(['rev-parse', '--show-toplevel']),
+    status: git(['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none']),
+    head: git(['rev-parse', 'HEAD']), origin: git(['remote', 'get-url', 'origin']),
+    branch: git(['rev-parse', '--abbrev-ref', 'HEAD']),
+    upstream: git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']) }));
+`;
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
 function requireProof(condition, code) {
@@ -187,6 +207,16 @@ function inspectBoxIdentity(item, scope) {
         requireProof(found.length === 1 && found[0].RW === false && found[0].Type === 'bind'
             && found[0].Source.startsWith(scope.workspace + '/'), 'QA_BOX_SOURCE_INVALID');
     }
+    // Every Box shadows the mounted checkout read-only at its own workspace path
+    // and masks the Box state directory with its read-only `empty/` directory.
+    // A Box built by an earlier runtime has neither, and is refused here.
+    const checkout = mounts.find(mount => mount.Destination === '/opt/ploinky').Source;
+    const shadows = mounts.filter(mount => mount.Destination === checkout);
+    const hostState = path.join(scope.workspace, HOST_STATE_DIRECTORY);
+    const masks = mounts.filter(mount => mount.Destination === hostState);
+    requireProof(shadows.length === 1 && shadows[0].Source === checkout && shadows[0].RW === false && shadows[0].Type === 'bind'
+        && masks.length === 1 && masks[0].Source === path.join(hostState, 'empty') && masks[0].RW === false
+        && masks[0].Type === 'bind', 'QA_BOX_SOURCE_INVALID');
     if (agentLibMode === 'image') assertImageAgentLibMounts(mounts);
     return { labels, image, mounts, agentLibMode };
 }
@@ -229,11 +259,156 @@ export function currentQaBox(boxes, scope = QA_SCOPE) {
     return exact[0];
 }
 
+/**
+ * Takes the QA workspace mutation lock from the imported Ploinky lock module of
+ * the runtime being handled. The lock lives in `<workspaceRoot>/.ploinky-box`,
+ * so the workspace root is always passed; this tooling keeps no other lock
+ * location. The in-place updater takes and releases it in place and never
+ * renames the workspace, so no relocation, deferral or successor custody exists.
+ */
+export async function acquireWorkspaceCustody(module, scope, { workspaceRoot = scope.workspace } = {}) {
+    const lock = await module.createMutationLockManager().acquire(scope.box, { workspaceRoot });
+    let released = false;
+    return {
+        workspaceRoot,
+        assertHeld() { requireProof(!released, 'QA_WORKSPACE_LOCK_RELEASED'); lock.assertHeld(scope.box); },
+        release() { if (!released) { lock.release(); released = true; } },
+    };
+}
+
 function command(program, args, options = {}) {
     const result = spawnSync(program, args, { encoding: 'utf8', timeout: 120_000,
         stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024, ...options });
     requireProof(!result.error && result.status === 0, 'QA_EXTERNAL_COMMAND_FAILED');
     return result.stdout.trim();
+}
+
+
+/**
+ * Container arguments of the source-check sandbox: the exact local Box image,
+ * no network, no pull, a read-only root and repository, every capability
+ * dropped, no privilege gain, and the unprivileged image user (uid 1000) mapped
+ * to the invoking host user, so the sandbox reads exactly what that user reads.
+ */
+export function sourceSandboxArguments(directoryPath, image) {
+    return ['run', '--rm', '-i', '--network=none', '--pull=never', '--read-only', '--cap-drop=ALL',
+        '--security-opt=no-new-privileges', '--userns=keep-id:uid=1000,gid=1000', '--user=1000:1000',
+        '--pids-limit=64', '--tmpfs=/tmp:rw,nosuid,nodev,noexec,mode=1777', '--env=HOME=/tmp', '--workdir=/tmp',
+        `--volume=${directoryPath}:${directoryPath}:ro`, '--entrypoint=/usr/local/bin/node', image,
+        '--input-type=module', '-', directoryPath];
+}
+
+/**
+ * Runs SOURCE_CHECK_SCRIPT for one repository in a throwaway rootless Podman
+ * container. `sandbox` names the engine and exact image of the QA Box being
+ * handled; without one, or outside rootless Podman, nothing runs.
+ */
+export function createSourceSandbox({ env = process.env, run = command } = {}) {
+    let rootless = false;
+    return (directoryPath, sandbox) => {
+        const image = String(sandbox?.image || '').replace(/^sha256:/, '');
+        requireProof(sandbox?.engine === 'podman' && FULL_ID.test(image), 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+        requireProof(SOURCE_PATH.test(directoryPath) && path.normalize(directoryPath) === directoryPath, 'QA_SOURCE_SANDBOX_PATH_INVALID');
+        if (!rootless) {
+            requireProof(run('podman', ['info', '--format', '{{.Host.Security.Rootless}}'], { env }) === 'true',
+                'QA_SOURCE_SANDBOX_UNAVAILABLE');
+            rootless = true;
+        }
+        const output = run('podman', sourceSandboxArguments(directoryPath, image), { env, input: SOURCE_CHECK_SCRIPT, timeout: 120_000 });
+        try { return JSON.parse(output); } catch { return requireProof(false, 'QA_SOURCE_SANDBOX_FAILED'); }
+    };
+}
+
+/**
+ * Container arguments for one Git command on one repository the Box can write,
+ * with the same isolation as the source checks. Only that repository is
+ * mounted, read-only unless the command must write it; only a fetch or remote
+ * query gets a network. Hooks are disabled; Box-written fsmonitor, filter and
+ * other configuration can then run only inside this container.
+ */
+export function gitSandboxArguments(repository, image, args, { write = false, network = null, source = repository } = {}) {
+    return ['run', '--rm', '-i', `--network=${network ? sandboxNetwork(network) : 'none'}`, '--pull=never', '--read-only', '--cap-drop=ALL',
+        '--security-opt=no-new-privileges', '--userns=keep-id:uid=1000,gid=1000', '--user=1000:1000',
+        '--pids-limit=64', '--tmpfs=/tmp:rw,nosuid,nodev,noexec,mode=1777', '--env=HOME=/tmp',
+        '--env=GIT_OPTIONAL_LOCKS=0', '--env=GIT_TERMINAL_PROMPT=0', '--workdir=/tmp',
+        `--volume=${source}:${repository}:${write ? 'rw' : 'ro'}`, '--entrypoint=/usr/bin/git', image,
+        '-c', `safe.directory=${repository}`, '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+        '-c', 'core.untrackedCache=false', '-C', repository, ...args];
+}
+
+/**
+ * The network of a sandboxed fetch or remote query: outbound only, never the
+ * host loopback, rendered for the engine's configured rootless network.
+ * Anything else fails closed.
+ */
+export function sandboxNetwork(kind) {
+    if (kind === 'pasta') return 'pasta:--no-map-gw';
+    if (kind === 'slirp4netns') return 'slirp4netns:allow_host_loopback=false';
+    return requireProof(false, 'QA_SOURCE_SANDBOX_NETWORK_UNAVAILABLE');
+}
+
+/**
+ * The mount source of a repository the sandbox may write: every component is
+ * checked with lstat and none may be a symbolic link, so the mount is exactly
+ * the resolved directory that was checked.
+ */
+export function writableRepositorySource(repository, fsApi = fs) {
+    requireProof(path.isAbsolute(repository) && path.normalize(repository) === repository, 'QA_SOURCE_SANDBOX_PATH_INVALID');
+    let current = path.parse(repository).root;
+    for (const part of repository.slice(current.length).split(path.sep).filter(Boolean)) {
+        current = path.join(current, part);
+        const stat = fsApi.lstatSync(current);
+        requireProof(stat.isDirectory() && !stat.isSymbolicLink(), 'QA_SOURCE_SANDBOX_PATH_INVALID');
+    }
+    const resolved = fsApi.realpathSync(repository);
+    requireProof(resolved === repository, 'QA_SOURCE_SANDBOX_PATH_INVALID');
+    return resolved;
+}
+
+/**
+ * Runs Git commands in throwaway rootless Podman containers made from the exact
+ * image of the QA Box being handled. Returns the raw spawn result, so callers
+ * keep their own exit-status rules. Without a Podman Box image, or outside
+ * rootless Podman, nothing runs.
+ */
+export function createGitSandbox({ env = process.env, spawn = spawnSync, fsApi = fs } = {}) {
+    let engineInfo = null;
+    return (repository, sandbox, args, { write = false, network = false, timeout = 60_000, encoding = 'utf8' } = {}) => {
+        const image = String(sandbox?.image || '').replace(/^sha256:/, '');
+        requireProof(sandbox?.engine === 'podman' && FULL_ID.test(image), 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+        requireProof(SOURCE_PATH.test(repository) && path.normalize(repository) === repository, 'QA_SOURCE_SANDBOX_PATH_INVALID');
+        if (!engineInfo) {
+            const info = spawn('podman', ['info', '--format', '{{.Host.Security.Rootless}} {{.Host.RootlessNetworkCmd}}'],
+                { env, encoding: 'utf8', timeout: 60_000 });
+            const [rootless, networkCommand = ''] = String(info.stdout || '').trim().split(/\s+/);
+            requireProof(!info.error && info.status === 0 && rootless === 'true', 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+            engineInfo = { networkCommand };
+        }
+        // A networked run needs the engine's rootless network; without one it fails closed.
+        if (network) sandboxNetwork(engineInfo.networkCommand);
+        const source = write ? writableRepositorySource(repository, fsApi) : repository;
+        return spawn('podman', gitSandboxArguments(repository, image, args,
+            { write, network: network ? engineInfo.networkCommand : null, source }),
+        { env, encoding, timeout, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    };
+}
+
+/** Validates one sandbox report exactly as the former host-side Git checks did. */
+export function sourcePinFromReport(directoryPath, report, scope = QA_SCOPE) {
+    const value = key => {
+        const row = report?.[key];
+        requireProof(row && row.status === 0 && typeof row.stdout === 'string', 'QA_EXTERNAL_COMMAND_FAILED');
+        return row.stdout.trim();
+    };
+    requireProof(value('toplevel') === directoryPath && value('status') === '', 'QA_SOURCE_NOT_CLEAN');
+    const commit = value('head');
+    requireProof(/^[a-f0-9]{40}$/.test(commit), 'QA_SOURCE_COMMIT_INVALID');
+    const origin = value('origin');
+    if (directoryPath.includes('/.ploinky/agentlib/generations/')) {
+        requireProof(new RegExp(`^${commit}-[a-f0-9]{12}$`).test(path.basename(directoryPath))
+            && origin === path.join(scope.workspace, '.ploinky/agentlib/mirror.git'), 'QA_SOURCE_ORIGIN_INVALID');
+    } else requireProof(/^https:\/\/github\.com\/AssistOS-AI\/[A-Za-z0-9_.-]+(?:\.git)?$/i.test(origin), 'QA_SOURCE_ORIGIN_INVALID');
+    return { commit, branch: value('branch'), origin };
 }
 
 export function productionAdapters(scope = QA_SCOPE) {
@@ -303,12 +478,19 @@ export function productionAdapters(scope = QA_SCOPE) {
         requireProof(records.length === 1, 'QA_INSPECTION_AMBIGUOUS');
         return sanitize(engine, records[0]);
     };
+    const sourceSandbox = createSourceSandbox({ env });
+    // One sandbox run yields the pin and, for the runtime verifier, the upstream.
+    const checkSource = (directoryPath, sandbox) => {
+        directory(directoryPath);
+        directory(path.join(directoryPath, '.git'));
+        const report = sourceSandbox(directoryPath, sandbox);
+        const upstream = report?.upstream?.status === 0 && typeof report.upstream.stdout === 'string' ? report.upstream.stdout.trim() : null;
+        return { pin: sourcePinFromReport(directoryPath, report, scope), upstream };
+    };
+    const lockModule = runtimeRoot => import(path.join(runtimeRoot, '.runtime/ploinky/ploinky-box/locks.mjs'));
     const adapters = {
-        async acquireWorkspaceLock(previous) {
-            const { createMutationLockManager } = await import(path.join(previous, '.runtime/ploinky/ploinky-box/locks.mjs'));
-            const lock = await createMutationLockManager().acquire(scope.box);
-            let released = false;
-            return { release() { if (!released) { lock.release(); released = true; } } };
+        async acquireWorkspaceLock(previous, options = {}) {
+            return acquireWorkspaceCustody(await lockModule(previous), scope, options);
         },
         assertHost() {
             requireProof(process.platform === 'linux' && os.userInfo().username === 'admin'
@@ -319,22 +501,10 @@ export function productionAdapters(scope = QA_SCOPE) {
             requireProof(/^[a-f0-9]{32}$/.test(value), 'QA_MACHINE_ID_INVALID');
             return value;
         },
-        sourcePin(directoryPath) {
-            directory(directoryPath);
-            directory(path.join(directoryPath, '.git'));
-            const git = args => command('git', ['-c', `safe.directory=${directoryPath}`, '-C', directoryPath, ...args],
-                { env: { ...env, GIT_OPTIONAL_LOCKS: '0' } });
-            requireProof(git(['rev-parse', '--show-toplevel']) === directoryPath
-                && git(['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none']) === '', 'QA_SOURCE_NOT_CLEAN');
-            const commit = git(['rev-parse', 'HEAD']);
-            requireProof(/^[a-f0-9]{40}$/.test(commit), 'QA_SOURCE_COMMIT_INVALID');
-            const origin = git(['remote', 'get-url', 'origin']);
-            if (directoryPath.includes('/.ploinky/agentlib/generations/')) {
-                requireProof(new RegExp(`^${commit}-[a-f0-9]{12}$`).test(path.basename(directoryPath))
-                    && origin === path.join(scope.workspace, '.ploinky/agentlib/mirror.git'), 'QA_SOURCE_ORIGIN_INVALID');
-            } else requireProof(/^https:\/\/github\.com\/AssistOS-AI\/[A-Za-z0-9_.-]+(?:\.git)?$/i.test(origin), 'QA_SOURCE_ORIGIN_INVALID');
-            return { commit, branch: git(['rev-parse', '--abbrev-ref', 'HEAD']), origin };
-        },
+        // The Box can write these repositories, so Git never runs on them in the
+        // host process; only structural lstat checks do.
+        sourcePin: (directoryPath, sandbox) => checkSource(directoryPath, sandbox).pin,
+        sourceCheck: checkSource,
         boxes() {
             const result = [];
             for (const engine of ['podman', 'docker']) {

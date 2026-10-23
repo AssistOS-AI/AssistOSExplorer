@@ -1101,6 +1101,67 @@ jobs:
           QA_TAIL_HELPER="$QA_HELPERS_DIR/rollback-explorer-qa.mjs"
           # END QA helper staging
 
+          # BEGIN QA sandboxed git
+          # Once a Box runs it can write the workspace checkouts and their Git configuration (fsmonitor,
+          # hooks, filters), so Git on them never runs in this host shell: every check runs in a throwaway
+          # rootless container made from the exact image of the QA Box (rollback-explorer-qa.mjs), with no
+          # network and the repository mounted read-only. The staged helper is the only copy used.
+          qa_box_image() {
+            local engine="$1" box="$2" image
+            image="$("$engine" container inspect "$box" --format '{{.Image}}')" || return 1
+            printf '%s\n' "${image#sha256:}"
+          }
+          qa_sandboxed_git() {
+            local directory="$1" image
+            shift
+            image="$(qa_box_image "$BOX_ENGINE" "$BOX_INSTANCE")" || return 1
+            node --input-type=module - "$QA_TAIL_HELPER" "$BOX_ENGINE" "$image" "$directory" "$@" <<'NODE'
+          // BEGIN QA sandboxed git command
+          const [helper, engine, image, directory, ...args] = process.argv.slice(2);
+          const { createGitSandbox } = await import(helper);
+          const result = createGitSandbox()(directory, { engine, image }, args);
+          if (result.error || result.status !== 0) process.exit(1);
+          process.stdout.write(result.stdout.trim());
+          // END QA sandboxed git command
+          NODE
+          }
+          # The managed sources of an existing workspace are proven in the sandbox of the exact Box found by
+          # the route, before anything is stopped: clean, at the reviewed origin and, for a shared-library
+          # generation, at the commit its name records. A source with no Box to supply the image is refused.
+          qa_prove_managed_sources() {
+            local image=""
+            if [ -n "$QA_EXACT_ID" ]; then
+              image="$(qa_box_image "$QA_EXACT_ENGINE" "$QA_EXACT_ID")" || return 1
+            fi
+            node --input-type=module - "$QA_TAIL_HELPER" "$QA_EXACT_ENGINE" "$image" "$WORK_DIR" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+
+          // BEGIN QA sandboxed source admission
+          const [helper, engine, image, workspace] = process.argv.slice(2);
+          const { productionAdapters } = await import(helper);
+          const present = file => fs.lstatSync(file, { throwIfNoEntry: false });
+          const managed = ['.runtime/ploinky', 'AdvancedLanguageAgent'];
+          for (const container of ['.ploinky/agentlib/generations', '.ploinky/repos']) {
+              if (present(path.join(workspace, container))) {
+                  managed.push(...fs.readdirSync(path.join(workspace, container)).sort().map(name => path.join(container, name)));
+              }
+          }
+          const sources = managed.filter(relative => present(path.join(workspace, relative)));
+          assert(sources.length === 0 || image, 'Managed sources exist but no QA Box can check them in its sandbox');
+          const adapters = productionAdapters();
+          for (const relative of sources) {
+              try { adapters.sourceCheck(path.join(workspace, relative), { engine, image }); } catch (error) {
+                  throw new Error(`Managed source ${relative} failed its sandboxed check (${error.code || 'unknown'}); local edits require reconciliation before redeployment`);
+              }
+          }
+          console.log(`[deploy-qa] Sandboxed source admission passed for ${sources.length} managed sources.`);
+          // END QA sandboxed source admission
+          NODE
+          }
+          # END QA sandboxed git
+
           # BEGIN QA safe receipts
           # The answers of the teardown helper carry user file names (the kept top-level entries) and identity
           # hashes, and this log and the step summary are public. Only counts, digests, container and image
@@ -1191,7 +1252,6 @@ jobs:
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import path from 'node:path';
-          import { execFileSync } from 'node:child_process';
 
           // BEGIN QA preservation admission
           const target = process.argv[2];
@@ -1241,16 +1301,11 @@ jobs:
                   const directory = path.join(target, relative), stat = present(directory);
                   if (!stat) continue;
                   assert(stat.isDirectory() && !stat.isSymbolicLink(), 'A managed source path needs explicit review');
-                  const git = args => execFileSync('git', ['-c', `safe.directory=${directory}`, '-C', directory, ...args], {
-                      encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-                  }).trim();
-                  assert.equal(git(['rev-parse', '--show-toplevel']), directory, 'Managed source must be its own repository');
-                  const origin = git(['remote', 'get-url', 'origin']);
-                  if (relative.startsWith('.ploinky/agentlib/generations/')) {
-                      assert.equal(origin, path.join(target, '.ploinky/agentlib/mirror.git'), 'Unreviewed shared-library source origin');
-                      assert.equal(git(['rev-parse', 'HEAD']), path.basename(relative).slice(0, 40), 'Shared-library generation commit changed');
-                  } else assert.match(origin, /^https:\/\/github\.com\/AssistOS-AI\/[A-Za-z0-9_.-]+(?:\.git)?$/i, 'Unreviewed managed source origin');
-                  assert.equal(git(['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none']), '', 'Local managed source edits require reconciliation before redeployment');
+                  const gitDirectory = present(path.join(directory, '.git'));
+                  assert(gitDirectory?.isDirectory() && !gitDirectory.isSymbolicLink(), 'Managed source must be its own repository');
+                  // This root step never runs Git: the Box can write these repositories and their Git
+                  // configuration. The sandboxed proof that follows (qa_prove_managed_sources) shows each one
+                  // clean, at its reviewed origin and, for a shared-library generation, at the commit its name records.
               }
               const desiredFile = path.join(target, '.ploinky/edge-desired.json');
               if (present(desiredFile)) {
@@ -1272,6 +1327,7 @@ jobs:
           console.log('[deploy-qa] Durable-state admission passed before stopping the previous runtime.');
           // END QA preservation admission
           NODE
+          qa_prove_managed_sources
           }
           # The admission reads the durable state of an installation that no earlier run began to
           # rebuild. A marker means an earlier run already began, so the workspace may hold the
@@ -1636,16 +1692,25 @@ jobs:
           fi
           git clone --single-branch --branch "$ALA_BRANCH" "$ALA_URL" "$ALA_DIR"
           verify_ala_checkout() {
-            if [ "$(git -C "$ALA_DIR" rev-parse HEAD)" != "$ALA_COMMIT" ] ||
-              [ "$(git -C "$ALA_DIR" branch --show-current)" != "$ALA_BRANCH" ] ||
-              [ "$(git -C "$ALA_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')" != "origin/$ALA_BRANCH" ] ||
-              [ -n "$(git -C "$ALA_DIR" status --porcelain)" ]; then
+            local image
+            image="$(qa_box_image "$BOX_ENGINE" "$BOX_INSTANCE")" || return 1
+            if ! node --input-type=module - "$QA_TAIL_HELPER" "$BOX_ENGINE" "$image" "$ALA_DIR" "$ALA_COMMIT" "$ALA_BRANCH" <<'NODE'
+          // BEGIN QA sandboxed ALA verification
+          // One sandbox run proves the checkout clean, at its reviewed origin, on the
+          // selected branch at the selected commit, tracking that branch's upstream.
+          const [helper, engine, image, directory, commit, branch] = process.argv.slice(2);
+          const { productionAdapters } = await import(helper);
+          const { pin, upstream } = productionAdapters().sourceCheck(directory, { engine, image });
+          if (pin.commit !== commit || pin.branch !== branch || upstream !== `origin/${branch}`) process.exit(1);
+          // END QA sandboxed ALA verification
+          NODE
+            then
               echo "[deploy-qa] ERROR: ALA checkout must remain clean and track the selected default-branch commit."
               return 1
             fi
             echo "[deploy-qa] Verified AdvancedLanguageAgent/$ALA_BRANCH at $ALA_COMMIT."
           }
-          verify_ala_checkout
+          # The fresh clone is verified in the sandbox once the QA Box is prepared, before the graph starts.
 
           mkdir -p "$WORK_DIR/.ploinky"
           chmod 700 "$WORK_DIR/.ploinky"
@@ -2253,8 +2318,10 @@ jobs:
           QA_VERIFY_BOX_ID="$("$BOX_ENGINE" container inspect "$BOX_INSTANCE" --format '{{.Id}}')"
           QA_VERIFY_IMAGE_ID="$("$BOX_ENGINE" container inspect "$BOX_INSTANCE" --format '{{.Image}}')"
           QA_VERIFY_IMAGE_ID="${QA_VERIFY_IMAGE_ID#sha256:}"
+          QA_RUNTIME_HEAD="$(qa_sandboxed_git "$RUNTIME_DIR" rev-parse HEAD)"
+          [[ "$QA_RUNTIME_HEAD" =~ ^[a-f0-9]{40}$ ]]
           QA_EXPECTED_SOURCES=(
-            ".runtime/ploinky|$PLOINKY_BRANCH|$(git -C "$RUNTIME_DIR" rev-parse HEAD)"
+            ".runtime/ploinky|$PLOINKY_BRANCH|$QA_RUNTIME_HEAD"
             "AdvancedLanguageAgent|$ALA_BRANCH|$ALA_COMMIT"
           )
           for repository_record in "${GRAPH_REPOSITORIES[@]}"; do
