@@ -697,7 +697,10 @@ async function runRace({ hold, move }) {
     steps: state.steps.map((step) => [step.name, step.status]),
     movedAccountInputs: events.filter((event) => event.type === 'input' && event.account && event.href !== validatedHref)
       .map((event) => event.name),
-    movedClicks: events.filter((event) => event.type === 'click' && !event.driving && event.href !== validatedHref)
+    // The test itself only ever clicks Next in a destination; any other click
+    // after the move, even while the test drives, came from the benchmark.
+    movedClicks: events.filter((event) => event.type === 'click' && event.href !== validatedHref
+      && !(event.driving && event.label === 'Next'))
       .map((event) => event.label),
     laterCredentialRequests: fixture.requests.slice(requestMark).filter((entry) => entry.method === 'POST'
       && (entry.email === ACCOUNT_EMAIL || entry.pathname.endsWith('/password/login') || entry.pathname === '/auth/login'))
