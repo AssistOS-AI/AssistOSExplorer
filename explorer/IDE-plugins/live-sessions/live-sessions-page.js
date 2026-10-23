@@ -14,6 +14,10 @@ import { initializeTheme } from '../../shared/ui/theme.js';
 export const EXPLORER_AGENT_ID = 'explorer';
 export const RUNTIME_PLUGIN_TOOL = 'collect_ide_plugins';
 export const PANEL_COMPONENT = 'live-sessions-modal';
+// Both are dependency entries of the toolbar plugin, and the runtime loader registers a dependency entry on its own
+// without its siblings, so the page registers each one the panel creates. The panel creates the stream view when an
+// agent run is watched.
+export const PAGE_COMPONENTS = Object.freeze([PANEL_COMPONENT, 'live-session-stream-view']);
 
 // The manifest's `applicationPlugins` booleans switch plugins off for a deployment, as in main.js.
 export function normalizeRuntimePluginPolicy(manifest) {
@@ -116,9 +120,9 @@ export async function startLiveSessionsPage({
         assistOS.runtimePlugins = plugins;
         runtimePluginLoader.mergeIntoAssistOS(assistOS, plugins);
 
-        // Registers the panel and, as its dependency, the terminal stream view it creates for agent runs.
-        const registered = await runtimePluginLoader.ensureComponentRegistered(PANEL_COMPONENT, plugins);
-        if (!registered) throw new Error('Live Sessions is not enabled for this workspace.');
+        // The panel and the stream view it creates for agent runs.
+        const registered = await Promise.all(PAGE_COMPONENTS.map((name) => runtimePluginLoader.ensureComponentRegistered(name, plugins)));
+        if (registered.some((component) => !component)) throw new Error('Live Sessions is not enabled for this workspace.');
 
         const element = webSkel.createElement(PANEL_COMPONENT, root, {}, { 'data-presenter': PANEL_COMPONENT }, true);
         const node = element.element?.deref?.();

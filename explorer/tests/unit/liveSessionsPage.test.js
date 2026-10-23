@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
-    normalizeRuntimePluginPolicy, PANEL_COMPONENT, startLiveSessionsPage,
+    normalizeRuntimePluginPolicy, PAGE_COMPONENTS, PANEL_COMPONENT, startLiveSessionsPage,
 } from '../../IDE-plugins/live-sessions/live-sessions-page.js';
+import { aggregateIdePlugins } from '../../utils/ide-plugins.mjs';
+import { createRuntimePluginLoader } from '../../services/runtime/runtimePluginLoader.js';
 import { filterRuntimePluginsByPolicy, mergeRuntimePluginsIntoAssistOS } from '../../utils/pluginUtils.core.js';
 
 const root = path.resolve(import.meta.dirname, '../..');
@@ -73,12 +75,14 @@ test('the page bootstraps WebSkel, the signed-in user and the source catalog, th
     assert.deepEqual(page.assistOS.workspace.appPlugins['live-sessions:source'], [SOURCE]);
     assert.deepEqual(page.log.find((entry) => entry[0] === 'policy'), ['policy', { help: false, 'live-sessions': true }]);
 
-    assert.deepEqual(page.log.find((entry) => entry[0] === 'register'), ['register', 'live-sessions-modal', true]);
+    assert.deepEqual(page.log.filter((entry) => entry[0] === 'register'), [
+        ['register', 'live-sessions-modal', true], ['register', 'live-session-stream-view', true],
+    ]);
     const created = page.log.find((entry) => entry[0] === 'createElement');
     assert.equal(created[1], 'live-sessions-modal');
     assert.equal(created[2], page.root);
     assert.deepEqual(created.slice(3), [{}, { 'data-presenter': 'live-sessions-modal' }, true]);
-    assert.ok(steps.indexOf('register') < steps.indexOf('createElement'), 'the panel is registered before it is created');
+    assert.ok(steps.lastIndexOf('register') < steps.indexOf('createElement'), 'the components are registered before the panel is created');
     assert.equal(page.status.hidden, true);
     assert.equal(page.status.textContent, '');
 });
@@ -136,4 +140,26 @@ test('the page imports only files of this repository that exist', async () => {
     const specifiers = [...source.matchAll(/(?:from |import\()'(\.[^']+)'/g)].map((match) => match[1]);
     assert.ok(specifiers.length >= 9, String(specifiers.length));
     for (const specifier of specifiers) await fs.access(path.resolve(pluginRoot, specifier));
+});
+
+test('the real runtime loader registers the panel and the stream view from the real config.json, so Attach on an agent run can create it', async () => {
+    const raw = await aggregateIdePlugins(path.resolve(root, '..'));
+    const loaded = [];
+    const registry = {
+        loadComponent: async (meta) => { loaded.push(meta.componentName); return { name: meta.componentName }; },
+        getCachedComponent: (meta) => (loaded.includes(meta.componentName) ? { name: meta.componentName } : undefined),
+    };
+    const page = harness();
+    const dependencies = {
+        ...page.dependencies,
+        assistosSDK: { name: 'sdk', fetchRuntimePlugins: async () => raw },
+        createComponentRegistry: () => registry,
+        createRuntimePluginLoader,
+        filterRuntimePluginsByPolicy,
+    };
+    assert.ok(await startLiveSessionsPage({ root: page.root, status: page.status, win: page.win, dependencies }));
+    assert.deepEqual(PAGE_COMPONENTS, ['live-sessions-modal', 'live-session-stream-view']);
+    for (const name of PAGE_COMPONENTS) assert.ok(loaded.includes(name), `${name} is registered`);
+    // The modal creates the stream view by name when an agent run is watched; nothing but the page registers it here.
+    assert.equal(loaded.includes('live-sessions-tool-button'), false, 'the toolbar button belongs to the shell');
 });
