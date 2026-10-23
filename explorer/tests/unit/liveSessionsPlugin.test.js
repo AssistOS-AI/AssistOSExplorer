@@ -15,13 +15,20 @@ import {
 } from '../../IDE-plugins/live-sessions/live-sessions-api.js';
 import {
     clearEmbeddedTerminalKey, countNeedsAttention, currentCue, EMBEDDED_TERMINAL_KEY, publishCue,
-    queueEmbeddedRestore, readEmbeddedTerminalKey, takeEmbeddedRestore, writeEmbeddedTerminalKey,
+    readEmbeddedTerminalKey, writeEmbeddedTerminalKey,
 } from '../../IDE-plugins/live-sessions/live-sessions-state.js';
+import {
+    CUE_MESSAGE, hostWindow, installHostBridge, parseBridgeMessage, postCueToHost, postViewToHost, VIEW_MESSAGE as BRIDGE_VIEW_MESSAGE,
+} from '../../IDE-plugins/live-sessions/live-sessions-bridge.js';
 import { closePolicyStatusText, closureText } from '../../IDE-plugins/live-sessions/components/live-sessions-modal/live-sessions-modal.js';
 
 const ID = 'S'.repeat(32);
 const TOKEN = 'T'.repeat(32);
 const root = path.resolve(import.meta.dirname, '../..');
+// What the host forwards to the toolbar presenter as `pluginToolbarModal`: config.json's descriptor.
+const PAGE_URL = '/explorer/IDE-plugins/live-sessions/live-sessions-page.html';
+const PAGE_DESCRIPTOR = Object.freeze({ mode: 'iframe', url: PAGE_URL, readyTitle: 'Live Sessions', fullscreen: true });
+const HOST_CONTEXT = Object.freeze({ pluginLabel: 'Live Sessions', pluginToolbarModal: PAGE_DESCRIPTOR });
 
 function row(overrides = {}) {
     return {
@@ -80,13 +87,17 @@ test('Live Sessions survives real discovery and normalization as an authenticate
     assert.equal(manifest.applicationPlugins['live-sessions'], true);
     assert.equal(config.adminOnly, false);
     assert.equal(config.locationOrder, 380);
-    assert.deepEqual(config.toolbarModal, { mode: 'component', component: 'live-sessions-modal', fullscreen: true });
+    // Like RoboTeam and Soul Gateway, the panel is a page in the shared expanded modal's iframe.
+    assert.deepEqual(config.toolbarModal, PAGE_DESCRIPTOR);
     const catalog = normalizeRuntimePlugins(await aggregateIdePlugins(path.resolve(root, '..')));
     const plugin = catalog.application['file-exp:toolbar'].find((entry) => entry.id === 'live-sessions');
     assert.ok(plugin);
     assert.equal(plugin.agent, 'explorer');
     assert.equal(plugin.component, 'live-sessions-tool-button');
     assert.equal(plugin.dependencies[0].component, 'live-sessions-modal');
+    assert.deepEqual(plugin.dependencies.map((dependency) => dependency.component), ['live-sessions-modal', 'live-session-stream-view'],
+        'the page registers both components through the runtime plugin catalog');
+    assert.deepEqual(plugin.toolbarModal, PAGE_DESCRIPTOR, 'the descriptor survives discovery and browser normalization');
     assert.equal(plugin.adminOnly, false);
     assert.equal(config.mountOnStart, true);
     assert.equal(plugin.mountOnStart, true, 'the opt-in survives discovery and browser normalization');
@@ -390,6 +401,7 @@ test('attach embeds a no-referrer fragment without putting the token in a descri
         },
     };
     const button = new LiveSessionsToolButton(new Element(), () => {});
+    button.updateHostContext(HOST_CONTEXT);
     button.openSessions();
     await new Promise((resolve) => setImmediate(resolve));
     const methods = [];
@@ -405,6 +417,13 @@ test('attach embeds a no-referrer fragment without putting the token in a descri
     assert.equal(frame.referrerPolicy, 'no-referrer');
     assert.equal(frame.src, `/webtty/#attach=${TOKEN}`);
     assert.equal(descriptors.length, 1);
+    // The panel opens as the Live Sessions page in the expanded modal's iframe, titled by the host's label.
+    assert.equal(descriptors[0].mode, 'iframe');
+    assert.equal(descriptors[0].url, PAGE_URL);
+    assert.equal(descriptors[0]['ready-title'], 'Live Sessions');
+    assert.equal(descriptors[0].title, 'Live Sessions');
+    assert.equal(descriptors[0].component, undefined);
+    assert.equal(descriptors[0].key, PAGE_URL, 'the modal dialog is keyed by the page URL, which the shell bridge trusts');
     assert.ok(descriptors.every((descriptor) => !JSON.stringify(descriptor).includes(TOKEN)));
     assert.deepEqual(storageWrites, []);
     modal.afterUnload();
@@ -968,11 +987,17 @@ function startupEnvironment(t, { admin = true, rows = [unattended()], key = { se
     const win = fakeWindow();
     globalThis.window = win;
     globalThis.sessionStorage = memoryStorage(key ? { [EMBEDDED_TERMINAL_KEY]: JSON.stringify(key) } : {});
-    clearPendingRestore();
     publishCue(0);
     const calls = [];
     const opened = [];
-    globalThis.assistOS.UI = { openExpandedModal: (descriptor) => { opened.push(descriptor); return Promise.resolve(); } };
+    // The expanded modal's promise stays pending until the panel is closed, as the real one does.
+    const closers = [];
+    globalThis.assistOS.UI = {
+        openExpandedModal: (descriptor) => {
+            opened.push(descriptor);
+            return new Promise((resolve) => { closers.push(resolve); });
+        },
+    };
     globalThis.fetch = fetchImpl || (async (url, options) => {
         calls.push({ url, method: options.method, ...(options.body === undefined ? {} : { body: options.body }) });
         if (options.method === 'GET') return response(payload(rows));
@@ -984,11 +1009,18 @@ function startupEnvironment(t, { admin = true, rows = [unattended()], key = { se
     const host = new Element();
     host.querySelector = (selector) => ({ '#liveSessionsToolButton': button, '#liveSessionsBadge': badge })[selector] || null;
     const toolButton = new LiveSessionsToolButton(host, () => {});
-    t.after(() => { toolButton.afterUnload(); clearPendingRestore(); publishCue(0); });
-    return { ...env, calls, opened, badge, button, toolButton, host, storage: globalThis.sessionStorage };
+    // The host hands the presenter its descriptor before the start work needs it.
+    toolButton.hostContext = HOST_CONTEXT;
+    t.after(() => { toolButton.afterUnload(); publishCue(0); });
+    const closePanel = () => { for (const close of closers.splice(0)) close(); };
+    // The panel the host opens is a new Live Sessions page; it reads the stored key when it starts.
+    const newPage = () => {
+        const page = new LiveSessionsModal(Object.assign(new Element(), { querySelector: (selector) => env.elements.get(selector) }), () => {});
+        t.after(() => page.afterUnload());
+        return page;
+    };
+    return { ...env, calls, opened, badge, button, toolButton, host, closePanel, newPage, win, storage: globalThis.sessionStorage };
 }
-
-function clearPendingRestore() { takeEmbeddedRestore(); }
 
 test('Explorer start makes one shell-list read, restores a still-owned embedded terminal through attach tokens, and shows the badge', async (t) => {
     const page = startupEnvironment(t, { rows: [unattended(), tombstone({ id: 'U'.repeat(32), closure: 'unconfirmed', closureScope: 'global' })] });
@@ -1000,20 +1032,23 @@ test('Explorer start makes one shell-list read, restores a still-owned embedded 
     assert.equal(page.badge.hidden, false);
     assert.equal(currentCue(), 2);
     assert.equal(page.opened.length, 1);
-    assert.deepEqual(page.opened[0], { mode: 'component', component: 'live-sessions-modal', title: 'Live Sessions', fullscreen: true });
-    assert.ok(!JSON.stringify(page.opened).includes(ID), 'the descriptor carries no session identifier');
+    assert.deepEqual(page.opened[0], { ...PAGE_DESCRIPTOR, title: 'Live Sessions' });
+    assert.ok(!JSON.stringify(page.opened).includes(ID) && !JSON.stringify(page.opened).includes(VIEW),
+        'the descriptor carries no session or view identifier');
+    assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), JSON.stringify({ sessionId: ID, viewId: VIEW }), 'the key waits for the page');
 
-    // The panel the host opens takes over the one-shot restore and re-attaches with a fresh attach token.
+    // The Live Sessions page the host opens reads the stored key itself and re-attaches with a fresh attach token.
     globalThis.assistOS.user = { roles: ['admin'] };
     const frameHost = page.elements.get('#liveSessionsFrame');
-    page.modal.afterRender();
+    const panel = page.newPage();
+    panel.afterRender();
     await settle();
     const posts = page.calls.filter((call) => call.method === 'POST');
     // The recovered view is named in the claim, and nothing else is.
     assert.deepEqual(posts, [{ url: `/webtty/live-sessions/${ID}/attach-tokens`, method: 'POST', body: JSON.stringify({ supersedes: VIEW }) }]);
     assert.equal(frameHost.children[0].src, `/webtty/#attach=${TOKEN}`);
-    assert.equal(page.modal.viewerId, ID);
-    assert.equal(takeEmbeddedRestore(), null, 'the restore request is consumed once');
+    assert.equal(panel.viewerId, ID);
+    assert.equal(panel.restore, null, 'the restore request is consumed once');
 
     // A second toolbar mount in the same page does not read again.
     const again = new LiveSessionsToolButton(page.host, () => {});
@@ -1034,7 +1069,6 @@ test('Explorer start clears the key when the session is gone, exited or not owne
         assert.equal(page.calls.length, 1);
         assert.deepEqual(page.opened, []);
         assert.equal(page.storage.data.size, 0, 'the stale key is cleared');
-        assert.equal(takeEmbeddedRestore(), null);
         page.toolButton.afterUnload();
     }
 });
@@ -1077,7 +1111,7 @@ test('Explorer start for a non-administrator, a failed read, or a panel closed m
     release();
     await settle();
     assert.deepEqual(closing.opened, [], 'closing the panel during the read wins over the restore');
-    assert.equal(takeEmbeddedRestore(), null);
+    assert.equal(closing.storage.data.size, 0);
 });
 
 test('the return cue counts owned unattended stop-policy shells and unconfirmed tombstones, and adds no timer', async (t) => {
@@ -1171,10 +1205,10 @@ test('the start work runs once when the opted-in toolbar button mounts, however 
     const page = startupEnvironment(t, { key: null, rows: [unattended()] });
     page.toolButton.afterRender();
     page.toolButton.afterRender();
-    page.toolButton.updateHostContext({ pluginLabel: 'Live Sessions' });
+    page.toolButton.updateHostContext(HOST_CONTEXT);
     await settle();
     page.toolButton.afterRender();
-    page.toolButton.updateHostContext({});
+    page.toolButton.updateHostContext(HOST_CONTEXT);
     await settle();
     assert.deepEqual(page.calls, [{ url: '/webtty/live-sessions', method: 'GET' }]);
     assert.equal(page.button.hidden, false, 'the mounted button is visible');
@@ -1263,12 +1297,6 @@ test('A11-S: a legacy, malformed or unreadable key is absent, and a bad write st
     writeEmbeddedTerminalKey(ID, VIEW);
     assert.equal(storage.data.get(EMBEDDED_TERMINAL_KEY), good);
 
-    queueEmbeddedRestore({ sessionId: ID });
-    assert.equal(takeEmbeddedRestore(), null);
-    queueEmbeddedRestore({ sessionId: ID, viewId: VIEW });
-    assert.deepEqual(takeEmbeddedRestore(), { sessionId: ID, viewId: VIEW });
-    assert.equal(takeEmbeddedRestore(), null);
-
     globalThis.sessionStorage = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };
     assert.equal(readEmbeddedTerminalKey(), null);
     writeEmbeddedTerminalKey(ID, VIEW);
@@ -1282,7 +1310,7 @@ test('A11-S: Explorer start with a legacy key restores nothing and clears it', a
     assert.deepEqual(page.calls.map((call) => call.method), ['GET']);
     assert.deepEqual(page.opened, []);
     assert.equal(page.storage.data.size, 0);
-    assert.equal(takeEmbeddedRestore(), null);
+    assert.equal(page.newPage().restore, null, 'a page started afterwards finds no key');
 });
 
 test('A11-S: only the Explorer restore names a superseded view; plain attach and pop-out send {}', async (t) => {
@@ -1300,9 +1328,289 @@ test('A11-S: only the Explorer restore names a superseded view; plain attach and
     // Even a caller that tries to pass a claim cannot make pop-out or transcript carry one.
     await page.modal.performAction(ID, 'pop-out', { supersedes: VIEW });
     assert.deepEqual(mintBodies(), ['{}', '{}', '{}']);
-    // A restore is a plain attach that names the recovered view.
-    queueEmbeddedRestore({ sessionId: ID, viewId: VIEW });
-    await page.modal.restoreEmbedded();
+    // A restore is a plain attach that names the recovered view, read from the stored key when the page starts.
+    writeEmbeddedTerminalKey(ID, VIEW);
+    const restored = new LiveSessionsModal(Object.assign(new Element(), { querySelector: (selector) => page.elements.get(selector) }), () => {});
+    t.after(() => restored.afterUnload());
+    restored.afterRender();
+    await settle();
     assert.deepEqual(mintBodies(), ['{}', '{}', '{}', JSON.stringify({ supersedes: VIEW })]);
-    assert.equal(page.modal.viewerId, ID);
+    assert.equal(restored.viewerId, ID);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The panel is the Live Sessions page in an iframe: it reaches the Explorer shell only through the bridge.
+// ---------------------------------------------------------------------------------------------------------------
+
+function parentWindow() {
+    const messages = [];
+    return { messages, postMessage(message, targetOrigin) { messages.push({ message, targetOrigin }); } };
+}
+
+// A shell window whose document holds the expanded modal's dialog around the Live Sessions iframe, plus other frames.
+function shellWindow(t) {
+    const win = fakeWindow();
+    const panel = { name: 'panel' };
+    const other = { name: 'another expanded panel' };
+    const bare = { name: 'a frame outside any dialog' };
+    const listeners = [];
+    const dialog = {
+        dataset: { expandedKey: PAGE_URL },
+        addEventListener(type, handler, options) { listeners.push({ type, handler, once: options?.once === true }); },
+        // The expanded modal closes the dialog and then removes it, taking its iframe out of the document.
+        close() {
+            frames.splice(frames.indexOf(panelFrame), 1);
+            for (const { type, handler } of listeners.splice(0)) if (type === 'close') handler({ type });
+        },
+        listenerCount: () => listeners.length,
+    };
+    const panelFrame = { contentWindow: panel, closest: (selector) => (selector === 'dialog' ? dialog : null) };
+    const frames = [
+        { contentWindow: bare, closest: () => null },
+        { contentWindow: other, closest: () => ({ dataset: { expandedKey: '/base-agent-additional-server/roboTeamAgent/3001/' } }) },
+        panelFrame,
+    ];
+    win.document = { querySelectorAll: (selector) => (selector === 'iframe' ? frames : []) };
+    const previous = new Map(['window', 'fetch', 'sessionStorage', 'document'].map((key) => [key, globalThis[key]]));
+    t.after(() => { for (const [key, value] of previous) globalThis[key] = value; publishCue(0); });
+    globalThis.window = win;
+    globalThis.sessionStorage = memoryStorage();
+    globalThis.document = { cookie: 'ploinky_browser_csrf=v1.shell-proof' };
+    const calls = [];
+    globalThis.fetch = async (url, options) => { calls.push({ url, options }); return response({ ok: true }, 202); };
+    publishCue(0);
+    return { win, panel, other, bare, calls, dialog, frames, panelFrame };
+}
+
+const cueMessage = (count) => ({ type: CUE_MESSAGE, count });
+const viewMessage = (view) => ({ type: BRIDGE_VIEW_MESSAGE, view });
+const goodView = (changes = {}) => ({ sessionId: ID, viewId: VIEW, policy: 'stop', ...changes });
+
+test('bridge messages have exact shapes: a cue count, or a null or exact {sessionId, viewId, policy} view', () => {
+    assert.deepEqual(parseBridgeMessage(cueMessage(0)), cueMessage(0));
+    assert.deepEqual(parseBridgeMessage(cueMessage(7)), cueMessage(7));
+    assert.deepEqual(parseBridgeMessage(viewMessage(null)), viewMessage(null));
+    assert.deepEqual(parseBridgeMessage(viewMessage(goodView())), viewMessage(goodView()));
+    assert.deepEqual(parseBridgeMessage(viewMessage(goodView({ policy: 'keep' }))), viewMessage(goodView({ policy: 'keep' })));
+    for (const bad of [
+        null, undefined, 'x', [], {}, { type: CUE_MESSAGE }, { type: 'other', count: 1 },
+        { ...cueMessage(1), extra: 1 }, cueMessage(-1), cueMessage(1.5), cueMessage('1'), cueMessage(Number.NaN), cueMessage(2 ** 60),
+        { type: BRIDGE_VIEW_MESSAGE }, { ...viewMessage(null), extra: 1 }, viewMessage(undefined), viewMessage('view'), viewMessage([]),
+        viewMessage({ ...goodView(), extra: 1 }), viewMessage({ sessionId: ID, viewId: VIEW }),
+        viewMessage(goodView({ sessionId: 'short' })), viewMessage(goodView({ sessionId: 'bad id'.padEnd(32, 'x') })),
+        viewMessage(goodView({ viewId: 'short' })), viewMessage(goodView({ viewId: 'V'.repeat(33) })),
+        viewMessage(goodView({ policy: 'later' })), viewMessage(goodView({ policy: undefined })),
+    ]) assert.equal(parseBridgeMessage(bad), null, JSON.stringify(bad));
+});
+
+test('the page reports to the shell only when it is framed, naming the shell origin', () => {
+    const alone = fakeWindow();
+    alone.parent = alone;
+    assert.equal(hostWindow(alone), null);
+    assert.equal(postCueToHost(2, alone), false);
+    assert.equal(postViewToHost(null, alone), false);
+    assert.equal(hostWindow({ location: { origin: ORIGIN } }), null, 'a window with no parent is not framed');
+
+    const framed = fakeWindow();
+    const parent = parentWindow();
+    framed.parent = parent;
+    assert.equal(hostWindow(framed), parent);
+    assert.equal(postCueToHost(2, framed), true);
+    assert.equal(postViewToHost(goodView(), framed), true);
+    assert.equal(postViewToHost(null, framed), true);
+    assert.deepEqual(parent.messages, [
+        { message: cueMessage(2), targetOrigin: ORIGIN },
+        { message: viewMessage(goodView()), targetOrigin: ORIGIN },
+        { message: viewMessage(null), targetOrigin: ORIGIN },
+    ]);
+});
+
+test('the shell bridge takes the cue and the view only from the Live Sessions panel iframe of this origin', async (t) => {
+    const { win, panel, other, bare, calls } = shellWindow(t);
+    const bridge = installHostBridge(win);
+    assert.equal(installHostBridge(win), bridge, 'one bridge per Explorer window');
+    bridge.setPageUrl(PAGE_URL);
+    const send = (data, event = {}) => win.dispatch('message', { source: panel, origin: ORIGIN, data, ...event });
+
+    send(cueMessage(3));
+    assert.equal(currentCue(), 3);
+    for (const event of [
+        { source: other }, { source: bare }, { source: null }, { source: undefined }, { source: { name: 'unknown window' } },
+        { origin: 'https://evil.test' }, { origin: 'null' }, { origin: undefined },
+    ]) {
+        send(cueMessage(9), event);
+        send(viewMessage(goodView()), event);
+    }
+    send(cueMessage(-1));
+    send({ ...cueMessage(8), extra: 1 });
+    assert.equal(currentCue(), 3, 'forged and malformed cues change nothing');
+    win.dispatch('pagehide', {});
+    assert.deepEqual(calls, [], 'a forged view registers no close intent');
+
+    bridge.setPageUrl('/another/page.html');
+    send(cueMessage(5));
+    assert.equal(currentCue(), 3, 'a panel opened for a different page is not trusted');
+    bridge.setPageUrl(PAGE_URL);
+    send(cueMessage(0));
+    assert.equal(currentCue(), 0);
+});
+
+test('only the shell sends the close intent, once for the reported view, when the whole Explorer tab unloads', async (t) => {
+    const { win, panel, calls } = shellWindow(t);
+    const bridge = installHostBridge(win);
+    bridge.setPageUrl(PAGE_URL);
+    const send = (data) => win.dispatch('message', { source: panel, origin: ORIGIN, data });
+
+    win.dispatch('pagehide', {});
+    assert.deepEqual(calls, [], 'no embedded terminal, no signal');
+
+    send(viewMessage(goodView({ viewId: 'A'.repeat(32), policy: 'keep' })));
+    send(viewMessage(goodView({ viewId: 'B'.repeat(32), policy: 'stop' })));
+    send(viewMessage(goodView({ viewId: 'bad' })));
+    win.dispatch('pagehide', { persisted: false });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, `/webtty/sessions/${ID}/close-intents`);
+    assert.equal(calls[0].options.method, 'POST');
+    assert.equal(calls[0].options.keepalive, true);
+    assert.equal(calls[0].options.headers['X-Ploinky-Browser-CSRF-Token'], 'v1.shell-proof');
+    assert.deepEqual(JSON.parse(calls[0].options.body), { view: 'B'.repeat(32), policy: 'stop' }, 'the latest valid view and its policy');
+
+    // A detach in the page, or the page closing the panel, leaves nothing to signal.
+    send(viewMessage(null));
+    win.dispatch('pagehide', {});
+    assert.equal(calls.length, 1);
+    send(viewMessage(goodView()));
+    writeEmbeddedTerminalKey(ID, VIEW);
+    bridge.panelClosed();
+    win.dispatch('pagehide', {});
+    assert.equal(calls.length, 1, 'closing the panel only detaches: it never stops a shell');
+    assert.equal(readEmbeddedTerminalKey(), null, 'a later Explorer start must not restore the detached view');
+});
+
+test('a page inside the Explorer panel hands its terminal view to the shell instead of signalling on its own pagehide', async (t) => {
+    const page = embeddedEnvironment(t);
+    const shell = parentWindow();
+    page.win.parent = shell;
+    page.modal.afterRender();
+    await settle();
+    await page.modal.performAction(ID, 'attach');
+    page.frame().contentWindow = { name: 'terminal frame' };
+    const posted = () => shell.messages.map((entry) => entry.message);
+
+    // The list read reported the cue (one unattended Stop-it shell) to the shell badge.
+    assert.deepEqual(posted(), [cueMessage(1)]);
+    page.announce();
+    assert.deepEqual(posted().at(-1), viewMessage(goodView()));
+    assert.ok(shell.messages.every((entry) => entry.targetOrigin === ORIGIN));
+    assert.equal(page.win.count('pagehide'), 0, 'the panel being closed is not the Explorer tab closing');
+    assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), JSON.stringify({ sessionId: ID, viewId: VIEW }), 'the key stays for an Explorer reload');
+    const before = page.calls.length;
+    page.win.dispatch('pagehide', {});
+    assert.equal(page.calls.length, before, 'this page sends no close intent');
+
+    page.announce({ viewId: 'W'.repeat(32), policy: 'keep' });
+    assert.deepEqual(posted().at(-1), viewMessage(goodView({ viewId: 'W'.repeat(32), policy: 'keep' })));
+
+    // Detaching tells the shell to forget the view, so a later Explorer unload signals nothing.
+    page.modal.detachViewer();
+    assert.deepEqual(posted().at(-1), viewMessage(null));
+    assert.equal(page.storage.data.size, 0);
+});
+
+test('a page of its own (Open in new tab) is the tab that closes, so it signals on its own pagehide', async (t) => {
+    const page = embeddedEnvironment(t);
+    page.win.parent = page.win;
+    page.modal.afterRender();
+    await settle();
+    await page.modal.performAction(ID, 'attach');
+    page.frame().contentWindow = { name: 'terminal frame' };
+    page.announce({ policy: 'stop' });
+    assert.equal(page.win.count('pagehide'), 1);
+    const before = page.calls.length;
+    page.win.dispatch('pagehide', {});
+    assert.equal(page.calls.length, before + 1);
+    assert.deepEqual(JSON.parse(page.calls.at(-1).options.body), { view: VIEW, policy: 'stop' });
+});
+
+test('the start work waits for the host descriptor, then opens the Live Sessions page once to restore a terminal', async (t) => {
+    const page = startupEnvironment(t);
+    page.toolButton.hostContext = {};
+    page.toolButton.afterRender();
+    await settle();
+    assert.deepEqual(page.calls, [], 'no descriptor yet: no read and no lost restore');
+    assert.deepEqual(page.opened, []);
+    assert.equal(page.storage.data.size, 1, 'the key is kept for the start work that follows');
+
+    page.toolButton.updateHostContext(HOST_CONTEXT);
+    await settle();
+    assert.deepEqual(page.calls, [{ url: '/webtty/live-sessions', method: 'GET' }]);
+    assert.deepEqual(page.opened, [{ ...PAGE_DESCRIPTOR, title: 'Live Sessions' }]);
+    page.toolButton.updateHostContext(HOST_CONTEXT);
+    page.toolButton.afterRender();
+    await settle();
+    assert.equal(page.opened.length, 1, 'later context updates do not reopen the panel');
+});
+
+test('the toolbar click opens the descriptor with the host label; closing the panel forgets the embedded terminal', async (t) => {
+    const page = startupEnvironment(t, { key: null });
+    page.toolButton.updateHostContext({ ...HOST_CONTEXT, pluginLabel: 'Sessions' });
+    await settle();
+    page.opened.length = 0;
+    page.toolButton.openSessions();
+    assert.deepEqual(page.opened, [{ ...PAGE_DESCRIPTOR, title: 'Sessions' }]);
+
+    // The shell holds the view the panel's page reported and the key that restores it after a reload.
+    const panel = {};
+    page.win.document = { querySelectorAll: () => [{ contentWindow: panel, closest: () => ({ dataset: { expandedKey: PAGE_URL } }) }] };
+    page.win.dispatch('message', { source: panel, origin: ORIGIN, data: viewMessage(goodView()) });
+    writeEmbeddedTerminalKey(ID, VIEW);
+    page.closePanel();
+    await settle();
+    assert.equal(page.storage.data.size, 0, 'closing the panel clears the key');
+    page.calls.length = 0;
+    page.win.dispatch('pagehide', {});
+    assert.deepEqual(page.calls, [], 'and the view, so an Explorer unload sends nothing');
+
+    // A host without a descriptor or without the expanded modal opens nothing and says so.
+    const bare = new LiveSessionsToolButton(new Element(), () => {});
+    assert.equal(bare.openPanel(), false);
+    bare.hostContext = HOST_CONTEXT;
+    const ui = globalThis.assistOS.UI;
+    globalThis.assistOS.UI = {};
+    assert.equal(bare.openPanel(), false);
+    globalThis.assistOS.UI = ui;
+});
+
+test('a panel closed by any code leaves nothing to signal: the shell notices the dialog closing and the iframe going away', async (t) => {
+    // 1. The dialog closes (the host opened the panel itself, so no presenter promise is involved).
+    const first = shellWindow(t);
+    const bridge = installHostBridge(first.win);
+    bridge.setPageUrl(PAGE_URL);
+    first.win.dispatch('message', { source: first.panel, origin: ORIGIN, data: viewMessage(goodView()) });
+    first.win.dispatch('message', { source: first.panel, origin: ORIGIN, data: viewMessage(goodView({ policy: 'keep' })) });
+    assert.equal(first.dialog.listenerCount(), 1, 'one close watch per dialog, however many views it reports');
+    writeEmbeddedTerminalKey(ID, VIEW);
+    first.dialog.close();
+    assert.equal(readEmbeddedTerminalKey(), null, 'a later Explorer start must not restore the detached view');
+    assert.equal(bridge.view, null);
+    first.win.dispatch('pagehide', {});
+    assert.deepEqual(first.calls, []);
+
+    // 2. The iframe is gone before the tab unloads, even if no close event ever arrived.
+    const second = shellWindow(t);
+    const other = installHostBridge(second.win);
+    other.setPageUrl(PAGE_URL);
+    second.win.dispatch('message', { source: second.panel, origin: ORIGIN, data: viewMessage(goodView()) });
+    second.frames.splice(second.frames.indexOf(second.panelFrame), 1);
+    second.win.dispatch('pagehide', {});
+    assert.deepEqual(second.calls, [], 'a missing panel frame never sends a Stop-it signal');
+
+    // 3. With the panel still open the same unload does signal, so the checks above are not vacuous.
+    const third = shellWindow(t);
+    const live = installHostBridge(third.win);
+    live.setPageUrl(PAGE_URL);
+    third.win.dispatch('message', { source: third.panel, origin: ORIGIN, data: viewMessage(goodView()) });
+    third.win.dispatch('pagehide', {});
+    assert.equal(third.calls.length, 1);
+    assert.equal(third.calls[0].url, `/webtty/sessions/${ID}/close-intents`);
 });

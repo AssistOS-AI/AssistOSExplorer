@@ -13,8 +13,9 @@
   "autoPin": false,
   "mountOnStart": true,
   "toolbarModal": {
-    "mode": "component",
-    "component": "live-sessions-modal",
+    "mode": "iframe",
+    "url": "/explorer/IDE-plugins/live-sessions/live-sessions-page.html",
+    "readyTitle": "Live Sessions",
     "fullscreen": true
   },
   "dependencies": [

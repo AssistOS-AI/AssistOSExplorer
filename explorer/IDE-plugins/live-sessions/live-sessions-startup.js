@@ -1,15 +1,16 @@
 import { isAdminUser } from '../../services/auth/adminUser.js';
 import { listLiveSessionsDetailed } from './live-sessions-api.js';
 import {
-    clearEmbeddedTerminalKey, countNeedsAttention, publishCue, queueEmbeddedRestore, readEmbeddedTerminalKey,
+    clearEmbeddedTerminalKey, countNeedsAttention, publishCue, readEmbeddedTerminalKey,
 } from './live-sessions-state.js';
 
 // Explorer start runs once per page: assistOS is created once, while the toolbar button can be mounted again.
 const startedFor = new WeakSet();
 
 // One shell-list read for administrators. It feeds the return cue and, when a terminal was embedded before the
-// reload, asks `openPanel` for the panel, which re-attaches it as a new owner view through the attach-token flow.
-// It makes no timer and no second request; the panel's own five-second poll keeps the cue current afterwards.
+// reload, asks `openPanel` for the panel. The Live Sessions page reads the same stored key itself and re-attaches the
+// terminal as a new owner view through the attach-token flow; the key never travels in the panel descriptor.
+// It makes no timer and no second request; the page's own five-second poll keeps the cue current afterwards.
 export async function runLiveSessionsStartup({ openPanel, host = globalThis.assistOS } = {}) {
     if (!host?.user || startedFor.has(host)) return false;
     startedFor.add(host);
@@ -30,9 +31,7 @@ export async function runLiveSessionsStartup({ openPanel, host = globalThis.assi
         clearEmbeddedTerminalKey();
         return false;
     }
-    queueEmbeddedRestore(stored);
     if (!openPanel?.()) {
-        queueEmbeddedRestore(null);
         clearEmbeddedTerminalKey();
         return false;
     }

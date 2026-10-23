@@ -1,14 +1,10 @@
+import { installHostBridge } from './live-sessions-bridge.js';
 import { runLiveSessionsStartup } from './live-sessions-startup.js';
 import { subscribeCue } from './live-sessions-state.js';
 
-const PANEL = { mode: 'component', component: 'live-sessions-modal', title: 'Live Sessions', fullscreen: true };
-
-function openPanel() {
-    const open = globalThis.assistOS?.UI?.openExpandedModal;
-    if (typeof open !== 'function') return false;
-    // Only component metadata reaches the modal descriptor and resume storage.
-    void open({ ...PANEL });
-    return true;
+// The shell is the only place that knows the panel was closed: the page in the panel's iframe is simply removed.
+function panelClosed() {
+    installHostBridge()?.panelClosed();
 }
 
 export class LiveSessionsToolButton {
@@ -41,6 +37,7 @@ export class LiveSessionsToolButton {
 
     updateHostContext(context = {}) {
         this.hostContext = context;
+        installHostBridge()?.setPageUrl(context.pluginToolbarModal?.url);
         this.syncButtonMetadata();
         void this.runStartup();
     }
@@ -54,9 +51,22 @@ export class LiveSessionsToolButton {
         this.syncButtonMetadata();
     }
 
-    // The toolbar mounts this presenter on demand, so the start work runs when it first mounts.
+    // The toolbar mounts this presenter at Explorer start, so the start work runs when it first mounts. It waits for
+    // the host to hand over the panel descriptor, because that is what it opens to restore an embedded terminal.
     runStartup() {
-        return runLiveSessionsStartup({ openPanel });
+        if (!this.hostContext.pluginToolbarModal) return Promise.resolve(false);
+        return runLiveSessionsStartup({ openPanel: () => this.openPanel() });
+    }
+
+    // The panel is the Live Sessions page in the shared expanded modal, like the other iframe toolbar tools.
+    openPanel() {
+        const descriptor = this.hostContext?.pluginToolbarModal;
+        const open = globalThis.assistOS?.UI?.openExpandedModal;
+        if (!descriptor || typeof open !== 'function') return false;
+        installHostBridge()?.setPageUrl(descriptor.url);
+        const closed = open({ ...descriptor, title: this.hostContext?.pluginLabel || descriptor.title || 'Live Sessions' });
+        void Promise.resolve(closed).then(panelClosed, () => {});
+        return true;
     }
 
     syncButtonMetadata() {
@@ -76,6 +86,6 @@ export class LiveSessionsToolButton {
     openSessions = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
-        if (openPanel()) this.button?.focus?.();
+        if (this.openPanel()) this.button?.focus?.();
     };
 }

@@ -9,8 +9,9 @@ import {
     mintLiveSessionAttach, navigateLiveSessionWindow, sendLiveSessionCloseIntent, setLiveSessionClosePolicy,
     stopAgentSession,
 } from '../../live-sessions-api.js';
+import { hostWindow, postCueToHost, postViewToHost } from '../../live-sessions-bridge.js';
 import {
-    clearEmbeddedTerminalKey, countNeedsAttention, publishCue, takeEmbeddedRestore, writeEmbeddedTerminalKey,
+    clearEmbeddedTerminalKey, countNeedsAttention, publishCue, readEmbeddedTerminalKey, writeEmbeddedTerminalKey,
 } from '../../live-sessions-state.js';
 
 const POLL_MS = 5000;
@@ -77,6 +78,8 @@ export class LiveSessionsModal {
         this.viewerId = '';
         this.attachSequence = 0;
         this.embedded = null;
+        // The terminal that was embedded when the Explorer tab last unloaded, re-attached once by the first read.
+        this.restore = readEmbeddedTerminalKey();
         this.shellAvailable = true;
         this.handleClick = this.handleClick.bind(this);
         this.handleViewMessage = this.handleViewMessage.bind(this);
@@ -154,7 +157,9 @@ export class LiveSessionsModal {
                 if (result.error) this.sourceErrors.push(result);
                 if (result.source.shell && !result.error) {
                     this.shellAvailable = result.available !== false;
-                    publishCue(countNeedsAttention(result.rows));
+                    const cue = countNeedsAttention(result.rows);
+                    publishCue(cue);
+                    postCueToHost(cue);
                 }
                 // A temporary read failure does not establish that a running session disappeared.
                 // Successful reads and authorization refusals replace only their own source rows.
@@ -368,7 +373,8 @@ export class LiveSessionsModal {
 
     // Re-attaches the terminal that was embedded when Explorer last unloaded, through the ordinary attach-token flow.
     async restoreEmbedded() {
-        const restore = takeEmbeddedRestore();
+        const restore = this.restore;
+        this.restore = null;
         if (!restore || this.closed) return;
         const id = restore.sessionId;
         const row = this.rows.get(id);
@@ -402,13 +408,16 @@ export class LiveSessionsModal {
         embedded.policy = data.policy;
         if (!embedded.registered) {
             embedded.registered = true;
-            globalThis.window?.addEventListener?.('pagehide', this.handlePageHide);
+            // Inside the Explorer panel this page cannot tell the panel being closed from the Explorer tab closing,
+            // so the Explorer shell holds the view and sends the signal; a page of its own is the tab that closes.
+            if (!hostWindow()) globalThis.window?.addEventListener?.('pagehide', this.handlePageHide);
         }
         // Every announcement replaces the stored view: a policy change or a back/forward re-attach issues a new one.
         writeEmbeddedTerminalKey(embedded.sessionId, embedded.viewId);
+        postViewToHost({ sessionId: embedded.sessionId, viewId: embedded.viewId, policy: embedded.policy });
     }
 
-    // Closing or reloading the whole Explorer tab is the only trigger. Nothing here clears the storage key, so a reload can restore.
+    // Closing or reloading the whole tab of a page that is not embedded is the only trigger. Nothing here clears the storage key, so a reload can restore.
     handlePageHide() {
         const embedded = this.embedded;
         if (embedded?.viewId) sendLiveSessionCloseIntent(embedded.sessionId, embedded.viewId, embedded.policy);
@@ -419,7 +428,10 @@ export class LiveSessionsModal {
         this.embedded = null;
         globalThis.window?.removeEventListener?.('message', this.handleViewMessage);
         globalThis.window?.removeEventListener?.('pagehide', this.handlePageHide);
-        if (embedded) clearEmbeddedTerminalKey();
+        if (embedded) {
+            clearEmbeddedTerminalKey();
+            postViewToHost(null);
+        }
     }
 
     detachViewer() {

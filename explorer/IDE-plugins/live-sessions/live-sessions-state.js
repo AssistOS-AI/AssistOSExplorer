@@ -1,4 +1,6 @@
-// Page-lifetime state shared by the Live Sessions toolbar button and its panel. It holds no timer and makes no request.
+// Page-lifetime state of the Live Sessions toolbar button (the Explorer shell) and of the Live Sessions page, each in
+// its own window. The embedded-terminal key lives in `sessionStorage`, which a page and its same-origin iframes share,
+// so the shell and the page agree on it. This module holds no timer and makes no request.
 export const EMBEDDED_TERMINAL_KEY = 'explorer.liveSessions.embeddedTerminal';
 const SESSION_ID = /^[A-Za-z0-9_-]{32,128}$/;
 const VIEW_ID = /^[A-Za-z0-9_-]{32}$/;
@@ -30,20 +32,6 @@ export function subscribeCue(listener) {
     cueListeners.add(listener);
     listener(cueCount);
     return () => cueListeners.delete(listener);
-}
-
-// The panel receives the session to re-attach (and the view it replaces) through this one-shot value, never through
-// the modal descriptor.
-let pendingRestore = null;
-
-export function queueEmbeddedRestore(restore) {
-    pendingRestore = validKey(restore) ? { sessionId: restore.sessionId, viewId: restore.viewId } : null;
-}
-
-export function takeEmbeddedRestore() {
-    const restore = pendingRestore;
-    pendingRestore = null;
-    return restore;
 }
 
 function validKey(value) {
