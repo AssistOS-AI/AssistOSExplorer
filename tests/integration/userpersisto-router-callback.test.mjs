@@ -110,14 +110,13 @@ test('UserPersisto handoffs retain client-error semantics through the Ploinky Ro
         async function begin(account = user) {
             const previousCount = loginRequests.length;
             const login = await request('/auth/login?returnTo=%2Fexplorer%2F');
-            assert.equal(login.status, 200);
+            assert.equal(login.status, 303);
             assert.equal(loginRequests.length, previousCount + 1, 'the real provider runtime creates the login request');
             assert.equal(loginRequests.at(-1).status, 200);
             const { request: providerRequest } = loginRequests.at(-1).body;
-            const loginHtml = await login.text();
-            const redirect = loginHtml.match(/window\.location\.replace\(("(?:[^"\\]|\\.)*")\);/);
-            assert.ok(redirect, 'the Router renders its browser redirect to the identity provider');
-            const authorization = new URL(JSON.parse(redirect[1]));
+            const redirect = login.headers.get('location');
+            assert.ok(redirect, 'the Router redirects the browser to the identity provider');
+            const authorization = new URL(redirect);
             const state = authorization.searchParams.get('state');
             assert.equal(authorization.origin, routerOrigin, 'browser login retains the public callback origin');
             assert.equal(authorization.searchParams.get('requestId'), providerRequest.providerState);

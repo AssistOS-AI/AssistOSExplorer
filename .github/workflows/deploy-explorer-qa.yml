@@ -2336,7 +2336,7 @@ jobs:
                 -w '%{http_code}' \
                 "${PUBLIC_URL%/}/auth/login?agent=dpuAgent" || true
             )"
-            if [ "$code" = "200" ] && [ "$mismatch_code" = "400" ] && node --input-type=module - \
+            if { [ "$code" = "303" ] || [ "$code" = "200" ]; } && [ "$mismatch_code" = "400" ] && node --input-type=module - \
               "$RESPONSE_FILE" \
               "$HEADER_FILE" \
               "$MISMATCH_RESPONSE_FILE" \
@@ -2344,16 +2344,19 @@ jobs:
           import fs from 'node:fs';
 
           const body = fs.readFileSync(process.argv[2], 'utf8');
-          const headers = fs.readFileSync(process.argv[3], 'utf8').toLowerCase();
+          const headers = fs.readFileSync(process.argv[3], 'utf8');
           const mismatchBody = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
           const mismatchHeaders = fs.readFileSync(process.argv[5], 'utf8').toLowerCase();
           // BEGIN QA public email-first verification
           const publicUrl = 'https://explorer-qa.axiologic.dev';
           if (/EDGE_GENERATION_INACTIVE|cloudflare tunnel error|error code: 1033/i.test(body)) process.exit(1);
+          // Current Routers answer with a 303 to the provider; older ones served
+          // a Continue with Single Sign-On page that redirected from script.
+          const location = headers.match(/^location:[ \t]*(\S+)[ \t]*\r?$/mi)?.[1];
           const redirect = body.match(/window\.location\.replace\(("(?:[^"\\]|\\.)*")\)/);
-          if (!/Continue with Single Sign-On/.test(body) || !redirect
+          if ((!location && (!/Continue with Single Sign-On/.test(body) || !redirect))
             || /<input[^>]+type=["']password["']/i.test(body)) process.exit(1);
-          const login = new URL(JSON.parse(redirect[1]));
+          const login = new URL(location || JSON.parse(redirect[1]), publicUrl);
           const service = '/base-agent-additional-server/userPersistoAgent/7000/service';
           if (login.origin !== publicUrl || login.username || login.password || login.hash
             || login.pathname !== `${service}/auth/` || !login.searchParams.get('requestId')

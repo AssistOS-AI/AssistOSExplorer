@@ -114,8 +114,8 @@ async function verifyPublic(overrides = {}) {
     const requests = [];
     const logs = [];
     await new AsyncFunction('body', 'headers', 'mismatchBody', 'mismatchHeaders', 'fetch', 'process', 'console', block('public email-first verification'))(
-        overrides.body || `Continue with Single Sign-On<script>window.location.replace(${JSON.stringify(login)})</script>`,
-        'cf-ray: test', { ok: false, error: 'auth_route_context_mismatch' }, 'cf-ray: test',
+        overrides.body ?? `Continue with Single Sign-On<script>window.location.replace(${JSON.stringify(login)})</script>`,
+        overrides.headers ?? 'cf-ray: test', { ok: false, error: 'auth_route_context_mismatch' }, 'cf-ray: test',
         async (url, options) => {
             requests.push(url);
             assert.equal(options.redirect, 'error');
@@ -134,6 +134,12 @@ test('QA public verification checks the SSO wizard and OIDC metadata without cla
     assert.equal(result.requests.length, 3);
     assert.deepEqual(result.logs[0].details.methods, { password: true, emailCode: true, passkey: false, totp: false, google: false });
     await assert.rejects(verifyPublic({ body: '<form data-auth-login-form><input type="password"></form>' }), /rejected/);
+    // Current Routers redirect with 303 and no page body.
+    const login = `${publicUrl}${service}/auth/?requestId=request&state=state`;
+    const redirected = await verifyPublic({ body: '', headers: `HTTP/2 303\r\nLocation: ${login}\r\ncf-ray: test\r\n` });
+    assert.equal(redirected.requests[0], login);
+    await assert.rejects(verifyPublic({ body: '', headers: 'HTTP/2 303\r\nLocation: https://other.example/auth/?state=x&requestId=y\r\ncf-ray: test\r\n' }), /rejected/);
+    await assert.rejects(verifyPublic({ body: '', headers: 'HTTP/2 303\r\ncf-ray: test\r\n' }), /rejected/);
     await assert.rejects(verifyPublic({ body: 'Continue with Single Sign-On<script>window.location.replace("https://other.example/auth/?state=x&requestId=y")</script>' }), /rejected/);
     await assert.rejects(verifyPublic({ responses: {
         [`${issuer}/.well-known/openid-configuration`]: { issuer: 'https://other.example' },
