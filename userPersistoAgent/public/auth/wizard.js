@@ -32,6 +32,12 @@ function defaultGis() {
             view?.addEventListener('pagehide', listener);
             return () => view?.removeEventListener('pagehide', listener);
         },
+        // Only a page restored from the back/forward cache, not a first load.
+        onPageShow(listener) {
+            const restored = (event) => { if (event.persisted) listener(); };
+            view?.addEventListener('pageshow', restored);
+            return () => view?.removeEventListener('pageshow', restored);
+        },
     };
 }
 
@@ -69,7 +75,22 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     let googleMount = null; // { epoch, container, statusNode }
     let googleInitializedFor = '';
     let submission = null; // null | 'discovery' | 'google'
-    const removePageHide = google.onPageHide?.(() => cancelGoogleSession());
+    let googleCompletion = null; // AbortController of the in-flight credential POST
+    // Leaving the page abandons pending Google work; a page restored from the
+    // back/forward cache discards it and renders a fresh transaction.
+    const removePageHide = google.onPageHide?.(() => {
+        googleCompletion?.abort();
+        googleStarting = null;
+        cancelGoogleSession();
+    });
+    const removePageShow = google.onPageShow?.(() => {
+        if (disposed) return;
+        googleOp += 1;
+        googleStarting = null;
+        if (submission === 'google') submission = null;
+        cancelGoogleSession();
+        if (googleMount && googleMount.epoch === epoch && GOOGLE_SCREENS.has(screen)) void prepareGoogle();
+    });
 
     // ---- small DOM helpers -------------------------------------------------
     function h(tag, attributes = {}, children = []) {
@@ -182,6 +203,9 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         screen = name;
         resendState = null;
         googleMount = null;
+        // Any transition (expiry, Cancel, Back) abandons a pending credential.
+        googleCompletion?.abort();
+        googleCompletion = null;
         if (expiresAt && name !== 'completing' && name !== 'expired') {
             timerNode = h('p', { className: 'auth-timer', 'aria-live': 'polite' });
             node.append(timerNode);
@@ -332,22 +356,41 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         submission = 'google';
         session.consumed = true;
         const op = ++googleOp;
+        const controller = new AbortController();
+        googleCompletion = controller;
         mount.container.replaceChildren();
         mount.statusNode.textContent = 'Completing Google sign-in…';
-        try {
-            const redirectUrl = await adapter.completeGoogle({ credentialUrl: session.gis.credentialUrl, transaction: session.transaction, credential: response.credential });
-            if (disposed || session !== googleSession) return;
-            session.handedOff = true;
-            showCompleting();
-            adapter.continueGoogle(redirectUrl);
-        } catch {
-            if (disposed) return;
-            submission = null;
-            // A failed or refused credential consumed this transaction.
+        // The credential may finish after expiry, Cancel, a restore or
+        // disposal; only the unchanged operation, screen and deadline may
+        // hand off. Anything else cancels the abandoned transaction.
+        const current = () => !disposed && !controller.signal.aborted && googleCompletion === controller && op === googleOp
+            && mount === googleMount && mount.epoch === epoch && session === googleSession
+            && !(expiresAt && ticker.now() >= expiresAt);
+        const abandon = () => {
+            if (googleCompletion === controller) googleCompletion = null;
+            if (submission === 'google') submission = null;
             if (googleSession === session) { googleSession = null; googleInitializedFor = ''; }
-            if (op !== googleOp || mount !== googleMount || mount.epoch !== epoch) return;
+            cancelGoogleHandle(session.transaction);
+        };
+        let redirectUrl;
+        try {
+            redirectUrl = await adapter.completeGoogle({ credentialUrl: session.gis.credentialUrl, transaction: session.transaction,
+                credential: response.credential, signal: controller.signal });
+        } catch {
+            if (!current()) return abandon();
+            googleCompletion = null;
+            submission = null;
+            // A failed, refused or timed-out credential consumed this transaction.
+            googleSession = null;
+            googleInitializedFor = '';
             void prepareGoogle('Google sign-in could not be completed. Try again or use another sign-in method.');
+            return;
         }
+        if (!current()) return abandon();
+        googleCompletion = null;
+        session.handedOff = true;
+        showCompleting();
+        adapter.continueGoogle(redirectUrl);
     }
 
     // ---- S0 loading / S1 start ------------------------------------------
@@ -1310,8 +1353,11 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             passkeyAbort = null;
             googleMount = null;
             googleStarting = null;
+            googleCompletion?.abort();
+            googleCompletion = null;
             cancelGoogleSession();
             removePageHide?.();
+            removePageShow?.();
             google.dispose?.();
             if (intervalId !== null) { ticker.clearInterval(intervalId); intervalId = null; }
         },

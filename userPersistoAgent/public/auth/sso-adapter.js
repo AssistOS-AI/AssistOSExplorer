@@ -105,8 +105,8 @@ export function createSsoAdapter({ location, fetch, navigate }) {
         startGoogle() {
             return post('google/start', { requestId, state });
         },
-        completeGoogle({ credentialUrl, transaction, credential }) {
-            return postGoogleCredential({ fetch, origin: new URL(location.href).origin, credentialUrl, transaction, credential });
+        completeGoogle({ credentialUrl, transaction, credential, signal }) {
+            return postGoogleCredential({ fetch, origin: new URL(location.href).origin, credentialUrl, transaction, credential, signal });
         },
         continueGoogle(redirectUrl) {
             navigate(redirectUrl);

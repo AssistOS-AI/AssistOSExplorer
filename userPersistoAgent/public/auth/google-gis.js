@@ -87,17 +87,50 @@ export function googleLocalPath(value, origin) {
     return `${parsed.pathname}${parsed.search}`;
 }
 
+export const GOOGLE_CREDENTIAL_TIMEOUT_MS = 15_000;
+const GOOGLE_RESPONSE_LIMIT = 16_384;
+
+function googleFailure(code = 'google_authentication_failed') {
+    return Object.assign(new Error(code), { code });
+}
+
 // Posts Google's ID token to the transaction's same-origin verifier and
-// returns the validated local resume path it answers with.
-export async function postGoogleCredential({ fetch, origin, credentialUrl, transaction, credential }) {
-    const response = await fetch(googleLocalPath(credentialUrl, origin), {
-        method: 'POST',
-        credentials: 'same-origin',
-        redirect: 'error',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ transaction, credential }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || payload?.ok !== true) throw Object.assign(new Error('google_authentication_failed'), { code: 'google_authentication_failed' });
-    return googleLocalPath(payload.redirectUrl, origin);
+// returns the validated local resume path it answers with. Headers and body
+// share one deadline; `signal` (the caller's) or the deadline aborts the
+// request, and a late response is never used.
+export async function postGoogleCredential({ fetch, origin, credentialUrl, transaction, credential, signal,
+    setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, timeoutMs = GOOGLE_CREDENTIAL_TIMEOUT_MS }) {
+    const url = googleLocalPath(credentialUrl, origin);
+    const controller = new AbortController();
+    let rejectStop;
+    const stopped = new Promise((_, reject) => { rejectStop = reject; });
+    stopped.catch(() => {});
+    const stop = (code) => { controller.abort(); rejectStop(googleFailure(code)); };
+    const onAbort = () => stop('google_request_aborted');
+    if (signal?.aborted) onAbort();
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    const timer = setTimeout(() => stop('google_request_timeout'), timeoutMs);
+    try {
+        const exchange = (async () => {
+            const response = await fetch(url, {
+                method: 'POST',
+                credentials: 'same-origin',
+                redirect: 'error',
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                body: JSON.stringify({ transaction, credential }),
+                signal: controller.signal,
+            });
+            const text = typeof response.text === 'function' ? await response.text() : JSON.stringify(await response.json());
+            if (text.length > GOOGLE_RESPONSE_LIMIT) throw googleFailure();
+            let payload = {};
+            try { payload = JSON.parse(text); } catch { /* treated as a failure below */ }
+            if (!response.ok || payload?.ok !== true) throw googleFailure();
+            return googleLocalPath(payload.redirectUrl, origin);
+        })();
+        exchange.catch(() => {});
+        return await Promise.race([exchange, stopped]);
+    } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener?.('abort', onAbort);
+    }
 }

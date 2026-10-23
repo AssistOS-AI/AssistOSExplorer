@@ -113,8 +113,8 @@ export function createOidcAdapter({ config, document, fetch, navigate, closeWind
         startGoogle() {
             return postJson('google');
         },
-        completeGoogle({ credentialUrl, transaction, credential }) {
-            return postGoogleCredential({ fetch, origin: new URL(config.base).origin, credentialUrl, transaction, credential });
+        completeGoogle({ credentialUrl, transaction, credential, signal }) {
+            return postGoogleCredential({ fetch, origin: new URL(config.base).origin, credentialUrl, transaction, credential, signal });
         },
         continueGoogle(redirectUrl) {
             navigate(redirectUrl);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mountWizard } from '../public/auth/wizard.js';
 import { createSsoAdapter } from '../public/auth/sso-adapter.js';
 import { createOidcAdapter } from '../public/auth/oidc-adapter.js';
+import { postGoogleCredential } from '../public/auth/google-gis.js';
 
 // ---- fake DOM --------------------------------------------------------------
 class Element {
@@ -188,7 +189,7 @@ function fail(code, extra = {}) {
 // Controlled Google Identity Services: records initialize/renderButton and
 // lets a test fire Google's credential callback itself.
 function fakeGis({ fail = false } = {}) {
-    const state = { loads: 0, inits: [], renders: 0, callback: null, pagehide: null };
+    const state = { loads: 0, inits: [], renders: 0, callback: null, pagehide: null, pageshow: null };
     const sdk = {
         initialize(options) { state.inits.push(options); state.callback = options.callback; },
         renderButton(container) {
@@ -202,6 +203,7 @@ function fakeGis({ fail = false } = {}) {
     const gis = {
         load: async () => { state.loads += 1; if (fail) throw new Error('google_sdk_unavailable'); return sdk; },
         onPageHide(listener) { state.pagehide = listener; return () => { state.pagehide = null; }; },
+        onPageShow(listener) { state.pageshow = listener; return () => { state.pageshow = null; }; },
     };
     return { state, gis, credential: (value = 'header.payload.signature') => state.callback?.({ credential: value }) };
 }
@@ -389,7 +391,9 @@ test('one Google credential owns the wizard: Next and duplicates are ignored, su
     await submitEmail(root);
     assert.equal(calls.discover, 0, 'Next waits for the Google submission');
     assert.equal(calls.complete.length, 1);
-    assert.deepEqual(calls.complete[0], { credentialUrl: '/prefix/service/auth/google/credential', transaction: GOOGLE_TRANSACTION, credential: 'first.credential.value' });
+    const { signal, ...completed } = calls.complete[0];
+    assert.deepEqual(completed, { credentialUrl: '/prefix/service/auth/google/credential', transaction: GOOGLE_TRANSACTION, credential: 'first.credential.value' });
+    assert.equal(signal.aborted, false);
     completion.resolve('/prefix/service/auth/google/resume/' + 'b'.repeat(64));
     await first;
     assert.deepEqual(calls.continued, ['/prefix/service/auth/google/resume/' + 'b'.repeat(64)]);
@@ -409,6 +413,148 @@ test('a credential completion that resolves after disposal does not navigate', a
     completion.resolve('/prefix/service/auth/google/resume/' + 'b'.repeat(64));
     await pending;
     assert.deepEqual(calls.continued, []);
+});
+
+test('a credential completion that resolves after the sign-in request expired cancels it and does not navigate', async () => {
+    const google = fakeGis();
+    const clock = fakeClock();
+    const completion = deferred();
+    const { adapter, calls } = googleAdapter((c) => ({
+        attempt: async () => wizardState({ expiresAt: clock.now() + 10_000, methods: { ...ALL_METHODS, google: true } }),
+        completeGoogle: (args) => { c.complete.push(args); return completion.promise; },
+    }));
+    const { root } = await mount({ adapter, gis: google.gis, clock });
+    const pending = google.credential();
+    clock.advance(11_000);
+    assert.equal(calls.complete[0].signal.aborted, true, 'expiry aborts the pending request');
+    completion.resolve('/prefix/service/auth/google/resume/' + 'b'.repeat(64));
+    await pending;
+    assert.deepEqual(calls.continued, []);
+    assert.deepEqual(calls.cancel, [GOOGLE_TRANSACTION]);
+    assert.doesNotMatch(root.textContent, /Signing you in/);
+});
+
+test('OIDC Cancel during a pending credential completion abandons it without navigating', async () => {
+    const google = fakeGis();
+    const completion = deferred();
+    let aborted = 0;
+    const { adapter, calls } = googleAdapter((c) => ({
+        flow: 'oidc', clientName: 'Explorer', abort: () => { aborted += 1; },
+        completeGoogle: (args) => { c.complete.push(args); return completion.promise; },
+    }));
+    const { root } = await mount({ adapter, gis: google.gis });
+    const pending = google.credential();
+    await button(root, 'Cancel').fire('click');
+    assert.equal(aborted, 1);
+    assert.equal(calls.complete[0].signal.aborted, true);
+    completion.resolve('/service/oidc/interaction/abc/google-resume?transaction=' + 'b'.repeat(64));
+    await pending;
+    assert.deepEqual(calls.continued, []);
+    assert.deepEqual(calls.cancel, [GOOGLE_TRANSACTION]);
+});
+
+test('a timed-out credential completion releases email sign-in and offers a fresh Google button', async () => {
+    const google = fakeGis();
+    let starts = 0;
+    const { adapter, calls } = googleAdapter((c) => ({
+        startGoogle: async () => { starts += 1; c.start += 1; return gisStart(String(starts).repeat(64)); },
+        completeGoogle: async (args) => { c.complete.push(args); throw fail('google_request_timeout'); },
+    }));
+    const { root } = await mount({ adapter, gis: google.gis });
+    await google.credential();
+    await settle();
+    assert.match(root.textContent, /Google sign-in could not be completed/);
+    await submitEmail(root);
+    assert.equal(calls.discover, 1, 'email Next works after the Google request failed');
+    assert.equal(h1(root).textContent, 'Enter your password');
+});
+
+test('a page restored from the back/forward cache renders a fresh transaction and drops the old callback', async () => {
+    const google = fakeGis();
+    let starts = 0;
+    const { adapter, calls } = googleAdapter((c) => ({ startGoogle: async () => { starts += 1; c.start += 1; return gisStart(String(starts).repeat(64)); } }));
+    await mount({ adapter, gis: google.gis });
+    const oldCallback = google.state.callback;
+    google.state.pagehide();
+    google.state.pageshow();
+    await settle();
+    await settle();
+    assert.deepEqual(calls.cancel, ['1'.repeat(64)]);
+    assert.equal(calls.start, 2);
+    assert.deepEqual(google.state.inits.map((options) => options.nonce), ['nonce-111111', 'nonce-222222']);
+    assert.equal(google.state.renders, 2);
+    await oldCallback({ credential: 'stale.credential.value' });
+    assert.deepEqual(calls.complete, [], 'the discarded transaction never completes');
+    await google.credential('fresh.credential.value');
+    assert.deepEqual(calls.complete.map((call) => [call.transaction, call.credential]), [['2'.repeat(64), 'fresh.credential.value']]);
+});
+
+test('a page restored while a start or credential was pending discards that work', async () => {
+    const google = fakeGis();
+    const first = deferred();
+    let starts = 0;
+    const { adapter, calls } = googleAdapter((c) => ({ startGoogle: () => { starts += 1; c.start += 1; return starts === 1 ? first.promise : Promise.resolve(gisStart('2'.repeat(64))); } }));
+    await mount({ adapter, gis: google.gis });
+    google.state.pagehide();
+    google.state.pageshow();
+    await settle();
+    first.resolve(gisStart('1'.repeat(64)));
+    await settle();
+    await settle();
+    assert.equal(calls.start, 2);
+    assert.ok(calls.cancel.includes('1'.repeat(64)), 'the start resolved after the restore is cancelled');
+    assert.deepEqual(google.state.inits.map((options) => options.nonce), ['nonce-222222']);
+
+    const pendingCompletion = fakeGis();
+    const completion = deferred();
+    const second = googleAdapter((c) => ({ completeGoogle: (args) => { c.complete.push(args); return completion.promise; } }));
+    const restored = await mount({ adapter: second.adapter, gis: pendingCompletion.gis });
+    const pending = pendingCompletion.credential();
+    pendingCompletion.state.pagehide();
+    assert.equal(second.calls.complete[0].signal.aborted, true, 'leaving the page aborts the credential request');
+    pendingCompletion.state.pageshow();
+    completion.resolve('/prefix/service/auth/google/resume/' + 'b'.repeat(64));
+    await pending;
+    await settle();
+    assert.deepEqual(second.calls.continued, []);
+    await submitEmail(restored.root);
+    assert.equal(second.calls.discover, 1, 'email sign-in works after the restore');
+});
+
+test('the shared credential POST bounds headers and body, honours abort and ignores late responses', async () => {
+    const origin = 'https://workspace.example';
+    const timers = [];
+    const fakeTimers = { setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout: () => {} };
+    const fire = () => timers.splice(0).forEach((timer) => timer.fn());
+    const args = { origin, credentialUrl: '/service/auth/google/credential', transaction: GOOGLE_TRANSACTION, credential: 'id.token', ...fakeTimers };
+    // Stalled headers.
+    let seenSignal;
+    const stalledHeaders = postGoogleCredential({ ...args, fetch: (url, options) => { seenSignal = options.signal; return new Promise(() => {}); } });
+    assert.equal(timers[0].ms, 15_000);
+    fire();
+    await assert.rejects(stalledHeaders, /google_request_timeout/);
+    assert.equal(seenSignal.aborted, true);
+    // Stalled body.
+    const stalledBody = postGoogleCredential({ ...args, fetch: async () => ({ ok: true, text: () => new Promise(() => {}) }) });
+    await settle();
+    fire();
+    await assert.rejects(stalledBody, /google_request_timeout/);
+    // A response that arrives after the timeout is ignored.
+    let late;
+    const lateResult = postGoogleCredential({ ...args, fetch: () => new Promise((resolve) => { late = resolve; }) });
+    fire();
+    await assert.rejects(lateResult, /google_request_timeout/);
+    late({ ok: true, text: async () => JSON.stringify({ ok: true, redirectUrl: '/service/auth/google/resume/x' }) });
+    await settle();
+    // Caller abort.
+    const controller = new AbortController();
+    const aborted = postGoogleCredential({ ...args, signal: controller.signal, fetch: () => new Promise(() => {}) });
+    controller.abort();
+    await assert.rejects(aborted, /google_request_aborted/);
+    // Oversized body and foreign redirect.
+    await assert.rejects(postGoogleCredential({ ...args, fetch: async () => ({ ok: true, text: async () => 'x'.repeat(20_000) }) }), /google_authentication_failed/);
+    await assert.rejects(postGoogleCredential({ ...args, fetch: async () => ({ ok: true, text: async () => JSON.stringify({ ok: true, redirectUrl: 'https://attacker.example/' }) }) }), /invalid_local_path/);
+    assert.equal(await postGoogleCredential({ ...args, fetch: async () => ({ ok: true, text: async () => JSON.stringify({ ok: true, redirectUrl: '/service/auth/google/resume/ok' }) }) }), '/service/auth/google/resume/ok');
 });
 
 test('a refused credential discards its transaction and renders a fresh Google button', async () => {
