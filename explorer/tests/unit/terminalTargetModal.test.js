@@ -689,7 +689,7 @@ test('launch URL is the bare launch or attach fragment and refuses every close-p
     assert.equal(buildTerminalLaunchUrl(launch), `/webtty/#launch=${launch}`);
     assert.equal(buildTerminalLaunchUrl({ launch }), `/webtty/#launch=${launch}`);
     assert.equal(buildTerminalLaunchUrl({ attach: 'T'.repeat(32) }), `/webtty/#attach=${'T'.repeat(32)}`);
-    // The chooser no longer asks for a close policy, so the launcher never carries one.
+    // The launcher never carries a close policy.
     for (const handoff of [
         { launch, close: 'stop' }, { launch, close: 'keep' }, { launch, close: '' }, { launch, close: 'stop', extra: 1 },
         { attach: 'T'.repeat(32), close: 'stop' }, { close: 'stop' },
@@ -1226,7 +1226,7 @@ test('template and styles carry the robot select and the Open button, and no clo
     assert.match(template, /<option value="" disabled selected>Choose a robot<\/option>/);
     assert.doesNotMatch(template, /No robot/i);
     assert.match(template, /data-local-action="openTerminal"[^>]*disabled/);
-    // The chooser neither shows nor sends a close policy.
+    // The chooser shows and sends no close policy.
     assert.doesNotMatch(template, /terminalTargetClosePolicy|<fieldset|<legend|type="radio"/);
     assert.doesNotMatch(template, /When this tab closes|Keep running|Stop it/);
     assert.doesNotMatch(styles, /terminal-target-policy/);
