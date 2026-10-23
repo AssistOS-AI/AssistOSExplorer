@@ -49,6 +49,7 @@ const REGENERATED = Object.freeze(['.ploinky/repo_sources.json', '.ploinky/enabl
     '.ploinky/data/edge-routing/active.json', '.ploinky/data/edge-publication/current.json',
     '.ploinky/data/router-security/compiled/generation.json',
     '.runtime/ploinky/old-source', 'AdvancedLanguageAgent/old-source',
+    '.ploinky-box/update/receipt.json', '.ploinky-box/workspace.lock', '.ploinky-box.retired-x/old-state.json',
     '.ploinky/.explorer-qa-cloudflare-credentials.json', '.ploinky/.explorer-qa-edge-desired.json']);
 const POLICY = Object.freeze({ 'policy-state.json': '{"policy":"live"}\n', 'sessions-revocations.json': '{"revoked":["s1"]}\n',
     'policy-audit.log': 'audit\n', 'policy-audit-archive/2026-10.log': 'archived\n' });
@@ -295,12 +296,15 @@ test('both teardown modules hold the same literal identity list as rollback-expl
 
 test('D1: the keep rules are the deploy preservation rules of the base workflow', t => {
     // deploy-explorer-qa.yml:1994, :1999-2001 and :2015 at 916078b2 (`// BEGIN QA durable workspace preservation`).
-    const regenerated = ['.ploinky', '.runtime', 'AdvancedLanguageAgent'];
+    const baseRegenerated = ['.ploinky', '.runtime', 'AdvancedLanguageAgent'];
+    // Box host state is regenerated too: the keep-data teardown never carries `.ploinky-box` into the new workspace.
+    const regenerated = ['.ploinky', '.ploinky-box', '.runtime', 'AdvancedLanguageAgent'];
     const runtimeEntries = ['agents.json', 'routing.json', 'running', 'run', 'logs', 'box', 'deps', 'repos', 'agentlib',
         'container-runtime', 'graph-skill-scope.json', 'data', 'enabled_repos.json', 'repo_sources.json', 'unregistered_agent_repos.json'];
     const graphData = ['edge-routing', 'edge-publication', 'router-security'];
     assert.deepEqual([...privileged.REGENERATED_TOP], regenerated);
     assert.deepEqual([...privileged.RUNTIME_ENTRIES], runtimeEntries);
+    assert.equal(privileged.BOX_STATE_SIBLING_PREFIX, '.ploinky-box.');
     assert.deepEqual([...privileged.GENERATED_DATA].sort(), [...graphData].sort());
     assert.deepEqual([...privileged.POLICY_ENTRIES], ['policy-state.json', 'sessions-revocations.json', 'policy-audit.log', 'policy-audit-archive']);
     // When the base commit is in this clone, the literals are compared with its workflow text too.
@@ -313,7 +317,7 @@ test('D1: the keep rules are the deploy preservation rules of the base workflow'
     const block = shown.stdout.slice(shown.stdout.indexOf('// BEGIN QA durable workspace preservation'),
         shown.stdout.indexOf('// END QA durable workspace preservation'));
     const set = name => JSON.parse(block.match(new RegExp(`const ${name} = new Set\\((\\[[\\s\\S]*?\\])\\)`))[1].replace(/'/g, '"'));
-    assert.deepEqual(set('regenerated'), regenerated);
+    assert.deepEqual(set('regenerated'), baseRegenerated);
     assert.deepEqual(set('runtimeEntries'), runtimeEntries);
     assert.match(block, /\['edge-publication', 'edge-routing', 'router-security'\]\.includes\(name\)/);
 });
@@ -536,7 +540,7 @@ test('AC10 r2: a keep-data destroy reduces the observed layout to exactly K and 
     fs.writeFileSync(path.join(sentinel, 'keep.txt'), 'outside');
     fs.symlinkSync(sentinel, f.at('.ploinky/skills/explorer'));
     const before = privileged.planWorkspace({ paths: f.paths, owner: uid, scope: 'destroy', mode: 'keep-data' });
-    const topInodes = Object.fromEntries(fs.readdirSync(f.paths.workspace).filter(name => !['.runtime', 'AdvancedLanguageAgent'].includes(name))
+    const topInodes = Object.fromEntries(fs.readdirSync(f.paths.workspace).filter(name => !['.runtime', 'AdvancedLanguageAgent', '.ploinky-box', '.ploinky-box.retired-x'].includes(name))
         .map(name => [name, fs.lstatSync(f.at(name)).ino]));
     const eng = engine(f, { containers: [exactBox(true), soulBox()] });
     const plan = await cli(f, eng, ['plan', '--scope', 'destroy', '--mode', 'keep-data', '--lock-held']);
@@ -548,7 +552,7 @@ test('AC10 r2: a keep-data destroy reduces the observed layout to exactly K and 
     assert.equal(result.output.result, 'torn-down');
     for (const name of durableList()) assert.equal(f.read(name), `original:${name}`, name);
     for (const name of [...REGENERATED, '.ploinky/code/explorer', '.ploinky/skills/explorer', '.ploinky/running', '.ploinky/run',
-        '.runtime', 'AdvancedLanguageAgent', POLICY_DIR, '.ploinky/data/edge-routing', '.ploinky/data/edge-publication']) {
+        '.runtime', 'AdvancedLanguageAgent', '.ploinky-box', '.ploinky-box.retired-x', POLICY_DIR, '.ploinky/data/edge-routing', '.ploinky/data/edge-publication']) {
         assert.equal(exists(f.at(name)), false, name);
     }
     assert.equal(fs.readFileSync(path.join(sentinel, 'keep.txt'), 'utf8'), 'outside');
@@ -623,6 +627,33 @@ function refusalFixture(t, setup) {
     return f;
 }
 
+test('keep-data deletes Box host state and its quarantine siblings, keeps operator files and never follows a sibling symlink', t => {
+    const f = fixture(t);
+    observedLayout(f);
+    fs.rmSync(f.at(POLICY_DIR), { recursive: true });
+    f.write('notes.md');
+    f.write('.ploinky-box.retired-x/nested/state.json');
+    f.write('.ploinky-box.update-failed');
+    const outside = path.join(f.base, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'keep.txt'), 'outside');
+    fs.symlinkSync(outside, f.at('.ploinky-box.link'));
+    const plan = privileged.planWorkspace({ paths: f.paths, owner: uid, scope: 'destroy', mode: 'keep-data' });
+    const deleted = plan.delete.map(item => item.relative).filter(name => name.startsWith('.ploinky-box'));
+    assert.deepEqual(deleted, ['.ploinky-box', '.ploinky-box.link', '.ploinky-box.retired-x', '.ploinky-box.update-failed']);
+    assert.equal(plan.delete.find(item => item.relative === '.ploinky-box.link').type, 'symlink');
+    assert.equal(plan.keep.top.some(name => name.startsWith('.ploinky-box')), false);
+    assert.equal(plan.keep.top.includes('notes.md'), true);
+    const result = privileged.reduceWorkspace({ paths: f.paths, owner: uid, scope: 'destroy', planDigest: plan.digest });
+    assert.equal(result.result, 'reduced');
+    for (const name of ['.ploinky-box', '.ploinky-box.retired-x', '.ploinky-box.update-failed', '.ploinky-box.link']) {
+        assert.equal(exists(f.at(name)), false, name);
+    }
+    assert.equal(f.read('notes.md'), 'original:notes.md');
+    assert.equal(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8'), 'outside');
+    assert.deepEqual(privileged.planWorkspace({ paths: f.paths, owner: uid, scope: 'destroy', mode: 'keep-data' }).delete, []);
+});
+
 test('AC11 r2: every refusal exits with its code and changes nothing', async t => {
     const elsewhere = f => { const target = path.join(f.base, 'elsewhere'); fs.mkdirSync(target, { recursive: true }); return target; };
     const cases = [
@@ -633,6 +664,8 @@ test('AC11 r2: every refusal exits with its code and changes nothing', async t =
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => { fs.rmSync(f.at('.data'), { recursive: true }); fs.symlinkSync(elsewhere(f), f.at('.data')); }],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => { fs.rmSync(f.at('.runtime'), { recursive: true }); fs.writeFileSync(f.at('.runtime'), 'file'); }],
         ['QA_TEARDOWN_UNSAFE_PATH', 'rebuild', f => fs.symlinkSync(elsewhere(f), f.at('.ploinky/skills'))],
+        ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.symlinkSync(elsewhere(f), f.at('.ploinky-box'))],
+        ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.writeFileSync(f.at('.ploinky-box'), 'file')],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.writeFileSync(f.at('.ploinky/code'), 'file')],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.linkSync(f.at('.ploinky/data/master-key'), path.join(f.base, 'hard-link'))],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.symlinkSync(f.at('testN2/doc.md'), f.at('.env'))],
