@@ -1,4 +1,5 @@
 import { assertionCredentialToServer } from './auth-api.js';
+import { postGoogleCredential } from './google-gis.js';
 
 // Router SSO protocol adapter for the shared wizard. Every call is a same-
 // origin JSON POST against /service/auth/<path>, resolved relative to the
@@ -104,8 +105,11 @@ export function createSsoAdapter({ location, fetch, navigate }) {
         startGoogle() {
             return post('google/start', { requestId, state });
         },
-        continueGoogle(result) {
-            navigate(result.authorizationUrl);
+        completeGoogle({ credentialUrl, transaction, credential, signal }) {
+            return postGoogleCredential({ fetch, origin: new URL(location.href).origin, credentialUrl, transaction, credential, signal });
+        },
+        continueGoogle(redirectUrl) {
+            navigate(redirectUrl);
         },
         cancelGoogle(result) {
             return post('attempt/cancel', { requestId, googleTransaction: result.transaction });

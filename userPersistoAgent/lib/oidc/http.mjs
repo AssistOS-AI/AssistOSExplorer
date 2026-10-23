@@ -52,13 +52,19 @@ function json(res, status, data) {
     res.end(JSON.stringify(data));
 }
 
-function html(res, status, body, redirectUri) {
+function html(res, status, body, redirectUri, { google = null } = {}) {
     // Chromium applies form-action to the authorization redirect chain too.
     // The engine has already validated this interaction's exact callback URI.
     const callbackOrigin = redirectUri ? ` ${new URL(redirectUri).origin}` : '';
+    // A login wizard with Google available hosts Google's button: only then
+    // admit its SDK, frames, styles and account images, keep its popup
+    // reachable and send the referrer Google checks against the origin.
+    const gis = (source) => (google ? ` ${source}` : '');
     res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
-        'Referrer-Policy': 'same-origin', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
-        'Content-Security-Policy': `default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'${callbackOrigin}; frame-ancestors 'none'; base-uri 'none'` });
+        'Referrer-Policy': !google ? 'same-origin' : google.protocol === 'http:' ? 'no-referrer-when-downgrade' : 'strict-origin-when-cross-origin',
+        ...(google ? { 'Cross-Origin-Opener-Policy': 'same-origin-allow-popups' } : {}),
+        'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
+        'Content-Security-Policy': `default-src 'none'; style-src 'self' 'unsafe-inline'${gis('https://accounts.google.com/gsi/style')}; img-src 'self'${gis('https://*.googleusercontent.com')}; font-src 'self'; script-src 'self'${gis('https://accounts.google.com/gsi/client')}; connect-src 'self'${gis('https://accounts.google.com/gsi/')};${google ? ' frame-src https://accounts.google.com/gsi/;' : ''} form-action 'self'${callbackOrigin}; frame-ancestors 'none'; base-uri 'none'` });
     res.end(body);
 }
 
@@ -161,7 +167,8 @@ async function renderWizard(res, interaction, issuer, csrf, client, { status = 2
 ${form(`${base}/abort`, csrf, '<button type="submit" class="secondary">Cancel</button>')}</section>
 </main>${jsonScript('userpersisto-wizard-config', config)}<script type="module" src="${esc(authAsset(issuer, 'oidc-main.js'))}"></script>`;
     const document = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${hint ? 'Create your account' : 'Sign in'} · UserPersisto</title><link rel="stylesheet" href="${esc(authAsset(issuer, 'auth.css'))}"><link rel="stylesheet" href="${esc(authAsset(issuer, 'google-button.css'))}"></head><body>${body}</body></html>`;
-    return html(res, status, document, interaction.params.redirect_uri);
+    return html(res, status, document, interaction.params.redirect_uri,
+        { google: config.methods?.google === true ? { protocol: issuer.protocol } : null });
 }
 
 function failureFrom(error) {

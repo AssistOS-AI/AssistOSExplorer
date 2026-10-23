@@ -76,8 +76,8 @@ function inputFacts(page, selector) {
 
 function startControls(page) {
     return page.locator('form.start-panel').evaluate((form) => [...form.children]
-        .filter((node) => ['BUTTON', 'LABEL', 'INPUT'].includes(node.tagName))
-        .map((node) => node.tagName === 'INPUT' ? `input:${node.name}` : node.textContent.trim()));
+        .filter((node) => ['BUTTON', 'LABEL', 'INPUT', 'DIV'].includes(node.tagName))
+        .map((node) => node.tagName === 'INPUT' ? `input:${node.name}` : node.tagName === 'DIV' ? `google:${node.textContent.trim()}` : node.textContent.trim()));
 }
 
 function countPosts(page, pathname) {
@@ -128,11 +128,15 @@ async function runInitialPasswordSetup({ label, prefix, prod }) {
     async function open() {
         const request = await createLoginRequest({ redirectUri: `${origin}/auth/callback` });
         const context = await browser.newContext();
+        // No Google SDK here: the wizard must show its recoverable unavailable
+        // state and keep email sign-in working, without any network request.
+        await context.route('https://accounts.google.com/**', (route) => route.abort());
         const page = await context.newPage();
         page.setDefaultTimeout(15_000);
         page.on('pageerror', (error) => browserErrors.push(error.message));
         await page.goto(`${origin}/service/auth/?requestId=${encodeURIComponent(request.providerState)}&state=initial-setup-state`);
         await page.locator('form.start-panel').waitFor();
+        await page.getByText('Google sign-in is not available right now.', { exact: true }).waitFor();
         return { request, context, page };
     }
     async function complete(flow) {
@@ -145,7 +149,7 @@ async function runInitialPasswordSetup({ label, prefix, prod }) {
     }
     const first = await open();
     const waiting = await open(); // Its boot configuration predates the first claim.
-    assert.deepEqual(await startControls(first.page), ['Sign in with Google', 'Email', 'input:email', 'Next']);
+    assert.deepEqual(await startControls(first.page), ['google:Google sign-in is not available right now.', 'Email', 'input:email', 'Next']);
     await first.page.getByRole('textbox', { name: 'Email', exact: true }).fill('initial-owner@example.test');
     await first.page.getByRole('button', { name: 'Next', exact: true }).click();
     await first.page.getByRole('heading', { name: 'Enter your password', exact: true }).waitFor();
@@ -290,7 +294,7 @@ async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     await flow.page.locator('form.start-panel').waitFor();
     await heading(flow.page, 'Sign in');
     await flow.page.getByText('This workspace is not set up yet. The first completed sign-in becomes its administrator.').waitFor();
-    assert.deepEqual(await startControls(flow.page), ['Sign in with Google', 'Email', 'input:email', 'Next']);
+    assert.deepEqual(await startControls(flow.page), ['google:Continue with test identity', 'Email', 'input:email', 'Next']);
     assert.equal(await flow.page.locator('input[type="password"]').count(), 0, 'The start screen has no password field.');
     assert.equal(await flow.page.getByRole('button', { name: /Administrator|Create an account|Register|Log in/ }).count(), 0,
         'The start screen has no administrator control or mode switch.');
@@ -526,13 +530,12 @@ async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     assert.equal((await consume(flow, await reachCallback(flow, flow.page))).user.id, member.user.id);
     await flow.context.close();
 
-    phase = `${label}: SSO Google cancellation returns to the start screen with its notice`;
+    phase = `${label}: SSO start screen hosts Google's own button next to Email`;
     flow = await ssoPage();
-    await flow.page.getByRole('button', { name: 'Sign in with Google', exact: true }).click();
-    await flow.page.getByRole('button', { name: 'Back to sign-in', exact: true }).click();
-    await flow.page.getByText('Google sign-in was cancelled.').waitFor();
     await flow.page.locator('form.start-panel').waitFor();
-    await shot(flow.page, '10-sso-google-cancelled');
+    await flow.page.getByRole('button', { name: 'Continue with test identity', exact: true }).waitFor();
+    assert.equal(await flow.page.getByRole('button', { name: 'Sign in with Google', exact: true }).count(), 0, 'No local button leads to an intermediate Google page.');
+    await shot(flow.page, '10-sso-google-button');
     // Narrow phones keep the whole panel inside the viewport, and Tab reaches the controls in order.
     await flow.page.setViewportSize({ width: 360, height: 740 });
     assert.equal(await flow.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'No horizontal overflow at 360 px.');
@@ -542,7 +545,6 @@ async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     assert.equal(await flow.page.evaluate(() => document.activeElement?.textContent), 'Next', 'Tab moves from the email field to Next.');
 
     phase = `${label}: SSO controlled Google sign-in creates a selfRegistered account`;
-    await flow.page.getByRole('button', { name: 'Sign in with Google', exact: true }).click();
     await flow.page.getByRole('button', { name: 'Continue with test identity', exact: true }).click();
     const googleAccount = await consume(flow, await reachCallback(flow, flow.page));
     assert.equal(googleAccount.user.email, google.state.email);
@@ -644,7 +646,7 @@ async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     let session = await popup({ hint: 'signup' });
     await heading(session.page, 'Create your account');
     await session.page.getByText('Wizard regression application').first().waitFor();
-    assert.deepEqual(await startControls(session.page), ['Sign in with Google', 'Email', 'input:email', 'Next', 'Cancel']);
+    assert.deepEqual(await startControls(session.page), ['google:Continue with test identity', 'Email', 'input:email', 'Next', 'Cancel']);
     const binding = (await session.context.cookies(`${providerOrigin}/service/`)).find((cookie) => cookie.name === 'up_browser');
     assert.ok(binding, 'The wizard must bind the attempt to this browser.');
     assert.deepEqual([binding.httpOnly, binding.sameSite, binding.path], [true, 'Strict', '/service/'], 'The browser proof is HttpOnly, SameSite=Strict and scoped to the service.');

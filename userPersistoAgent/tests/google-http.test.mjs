@@ -62,7 +62,7 @@ async function fixture(fn, { withOwner = true } = {}) {
             return { browser, request, start, state };
         };
         const callback = async (flow) => {
-            const { url, body } = await provider.credential(flow.start.authorizationUrl, flow.browser);
+            const { url, body } = await provider.credential(flow.start, flow.browser);
             const response = await flow.browser.json(url, body);
             assert.equal(response.status, 200, await response.clone().text());
             return { url, body, resume: new URL((await response.json()).redirectUrl, base).href };
@@ -375,7 +375,7 @@ test('Google password confirmation rechecks its parent after asynchronous verifi
 
 test('missing, copied and mismatched credential proof cannot consume the valid attempt', () => fixture(async ({ begin, provider }) => {
     const flow = await begin();
-    const { url, body } = await provider.credential(flow.start.authorizationUrl, flow.browser);
+    const { url, body } = await provider.credential(flow.start, flow.browser);
     assert.equal((await new CookieBrowser().json(url, body)).status, 400);
     assert.equal((await flow.browser.json(url, { ...body, transaction: 'wrong' })).status, 400);
     assert.equal((await flow.browser.json(url, { ...body, credential: '' })).status, 400);
@@ -496,7 +496,7 @@ test('two browser attempts retain separate cookies and pending/verified attempts
 
 test('GIS cancellation and resume cancellation cannot produce an identity or replay', () => fixture(async ({ provider, begin, callback }) => {
     const flow = await begin();
-    const credential = await provider.credential(flow.start.authorizationUrl, flow.browser);
+    const credential = await provider.credential(flow.start, flow.browser);
     const cancelUrl = new URL(credential.config.cancelUrl, credential.url);
     const response = await flow.browser.json(cancelUrl, { transaction: flow.start.transaction });
     assert.equal(response.status, 200);
@@ -524,7 +524,7 @@ test('a timed-out credential key lookup fails once and does not hold persistence
     provider.state.verificationGate = new Promise((resolve) => { release = resolve; });
     try {
         const flow = await begin();
-        const returned = await provider.credential(flow.start.authorizationUrl, flow.browser);
+        const returned = await provider.credential(flow.start, flow.browser);
         const pending = flow.browser.json(returned.url, returned.body);
         const deadline = Date.now() + 1000;
         while (!provider.state.verifications && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -684,7 +684,7 @@ test('downstream OIDC resumes browser interaction, local subject and explicit co
     assert.equal(wizardConfig.methods.google, true);
     response = await browser.post(`${interaction}/google`, { csrf: csrf(html) });
     assert.equal(response.status, 200, await response.clone().text());
-    response = await provider.submit((await response.json()).authorizationUrl, browser);
+    response = await provider.submit(await response.json(), browser, base);
     assert.equal(response.status, 200, await response.clone().text());
     const resume = new URL((await response.json()).redirectUrl, base).href;
     assert.ok(resume.includes('/google-resume?transaction='));
@@ -729,7 +729,8 @@ test('targeted Google cancellation binds browser and parent and preserves newer 
     assert.equal(startedSignup.status, 200, await startedSignup.clone().text());
     const code = mail().code;
     assert.equal((await first.browser.json(cancelPath, args)).status, 200);
-    assert.equal((await first.browser.fetch(first.start.authorizationUrl)).status, 400, 'cancelled Google cannot resume');
+    const cancelledCredential = await provider.credential(first.start, first.browser, base);
+    assert.equal((await first.browser.json(cancelledCredential.url, cancelledCredential.body)).status, 400, 'cancelled Google cannot resume');
     const completedSignup = await first.browser.json(`${base}/service/auth/signup/verify`, {
         requestId: first.request.providerState, state: first.state, code,
     });

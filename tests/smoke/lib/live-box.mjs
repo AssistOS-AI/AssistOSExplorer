@@ -326,7 +326,7 @@ export function assertOriginBindAddress(local, expectedRouterBindAddress, env = 
 function exactScreenBindings(port, mediaPort, expectedRouterBindAddress) {
   return normalizeOuterPortBindings({
     '8080/tcp': [{ HostIp: expectedRouterBindAddress, HostPort: port }],
-    '7882/udp': [{ HostIp: '0.0.0.0', HostPort: mediaPort }],
+    [`${mediaPort}/udp`]: [{ HostIp: '0.0.0.0', HostPort: mediaPort }],
   });
 }
 
@@ -347,7 +347,7 @@ export function selectLocalScreenContainer(containerInspects, port, { expectedRo
     }
   });
   if (candidates.length !== 1) {
-    throw new Error(`Smoke evidence requires exactly one running Box outer container with the exact ${bindAddress}:${port}:8080/tcp and 0.0.0.0:<media-host-port label>:7882/udp publications; found ${candidates.length}.`);
+    throw new Error(`Smoke evidence requires exactly one running Box outer container with the exact ${bindAddress}:${port}:8080/tcp and 0.0.0.0:<media-host-port label>:<media-host-port label>/udp publications; found ${candidates.length}.`);
   }
   return candidates[0];
 }

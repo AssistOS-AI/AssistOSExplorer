@@ -140,8 +140,17 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                 clientId: config.clientId, redirectUri: config.redirectUri, csrf: randomBytes(32).toString('base64url') } });
         const handle = transaction.handle || transaction.stateHash;
         setProof(res, handle, config, proof, expiresAt);
-        const authorizationUrl = new URL(`${servicePath(config)}auth/google/sign-in?transaction=${handle}`, config.redirect.origin).href;
-        return json(res, 200, { ok: true, authorizationUrl, transaction: handle });
+        // Only reauth still opens the dedicated page. Sign-in wizards render
+        // Google's button themselves with this transaction's nonce.
+        if (context.flow === 'reauth') {
+            const authorizationUrl = new URL(`${servicePath(config)}auth/google/sign-in?transaction=${handle}`, config.redirect.origin).href;
+            return json(res, 200, { ok: true, authorizationUrl, transaction: handle });
+        }
+        const assetBase = `${servicePath(config)}auth/`;
+        return json(res, 200, { ok: true, transaction: handle, gis: {
+            clientId: config.clientId, nonce: authorization.nonce, expiresAt,
+            credentialUrl: `${assetBase}google/credential`, cancelUrl: `${assetBase}google/cancel`,
+        } });
     }
 
     async function validateGisParent(payload, config) {
@@ -178,7 +187,8 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
         const transaction = await readGoogleTransaction(handle, {
             browserProof: cookie(req, handle, config), configFingerprint: config.fingerprint, statuses: ['pending'],
         });
-        if (transaction.payload.mode !== 'gis') throw googleError();
+        // Sign-in flows host Google's button on their own wizard page.
+        if (transaction.payload.mode !== 'gis' || transaction.payload.flow !== 'reauth') throw googleError();
         await validateGisParent(transaction.payload, config);
         const assetBase = `${servicePath(config)}auth/`;
         const browserConfig = JSON.stringify({
@@ -187,7 +197,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
             cancelRedirectUrl: gisDestination(transaction.payload, handle, config, true),
             expiresAt: transaction.expiresAt, reauthentication: transaction.payload.flow === 'reauth',
         }).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e').replaceAll('&', '\\u0026');
-        // Only this dedicated page loads Google's browser SDK. No credentials
+        // This reauth page and the sign-in wizards load Google's browser SDK. No credentials
         // or identity tokens are placed in its URL, storage, or response cache.
         res.writeHead(200, {
             'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
@@ -196,7 +206,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
             'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff',
             'Content-Security-Policy': "default-src 'none'; script-src 'self' https://accounts.google.com/gsi/client; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; style-src 'self' https://accounts.google.com/gsi/style; font-src 'self'; img-src 'self' https://*.googleusercontent.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
         });
-        res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in with Google · UserPersisto</title><link rel="stylesheet" href="${esc(assetBase)}auth.css"></head><body><main class="userpersisto-auth-shell"><section class="auth-panel"><h1>Sign in with Google</h1><p>Continue to your local UserPersisto account.</p><div id="google-sign-in-button"></div><p id="google-sign-in-status" role="status" aria-live="polite">Loading Google sign-in…</p><p id="google-sign-in-timer"></p><button id="google-sign-in-retry" type="button" hidden>Retry</button><button id="google-sign-in-cancel" type="button">Back to sign-in</button></section></main><script id="google-sign-in-config" type="application/json">${browserConfig}</script><script type="module" src="${esc(assetBase)}google-sign-in.mjs"></script></body></html>`);
+        res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in with Google · UserPersisto</title><link rel="stylesheet" href="${esc(assetBase)}auth.css"></head><body><main class="userpersisto-auth-shell"><section class="auth-panel"><h1>Sign in with Google</h1><div id="google-sign-in-button"></div><p id="google-sign-in-status" role="status" aria-live="polite">Loading Google sign-in…</p><p id="google-sign-in-timer"></p><button id="google-sign-in-retry" type="button" hidden>Retry</button><button id="google-sign-in-cancel" type="button">Back to sign-in</button></section></main><script id="google-sign-in-config" type="application/json">${browserConfig}</script><script type="module" src="${esc(assetBase)}google-sign-in.mjs"></script></body></html>`);
     }
 
     async function gisCredential(req, res, cancel = false) {

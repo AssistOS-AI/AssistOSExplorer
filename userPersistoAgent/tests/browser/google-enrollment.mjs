@@ -112,7 +112,6 @@ try {
     page.on('pageerror', (error) => failures.push(error.message));
     phase = 'Google-only initial administrator through a controlled signed GIS credential';
     await page.goto(`${origin}/start`);
-    await page.getByRole('button', { name: 'Sign in with Google', exact: true }).click();
     await page.getByRole('button', { name: 'Continue with test identity' }).click();
     await page.waitForURL(`${origin}/service/dashboard/`);
     await page.getByRole('button', { name: 'Set up authenticator', exact: true }).waitFor();

@@ -22,6 +22,12 @@ import {
 const NOW = Date.parse('2026-07-16T10:10:00.000Z');
 const IMAGE_ID = `sha256:${'a'.repeat(64)}`;
 
+// The media publication is N:N, so its key names the same port as the label.
+function mediaLabel(bindings) {
+  const key = Object.keys(bindings).find((target) => target.endsWith('/udp'));
+  return key === undefined ? undefined : bindings[key]?.[0]?.HostPort;
+}
+
 function container(bindings, overrides = {}) {
   return {
     Id: 'c'.repeat(64),
@@ -31,7 +37,7 @@ function container(bindings, overrides = {}) {
     Config: { Labels: {
       'io.assistos.ploinky-box.role': 'box',
       'io.assistos.ploinky-box.router-host-port': bindings['8080/tcp']?.[0]?.HostPort,
-      'io.assistos.ploinky-box.media-host-port': bindings['7882/udp']?.[0]?.HostPort,
+      'io.assistos.ploinky-box.media-host-port': mediaLabel(bindings),
     } },
     HostConfig: { PortBindings: bindings },
     ...overrides,
@@ -41,7 +47,7 @@ function container(bindings, overrides = {}) {
 function exactBindings(port = '8080', mediaPort = '7882') {
   return {
     '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: port }],
-    '7882/udp': [{ HostIp: '', HostPort: mediaPort }],
+    [`${mediaPort}/udp`]: [{ HostIp: '', HostPort: mediaPort }],
   };
 }
 
@@ -194,6 +200,13 @@ test('explicit bound-container selection requires the configured address and mat
   assert.throws(() => selectLocalScreenContainer([bound], '28080', options), /found 0/);
 });
 
+test('live Box discovery accepts the default 7882 and N:N publications and nothing else', () => {
+  const defaults = container(exactBindings('18080', '7882'));
+  assert.equal(selectLocalScreenContainer([defaults], '18080'), defaults);
+  const alternate = container(exactBindings('28080', '27882'));
+  assert.equal(selectLocalScreenContainer([alternate], '28080'), alternate);
+});
+
 test('live Box discovery rejects missing, malformed, or mismatched port labels', () => {
   for (const label of ['router-host-port', 'media-host-port']) {
     for (const value of [undefined, '', '0', '-1', '65536', '27882.5', '027882', ' 27882 ', '1e4', 'wrong', '7881']) {
@@ -209,8 +222,14 @@ test('live Box discovery rejects missing, malformed, or mismatched port labels',
 test('live Box discovery preserves exact target, protocol, IP, and mapping-count boundaries with an alternate media port', () => {
   const candidate = container(exactBindings('28080', '27882'));
   for (const bindings of [
+    // Legacy N:7882 (container port 7882 behind the labeled host port) is rejected.
+    { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '28080' }], '7882/udp': [{ HostIp: '0.0.0.0', HostPort: '27882' }] },
+    // A second UDP publication, and an N:M label/HostPort mismatch, are rejected.
+    { ...exactBindings('28080', '27882'), '7882/udp': [{ HostIp: '0.0.0.0', HostPort: '7882' }] },
+    { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '28080' }], '27882/udp': [{ HostIp: '0.0.0.0', HostPort: '27883' }] },
+    { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '28080' }], '27883/udp': [{ HostIp: '0.0.0.0', HostPort: '27882' }] },
     { ...exactBindings('28080', '27882'), '8081/tcp': [{ HostIp: '127.0.0.1', HostPort: '28081' }] },
-    { ...exactBindings('28080', '27882'), '7882/udp': [
+    { ...exactBindings('28080', '27882'), '27882/udp': [
       { HostIp: '0.0.0.0', HostPort: '27882' }, { HostIp: '0.0.0.0', HostPort: '37882' },
     ] },
     { ...exactBindings('28080', '27882'), '8080/tcp': [
@@ -219,9 +238,9 @@ test('live Box discovery preserves exact target, protocol, IP, and mapping-count
     { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '28080' }], '7882/tcp': [{ HostIp: '0.0.0.0', HostPort: '27882' }] },
     { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '28080' }], '7881/udp': [{ HostIp: '0.0.0.0', HostPort: '27882' }] },
     { ...exactBindings('28080', '27882'), '8080/tcp': [{ HostIp: '0.0.0.0', HostPort: '28080' }] },
-    { ...exactBindings('28080', '27882'), '7882/udp': [{ HostIp: '127.0.0.1', HostPort: '27882' }] },
-    { ...exactBindings('28080', '27882'), '7882/udp': [{ HostIp: '::', HostPort: '27882' }] },
-    { ...exactBindings('28080', '27882'), '7882/udp': [{ HostIp: '0.0.0.0', HostPort: ' 27882 ' }] },
+    { ...exactBindings('28080', '27882'), '27882/udp': [{ HostIp: '127.0.0.1', HostPort: '27882' }] },
+    { ...exactBindings('28080', '27882'), '27882/udp': [{ HostIp: '::', HostPort: '27882' }] },
+    { ...exactBindings('28080', '27882'), '27882/udp': [{ HostIp: '0.0.0.0', HostPort: ' 27882 ' }] },
   ]) {
     assert.throws(() => selectLocalScreenContainer([
       { ...candidate, HostConfig: { PortBindings: bindings } },
@@ -243,7 +262,7 @@ test('alternate media port evidence remains bound to both labels and the exact p
 
   const after = structuredClone(before);
   after.box.semanticLabels.mediaHostPort = '37882';
-  assert.throws(() => validateLiveBoxEvidence(after, context), /media-host-port label does not match/);
+  assert.throws(() => validateLiveBoxEvidence(after, context), /must contain exactly one 37882\/udp mapping/);
   after.box.normalizedPortBindings = exactBindings('28080', '37882');
   assert.equal(sameLiveBoxGeneration(validated, validateLiveBoxEvidence(after, context)), false);
 });

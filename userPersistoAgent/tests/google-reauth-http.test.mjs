@@ -37,7 +37,7 @@ async function fixture(run) {
         const browser = new CookieBrowser();
         const parent = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
         const start = await (await browser.json(`${base}/service/auth/google/start`, { requestId: parent.providerState, state: 'router-reauth-fixture' })).json();
-        const credential = await provider.submit(start.authorizationUrl, browser);
+        const credential = await provider.submit(start, browser);
         assert.equal(credential.status, 200);
         assert.equal((await browser.fetch(new URL((await credential.json()).redirectUrl, base))).status, 303);
         const user = await getUserByEmail(provider.state.email);

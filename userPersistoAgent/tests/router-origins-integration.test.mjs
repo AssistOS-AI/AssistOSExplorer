@@ -232,10 +232,10 @@ function wizardBrowser(host) {
 
 async function beginLogin(host, returnTo = '/portal/') {
     const login = await router(host, `/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
-    assert.equal(login.statusCode, 200, login.body);
+    assert.equal(login.statusCode, 303, login.body);
     const [binding] = login.cookies();
     assert.match(binding, /^ploinky_sso_login_[A-Za-z0-9_-]{22}=/);
-    const redirect = new URL(JSON.parse(login.body.match(/window\.location\.replace\(("[^"]*")\)/)[1]));
+    const redirect = new URL(login.getHeader('location'));
     assert.equal(redirect.origin, `http://${host}`, 'the wizard stays on the bound origin');
     return {
         binding,
@@ -304,7 +304,7 @@ test('unknown, opted-out, and unavailable origins are rejected with clear safe r
     });
     assert.equal((await (await getStore()).select('ssoLoginRequest')).objects.length, requestsBefore);
     // Loopback keeps working without Router metadata or configuration.
-    assert.equal((await router('127.0.0.1:3000', '/auth/login')).statusCode, 200);
+    assert.equal((await router('127.0.0.1:3000', '/auth/login')).statusCode, 303);
     delete process.env.USERPERSISTO_TRUST_ROUTER_ORIGINS;
 
     // The Router's private metadata listener is temporarily not serving.
@@ -320,7 +320,7 @@ test('unknown, opted-out, and unavailable origins are rejected with clear safe r
     } finally {
         privateOutage = false;
     }
-    assert.equal((await router(PGX_HOST, '/auth/login')).statusCode, 200);
+    assert.equal((await router(PGX_HOST, '/auth/login')).statusCode, 303);
 
     // An inactive routing generation is refused by the Router before auth.
     inactivateEdgeRoutingGeneration('integration-maintenance', { workspaceRoot: workspace });

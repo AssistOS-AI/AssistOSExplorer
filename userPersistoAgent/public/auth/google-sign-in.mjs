@@ -1,42 +1,7 @@
-const GOOGLE_SDK_URL = 'https://accounts.google.com/gsi/client';
-const LOAD_TIMEOUT_MS = 10_000;
+import { GOOGLE_SDK_TIMEOUT_MS, enlargeGooglePopups, loadGoogleSdk } from './google-gis.js';
+
+const LOAD_TIMEOUT_MS = GOOGLE_SDK_TIMEOUT_MS;
 const REQUEST_TIMEOUT_MS = 15_000;
-// The SDK opens its sign-in popup through this page's window.open at 500x550,
-// so Google's account chooser, passkey and consent screens scroll to their
-// buttons. The width matches the SDK's own larger popup variant.
-const GOOGLE_POPUP_ORIGIN = 'https://accounts.google.com';
-const GOOGLE_POPUP_WIDTH = 590;
-const GOOGLE_POPUP_HEIGHT = 900;
-// Leaves room for the popup's title and address bars on the screen.
-const GOOGLE_POPUP_FRAME = 80;
-const POPUP_GEOMETRY_FEATURES = new Set(['width', 'innerwidth', 'height', 'innerheight', 'left', 'screenx', 'top', 'screeny']);
-
-function googlePopupFeatures(url, features, screen) {
-    let origin;
-    try { origin = new URL(String(url)).origin; } catch { return features; }
-    if (origin !== GOOGLE_POPUP_ORIGIN || typeof features !== 'string') return features;
-    const requested = features.split(',').map((feature) => feature.trim()).filter(Boolean);
-    const kept = requested.filter((feature) => !POPUP_GEOMETRY_FEATURES.has(feature.split('=')[0].trim().toLowerCase()));
-    // A call without geometry keeps the browser's own choice of window.
-    if (kept.length === requested.length) return features;
-    const width = Math.min(GOOGLE_POPUP_WIDTH, screen.availWidth - GOOGLE_POPUP_FRAME);
-    const height = Math.min(GOOGLE_POPUP_HEIGHT, screen.availHeight - GOOGLE_POPUP_FRAME);
-    const left = (Number.isFinite(screen.availLeft) ? screen.availLeft : 0) + Math.round((screen.availWidth - width) / 2);
-    const top = (Number.isFinite(screen.availTop) ? screen.availTop : 0)
-        + Math.max(0, Math.round((screen.availHeight - height - GOOGLE_POPUP_FRAME) / 2));
-    return [...kept, `width=${width}`, `height=${height}`, `left=${left}`, `top=${top}`].join(',');
-}
-
-function enlargeGooglePopups(window) {
-    const open = window.open;
-    if (typeof open !== 'function') return undefined;
-    function openEnlarged(...args) {
-        if (args.length > 2) args[2] = googlePopupFeatures(args[0], args[2], window.screen);
-        return open.apply(window, args);
-    }
-    window.open = openEnlarged;
-    return () => { if (window.open === openEnlarged) window.open = open; };
-}
 
 function localPath(value, origin) {
     if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')
@@ -207,38 +172,11 @@ export function mountGoogleSignIn({
     }
 
     function loadSdk() {
-        const available = window.google?.accounts?.id;
-        if (typeof available?.initialize === 'function' && typeof available?.renderButton === 'function') return Promise.resolve(available);
-        return new Promise((resolve, reject) => {
-            const script = document.createElement('script');
-            let settled = false;
-            let timeoutId;
-            function finish(error) {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timeoutId);
-                script.removeEventListener('load', onLoad);
-                script.removeEventListener('error', onError);
-                if (error) script.remove();
-                if (cleanupLoad === abortLoad) cleanupLoad = undefined;
-                if (error) reject(error);
-                else resolve(window.google.accounts.id);
-            }
-            function onLoad() {
-                const sdk = window.google?.accounts?.id;
-                finish(typeof sdk?.initialize === 'function' && typeof sdk?.renderButton === 'function'
-                    ? null : new Error('google_sdk_unavailable'));
-            }
-            function onError() { finish(new Error('google_sdk_unavailable')); }
-            function abortLoad() { finish(new Error('google_sdk_cancelled')); }
-            cleanupLoad = abortLoad;
-            script.src = GOOGLE_SDK_URL;
-            script.async = true;
-            script.addEventListener('load', onLoad);
-            script.addEventListener('error', onError);
-            timeoutId = setTimeout(onError, loadTimeoutMs);
-            document.head.append(script);
-        });
+        const load = loadGoogleSdk({ document, window, setTimeout, clearTimeout, timeoutMs: loadTimeoutMs });
+        const abortLoad = () => load.abort();
+        cleanupLoad = abortLoad;
+        const clear = () => { if (cleanupLoad === abortLoad) cleanupLoad = undefined; };
+        return load.promise.then((sdk) => { clear(); return sdk; }, (error) => { clear(); throw error; });
     }
 
     async function start() {
