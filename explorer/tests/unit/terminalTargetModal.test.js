@@ -573,7 +573,7 @@ test('modal template and styles provide semantic controls, live status, focus, a
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-// Robot selection, profiled discovery, close policy and the Open flow (plan r3 section 3.3, acceptance A10).
+// Robot selection, profiled discovery and the Open flow (plan r3 section 3.3, acceptance A10).
 // ---------------------------------------------------------------------------------------------------------------
 
 const PROFILE_BASE = '/base-agent-additional-server/roboTeamAgent/3001/api/terminal-profiles';
@@ -684,14 +684,14 @@ test('discovery posts exactly {dir} or {dir, profile:{provider,id}} and rejects 
     }), /Invalid terminal discovery profile/);
 });
 
-test('launch URL adds close=stop only for the exact launch plus stop handoff', () => {
+test('launch URL is the bare launch or attach fragment and refuses every close-policy handoff', () => {
     const launch = id32('launch');
     assert.equal(buildTerminalLaunchUrl(launch), `/webtty/#launch=${launch}`);
     assert.equal(buildTerminalLaunchUrl({ launch }), `/webtty/#launch=${launch}`);
-    assert.equal(buildTerminalLaunchUrl({ launch, close: 'stop' }), `/webtty/#launch=${launch}&close=stop`);
     assert.equal(buildTerminalLaunchUrl({ attach: 'T'.repeat(32) }), `/webtty/#attach=${'T'.repeat(32)}`);
+    // The chooser no longer asks for a close policy, so the launcher never carries one.
     for (const handoff of [
-        { launch, close: 'keep' }, { launch, close: '' }, { launch, close: 'stop', extra: 1 },
+        { launch, close: 'stop' }, { launch, close: 'keep' }, { launch, close: '' }, { launch, close: 'stop', extra: 1 },
         { attach: 'T'.repeat(32), close: 'stop' }, { close: 'stop' },
     ]) assert.throws(() => buildTerminalLaunchUrl(handoff), /Invalid/);
 });
@@ -879,13 +879,12 @@ function pageHarness(t, { sources = [PROFILE_SOURCE], robots = ROBOTS, respond =
     const select = new FakeElement('select');
     select.value = '';
     fields.set('#terminalTargetRobot', select);
-    const radios = ['keep', 'stop'].map((value) => Object.assign(new FakeElement('input'), { value, checked: value === 'keep' }));
     const element = {
         id: 'modal',
         dataset: {},
         closest: () => null,
         querySelector: (selector) => fields.get(selector),
-        querySelectorAll: (selector) => (selector.includes('terminalTargetClosePolicy') ? radios : []),
+        querySelectorAll: () => [],
         addEventListener(type) { log.push(['listen', type]); },
         removeEventListener() {},
     };
@@ -909,11 +908,7 @@ function pageHarness(t, { sources = [PROFILE_SOURCE], robots = ROBOTS, respond =
         assert.equal(modal.selectTarget(button), true);
         await settle();
     };
-    const setPolicy = (value) => {
-        radios.forEach((radio) => { radio.checked = radio.value === value; });
-        modal.handleChange({ target: { name: 'terminalTargetClosePolicy', value } });
-    };
-    return { modal, log, popups, storageWrites, $, settle, optionTexts, rows, chooseRobot, chooseRow, setPolicy, select, radios, fields };
+    return { modal, log, popups, storageWrites, $, settle, optionTexts, rows, chooseRobot, chooseRow, select, fields };
 }
 
 const fetchLog = (log, method) => log.filter((entry) => entry[0] === 'fetch' && (!method || entry[1] === method));
@@ -1100,20 +1095,20 @@ test('robots come from every declared source, labelled with the source only when
     assert.deepEqual(body.profile, { provider: 'dpuAgent', id: 'robot-a' });
 });
 
-test('close policy defaults to Keep running on every open, is never persisted, and only Stop it adds close=stop', async (t) => {
-    for (const choice of ['keep', 'stop']) {
+test('the chooser has no close policy: every open navigates to a bare launch fragment and persists nothing', async (t) => {
+    for (const staleChange of [null, { name: 'terminalTargetClosePolicy', value: 'stop' }]) {
         const page = pageHarness(t);
         page.modal.afterRender();
         await page.settle();
-        assert.equal(page.modal.closePolicy, 'keep', 'a new dialog never inherits an earlier choice');
-        assert.deepEqual(page.radios.map((radio) => [radio.value, radio.checked]), [['keep', true], ['stop', false]]);
+        assert.equal(Object.hasOwn(page.modal, 'closePolicy'), false, 'the dialog holds no close policy');
         await page.chooseRobot('Robot A');
         await page.chooseRow(/Ploinky Box/);
-        page.setPolicy(choice);
+        // A leftover policy control event from an older page must not change the launch.
+        if (staleChange) page.modal.handleChange({ target: staleChange });
 
         assert.equal(await page.modal.openTerminal(), true);
         const navigation = page.log.find((entry) => entry[0] === 'navigate');
-        assert.equal(navigation[1], choice === 'stop' ? `/webtty/#launch=${id32('box')}&close=stop` : `/webtty/#launch=${id32('box')}`);
+        assert.equal(navigation[1], `/webtty/#launch=${id32('box')}`);
         assert.equal(navigation[2], 'noopener noreferrer');
         assert.equal(navigation[3], 'no-referrer');
         assert.deepEqual(page.storageWrites, []);
@@ -1222,7 +1217,7 @@ test('Open stays disabled for an expired discovery and a discovery that belongs 
     assert.equal(await page.modal.openTerminal.call({ ...page.modal, openGate: () => null, statusElement: { textContent: '' } }), false);
 });
 
-test('template and styles carry the robot select, the close policy radios, the Open button and the exact explanation', async () => {
+test('template and styles carry the robot select and the Open button, and no close policy control or text', async () => {
     const root = path.resolve(import.meta.dirname, '../../web-components/modals/terminal-target-modal');
     const [template, styles, source] = await Promise.all(['html', 'css', 'js'].map((extension) => (
         fs.readFile(path.join(root, `terminal-target-modal.${extension}`), 'utf8'))));
@@ -1230,11 +1225,12 @@ test('template and styles carry the robot select, the close policy radios, the O
     assert.match(template, /<select id="terminalTargetRobot"[^>]*\brequired\b/);
     assert.match(template, /<option value="" disabled selected>Choose a robot<\/option>/);
     assert.doesNotMatch(template, /No robot/i);
-    assert.match(template, /name="terminalTargetClosePolicy" value="keep" checked/);
-    assert.match(template, /name="terminalTargetClosePolicy" value="stop"(?! checked)/);
-    assert.match(template, /<legend>When this tab closes<\/legend>/);
     assert.match(template, /data-local-action="openTerminal"[^>]*disabled/);
-    assert.ok(template.includes('<p>Keep running leaves the terminal alive after its tab closes; Stop it ends it about 30 seconds after the tab closes unless you reopen it. Manage terminals in Live Sessions.</p>'));
+    // The chooser neither shows nor sends a close policy.
+    assert.doesNotMatch(template, /terminalTargetClosePolicy|<fieldset|<legend|type="radio"/);
+    assert.doesNotMatch(template, /When this tab closes|Keep running|Stop it/);
+    assert.doesNotMatch(styles, /terminal-target-policy/);
+    assert.doesNotMatch(source, /CLOSE_POLICIES|closePolicy|terminalTargetClosePolicy|close=stop/);
     assert.doesNotMatch(template, /Closing the tab keeps the terminal running/);
     assert.match(styles, /terminal-target-button:disabled/);
     assert.match(styles, /terminal-target-select/);

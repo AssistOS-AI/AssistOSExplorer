@@ -7,7 +7,6 @@ const UNAVAILABLE_REASONS = Object.freeze(['home-unreachable', 'home-read-only']
 const MAX_PROFILES = 256;
 const PROFILE_TIMEOUT_MS = 5000;
 const PREPARE_TIMEOUT_MS = 30000;
-const CLOSE_POLICIES = Object.freeze(['keep', 'stop']);
 const CSRF_COOKIE_NAME = 'ploinky_browser_csrf';
 const CSRF_HEADER_NAME = 'X-Ploinky-Browser-CSRF-Token';
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
@@ -157,16 +156,14 @@ export function normalizeTerminalDiscoveryPayload(payload, options = {}) {
 
 export function buildTerminalLaunchUrl(handoff) {
     const attach = isPlainObject(handoff) && hasExactKeys(handoff, ['attach']);
-    const stopOnClose = isPlainObject(handoff) && hasExactKeys(handoff, ['launch', 'close']);
-    const launch = typeof handoff === 'string' || stopOnClose
+    const launch = typeof handoff === 'string'
         || (isPlainObject(handoff) && hasExactKeys(handoff, ['launch']));
     const normalized = attach ? handoff.attach : typeof handoff === 'string' ? handoff : handoff?.launch;
     if ((!attach && !launch) || typeof normalized !== 'string'
-        || !(attach ? /^[A-Za-z0-9_-]{32}$/ : IDENTIFIER_PATTERN).test(normalized)
-        || (stopOnClose && handoff.close !== 'stop')) {
+        || !(attach ? /^[A-Za-z0-9_-]{32}$/ : IDENTIFIER_PATTERN).test(normalized)) {
         throw new Error('Invalid terminal launch identifier.');
     }
-    return `/webtty/#${attach ? 'attach' : 'launch'}=${encodeURIComponent(normalized)}${stopOnClose ? '&close=stop' : ''}`;
+    return `/webtty/#${attach ? 'attach' : 'launch'}=${encodeURIComponent(normalized)}`;
 }
 
 export function reserveTerminalWindow(windowRef = globalThis.window) {
@@ -418,7 +415,6 @@ export class TerminalTargetModal {
         this.profileController = null;
         this.selectedRobotKey = '';
         this.selectedLaunch = '';
-        this.closePolicy = 'keep';
         this.opening = false;
         this.prepareController = null;
         this.boundKeydown = this.handleKeydown.bind(this);
@@ -442,14 +438,12 @@ export class TerminalTargetModal {
         this.robotNote = this.element.querySelector('#terminalTargetRobotNote');
         this.disclosureElement = this.element.querySelector('#terminalTargetDisclosure');
         this.openButton = this.element.querySelector('#terminalTargetOpen');
-        this.policyInputs = [...(this.element.querySelectorAll?.('input[name="terminalTargetClosePolicy"]') || [])];
         this.element.removeEventListener('keydown', this.boundKeydown);
         this.element.addEventListener('keydown', this.boundKeydown);
         this.element.removeEventListener('change', this.boundChange);
         this.element.addEventListener('change', this.boundChange);
         this.directoryElement.textContent = this.directory ? `/${this.directory}` : '/';
         this.renderRobotOptions();
-        for (const input of this.policyInputs) input.checked = input.value === this.closePolicy;
         if (this.viewState === 'ready' && this.currentDiscovery) {
             this.renderReady(this.currentDiscovery);
         } else if (this.viewState === 'error') {
@@ -602,7 +596,6 @@ export class TerminalTargetModal {
         const robot = this.selectedRobot();
         const target = this.targetsByLaunch.get(this.selectedLaunch) || null;
         if (this.robotSelect) this.robotSelect.disabled = this.opening || !this.robots.length;
-        for (const input of this.policyInputs || []) input.disabled = this.opening;
         if (this.openButton) this.openButton.disabled = !this.openGate();
         if (this.refreshButton) this.refreshButton.disabled = this.opening || this.viewState !== 'ready';
         if (this.retryButton) this.retryButton.disabled = this.opening;
@@ -831,8 +824,6 @@ export class TerminalTargetModal {
         const field = event?.target;
         if (field?.id === 'terminalTargetRobot') {
             this.chooseRobot(String(field.value || ''));
-        } else if (field?.name === 'terminalTargetClosePolicy' && CLOSE_POLICIES.includes(field.value)) {
-            this.closePolicy = field.value;
         }
     }
 
@@ -913,10 +904,7 @@ export class TerminalTargetModal {
             failure = 'These terminal choices expired while the robot was being prepared. Choose again.';
         }
         if (!failure) {
-            const navigated = navigateTerminalWindow(
-                popup,
-                this.closePolicy === 'stop' ? { launch: target.launch, close: 'stop' } : target.launch
-            );
+            const navigated = navigateTerminalWindow(popup, target.launch);
             if (navigated) {
                 this.handedOff = true;
                 this.clearExpiryTimer();

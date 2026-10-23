@@ -32,8 +32,7 @@ terminal-target-modal .terminal-target-robot-note {
     line-height: var(--line-normal);
 }
 
-terminal-target-modal .terminal-target-robot,
-terminal-target-modal .terminal-target-policy {
+terminal-target-modal .terminal-target-robot {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
@@ -45,25 +44,10 @@ terminal-target-modal .terminal-target-robot-note:empty {
     display: none;
 }
 
-terminal-target-modal .terminal-target-field-label,
-terminal-target-modal .terminal-target-policy legend {
+terminal-target-modal .terminal-target-field-label {
     color: var(--text);
     font-size: var(--font-sm);
     font-weight: var(--font-semibold);
-}
-
-terminal-target-modal .terminal-target-policy {
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-}
-
-terminal-target-modal .terminal-target-policy-option {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    color: var(--text);
-    font-size: var(--font-sm);
 }
 
 terminal-target-modal .terminal-target-select {
