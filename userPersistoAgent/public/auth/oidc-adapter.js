@@ -1,4 +1,5 @@
 import { assertionCredentialToServer } from './auth-api.js';
+import { postGoogleCredential } from './google-gis.js';
 
 // OIDC interaction protocol adapter for the shared wizard. Read-only actions
 // are JSON-over-form-urlencoded fetches against `${base}/${action}`; every
@@ -112,8 +113,11 @@ export function createOidcAdapter({ config, document, fetch, navigate, closeWind
         startGoogle() {
             return postJson('google');
         },
-        continueGoogle(data) {
-            navigate(data.authorizationUrl);
+        completeGoogle({ credentialUrl, transaction, credential }) {
+            return postGoogleCredential({ fetch, origin: new URL(config.base).origin, credentialUrl, transaction, credential });
+        },
+        continueGoogle(redirectUrl) {
+            navigate(redirectUrl);
         },
         cancelGoogle(data) {
             return postJson('attempt-cancel', { googleTransaction: data.transaction });

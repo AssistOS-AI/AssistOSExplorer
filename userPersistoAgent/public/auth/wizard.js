@@ -1,5 +1,6 @@
 import { publicKeyRequestFromServer } from './auth-api.js';
 import { DEFAULT_PASSWORD_POLICY, newPasswordProblem, passwordReasonMessage } from './password-rules.js';
+import { enlargeGooglePopups, loadGoogleSdk } from './google-gis.js';
 
 // Protocol-agnostic, email-first sign-in wizard. Talks only to `adapter`
 // (see sso-adapter.js / oidc-adapter.js); every screen is rebuilt with
@@ -12,8 +13,29 @@ import { DEFAULT_PASSWORD_POLICY, newPasswordProblem, passwordReasonMessage } fr
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const EXPIRY_CODES = new Set(['attempt_expired', 'login_request_expired', 'login_request_invalid']);
 const RETRY_NOW_DELIVERIES = new Set(['failed', 'pending']);
+// Screens that host Google's own button; a refresh starts this long before expiry.
+const GOOGLE_SCREENS = new Set(['start', 'googleRegistration']);
+const GOOGLE_REFRESH_MARGIN_MS = 30_000;
+const GOOGLE_UNAVAILABLE = 'Google sign-in is not available right now.';
 
-export function mountWizard({ root, document, adapter, storage = null, clock = null, credentials = undefined }) {
+function defaultGis() {
+    const view = globalThis.window;
+    let restoreOpen;
+    return {
+        load() {
+            if (!view) return Promise.reject(new Error('google_sdk_unavailable'));
+            restoreOpen ??= enlargeGooglePopups(view);
+            return loadGoogleSdk({ document: view.document, window: view, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout }).promise;
+        },
+        dispose() { restoreOpen?.(); restoreOpen = undefined; },
+        onPageHide(listener) {
+            view?.addEventListener('pagehide', listener);
+            return () => view?.removeEventListener('pagehide', listener);
+        },
+    };
+}
+
+export function mountWizard({ root, document, adapter, storage = null, clock = null, credentials = undefined, gis = null }) {
     const ticker = clock || {
         now: () => Date.now(),
         setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
@@ -36,6 +58,18 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     let passkeyAbort = null;
     let intervalId = null;
     let disposed = false;
+    // Google: one browser-bound transaction per page, reused across screens.
+    // `googleOp` is captured before every await; a later operation, screen
+    // change or disposal makes the earlier one give up. `submission` lets
+    // either email Next or one Google credential proceed, never both.
+    const google = gis || defaultGis();
+    let googleSession = null; // { transaction, gis, consumed, handedOff }
+    let googleStarting = null;
+    let googleOp = 0;
+    let googleMount = null; // { epoch, container, statusNode }
+    let googleInitializedFor = '';
+    let submission = null; // null | 'discovery' | 'google'
+    const removePageHide = google.onPageHide?.(() => cancelGoogleSession());
 
     // ---- small DOM helpers -------------------------------------------------
     function h(tag, attributes = {}, children = []) {
@@ -147,6 +181,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         passkeyAbort = null;
         screen = name;
         resendState = null;
+        googleMount = null;
         if (expiresAt && name !== 'completing' && name !== 'expired') {
             timerNode = h('p', { className: 'auth-timer', 'aria-live': 'polite' });
             node.append(timerNode);
@@ -184,6 +219,8 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             resendState.node.textContent = remaining > 0 ? `${resendState.label} in ${remaining} s` : resendState.label;
         }
         if (expiresAt && ticker.now() >= expiresAt && screen !== 'expired' && screen !== 'completing') showExpired();
+        else if (googleMount && googleMount.epoch === epoch && googleSession && !googleSession.consumed && !googleStarting
+            && submission === null && googleSession.gis.expiresAt - ticker.now() <= GOOGLE_REFRESH_MARGIN_MS) void prepareGoogle();
     }
     function startTicking() {
         if (intervalId !== null) return;
@@ -202,27 +239,115 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         pendingNotice = '';
         return status(message);
     }
-    function googleButton(onFailure) {
-        return h('button', { type: 'button', className: 'google-button', onClick: async (event) => {
-            const capturedEpoch = epoch;
-            const button = event.currentTarget;
-            button.disabled = true;
-            try {
-                const result = await adapter.startGoogle();
-                if (stale(capturedEpoch)) {
-                    try { await adapter.cancelGoogle?.(result); } catch { /* expires server-side if unreachable */ }
-                    return;
-                }
-                adapter.continueGoogle?.(result);
-            } catch {
-                if (stale(capturedEpoch)) return;
-                button.disabled = false;
-                onFailure('Unable to continue with Google. Try another sign-in method.');
+    // ---- Google Identity Services ----------------------------------------
+    function googleSection() {
+        const container = h('div', { className: 'google-signin' });
+        const statusNode = h('p', { className: 'status google-signin-status', 'aria-live': 'polite' });
+        return { node: h('div', { className: 'google-signin-section' }, [container, statusNode]), container, statusNode };
+    }
+    // Call right after commit(): the section belongs to the screen just shown.
+    function mountGoogle(section) {
+        googleMount = { epoch, container: section.container, statusNode: section.statusNode };
+        void prepareGoogle();
+    }
+    function ownsGoogle(op, mount) {
+        return !disposed && op === googleOp && mount === googleMount && mount?.epoch === epoch;
+    }
+    function cancelGoogleHandle(transaction) {
+        if (typeof transaction !== 'string' || !transaction) return;
+        try { void Promise.resolve(adapter.cancelGoogle?.({ transaction })).catch(() => {}); } catch { /* expires server-side */ }
+    }
+    // A verified credential awaiting resume is never cancelled.
+    function cancelGoogleSession() {
+        const session = googleSession;
+        googleSession = null;
+        googleInitializedFor = '';
+        if (session && !session.handedOff) cancelGoogleHandle(session.transaction);
+    }
+    function usableGoogleStart(result) {
+        const config = result?.gis;
+        return typeof result?.transaction === 'string' && /^[a-f0-9]{64}$/.test(result.transaction)
+            && config && typeof config.clientId === 'string' && config.clientId
+            && typeof config.nonce === 'string' && config.nonce && Number.isSafeInteger(config.expiresAt)
+            && typeof config.credentialUrl === 'string' && config.credentialUrl.startsWith('/') && !config.credentialUrl.startsWith('//');
+    }
+    // One shared pending start. A result that arrives after disposal, parent
+    // expiry or a newer start is cancelled and never rendered.
+    function ensureGoogleSession() {
+        if (googleSession && !googleSession.consumed && googleSession.gis.expiresAt - ticker.now() > GOOGLE_REFRESH_MARGIN_MS) return Promise.resolve(googleSession);
+        if (googleStarting) return googleStarting;
+        cancelGoogleSession();
+        const starting = (async () => {
+            const result = await adapter.startGoogle();
+            if (disposed || googleStarting !== starting || screen === 'expired' || screen === 'completing'
+                || (expiresAt && ticker.now() >= expiresAt) || !usableGoogleStart(result)) {
+                cancelGoogleHandle(result?.transaction);
+                throw new Error('google_start_unusable');
             }
-        } }, [
-            h('span', { className: 'google-icon', 'aria-hidden': 'true' }),
-            h('span', { text: 'Sign in with Google' }),
-        ]);
+            googleSession = { transaction: result.transaction, gis: result.gis, consumed: false, handedOff: false };
+            return googleSession;
+        })();
+        googleStarting = starting;
+        const clear = () => { if (googleStarting === starting) googleStarting = null; };
+        starting.then(clear, clear);
+        return starting;
+    }
+    async function prepareGoogle(notice = '') {
+        const op = ++googleOp;
+        const mount = googleMount;
+        if (!mount) return;
+        try {
+            const session = await ensureGoogleSession();
+            if (!ownsGoogle(op, mount)) return;
+            const sdk = await google.load();
+            if (!ownsGoogle(op, mount) || googleSession !== session) return;
+            if (googleInitializedFor !== session.transaction) {
+                sdk.initialize({
+                    client_id: session.gis.clientId,
+                    nonce: session.gis.nonce,
+                    auto_select: false,
+                    ux_mode: 'popup',
+                    use_fedcm_for_button: false,
+                    callback: (response) => { void onGoogleCredential(response, session); },
+                });
+                googleInitializedFor = session.transaction;
+            }
+            mount.container.replaceChildren();
+            mount.statusNode.textContent = notice;
+            sdk.renderButton(mount.container, { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with' });
+        } catch {
+            if (!ownsGoogle(op, mount)) return;
+            mount.container.replaceChildren();
+            mount.statusNode.textContent = GOOGLE_UNAVAILABLE;
+        }
+    }
+    // Google calls this from its popup; the popup may finish after the
+    // wizard moved on. Only the screen showing this session's button, with
+    // no other submission running, may post one credential for it.
+    async function onGoogleCredential(response, session) {
+        if (disposed || session !== googleSession || session.consumed || submission !== null) return;
+        const mount = googleMount;
+        if (!mount || mount.epoch !== epoch || !GOOGLE_SCREENS.has(screen)) return;
+        if (typeof response?.credential !== 'string' || !response.credential) return;
+        submission = 'google';
+        session.consumed = true;
+        const op = ++googleOp;
+        mount.container.replaceChildren();
+        mount.statusNode.textContent = 'Completing Google sign-in…';
+        try {
+            const redirectUrl = await adapter.completeGoogle({ credentialUrl: session.gis.credentialUrl, transaction: session.transaction, credential: response.credential });
+            if (disposed || session !== googleSession) return;
+            session.handedOff = true;
+            showCompleting();
+            adapter.continueGoogle(redirectUrl);
+        } catch {
+            if (disposed) return;
+            submission = null;
+            // A failed or refused credential consumed this transaction.
+            if (googleSession === session) { googleSession = null; googleInitializedFor = ''; }
+            if (op !== googleOp || mount !== googleMount || mount.epoch !== epoch) return;
+            void prepareGoogle('Google sign-in could not be completed. Try again or use another sign-in method.');
+        }
     }
 
     // ---- S0 loading / S1 start ------------------------------------------
@@ -241,13 +366,14 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         if (adapter.clientName) children.push(h('p', { className: 'auth-copy' }, [h('span', { text: 'Continue to ' }), h('strong', { text: adapter.clientName })]));
         const notice = noticeStatus();
         if (notice) children.push(notice);
-        if (config.methods.google) children.push(googleButton((message) => showError(errorNode, message)));
+        const googleArea = config.methods.google ? googleSection() : null;
+        if (googleArea) children.push(googleArea.node);
         children.push(h('label', { for: 'auth-email', text: 'Email' }), emailInput, nextButton, errorNode);
         if (typeof adapter.abort === 'function') children.push(h('button', { type: 'button', className: 'auth-link', text: 'Cancel', onClick: () => { showCompleting(); adapter.abort(); } }));
         form.append(...children);
         form.addEventListener('submit', (event) => {
             event.preventDefault();
-            if (nextButton.disabled) return;
+            if (nextButton.disabled || submission !== null) return;
             const candidate = emailInput.value.trim();
             if (!EMAIL_PATTERN.test(candidate)) {
                 showError(errorNode, errorMessage({ code: 'invalid_email' }));
@@ -257,9 +383,12 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             void beginDiscovery(candidate, nextButton, errorNode);
         });
         commit('start', form);
+        if (googleArea) mountGoogle(googleArea);
     }
 
     async function beginDiscovery(candidate, button, errorNode) {
+        if (submission !== null) return;
+        submission = 'discovery';
         const capturedEpoch = epoch;
         button.disabled = true;
         try {
@@ -274,6 +403,8 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             button.disabled = false;
             if (handleGlobalError(error)) return;
             showError(errorNode, errorMessage(error));
+        } finally {
+            if (submission === 'discovery') submission = null;
         }
     }
 
@@ -974,14 +1105,14 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
 
     // ---- S10 / S11 / S12 / S13 / S14 ----------------------------------------
     function showGoogleRegistration() {
-        const errorNode = status('', { error: true });
+        const googleArea = googleSection();
         commit('googleRegistration', h('section', { className: 'auth-panel' }, [
             heading('Create an account with Google'),
             status('Email registration is not available. Sign in with Google to create an account.'),
-            googleButton((message) => showError(errorNode, message)),
-            errorNode,
-            backButton(() => showStart()),
+            googleArea.node,
+            backButton(() => { if (submission === null) showStart(); }),
         ]));
+        mountGoogle(googleArea);
     }
 
     function showNoAccount() {
@@ -1177,6 +1308,11 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             disposed = true;
             passkeyAbort?.abort();
             passkeyAbort = null;
+            googleMount = null;
+            googleStarting = null;
+            cancelGoogleSession();
+            removePageHide?.();
+            google.dispose?.();
             if (intervalId !== null) { ticker.clearInterval(intervalId); intervalId = null; }
         },
     };

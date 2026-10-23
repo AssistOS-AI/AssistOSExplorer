@@ -62,11 +62,11 @@ test('loopback restart creates no provider state and the fresh canonical login s
     const response = await browser.json(`${base}/service/auth/google/start`, { requestId: login.providerState, state: 'fresh-router-state' });
     assert.equal(response.status, 200, await response.clone().text());
     const result = await response.json();
-    const authorization = new URL(result.authorizationUrl);
-    assert.equal(authorization.origin, base);
-    assert.equal(authorization.pathname, '/service/auth/google/sign-in');
-    assert.equal(authorization.searchParams.get('transaction'), result.transaction);
-    assert.equal((await browser.fetch(authorization)).status, 200);
+    // The canonical wizard renders Google's button with this same-origin configuration.
+    assert.equal(result.authorizationUrl, undefined);
+    assert.match(result.transaction, /^[a-f0-9]{64}$/);
+    assert.equal(result.gis.credentialUrl, '/service/auth/google/credential');
+    assert.equal(result.gis.clientId.length > 0, true);
     assert.ok(response.headers.get('set-cookie')?.includes('up_google_'));
     // The convenience redirect does not relax the Google Origin/CSRF boundary.
     const wrongOrigin = await fetch(`${base}/service/auth/google/start`, { method: 'POST',

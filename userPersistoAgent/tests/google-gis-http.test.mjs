@@ -49,11 +49,10 @@ async function fixture(run) {
             const response = await browser.json(`${base}/service/auth/google/start`, { requestId: request.providerState, state: 'outer-router-state' });
             assert.equal(response.status, 200, await response.clone().text());
             const start = await response.json();
-            const page = await browser.fetch(start.authorizationUrl);
-            assert.equal(page.status, 200, await page.clone().text());
-            const html = await page.text();
-            const config = JSON.parse(html.match(/<script id="google-sign-in-config" type="application\/json">([^<]+)<\/script>/)[1]);
-            return { browser, request, start, page, config, html };
+            // The wizard renders Google's button with this configuration; no
+            // intermediate page exists for sign-in.
+            const config = { ...start.gis, transaction: start.transaction };
+            return { browser, request, start, config, response };
         };
         const sign = async (flow, claims = {}, key = keys.privateKey) => {
             const now = Math.floor(Date.now() / 1000);
@@ -87,18 +86,28 @@ test('fresh local Google configuration needs only installation-generated key, no
     assert.equal(defaults.configurationSource, 'local-default');
     assert.deepEqual(defaults.missing, []);
     const flow = await begin();
-    assert.equal(new URL(flow.start.authorizationUrl).origin, base);
-    assert.equal(flow.page.headers.get('cache-control'), 'no-store');
-    assert.equal(flow.page.headers.get('x-frame-options'), 'DENY');
-    assert.equal(flow.page.headers.get('cross-origin-opener-policy'), 'same-origin-allow-popups');
-    assert.match(flow.page.headers.get('content-security-policy'), /script-src 'self' https:\/\/accounts.google.com\/gsi\/client/);
+    assert.equal(flow.start.authorizationUrl, undefined, 'sign-in has no intermediate Google page');
+    assert.match(flow.start.transaction, /^[a-f0-9]{64}$/);
+    assert.equal(flow.response.headers.get('cache-control'), 'no-store');
     assert.equal(flow.config.clientId, 'gis-http-client');
     assert.match(flow.config.nonce, /^[A-Za-z0-9_-]{43}$/);
-    assert.doesNotMatch(flow.html, /client_secret|clientSecret|access_token|id_token/);
+    assert.equal(flow.config.credentialUrl, '/service/auth/google/credential');
+    assert.equal(flow.config.cancelUrl, '/service/auth/google/cancel');
+    assert.ok(flow.config.expiresAt > Date.now() && flow.config.expiresAt <= Date.now() + 300_000);
+    assert.deepEqual(Object.keys(flow.start.gis).sort(), ['cancelUrl', 'clientId', 'credentialUrl', 'expiresAt', 'nonce']);
+    // The former sign-in page now refuses sign-in transactions, even for the
+    // initiating browser, and never loads Google's SDK.
+    const removed = await flow.browser.fetch(`${base}/service/auth/google/sign-in?transaction=${flow.start.transaction}`);
+    assert.equal(removed.status, 400);
+    const removedHtml = await removed.text();
+    assert.doesNotMatch(removedHtml, /accounts\.google\.com|google-sign-in-config/);
+    const helper = await flow.browser.fetch(`${base}/service/auth/google-gis.js`);
+    assert.equal(helper.status, 200);
+    assert.match(await helper.text(), /accounts\.google\.com\/gsi\/client/);
     const asset = await flow.browser.fetch(`${base}/service/auth/google-sign-in.mjs`);
     assert.equal(asset.status, 200);
     assert.match(asset.headers.get('content-type'), /javascript/);
-    assert.match(await asset.text(), /accounts\.google\.com\/gsi\/client/);
+    assert.match(await asset.text(), /from '\.\/google-gis\.js'/);
 }));
 
 test('GIS verification preserves the ordinary first-administrator and one-use Router handoff', () => fixture(async ({ begin, sign, submit, base }) => {
@@ -129,7 +138,6 @@ test('GIS verification preserves the ordinary first-administrator and one-use Ro
 test('GIS requires the matching browser, exact Origin and JSON body before verifying a credential', () => fixture(async ({ begin, sign, submit, base, verifications }) => {
     const flow = await begin();
     const credential = await sign(flow);
-    assert.equal((await new CookieBrowser().fetch(flow.start.authorizationUrl)).status, 400);
     assert.equal((await submit(flow, credential, new CookieBrowser())).status, 400);
     assert.equal((await submit(flow, credential, flow.browser, 'https://attacker.example')).status, 403);
     const endpoint = new URL(flow.config.credentialUrl, base);

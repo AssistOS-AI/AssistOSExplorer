@@ -185,9 +185,41 @@ function fail(code, extra = {}) {
     return Object.assign(new Error(code), { code, ...extra });
 }
 
-async function mount({ adapter, storage = null, clock = fakeClock(), credentials } = {}) {
+// Controlled Google Identity Services: records initialize/renderButton and
+// lets a test fire Google's credential callback itself.
+function fakeGis({ fail = false } = {}) {
+    const state = { loads: 0, inits: [], renders: 0, callback: null, pagehide: null };
+    const sdk = {
+        initialize(options) { state.inits.push(options); state.callback = options.callback; },
+        renderButton(container) {
+            state.renders += 1;
+            const node = new Element('button');
+            node.setAttribute('class', 'gsi-test-button');
+            node.textContent = 'Sign in with Google';
+            container.replaceChildren(node);
+        },
+    };
+    const gis = {
+        load: async () => { state.loads += 1; if (fail) throw new Error('google_sdk_unavailable'); return sdk; },
+        onPageHide(listener) { state.pagehide = listener; return () => { state.pagehide = null; }; },
+    };
+    return { state, gis, credential: (value = 'header.payload.signature') => state.callback?.({ credential: value }) };
+}
+const GOOGLE_TRANSACTION = 'a'.repeat(64);
+function gisStart(transaction = GOOGLE_TRANSACTION, overrides = {}) {
+    return { ok: true, transaction, gis: { clientId: 'client-id', nonce: `nonce-${transaction.slice(0, 6)}`, expiresAt: Date.now() + 5 * 60 * 1000,
+        credentialUrl: '/prefix/service/auth/google/credential', cancelUrl: '/prefix/service/auth/google/cancel', ...overrides } };
+}
+function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((ok, no) => { resolve = ok; reject = no; });
+    return { promise, resolve, reject };
+}
+
+async function mount({ adapter, storage = null, clock = fakeClock(), credentials, gis } = {}) {
     const { document, root, body } = createDocument();
-    const instance = mountWizard({ root, document, adapter, storage, clock, credentials });
+    const instance = mountWizard({ root, document, adapter, storage, clock, credentials, ...(gis ? { gis } : {}) });
     await settle();
     return { root, body, clock, instance, dispose: instance.dispose };
 }
@@ -241,12 +273,12 @@ test('S1 orders Sign in with Google, Email and Next with no password, administra
     for (const flow of ['sso', 'oidc']) {
         const adapter = baseAdapter({ flow, attempt: async () => wizardState({ methods: { ...ALL_METHODS, google: true } }),
             ...(flow === 'oidc' ? { clientName: 'Explorer', abort: () => {} } : {}) });
-        const { root } = await mount({ adapter });
+        const { root } = await mount({ adapter: { ...adapter, startGoogle: async () => gisStart() }, gis: fakeGis().gis });
         assert.equal(h1(root).textContent, 'Sign in');
         const form = root.querySelector('form.start-panel');
-        assert.deepEqual(form.children.filter((node) => ['BUTTON', 'LABEL', 'INPUT'].includes(node.tagName))
-            .map((node) => (node.tagName === 'INPUT' ? `input:${node.name}` : node.textContent)),
-        ['Sign in with Google', 'Email', 'input:email', 'Next', ...(flow === 'oidc' ? ['Cancel'] : [])]);
+        assert.deepEqual(form.children.filter((node) => ['BUTTON', 'LABEL', 'INPUT', 'DIV'].includes(node.tagName))
+            .map((node) => (node.tagName === 'INPUT' ? `input:${node.name}` : node.tagName === 'DIV' ? `google:${node.textContent}` : node.textContent)),
+        ['google:Sign in with Google', 'Email', 'input:email', 'Next', ...(flow === 'oidc' ? ['Cancel'] : [])]);
         const emailInput = root.querySelector('[name="email"]');
         assert.deepEqual([emailInput.type, emailInput.autocomplete, emailInput.required], ['email', 'email', true]);
         assert.equal(root.querySelectorAll('input[type="password"]').length, 0);
@@ -256,15 +288,181 @@ test('S1 orders Sign in with Google, Email and Next with no password, administra
     }
 });
 
-test('the Google button is rendered only when usable and starts the Google flow', async () => {
-    const withoutGoogle = await mount({ adapter: baseAdapter() });
-    assert.equal(withoutGoogle.root.querySelector('.google-button'), null);
+function googleAdapter(overrides = {}) {
+    const calls = { start: 0, cancel: [], complete: [], continued: [], discover: 0 };
+    const adapter = baseAdapter({
+        attempt: async () => wizardState({ methods: { ...ALL_METHODS, google: true } }),
+        startGoogle: async () => { calls.start += 1; return gisStart(); },
+        cancelGoogle: async ({ transaction }) => { calls.cancel.push(transaction); return { ok: true }; },
+        completeGoogle: async (args) => { calls.complete.push(args); return '/prefix/service/auth/google/resume/' + 'b'.repeat(64); },
+        continueGoogle: (path) => { calls.continued.push(path); },
+        discover: async () => { calls.discover += 1; return REGISTERED; },
+        ...overrides(calls),
+    });
+    return { adapter, calls };
+}
+
+test('without usable Google the wizard starts no transaction and loads no Google script', async () => {
+    const google = fakeGis();
     let started = 0;
-    const { root } = await mount({ adapter: baseAdapter({ attempt: async () => wizardState({ methods: { ...ALL_METHODS, google: true } }), startGoogle: async () => { started += 1; } }) });
-    const google = root.querySelector('.google-button');
-    assert.equal(google.textContent, 'Sign in with Google');
-    await google.fire('click');
-    assert.equal(started, 1);
+    const { root } = await mount({ adapter: baseAdapter({ startGoogle: async () => { started += 1; return gisStart(); } }), gis: google.gis });
+    assert.equal(root.querySelector('.google-signin'), null);
+    assert.deepEqual([started, google.state.loads], [0, 0]);
+});
+
+test('the start screen renders Google\'s own button with the server nonce and reuses one transaction across Next and Back', async () => {
+    const google = fakeGis();
+    const { adapter, calls } = googleAdapter(() => ({}));
+    const { root } = await mount({ adapter, gis: google.gis });
+    assert.equal(calls.start, 1);
+    assert.equal(google.state.loads, 1);
+    assert.deepEqual(google.state.inits.map((options) => [options.client_id, options.nonce, options.ux_mode, options.auto_select, options.use_fedcm_for_button]),
+        [['client-id', 'nonce-aaaaaa', 'popup', false, false]]);
+    assert.equal(root.querySelector('.google-signin').textContent, 'Sign in with Google');
+    await submitEmail(root);
+    assert.equal(h1(root).textContent, 'Enter your password');
+    await button(root, 'Back').fire('click');
+    await settle();
+    assert.equal(h1(root).textContent, 'Sign in');
+    assert.equal(calls.start, 1, 'remounts reuse the page transaction');
+    assert.equal(google.state.inits.length, 1);
+    assert.equal(google.state.renders, 2);
+    assert.deepEqual(calls.cancel, []);
+});
+
+test('remounts during one pending start share it, and only the current mount renders', async () => {
+    const google = fakeGis();
+    const pending = deferred();
+    const { adapter, calls } = googleAdapter(() => ({ startGoogle: () => { calls.start += 1; return pending.promise; } }));
+    const { root } = await mount({ adapter, gis: google.gis });
+    await submitEmail(root);
+    await button(root, 'Back').fire('click');
+    pending.resolve(gisStart());
+    await settle();
+    await settle();
+    assert.equal(calls.start, 1);
+    assert.equal(google.state.renders, 1);
+    assert.equal(root.querySelector('.google-signin').textContent, 'Sign in with Google');
+});
+
+test('a start that resolves after disposal is cancelled and never rendered', async () => {
+    const google = fakeGis();
+    const pending = deferred();
+    const { adapter, calls } = googleAdapter(() => ({ startGoogle: () => pending.promise }));
+    const { dispose } = await mount({ adapter, gis: google.gis });
+    dispose();
+    pending.resolve(gisStart());
+    await settle();
+    assert.deepEqual(calls.cancel, [GOOGLE_TRANSACTION]);
+    assert.deepEqual([google.state.loads, google.state.renders], [0, 0]);
+});
+
+test('a Google credential after Next, or while discovery is pending, is dropped without a request', async () => {
+    const afterNext = fakeGis();
+    const first = googleAdapter(() => ({}));
+    const { root } = await mount({ adapter: first.adapter, gis: afterNext.gis });
+    await submitEmail(root);
+    assert.equal(h1(root).textContent, 'Enter your password');
+    await afterNext.credential();
+    assert.deepEqual(first.calls.complete, []);
+
+    const during = fakeGis();
+    const discovery = deferred();
+    const second = googleAdapter(() => ({ discover: () => discovery.promise }));
+    const mounted = await mount({ adapter: second.adapter, gis: during.gis });
+    mounted.root.querySelector('[name="email"]').value = 'member@example.test';
+    const submitted = mounted.root.querySelector('form.start-panel').fire('submit');
+    await during.credential();
+    discovery.resolve(REGISTERED);
+    await submitted;
+    assert.deepEqual(second.calls.complete, []);
+    assert.equal(h1(mounted.root).textContent, 'Enter your password');
+});
+
+test('one Google credential owns the wizard: Next and duplicates are ignored, success hands off without cancelling', async () => {
+    const google = fakeGis();
+    const completion = deferred();
+    const { adapter, calls } = googleAdapter((c) => ({ completeGoogle: (args) => { c.complete.push(args); return completion.promise; } }));
+    const { root, dispose } = await mount({ adapter, gis: google.gis });
+    const first = google.credential('first.credential.value');
+    await google.credential('second.credential.value');
+    await submitEmail(root);
+    assert.equal(calls.discover, 0, 'Next waits for the Google submission');
+    assert.equal(calls.complete.length, 1);
+    assert.deepEqual(calls.complete[0], { credentialUrl: '/prefix/service/auth/google/credential', transaction: GOOGLE_TRANSACTION, credential: 'first.credential.value' });
+    completion.resolve('/prefix/service/auth/google/resume/' + 'b'.repeat(64));
+    await first;
+    assert.deepEqual(calls.continued, ['/prefix/service/auth/google/resume/' + 'b'.repeat(64)]);
+    assert.match(root.textContent, /Signing you in|Loading|Completing/);
+    google.state.pagehide?.();
+    dispose();
+    assert.deepEqual(calls.cancel, [], 'a verified transaction awaiting resume is never cancelled');
+});
+
+test('a credential completion that resolves after disposal does not navigate', async () => {
+    const google = fakeGis();
+    const completion = deferred();
+    const { adapter, calls } = googleAdapter((c) => ({ completeGoogle: (args) => { c.complete.push(args); return completion.promise; } }));
+    const { dispose } = await mount({ adapter, gis: google.gis });
+    const pending = google.credential();
+    dispose();
+    completion.resolve('/prefix/service/auth/google/resume/' + 'b'.repeat(64));
+    await pending;
+    assert.deepEqual(calls.continued, []);
+});
+
+test('a refused credential discards its transaction and renders a fresh Google button', async () => {
+    const google = fakeGis();
+    let starts = 0;
+    const { adapter, calls } = googleAdapter((c) => ({
+        startGoogle: async () => { starts += 1; c.start += 1; return gisStart(String(starts).repeat(64)); },
+        completeGoogle: async (args) => { c.complete.push(args); throw fail('google_authentication_failed'); },
+    }));
+    const { root } = await mount({ adapter, gis: google.gis });
+    await google.credential();
+    await settle();
+    assert.equal(calls.start, 2);
+    assert.deepEqual(google.state.inits.map((options) => options.nonce), ['nonce-111111', 'nonce-222222']);
+    assert.match(root.textContent, /Google sign-in could not be completed/);
+    assert.deepEqual(calls.continued, []);
+});
+
+test('a transaction near expiry is cancelled and replaced while the button is shown', async () => {
+    const google = fakeGis();
+    const clock = fakeClock();
+    let starts = 0;
+    const { adapter, calls } = googleAdapter((c) => ({ startGoogle: async () => {
+        starts += 1; c.start += 1;
+        return gisStart(String(starts).repeat(64), { expiresAt: clock.now() + 40_000 });
+    } }));
+    await mount({ adapter, gis: google.gis, clock });
+    clock.advance(15_000);
+    await settle();
+    await settle();
+    assert.equal(calls.start, 2);
+    assert.deepEqual(calls.cancel, ['1'.repeat(64)]);
+    assert.deepEqual(google.state.inits.map((options) => options.nonce), ['nonce-111111', 'nonce-222222']);
+});
+
+test('an unavailable SDK or a refused start leaves email sign-in working', async () => {
+    for (const variant of ['sdk', 'limit']) {
+        const google = fakeGis({ fail: variant === 'sdk' });
+        const { adapter } = googleAdapter(() => (variant === 'limit' ? { startGoogle: async () => { throw fail('google_transaction_limit', { status: 429 }); } } : {}));
+        const { root } = await mount({ adapter, gis: google.gis });
+        assert.match(root.querySelector('.google-signin-section').textContent, /Google sign-in is not available right now\./);
+        assert.equal(google.state.renders, 0);
+        await submitEmail(root);
+        assert.equal(h1(root).textContent, 'Enter your password', variant);
+    }
+});
+
+test('leaving the page before a credential cancels the pending transaction', async () => {
+    const google = fakeGis();
+    const { adapter, calls } = googleAdapter(() => ({}));
+    await mount({ adapter, gis: google.gis });
+    google.state.pagehide();
+    await settle();
+    assert.deepEqual(calls.cancel, [GOOGLE_TRANSACTION]);
 });
 
 test('an unclaimed installation shows the first-run notice and an OIDC signup hint only changes the heading', async () => {
@@ -297,11 +495,12 @@ test('Next branches only on discovery: registered to S2, unknown to S4, Google-o
     assert.match(offer.root.textContent, /No account uses new@example\.test\./);
     button(offer.root, 'Sign up');
     button(offer.root, 'Back');
-    const google = await mount({ adapter: baseAdapter({ discover: async () => UNKNOWN,
-        attempt: async () => wizardState({ signup: { email: false, google: true }, methods: { ...ALL_METHODS, google: true } }) }) });
+    const google = await mount({ adapter: baseAdapter({ discover: async () => UNKNOWN, startGoogle: async () => gisStart(),
+        attempt: async () => wizardState({ signup: { email: false, google: true }, methods: { ...ALL_METHODS, google: true } }) }), gis: fakeGis().gis });
     await submitEmail(google.root, 'new@example.test');
+    await settle();
     assert.equal(h1(google.root).textContent, 'Create an account with Google');
-    assert.equal(google.root.querySelector('.google-button').textContent, 'Sign in with Google');
+    assert.equal(google.root.querySelector('.google-signin').textContent, 'Sign in with Google');
     const closed = await mount({ adapter: baseAdapter({ discover: async () => UNKNOWN, attempt: async () => wizardState({ registration: false, signup: { email: false, google: false } }) }) });
     await submitEmail(closed.root, 'ghost@example.test');
     assert.equal(h1(closed.root).textContent, 'No account found');
@@ -1382,11 +1581,21 @@ test('OIDC adapter exposes initial failure state, restarts by closing and defers
     assert.deepEqual([clean.adapter.initialFailure, clean.adapter.initialEmail], [null, '']);
     clean.adapter.restart();
     assert.equal(clean.closedCount(), 1);
-    const google = oidcFixture({ post: () => ({ ok: true, authorizationUrl: 'https://accounts.google.com/authorize?x=1' }) });
+    const resume = '/service/oidc/interaction/abc123/google-resume?transaction=' + 'b'.repeat(64);
+    const google = oidcFixture({ post: ({ url }) => (url.endsWith('/google') ? gisStart() : { ok: true, redirectUrl: resume }) });
     const result = await google.adapter.startGoogle();
+    assert.equal(result.transaction, GOOGLE_TRANSACTION);
     assert.deepEqual(google.navigated, []);
-    google.adapter.continueGoogle(result);
-    assert.deepEqual([google.calls[0].url, google.navigated], ['https://issuer.example/service/oidc/interaction/abc123/google', ['https://accounts.google.com/authorize?x=1']]);
+    const redirectUrl = await google.adapter.completeGoogle({ credentialUrl: '/service/auth/google/credential', transaction: result.transaction, credential: 'id.token.value' });
+    assert.equal(google.calls[1].url, '/service/auth/google/credential');
+    assert.deepEqual([google.calls[1].options.method, google.calls[1].options.credentials, google.calls[1].options.redirect], ['POST', 'same-origin', 'error']);
+    assert.deepEqual(JSON.parse(google.calls[1].options.body), { transaction: GOOGLE_TRANSACTION, credential: 'id.token.value' });
+    assert.equal(redirectUrl, resume);
+    assert.deepEqual(google.navigated, []);
+    google.adapter.continueGoogle(redirectUrl);
+    assert.deepEqual([google.calls[0].url, google.navigated], ['https://issuer.example/service/oidc/interaction/abc123/google', [resume]]);
+    const foreign = oidcFixture({ post: () => ({ ok: true, redirectUrl: 'https://attacker.example/steal' }) });
+    await assert.rejects(foreign.adapter.completeGoogle({ credentialUrl: '/service/auth/google/credential', transaction: GOOGLE_TRANSACTION, credential: 'x' }), /invalid_local_path/);
 });
 
 // ==== real adapters with the wizard ==========================================
@@ -1451,7 +1660,7 @@ test('the real SSO adapter never navigates a delayed successful credential respo
     }
 });
 
-test('both real adapters cancel only the abandoned Google transaction after a delayed start response', async (t) => {
+test('both real adapters cancel a delayed Google start only when the wizard can no longer use it', async (t) => {
     for (const flow of ['sso', 'oidc']) {
         for (const transition of ['next', 'expiry', 'dispose', ...(flow === 'oidc' ? ['abort'] : [])]) {
             await t.test(`${flow}: ${transition}`, async () => {
@@ -1464,19 +1673,24 @@ test('both real adapters cancel only the abandoned Google transaction after a de
                     if (url.endsWith('/google/start') || url.endsWith('/google')) return new Promise((resolve) => { release = resolve; });
                     return { ok: true };
                 } });
-                const { root, dispose } = await mount({ adapter: fixture.adapter, clock });
-                const pending = button(root, 'Sign in with Google').fire('click');
-                await settle();
+                const google = fakeGis();
+                const { root, dispose } = await mount({ adapter: fixture.adapter, clock, gis: google.gis });
+                assert.equal(typeof release, 'function', 'the page starts its Google transaction when the button area mounts');
                 if (transition === 'next') await submitEmail(root);
                 else if (transition === 'expiry') clock.advance(11_000);
                 else if (transition === 'abort') await button(root, 'Cancel').fire('click');
                 else dispose();
-                release({ ok: true, authorizationUrl: 'https://accounts.google.com/authorize', transaction: 'abandoned-transaction' });
-                await pending;
-                assert.deepEqual(fixture.navigated, [], 'a stale Google response must never navigate');
-                const cancellation = fixture.calls.at(-1);
-                assert.match(cancellation.url, /attempt(?:\/|-)cancel$/);
-                assert.equal(cancellation.body.googleTransaction, 'abandoned-transaction');
+                release(gisStart());
+                await settle();
+                await settle();
+                assert.deepEqual(fixture.navigated, [], 'a Google start never navigates');
+                const cancellations = fixture.calls.filter((call) => /attempt(?:\/|-)cancel$/.test(call.url) && call.body.googleTransaction);
+                if (transition === 'next') {
+                    assert.deepEqual(cancellations, [], 'Next keeps the page transaction for a later Back');
+                } else {
+                    assert.deepEqual(cancellations.map((call) => call.body.googleTransaction), [GOOGLE_TRANSACTION]);
+                }
+                assert.equal(google.state.renders, 0);
                 if (transition === 'abort') assert.equal(fixture.body.children.at(-1).submitted, true, 'OIDC abort remains a native POST');
             });
         }

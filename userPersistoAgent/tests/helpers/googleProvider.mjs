@@ -35,15 +35,24 @@ export async function controlledGoogleProvider() {
             const signer = state.mode === 'bad-signature' ? generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey : keys.privateKey;
             return `${header}.${payload}.${sign('RSA-SHA256', Buffer.from(`${header}.${payload}`), signer).toString('base64url')}`;
         },
-        async credential(authorizationUrl, browser) {
-            const response = await browser.fetch(authorizationUrl);
+        // `start` is a sign-in start response (its `gis` carries the nonce the
+        // wizard renders Google's button with) or a reauth page URL.
+        async credential(start, browser, base = browser.base) {
+            if (start && typeof start === 'object') {
+                assert.ok(start.gis, 'A sign-in start must return its GIS configuration.');
+                const origin = base || new URL(start.gis.credentialUrl, 'http://unused.invalid').origin;
+                return { url: new URL(start.gis.credentialUrl, origin).href,
+                    body: { transaction: start.transaction, credential: provider.sign(start.gis.nonce, start.gis.clientId) },
+                    config: { ...start.gis, transaction: start.transaction } };
+            }
+            const response = await browser.fetch(start);
             assert.equal(response.status, 200, 'A live browser-bound GIS page is required to obtain the nonce.');
             const config = googleSignInConfig(await response.text());
-            return { url: new URL(config.credentialUrl, authorizationUrl).href,
+            return { url: new URL(config.credentialUrl, start).href,
                 body: { transaction: config.transaction, credential: provider.sign(config.nonce, config.clientId) }, config };
         },
-        async submit(authorizationUrl, browser) {
-            const credential = await provider.credential(authorizationUrl, browser);
+        async submit(start, browser, base) {
+            const credential = await provider.credential(start, browser, base);
             return browser.json(credential.url, credential.body);
         },
         async installBrowserSdk(context) {
@@ -81,6 +90,8 @@ export class CookieBrowser {
     cookies = new Map();
     async fetch(url, options = {}) {
         const path = new URL(url).pathname;
+        // Origin of the last request, used to resolve same-origin GIS paths.
+        this.base = new URL(url).origin;
         const cookies = [...this.cookies].filter(([, c]) => path.startsWith(c.path)).map(([name, c]) => `${name}=${c.value}`).join('; ');
         const response = await fetch(url, { ...options, redirect: 'manual', headers: { cookie: cookies, ...options.headers } });
         for (const raw of response.headers.getSetCookie()) {

@@ -275,29 +275,32 @@ async function verify() {
     };
     await page.route(wizardScriptPattern, holdWizardScript);
     page.on('request', observeGooglePost);
+    // The loaded wizard starts its Google transaction as it renders the button.
+    const googleStart = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/google'));
     try {
         await page.goto(`${applicationOrigin}/start`, { waitUntil: 'commit' });
         await scriptHeld;
         // The server shell renders no Google control; only the loaded wizard does.
-        assert.equal(await page.getByRole('button', { name: 'Sign in with Google', exact: true }).count(), 0, 'Google must not be offered before the wizard module loads.');
+        assert.equal(await page.getByRole('button', { name: 'Continue with test identity', exact: true }).count(), 0, 'Google must not be offered before the wizard module loads.');
         assert.equal(prematureGooglePosts, 0, 'No Google request can start before the wizard module loads.');
     } finally {
         releaseWizardScript();
         page.off('request', observeGooglePost);
     }
-    await page.getByRole('button', { name: 'Sign in with Google', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Continue with test identity', exact: true }).waitFor();
     await page.unroute(wizardScriptPattern, holdWizardScript);
     phase = 'completing a controlled signed GIS credential into the collision page';
-    const googleStart = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/google'));
-    await page.getByRole('button', { name: 'Sign in with Google', exact: true }).click();
-    const proofHeader = (await (await googleStart).allHeaders())['set-cookie'];
+    const startResponse = await googleStart;
+    const proofHeader = (await startResponse.allHeaders())['set-cookie'];
+    const attemptTransaction = (await startResponse.json()).transaction;
     assert.ok(proofHeader && !/;\s*Domain=/i.test(proofHeader), 'Google attempt cookie must remain host-only.');
     const resumeResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/google-resume'));
     await page.getByRole('button', { name: 'Continue with test identity', exact: true }).click();
     const resumeHeaders = (await resumeResponse).headers();
     assert.equal(resumeHeaders['referrer-policy'], 'same-origin', 'Google resume forms must preserve native same-origin POST Origin.');
     assert.ok(resumeHeaders['content-security-policy'].includes(`form-action 'self' ${applicationOrigin};`), 'Google OIDC resume CSP must permit its validated callback redirect chain.');
-    const proofCookies = (await context.cookies(`${serviceOrigin}/service/`)).filter((cookie) => /^(?:__Secure-)?up_google_/.test(cookie.name));
+    // Earlier wizard pages in this context hold their own attempts' cookies.
+    const proofCookies = (await context.cookies(`${serviceOrigin}/service/`)).filter((cookie) => new RegExp(`^(?:__Secure-)?up_google_${attemptTransaction}$`).test(cookie.name));
     assert.equal(proofCookies.length, 1, 'This attempt must own one independent Google proof cookie.');
     const proofCookie = proofCookies[0];
     assert.equal(proofCookie.domain, browserHost, 'Proof cookie must be bound to the configured host.');
@@ -360,7 +363,7 @@ async function verify() {
     const bindings = (await store.select('externalIdentity', {}, { start: 0, pageSize: 10 })).objects;
     assert.equal(bindings.length, 1, 'Confirmation must create exactly one Google binding.');
     assert.equal(bindings[0].userId, owner.id, 'The binding must belong to the authenticated local user.');
-    assert.equal((await context.cookies(`${serviceOrigin}/service/`)).filter((cookie) => /^(?:__Secure-)?up_google_/.test(cookie.name)).length, 0, 'Successful completion must clear the attempt proof cookie.');
+    assert.equal((await context.cookies(`${serviceOrigin}/service/`)).filter((cookie) => new RegExp(`^(?:__Secure-)?up_google_${attemptTransaction}$`).test(cookie.name)).length, 0, 'Successful completion must clear the attempt proof cookie.');
     output(`PASS Chromium ${browser.version()} ${httpsMode ? 'HTTPS' : 'HTTP'} ${browserHost} ${linkMethod}: controlled signed GIS credential, ${linkMethod === 'password' ? 'password' : 'Try another way email-code'} wizard sign-in, no Google control before the wizard loads, native form Origin, explicit linking, consented callback CSP, local subject and roles, scoped host-only proof cookie.`);
 }
 

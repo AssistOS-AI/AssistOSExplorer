@@ -187,15 +187,37 @@ test('independent OIDC client discovers, authenticates with PKCE, verifies RS256
     await assert.rejects(client.fetchUserInfo(config, refreshed.access_token, user.id));
 }));
 
+test('without Google the OIDC login page keeps its strict same-origin headers', async () => fixture(async ({ config }) => {
+    await updateAuthPolicy({ enabledAuthMethods: ['password', 'passkey', 'totp'] });
+    const flow = await begin(config, { scope: 'openid' });
+    const loginPage = await flow.browser.fetch(flow.location);
+    assert.equal(loginPage.status, 200);
+    assert.equal(loginPage.headers.get('referrer-policy'), 'same-origin');
+    assert.equal(loginPage.headers.get('cross-origin-opener-policy'), null);
+    assert.equal(loginPage.headers.get('content-security-policy'),
+        "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self' https://client.example.test; frame-ancestors 'none'; base-uri 'none'");
+}));
+
 test('browser binding, exact origin, CSRF token, consent denial, prompt none and scope filtering', async () => fixture(async ({ config, user }) => {
     const flow = await begin(config, { scope: 'openid' });
     const stolen = await new Browser().fetch(flow.location);
     assert.ok(stolen.status >= 400);
     const loginPage = await flow.browser.fetch(flow.location);
-    // no-referrer makes Chromium's same-origin form POST send Origin:null,
-    // which correctly fails our interaction CSRF check.
-    assert.equal(loginPage.headers.get('referrer-policy'), 'same-origin');
-    assert.match(loginPage.headers.get('content-security-policy'), /form-action 'self' https:\/\/client\.example\.test;/);
+    // Google is available here, so the login wizard hosts Google's button: its
+    // SDK, frames, styles and account images are admitted, the popup stays
+    // reachable and Google receives the page origin. no-referrer would make
+    // Chromium's same-origin form POST send Origin:null and fail CSRF; the
+    // GIS policy keeps the exact same-origin Origin.
+    assert.equal(loginPage.headers.get('referrer-policy'), 'no-referrer-when-downgrade');
+    assert.equal(loginPage.headers.get('cross-origin-opener-policy'), 'same-origin-allow-popups');
+    const loginPolicy = loginPage.headers.get('content-security-policy');
+    assert.match(loginPolicy, /form-action 'self' https:\/\/client\.example\.test;/);
+    assert.match(loginPolicy, /script-src 'self' https:\/\/accounts\.google\.com\/gsi\/client;/);
+    assert.match(loginPolicy, /connect-src 'self' https:\/\/accounts\.google\.com\/gsi\/;/);
+    assert.match(loginPolicy, /frame-src https:\/\/accounts\.google\.com\/gsi\/;/);
+    assert.match(loginPolicy, /style-src 'self' 'unsafe-inline' https:\/\/accounts\.google\.com\/gsi\/style;/);
+    assert.match(loginPolicy, /img-src 'self' https:\/\/\*\.googleusercontent\.com;/);
+    assert.match(loginPolicy, /frame-ancestors 'none'; base-uri 'none'$/);
     const form = await loginPage.text();
     for (const action of ['attempt', 'email-start', 'email-verify', 'password-login', 'password-forgot', 'signup-start', 'signup-create', 'signup-resend', 'signup-email', 'signup-verify']) {
         assert.equal((await flow.browser.post(`${flow.location}/${action}`, { email: user.email, purpose: 'login', csrf: csrf(form) }, 'https://evil.example')).status, 403);

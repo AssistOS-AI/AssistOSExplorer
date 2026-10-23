@@ -140,8 +140,17 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                 clientId: config.clientId, redirectUri: config.redirectUri, csrf: randomBytes(32).toString('base64url') } });
         const handle = transaction.handle || transaction.stateHash;
         setProof(res, handle, config, proof, expiresAt);
-        const authorizationUrl = new URL(`${servicePath(config)}auth/google/sign-in?transaction=${handle}`, config.redirect.origin).href;
-        return json(res, 200, { ok: true, authorizationUrl, transaction: handle });
+        // Only reauth still opens the dedicated page. Sign-in wizards render
+        // Google's button themselves with this transaction's nonce.
+        if (context.flow === 'reauth') {
+            const authorizationUrl = new URL(`${servicePath(config)}auth/google/sign-in?transaction=${handle}`, config.redirect.origin).href;
+            return json(res, 200, { ok: true, authorizationUrl, transaction: handle });
+        }
+        const assetBase = `${servicePath(config)}auth/`;
+        return json(res, 200, { ok: true, transaction: handle, gis: {
+            clientId: config.clientId, nonce: authorization.nonce, expiresAt,
+            credentialUrl: `${assetBase}google/credential`, cancelUrl: `${assetBase}google/cancel`,
+        } });
     }
 
     async function validateGisParent(payload, config) {
@@ -178,7 +187,8 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
         const transaction = await readGoogleTransaction(handle, {
             browserProof: cookie(req, handle, config), configFingerprint: config.fingerprint, statuses: ['pending'],
         });
-        if (transaction.payload.mode !== 'gis') throw googleError();
+        // Sign-in flows host Google's button on their own wizard page.
+        if (transaction.payload.mode !== 'gis' || transaction.payload.flow !== 'reauth') throw googleError();
         await validateGisParent(transaction.payload, config);
         const assetBase = `${servicePath(config)}auth/`;
         const browserConfig = JSON.stringify({
@@ -187,7 +197,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
             cancelRedirectUrl: gisDestination(transaction.payload, handle, config, true),
             expiresAt: transaction.expiresAt, reauthentication: transaction.payload.flow === 'reauth',
         }).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e').replaceAll('&', '\\u0026');
-        // Only this dedicated page loads Google's browser SDK. No credentials
+        // This reauth page and the sign-in wizards load Google's browser SDK. No credentials
         // or identity tokens are placed in its URL, storage, or response cache.
         res.writeHead(200, {
             'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
