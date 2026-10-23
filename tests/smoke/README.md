@@ -461,11 +461,38 @@ cache disabled. The sequence covers Router/login, Explorer interactive
 readiness, a root refresh, normal workspace directory navigation, DPU-backed
 Confidential navigation, a normal workspace file open, and Git modal readiness.
 
+The runner signs in through whichever login surface the Router serves: Ploinky's
+local `/auth/login` form, or the UserPersisto email-first wizard at its exact
+service path on the benchmark origin. The local form uses
+`UI_BENCHMARK_USERNAME` and `UI_BENCHMARK_PASSWORD` (then `SMOKE_USERNAME` and
+`SMOKE_PASSWORD`, then the local `admin` defaults). UserPersisto supports only an
+existing password account: `UI_BENCHMARK_LOGIN_EMAIL` (then `SMOKE_LOGIN_EMAIL`,
+or a username that is already an email) and `UI_BENCHMARK_ACCOUNT_PASSWORD`
+(then `SMOKE_ACCOUNT_PASSWORD`). Credentials are read only from the
+environment. The runner never signs up, never uses email codes or
+authenticators, and never substitutes the local-form password or a generated
+run password; it refuses as `BLOCKED` when the email or account password is
+missing, the account is unknown or has no password sign-in, or the
+installation is unclaimed. An unknown account sends no sign-up request, so the
+benchmark is safe against QA. The origin and login path are checked before any
+credential is entered, and a different origin or service path refuses with
+the fields untouched. A refused password is reported with fixed text, never
+the wizard's message.
+
+`router-login-page` ends when the login surface is rendered. Email discovery
+and credential entry happen between the two measured steps, and
+`login-to-explorer-interactive` starts immediately before the final **Log in**
+or local form submit. The default origin is `http://localhost:8080`; results
+recorded against `http://127.0.0.1:8080` have a different target and are not
+comparable with it. Pass `--directory-path` and `--file-path` naming a safe,
+existing, non-secret workspace entry rather than relying on the `/.env`
+default. Offline checks: `node --test lib/ui-benchmark-auth.test.mjs`.
+
 Run the baseline only after its full agent graph is admitted and stable:
 
 ```bash
 UI_BENCHMARK_LABEL=master \
-UI_BENCHMARK_BASE_URL=http://127.0.0.1:8080 \
+UI_BENCHMARK_BASE_URL=http://localhost:8080 \
 UI_BENCHMARK_PLOINKY_SHA=<deployed-ploinky-sha> \
 UI_BENCHMARK_EXPLORER_SHA=<deployed-explorer-sha> \
 npm run benchmark:ui
@@ -477,7 +504,7 @@ deployed SHAs:
 
 ```bash
 UI_BENCHMARK_LABEL=ploinky-proxy \
-UI_BENCHMARK_BASE_URL=http://127.0.0.1:8080 \
+UI_BENCHMARK_BASE_URL=http://localhost:8080 \
 UI_BENCHMARK_PLOINKY_SHA=<deployed-ploinky-sha> \
 UI_BENCHMARK_EXPLORER_SHA=<deployed-explorer-sha> \
 npm run benchmark:ui

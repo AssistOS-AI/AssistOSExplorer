@@ -22,6 +22,15 @@ import {
   summarizeRequests,
   summarizeValues,
 } from '../lib/ui-benchmark-metrics.mjs';
+import {
+  AUTHENTICATION_SURFACES,
+  LEGACY_LOGIN_PATH,
+  USERPERSISTO_LOGIN_PATH,
+  assertAuthenticationLocation,
+  completeThroughWizard,
+  prepareUserPersistoAccount,
+  waitForAuthenticationSurface,
+} from '../lib/auth-wizard.mjs';
 
 const smokeRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const repoRoot = path.dirname(path.dirname(smokeRoot));
@@ -45,7 +54,7 @@ function printHelp() {
   console.log(`Explorer UI benchmark
 
 Usage:
-  npm run benchmark:ui -- --base-url http://127.0.0.1:8080 --label master
+  npm run benchmark:ui -- --base-url http://localhost:8080 --label master
 
 Options:
   --base-url <url>         Router origin (or UI_BENCHMARK_BASE_URL / SMOKE_BASE_URL)
@@ -61,10 +70,14 @@ Options:
   --headed                 Show Chromium
   --help                   Show this help
 
-Credentials are accepted only through UI_BENCHMARK_USERNAME and
-UI_BENCHMARK_PASSWORD (falling back to SMOKE_USERNAME / SMOKE_PASSWORD and
-then the documented local admin defaults). Passwords are never written to the
-result.`);
+Credentials are accepted only through the environment, never as options.
+Ploinky's local login form uses UI_BENCHMARK_USERNAME and UI_BENCHMARK_PASSWORD
+(falling back to SMOKE_USERNAME / SMOKE_PASSWORD and then the documented local
+admin defaults). UserPersisto signs in an existing password account with
+UI_BENCHMARK_LOGIN_EMAIL (or SMOKE_LOGIN_EMAIL, or a username that is already
+an email) and UI_BENCHMARK_ACCOUNT_PASSWORD (or SMOKE_ACCOUNT_PASSWORD). The
+benchmark never signs up, never uses email codes or authenticators, and never
+substitutes another password. Passwords are never written to the result.`);
 }
 
 function parseArgs(argv) {
@@ -125,6 +138,24 @@ function createRunId(label) {
   return `${label}-${stamp}-${process.pid}`;
 }
 
+// Local-form credentials keep their documented precedence. A UserPersisto
+// account needs its own email and account password; neither falls back to the
+// local-form password, a generated run password or a default.
+export function benchmarkCredentials(env) {
+  const username = String(env.UI_BENCHMARK_USERNAME || env.SMOKE_USERNAME || 'admin');
+  const loginEmail = String(
+    env.UI_BENCHMARK_LOGIN_EMAIL
+      || env.SMOKE_LOGIN_EMAIL
+      || (username.includes('@') ? username : ''),
+  ).trim();
+  return {
+    username,
+    password: String(env.UI_BENCHMARK_PASSWORD || env.SMOKE_PASSWORD || 'admin'),
+    loginEmail,
+    accountPassword: String(env.UI_BENCHMARK_ACCOUNT_PASSWORD || env.SMOKE_ACCOUNT_PASSWORD || ''),
+  };
+}
+
 function loadConfig(argv) {
   const args = parseArgs(argv);
   if (args.help) return { help: true };
@@ -133,7 +164,7 @@ function loadConfig(argv) {
       || process.env.UI_BENCHMARK_BASE_URL
       || process.env.SMOKE_BASE_URL
       || process.env.PLAYWRIGHT_BASE_URL
-      || 'http://127.0.0.1:8080',
+      || 'http://localhost:8080',
   );
   const label = normalizeBenchmarkLabel(args.label || process.env.UI_BENCHMARK_LABEL);
   const runId = createRunId(label);
@@ -172,16 +203,7 @@ function loadConfig(argv) {
       600_000,
     ),
     headless: !args.headed && !envBoolean(process.env.UI_BENCHMARK_HEADED, false),
-    username: String(
-      process.env.UI_BENCHMARK_USERNAME
-        || process.env.SMOKE_USERNAME
-        || 'admin',
-    ),
-    password: String(
-      process.env.UI_BENCHMARK_PASSWORD
-        || process.env.SMOKE_PASSWORD
-        || 'admin',
-    ),
+    ...benchmarkCredentials(process.env),
     deployment: {
       id: optionalIdentifier(
         args['deployment-id'] || process.env.UI_BENCHMARK_DEPLOYMENT_ID,
@@ -739,6 +761,111 @@ async function measureStep(state, name, action) {
   return step;
 }
 
+// Fills the local Ploinky form outside the measured steps and returns its
+// submit action. The origin and path are checked before any credential.
+async function prepareLegacyLogin(page, config, expectedOrigin) {
+  const username = page.locator('input#username, input[name="username"]').first();
+  const password = page.locator('input#password, input[name="password"]').first();
+  assertAuthenticationLocation(page, { expectedOrigin, pathname: LEGACY_LOGIN_PATH });
+  await username.fill(config.username);
+  assertAuthenticationLocation(page, { expectedOrigin, pathname: LEGACY_LOGIN_PATH });
+  await password.fill(config.password);
+  return async () => {
+    assertAuthenticationLocation(page, { expectedOrigin, pathname: LEGACY_LOGIN_PATH });
+    const navigation = page.waitForNavigation({ waitUntil: 'load', timeout: config.timeoutMs });
+    await page.locator(
+      'form[action="/auth/login"] button[type="submit"], button[type="submit"], .auth-btn',
+    ).first().click();
+    await navigation;
+    if (new URL(page.url()).origin !== expectedOrigin) {
+      throw new Error('Authentication left the expected origin.');
+    }
+  };
+}
+
+// Enters the email of an existing UserPersisto password account and its
+// password outside the measured steps and returns the final Log in action.
+// An unknown account refuses before Sign up, so the benchmark creates nothing.
+async function prepareUserPersistoLogin(page, config, expectedOrigin) {
+  if (!config.loginEmail.includes('@')) {
+    throw new Error('BLOCKED: UserPersisto benchmark login needs UI_BENCHMARK_LOGIN_EMAIL or SMOKE_LOGIN_EMAIL.');
+  }
+  if (!config.accountPassword) {
+    throw new Error('BLOCKED: UserPersisto benchmark login needs UI_BENCHMARK_ACCOUNT_PASSWORD or SMOKE_ACCOUNT_PASSWORD for an existing password account.');
+  }
+  const { state, content } = await prepareUserPersistoAccount(page, { loginEmail: config.loginEmail }, {
+    expectedOrigin,
+    timeoutMs: config.timeoutMs,
+    allowSignup: false,
+  });
+  if (state !== 'existing') {
+    throw new Error('BLOCKED: UserPersisto benchmark login supports only an existing password account.');
+  }
+  const passwordInput = content.locator('input[name="password"]');
+  if (await passwordInput.isDisabled()) {
+    throw new Error('BLOCKED: password sign-in is not available for the configured benchmark account.');
+  }
+  assertAuthenticationLocation(page, { expectedOrigin, pathname: USERPERSISTO_LOGIN_PATH });
+  await passwordInput.fill(config.accountPassword);
+  const loginButton = content.getByRole('button', { name: 'Log in', exact: true });
+  return () => completeThroughWizard(page, content, loginButton, config.timeoutMs, {
+    expectedOrigin,
+    safeRefusal: true,
+  });
+}
+
+// Runs the two measured authentication steps. router-login-page ends when the
+// permitted login surface is rendered; email discovery and credential entry
+// happen between the steps; login-to-explorer-interactive starts immediately
+// before the final submit. `beforeLoginStep` and `waitForInteractive` exist
+// for the regression tests and default to no hook and the real Explorer
+// readiness check.
+export async function runAuthenticationSteps(state, config, {
+  beforeLoginStep = null,
+  waitForInteractive = waitForExplorerInteractive,
+} = {}) {
+  const { page } = state;
+  const expectedOrigin = new URL(config.baseURL).origin;
+  let surface = null;
+  await measureStep(state, 'router-login-page', async () => {
+    const response = await page.goto(`${config.baseURL}/explorer/index.html`, { waitUntil: 'load' });
+    if (response && response.status() >= 400) {
+      throw new Error(`Router returned HTTP ${response.status()} for the Explorer entry route.`);
+    }
+    surface = await waitForAuthenticationSurface(page, {
+      baseURL: config.baseURL,
+      timeoutMs: config.timeoutMs,
+    });
+    return {
+      finalPathname: new URL(page.url()).pathname,
+      responseStatus: response?.status() ?? null,
+    };
+  });
+
+  const submit = surface === AUTHENTICATION_SURFACES.userPersisto
+    ? await prepareUserPersistoLogin(page, config, expectedOrigin)
+    : await prepareLegacyLogin(page, config, expectedOrigin);
+  if (beforeLoginStep) await beforeLoginStep({ surface });
+
+  await measureStep(state, 'login-to-explorer-interactive', async ({ elapsedMs }) => {
+    await submit();
+    const navigationLoadedMs = elapsedMs();
+    await page.locator('#page_content').waitFor({ state: 'visible', timeout: config.timeoutMs });
+    await page.waitForFunction(() => Boolean(
+      window.webSkel
+      && document.querySelector('#page_content')?.children.length,
+    ), null, { timeout: config.timeoutMs });
+    const shellReadyMs = elapsedMs();
+    await waitForInteractive(page, config);
+    return {
+      navigationLoadedMs,
+      shellReadyMs,
+      interactiveReadyMs: elapsedMs(),
+    };
+  });
+  return surface;
+}
+
 export function finalizeStepNetworkSummaries(steps, waterfallRequests) {
   const finalRequests = Array.isArray(waterfallRequests) ? waterfallRequests : [];
   const requestsByStep = new Map();
@@ -786,44 +913,7 @@ async function runIteration(browser, config, index) {
   let failure = null;
   let initialPagePerformance = null;
   try {
-    await measureStep(state, 'router-login-page', async () => {
-      const response = await page.goto(`${config.baseURL}/explorer/index.html`, { waitUntil: 'load' });
-      if (response && response.status() >= 400) {
-        throw new Error(`Router returned HTTP ${response.status()} for the Explorer entry route.`);
-      }
-      const loginForm = page.locator(
-        'form[action="/auth/login"], input#username, input[name="username"]',
-      ).first();
-      await loginForm.waitFor({ state: 'visible', timeout: config.timeoutMs });
-      return {
-        finalPathname: new URL(page.url()).pathname,
-        responseStatus: response?.status() ?? null,
-      };
-    });
-
-    await page.locator('input#username, input[name="username"]').first().fill(config.username);
-    await page.locator('input#password, input[name="password"]').first().fill(config.password);
-
-    await measureStep(state, 'login-to-explorer-interactive', async ({ elapsedMs }) => {
-      const navigation = page.waitForNavigation({ waitUntil: 'load', timeout: config.timeoutMs });
-      await page.locator(
-        'form[action="/auth/login"] button[type="submit"], button[type="submit"], .auth-btn',
-      ).first().click();
-      await navigation;
-      const navigationLoadedMs = elapsedMs();
-      await page.locator('#page_content').waitFor({ state: 'visible', timeout: config.timeoutMs });
-      await page.waitForFunction(() => Boolean(
-        window.webSkel
-        && document.querySelector('#page_content')?.children.length,
-      ), null, { timeout: config.timeoutMs });
-      const shellReadyMs = elapsedMs();
-      await waitForExplorerInteractive(page, config);
-      return {
-        navigationLoadedMs,
-        shellReadyMs,
-        interactiveReadyMs: elapsedMs(),
-      };
-    });
+    await runAuthenticationSteps(state, config);
     initialPagePerformance = await readPagePerformance(page);
 
     await measureStep(state, 'refresh-root-listing', async () => {
