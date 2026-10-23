@@ -1347,6 +1347,28 @@ test('a session that exits or a view that is replaced during the choice is never
     assert.equal(replaced.modal.viewerId, ID);
 });
 
+test('a late Stop answer for view V never disposes a newer view W announced in the same frame', async (t) => {
+    let release;
+    const until = Date.now() + 30000;
+    const page = await choiceEnvironment(t, { intent: () => new Promise((resolve) => { release = () => resolve(response({ ok: true, pending: true, until }, 202)); }) });
+    const frame = page.frame();
+    const closing = page.modal.prepareViewClose('detach');
+    const stopping = page.modal.chooseViewClose(null, 'stop');
+    await settle();
+    assert.deepEqual(JSON.parse(page.lifetime().at(-1).options.body), { view: VIEW, policy: 'stop' }, 'the intent names V');
+    const newer = 'W'.repeat(32);
+    page.announce({ viewId: newer, policy: 'stop' });
+    release();
+    await stopping;
+    assert.equal(await closing, false, 'W is not disposed by V\'s answer');
+    assert.equal(page.frame(), frame);
+    assert.equal(page.modal.viewerId, ID);
+    assert.equal(page.modal.embedded.viewId, newer);
+    assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), JSON.stringify({ sessionId: ID, viewId: newer }));
+    assert.match(page.status(), /Another view is shown now, so it stays open/);
+    assert.equal(page.lifetime().length, 2, 'no further request for W');
+});
+
 test('a superseded or keep-raced Stop answer is accepted, disposes the view and says the terminal is still running', async (t) => {
     for (const [answer, text] of [[{ ok: true, pending: false, reason: 'superseded' }, /already been replaced/], [{ ok: true, pending: false }, /changed to Keep running/]]) {
         const page = await choiceEnvironment(t, { intent: () => response(answer) });

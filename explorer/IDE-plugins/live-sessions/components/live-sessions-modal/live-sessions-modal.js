@@ -550,7 +550,11 @@ export class LiveSessionsModal {
                 : result.reason === 'superseded'
                     ? 'This view had already been replaced, so no stop was armed. The terminal is still running.'
                     : 'Its close choice changed to Keep running meanwhile, so no stop was armed. The terminal is still running.';
-            const otherView = Boolean(this.embedded) && this.embedded.frame !== decision.frame;
+            // Another view is shown when anything identifying the chosen view changed: a new frame, attachment, session
+            // or a newer announcement in the same frame.
+            const shown = this.embedded;
+            const otherView = Boolean(shown) && (shown.frame !== decision.frame || shown.sessionId !== decision.sessionId
+                || shown.viewId !== decision.viewId || this.attachSequence !== decision.sequence);
             if (this.statusElement) this.statusElement.textContent = otherView ? `${outcome} Another view is shown now, so it stays open.` : outcome;
             this.settleCloseDecision(decision, !otherView);
         } catch (error) {
