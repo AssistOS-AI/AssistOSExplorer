@@ -11,7 +11,7 @@ import { LiveSessionsModal } from '../../IDE-plugins/live-sessions/components/li
 import {
     aggregateLiveSessions, killLiveSession, listLiveSessions, listLiveSessionsDetailed, mintLiveSessionAttach,
     normalizeAgentSessionsPayload, normalizeLiveSessionsPayload, parseLiveSessionsPayload, sendLiveSessionCloseIntent,
-    setLiveSessionClosePolicy,
+    setLiveSessionClosePolicy, submitLiveSessionCloseIntent,
 } from '../../IDE-plugins/live-sessions/live-sessions-api.js';
 import {
     clearEmbeddedTerminalKey, countNeedsAttention, currentCue, EMBEDDED_TERMINAL_KEY, publishCue,
@@ -64,6 +64,26 @@ class Element {
     focus() {}
 }
 
+// The component's close-choice <dialog>: showModal/close, and a native `cancel` (Escape) that closes it unless prevented.
+class FakeDialog extends Element {
+    constructor() {
+        super('dialog');
+        this.open = false;
+        this.shows = 0;
+        this.listeners = new Map();
+    }
+    showModal() { this.open = true; this.shows += 1; }
+    close() { this.open = false; }
+    addEventListener(type, handler) { this.listeners.set(type, handler); }
+    removeEventListener(type, handler) { if (this.listeners.get(type) === handler) this.listeners.delete(type); }
+    pressEscape() {
+        const event = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+        this.listeners.get('cancel')?.(event);
+        if (!event.defaultPrevented) this.close();
+        return event;
+    }
+}
+
 function environment(t, { admin = true } = {}) {
     const previous = new Map(['document', 'assistOS', 'fetch', 'window', 'sessionStorage', 'localStorage'].map((key) => [key, globalThis[key]]));
     t.after(() => { for (const [key, value] of previous) globalThis[key] = value; });
@@ -73,7 +93,9 @@ function environment(t, { admin = true } = {}) {
         createDocumentFragment: () => new Element('#fragment'),
     };
     globalThis.assistOS = { user: { roles: admin ? ['admin'] : ['user'] } };
-    const elements = new Map(['Status', 'List', 'Viewer', 'ViewerTitle', 'Frame'].map((name) => [`#liveSessions${name}`, new Element()]));
+    const elements = new Map(['Status', 'List', 'Viewer', 'ViewerTitle', 'Frame', 'CloseText', 'CloseStatus', 'CloseKeep', 'CloseStop', 'CloseCancel']
+        .map((name) => [`#liveSessions${name}`, new Element()]));
+    elements.set('#liveSessionsCloseDialog', new FakeDialog());
     const host = new Element();
     host.querySelector = (selector) => elements.get(selector);
     const modal = new LiveSessionsModal(host, () => {});
@@ -766,7 +788,7 @@ test('rows show the profile, the close policy, closure outcomes, the cleanup fla
     assert.equal(list[0].role, 'alert');
     assert.equal(list.length, 7);
     const texts = [1, 2, 3, 4, 5, 6].map((index) => listText(elements, index));
-    assert.match(texts[0], /Profile: Robot A · When its tab closes: Stop it/);
+    assert.match(texts[0], /Profile: Robot A · Close choice: Stop it/);
     assert.match(texts[0], /Set to stop on close, still running/);
     assert.match(texts[1], /^.*Terminal B/);
     assert.doesNotMatch(texts[1], /Profile:/);
@@ -776,7 +798,7 @@ test('rows show the profile, the close policy, closure outcomes, the cleanup fla
     assert.match(texts[2], /Record cleanup failed/);
     assert.match(texts[3], /Stopping…/);
     assert.match(texts[4], /Stopped \(confirmed\)/);
-    assert.doesNotMatch(texts[5], /When its tab closes|Set to stop|Stopped|Stopping/);
+    assert.doesNotMatch(texts[5], /Close choice|When its tab closes|Set to stop|Stopped|Stopping/);
     for (const index of [3, 4, 5]) assert.equal(elements.get('#liveSessionsList').children[index].children.some((child) => child.className === 'live-sessions-actions'), false);
 
     body = payload(rows);
@@ -839,6 +861,7 @@ function embeddedEnvironment(t, rows = [unattended()]) {
         calls.push({ url, options });
         if (options.method === 'GET') return response(payload(rows));
         if (url.endsWith('/attach-tokens')) return response({ ok: true, attach: TOKEN, expiresAt: Date.now() + 60000 }, 201);
+        if (url.endsWith('/close-policy')) return response({ ok: true, closePolicy: JSON.parse(options.body).policy, pendingStopUntil: null });
         return response({ ok: true }, 202);
     };
     globalThis.document.cookie = 'ploinky_browser_csrf=v1.embedded-proof';
@@ -900,7 +923,7 @@ test('embedded owner view ignores foreign windows, origins, shapes and roles; a 
     assert.equal(page.win.count('pagehide'), 1);
 });
 
-test('detaching, switching, refreshing away and closing the panel clear the key and listeners without any request', async (t) => {
+test('switching asks first; unconditional detach, refreshing away and closing the panel clear the key and listeners without any request', async (t) => {
     const second = unattended({ id: SECOND_ID, title: 'Terminal B' });
     const page = embeddedEnvironment(t, [unattended(), second]);
     page.modal.afterRender();
@@ -911,10 +934,17 @@ test('detaching, switching, refreshing away and closing the panel clear the key 
     assert.equal(page.storage.data.size, 1);
     let before = page.calls.length;
 
-    // Switching to another session replaces the embedded view and clears the previous registration first.
-    await page.modal.performAction(SECOND_ID, 'attach');
+    // Switching away from an owned running terminal first asks; Keep running posts only the policy, then the switch
+    // replaces the embedded view and clears the previous registration.
+    const switching = page.modal.performAction(SECOND_ID, 'attach');
+    await settle();
+    assert.equal(page.elements.get('#liveSessionsCloseDialog').open, true);
+    assert.equal(page.calls.length, before, 'nothing is minted or sent while the choice is open');
+    await page.modal.chooseViewClose(null, 'keep');
+    await switching;
     const switched = page.calls.slice(before);
-    assert.deepEqual(switched.map((call) => call.url), [`/webtty/live-sessions/${SECOND_ID}/attach-tokens`]);
+    assert.deepEqual(switched.map((call) => call.url), [`/webtty/sessions/${ID}/close-policy`, `/webtty/live-sessions/${SECOND_ID}/attach-tokens`]);
+    assert.equal(switched[0].options.body, '{"policy":"keep"}');
     assert.equal(page.win.count('pagehide'), 0);
     assert.equal(page.storage.data.size, 0);
     assert.equal(page.win.count('message'), 1);
@@ -980,6 +1010,388 @@ test('a viewed shell that exits or disappears clears the key and listeners', asy
     assert.equal(page.modal.viewerId, '');
     assert.equal(page.storage.data.size, 0);
     assert.equal(page.win.count('pagehide') + page.win.count('message'), 0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Close-time choice: Explorer-managed closes of an owned running terminal view ask Keep running, Stop it or Cancel.
+// ---------------------------------------------------------------------------------------------------------------
+
+const CLOSE_TEXT_KEYS = ['#liveSessionsCloseKeep', '#liveSessionsCloseStop', '#liveSessionsCloseCancel'];
+
+// An embedded owner view with scripted answers for the two lifetime requests. `policy` and `intent` receive the parsed
+// body and the request options and return a response, a promise or throw.
+async function choiceEnvironment(t, {
+    rows = [row({ closePolicy: 'keep', pendingStopUntil: null, ownerViewOpen: true })],
+    policy = (body) => response({ ok: true, closePolicy: body.policy, pendingStopUntil: null }),
+    intent = () => response({ ok: true, pending: true, until: Date.now() + 30000 }, 202),
+    announce = true,
+} = {}) {
+    // The modal reads its restore key when it is constructed, so an earlier environment's key must not leak into it.
+    const previousStorage = globalThis.sessionStorage;
+    t.after(() => { globalThis.sessionStorage = previousStorage; });
+    globalThis.sessionStorage = memoryStorage();
+    const page = embeddedEnvironment(t, rows);
+    let currentRows = rows;
+    globalThis.fetch = async (url, options) => {
+        page.calls.push({ url, options });
+        if (options.method === 'GET') return response(payload(currentRows));
+        if (url.endsWith('/attach-tokens')) return response({ ok: true, attach: TOKEN, expiresAt: Date.now() + 60000 }, 201);
+        if (url.endsWith('/close-policy')) return policy(JSON.parse(options.body), options);
+        if (url.endsWith('/close-intents')) return intent(JSON.parse(options.body), options);
+        return response({ ok: true });
+    };
+    page.modal.afterRender();
+    await settle();
+    await page.modal.performAction(ID, 'attach');
+    page.frame().contentWindow = { name: 'terminal frame' };
+    if (announce) page.announce({ policy: 'keep' });
+    const dialog = page.elements.get('#liveSessionsCloseDialog');
+    const mutations = () => page.calls.filter((call) => call.options.method !== 'GET');
+    const lifetime = () => page.calls.filter((call) => /\/(close-policy|close-intents)$/.test(call.url) || call.options.method === 'DELETE');
+    const setRows = (next) => { currentRows = next; };
+    return { ...page, dialog, mutations, lifetime, setRows, status: () => page.elements.get('#liveSessionsStatus').textContent };
+}
+
+function trackPromise(promise) {
+    const state = { settled: false, value: undefined };
+    promise.then((value) => { state.settled = true; state.value = value; });
+    return state;
+}
+
+test('close intent helper posts exact {view, policy} with the mutation proof and accepts only the server shapes', async () => {
+    globalThis.document = { cookie: 'ploinky_browser_csrf=v1.choice-proof' };
+    try {
+        const calls = [];
+        const answer = (body, status = 200) => async (url, request) => { calls.push({ url, request }); return response(body, status); };
+        const until = Date.now() + 30000;
+        assert.deepEqual(await submitLiveSessionCloseIntent(ID, VIEW, 'stop', { fetchImpl: answer({ ok: true, pending: true, until }, 202) }), { pending: true, until });
+        assert.equal(calls[0].url, `/webtty/sessions/${ID}/close-intents`);
+        assert.equal(calls[0].request.method, 'POST');
+        assert.equal(calls[0].request.keepalive, undefined, 'an awaited intent is an ordinary request');
+        assert.equal(calls[0].request.headers['X-Ploinky-Browser-CSRF-Token'], 'v1.choice-proof');
+        assert.deepEqual(JSON.parse(calls[0].request.body), { view: VIEW, policy: 'stop' });
+        assert.deepEqual(await submitLiveSessionCloseIntent(ID, VIEW, 'stop', { fetchImpl: answer({ ok: true, pending: false }) }), { pending: false });
+        assert.deepEqual(await submitLiveSessionCloseIntent(ID, VIEW, 'stop', { fetchImpl: answer({ ok: true, pending: false, reason: 'superseded' }) }),
+            { pending: false, reason: 'superseded' });
+        for (const body of [
+            {}, { ok: true }, { ok: true, pending: true }, { ok: true, pending: true, until: 'soon' }, { ok: true, pending: true, until: 0 },
+            { ok: true, pending: true, until, extra: 1 }, { ok: true, pending: false, reason: 'keep' }, { ok: true, pending: false, until },
+            { ok: false, pending: false }, { ok: true, pending: 'false' }, null, [],
+        ]) await assert.rejects(submitLiveSessionCloseIntent(ID, VIEW, 'stop', { fetchImpl: answer(body) }), /Invalid close intent response/, JSON.stringify(body));
+        await assert.rejects(submitLiveSessionCloseIntent(ID, VIEW, 'stop', { fetchImpl: answer({ error: 'terminal_view_stale' }, 409) }), (error) => error.status === 409);
+        const before = calls.length;
+        for (const [viewId, policy] of [['short', 'stop'], [VIEW, 'later'], [undefined, 'stop']]) {
+            await assert.rejects(submitLiveSessionCloseIntent(ID, viewId, policy, { fetchImpl: answer({}) }), /Invalid close intent/);
+        }
+        await assert.rejects(submitLiveSessionCloseIntent('../x', VIEW, 'stop', { fetchImpl: answer({}) }), /Invalid/);
+        assert.equal(calls.length, before, 'invalid input sends nothing');
+    } finally {
+        delete globalThis.document;
+    }
+});
+
+test('Detach view on an owned running terminal shows one choice; Cancel keeps the identical frame, stream and key with no request', async (t) => {
+    const page = await choiceEnvironment(t);
+    const frame = page.frame();
+    const key = page.storage.data.get(EMBEDDED_TERMINAL_KEY);
+    const before = page.calls.length;
+    const pagehideListeners = page.win.count('pagehide');
+    const detaching = page.modal.requestDetachViewer();
+    const again = page.modal.prepareViewClose('close');
+    await settle();
+    assert.equal(page.dialog.open, true);
+    assert.equal(page.dialog.shows, 1, 'repeated close requests share one dialog');
+    assert.match(page.elements.get('#liveSessionsCloseText').textContent, /keeps running unless you choose Stop it[\s\S]*about 30 seconds/);
+    assert.deepEqual(CLOSE_TEXT_KEYS.map((key) => page.elements.get(key).disabled), [false, false, false]);
+    await page.modal.chooseViewClose(null, 'cancel');
+    await detaching;
+    assert.equal(await again, false);
+    assert.equal(page.dialog.open, false);
+    assert.equal(page.calls.length, before, 'Cancel sends nothing');
+    assert.equal(page.frame(), frame, 'the same iframe element stays');
+    assert.equal(page.elements.get('#liveSessionsFrame').children.length, 1);
+    assert.equal(page.modal.viewerId, ID);
+    assert.equal(page.modal.embedded.viewId, VIEW);
+    assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), key);
+    assert.equal(page.win.count('message'), 1, 'the view registration stays');
+    assert.equal(page.win.count('pagehide'), pagehideListeners, 'the decision listener is gone again');
+});
+
+test('Escape in the choice is Cancel, but not while a choice is being applied', async (t) => {
+    let release;
+    const page = await choiceEnvironment(t, { policy: (body) => new Promise((resolve) => { release = () => resolve(response({ ok: true, closePolicy: body.policy, pendingStopUntil: null })); }) });
+    const first = page.modal.prepareViewClose('close');
+    assert.equal(page.dialog.pressEscape().defaultPrevented, true);
+    assert.equal(await first, false);
+    assert.equal(page.lifetime().length, 0);
+    const second = trackPromise(page.modal.prepareViewClose('close'));
+    const choosing = page.modal.chooseViewClose(null, 'keep');
+    await settle();
+    assert.deepEqual(CLOSE_TEXT_KEYS.map((key) => page.elements.get(key).disabled), [true, true, true]);
+    page.dialog.pressEscape();
+    await settle();
+    assert.equal(page.dialog.open, true, 'Escape cannot abandon a request in flight');
+    assert.equal(second.settled, false);
+    release();
+    await choosing;
+    await settle();
+    assert.equal(second.value, true);
+});
+
+test('Keep running awaits the policy keep, sends no intent and then detaches; Stop it is ordered policy then exact intent', async (t) => {
+    const keep = await choiceEnvironment(t);
+    const keeping = keep.modal.requestDetachViewer();
+    await keep.modal.chooseViewClose(null, 'keep');
+    await keeping;
+    assert.deepEqual(keep.lifetime().map((call) => [call.url, call.options.body]), [[`/webtty/sessions/${ID}/close-policy`, '{"policy":"keep"}']]);
+    assert.equal(keep.modal.viewerId, '');
+    assert.equal(keep.elements.get('#liveSessionsFrame').children.length, 0);
+    assert.match(keep.status(), /keeps running/);
+
+    const order = [];
+    const stop = await choiceEnvironment(t, {
+        policy: (body) => { order.push(['policy', body.policy, Boolean(stop?.modal.viewerId)]); return response({ ok: true, closePolicy: body.policy, pendingStopUntil: null }); },
+        intent: (body, options) => { order.push(['intent', body, options.keepalive]); return response({ ok: true, pending: true, until: Date.now() + 30000 }, 202); },
+    });
+    const stopping = stop.modal.requestDetachViewer();
+    await stop.modal.chooseViewClose(null, 'stop');
+    await stop.modal.chooseViewClose(null, 'stop');
+    await stopping;
+    assert.deepEqual(order, [['policy', 'stop', true], ['intent', { view: VIEW, policy: 'stop' }, undefined]], 'one policy, then one intent for the captured view, before disposal');
+    assert.equal(stop.lifetime().length, 2, 'a double click repeats nothing and nothing is deleted');
+    assert.equal(stop.modal.viewerId, '');
+    assert.match(stop.status(), /stops in about (29|30) s unless it is reopened/);
+});
+
+test('switching to an agent stream or another shell completes the choice before minting or mounting', async (t) => {
+    const agentRow = { ...row(), id: 'ls_task', source: 'roboTeamAgent', kind: 'robot-task', status: 'running', ownerState: 'verified', exit: null,
+        attach: { mode: 'event-stream' }, capabilities: { watch: true, input: false, stop: true, message: false } };
+    const page = await choiceEnvironment(t);
+    const source = { agent: 'roboTeamAgent', label: 'Runs', liveSessions: { version: 1, base: '/roboTeamAgent/runs' } };
+    page.modal.rows.set(`${source.liveSessions.base}:ls_task`, { ...agentRow, key: `${source.liveSessions.base}:ls_task`, sessionSource: source });
+    let mounts = 0;
+    globalThis.assistOS.UI = { createElement: () => { mounts += 1; return { element: { deref: () => null } }; } };
+    const frame = page.frame();
+    const watching = page.modal.performAction(`${source.liveSessions.base}:ls_task`, 'attach');
+    await settle();
+    assert.equal(page.dialog.open, true);
+    assert.equal(mounts, 0);
+    await page.modal.chooseViewClose(null, 'cancel');
+    await watching;
+    assert.equal(mounts, 0, 'Cancel mounts nothing');
+    assert.equal(page.frame(), frame);
+    assert.equal(page.modal.pendingId, '');
+
+    // Attach on another shell: Cancel mints nothing and keeps the frame.
+    page.modal.rows.set(SECOND_ID, { ...row({ id: SECOND_ID }), key: SECOND_ID, sessionSource: page.modal.rows.get(ID).sessionSource });
+    const before = page.calls.length;
+    const attaching = page.modal.performAction(SECOND_ID, 'attach');
+    await settle();
+    await page.modal.chooseViewClose(null, 'cancel');
+    await attaching;
+    assert.equal(page.calls.length, before, 'nothing minted');
+    assert.equal(page.frame(), frame);
+});
+
+test('watchers, agent streams, exited shells and an empty viewer close without a choice; Kill stays available to watchers', async (t) => {
+    const watcherRow = row({ isOwner: false, capabilities: { watch: true, input: false, stop: true, message: false } });
+    const watcher = await choiceEnvironment(t, { rows: [watcherRow], announce: false });
+    watcher.announce({ role: 'watcher' });
+    assert.equal(await watcher.modal.prepareViewClose('close'), true);
+    assert.equal(await watcher.modal.prepareViewClose('detach'), true);
+    assert.equal(watcher.dialog.shows, 0);
+    assert.equal(watcher.mutations().filter((call) => !call.url.endsWith('/attach-tokens')).length, 0);
+    const actions = watcher.elements.get('#liveSessionsList').children[0].children
+        .find((child) => child.className === 'live-sessions-actions').children.map((button) => button.textContent);
+    assert.deepEqual(actions, ['Attach', 'Pop out', 'Kill'], 'no new owner control; the existing Kill remains');
+
+    const empty = environment(t);
+    assert.equal(await empty.modal.prepareViewClose('close'), true);
+    assert.equal(empty.elements.get('#liveSessionsCloseDialog').shows, 0);
+
+    const exited = await choiceEnvironment(t);
+    exited.modal.rows.set(ID, { ...exited.modal.rows.get(ID), status: 'exited' });
+    assert.equal(await exited.modal.prepareViewClose('close'), true);
+    assert.equal(exited.dialog.shows, 0);
+    for (const reason of ['', 'unload', 'Close']) assert.equal(await exited.modal.prepareViewClose(reason), false, `unknown reason ${reason}`);
+});
+
+test('closing while the view is still connecting offers Keep running and Cancel; Stop it waits for the announced view', async (t) => {
+    const page = await choiceEnvironment(t, { announce: false });
+    const closing = page.modal.prepareViewClose('close');
+    await settle();
+    assert.equal(page.dialog.open, true, 'a connecting owner view is retained, not silently discarded');
+    assert.equal(page.elements.get('#liveSessionsCloseStop').disabled, true);
+    assert.match(page.elements.get('#liveSessionsCloseStatus').textContent, /still connecting/);
+    await page.modal.chooseViewClose(null, 'stop');
+    assert.equal(page.lifetime().length, 0, 'no Stop without a known view');
+    page.announce({ policy: 'keep' });
+    assert.equal(page.elements.get('#liveSessionsCloseStop').disabled, false);
+    assert.equal(page.elements.get('#liveSessionsCloseStatus').hidden, true);
+    await page.modal.chooseViewClose(null, 'stop');
+    assert.equal(await closing, true);
+    assert.deepEqual(JSON.parse(page.lifetime().at(-1).options.body), { view: VIEW, policy: 'stop' });
+
+    const keep = await choiceEnvironment(t, { announce: false });
+    const keeping = keep.modal.prepareViewClose('detach');
+    await keep.modal.chooseViewClose(null, 'keep');
+    assert.equal(await keeping, true);
+    assert.deepEqual(keep.lifetime().map((call) => call.url), [`/webtty/sessions/${ID}/close-policy`]);
+});
+
+test('a refused or malformed or timed-out choice keeps the panel and says what is known; a retry is only the person\'s', async (t) => {
+    const refused = await choiceEnvironment(t, { policy: () => response({ error: 'owner_required' }, 403) });
+    const first = trackPromise(refused.modal.prepareViewClose('close'));
+    await refused.modal.chooseViewClose(null, 'stop');
+    await settle();
+    assert.equal(first.settled, false, 'the panel stays');
+    assert.equal(refused.dialog.open, true);
+    assert.match(refused.elements.get('#liveSessionsCloseStatus').textContent, /Stop it could not be confirmed/);
+    assert.equal(refused.lifetime().filter((call) => call.url.endsWith('/close-intents')).length, 0, 'no intent after a refused policy');
+    assert.deepEqual(CLOSE_TEXT_KEYS.map((key) => refused.elements.get(key).disabled), [false, false, false]);
+    await refused.modal.chooseViewClose(null, 'cancel');
+    assert.equal(first.value, false);
+    assert.equal(refused.modal.viewerId, ID);
+
+    const malformed = await choiceEnvironment(t, { intent: () => response({ ok: true, pending: true }) });
+    const second = trackPromise(malformed.modal.prepareViewClose('close'));
+    await malformed.modal.chooseViewClose(null, 'stop');
+    await settle();
+    assert.equal(second.settled, false, 'a malformed success is not acceptance');
+    assert.match(malformed.elements.get('#liveSessionsCloseStatus').textContent, /may have been accepted/);
+    assert.doesNotMatch(malformed.elements.get('#liveSessionsCloseStatus').textContent, /still running/);
+    assert.equal(malformed.lifetime().length, 2, 'never replayed automatically');
+
+    const stale = await choiceEnvironment(t, { intent: () => response({ error: 'terminal_view_stale' }, 409) });
+    const third = trackPromise(stale.modal.prepareViewClose('close'));
+    await stale.modal.chooseViewClose(null, 'stop');
+    await settle();
+    assert.equal(third.settled, false);
+    assert.match(stale.elements.get('#liveSessionsCloseStatus').textContent, /no longer current/);
+    // Keep running needs no view, so it remains the way out.
+    await stale.modal.chooseViewClose(null, 'keep');
+    await settle();
+    assert.equal(third.value, true);
+
+    const keepFails = await choiceEnvironment(t, { policy: () => { throw new Error('offline'); } });
+    const fourth = trackPromise(keepFails.modal.prepareViewClose('detach'));
+    await keepFails.modal.chooseViewClose(null, 'keep');
+    await settle();
+    assert.equal(fourth.settled, false);
+    assert.match(keepFails.elements.get('#liveSessionsCloseStatus').textContent, /Keep running could not be confirmed/);
+});
+
+test('a Stop intent that times out at the ten-second deadline is reported as possibly accepted', async (t) => {
+    const page = await choiceEnvironment(t, {
+        intent: (_body, options) => new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })),
+    });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const closing = trackPromise(page.modal.prepareViewClose('close'));
+    const choosing = page.modal.chooseViewClose(null, 'stop');
+    await settle();
+    assert.equal(page.lifetime().length, 2);
+    t.mock.timers.tick(10000);
+    await choosing;
+    await settle();
+    assert.equal(closing.settled, false);
+    assert.match(page.elements.get('#liveSessionsCloseStatus').textContent, /may have been accepted/);
+    assert.equal(page.modal.viewerId, ID);
+});
+
+test('expired authentication keeps the choice open until the list read detaches the view, which then closes', async (t) => {
+    const page = await choiceEnvironment(t, { policy: () => response({ error: 'auth' }, 401) });
+    const closing = trackPromise(page.modal.prepareViewClose('close'));
+    await page.modal.chooseViewClose(null, 'keep');
+    await settle();
+    assert.equal(closing.settled, false);
+    assert.match(page.elements.get('#liveSessionsCloseStatus').textContent, /authentication session has expired/);
+    globalThis.fetch = async () => response({}, 401);
+    await page.modal.refresh();
+    await settle();
+    assert.equal(closing.value, true, 'an authoritative detach approves the close without a request');
+    assert.equal(page.modal.viewerId, '');
+    assert.equal(page.dialog.open, false);
+});
+
+test('a session that exits or a view that is replaced during the choice is never sent a late request', async (t) => {
+    const exits = await choiceEnvironment(t);
+    const closing = exits.modal.prepareViewClose('close');
+    await settle();
+    exits.setRows([tombstone({ closePolicy: 'keep' })]);
+    await exits.modal.refresh();
+    assert.equal(await closing, true, 'nothing is left to protect');
+    assert.equal(exits.lifetime().length, 0);
+
+    let release;
+    const late = await choiceEnvironment(t, { policy: (body) => new Promise((resolve) => { release = () => resolve(response({ ok: true, closePolicy: body.policy, pendingStopUntil: null })); }) });
+    const lateClose = late.modal.prepareViewClose('close');
+    const stopping = late.modal.chooseViewClose(null, 'stop');
+    await settle();
+    late.setRows([tombstone({ closePolicy: 'keep' })]);
+    await late.modal.refresh();
+    release();
+    await stopping;
+    await settle();
+    assert.equal(await lateClose, true);
+    assert.deepEqual(late.lifetime().map((call) => call.url), [`/webtty/sessions/${ID}/close-policy`], 'no intent for a view that is gone');
+
+    // A newer announcement for a different view makes Stop it refuse to act on the old one.
+    const replaced = await choiceEnvironment(t);
+    const replacedClose = replaced.modal.prepareViewClose('close');
+    await settle();
+    replaced.announce({ viewId: 'W'.repeat(32), policy: 'keep' });
+    await replaced.modal.chooseViewClose(null, 'stop');
+    assert.equal(await replacedClose, false);
+    assert.equal(replaced.lifetime().length, 0);
+    assert.match(replaced.status(), /view changed/);
+    assert.equal(replaced.modal.viewerId, ID);
+});
+
+test('a superseded or keep-raced Stop answer is accepted, disposes the view and says the terminal is still running', async (t) => {
+    for (const [answer, text] of [[{ ok: true, pending: false, reason: 'superseded' }, /already been replaced/], [{ ok: true, pending: false }, /changed to Keep running/]]) {
+        const page = await choiceEnvironment(t, { intent: () => response(answer) });
+        const detaching = page.modal.requestDetachViewer();
+        await page.modal.chooseViewClose(null, 'stop');
+        await detaching;
+        assert.equal(page.modal.viewerId, '');
+        assert.match(page.status(), text);
+        assert.match(page.status(), /still running/);
+    }
+});
+
+test('reload asks nothing and withdraws an open choice; native page hide withdraws it too; the key stays for recovery', async (t) => {
+    const page = await choiceEnvironment(t);
+    const key = page.storage.data.get(EMBEDDED_TERMINAL_KEY);
+    assert.equal(await page.modal.prepareViewClose('reload'), true);
+    assert.equal(page.dialog.shows, 0);
+    const closing = page.modal.prepareViewClose('close');
+    await settle();
+    assert.equal(await page.modal.prepareViewClose('reload'), true);
+    assert.equal(await closing, false, 'the reload replaces the close');
+    assert.equal(page.dialog.open, false);
+    assert.equal(page.lifetime().length, 0);
+    assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), key);
+
+    // This page runs as its own tab, so its native page hide also sends the one keep signal for its view.
+    const listeners = page.win.count('pagehide');
+    const hidden = page.modal.prepareViewClose('close');
+    await settle();
+    assert.equal(page.win.count('pagehide'), listeners + 1);
+    page.win.dispatch('pagehide', {});
+    assert.equal(await hidden, false);
+    assert.deepEqual(page.lifetime().map((call) => [call.url, JSON.parse(call.options.body)]),
+        [[`/webtty/sessions/${ID}/close-intents`, { view: VIEW, policy: 'keep' }]], 'native close keeps; the open choice sends nothing');
+    assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), key);
+    assert.equal(page.win.count('pagehide'), listeners);
+});
+
+test('the panel markup has the three choices, a guarded Detach view and no standalone Close button', async () => {
+    const html = await fs.readFile(path.join(root, 'IDE-plugins/live-sessions/components/live-sessions-modal/live-sessions-modal.html'), 'utf8');
+    assert.match(html, /<dialog id="liveSessionsCloseDialog" class="modal live-sessions-close-dialog"/);
+    assert.deepEqual([...html.matchAll(/data-local-action="chooseViewClose (\w+)"/g)].map((match) => match[1]), ['keep', 'stop', 'cancel']);
+    assert.match(html, /data-local-action="requestDetachViewer">Detach view</);
+    assert.doesNotMatch(html, /data-local-action="detachViewer"|>Close</);
+    assert.doesNotMatch(html, /<select|When this tab closes/);
 });
 
 function startupEnvironment(t, { admin = true, rows = [unattended()], key = { sessionId: ID, viewId: VIEW }, fetchImpl = null } = {}) {
@@ -1468,12 +1880,14 @@ test('only the shell sends the close intent, once for the reported view, when th
     send(viewMessage(goodView({ viewId: 'B'.repeat(32), policy: 'stop' })));
     send(viewMessage(goodView({ viewId: 'bad' })));
     win.dispatch('pagehide', { persisted: false });
-    assert.equal(calls.length, 1);
+    win.dispatch('pagehide', { persisted: false });
+    assert.equal(calls.length, 1, 'once per reported view');
     assert.equal(calls[0].url, `/webtty/sessions/${ID}/close-intents`);
     assert.equal(calls[0].options.method, 'POST');
     assert.equal(calls[0].options.keepalive, true);
     assert.equal(calls[0].options.headers['X-Ploinky-Browser-CSRF-Token'], 'v1.shell-proof');
-    assert.deepEqual(JSON.parse(calls[0].options.body), { view: 'B'.repeat(32), policy: 'stop' }, 'the latest valid view and its policy');
+    assert.deepEqual(JSON.parse(calls[0].options.body), { view: 'B'.repeat(32), policy: 'keep' },
+        'the latest valid view; a native unload keeps the terminal running whatever policy was reported');
 
     // A detach in the page, or the page closing the panel, leaves nothing to signal.
     send(viewMessage(null));
@@ -1517,7 +1931,7 @@ test('a page inside the Explorer panel hands its terminal view to the shell inst
     assert.equal(page.storage.data.size, 0);
 });
 
-test('a page of its own (Open in new tab) is the tab that closes, so it signals on its own pagehide', async (t) => {
+test('a page of its own (Open in new tab) is the tab that closes, so it signals keep once on its own pagehide', async (t) => {
     const page = embeddedEnvironment(t);
     page.win.parent = page.win;
     page.modal.afterRender();
@@ -1528,8 +1942,11 @@ test('a page of its own (Open in new tab) is the tab that closes, so it signals 
     assert.equal(page.win.count('pagehide'), 1);
     const before = page.calls.length;
     page.win.dispatch('pagehide', {});
-    assert.equal(page.calls.length, before + 1);
-    assert.deepEqual(JSON.parse(page.calls.at(-1).options.body), { view: VIEW, policy: 'stop' });
+    page.win.dispatch('pagehide', {});
+    assert.equal(page.calls.length, before + 1, 'once per view');
+    assert.deepEqual(JSON.parse(page.calls.at(-1).options.body), { view: VIEW, policy: 'keep' });
+    assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), JSON.stringify({ sessionId: ID, viewId: VIEW }), 'recovery storage is retained');
+    assert.equal(page.calls.filter((call) => call.options.method === 'DELETE' || call.url.endsWith('/close-policy')).length, 0);
 });
 
 test('the start work waits for the host descriptor, then opens the Live Sessions page once to restore a terminal', async (t) => {

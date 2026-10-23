@@ -100,3 +100,17 @@ live-sessions-modal .live-sessions-notice {
 live-sessions-modal .live-sessions-banner {
     color: var(--danger, #b91c1c);
 }
+
+live-sessions-modal .live-sessions-close-dialog h2 {
+    margin: 0 0 10px;
+    font-size: 17px;
+}
+
+live-sessions-modal .live-sessions-close-dialog p {
+    margin: 0 0 10px;
+    font-size: 14px;
+}
+
+live-sessions-modal .live-sessions-close-dialog p[hidden] {
+    display: none;
+}

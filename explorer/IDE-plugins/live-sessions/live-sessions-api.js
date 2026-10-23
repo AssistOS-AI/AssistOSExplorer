@@ -269,6 +269,24 @@ export async function setLiveSessionClosePolicy(id, policy, options = {}) {
     return Object.freeze({ closePolicy: payload.closePolicy, pendingStopUntil: payload.pendingStopUntil });
 }
 
+// Awaited close intent for an owner view that Explorer itself is closing (Stop it in the close dialog). Resolves
+// {pending: true, until} when the server armed its grace period, or {pending: false} (optionally with reason
+// 'superseded') when it only ended the view. Any other 2xx body is rejected; nothing is ever retried automatically.
+export async function submitLiveSessionCloseIntent(id, viewId, policy, options = {}) {
+    if (typeof viewId !== 'string' || !VIEW_ID.test(viewId) || !CLOSE_POLICIES.includes(policy)) {
+        throw new Error('Invalid close intent.');
+    }
+    const payload = await request(`/webtty/sessions/${sessionId(id)}/close-intents`, 'POST', { ...options, body: { view: viewId, policy } });
+    if (exactKeys(payload, ['ok', 'pending', 'until']) && payload.ok === true && payload.pending === true && timestamp(payload.until)) {
+        return Object.freeze({ pending: true, until: payload.until });
+    }
+    if (exactKeys(payload, ['ok', 'pending'], ['reason']) && payload.ok === true && payload.pending === false
+        && (!Object.hasOwn(payload, 'reason') || payload.reason === 'superseded')) {
+        return Object.freeze(payload.reason ? { pending: false, reason: payload.reason } : { pending: false });
+    }
+    throw new Error('Invalid close intent response.');
+}
+
 // Best-effort page-close signal for the embedded owner view. keepalive lets it outlive the page; any failure
 // stops nothing, because only an accepted intent arms the server's grace period.
 export function sendLiveSessionCloseIntent(id, viewId, policy, options = {}) {

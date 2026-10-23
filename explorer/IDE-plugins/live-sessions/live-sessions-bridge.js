@@ -3,8 +3,9 @@ import { clearEmbeddedTerminalKey, publishCue } from './live-sessions-state.js';
 
 // The Live Sessions page runs in its own iframe, so it cannot reach the Explorer shell's memory. This module is the
 // one-way channel from that page to the shell: the shell's toolbar badge count and the terminal view that the page
-// embeds. Only the shell sends the close signal when the whole Explorer tab unloads; the page cannot tell that apart
-// from the panel being closed, which only detaches views.
+// embeds. Only the shell sends the native close signal when the whole Explorer tab unloads; the page cannot tell that
+// apart from the panel being closed, which goes through the page's own close choice. A native unload always keeps the
+// terminal running.
 export const CUE_MESSAGE = 'explorer-live-sessions:cue';
 export const VIEW_MESSAGE = 'explorer-live-sessions:view';
 const SESSION_ID = /^[A-Za-z0-9_-]{32,128}$/;
@@ -69,12 +70,14 @@ function findPageFrame(win, source, pageUrl) {
 const bridges = new WeakMap();
 
 // The shell side. One bridge per Explorer window: it shows the page's cue on the toolbar badge and, when the whole
-// Explorer tab closes or reloads while the panel is still open and embeds an owner terminal, sends that view's close
-// intent. The bridge itself notices the panel closing, so it does not depend on which code opened the panel.
+// Explorer tab closes or reloads while the panel is still open and embeds an owner terminal, sends that view's keep
+// intent once, which only ends the view. The bridge itself notices the panel closing, so it does not depend on which
+// code opened the panel.
 export function installHostBridge(win = globalThis.window) {
     if (!win || typeof win.addEventListener !== 'function') return null;
     if (bridges.has(win)) return bridges.get(win);
     const watchedDialogs = new WeakSet();
+    const signalledViews = new Set();
     const bridge = {
         pageUrl: '',
         // {sessionId, viewId, policy, source}: the view the page reported and the window that reported it.
@@ -105,9 +108,11 @@ export function installHostBridge(win = globalThis.window) {
     });
     win.addEventListener('pagehide', () => {
         const view = bridge.view;
-        // A tab unload leaves the panel's iframe in the document; a closed panel does not, so it never signals.
-        if (view && findPageFrame(win, view.source, bridge.pageUrl)) {
-            sendLiveSessionCloseIntent(view.sessionId, view.viewId, view.policy);
+        // A tab unload leaves the panel's iframe in the document; a closed panel does not, so it never signals. The
+        // reported policy is not used: a native unload never stops a terminal.
+        if (view && findPageFrame(win, view.source, bridge.pageUrl) && !signalledViews.has(view.viewId)) {
+            signalledViews.add(view.viewId);
+            sendLiveSessionCloseIntent(view.sessionId, view.viewId, 'keep');
         }
     });
     bridges.set(win, bridge);

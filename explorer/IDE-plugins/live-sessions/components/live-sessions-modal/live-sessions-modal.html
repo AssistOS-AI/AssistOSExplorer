@@ -1,14 +1,24 @@
 <div class="live-sessions-body">
     <div class="live-sessions-list-panel">
-        <p class="live-sessions-guidance">Watch agent runs and manage your sessions. Closing this panel detaches its views. Use Stop or Kill to end a run or shell.</p>
+        <p class="live-sessions-guidance">Watch agent runs and manage your sessions. When you close or detach a terminal you own, you choose whether it keeps running. Use Stop or Kill to end a run or shell.</p>
         <p id="liveSessionsStatus" role="status" aria-live="polite">Loading live sessions…</p>
         <ul id="liveSessionsList" class="live-sessions-list" aria-label="Live sessions"></ul>
     </div>
     <section id="liveSessionsViewer" class="live-sessions-viewer" aria-label="Attached session" hidden>
         <div class="live-sessions-viewer-heading">
             <span id="liveSessionsViewerTitle"></span>
-            <button class="gray-button" type="button" data-local-action="detachViewer">Detach view</button>
+            <button class="gray-button" type="button" data-local-action="requestDetachViewer">Detach view</button>
         </div>
         <div id="liveSessionsFrame" class="live-sessions-frame"></div>
     </section>
+    <dialog id="liveSessionsCloseDialog" class="modal live-sessions-close-dialog" aria-labelledby="liveSessionsCloseTitle" aria-describedby="liveSessionsCloseText">
+        <h2 id="liveSessionsCloseTitle">Keep this terminal running?</h2>
+        <p id="liveSessionsCloseText"></p>
+        <p id="liveSessionsCloseStatus" class="live-sessions-notice" role="status" aria-live="polite" hidden></p>
+        <div class="live-sessions-actions">
+            <button id="liveSessionsCloseKeep" class="general-button" type="button" data-local-action="chooseViewClose keep">Keep running</button>
+            <button id="liveSessionsCloseStop" class="gray-button" type="button" data-local-action="chooseViewClose stop">Stop it</button>
+            <button id="liveSessionsCloseCancel" class="gray-button" type="button" data-local-action="chooseViewClose cancel">Cancel</button>
+        </div>
+    </dialog>
 </div>
