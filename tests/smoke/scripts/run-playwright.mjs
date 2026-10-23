@@ -67,7 +67,7 @@ const sourceManifestPath = String(verificationMode === 'local-snapshot'
   : process.env.SMOKE_RELEASE_MANIFEST || '').trim();
 const sourceVerifierPath = path.resolve(smokeRoot, verificationMode === 'local-snapshot'
   ? '../../../ploinky/tests/release/verifyLocalSnapshotBundle.mjs'
-  : '../../../ploinky/tests/release/verifyCopilot421Bundle.mjs');
+  : '../../../ploinky/tests/release/verifyExplorerReleaseBundle.mjs');
 
 validateHeadlessWebMeetProfile({
   enabled: headlessWebMeetGate,
@@ -145,6 +145,9 @@ childEnv.SMOKE_ARTIFACT_DIR = path.resolve(childEnv.SMOKE_ARTIFACT_DIR
   || path.join(smokeRoot, '..', '..', '.ploinky', 'test-artifacts', 'headless-smoke', childEnv.SMOKE_RUN_ID));
 childEnv.SMOKE_PREFLIGHT_ACCOUNT_REQUIREMENTS = JSON.stringify(profile.accounts);
 childEnv.SMOKE_LEDGER_COVERAGE = profile.coverage;
+// Release mode hands the exact verifier this runner uses to every child, so a
+// spec's own release collector can never fall back to or inherit another one.
+if (verificationMode === 'release') childEnv.SMOKE_COPILOT_RELEASE_VERIFIER = sourceVerifierPath;
 for (const name of Object.keys(childEnv)) {
   if (
     /^PLAYWRIGHT_[A-Z0-9]+_OUTPUT_(?:DIR|FILE|NAME)$/.test(name)

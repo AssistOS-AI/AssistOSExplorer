@@ -10,6 +10,7 @@ import {
   readImageAgentLibProvenance,
   sameCopilotReleaseGeneration,
 } from './copilot-release-evidence.mjs';
+import { validateBoxFreshness } from './live-box.mjs';
 
 const DIGEST = `sha256:${'a'.repeat(64)}`;
 const PLOINKY_SOURCE = '/candidate/ploinky';
@@ -64,16 +65,35 @@ function imageModeLiveBox() {
   return box;
 }
 
-function releaseVerifier(achillesAgentLibCommit = AGENTLIB_COMMIT) {
+const INVENTORY_SHA256 = '7'.repeat(64);
+
+function sourceEntry(name, commit, role = 'deployed-source') {
+  return { name, repositoryPath: `/verified/${name}`, commit, role };
+}
+
+// The current release verifier's versioned result, with the complete source map
+// (core repositories plus actual dependencies), in the verifier's sorted order.
+function currentRelease({ agentLibCommit = AGENTLIB_COMMIT, agentLibRole = 'provenance-reference', mutate } = {}) {
+  const result = {
+    schemaVersion: 1,
+    kind: 'explorer-release-bundle',
+    sourceInventorySha256: INVENTORY_SHA256,
+    imageDigest: DIGEST,
+    repositories: {
+      OnlyOfficeAgent: sourceEntry('OnlyOfficeAgent', '8'.repeat(40)),
+      achillesAgentLib: sourceEntry('achillesAgentLib', agentLibCommit, agentLibRole),
+      explorer: sourceEntry('explorer', '1'.repeat(40)),
+      ploinky: { ...sourceEntry('ploinky', '2'.repeat(40)), repositoryPath: PLOINKY_SOURCE },
+      webmeet: sourceEntry('webmeet', '9'.repeat(40)),
+    },
+  };
+  if (mutate) mutate(result);
+  return result;
+}
+
+function releaseVerifier(achillesAgentLibCommit = AGENTLIB_COMMIT, options = {}) {
   return async () => ({
-    verifyManifestFile: () => ({
-      imageDigest: DIGEST,
-      repositories: {
-        explorer: { commit: '1'.repeat(40) },
-        ploinky: { commit: '2'.repeat(40), repositoryPath: PLOINKY_SOURCE },
-        achillesAgentLib: { commit: achillesAgentLibCommit },
-      },
-    }),
+    verifyManifestFile: () => currentRelease({ agentLibCommit: achillesAgentLibCommit, ...options }),
   });
 }
 
@@ -99,14 +119,7 @@ test('ordinary Copilot release evidence binds the verified manifest digest to th
       return {
         verifyManifestFile(manifestPath) {
           calls.push(['verify', manifestPath]);
-          return {
-            imageDigest: DIGEST,
-            repositories: {
-              explorer: { commit: '1'.repeat(40) },
-              ploinky: { commit: '2'.repeat(40), repositoryPath: PLOINKY_SOURCE },
-              achillesAgentLib: { commit: AGENTLIB_COMMIT },
-            },
-          };
+          return currentRelease();
         },
       };
     },
@@ -241,15 +254,7 @@ test('ordinary Copilot release evidence rejects missing manifest binding and wro
     () => collectCopilotReleaseEvidence({
       manifestPath: '/candidate/release.json',
       verifierPath: '/candidate/verifier.mjs',
-      loadVerifier: async () => ({
-        verifyManifestFile: () => ({
-          imageDigest: DIGEST,
-          repositories: {
-            ploinky: { commit: '2'.repeat(40), repositoryPath: PLOINKY_SOURCE },
-            achillesAgentLib: { commit: AGENTLIB_COMMIT },
-          },
-        }),
-      }),
+      loadVerifier: releaseVerifier(),
       collectLiveBox: () => liveBox({ imageId: `sha256:${'c'.repeat(64)}` }),
       realpathSync: (value) => value,
     }),
@@ -262,15 +267,7 @@ test('ordinary Copilot release evidence rejects a Box without the verified read-
     () => collectCopilotReleaseEvidence({
       manifestPath: '/candidate/release.json',
       verifierPath: '/candidate/verifier.mjs',
-      loadVerifier: async () => ({
-        verifyManifestFile: () => ({
-          imageDigest: DIGEST,
-          repositories: {
-            ploinky: { commit: '2'.repeat(40), repositoryPath: PLOINKY_SOURCE },
-            achillesAgentLib: { commit: AGENTLIB_COMMIT },
-          },
-        }),
-      }),
+      loadVerifier: releaseVerifier(),
       collectLiveBox: () => ({ ...liveBox(), ploinkySourceMount: undefined }),
       realpathSync: (value) => value,
     }),
@@ -279,24 +276,16 @@ test('ordinary Copilot release evidence rejects a Box without the verified read-
 });
 
 test('ordinary Copilot release evidence rejects a missing or mismatched AgentLib manifest binding', async () => {
-  const collect = (achillesAgentLib, box = liveBox()) => collectCopilotReleaseEvidence({
+  const collect = (mutate, box = liveBox()) => collectCopilotReleaseEvidence({
     manifestPath: '/candidate/release.json',
     verifierPath: '/candidate/verifier.mjs',
-    loadVerifier: async () => ({
-      verifyManifestFile: () => ({
-        imageDigest: DIGEST,
-        repositories: {
-          ploinky: { commit: '2'.repeat(40), repositoryPath: PLOINKY_SOURCE },
-          ...(achillesAgentLib ? { achillesAgentLib } : {}),
-        },
-      }),
-    }),
+    loadVerifier: async () => ({ verifyManifestFile: () => currentRelease({ mutate }) }),
     collectLiveBox: () => box,
     realpathSync: (value) => value,
   });
-  await assert.rejects(() => collect(undefined), /did not return the verified achillesAgentLib commit/);
+  await assert.rejects(() => collect((result) => { delete result.repositories.achillesAgentLib; }), /did not return the verified achillesAgentLib commit/);
   await assert.rejects(
-    () => collect({ commit: '6'.repeat(40) }),
+    () => collect((result) => { result.repositories.achillesAgentLib.commit = '6'.repeat(40); }),
     /AgentLib commit does not match SMOKE_RELEASE_MANIFEST/,
   );
 });
@@ -306,6 +295,8 @@ test('ordinary Copilot evidence requires the same immutable Box generation after
     applicationBaseURL: 'https://explorer-qa.axiologic.dev',
     boxBaseURL: 'http://127.0.0.1:8080',
     imageDigest: DIGEST,
+    verificationMode: 'release',
+    releaseBundle: { schemaVersion: 1, kind: 'explorer-release-bundle', sourceInventorySha256: INVENTORY_SHA256 },
     ploinkySource: { path: PLOINKY_SOURCE, commit: '2'.repeat(40) },
     agentLib: {
       mode: 'managed',
@@ -478,4 +469,163 @@ test('image-mode release evidence and local-snapshot source evidence never subst
   assert.equal(sameCopilotReleaseGeneration({ ...structuredClone(release), verificationMode: 'local-snapshot' }, snapshot), false);
   assert.equal(sameCopilotReleaseGeneration(release, structuredClone(release)), true);
   assert.equal(sameCopilotReleaseGeneration(snapshot, structuredClone(snapshot)), true);
+});
+
+const releaseOptions = (overrides = {}) => ({
+  manifestPath: '/candidate/release.json',
+  verifierPath: '/candidate/verifyExplorerReleaseBundle.mjs',
+  baseURL: 'http://127.0.0.1:8080',
+  loadVerifier: releaseVerifier(),
+  collectLiveBox: () => imageModeLiveBox(),
+  readImageAgentLib: () => ({ commit: AGENTLIB_COMMIT }),
+  realpathSync: (value) => value,
+  ...overrides,
+});
+
+test('release mode accepts only the current versioned verifier result and never falls back to the legacy shape', async () => {
+  const legacyShaped = () => ({
+    imageDigest: DIGEST,
+    repositories: {
+      explorer: { commit: '1'.repeat(40), repositoryPath: '/verified/explorer' },
+      ploinky: { commit: '2'.repeat(40), repositoryPath: PLOINKY_SOURCE },
+      achillesAgentLib: { commit: AGENTLIB_COMMIT, repositoryPath: '/verified/achillesAgentLib' },
+      achillesCLI: { commit: '3'.repeat(40), repositoryPath: '/verified/achillesCLI' },
+    },
+  });
+  const rejected = [
+    ['legacy unversioned result', legacyShaped, /current versioned explorer-release-bundle result/],
+    ['unknown version', () => currentRelease({ mutate: (result) => { result.schemaVersion = 2; } }), /current versioned explorer-release-bundle result/],
+    ['string version', () => currentRelease({ mutate: (result) => { result.schemaVersion = '1'; } }), /current versioned explorer-release-bundle result/],
+    ['foreign kind', () => currentRelease({ mutate: (result) => { result.kind = 'local-snapshot-v1'; } }), /current versioned explorer-release-bundle result/],
+    ['missing inventory hash', () => currentRelease({ mutate: (result) => { delete result.sourceInventorySha256; } }), /SHA-256 of the frozen source inventory/],
+    ['malformed inventory hash', () => currentRelease({ mutate: (result) => { result.sourceInventorySha256 = 'A'.repeat(64); } }), /SHA-256 of the frozen source inventory/],
+  ];
+  for (const [label, verified, expected] of rejected) {
+    const calls = [];
+    await assert.rejects(() => collectCopilotReleaseEvidence(releaseOptions({
+      loadVerifier: async () => ({ verifyManifestFile: verified }),
+      collectLiveBox: (...args) => { calls.push(args); return imageModeLiveBox(); },
+    })), expected, label);
+    assert.equal(calls.length, 0, `${label} must fail before the Box is observed`);
+  }
+});
+
+test('release evidence retains the complete verified source map and binds the inventory hash across the run', async () => {
+  const result = await collectCopilotReleaseEvidence(releaseOptions());
+  const expected = currentRelease();
+  assert.deepEqual(result.repositories, expected.repositories);
+  assert.deepEqual(Object.keys(result.repositories), ['OnlyOfficeAgent', 'achillesAgentLib', 'explorer', 'ploinky', 'webmeet']);
+  assert.deepEqual(result.releaseBundle, { schemaVersion: 1, kind: 'explorer-release-bundle', sourceInventorySha256: INVENTORY_SHA256 });
+  assert.equal('achillesCLI' in result.repositories, false);
+  assert.equal(sameCopilotReleaseGeneration(result, structuredClone(result)), true);
+  for (const [label, change] of [
+    ['dependency commit', (value) => { value.repositories.webmeet.commit = 'a'.repeat(40); }],
+    ['dependency removed', (value) => { delete value.repositories.OnlyOfficeAgent; }],
+    ['dependency role', (value) => { value.repositories.webmeet.role = 'provenance-reference'; }],
+    ['inventory hash', (value) => { value.releaseBundle.sourceInventorySha256 = '6'.repeat(64); }],
+    ['bundle removed', (value) => { delete value.releaseBundle; }],
+  ]) {
+    const after = structuredClone(result);
+    change(after);
+    assert.equal(sameCopilotReleaseGeneration(result, after), false, label);
+  }
+  const bare = structuredClone(result);
+  delete bare.releaseBundle;
+  assert.equal(sameCopilotReleaseGeneration(bare, structuredClone(bare)), false, 'release evidence without a bundle binding never settles');
+});
+
+test('release mode rejects incomplete verified source maps after the existing manifest checks', async () => {
+  const collect = (mutate) => collectCopilotReleaseEvidence(releaseOptions({
+    loadVerifier: async () => ({ verifyManifestFile: () => currentRelease({ mutate }) }),
+  }));
+  await assert.rejects(() => collect((result) => { delete result.repositories.explorer; }), /did not return the required explorer source/);
+  await assert.rejects(() => collect((result) => { delete result.repositories.webmeet.role; }), /incomplete source entry for webmeet/);
+  await assert.rejects(() => collect((result) => { result.repositories.webmeet.role = 'latest'; }), /incomplete source entry for webmeet/);
+  await assert.rejects(() => collect((result) => { result.repositories.webmeet.repositoryPath = 'relative/webmeet'; }), /incomplete source entry for webmeet/);
+  await assert.rejects(() => collect((result) => { result.repositories.webmeet.commit = 'master'; }), /incomplete source entry for webmeet/);
+  await assert.rejects(() => collect((result) => { result.repositories.webmeet.name = 'other'; }), /incomplete source entry for webmeet/);
+});
+
+test('the AgentLib source role must match the actual AgentLib mode of the running Box', async () => {
+  // Image mode: the clean Git counterpart is provenance for the packaged commit, never a deployed source.
+  await assert.rejects(() => collectCopilotReleaseEvidence(releaseOptions({
+    loadVerifier: releaseVerifier(AGENTLIB_COMMIT, { agentLibRole: 'deployed-source' }),
+  })), /image-mode Box requires the achillesAgentLib source to be labeled provenance-reference/);
+  const image = await collectCopilotReleaseEvidence(releaseOptions());
+  assert.equal(image.repositories.achillesAgentLib.role, 'provenance-reference');
+  assert.equal(image.agentLib.commitEvidence, 'image-provenance');
+  // The packaged-commit comparison still applies to a correctly labeled reference.
+  await assert.rejects(() => collectCopilotReleaseEvidence(releaseOptions({
+    loadVerifier: releaseVerifier('6'.repeat(40)),
+  })), /image records an AgentLib commit that does not match SMOKE_RELEASE_MANIFEST/);
+  // Local mode: the real checkout is the deployed source, and its label commit is still compared.
+  const localBox = () => {
+    const box = liveBox();
+    box.box.semanticLabels = { ...box.box.semanticLabels, agentLibMode: 'local' };
+    return box;
+  };
+  await assert.rejects(() => collectCopilotReleaseEvidence(releaseOptions({
+    collectLiveBox: localBox,
+    loadVerifier: releaseVerifier(AGENTLIB_COMMIT, { agentLibRole: 'provenance-reference' }),
+  })), /local-AgentLib Box requires the achillesAgentLib source to be labeled deployed-source/);
+  const local = await collectCopilotReleaseEvidence(releaseOptions({
+    collectLiveBox: localBox,
+    loadVerifier: releaseVerifier(AGENTLIB_COMMIT, { agentLibRole: 'deployed-source' }),
+  }));
+  assert.equal(local.agentLib.mode, 'local');
+  assert.equal(local.agentLib.commitEvidence, 'box-label');
+  await assert.rejects(() => collectCopilotReleaseEvidence(releaseOptions({
+    collectLiveBox: localBox,
+    loadVerifier: releaseVerifier('6'.repeat(40), { agentLibRole: 'deployed-source' }),
+  })), /running Box AgentLib commit does not match SMOKE_RELEASE_MANIFEST/);
+});
+
+test('the exact absolute verifier path is loaded and relative or missing paths are refused before any load', async () => {
+  const loaded = [];
+  const loadVerifier = async (filePath) => { loaded.push(filePath); return releaseVerifier()(); };
+  await collectCopilotReleaseEvidence(releaseOptions({ loadVerifier, verifierPath: '/pinned/ploinky/tests/release/verifyExplorerReleaseBundle.mjs' }));
+  assert.deepEqual(loaded, ['/pinned/ploinky/tests/release/verifyExplorerReleaseBundle.mjs']);
+  for (const verifierPath of ['relative/verifier.mjs', '', undefined]) {
+    await assert.rejects(() => collectCopilotReleaseEvidence(releaseOptions({ loadVerifier, verifierPath })), /requires an absolute release verifier path/);
+  }
+  assert.equal(loaded.length, 1, 'no refused path reached the loader');
+  await assert.rejects(() => collectCopilotReleaseEvidence(releaseOptions({ loadVerifier: async () => ({}) })), /does not export verifyManifestFile/);
+});
+
+test('canonical runner selects the current release verifier and hands that exact path to every child', () => {
+  const runner = fs.readFileSync(path.resolve(import.meta.dirname, '../scripts/run-playwright.mjs'), 'utf8');
+  const orchestration = fs.readFileSync(path.resolve(import.meta.dirname, 'live-sessions-orchestration.mjs'), 'utf8');
+  assert.match(runner, /\? '\.\.\/\.\.\/\.\.\/ploinky\/tests\/release\/verifyLocalSnapshotBundle\.mjs'\n\s+: '\.\.\/\.\.\/\.\.\/ploinky\/tests\/release\/verifyExplorerReleaseBundle\.mjs'\);/);
+  assert.match(runner, /if \(verificationMode === 'release'\) childEnv\.SMOKE_COPILOT_RELEASE_VERIFIER = sourceVerifierPath;/);
+  assert.doesNotMatch(runner, /verifyCopilot421Bundle/);
+  assert.doesNotMatch(orchestration, /verifyCopilot421Bundle/);
+  assert.match(orchestration, /verifyExplorerReleaseBundle\.mjs/);
+  // Every consumer of the runner's verifier resolves its default from the same current file.
+  assert.equal((runner.match(/verifierPath: sourceVerifierPath/g) || []).length >= 4, true);
+});
+
+test('an expired Box generation is refused by the real freshness check under the caller age limit, with no evidence returned', async () => {
+  const NOW = Date.parse('2026-07-31T10:00:00.000Z');
+  const seen = [];
+  const collect = (startedAt) => collectCopilotReleaseEvidence(releaseOptions({
+    generationMaxAgeMs: 30 * 60_000,
+    collectLiveBox(options) {
+      seen.push({ generationMaxAgeMs: options.generationMaxAgeMs, requireFreshImage: options.requireFreshImage });
+      const evidence = imageModeLiveBox();
+      evidence.box.startedAt = startedAt;
+      validateBoxFreshness({
+        capturedAt: '2026-07-31T10:00:00.000Z',
+        imageCreatedAt: '2026-07-30T10:00:00.000Z',
+        box: evidence.box,
+        generationMaxAgeMs: options.generationMaxAgeMs,
+        requireFreshImage: options.requireFreshImage,
+      }, { nowMs: NOW });
+      return evidence;
+    },
+  }));
+  const fresh = await collect('2026-07-31T09:45:00.000Z');
+  assert.equal(fresh.repositories.explorer.commit, '1'.repeat(40));
+  await assert.rejects(() => collect('2026-07-31T09:20:00.000Z'), /outer container generation is not fresh enough/);
+  await assert.rejects(() => collect('2026-07-31T09:20:00.000Z'), (error) => !('liveBox' in error));
+  assert.deepEqual(seen, Array(3).fill({ generationMaxAgeMs: 30 * 60_000, requireFreshImage: false }));
 });

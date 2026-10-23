@@ -112,7 +112,8 @@ test('outer binding keeps stopped state and all generation and mount changes vis
 });
 
 test('orchestration reader carries the verifier path across the actual runtime and release collector boundary', async t => {
-    const fallback = fileURLToPath(new URL('../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs', import.meta.url));
+    const fallback = fileURLToPath(new URL('../../../../ploinky/tests/release/verifyExplorerReleaseBundle.mjs', import.meta.url));
+    const legacy = fileURLToPath(new URL('../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs', import.meta.url));
     for (const override of [undefined, '/neutral/pinned/verify-release.mjs', 'relative-verifier.mjs']) {
         await t.test(override || 'canonical fallback', async () => {
             const stopped = new Error('neutral verifier load reached');
@@ -133,6 +134,7 @@ test('orchestration reader carries the verifier path across the actual runtime a
             } else {
                 await assert.rejects(createOrchestrationReader(input, { env, createRuntimeReader }), error => error === stopped);
                 assert.equal(loaded, override || fallback);
+                assert.notEqual(loaded, legacy, 'the legacy 421 verifier is never an independent fallback');
             }
         });
     }

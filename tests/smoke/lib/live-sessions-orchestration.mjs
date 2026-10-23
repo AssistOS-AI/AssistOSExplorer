@@ -617,7 +617,7 @@ export async function createOrchestrationReader({ release, evidence, runtime, cw
 } = {}) {
     const guard = await createRuntimeReader({ env, baseURL: release.applicationBaseURL,
         verifierPath: env.SMOKE_COPILOT_RELEASE_VERIFIER
-            || fileURLToPath(new URL('../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs', import.meta.url)) });
+            || fileURLToPath(new URL('../../../../ploinky/tests/release/verifyExplorerReleaseBundle.mjs', import.meta.url)) });
     const initial = await guard.finish();
     assert.equal(initial.runtime.containerId, runtime.containerId);
     const initialInspection = inspectNested(evidence.outerContainerId, runtime.containerId, nestedCommand);
