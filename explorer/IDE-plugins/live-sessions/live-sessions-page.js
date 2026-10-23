@@ -18,6 +18,20 @@ export const PANEL_COMPONENT = 'live-sessions-modal';
 // without its siblings, so the page registers each one the panel creates. The panel creates the stream view when an
 // agent run is watched.
 export const PAGE_COMPONENTS = Object.freeze([PANEL_COMPONENT, 'live-session-stream-view']);
+// The expanded modal calls this same-origin hook on its frame before it closes or replaces the panel.
+export const CLOSE_GUARD = '__beforeExpandedModalClose';
+
+// Answers the expanded modal's close or replacement request: the mounted panel asks the owner of an embedded running
+// terminal whether it keeps running. Only a literal true lets the modal proceed; with no panel mounted yet there is
+// nothing to ask about.
+export function installCloseGuard(win, currentPresenter) {
+    if (!win) return;
+    win[CLOSE_GUARD] = async (reason) => {
+        const presenter = currentPresenter();
+        if (typeof presenter?.prepareViewClose !== 'function') return true;
+        return (await presenter.prepareViewClose(reason)) === true;
+    };
+}
 
 // The manifest's `applicationPlugins` booleans switch plugins off for a deployment, as in main.js.
 export function normalizeRuntimePluginPolicy(manifest) {
@@ -82,8 +96,11 @@ export async function startLiveSessionsPage({
     win = globalThis.window,
     dependencies = null,
 } = {}) {
+    let mounted = null;
     try {
         if (!root) throw new Error('The Live Sessions page has no mount point.');
+        // Installed before anything can embed a terminal: the first list read may already restore one.
+        installCloseGuard(win, () => mounted?.webSkelPresenter);
         const deps = dependencies || await loadDefaultDependencies();
         deps.initializeTheme();
         // The shell marks its own agent for the SDK and the auth guard; this page is served by the same agent.
@@ -126,6 +143,7 @@ export async function startLiveSessionsPage({
 
         const element = webSkel.createElement(PANEL_COMPONENT, root, {}, { 'data-presenter': PANEL_COMPONENT }, true);
         const node = element.element?.deref?.();
+        mounted = node;
         await node?.presenterReadyPromise;
         await node?.renderCompletePromise;
         await node?.webSkelPresenter?.initialLoad;

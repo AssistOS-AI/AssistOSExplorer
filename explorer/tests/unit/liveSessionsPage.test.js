@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
-    normalizeRuntimePluginPolicy, PAGE_COMPONENTS, PANEL_COMPONENT, startLiveSessionsPage,
+    CLOSE_GUARD, installCloseGuard, normalizeRuntimePluginPolicy, PAGE_COMPONENTS, PANEL_COMPONENT, startLiveSessionsPage,
 } from '../../IDE-plugins/live-sessions/live-sessions-page.js';
 import { aggregateIdePlugins } from '../../utils/ide-plugins.mjs';
 import { createRuntimePluginLoader } from '../../services/runtime/runtimePluginLoader.js';
@@ -32,7 +32,7 @@ function harness({ registered = { name: PANEL_COMPONENT }, user = { roles: ['adm
     const webSkel = { name: 'webSkel' };
     const presenter = { initialLoad: Promise.resolve() };
     const node = { presenterReadyPromise: Promise.resolve(), renderCompletePromise: Promise.resolve(), webSkelPresenter: presenter };
-    webSkel.createElement = (...args) => { log.push(['createElement', ...args]); return { element: { deref: () => node } }; };
+    webSkel.createElement = (...args) => { log.push(['createElement', ...args, typeof win[CLOSE_GUARD]]); return { element: { deref: () => node } }; };
     const dependencies = {
         initializeTheme: () => log.push(['theme']),
         installAuthNavigationGuard: () => log.push(['auth-guard']),
@@ -81,7 +81,8 @@ test('the page bootstraps WebSkel, the signed-in user and the source catalog, th
     const created = page.log.find((entry) => entry[0] === 'createElement');
     assert.equal(created[1], 'live-sessions-modal');
     assert.equal(created[2], page.root);
-    assert.deepEqual(created.slice(3), [{}, { 'data-presenter': 'live-sessions-modal' }, true]);
+    assert.deepEqual(created.slice(3), [{}, { 'data-presenter': 'live-sessions-modal' }, true, 'function'],
+        'the close guard exists before the panel (and any restored terminal) is created');
     assert.ok(steps.lastIndexOf('register') < steps.indexOf('createElement'), 'the components are registered before the panel is created');
     assert.equal(page.status.hidden, true);
     assert.equal(page.status.textContent, '');
@@ -162,4 +163,38 @@ test('the real runtime loader registers the panel and the stream view from the r
     for (const name of PAGE_COMPONENTS) assert.ok(loaded.includes(name), `${name} is registered`);
     // The modal creates the stream view by name when an agent run is watched; nothing but the page registers it here.
     assert.equal(loaded.includes('live-sessions-tool-button'), false, 'the toolbar button belongs to the shell');
+});
+
+test('the page close guard asks the mounted panel and passes only a literal true; without a panel it approves', async () => {
+    const page = harness();
+    const reasons = [];
+    let answer = true;
+    page.dependencies.lastPresenter = null;
+    const result = await startLiveSessionsPage({ root: page.root, status: page.status, win: page.win, dependencies: page.dependencies });
+    assert.ok(result);
+    const presenter = result.element.element.deref().webSkelPresenter;
+    presenter.prepareViewClose = async (reason) => { reasons.push(reason); return answer; };
+    assert.equal(await page.win[CLOSE_GUARD]('close'), true);
+    answer = false;
+    assert.equal(await page.win[CLOSE_GUARD]('replace'), false);
+    for (const value of ['true', 1, {}, undefined]) {
+        answer = value;
+        assert.equal(await page.win[CLOSE_GUARD]('close'), false, JSON.stringify(value));
+    }
+    assert.deepEqual(reasons.slice(0, 2), ['close', 'replace']);
+
+    const bare = {};
+    installCloseGuard(bare, () => null);
+    assert.equal(await bare[CLOSE_GUARD]('close'), true, 'no panel mounted yet: nothing to ask');
+    installCloseGuard(null, () => null);
+
+    const failed = harness({ registered: null });
+    const original = console.error;
+    console.error = () => {};
+    try {
+        assert.equal(await startLiveSessionsPage({ root: failed.root, status: failed.status, win: failed.win, dependencies: failed.dependencies }), null);
+    } finally {
+        console.error = original;
+    }
+    assert.equal(await failed.win[CLOSE_GUARD]('close'), true, 'a page that could not start never blocks closing');
 });

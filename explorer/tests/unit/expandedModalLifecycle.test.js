@@ -126,3 +126,120 @@ test('camelCase attributes and typed props survive payload encoding', async () =
     assert.deepEqual(JSON.parse(h.calls[0].payload.props), { enabled: false, count: 2 });
     h.calls[0].finish(); await tick(); h.calls[0].dialog.close(); await closed;
 });
+
+// ---- Guarded replacement: a mounted panel whose content guards its closing stays until it approves ----
+
+function guardedHost(storage = new Map()) {
+    const h = createHost(storage);
+    const guard = { active: true, reasons: [], answers: [] };
+    // The mounted dialog's presenter guards its closing; the test resolves each prepareClose('replace') answer.
+    return {
+        ...h,
+        guard,
+        mountGuarded(index) {
+            const dialog = h.calls[index].dialog;
+            dialog.querySelector = () => ({ webSkelPresenter: {
+                updateDescriptor: d => h.updates.push(d),
+                hasCloseGuard: () => guard.active,
+                prepareClose: (reason) => {
+                    guard.reasons.push(reason);
+                    return new Promise((resolve, reject) => { guard.answers.push({ resolve, reject }); });
+                },
+            } });
+        },
+    };
+}
+
+test('a guarded panel stays while it prepares; a refusal cancels the incoming request without touching the active panel or its resume record', async () => {
+    const h = guardedHost();
+    const first = h.open({ mode: 'iframe', url: '/live.html', title: 'Live', resume: true });
+    await tick(); h.mountGuarded(0); h.calls[0].finish(); await tick();
+    const resumeBefore = h.storage.get(RESUME_KEY);
+    const next = h.open({ mode: 'iframe', url: '/other.html', title: 'Other', resume: true });
+    assert.equal(typeof next.then, 'function');
+    assert.equal(typeof next.isClosed, 'function', 'the decorated promise is returned synchronously');
+    assert.equal(next.isClosed(), false);
+    await tick();
+    assert.deepEqual(h.guard.reasons, ['replace']);
+    assert.equal(h.calls.length, 1, 'nothing new is shown while the active panel decides');
+    assert.equal(h.calls[0].dialog.removed, false);
+    assert.equal(h.storage.get(RESUME_KEY), resumeBefore, 'the resume record still names the active panel');
+    h.guard.answers[0].resolve(false);
+    assert.equal(await next.opened, null);
+    await next;
+    assert.equal(next.isClosed(), true);
+    assert.equal(h.calls[0].dialog.removed, false);
+    assert.equal(h.calls[0].signal.aborted, false);
+    assert.equal(h.storage.get(RESUME_KEY), resumeBefore);
+    // The active panel is still the active one: reopening it returns its own promise.
+    assert.equal(h.open({ mode: 'iframe', url: '/live.html', title: 'Live' }), first);
+});
+
+test('an approved replacement disposes the guarded panel and then shows the new one', async () => {
+    const h = guardedHost();
+    const first = h.open({ mode: 'iframe', url: '/live.html', title: 'Live' });
+    await tick(); h.mountGuarded(0); h.calls[0].finish(); await tick();
+    const next = h.open({ component: 'help-modal' });
+    await tick();
+    h.guard.answers[0].resolve(true);
+    await first;
+    await tick();
+    assert.equal(h.calls[0].dialog.removed, true);
+    assert.equal(h.calls.length, 2);
+    h.calls[1].finish();
+    assert.notEqual(await next.opened, null);
+    h.calls[1].dialog.close(); await next;
+});
+
+test('A to B to C: B owns the transition, C is cancelled at once, a repeated B shares its promise, and a rejecting guard refuses', async () => {
+    const h = guardedHost();
+    h.open({ mode: 'iframe', url: '/live.html', title: 'Live' });
+    await tick(); h.mountGuarded(0); h.calls[0].finish(); await tick();
+    const b = h.open({ component: 'help-modal', props: { page: 1 } });
+    const c = h.open({ component: 'git-panel' });
+    assert.equal(await c.opened, null, 'the competing request settles opened with null');
+    await c;
+    assert.equal(c.isClosed(), true);
+    const bAgain = h.open({ component: 'help-modal', props: { page: 2 } });
+    assert.equal(bAgain, b, 'an identical incoming request shares the pending promise');
+    await tick();
+    assert.equal(h.guard.reasons.length, 1, 'one preparation');
+    h.guard.answers[0].resolve(true);
+    await tick(); await tick();
+    assert.equal(h.calls.length, 2, 'B is shown once and C never');
+    assert.equal(h.calls[1].payload.component, 'help-modal');
+    assert.equal(JSON.parse(h.calls[1].payload.props).page, 2, 'the coalesced descriptor is used');
+
+    const r = guardedHost();
+    r.open({ mode: 'iframe', url: '/live.html', title: 'Live' });
+    await tick(); r.mountGuarded(0); r.calls[0].finish(); await tick();
+    const refused = r.open({ component: 'help-modal' });
+    await tick();
+    r.guard.answers[0].reject(new Error('page failed'));
+    assert.equal(await refused.opened, null);
+    assert.equal(r.calls[0].dialog.removed, false);
+});
+
+test('when the guarded panel closes itself during the preparation, the waiting panel opens', async () => {
+    const h = guardedHost();
+    h.open({ mode: 'iframe', url: '/live.html', title: 'Live' });
+    await tick(); h.mountGuarded(0); h.calls[0].finish(); await tick();
+    const next = h.open({ component: 'help-modal' });
+    await tick();
+    // The person chose Keep running from the panel's own X: the shared preparation approves and the panel closes.
+    h.calls[0].dialog.close();
+    h.guard.answers[0].resolve(true);
+    await tick(); await tick();
+    assert.equal(h.calls.length, 2);
+    h.calls[1].finish();
+    assert.notEqual(await next.opened, null);
+
+    const unguarded = guardedHost();
+    unguarded.guard.active = false;
+    unguarded.open({ mode: 'iframe', url: '/live.html', title: 'Live' });
+    await tick(); unguarded.mountGuarded(0); unguarded.calls[0].finish(); await tick();
+    const plain = unguarded.open({ component: 'help-modal' });
+    assert.equal(unguarded.calls[0].dialog.removed, true, 'an unguarded mounted panel is replaced at once, as before');
+    assert.deepEqual(unguarded.guard.reasons, []);
+    await tick(); unguarded.calls[1].finish(); await tick(); unguarded.calls[1].dialog.close(); await plain;
+});
