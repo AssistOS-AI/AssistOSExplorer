@@ -26,6 +26,11 @@ const WRONG_PASSWORD = 'sentinel-mistyped-passphrase-77b0';
 const ACCOUNT_EMAIL = 'bench-member@example.test';
 const NO_PASSWORD_EMAIL = 'code-only@example.test';
 const UNKNOWN_EMAIL = 'unknown-member@example.test';
+// The race tests drive a destination wizard with this separate account; it is
+// never the benchmark's account.
+const DESTINATION_EMAIL = 'destination-member@example.test';
+const DESTINATION_PASSWORD = 'destination-passphrase';
+const FOREIGN_SERVICE_PATH = '/other-service/auth/';
 const LOCAL_USERNAME = 'bench-local';
 const SENTINELS = [ACCOUNT_PASSWORD, LOCAL_PASSWORD, WRONG_PASSWORD];
 const PROVIDER_PATH = '/base-agent-additional-server/userPersistoAgent/7000/service/auth/';
@@ -65,6 +70,7 @@ function createFixture() {
       this.registered.clear();
       this.registered.set(ACCOUNT_EMAIL, { password: ACCOUNT_PASSWORD });
       this.registered.set(NO_PASSWORD_EMAIL, { password: '' });
+      this.registered.set(DESTINATION_EMAIL, { password: DESTINATION_PASSWORD });
       Object.assign(this, { sso: true, redirectDelay: 0, loginPath: PROVIDER_PATH, loginOrigin: '',
         setupComplete: true, signupEmail: true, initialPasswordSetup: false, returnTo: '/' }, overrides);
     },
@@ -89,7 +95,10 @@ function createFixture() {
   const authenticated = (incoming) => Boolean(incoming.headers.cookie?.includes('fixture-session=authenticated'));
   fixture.server = http.createServer(async (incoming, response) => {
     const url = new URL(incoming.url, 'http://fixture.invalid');
-    fixture.requests.push({ method: incoming.method, pathname: url.pathname });
+    const entry = { method: incoming.method, pathname: url.pathname };
+    fixture.requests.push(entry);
+    // The race tests also reach the real wizard at a foreign service path.
+    const servicePath = [fixture.loginPath, FOREIGN_SERVICE_PATH].find((prefix) => url.pathname.startsWith(prefix));
     if (url.pathname === '/explorer/index.html') {
       if (!authenticated(incoming)) {
         response.writeHead(302, { location: `/auth/login?returnTo=${encodeURIComponent(url.pathname)}` });
@@ -117,10 +126,11 @@ function createFixture() {
       }
       return;
     }
-    if (url.pathname.startsWith(fixture.loginPath) && fixture.sso) {
-      const relativePath = url.pathname.slice(fixture.loginPath.length);
+    if (servicePath && fixture.sso) {
+      const relativePath = url.pathname.slice(servicePath.length);
       if (incoming.method === 'POST') {
         const payload = JSON.parse(await readBody(incoming) || '{}');
+        entry.email = payload.email;
         if (payload.requestId !== 'fixture-state') return json(response, 400, { ok: false, error: 'login_request_invalid' });
         if (relativePath === 'attempt') {
           // A slow first state read proves the first step waits for the
@@ -283,7 +293,7 @@ function assertSafeOutcome(result) {
 
 function assertNothingCreated() {
   for (const route of SIGNUP_ROUTES) assert.equal(fixture.posts(route), 0, `no ${route} request`);
-  assert.deepEqual([...fixture.registered.keys()].sort(), [ACCOUNT_EMAIL, NO_PASSWORD_EMAIL].sort());
+  assert.deepEqual([...fixture.registered.keys()].sort(), [ACCOUNT_EMAIL, NO_PASSWORD_EMAIL, DESTINATION_EMAIL].sort());
 }
 
 const LOGIN_STEPS = ['begin:router-login-page', 'end:router-login-page', 'before-login-step',
@@ -560,4 +570,167 @@ for (const [name, extra, expectation] of [
       fs.rmSync(artifactDir, { recursive: true, force: true });
     }
   });
+}
+
+// ---- navigation while a credential action is waiting ------------------------
+// A field or button in the validated document is held unavailable, the page
+// then moves while the benchmark's action waits, and the hold is released.
+// The waiting action must never fill, click or send anything afterwards,
+// even after its whole timeout has passed.
+const RACE_TIMEOUT_MS = 2_000;
+const ACCOUNT_VALUES = [ACCOUNT_EMAIL, ACCOUNT_PASSWORD, LOCAL_USERNAME, LOCAL_PASSWORD];
+
+// Runs in every document: records input and click events (with whether the
+// field now holds a benchmark value) and, only in the validated document,
+// keeps the held element readonly or disabled until released.
+function raceProbe({ origin, pathname, hold, values }) {
+  const report = (event) => window.__authProbe?.({ ...event, href: location.href, driving: Boolean(window.__testDriving) });
+  document.addEventListener('input', (event) => {
+    if (event.target instanceof HTMLInputElement) {
+      report({ type: 'input', name: event.target.name, account: values.includes(event.target.value) });
+    }
+  }, true);
+  document.addEventListener('click', (event) => {
+    const button = event.target instanceof Element ? event.target.closest('button') : null;
+    if (button) report({ type: 'click', label: button.textContent.trim() });
+  }, true);
+  if (location.origin !== origin || location.pathname !== pathname) return;
+  const selectors = {
+    email: '#auth_content input[name="email"]',
+    password: '#auth_content input[name="password"]',
+    submit: '#auth_content button[type="submit"]',
+    legacy: 'input[name="password"]',
+  };
+  const apply = () => {
+    if (window.__holdReleased) return;
+    for (const element of document.querySelectorAll(selectors[hold])) {
+      if (hold === 'submit') {
+        if (element.textContent.trim() === 'Log in' && !element.disabled) element.disabled = true;
+      } else if (!element.readOnly) {
+        element.readOnly = true;
+      }
+    }
+  };
+  window.__releaseHold = () => {
+    window.__holdReleased = true;
+    for (const element of document.querySelectorAll(selectors[hold])) {
+      if (hold === 'submit') element.disabled = false;
+      else element.readOnly = false;
+    }
+  };
+  new MutationObserver(apply).observe(document, { childList: true, subtree: true });
+}
+
+async function waitFor(condition, what) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await condition().catch(() => false)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`timed out waiting for ${what}`);
+}
+
+async function runRace({ hold, move }) {
+  const { runAuthenticationSteps, NetworkRecorder } = await import('../scripts/run-ui-benchmark.mjs');
+  const legacy = hold === 'legacy';
+  fixture.reset({ sso: !legacy });
+  const config = benchmarkConfig({ timeoutMs: RACE_TIMEOUT_MS });
+  const holdPath = legacy ? '/auth/login' : PROVIDER_PATH;
+  const foreignOrigin = fixture.baseURL.replace('127.0.0.1', 'localhost');
+  const events = [];
+  const context = await browser.newContext();
+  await context.exposeBinding('__authProbe', (_source, event) => { events.push(event); });
+  await context.addInitScript(raceProbe, { origin: fixture.baseURL, pathname: holdPath, hold, values: ACCOUNT_VALUES });
+  const page = await context.newPage();
+  const session = await context.newCDPSession(page);
+  await session.send('Performance.enable');
+  const network = new NetworkRecorder(session, config.baseURL);
+  await network.install();
+  const state = { page, session, network, steps: [] };
+  let error = null;
+  const running = runAuthenticationSteps(state, config, { waitForInteractive: async () => {} })
+    .then(() => {}, (caught) => { error = caught; });
+  // Wait until the benchmark is blocked on the held action.
+  if (hold === 'email') {
+    await waitFor(async () => network.currentStep === 'background'
+      && page.locator('#auth_content input[name="email"]').evaluate((input) => input.readOnly), 'the held email field');
+  } else if (hold === 'password') {
+    await waitFor(() => page.locator('#auth_content input[name="password"]').evaluate((input) => input.readOnly),
+      'the held password field');
+  } else if (hold === 'submit') {
+    await waitFor(async () => network.currentStep === 'login-to-explorer-interactive', 'the login step');
+  } else {
+    await waitFor(async () => (await page.locator('input[name="username"]').inputValue()) !== ''
+      && page.locator('input[name="password"]').evaluate((input) => input.readOnly), 'the held local password field');
+  }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const validatedHref = page.url();
+  const requestMark = fixture.requests.length;
+  const query = legacy ? '?returnTo=%2Fexplorer%2Findex.html' : '?requestId=fixture-state&state=fixture-state';
+  if (move === 'cross-origin') {
+    await page.goto(`${foreignOrigin}${holdPath}${query}`);
+  } else if (move === 'foreign-path') {
+    await page.goto(`${fixture.baseURL}${FOREIGN_SERVICE_PATH}${query}`);
+  } else if (move === 'push-state') {
+    await page.evaluate((target) => { history.pushState({}, '', target); window.__releaseHold(); }, `${FOREIGN_SERVICE_PATH}${query}`);
+  } else {
+    await page.evaluate(() => { location.hash = 'moved'; window.__releaseHold(); });
+  }
+  if (!legacy && ['cross-origin', 'foreign-path'].includes(move) && hold !== 'email') {
+    // Give a stale action a real target: the destination's own password screen.
+    await page.evaluate(() => { window.__testDriving = true; });
+    await page.locator('#auth_content input[name="email"]').fill(DESTINATION_EMAIL);
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.getByRole('heading', { name: 'Enter your password', exact: true }).waitFor();
+    await page.evaluate(() => { window.__testDriving = false; });
+  }
+  await running;
+  // Outlast every bound wait before looking for a late effect.
+  await new Promise((resolve) => setTimeout(resolve, RACE_TIMEOUT_MS + 500));
+  const fieldsWithAccountValues = [];
+  for (const input of await page.locator('input').all()) {
+    if (ACCOUNT_VALUES.includes(await input.inputValue().catch(() => ''))) fieldsWithAccountValues.push(await input.getAttribute('name'));
+  }
+  await context.close();
+  return {
+    error,
+    steps: state.steps.map((step) => [step.name, step.status]),
+    movedAccountInputs: events.filter((event) => event.type === 'input' && event.account && event.href !== validatedHref)
+      .map((event) => event.name),
+    movedClicks: events.filter((event) => event.type === 'click' && !event.driving && event.href !== validatedHref)
+      .map((event) => event.label),
+    laterCredentialRequests: fixture.requests.slice(requestMark).filter((entry) => entry.method === 'POST'
+      && (entry.email === ACCOUNT_EMAIL || entry.pathname.endsWith('/password/login') || entry.pathname === '/auth/login'))
+      .map((entry) => entry.pathname),
+    fieldsWithAccountValues,
+  };
+}
+
+for (const [hold, moves] of [
+  ['email', ['cross-origin', 'foreign-path', 'push-state', 'hash']],
+  ['password', ['cross-origin', 'foreign-path', 'push-state']],
+  ['submit', ['cross-origin', 'foreign-path', 'push-state']],
+  ['legacy', ['cross-origin', 'push-state']],
+]) {
+  for (const move of moves) {
+    test(`a ${move} move while the ${hold} action waits leaves no fill, click or request behind`, async () => {
+      const result = await runRace({ hold, move });
+      // Safety first, so a regression reports the leak rather than the message.
+      assert.deepEqual(result.movedAccountInputs, [], 'no benchmark value was entered after the move');
+      assert.deepEqual(result.movedClicks, [], 'nothing was clicked after the move');
+      assert.deepEqual(result.laterCredentialRequests, [], 'no account request was sent after the move');
+      // A same-document move keeps values entered before it in the validated
+      // document; only the held field must stay empty there. A new document
+      // must hold no benchmark value at all.
+      const sameDocument = ['push-state', 'hash'].includes(move);
+      const heldField = { email: 'email', password: 'password', submit: null, legacy: 'password' }[hold];
+      assert.deepEqual(result.fieldsWithAccountValues.filter((name) => !sameDocument || name === heldField), [],
+        'no field holds a benchmark value after the move');
+      assert.equal(result.error?.message, 'Authentication left the validated login document.');
+      assert.deepEqual(result.steps, hold === 'submit'
+        ? [['router-login-page', 'passed'], ['login-to-explorer-interactive', 'failed']]
+        : [['router-login-page', 'passed']]);
+      assertSafeOutcome({ steps: [], requests: [], error: result.error });
+    });
+  }
 }
