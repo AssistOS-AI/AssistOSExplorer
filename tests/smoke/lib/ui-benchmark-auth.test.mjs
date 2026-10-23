@@ -737,3 +737,57 @@ for (const [hold, moves] of [
     });
   }
 }
+
+// ---- navigation from the field's own focus listener -------------------------
+// Focusing a field runs page listeners synchronously. A listener that moves
+// the page to another service path must not receive the value that the bound
+// action was about to write.
+function focusMoveProbe({ field, target, values }) {
+  document.addEventListener('input', (event) => {
+    if (event.target instanceof HTMLInputElement) {
+      window.__authProbe?.({ name: event.target.name, account: values.includes(event.target.value), pathname: location.pathname });
+    }
+  }, true);
+  new MutationObserver(() => {
+    const input = document.querySelector(`#auth_content input[name="${field}"]`);
+    if (input && !input.dataset.focusMove) {
+      input.dataset.focusMove = 'set';
+      input.addEventListener('focus', () => { history.pushState({}, '', `${target}${location.search}`); }, { once: true });
+    }
+  }).observe(document, { childList: true, subtree: true });
+}
+
+for (const field of ['email', 'password']) {
+  test(`a ${field} focus listener that moves to another service path receives no value`, async () => {
+    const { runAuthenticationSteps, NetworkRecorder } = await import('../scripts/run-ui-benchmark.mjs');
+    fixture.reset();
+    const config = benchmarkConfig({ timeoutMs: RACE_TIMEOUT_MS });
+    const events = [];
+    const context = await browser.newContext();
+    await context.exposeBinding('__authProbe', (_source, event) => { events.push(event); });
+    await context.addInitScript(focusMoveProbe, { field, target: FOREIGN_SERVICE_PATH, values: ACCOUNT_VALUES });
+    const page = await context.newPage();
+    const session = await context.newCDPSession(page);
+    await session.send('Performance.enable');
+    const network = new NetworkRecorder(session, config.baseURL);
+    await network.install();
+    const state = { page, session, network, steps: [] };
+    let error = null;
+    try {
+      await runAuthenticationSteps(state, config, { waitForInteractive: async () => {} }).catch((caught) => { error = caught; });
+      // Outlast every bound wait before looking for a late effect.
+      await new Promise((resolve) => setTimeout(resolve, RACE_TIMEOUT_MS + 500));
+      assert.equal(new URL(page.url()).pathname, FOREIGN_SERVICE_PATH, 'the focus listener moved the page');
+      assert.deepEqual(events.filter((event) => event.account && event.pathname !== PROVIDER_PATH), [],
+        'no benchmark value was entered after the move');
+      assert.equal(await page.locator(`#auth_content input[name="${field}"]`).inputValue(), '', 'the moved field stays empty');
+      assert.deepEqual(fixture.requests.filter((entry) => entry.method === 'POST'
+        && (entry.pathname.startsWith(FOREIGN_SERVICE_PATH) || entry.pathname.endsWith('/password/login'))), []);
+      assert.deepEqual(fixture.providerPosts(), field === 'email' ? ['attempt'] : ['attempt', 'discover']);
+      assert.equal(error?.message, 'Authentication left the validated login document.');
+      assert.deepEqual(state.steps.map((step) => [step.name, step.status]), [['router-login-page', 'passed']]);
+    } finally {
+      await context.close();
+    }
+  });
+}

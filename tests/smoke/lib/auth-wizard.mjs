@@ -118,10 +118,14 @@ async function boundAction(binding, locator, kind, value = '') {
       await handle.waitForElementState('visible', { timeout: Math.max(1, deadline - Date.now()) });
       await handle.waitForElementState(kind === 'fill' ? 'editable' : 'enabled', { timeout: Math.max(1, deadline - Date.now()) });
       outcome = await handle.evaluate((element, args) => {
-        if (!element.isConnected || window[args.mark] !== true || location.href !== args.href) return 'moved';
+        const moved = () => !element.isConnected || window[args.mark] !== true || location.href !== args.href;
+        if (moved()) return 'moved';
         if (element.disabled || (args.kind === 'fill' && element.readOnly)) return 'unavailable';
         if (args.kind === 'fill') {
           element.focus();
+          // Focus runs page listeners synchronously; check again before writing.
+          if (moved()) return 'moved';
+          if (element.disabled || element.readOnly) return 'unavailable';
           element.value = args.value;
           element.dispatchEvent(new Event('input', { bubbles: true }));
           element.dispatchEvent(new Event('change', { bubbles: true }));
