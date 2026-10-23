@@ -125,6 +125,104 @@ their existing additional image-age policies. DPU fallback discovery still requi
 an image younger than four hours. Changing selection to evade that limit is not
 acceptance.
 
+### Standard release manifest and source inventory
+
+`SMOKE_RELEASE_MANIFEST` must be a current `explorer-release-bundle` manifest
+(`schemaVersion` 1) read by `ploinky/tests/release/verifyExplorerReleaseBundle.mjs`, the
+verifier the runner selects in release mode and hands, as one exact absolute path, to every
+spec through `SMOKE_COPILOT_RELEASE_VERIFIER`. Versionless legacy manifests, other
+versions and other kinds are refused with no fallback to `verifyCopilot421Bundle.mjs`, which
+still requires a separate AchillesCLI source and is kept unchanged. The local-snapshot
+verifier is unchanged and remains development evidence that cannot replace release
+acceptance.
+
+The manifest holds exactly the schema version, the kind, the absolute path and SHA-256 of a
+frozen source inventory, and the immutable `images.ploinkyBox.digest`. Before writing it, the
+operator and an independent coordinator freeze the inventory outside every workspace and
+source directory and record its SHA-256 in the reviewed task checkpoint. Completeness comes
+from recursively examining the exact original-source manifests, selected agents, repos,
+enable and link-install steps and Git package dependencies; the verifier proves every listed
+source but cannot discover an omitted one. The inventory is a strict JSON file with the
+fields `schemaVersion` 1, `kind` `explorer-source-inventory`, `roboTeam`
+(`{"repository": "explorer", "path": "roboTeamAgent"}`) and `repositories`. Each repository
+name maps to exactly a canonical absolute Git `root`, an exact 40-hex `commit` and a `role`
+of `deployed-source` or `provenance-reference`. The required core keys are `ploinky`,
+`explorer` and `achillesAgentLib`; every actual participating source (for example `webmeet`,
+`OnlyOfficeAgent`, `UmamiAgent`, `local-llms`, ALA and `DocumentationSkills`) is listed too.
+Never add an `achillesCLI` entry: RoboTeam is owned by `explorer/roboTeamAgent`, which the
+verifier proves is a tracked real directory inside the verified Explorer checkout.
+
+```sh
+node <ploinky>/tests/release/verifyExplorerReleaseBundle.mjs write \
+  --inventory /abs/evidence/source-inventory.json --inventory-sha256 <reviewed sha256> \
+  --image-digest sha256:<64 hex> --output /abs/evidence/<cohort>/standard-release.json
+node <ploinky>/tests/release/verifyExplorerReleaseBundle.mjs verify \
+  --manifest /abs/evidence/<cohort>/standard-release.json
+```
+
+The writer validates the reviewed hash and every Git root, commit and clean state (including
+untracked files and submodules) first, creates the output exclusively with mode 0600, never
+overwrites, and offers no subset or filter option. Removing a dependency from the inventory
+without updating its reviewed hash fails. The verified result keeps the complete source map
+with each entry's role, and the native Live Sessions evidence must carry that complete map; a
+three-core-only map is refused when the release evidence contains dependencies.
+
+Unit prerequisite: unlike the other ordinary Explorer unit checks, `lib/acceptance-profile.test.mjs`
+exercises the real verifier and therefore reads `ploinky/tests/release/verifyExplorerReleaseBundle.mjs`
+from the sibling Ploinky checkout (`PLOINKY_ROOT` overrides the default `../ploinky`, see
+`tests/helpers/sibling-roots.mjs`). It fails, never skips, when that file is absent, so publish
+the Ploinky verifier before or together with this Explorer change; an older sibling Ploinky
+breaks that unit run (only the opt-in acceptance runs use it today, no CI workflow does).
+
+Role semantics follow the Box's actual AgentLib mode. An `image`-mode Box is verified
+against the AgentLib commit its immutable image records, and the clean Git counterpart of
+that commit must be labeled `provenance-reference` and kept outside
+`<workspace>/achillesAgentLib` so it cannot select local mode; it is not proof of the
+packaged bytes or of the latest deployed default-branch source. A deliberately selected
+`local` mode requires the `deployed-source` label and keeps its existing commit and semantic
+identity checks against the real checkout; a `managed` Box accepts either label. The Live
+Sessions runtime reader still rejects managed `.ploinky/repos` source paths: list the
+original clean source checkouts that the runtime actually uses.
+
+### Standard cohorts and the 30-minute budget
+
+The standard selection is every ledger entry whose disposition is
+`required-local-acceptance` plus the `fresh-live-sessions` cohort, an actual array of 26
+identities (ignore the historical `counts.total` of 44). Other profiles are outside the
+selection; they are neither skipped tests nor passes. Run each cohort on a fresh deployment
+bound to the same candidate and inventory pins:
+
+| Cohort (spec) | Count | Setup |
+| --- | ---: | --- |
+| supporting-00 (`00`) | 2 | Default admitted graph and routed WebChat agent |
+| fresh-webtty (`01`) | 1 | Own early fresh cohort, `SMOKE_WEBTTY_CORE=1`, distinct accounts and private inputs |
+| optional-defaults-and-activation (`03`) | 1 | Own fresh cohort with the four optional selections initially disabled, `SMOKE_OPTIONAL_AGENTS=1` |
+| supporting-04 (`04`) | 1 | Umami catalog initially disabled; the test intercepts lifecycle responses |
+| official-release (`05`) | 1 | Exact title `opens a working Copilot from a newly created folder` |
+| supporting-10 (`10`) | 2 | Default graph; owned upload fixtures |
+| supporting-20 (`20`) | 1 | Default graph |
+| official-release (`30`) | 2 | Separate public-room and media commands; WebMeet and LiveKit ready |
+| supporting-31 (`31`), supporting-40 (`40`) | 2, 1 | WebMeet and LiveKit ready |
+| supporting-33 (`33`) | 1 | Umami ready, `SMOKE_UMAMI=1`, private dashboard inputs |
+| official-release (`50`) | 1 | OnlyOffice globally enabled and ready, `SMOKE_ONLYOFFICE=1`, absolute candidate `SMOKE_PLOINKY_BIN` |
+| supporting-60 (`60`), supporting-61 (`61`) | 1, 3 | `SMOKE_GITHUB=1`; distinct accounts; synthetic tokens rather than a real PAT |
+| semantic (`70`) | 4 | Four separate exact titles, `SMOKE_OPEN_INTERPRETER=1` and real provider prerequisites |
+| fresh-live-sessions (`07`) | 2 | Own fresh cohort, both cases together, `SMOKE_LIVE_SESSIONS=1`, three distinct accounts, native evidence, candidate CLI and ALA command |
+
+The four official-release passes (specs 05, 30 twice and 50) must come from one fresh Box
+generation, each in its own invocation and artifact directory. For the media pass set
+`SMOKE_WEBMEET_HEADLESS=1`, `SMOKE_WEBMEET_MEDIA=1` and `SMOKE_MEDIA_TIMEOUT_MS=60000`; the
+public room needs neither media flags nor a secondary account. WebMeet is disabled by
+default, so enable `webmeet/webmeetAgent` globally (documented command or Marketplace) and
+prove WebMeet and LiveKit ready before preflight; prepare OnlyOffice alone, and neither
+Scribe nor STT is a prerequisite. Spec 03 stays a separate fresh cohort: record its full
+transitive graph (Scribe transitively enables LiveKit) and never pre-enable its four
+selections. Measure startup, account and service setup, all four commands, postflight and a
+margin inside the hard 30-minute generation limit. When the measured sequence cannot fit,
+report a concrete scheduling blocker rather than splitting the official passes across
+generations. A missing, extra, skipped, cancelled, flaky, retried, expected-failure or
+zero-test outcome never counts as a selected pass.
+
 Before lengthy execution, the runner requires the ledger's exact flags and the
 selected account sign-in inputs. Supply `SMOKE_LOGIN_EMAIL` and
 `SMOKE_SIGN_IN_METHOD`, with `SMOKE_ACCOUNT_PASSWORD` for `password`,
@@ -482,7 +580,10 @@ the wizard's message.
 `router-login-page` ends when the login surface is rendered. Email discovery
 and credential entry happen between the two measured steps, and
 `login-to-explorer-interactive` starts immediately before the final **Log in**
-or local form submit. The default origin is `http://localhost:8080`; results
+or local form submit. That final submit is a scripted click bound to the
+validated login document rather than a simulated mouse click, so
+`login-to-explorer-interactive` from earlier runner revisions that used a mouse
+click is not strictly comparable. The default origin is `http://localhost:8080`; results
 recorded against `http://127.0.0.1:8080` have a different target and are not
 comparable with it. Pass `--directory-path` and `--file-path` naming a safe,
 existing, non-secret workspace entry rather than relying on the `/.env`
@@ -775,8 +876,9 @@ Opt-in checks:
 - `SMOKE_OPEN_INTERPRETER=1` runs Copilot semantic routing and AKU memory checks that require configured external provider runtime.
 - `SMOKE_CODEX_DELEGATION=1` selects the current C4 workflow delegation spec. Copilot starts one run-owned terminal workflow through `launch-workflow`; exactly one canonical matching Codex-only worker must produce the requested file, helper receipt and completed native child proof. The front backend is recorded separately through `SMOKE_C4_FRONT_BACKEND` and its configuration remains unchanged. Enabled live execution is refused until the reviewed phase6 runner and independently verified B+C setup exist. See [workflow delegation](./copilot-workflow-delegation.md).
 - The ordinary Copilot folder-launch spec requires `SMOKE_RELEASE_MANIFEST` and
-  binds that immutable 421 release bundle to the running outer Box before and
-  after Playwright. For public QA, keep `SMOKE_BASE_URL` on the real public
+  binds that current `explorer-release-bundle` manifest (see "Standard release
+  manifest and source inventory") to the running outer Box before and after
+  Playwright. For public QA, keep `SMOKE_BASE_URL` on the real public
   application and set `SMOKE_BOX_BASE_URL` to the exact host-loopback Router
   publication used only for local Podman generation inspection. The live Box
   inspector still rejects non-loopback, ambiguous, stale, or mismatched outer
