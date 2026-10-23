@@ -6,8 +6,12 @@ import { expect, recordPageNavigationFailure } from './fixtures.mjs';
 import { beginAuthNavigationDiagnostics } from './auth-navigation-diagnostics.mjs';
 import { smokeConfig } from './config.mjs';
 import { getWithoutKeepAlive } from './api-probe.mjs';
+import {
+  USERPERSISTO_LOGIN_PATH,
+  completeThroughWizard,
+  prepareUserPersistoAccount,
+} from './auth-wizard.mjs';
 
-const USERPERSISTO_LOGIN_PATH = '/base-agent-additional-server/userPersistoAgent/7000/service/auth/';
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const TOTP_PERIOD_MS = 30_000;
 const TOTP_BOUNDARY_MARGIN_MS = 250;
@@ -139,21 +143,8 @@ async function currentEmailCode(email, run) {
   }
 }
 
-// Clicks a wizard action that completes sign-in and waits for the Router
-// callback navigation, reporting the wizard's own refusal instead of waiting
-// for the navigation timeout. Refusal copy never contains a submitted secret.
-async function completeThroughWizard(page, content, button, timeout) {
-  const refusal = content.locator('[role="alert"]').filter({ hasText: /\S/ }).first();
-  const navigated = page.waitForNavigation({ waitUntil: 'load', timeout }).then(() => false);
-  const refused = refusal.waitFor({ state: 'visible', timeout }).then(() => true);
-  // Only the first outcome matters; the other one is abandoned.
-  navigated.catch(() => {});
-  refused.catch(() => {});
-  await button.click();
-  if (await Promise.race([navigated, refused])) {
-    const message = String(await refusal.textContent().catch(() => '') || '').trim();
-    throw new Error(`UserPersisto refused the sign-in${message ? `: ${message}` : '.'}`);
-  }
+function configuredSmokeOrigin() {
+  return new URL(smokeConfig.baseURL).origin;
 }
 
 function requireEmailCodeCommand(purpose) {
@@ -197,7 +188,8 @@ async function signUpThroughUserPersisto(page, content, { email, password, timeo
   requireEmailCodeCommand('the sign-up verification code');
   const code = await readEmailCode(email, { after: baseline, ...(codeCommandRunner ? { run: codeCommandRunner } : {}) });
   await codeInput.fill(code);
-  await completeThroughWizard(page, content, content.getByRole('button', { name: 'Verify', exact: true }), timeout);
+  await completeThroughWizard(page, content, content.getByRole('button', { name: 'Verify', exact: true }), timeout,
+    { expectedOrigin: configuredSmokeOrigin() });
 }
 
 // Drives the email-first wizard for administrators and other accounts: Email
@@ -206,38 +198,27 @@ async function signUpThroughUserPersisto(page, content, { email, password, timeo
 // password is the configured one, or the run password for accounts this run
 // signs up.
 export async function signInThroughUserPersisto(page, account, { codeCommandRunner, totpClock } = {}) {
-  const content = page.locator('#auth_content');
   const timeout = smokeConfig.timeouts.navigation;
-  await content.locator('h1').first().waitFor({ state: 'visible', timeout });
+  const expectedOrigin = configuredSmokeOrigin();
+  await page.locator('#auth_content').locator('h1').first().waitFor({ state: 'visible', timeout });
   if (!SIGN_IN_METHODS.has(account.signInMethod)) {
     throw new Error('BLOCKED: automated UserPersisto sign-in requires password, emailCode or totp.');
   }
-  // Wait for the rendered start screen, not the loading placeholder.
-  const emailInput = content.locator('input[name="email"]');
-  await emailInput.waitFor({ state: 'visible', timeout });
-  // The first completed sign-in claims an unclaimed installation; a test
-  // account must never become its administrator by accident.
-  if (await content.getByText('The first completed sign-in becomes its administrator', { exact: false }).isVisible()) {
-    throw new Error('UserPersisto setup is not complete. Claim the installation as its administrator before running account tests.');
-  }
-  const email = String(account.loginEmail || account.username || '').trim();
-  if (!email.includes('@')) throw new Error('A UserPersisto account needs a configured sign-in email.');
   if (account.signInMethod === 'totp' && !account.totpSecret) {
     throw new Error('BLOCKED: the configured account uses an authenticator app but no TOTP secret is configured.');
   }
+  const email = String(account.loginEmail || account.username || '').trim();
   const password = String(account.accountPassword || smokeConfig.runAccountPassword || '');
-  await emailInput.fill(email);
-  await content.getByRole('button', { name: 'Next', exact: true }).click();
-  const passwordScreen = content.getByRole('heading', { name: 'Enter your password', exact: true });
-  const signUp = content.getByRole('button', { name: 'Sign up', exact: true });
-  const noEmailSignUp = content.getByRole('heading', { name: /^(No account found|Create an account with Google)$/ });
-  await passwordScreen.or(signUp).or(noEmailSignUp).first().waitFor({ state: 'visible', timeout });
-  if (await signUp.isVisible()) {
+  // The smoke suite signs unknown emails up; the shared helper refuses an
+  // unclaimed installation and checks the origin before the email is entered.
+  const { state, content } = await prepareUserPersistoAccount(page, { loginEmail: account.loginEmail, username: account.username }, {
+    expectedOrigin,
+    timeoutMs: timeout,
+    allowSignup: true,
+  });
+  if (state === 'signup') {
     await signUpThroughUserPersisto(page, content, { email, password, timeout, codeCommandRunner });
     return;
-  }
-  if (await noEmailSignUp.isVisible()) {
-    throw new Error('BLOCKED: UserPersisto has no account for the configured email and offers no email sign-up.');
   }
   if (account.signInMethod === 'password') {
     const passwordInput = content.locator('input[name="password"]');
@@ -245,7 +226,8 @@ export async function signInThroughUserPersisto(page, account, { codeCommandRunn
       throw new Error('BLOCKED: password sign-in is not available for the configured account.');
     }
     await passwordInput.fill(password);
-    await completeThroughWizard(page, content, content.getByRole('button', { name: 'Log in', exact: true }), timeout);
+    await completeThroughWizard(page, content, content.getByRole('button', { name: 'Log in', exact: true }), timeout,
+      { expectedOrigin });
     return;
   }
   const totp = account.signInMethod === 'totp';
@@ -267,7 +249,8 @@ export async function signInThroughUserPersisto(page, account, { codeCommandRunn
     const code = await readEmailCode(email, { after: baseline, ...(codeCommandRunner ? { run: codeCommandRunner } : {}) });
     await codeInput.fill(code);
   }
-  await completeThroughWizard(page, content, content.getByRole('button', { name: 'Verify', exact: true }), timeout);
+  await completeThroughWizard(page, content, content.getByRole('button', { name: 'Verify', exact: true }), timeout,
+    { expectedOrigin });
 }
 
 function loginForm(page) {
