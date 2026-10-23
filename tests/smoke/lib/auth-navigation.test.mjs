@@ -18,7 +18,7 @@ test('authentication visits only its final surface and preserves a separate serv
   const administratorAccount = { username: 'administrator', loginEmail: 'owner@example.test', signInMethod: 'emailCode' };
   const totpSecret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
   const providerPath = '/base-agent-additional-server/userPersistoAgent/7000/service/auth/';
-  const providerAssets = new Map(['index.html', 'main.js', 'wizard.js', 'password-rules.js', 'sso-adapter.js', 'auth-api.js', 'auth.css', 'google-button.css'].map((name) => [
+  const providerAssets = new Map(['index.html', 'main.js', 'wizard.js', 'password-rules.js', 'sso-adapter.js', 'auth-api.js', 'google-gis.js', 'auth.css', 'google-button.css'].map((name) => [
     name,
     fs.readFileSync(new URL(`../../../userPersistoAgent/public/auth/${name}`, import.meta.url)),
   ]));
