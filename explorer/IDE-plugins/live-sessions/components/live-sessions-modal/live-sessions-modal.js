@@ -69,6 +69,22 @@ function closeChoiceFailure(choice, stage, error) {
     return 'Stop it may have been accepted: if so, the terminal stops in about 30 seconds unless it is reopened or set to Keep running. This view stays open.';
 }
 
+// What the status says when the chosen view went away or changed. `sentPolicy` is the close policy Ploinky already
+// accepted for the session before that was noticed, or null when nothing was sent.
+export function closeDecisionLostText(sentPolicy, viewShown) {
+    if (sentPolicy === 'keep') {
+        return viewShown
+            ? 'The terminal view changed while your choice was applied. Its close choice was set to Keep running, so the terminal keeps running; close the view again to choose.'
+            : 'Its close choice was set to Keep running before the view closed, so the terminal keeps running.';
+    }
+    if (sentPolicy === 'stop') {
+        return viewShown
+            ? 'The terminal view changed while your choice was applied. Its close choice was set to Stop it, but no stop was armed for this view, so the terminal keeps running while a view is open. Close the view again to choose, or set Keep running.'
+            : 'Its close choice was set to Stop it, but the view closed before a stop was requested for it, so no stop was armed from here.';
+    }
+    return 'The terminal view changed before your choice was applied. Nothing was sent for it; close it again to choose.';
+}
+
 function sameOriginMessage(event, frame) {
     const win = globalThis.window;
     const origin = win?.location?.origin ?? globalThis.location?.origin;
@@ -500,15 +516,13 @@ export class LiveSessionsModal {
             && (!decision.viewId || target.embedded.viewId === decision.viewId);
     }
 
-    // The chosen view went away or changed during the choice. Nothing is sent for it. With no view left there is
-    // nothing to protect, so the close may proceed; a different view stays, and the person decides again.
-    closeDecisionLost(decision) {
-        if (!this.embedded) {
-            this.settleCloseDecision(decision, true);
-            return;
-        }
-        if (this.statusElement) this.statusElement.textContent = 'The terminal view changed before your choice was applied. Nothing was sent for it; close it again to choose.';
-        this.settleCloseDecision(decision, false);
+    // The chosen view went away or changed during the choice, and nothing more is sent for it. With no view left there is
+    // nothing to protect, so the close may proceed; a different view stays, and the person decides again. The status
+    // names a policy request that was already accepted for the session.
+    closeDecisionLost(decision, sentPolicy = null) {
+        const viewShown = Boolean(this.embedded);
+        if (this.statusElement && (viewShown || sentPolicy)) this.statusElement.textContent = closeDecisionLostText(sentPolicy, viewShown);
+        this.settleCloseDecision(decision, !viewShown);
     }
 
     // The dialog buttons: Keep running, Stop it or Cancel.
@@ -533,7 +547,7 @@ export class LiveSessionsModal {
             await this.withRequest((options) => setLiveSessionClosePolicy(decision.sessionId, choice, options));
             if (decision.settled) return;
             if (!this.closeDecisionCurrent(decision)) {
-                this.closeDecisionLost(decision);
+                this.closeDecisionLost(decision, choice);
                 return;
             }
             if (choice === 'keep') {
@@ -545,17 +559,24 @@ export class LiveSessionsModal {
             const result = await this.withRequest((options) => submitLiveSessionCloseIntent(decision.sessionId, decision.viewId, 'stop', options));
             if (decision.settled) return;
             // Accepted: Ploinky ended this view, so its frame may be disposed. A late answer never disposes another view.
-            const outcome = result.pending
-                ? `The terminal stops in about ${Math.max(0, Math.ceil((result.until - Date.now()) / 1000))} s unless it is reopened, set to Keep running or open elsewhere.`
-                : result.reason === 'superseded'
-                    ? 'This view had already been replaced, so no stop was armed. The terminal is still running.'
-                    : 'Its close choice changed to Keep running meanwhile, so no stop was armed. The terminal is still running.';
             // Another view is shown when anything identifying the chosen view changed: a new frame, attachment, session
             // or a newer announcement in the same frame.
             const shown = this.embedded;
             const otherView = Boolean(shown) && (shown.frame !== decision.frame || shown.sessionId !== decision.sessionId
                 || shown.viewId !== decision.viewId || this.attachSequence !== decision.sequence);
-            if (this.statusElement) this.statusElement.textContent = otherView ? `${outcome} Another view is shown now, so it stays open.` : outcome;
+            const seconds = result.pending ? Math.max(0, Math.ceil((result.until - Date.now()) / 1000)) : 0;
+            let outcome;
+            if (result.pending) {
+                outcome = otherView
+                    ? `Stop it was accepted for the earlier view. Another view is shown now and stays open; the terminal stops in about ${seconds} s only if no owner view is open then and it is not reopened or set to Keep running.`
+                    : `The terminal stops in about ${seconds} s unless it is reopened, set to Keep running or open elsewhere.`;
+            } else {
+                outcome = result.reason === 'superseded'
+                    ? 'This view had already been replaced, so no stop was armed. The terminal is still running.'
+                    : 'Its close choice changed to Keep running meanwhile, so no stop was armed. The terminal is still running.';
+                if (otherView) outcome += ' Another view is shown now, so it stays open.';
+            }
+            if (this.statusElement) this.statusElement.textContent = outcome;
             this.settleCloseDecision(decision, !otherView);
         } catch (error) {
             if (decision.settled) return;

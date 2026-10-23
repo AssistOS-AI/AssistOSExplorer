@@ -1343,8 +1343,32 @@ test('a session that exits or a view that is replaced during the choice is never
     await replaced.modal.chooseViewClose(null, 'stop');
     assert.equal(await replacedClose, false);
     assert.equal(replaced.lifetime().length, 0);
-    assert.match(replaced.status(), /view changed/);
+    assert.equal(replaced.status(), 'The terminal view changed before your choice was applied. Nothing was sent for it; close it again to choose.');
     assert.equal(replaced.modal.viewerId, ID);
+});
+
+test('a view that changes after the policy request reports the close choice that was already accepted', async (t) => {
+    const expected = {
+        stop: 'The terminal view changed while your choice was applied. Its close choice was set to Stop it, but no stop was armed for this view, so the terminal keeps running while a view is open. Close the view again to choose, or set Keep running.',
+        keep: 'The terminal view changed while your choice was applied. Its close choice was set to Keep running, so the terminal keeps running; close the view again to choose.',
+    };
+    for (const choice of ['stop', 'keep']) {
+        let release;
+        const page = await choiceEnvironment(t, { policy: (body) => new Promise((resolve) => { release = () => resolve(response({ ok: true, closePolicy: body.policy, pendingStopUntil: null })); }) });
+        const frame = page.frame();
+        const closing = page.modal.prepareViewClose('close');
+        const choosing = page.modal.chooseViewClose(null, choice);
+        await settle();
+        page.announce({ viewId: 'W'.repeat(32), policy: 'keep' });
+        release();
+        await choosing;
+        assert.equal(await closing, false, choice);
+        assert.deepEqual(page.lifetime().map((call) => [call.url, call.options.body]),
+            [[`/webtty/sessions/${ID}/close-policy`, JSON.stringify({ policy: choice })]], `${choice}: only the policy was sent`);
+        assert.equal(page.status(), expected[choice], choice);
+        assert.equal(page.frame(), frame, choice);
+        assert.equal(page.modal.embedded.viewId, 'W'.repeat(32), choice);
+    }
 });
 
 test('a late Stop answer for view V never disposes a newer view W announced in the same frame', async (t) => {
@@ -1365,7 +1389,7 @@ test('a late Stop answer for view V never disposes a newer view W announced in t
     assert.equal(page.modal.viewerId, ID);
     assert.equal(page.modal.embedded.viewId, newer);
     assert.equal(page.storage.data.get(EMBEDDED_TERMINAL_KEY), JSON.stringify({ sessionId: ID, viewId: newer }));
-    assert.match(page.status(), /Another view is shown now, so it stays open/);
+    assert.match(page.status(), /^Stop it was accepted for the earlier view\. Another view is shown now and stays open; the terminal stops in about (29|30) s only if no owner view is open then and it is not reopened or set to Keep running\.$/);
     assert.equal(page.lifetime().length, 2, 'no further request for W');
 });
 
