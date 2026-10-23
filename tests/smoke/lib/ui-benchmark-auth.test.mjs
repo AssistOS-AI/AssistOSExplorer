@@ -56,6 +56,8 @@ function createFixture() {
     loginPath: PROVIDER_PATH,
     loginOrigin: '',
     setupComplete: true,
+    signupEmail: true,
+    initialPasswordSetup: false,
     returnTo: '/',
     baseURL: '',
     reset(overrides = {}) {
@@ -64,7 +66,7 @@ function createFixture() {
       this.registered.set(ACCOUNT_EMAIL, { password: ACCOUNT_PASSWORD });
       this.registered.set(NO_PASSWORD_EMAIL, { password: '' });
       Object.assign(this, { sso: true, redirectDelay: 0, loginPath: PROVIDER_PATH, loginOrigin: '',
-        setupComplete: true, returnTo: '/' }, overrides);
+        setupComplete: true, signupEmail: true, initialPasswordSetup: false, returnTo: '/' }, overrides);
     },
     posts(route) {
       return this.requests.filter((entry) => entry.method === 'POST'
@@ -125,7 +127,7 @@ function createFixture() {
           // rendered email screen rather than the page load.
           await new Promise((resolve) => setTimeout(resolve, ATTEMPT_DELAY_MS));
           return json(response, 200, { ok: true, expiresAt: Date.now() + 300_000, setupComplete: fixture.setupComplete,
-            registration: true, signup: { email: true, google: false, verification: 'none' },
+            registration: true, signup: { email: fixture.signupEmail, google: false, verification: 'none' },
             methods: { password: true, emailCode: true, passkey: false, totp: false, google: false },
             passwordPolicy: { minLength: 1, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' },
             attempt: { status: 'active', challenge: null, locked: false } });
@@ -134,6 +136,7 @@ function createFixture() {
         const known = fixture.registered.get(payload.email);
         if (relativePath === 'discover') {
           return json(response, 200, { ok: true, exists: Boolean(known),
+            initialPasswordSetup: !known && fixture.initialPasswordSetup,
             methods: { password: Boolean(known?.password), emailCode: Boolean(known), passkey: false, totp: false } });
         }
         if (relativePath === 'password/login') {
@@ -389,6 +392,19 @@ test('an unclaimed installation refuses before the email is entered', async () =
   assert.match(result.error?.message || '', /^UserPersisto setup is not complete\./);
   assert.deepEqual(fixture.providerPosts(), ['attempt']);
   assert.deepEqual(result.fields.filter(Boolean), []);
+  assertNothingCreated();
+  assertSafeOutcome(result);
+});
+
+test('an initial-setup password screen refuses before a password is entered', async () => {
+  // Without email sign-up the first-administrator screen shows an enabled
+  // password field and no Sign up button; a Log in there would claim the
+  // installation.
+  fixture.reset({ signupEmail: false, initialPasswordSetup: true });
+  const result = await runLogin({ loginEmail: UNKNOWN_EMAIL });
+  assert.match(result.error?.message || '', /^UserPersisto setup is not complete\./);
+  assert.deepEqual(fixture.providerPosts(), ['attempt', 'discover']);
+  assert.equal(fixture.posts('password/login'), 0);
   assertNothingCreated();
   assertSafeOutcome(result);
 });
