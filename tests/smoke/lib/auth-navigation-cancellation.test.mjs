@@ -32,6 +32,7 @@ test('a password sign-in retires Google before navigating and only a proven scri
     let cleanupMode = 'normal';
     let sinkMode = 'hold';
     let destinationScript = '';
+    let loggedOutScript = '';
     const parents = new Map();
     const sessions = new Map();
     const heldResponses = new Set();
@@ -66,6 +67,34 @@ test('a password sign-in retires Google before navigating and only a proven scri
                 const session = crypto.randomUUID();
                 sessions.set(session, described.user);
                 res.writeHead(302, { location: parent.returnTo, 'set-cookie': `fixture-session=${session}; Path=/; HttpOnly` }).end();
+                return;
+            }
+            // The Router's logout flow as far as the lifecycle controls need it: a confirmation page, a POST that revokes the
+            // session and redirects to returnTo, a public inert signed-out page, and a protected root that sends an
+            // unauthenticated visitor to the login.
+            if (url.pathname === '/auth/logout') {
+                const returnTo = url.searchParams.get('returnTo') || '/';
+                if (req.method === 'POST') {
+                    const id = /fixture-session=([a-f0-9-]+)/.exec(req.headers.cookie || '')?.[1];
+                    sessions.delete(id);
+                    record('logout-posted', { returnTo });
+                    res.writeHead(302, { location: returnTo, 'set-cookie': 'fixture-session=; Path=/; HttpOnly; Max-Age=0' }).end();
+                    return;
+                }
+                res.writeHead(200, { 'content-type': 'text/html' });
+                res.end(`<form action="/auth/logout?returnTo=${encodeURIComponent(returnTo)}" method="post"><button type="submit">Sign out</button></form>`);
+                return;
+            }
+            if (url.pathname === '/auth/logged-out') {
+                res.writeHead(200, { 'content-type': 'text/html' });
+                res.end(`<h1>Signed out</h1>${loggedOutScript ? `<script>${loggedOutScript}</script>` : ''}`);
+                return;
+            }
+            if (url.pathname === '/') {
+                const user = sessions.get(/fixture-session=([a-f0-9-]+)/.exec(req.headers.cookie || '')?.[1]);
+                if (!user) { res.writeHead(302, { location: '/auth/login?returnTo=%2F' }).end(); return; }
+                res.writeHead(200, { 'content-type': 'text/html' });
+                res.end('<h1 id="root">Protected root</h1>');
                 return;
             }
             if (url.pathname === '/destination') {
@@ -313,6 +342,184 @@ test('a password sign-in retires Google before navigating and only a proven scri
                 assert.equal(await statusOf(result.handle), 'cancelled');
             } finally {
                 await result.close();
+            }
+        });
+
+        // The primary-page lifecycle observer of the WebTTY gate (specs/01-webtty-core.spec.mjs observePrimaryAuthLifecycle),
+        // as the same logic over the same page events. It keeps counts only.
+        const { USERPERSISTO_LOGIN_PATH } = await import('./auth-wizard.mjs');
+        const { hasAuthenticatedSession } = await import('./auth.mjs');
+        assert.equal(WIZARD, USERPERSISTO_LOGIN_PATH, 'the fixture serves the wizard at the path the gate counts');
+        const observePrimary = (page) => {
+            const counts = { loginNavigations: 0, wizardDocuments: 0, googleSignInRequests: 0 };
+            const onRequest = (request) => {
+                const url = new URL(request.url());
+                if (request.isNavigationRequest() && url.origin === baseURL) {
+                    if (url.pathname === '/auth/login') counts.loginNavigations += 1;
+                    if (url.pathname === USERPERSISTO_LOGIN_PATH) counts.wizardDocuments += 1;
+                }
+                if (url.hostname === 'accounts.google.com' && url.pathname.startsWith('/gsi/')) counts.googleSignInRequests += 1;
+            };
+            page.on('request', onRequest);
+            let active = true;
+            return {
+                counts: () => ({ ...counts }),
+                stop() {
+                    if (!active) return;
+                    active = false;
+                    page.off('request', onRequest);
+                },
+            };
+        };
+        const QUIET = { loginNavigations: 0, wizardDocuments: 0, googleSignInRequests: 0 };
+        const assertQuiet = (observer) => assert.deepEqual(observer.counts(), QUIET, 'no login navigation, wizard document or Google sign-in start before the intentional re-login');
+        const assertLoggedOutLanding = async (page) => {
+            const landed = new URL(page.url());
+            assert.deepEqual({ origin: landed.origin, pathname: landed.pathname }, { origin: baseURL, pathname: '/auth/logged-out' });
+            assert.equal(await page.getByRole('heading', { name: 'Signed out', exact: true }).isVisible(), true);
+            assert.equal(await hasAuthenticatedSession(page.request), false, 'the session is revoked');
+        };
+        // One deliberate logout of the signed-in primary page to `returnTo`, observed from before the confirmation POST.
+        async function logoutCycle(page, returnTo, { settleMs = 1500, waitForIdleWizard = false } = {}) {
+            const observer = observePrimary(page);
+            assert.equal(await hasAuthenticatedSession(page.request), true, 'the primary session is authenticated before the logout');
+            await page.goto(`/auth/logout?returnTo=${encodeURIComponent(returnTo)}`, { waitUntil: 'load' });
+            // The service events recorded from here on belong to the logout; the earlier sign-in's wizard recorded its own.
+            const since = events.length;
+            await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), page.locator('form[action^="/auth/logout"] button[type="submit"]').click()]);
+            if (waitForIdleWizard) {
+                const deadline = Date.now() + 20_000;
+                while (!events.slice(since).some((event) => event.kind === 'google-started') && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+                assert.ok(events.slice(since).some((event) => event.kind === 'google-started'), 'the idle wizard started Google sign-in after the logout');
+            }
+            await new Promise((resolve) => setTimeout(resolve, settleMs));
+            observer.since = since;
+            return observer;
+        }
+        const afterLogout = (observer) => events.slice(observer.since).map((event) => event.kind);
+        async function signedInPrimary(browserContext = null) {
+            events = [];
+            const artifacts = fs.mkdtempSync(path.join(scratch, 'artifacts-'));
+            const context = browserContext || await browser.newContext({ baseURL });
+            const page = await context.newPage();
+            const diagnostics = attachPageDiagnostics(page, { outputPath: (...parts) => path.join(artifacts, ...parts) }, 'auth');
+            await signIn(page, account, '/destination', { requireConfiguredPrincipal: true });
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            assert.deepEqual(diagnostics.actionableEvents(), [], 'the initial sign-in is clean');
+            return { page, context, diagnostics, close: async () => { await context.close(); fs.rmSync(artifacts, { recursive: true, force: true }); } };
+        }
+        const actionableCancel = (diagnostics) => diagnostics.actionableEvents().filter((event) => String(event.url || '').endsWith(`${WIZARD}google/cancel`));
+
+        await t.test('the old logout to the protected root starts an idle wizard that the next sign-in abandons as an actionable abort', async () => {
+            const primary = await signedInPrimary();
+            try {
+                const observer = await logoutCycle(primary.page, '/', { waitForIdleWizard: true });
+                const idle = observer.counts();
+                assert.ok(idle.loginNavigations >= 1 && idle.wizardDocuments >= 1, `the root redirected the logged-out page to the login wizard (${JSON.stringify(idle)})`);
+                assert.ok(idle.googleSignInRequests >= 1, 'the idle wizard requested Google sign-in in the browser');
+                const served = afterLogout(observer);
+                assert.ok(served.includes('google-started') && served.indexOf('logout-posted') < served.indexOf('google-started'), `the service saw the Google start after the logout (${served.join(',')})`);
+                await assert.rejects(assertLoggedOutLanding(primary.page), 'the logout did not land on the inert page');
+                assert.throws(() => assertQuiet(observer), /no login navigation/);
+                observer.stop();
+                await signIn(primary.page, account, '/destination', { requireConfiguredPrincipal: true });
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                const actionable = primary.diagnostics.actionableEvents();
+                assert.deepEqual(actionableCancel(primary.diagnostics).map(({ kind, failure }) => [kind, failure]), [['requestfailed', 'net::ERR_ABORTED']],
+                    'the abandoned wizard\'s cleanup POST is an actionable abort');
+                assert.ok(actionable.some((event) => event.kind === 'requestfailed' && event.url === GIS && event.failure === 'net::ERR_ABORTED'), 'and so is its Google script request');
+                assert.throws(() => assertPageDiagnosticsClean(primary.page), /browser console, page, or network errors/);
+            } finally {
+                await primary.close();
+            }
+        });
+
+        await t.test('the inert logged-out page starts no wizard or Google and the next sign-in is clean, in a repeated cycle', async () => {
+            const primary = await signedInPrimary();
+            try {
+                for (const cycle of [1, 2]) {
+                    const baseline = primary.page.listenerCount('request');
+                    const observer = await logoutCycle(primary.page, '/auth/logged-out');
+                    await assertLoggedOutLanding(primary.page);
+                    assertQuiet(observer);
+                    assert.deepEqual(afterLogout(observer), ['logout-posted'], `cycle ${cycle}: the service saw the logout and no Google start`);
+                    assert.deepEqual(primary.diagnostics.actionableEvents(), [], `cycle ${cycle}: the logged-out page is clean before the re-login`);
+                    observer.stop();
+                    assert.equal(primary.page.listenerCount('request'), baseline, 'stopping the observer removes its listener');
+                    const principal = await signIn(primary.page, account, '/destination', { requireConfiguredPrincipal: true });
+                    assert.equal(principal.canonicalUsername, email);
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                    assert.deepEqual(primary.diagnostics.actionableEvents(), [], `cycle ${cycle}: the intentional re-login is clean`);
+                    assert.doesNotThrow(() => assertPageDiagnosticsClean(primary.page));
+                    assert.deepEqual(actionableCancel(primary.diagnostics), []);
+                }
+            } finally {
+                await primary.close();
+            }
+        });
+
+        await t.test('wizard activity in another context is not counted against the primary page', async () => {
+            const primary = await signedInPrimary();
+            const other = await signedInPrimary();
+            try {
+                const observer = observePrimary(primary.page);
+                // The other context takes the old path, idles at its wizard and keeps it open.
+                const otherObserver = await logoutCycle(other.page, '/', { waitForIdleWizard: true });
+                assert.ok(otherObserver.counts().wizardDocuments >= 1, 'the other context reached its idle wizard');
+                otherObserver.stop();
+                observer.stop();
+                // A second observer for the primary page's own inert logout.
+                const inert = await logoutCycle(primary.page, '/auth/logged-out');
+                await assertLoggedOutLanding(primary.page);
+                assertQuiet(inert);
+                assertQuiet(observer);
+                assert.deepEqual(afterLogout(inert), ['logout-posted'], 'the primary logout started no Google sign-in');
+                assert.deepEqual(primary.diagnostics.actionableEvents(), []);
+                inert.stop();
+            } finally {
+                await other.close();
+                await primary.close();
+            }
+        });
+
+        await t.test('a wrong logout redirect fails the landing check and an unrelated error on the inert page stays actionable', async () => {
+            const wrong = await signedInPrimary();
+            try {
+                const observer = await logoutCycle(wrong.page, '/destination');
+                await assert.rejects(assertLoggedOutLanding(wrong.page), 'a landing other than /auth/logged-out is refused');
+                observer.stop();
+            } finally {
+                await wrong.close();
+            }
+            const noisy = await signedInPrimary();
+            loggedOutScript = 'console.error("unexpected logged-out failure")';
+            try {
+                const observer = await logoutCycle(noisy.page, '/auth/logged-out');
+                await assertLoggedOutLanding(noisy.page);
+                assertQuiet(observer);
+                observer.stop();
+                assert.ok(noisy.diagnostics.actionableEvents().some((event) => event.kind === 'console'), 'the unrelated error is not hidden');
+                assert.throws(() => assertPageDiagnosticsClean(noisy.page), /browser console, page, or network errors/);
+            } finally {
+                loggedOutScript = '';
+                await noisy.close();
+            }
+        });
+
+        await t.test('a stopped observer ignores later wizard and Google traffic', async () => {
+            const primary = await signedInPrimary();
+            try {
+                const observer = await logoutCycle(primary.page, '/auth/logged-out');
+                await assertLoggedOutLanding(primary.page);
+                observer.stop();
+                observer.stop();
+                const before = observer.counts();
+                await primary.page.goto('/auth/login?returnTo=%2Fdestination', { waitUntil: 'load' });
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                assert.deepEqual(observer.counts(), before, 'a later intentional login is not observed after stop');
+                assert.deepEqual(before, QUIET);
+            } finally {
+                await primary.close();
             }
         });
     } finally {

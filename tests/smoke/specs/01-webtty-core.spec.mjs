@@ -12,7 +12,8 @@ import {
   expect,
   test,
 } from '../lib/fixtures.mjs';
-import { assertDistinctAuthenticatedPrincipals, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
+import { assertDistinctAuthenticatedPrincipals, hasAuthenticatedSession, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
+import { USERPERSISTO_LOGIN_PATH } from '../lib/auth-wizard.mjs';
 import { captureRouterRecoveryAuthentication, expectedRouterRecoveryDiagnostics, recoveryConsoleText } from '../lib/webtty-router-recovery.mjs';
 import { cleanupWebttyTerminals, requireDetachedShell, registerCreatedTerminal } from '../lib/webtty-terminal-cleanup.mjs';
 import { smokeConfig } from '../lib/config.mjs';
@@ -562,6 +563,31 @@ function requireWatcherAccount() {
   };
 }
 
+// Observes the primary page between the deliberate logout and the intentional re-login. Navigation requests count at
+// the request, so a redirect hop that never commits a document is seen too. Only counts are kept: no URL, query or body.
+function observePrimaryAuthLifecycle(page) {
+  const baseOrigin = new URL(smokeConfig.baseURL).origin;
+  const counts = { loginNavigations: 0, wizardDocuments: 0, googleSignInRequests: 0 };
+  const onRequest = (request) => {
+    const url = new URL(request.url());
+    if (request.isNavigationRequest() && url.origin === baseOrigin) {
+      if (url.pathname === '/auth/login') counts.loginNavigations += 1;
+      if (url.pathname === USERPERSISTO_LOGIN_PATH) counts.wizardDocuments += 1;
+    }
+    if (url.hostname === 'accounts.google.com' && url.pathname.startsWith('/gsi/')) counts.googleSignInRequests += 1;
+  };
+  page.on('request', onRequest);
+  let active = true;
+  return {
+    counts: () => ({ ...counts }),
+    stop() {
+      if (!active) return;
+      active = false;
+      page.off('request', onRequest);
+    },
+  };
+}
+
 async function attachFromLiveSessions(page, id, role) {
   await waitForExplorerPluginRender(page);
   const host = page.locator('[data-app-plugin-key="explorer/live-sessions"]');
@@ -751,6 +777,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
     let watcherContext = null;
     let cleanupPage = page;
     let primaryFailure = null;
+    let primaryAuthLifecycle = null;
     try {
       await observeExplorerPluginReadiness(page);
       await openExplorer(page, { hash: fixture.explorerHash });
@@ -1409,11 +1436,21 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await waitForAgentProcess(replacementRuntime, replacementGitAgent, logoutSleepPattern, true);
       expect(replacementDiagnostics.actionableEvents(), 'the replacement agent terminal must remain error-free before logout').toEqual([]);
       replacementDiagnostics.setExpectedOffline(true);
-      await page.goto('/auth/logout?returnTo=/', { waitUntil: 'load' });
+      // The deliberate logout lands on the public inert signed-out page. Landing on the protected root would send the
+      // logged-out primary page to an idle UserPersisto login wizard that starts Google sign-in while the owner and
+      // watcher work runs, and the intentional re-login below would then abandon that earlier document.
+      primaryAuthLifecycle = observePrimaryAuthLifecycle(page);
+      expect(await hasAuthenticatedSession(page.request), 'the primary session must be authenticated before the deliberate logout').toBe(true);
+      await page.goto(`/auth/logout?${new URLSearchParams({ returnTo: '/auth/logged-out' })}`, { waitUntil: 'load' });
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'load' }),
         page.locator('form[action^="/auth/logout"] button[type="submit"]').click(),
       ]);
+      const loggedOutLocation = new URL(page.url());
+      expect({ origin: loggedOutLocation.origin, pathname: loggedOutLocation.pathname }, 'the logout must land on the inert signed-out page')
+        .toEqual({ origin: new URL(smokeConfig.baseURL).origin, pathname: '/auth/logged-out' });
+      await expect(page.getByRole('heading', { name: 'Signed out', exact: true })).toBeVisible();
+      expect(await hasAuthenticatedSession(page.request), 'the primary session must be revoked after the logout').toBe(false);
       await waitForAgentExecDelta(
         replacementRuntime,
         replacementGitAgent,
@@ -1484,6 +1521,17 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await ownerViewDiagnostics.flush();
       ownerReattachContext = null;
 
+      const primaryLifecycleCounts = primaryAuthLifecycle.counts();
+      expect(
+        primaryLifecycleCounts,
+        'the logged-out primary page must start no login navigation, UserPersisto wizard document or Google sign-in before the intentional re-login',
+      ).toEqual({ loginNavigations: 0, wizardDocuments: 0, googleSignInRequests: 0 });
+      assertPageDiagnosticsClean(page, 'the logged-out primary page must be error-free before the intentional re-login');
+      primaryAuthLifecycle.stop();
+      await testInfo.attach('webtty-logout-lifecycle.json', {
+        body: Buffer.from(JSON.stringify({ landing: '/auth/logged-out', ...primaryLifecycleCounts }, null, 2)),
+        contentType: 'application/json',
+      });
       await openExplorer(page, {
         account: smokeConfig.primaryUser,
         hash: fixture.explorerHash,
@@ -1775,6 +1823,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
       primaryFailure = error;
       throw error;
     } finally {
+      // Idempotent: the observer must be gone before the cleanup sign-in below navigates the primary page.
+      primaryAuthLifecycle?.stop();
       await cleanupWebttyTerminals({
         terminals,
         priorFailure: primaryFailure,

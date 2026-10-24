@@ -857,6 +857,22 @@ The independently verified workspace bind must use the canonical
 terminal working directories, and the Router recovery pid-file path derive
 from that same absolute root. The retired `/workspace` alias is rejected.
 
+The gate's deliberate logout of the primary page returns to the public
+`/auth/logged-out` page, never to the protected Explorer root. It requires the
+same origin, the exact pathname, the `Signed out` heading and an unauthenticated
+session read, and it observes only that page's requests from before the
+logout confirmation until the intentional re-login: no `/auth/login`
+navigation, UserPersisto wizard document or `accounts.google.com/gsi` request
+may occur, and the page diagnostics must be clean first. Only the counts are
+recorded, as the `webtty-logout-lifecycle.json` attachment. A logout to the
+root sends the logged-out page to an idle login wizard that starts Google
+sign-in; the later intentional sign-in then abandons that earlier document and
+its cleanup and script requests abort with it. That is abandonment of the old
+document, not a failure of the sign-in finish barrier. The same
+`node --test lib/auth-navigation-cancellation.test.mjs` run reproduces both
+sequences against the actual UserPersisto service behind the fixture's Router
+stand-in.
+
 The intentional Router crash targets the recovery terminal, not unrelated
 Explorer background traffic. The gate first requires clean primary-page
 diagnostics, navigates that Explorer page to `about:blank`, and keeps the
