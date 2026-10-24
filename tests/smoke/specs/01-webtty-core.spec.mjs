@@ -564,16 +564,19 @@ function requireWatcherAccount() {
 }
 
 // Observes the primary page between the deliberate logout and the intentional re-login. Navigation requests count at
-// the request, so a redirect hop that never commits a document is seen too. Only counts are kept: no URL, query or body.
+// the request, so a redirect hop that never commits a document is seen too. The wizard's own Google start POST is
+// counted by itself, independent of any navigation or Google script request. Only counts are kept: no URL, query or
+// body. lib/auth-navigation-cancellation.test.mjs runs this exact function text against the actual service.
 function observePrimaryAuthLifecycle(page) {
   const baseOrigin = new URL(smokeConfig.baseURL).origin;
-  const counts = { loginNavigations: 0, wizardDocuments: 0, googleSignInRequests: 0 };
+  const counts = { loginNavigations: 0, wizardDocuments: 0, googleStartRequests: 0, googleSignInRequests: 0 };
   const onRequest = (request) => {
     const url = new URL(request.url());
     if (request.isNavigationRequest() && url.origin === baseOrigin) {
       if (url.pathname === '/auth/login') counts.loginNavigations += 1;
       if (url.pathname === USERPERSISTO_LOGIN_PATH) counts.wizardDocuments += 1;
     }
+    if (request.method() === 'POST' && url.origin === baseOrigin && url.pathname === `${USERPERSISTO_LOGIN_PATH}google/start`) counts.googleStartRequests += 1;
     if (url.hostname === 'accounts.google.com' && url.pathname.startsWith('/gsi/')) counts.googleSignInRequests += 1;
   };
   page.on('request', onRequest);
@@ -586,6 +589,28 @@ function observePrimaryAuthLifecycle(page) {
       page.off('request', onRequest);
     },
   };
+}
+
+// The Router answers /auth/token without a session with exactly HTTP 401 and {"ok":false,"error":"not_authenticated"}
+// (authRoutes.js, sendJson). One bounded request that follows no redirect and retries nothing; a transport error, a
+// redirect, any other status or payload, and a malformed or non-JSON body all fail. It runs through the request
+// context, so its answer never enters the page's diagnostic ledger. lib/auth-navigation-cancellation.test.mjs runs this
+// exact function text against the actual fixture and against each failure answer.
+async function requireUnauthenticatedTokenRoute(request) {
+  const response = await request.get('/auth/token', {
+    headers: { connection: 'close' },
+    maxRedirects: 0,
+    maxRetries: 0,
+    timeout: smokeConfig.timeouts.action,
+  });
+  if (response.status() !== 401 || !/^application\/json(?:;|$)/i.test(response.headers()['content-type'] || '')) {
+    throw new Error(`/auth/token must answer the unauthenticated 401 JSON, not HTTP ${response.status()}.`);
+  }
+  const payload = await response.json();
+  if (!payload || typeof payload !== 'object' || Object.keys(payload).sort().join() !== 'error,ok'
+    || payload.ok !== false || payload.error !== 'not_authenticated') {
+    throw new Error('/auth/token must answer exactly {ok:false,error:not_authenticated} after logout.');
+  }
 }
 
 async function attachFromLiveSessions(page, id, role) {
@@ -1450,7 +1475,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect({ origin: loggedOutLocation.origin, pathname: loggedOutLocation.pathname }, 'the logout must land on the inert signed-out page')
         .toEqual({ origin: new URL(smokeConfig.baseURL).origin, pathname: '/auth/logged-out' });
       await expect(page.getByRole('heading', { name: 'Signed out', exact: true })).toBeVisible();
-      expect(await hasAuthenticatedSession(page.request), 'the primary session must be revoked after the logout').toBe(false);
+      await requireUnauthenticatedTokenRoute(page.request);
       await waitForAgentExecDelta(
         replacementRuntime,
         replacementGitAgent,
@@ -1524,8 +1549,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
       const primaryLifecycleCounts = primaryAuthLifecycle.counts();
       expect(
         primaryLifecycleCounts,
-        'the logged-out primary page must start no login navigation, UserPersisto wizard document or Google sign-in before the intentional re-login',
-      ).toEqual({ loginNavigations: 0, wizardDocuments: 0, googleSignInRequests: 0 });
+        'the logged-out primary page must start no login navigation, UserPersisto wizard document, Google start or Google sign-in request before the intentional re-login',
+      ).toEqual({ loginNavigations: 0, wizardDocuments: 0, googleStartRequests: 0, googleSignInRequests: 0 });
       assertPageDiagnosticsClean(page, 'the logged-out primary page must be error-free before the intentional re-login');
       primaryAuthLifecycle.stop();
       await testInfo.attach('webtty-logout-lifecycle.json', {

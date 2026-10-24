@@ -859,18 +859,22 @@ from that same absolute root. The retired `/workspace` alias is rejected.
 
 The gate's deliberate logout of the primary page returns to the public
 `/auth/logged-out` page, never to the protected Explorer root. It requires the
-same origin, the exact pathname, the `Signed out` heading and an unauthenticated
-session read, and it observes only that page's requests from before the
-logout confirmation until the intentional re-login: no `/auth/login`
-navigation, UserPersisto wizard document or `accounts.google.com/gsi` request
-may occur, and the page diagnostics must be clean first. Only the counts are
+same origin, the exact pathname, the `Signed out` heading and one bounded,
+non-retrying, non-redirecting read of `/auth/token` that must answer exactly
+HTTP 401 `{"ok":false,"error":"not_authenticated"}` (a 503, transport error,
+redirect, other payload or malformed body fails). It observes only that page's
+requests from before the logout confirmation until the intentional re-login:
+no `/auth/login` navigation, UserPersisto wizard document, same-origin wizard
+`google/start` POST or `accounts.google.com/gsi` request may occur, and the
+page diagnostics must be clean first. Only the counts are
 recorded, as the `webtty-logout-lifecycle.json` attachment. A logout to the
 root sends the logged-out page to an idle login wizard that starts Google
 sign-in; the later intentional sign-in then abandons that earlier document and
 its cleanup and script requests abort with it. That is abandonment of the old
 document, not a failure of the sign-in finish barrier. The same
-`node --test lib/auth-navigation-cancellation.test.mjs` run reproduces both
-sequences against the actual UserPersisto service behind the fixture's Router
+`node --test lib/auth-navigation-cancellation.test.mjs` run executes the gate's
+own observer and probe functions, with their negative controls, and reproduces
+both sequences against the actual UserPersisto service behind the fixture's Router
 stand-in.
 
 The intentional Router crash targets the recovery terminal, not unrelated

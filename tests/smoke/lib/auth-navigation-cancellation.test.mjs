@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { once } from 'node:events';
 import { performance } from 'node:perf_hooks';
-import { chromium } from '@playwright/test';
+import { chromium, request as playwrightRequest } from '@playwright/test';
 
 // The actual UserPersisto service and wizard behind a small Router stand-in.
 // Google's script address resolves to a local socket that never answers, so
@@ -50,7 +50,7 @@ test('a password sign-in retires Google before navigating and only a proven scri
             if (url.pathname === '/auth/token') {
                 const user = sessions.get(/fixture-session=([a-f0-9-]+)/.exec(req.headers.cookie || '')?.[1]);
                 res.writeHead(user ? 200 : 401, { 'content-type': 'application/json' });
-                res.end(JSON.stringify(user ? { user: { id: user.id, email: user.email, roles: ['user'] } } : { error: 'unauthenticated' }));
+                res.end(JSON.stringify(user ? { user: { id: user.id, email: user.email, roles: ['user'] } } : { ok: false, error: 'not_authenticated' }));
                 return;
             }
             if (url.pathname === '/auth/login') {
@@ -345,39 +345,28 @@ test('a password sign-in retires Google before navigating and only a proven scri
             }
         });
 
-        // The primary-page lifecycle observer of the WebTTY gate (specs/01-webtty-core.spec.mjs observePrimaryAuthLifecycle),
-        // as the same logic over the same page events. It keeps counts only.
+        // The gate's own observer and unauthenticated probe: the exact function text of specs/01-webtty-core.spec.mjs runs
+        // here, so this file proves the code the live gate uses and cannot drift from it.
         const { USERPERSISTO_LOGIN_PATH } = await import('./auth-wizard.mjs');
         const { hasAuthenticatedSession } = await import('./auth.mjs');
+        const { smokeConfig } = await import('./config.mjs');
         assert.equal(WIZARD, USERPERSISTO_LOGIN_PATH, 'the fixture serves the wizard at the path the gate counts');
-        const observePrimary = (page) => {
-            const counts = { loginNavigations: 0, wizardDocuments: 0, googleSignInRequests: 0 };
-            const onRequest = (request) => {
-                const url = new URL(request.url());
-                if (request.isNavigationRequest() && url.origin === baseURL) {
-                    if (url.pathname === '/auth/login') counts.loginNavigations += 1;
-                    if (url.pathname === USERPERSISTO_LOGIN_PATH) counts.wizardDocuments += 1;
-                }
-                if (url.hostname === 'accounts.google.com' && url.pathname.startsWith('/gsi/')) counts.googleSignInRequests += 1;
-            };
-            page.on('request', onRequest);
-            let active = true;
-            return {
-                counts: () => ({ ...counts }),
-                stop() {
-                    if (!active) return;
-                    active = false;
-                    page.off('request', onRequest);
-                },
-            };
+        assert.equal(new URL(smokeConfig.baseURL).origin, baseURL);
+        const specSource = fs.readFileSync(new URL('../specs/01-webtty-core.spec.mjs', import.meta.url), 'utf8');
+        const fromSpec = (name) => {
+            const match = new RegExp(`\\n((?:async )?function ${name}\\([\\s\\S]*?\\n\\})\\n`).exec(specSource);
+            assert.ok(match, `the gate defines ${name}`);
+            return new Function('smokeConfig', 'USERPERSISTO_LOGIN_PATH', `${match[1]}\nreturn ${name};`)(smokeConfig, USERPERSISTO_LOGIN_PATH);
         };
-        const QUIET = { loginNavigations: 0, wizardDocuments: 0, googleSignInRequests: 0 };
-        const assertQuiet = (observer) => assert.deepEqual(observer.counts(), QUIET, 'no login navigation, wizard document or Google sign-in start before the intentional re-login');
+        const observePrimary = fromSpec('observePrimaryAuthLifecycle');
+        const requireUnauthenticatedTokenRoute = fromSpec('requireUnauthenticatedTokenRoute');
+        const QUIET = { loginNavigations: 0, wizardDocuments: 0, googleStartRequests: 0, googleSignInRequests: 0 };
+        const assertQuiet = (observer) => assert.deepEqual(observer.counts(), QUIET, 'no login navigation, wizard document, Google start or Google sign-in request before the intentional re-login');
         const assertLoggedOutLanding = async (page) => {
             const landed = new URL(page.url());
             assert.deepEqual({ origin: landed.origin, pathname: landed.pathname }, { origin: baseURL, pathname: '/auth/logged-out' });
             assert.equal(await page.getByRole('heading', { name: 'Signed out', exact: true }).isVisible(), true);
-            assert.equal(await hasAuthenticatedSession(page.request), false, 'the session is revoked');
+            await requireUnauthenticatedTokenRoute(page.request);
         };
         // One deliberate logout of the signed-in primary page to `returnTo`, observed from before the confirmation POST.
         async function logoutCycle(page, returnTo, { settleMs = 1500, waitForIdleWizard = false } = {}) {
@@ -416,7 +405,7 @@ test('a password sign-in retires Google before navigating and only a proven scri
                 const observer = await logoutCycle(primary.page, '/', { waitForIdleWizard: true });
                 const idle = observer.counts();
                 assert.ok(idle.loginNavigations >= 1 && idle.wizardDocuments >= 1, `the root redirected the logged-out page to the login wizard (${JSON.stringify(idle)})`);
-                assert.ok(idle.googleSignInRequests >= 1, 'the idle wizard requested Google sign-in in the browser');
+                assert.ok(idle.googleStartRequests >= 1 && idle.googleSignInRequests >= 1, `the idle wizard started Google sign-in and requested its script (${JSON.stringify(idle)})`);
                 const served = afterLogout(observer);
                 assert.ok(served.includes('google-started') && served.indexOf('logout-posted') < served.indexOf('google-started'), `the service saw the Google start after the logout (${served.join(',')})`);
                 await assert.rejects(assertLoggedOutLanding(primary.page), 'the logout did not land on the inert page');
@@ -503,6 +492,71 @@ test('a password sign-in retires Google before navigating and only a proven scri
             } finally {
                 loggedOutScript = '';
                 await noisy.close();
+            }
+        });
+
+        await t.test('the observer counts the wizard\'s Google start POST with no navigation and no Google script request', async () => {
+            const context = await browser.newContext({ baseURL });
+            const page = await context.newPage();
+            try {
+                await page.goto('/destination', { waitUntil: 'load' });
+                const observer = observePrimary(page);
+                const send = (method, where) => page.evaluate(async ([verb, target]) => {
+                    // The foreign-origin target is the sink, which never answers: the request is made, then abandoned.
+                    await fetch(target, { method: verb, headers: { 'content-type': 'application/json' }, body: verb === 'POST' ? '{}' : undefined, signal: AbortSignal.timeout(1500) }).catch(() => null);
+                }, [method, where]);
+                // Not the Google start: another wizard POST, the same path with GET, and the start on a foreign origin.
+                await send('POST', `${WIZARD}google/cancel`);
+                await send('GET', `${WIZARD}google/start`);
+                await send('POST', `http://127.0.0.1:${sink.address().port}${WIZARD}google/start`);
+                assertQuiet(observer);
+                await send('POST', `${WIZARD}google/start`);
+                assert.deepEqual(observer.counts(), { ...QUIET, googleStartRequests: 1 }, 'the start POST alone is counted');
+                assert.throws(() => assertQuiet(observer), /no login navigation/);
+                observer.stop();
+            } finally {
+                await context.close();
+            }
+        });
+
+        await t.test('the unauthenticated probe accepts only the Router\'s exact 401 and fails every other answer', async () => {
+            const router401 = JSON.stringify({ ok: false, error: 'not_authenticated' });
+            const answers = {
+                'exact 401': { respond: (res) => res.writeHead(401, { 'Content-Type': 'application/json' }).end(router401), passes: true },
+                '503 authentication_unavailable': { respond: (res) => res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '5' }).end(JSON.stringify({ ok: false, error: 'authentication_unavailable' })) },
+                'transport error': { respond: (res) => res.socket.destroy() },
+                'malformed body': { respond: (res) => res.writeHead(401, { 'Content-Type': 'application/json' }).end('{"ok":false,') },
+                'non-JSON body': { respond: (res) => res.writeHead(401, { 'Content-Type': 'text/plain' }).end('not_authenticated') },
+                'redirect': { respond: (res) => res.writeHead(302, { Location: '/auth/login?returnTo=%2F' }).end() },
+                'expired session payload': { respond: (res) => res.writeHead(401, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, error: 'session_expired' })) },
+                'extra fields': { respond: (res) => res.writeHead(401, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, error: 'not_authenticated', user: null })) },
+                'authenticated 200': { respond: (res) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ user: { id: 'x' } })) },
+            };
+            let current = 'exact 401';
+            let requestsSeen = 0;
+            const stand = http.createServer((req, res) => { requestsSeen += 1; answers[current].respond(res); });
+            await new Promise((resolve) => stand.listen(0, '127.0.0.1', resolve));
+            const probeContext = await playwrightRequest.newContext({ baseURL: `http://127.0.0.1:${stand.address().port}` });
+            try {
+                for (const [name, answer] of Object.entries(answers)) {
+                    current = name;
+                    requestsSeen = 0;
+                    if (answer.passes) await requireUnauthenticatedTokenRoute(probeContext);
+                    else await assert.rejects(requireUnauthenticatedTokenRoute(probeContext), `${name} must fail the probe`);
+                    assert.equal(requestsSeen, 1, `${name}: exactly one request, no retry and no redirect follow`);
+                }
+                // The fixture's own unauthenticated answer is the Router's, so the logged-out landing checks above use it.
+                const anonymous = await playwrightRequest.newContext({ baseURL });
+                try {
+                    await requireUnauthenticatedTokenRoute(anonymous);
+                    assert.equal(await hasAuthenticatedSession(anonymous), false);
+                } finally {
+                    await anonymous.dispose();
+                }
+            } finally {
+                await probeContext.dispose();
+                stand.closeAllConnections?.();
+                await new Promise((resolve) => stand.close(resolve));
             }
         });
 
