@@ -216,6 +216,14 @@ function explorerFixture(config) {
       presenter.__appPluginRenderPromise = new Promise((resolve) => { releaseRender = resolve; });
     }
     if (config.structure === 'loader') loader.depth = 1;
+    // Unrelated Explorer work starting right after the Git check, which the
+    // readiness recheck must wait for.
+    if (config.structure === 'loader-after-git-check') {
+      host.addEventListener('pointerover', () => {
+        loader.depth += 1;
+        setTimeout(() => { loader.depth -= 1; }, 400);
+      }, { once: true });
+    }
   }, config.bootDelayMs);
 }
 
@@ -504,6 +512,19 @@ test('the existing structural gates still hold readiness, and a released delay p
         await context.close();
       }
     });
+  }
+});
+
+test('readiness checks the Explorer structure again after the Git check', async () => {
+  const { waitForExplorerInteractive } = await import('../scripts/run-ui-benchmark.mjs');
+  const { page, context, events } = await fixturePage({ structure: 'loader-after-git-check' });
+  try {
+    await waitForExplorerInteractive(page, readinessConfig({ timeoutMs: 5_000 }));
+    assert.equal(await page.evaluate(() => window.__assistosExplorerGlobalLoader.depth), 0,
+      'readiness returned only after the work that began during the Git check settled');
+    assert.ok((await events()).some(({ type }) => type === 'pointerover'), 'the fixture work was started by the Git check');
+  } finally {
+    await context.close();
   }
 });
 
