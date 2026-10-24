@@ -895,7 +895,10 @@ unchanged.
 
 `npm run test:unit` includes isolated Chromium regressions for these cleanup and
 diagnostic boundaries, so run `npm run install:browsers` before that suite. Missing
-Chromium is a test failure, not a silently skipped lifecycle check.
+Chromium is a test failure, not a silently skipped lifecycle check. The
+authentication cancellation regression also starts the actual UserPersisto
+service, so install `userPersistoAgent` dependencies (`npm ci` there) first; a
+missing dependency is likewise a failure.
 
 The Marketplace lifecycle test controls both the Marketplace snapshot and the
 runtime NDJSON stream with one synthetic lifecycle. It verifies Starting up,

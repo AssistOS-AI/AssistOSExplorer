@@ -195,6 +195,67 @@ export async function beginAuthNavigationDiagnostics(page, account) {
         }
     }
 
+    async function proveBoundPasswordNavigation({ expectedOrigin, returnTo, timeoutMs }) {
+        const bound = binding;
+        if (!protocolAvailable || !bound || bound.origin !== expectedOrigin) return null;
+        if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) return null;
+        let destination = null;
+        try { destination = new URL(String(returnTo || '/'), expectedOrigin); } catch { return null; }
+        if (destination.origin !== expectedOrigin) return null;
+        const settled = await terminalGoogleScript(Date.now() + timeoutMs);
+        if (!settled || omitted) return null;
+        const { protocolEntries, playwrightEntries } = settled;
+        if (protocolEntries.length !== 1 || playwrightEntries.length !== 1) return null;
+        const [script] = protocolEntries;
+        const [observed] = playwrightEntries;
+        if (script.urls.length !== 1 || script.urls[0] !== GOOGLE_SIGN_IN_SCRIPT_URL || script.redirected
+            || script.method !== 'GET' || script.type !== 'Script'
+            || script.frameId !== bound.frameId || script.loaderId !== bound.loaderId
+            || script.state !== 'failed' || script.errorText !== ABORTED || script.status !== undefined) return null;
+        if (observed.url !== GOOGLE_SIGN_IN_SCRIPT_URL || observed.method !== 'GET' || observed.resourceType !== 'script'
+            || observed.navigation || !observed.mainFrame || observed.redirected
+            || observed.state !== 'failed' || observed.failure !== ABORTED) return null;
+        // The bound document's password submission succeeded.
+        const loginUrl = `${expectedOrigin}${bound.pathname}password/login`;
+        const logins = [...rawProtocol.values()].filter((entry) => entry.urls.some((url) => {
+            const parsed = parsedUrl(url);
+            return parsed && `${parsed.origin}${parsed.pathname}` === loginUrl;
+        }));
+        if (logins.length !== 1) return null;
+        const [login] = logins;
+        if (login.urls.length !== 1 || login.urls[0] !== loginUrl || login.method !== 'POST'
+            || login.frameId !== bound.frameId || login.loaderId !== bound.loaderId
+            || login.state !== 'finished' || login.status !== 200) return null;
+        // The only later main-frame document: the callback, then the destination.
+        const later = [...rawProtocol.values()].filter((entry) => entry.type === 'Document'
+            && entry.frameId === bound.frameId && entry.startedAt > bound.startedAt);
+        if (later.length !== 1) return null;
+        const [handoff] = later;
+        const hops = handoff.urls.map(parsedUrl);
+        if (handoff.loaderId === bound.loaderId || hops.length < 2 || hops.some((hop) => !hop || hop.origin !== expectedOrigin)
+            || hops[0].pathname !== '/auth/callback' || withoutFragment(hops[1]) !== withoutFragment(destination)
+            || handoff.state !== 'finished' || handoff.status !== 200) return null;
+        const shown = parsedUrl(page.url());
+        if (!shown || withoutFragment(shown) !== withoutFragment(hops.at(-1))) return null;
+        const loaded = rawLoads.find((entry) => entry.frameId === bound.frameId && entry.loaderId === handoff.loaderId);
+        if (!loaded) return null;
+        // The script was pending until the handoff navigation began and was
+        // aborted by it, before the destination finished loading.
+        if (!(script.startedAt < handoff.startedAt && login.endedAt <= handoff.startedAt
+            && handoff.startedAt <= script.endedAt && script.endedAt <= loaded.at)) return null;
+        const relative = (time) => Math.round((time - handoff.startedAt) * 1000);
+        return Object.freeze({
+            signature: Object.freeze({ kind: 'requestfailed', type: 'error', url: GOOGLE_SIGN_IN_SCRIPT_URL, method: 'GET', failure: ABORTED }),
+            proof: Object.freeze({
+                request: 'Google sign-in script', url: GOOGLE_SIGN_IN_SCRIPT_URL, method: 'GET', resourceType: 'script', failure: ABORTED,
+                document: 'bound UserPersisto wizard main frame', passwordStatus: 200,
+                callback: '/auth/callback', destination: safeUrl(hops.at(-1).href),
+                timingMs: Object.freeze({ scriptStarted: relative(script.startedAt), passwordFinished: relative(login.endedAt),
+                    handoffStarted: 0, scriptAborted: relative(script.endedAt), destinationLoaded: relative(loaded.at) }),
+            }),
+        });
+    }
+
     return {
         // Binds the current main-frame document, which must be at exactly
         // `pathname` on `expectedOrigin` with a recorded document request.
@@ -227,65 +288,12 @@ export async function beginAuthNavigationDiagnostics(page, account) {
         // callback and destination, and was aborted by that navigation. Call
         // only after the authenticated principal is verified. It performs no
         // navigation and reads no page content, credential or body.
-        async provePasswordNavigation({ expectedOrigin, returnTo, timeoutMs }) {
-            const bound = binding;
-            if (!protocolAvailable || !bound || bound.origin !== expectedOrigin) return null;
-            if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) return null;
-            let destination = null;
-            try { destination = new URL(String(returnTo || '/'), expectedOrigin); } catch { return null; }
-            if (destination.origin !== expectedOrigin) return null;
-            const settled = await terminalGoogleScript(Date.now() + timeoutMs);
-            if (!settled || omitted) return null;
-            const { protocolEntries, playwrightEntries } = settled;
-            if (protocolEntries.length !== 1 || playwrightEntries.length !== 1) return null;
-            const [script] = protocolEntries;
-            const [observed] = playwrightEntries;
-            if (script.urls.length !== 1 || script.urls[0] !== GOOGLE_SIGN_IN_SCRIPT_URL || script.redirected
-                || script.method !== 'GET' || script.type !== 'Script'
-                || script.frameId !== bound.frameId || script.loaderId !== bound.loaderId
-                || script.state !== 'failed' || script.errorText !== ABORTED || script.status !== undefined) return null;
-            if (observed.url !== GOOGLE_SIGN_IN_SCRIPT_URL || observed.method !== 'GET' || observed.resourceType !== 'script'
-                || observed.navigation || !observed.mainFrame || observed.redirected
-                || observed.state !== 'failed' || observed.failure !== ABORTED) return null;
-            // The bound document's password submission succeeded.
-            const loginUrl = `${expectedOrigin}${bound.pathname}password/login`;
-            const logins = [...rawProtocol.values()].filter((entry) => entry.urls.some((url) => {
-                const parsed = parsedUrl(url);
-                return parsed && `${parsed.origin}${parsed.pathname}` === loginUrl;
-            }));
-            if (logins.length !== 1) return null;
-            const [login] = logins;
-            if (login.urls.length !== 1 || login.urls[0] !== loginUrl || login.method !== 'POST'
-                || login.frameId !== bound.frameId || login.loaderId !== bound.loaderId
-                || login.state !== 'finished' || login.status !== 200) return null;
-            // The only later main-frame document: the callback, then the destination.
-            const later = [...rawProtocol.values()].filter((entry) => entry.type === 'Document'
-                && entry.frameId === bound.frameId && entry.startedAt > bound.startedAt);
-            if (later.length !== 1) return null;
-            const [handoff] = later;
-            const hops = handoff.urls.map(parsedUrl);
-            if (handoff.loaderId === bound.loaderId || hops.length < 2 || hops.some((hop) => !hop || hop.origin !== expectedOrigin)
-                || hops[0].pathname !== '/auth/callback' || withoutFragment(hops[1]) !== withoutFragment(destination)
-                || handoff.state !== 'finished' || handoff.status !== 200) return null;
-            const shown = parsedUrl(page.url());
-            if (!shown || withoutFragment(shown) !== withoutFragment(hops.at(-1))) return null;
-            const loaded = rawLoads.find((entry) => entry.frameId === bound.frameId && entry.loaderId === handoff.loaderId);
-            if (!loaded) return null;
-            // The script was pending until the handoff navigation began and was
-            // aborted by it, before the destination finished loading.
-            if (!(script.startedAt < handoff.startedAt && login.endedAt <= handoff.startedAt
-                && handoff.startedAt <= script.endedAt && script.endedAt <= loaded.at)) return null;
-            const relative = (time) => Math.round((time - handoff.startedAt) * 1000);
-            return Object.freeze({
-                signature: Object.freeze({ kind: 'requestfailed', type: 'error', url: GOOGLE_SIGN_IN_SCRIPT_URL, method: 'GET', failure: ABORTED }),
-                proof: Object.freeze({
-                    request: 'Google sign-in script', url: GOOGLE_SIGN_IN_SCRIPT_URL, method: 'GET', resourceType: 'script', failure: ABORTED,
-                    document: 'bound UserPersisto wizard main frame', passwordStatus: 200,
-                    callback: '/auth/callback', destination: safeUrl(hops.at(-1).href),
-                    timingMs: Object.freeze({ scriptStarted: relative(script.startedAt), passwordFinished: relative(login.endedAt),
-                        handoffStarted: 0, scriptAborted: relative(script.endedAt), destinationLoaded: relative(loaded.at) }),
-                }),
-            });
+        async provePasswordNavigation(options) {
+            try {
+                return await proveBoundPasswordNavigation(options);
+            } catch {
+                return null;
+            }
         },
         failure(error, stage) {
             const failure = { name: safeText(error?.name), message: safeText(error?.message || error) };
