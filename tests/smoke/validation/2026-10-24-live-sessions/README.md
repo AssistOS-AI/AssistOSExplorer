@@ -1,11 +1,12 @@
 # Live Sessions validation reference, 24 October 2026
 
-This snapshot preserves UI benchmark measurements and selected live E2E results as of 2026-10-24T15:57:29.181Z, with G6 execution evidence through 2026-10-24T15:51:25Z. Validation is incomplete. The current source pair has nine passed cases, one failed case and sixteen unrun cases out of 26 selected identities. The WebTTY case has not run on this pair. Earlier results remain bound to their original source pairs and generations.
+The campaign stopped at human request. This intermediate snapshot preserves 12 passed cases, 1 failed WebTTY case and 13 unrun identities on the frozen runtime pair, plus 41 unique historical runs. The operator stop snapshot is dated 2026-10-24T19:56:47Z. No further campaign execution is planned. The full suite is incomplete and the deployment is not release-ready. See [HANDOFF.md](HANDOFF.md) for the stopped state, unresolved gates and evidence limits.
 
 | File | Contents |
 | --- | --- |
 | [benchmark-metrics.json](benchmark-metrics.json) | Two saved UI observations, all three timing samples for every step, numerical summaries, browser/CPU/network measurements, provenance and the actual comparator refusal |
-| [validation-results.json](validation-results.json) | Per-candidate coverage for 26 identities, seventeen recorded E2E runs, durations, outcomes, historical semantic measurements and incomplete release gates |
+| [HANDOFF.md](HANDOFF.md) | Stop snapshot, frozen runtime, unresolved cases and constraints for a later handoff |
+| [validation-results.json](validation-results.json) | Per-candidate coverage for 26 identities, forty-one recorded E2E runs, durations, outcomes, historical semantic measurements and incomplete release gates |
 
 The original artifacts remain outside the repository. SHA-256 values in these files identify the source artifacts. The reference omits credentials, cookies, headers, request/response bodies, query values, account identities, private host paths, file contents and raw request waterfalls. Publication did not rerun a benchmark, login, deployment or live probe.
 
@@ -60,16 +61,18 @@ Both selected files were reported as 20 bytes, but their contents differ. Concur
 
 ## Live E2E history
 
-Every source pair below uses Ploinky `7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0`. Current Explorer is `de32689404ca8069eb3b5830dd5deb2be2f1f33f`. The JSON preserves full historical source identities and the earlier 14:57 snapshot remains in repository history. Benchmark observations still use their original c9 source and deployment; no new benchmark has run on the current pair.
+G8 through G10 use Ploinky `c4382eb49a24f06c1aa9033180719e156c916dc8` and Explorer `e6ca9ebcf375cc3a780121caf753ad37440566a8`. The JSON retains full historical source identities. Earlier references remain in repository history. The benchmark file is unchanged and retains its older snapshot date and observations.
 
-| Explorer revision | Passed | Failed | Unrun | Skipped | Cancelled | Scope |
+| Ploinky / Explorer | Passed | Failed | Unrun | Skipped | Cancelled | Scope |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `de326894` | 9 | 1 | 16 | 0 | 0 | Current at snapshot |
-| `4cbc5236` | 0 | 1 | 25 | 0 | 0 | Historical |
-| `c9e9e695` | 4 | 1 | 21 | 0 | 0 | Historical |
-| `51c7f9da` | 0 | 1 | 25 | 0 | 0 | Historical |
+| `c4382eb4` / `e6ca9ebc` | 12 | 1 | 13 | 0 | 0 | Stopped runtime pair |
+| `c4382eb4` / `a89594d2` | 10 | 1 | 15 | 0 | 0 | Historical |
+| `7c9fabdb` / `de326894` | 9 | 1 | 16 | 0 | 0 | Historical |
+| `7c9fabdb` / `4cbc5236` | 0 | 1 | 25 | 0 | 0 | Historical |
+| `7c9fabdb` / `c9e9e695` | 4 | 1 | 21 | 0 | 0 | Historical |
+| `7c9fabdb` / `51c7f9da` | 0 | 1 | 25 | 0 | 0 | Historical |
 
-These rows describe the same selected identities across different candidates. Their counts must not be summed. Partial progress inside a failed test remains a failure. Unit suites, discovery entries and synthetic probes do not count toward these live outcomes.
+These rows describe the same identities across different source pairs and must not be summed. Partial progress inside a failed test remains a failure. Unit suites, discovery and prerequisite checks do not count toward live acceptance. A canonical test pass does not erase a separate operational HOLD.
 
 | Run | Generation | Explorer | Outcome | Process seconds | Reporter ms | Exit |
 | --- | ---: | --- | --- | ---: | ---: | ---: |
@@ -90,17 +93,49 @@ These rows describe the same selected identities across different candidates. Th
 | ls-r6-s61a-20261024T155003Z | 6 | `de326894` | failed | 7 | 4468.193 | 1 |
 | ls-r6-s61b-20261024T155058Z | 6 | `de326894` | passed | 9 | 6543.448 | 0 |
 | ls-r6-s61c-20261024T155115Z | 6 | `de326894` | passed | 10 | 7520.557 | 0 |
+| ls-r7-w01-20261024T162328Z | 7 | `a89594d2` | failed | 82 | 79605.529 | 1 |
+| ls-r7-s00a-20261024T162527Z | 7 | `a89594d2` | passed | 7 | 4478.586 | 0 |
+| ls-r7-s00b-20261024T162534Z | 7 | `a89594d2` | passed | 8 | 5872.512 | 0 |
+| ls-r7-s04-20261024T162542Z | 7 | `a89594d2` | passed | 23 | 20500.743 | 0 |
+| ls-r7-s20-20261024T162605Z | 7 | `a89594d2` | passed | 9 | 6948.401 | 0 |
+| ls-r7-s60-20261024T162615Z | 7 | `a89594d2` | passed | 7 | 5182.780 | 0 |
+| ls-r7-s10a-20261024T162623Z | 7 | `a89594d2` | passed | 14 | 11838.322 | 0 |
+| ls-r7-s10b-20261024T162637Z | 7 | `a89594d2` | passed | 10 | 8308.013 | 0 |
+| ls-r7-s61a-20261024T162648Z | 7 | `a89594d2` | passed | 8 | 6024.864 | 0 |
+| ls-r7-s61b-20261024T162656Z | 7 | `a89594d2` | passed | 10 | 7902.993 | 0 |
+| ls-r7-s61c-20261024T162707Z | 7 | `a89594d2` | passed | 10 | 8847.153 | 0 |
+| ls-r8-w01-20261024T182924Z | 8 | `e6ca9ebc` | failed | 97 | 94663.995 | 1 |
+| ls-r8-s00a-20261024T183132Z | 8 | `e6ca9ebc` | passed | 7 | 4465.087 | 0 |
+| ls-r8-s00b-20261024T183139Z | 8 | `e6ca9ebc` | passed | 8 | 5911.386 | 0 |
+| ls-r8-s04-20261024T183147Z | 8 | `e6ca9ebc` | passed | 23 | 20632.001 | 0 |
+| ls-r8-s20-20261024T183211Z | 8 | `e6ca9ebc` | passed | 9 | 7009.889 | 0 |
+| ls-r8-s60-20261024T183220Z | 8 | `e6ca9ebc` | passed | 7 | 4760.614 | 0 |
+| ls-r8-s10a-20261024T183227Z | 8 | `e6ca9ebc` | passed | 14 | 11847.045 | 0 |
+| ls-r8-s10b-20261024T183242Z | 8 | `e6ca9ebc` | passed | 10 | 8513.844 | 0 |
+| ls-r8-s61a-20261024T183253Z | 8 | `e6ca9ebc` | passed | 8 | 6015.930 | 0 |
+| ls-r8-s61b-20261024T183301Z | 8 | `e6ca9ebc` | passed | 10 | 8015.446 | 0 |
+| ls-r8-s61c-20261024T183312Z | 8 | `e6ca9ebc` | passed | 10 | 8667.466 | 0 |
+| ls-r9-m70oi-20261024T185813Z | 9 | `e6ca9ebc` | passed | 129 | 126680.202 | 0 |
+| ls-r10-m70ws-20261024T193143Z | 10 | `e6ca9ebc` | passed | 175 | 171883.622 | 0 |
 
-Generation 2 passed four official identities but was later retired. Generations 3, 4 and 5 each failed the WebTTY identity on their respective source pairs. These outcomes remain historical and provide no current-candidate acceptance credit.
+All earlier records remain unchanged. G2's four official passes belong to a retired generation. G3, G4 and G5 each failed WebTTY. G6 recorded nine supporting passes and one failed navigation assertion. G7 recorded ten supporting passes and a late WebTTY diagnostic mismatch. G8 recorded ten supporting passes and a WebTTY GSI request-abort failure before Router fault injection. Its incomplete cleanup attachment and later exited-session observation remain distinct. The G8 semantic baseline HOLD is not a test outcome.
 
-Generation 6's ten canonical invocations ran from 15:48:47 to 15:51:25 UTC. Nine passed and the first GitHub identity, 61a, failed. Each invocation discovered exactly one identity, used one worker and zero retries, and recorded the same source pair, image and generation start. No runtime case skipped, retried, canceled or flaked. List-only discovery records contain empty results and a skipped label; that label is not a runtime skip. A runner preflight check is also not an additional E2E case.
+G9's sole Open Interpreter routing case passed, but its original barrier returned 40 after a redacted session field failed validation. The dispatcher stopped with reported exit 50. Saved-file joins and separately delegated strict-v3/quiet observations corroborate completion without replacing that original HOLD. The JSON preserves all phase timings, proof limitations and the distinction between its pre-run quiet receipt and later verifier observation. No earlier introduction is treated as a regression baseline.
 
-The 61a assertion expected a main-frame navigation through `/auth/login`. The saved navigation array instead contains the sign-in service path followed by Explorer. The exact-directory assertion appears before the failing assertion in the saved error context. The case remains failed; this observation makes no root-cause claim. Its source body performs no token-store or fixture-creation operation.
+G10's sole web-search routing case passed with wrapper/inner exit 0, one test and zero skips/retries/flakes/errors. It ran from 19:31:43 to 19:34:38 UTC: 175 process seconds, 171,883.622 reporter milliseconds and 169,779 actual test milliseconds. Its exact generation started at 19:16:25.475 UTC, with unchanged deadline 19:46:25 UTC.
 
-The sequence stopped after 61a. A saved check at 15:50:46 UTC records the same Box start and image, nine running agents, three clean source records, and an HTTP 200 Live Sessions response with zero sessions. The sequence resumed with 61b at 15:50:58 UTC. The complete 61b case passed its disconnect and absent-secret/permission assertions. The complete 61c case passed with its fixture-key restoration in `finally`; no separate post-restoration filesystem snapshot was recorded. These are saved observations, not a fresh state probe.
+The saved v3b barrier receipt contains a bound captured-tab/attempt/message join, metadata-helper exit 0 with completed status, and lifecycle-helper exit 0 with outcome `end`. The retained diagnostic snapshot and result hashes match the receipt and join. The process gate then returned 20 with nine processes, seven of seven baseline members, zero native-agent/active-turn counts and one unknown process. The barrier remained HOLD with exit 40 and the dispatcher stopped with reported exit 50. The ordinary-token routing case, m70tk, and the AKU case did not run.
 
-The initial attempt at 15:48:23 UTC exited 1 because `GEN` was missing. It stopped before npm and before creation of a run artifact. It is preserved as a non-test event and is not added to the ten cases.
+| G10 observed phase | UTC timestamp | Interval from preceding listed phase |
+| --- | --- | ---: |
+| Before submit | 19:33:19.267 | Not applicable |
+| Execution start | 19:33:19.412 | 145 ms |
+| Engine active-finish | 19:34:36.880 | 77,468 ms |
+| Execution finally | 19:34:36.902 | 22 ms |
+| Reply pair observed | 19:34:37.533 | 631 ms |
 
-Default graph readiness has fifteen saved records, including nine successful declared-protocol observations. The generation started at 15:36:01.707 UTC; its unchanged 30-minute deadline was 16:06:01 UTC. All ten test invocations completed before that deadline. This does not prove later live state or optional service readiness.
+The wall-clock before-submit to reply-pair interval is 78,266 ms. The engine's recorded elapsed value at active-finish is 77,467 ms. These distinct values describe one attempt and support no controlled regression claim.
 
-The final retained-generation quartet remains pending. It requires four exact identities, each in its own invocation, on one retained fresh generation within the 30-minute age limit. Historical passes, supporting cases and the older benchmark do not close that gate. Later runs or source revisions require a dated update to this reference.
+A separate saved read-only check at 19:39:54.679 reports exit 0, unchanged exact Box/start pins, eight processes, seven of seven baseline members and zero native-agent/active-turn/unknown counts. It did not replace the original HOLD or resume a test. The reviewer subsequently bound the earlier unknown process to the recorded turn and identified the source's normal 120-second grace. That process-role explanation is delegated reviewer/source evidence. The exact disappearance time was not observed and is not inferred.
+
+The campaign is now stopped at human request. At 19:56:47 UTC, the operator reported G11 running on the same runtime pair, with local-llm still starting and no G11 tests, final quiet check, continuation/quiet receipt or dispatcher run. The bounded waiter and exact orphan process were stopped; no orchestrators remained. The deployment was left to finish natural startup, and four protected deployments were reported unchanged. This is an operator snapshot, not new acceptance evidence or a live-state guarantee. The final retained-generation quartet, final current-pair/QA benchmark comparison and thirteen unrun selected identities were not completed. No further campaign execution is planned; details are in [HANDOFF.md](HANDOFF.md).
