@@ -7,15 +7,46 @@ export const COPILOT_TERMINAL_FAILURE = /\[input error\]|\[error\]|bwrap:|Agent 
 // (ploinky cli/server/webchat/domSetup.js createBrowserId, network.js `stream?tabId=`, handlers/webchat/index.js
 // `__BASE_PATH__`). The RoboTeam diagnostics join a turn to this id as `sourceTabId`.
 export const WEBCHAT_STREAM_PATH = '/webchat/stream';
+// RoboTeam's conversation settings link names only the robot id and the session id (copilot/src/lib/webchat/
+// webchatSessionState.mjs createConversationSettingsAction, public base from server/constants.mjs). Robot ids need not be
+// UUIDs: `^[a-z0-9][a-z0-9-]{2,63}$` (server/conversation-skills-api.mjs). Session ids and the message ids that
+// conversationSessionStore.beginTurn issues are random v4 UUIDs (storage/sessionPaths.mjs validateSessionId).
+const SETTINGS_LINK_PATH = /^\/base-agent-additional-server\/roboTeamAgent\/3001\/conversation-skills\/([a-z0-9][a-z0-9-]{2,63})\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$/;
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TAB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function createCopilotDiagnostics({ now = () => new Date().toISOString(), webchatTab = false } = {}) {
     const evidence = { firstTerminalError: null, submissions: [], replyOutcome: 'not-submitted' };
     // Opt-in: callers that do not ask keep the artifact exactly as it was.
-    const tab = webchatTab ? { observationStartedAt: null, tabId: null, status: 'not-observed', streamRequests: 0, distinctTabIds: 0, navigationsAfterBinding: 0, submissionAttempts: [] } : null;
+    const tab = webchatTab ? { observationStartedAt: null, tabId: null, status: 'not-observed', streamRequests: 0, distinctTabIds: 0, navigationsAfterBinding: 0, sessionId: null, submissionAttempts: [], pairs: [] } : null;
     if (tab) evidence.webchatTab = tab;
     const identities = new Set();
     let stopObserving = null;
+    // The submission in flight: the owned session and the stable ids that existed before it was sent.
+    let pending = null;
+    const fail = (message) => { throw new Error(`The WebChat message pair is ${message}.`); };
+    // Reads the DOM passively: nothing is clicked, and no text or full href leaves this function. The link's `hidden`
+    // property is the product's own show/hide state (sessionSettings.js); CSS-hidden inside its menu is not "hidden".
+    async function readWebchat(page, baseURL) {
+        const dom = await page.evaluate(() => {
+            const link = document.getElementById('sessionSettingsLink');
+            const ids = (selector) => [...document.querySelectorAll(selector)].map((node) => node.getAttribute('data-message-id'));
+            return {
+                link: link ? { hidden: link.hidden, href: link.href } : null,
+                user: ids('#chatList > .wa-message.out[data-message-id]'),
+                assistant: ids('#chatList > .wa-message.in[data-message-id]:not(.wa-task-item):not(.wa-typing)'),
+            };
+        });
+        if (!dom.link || dom.link.hidden !== false || typeof dom.link.href !== 'string' || !dom.link.href) fail('unbound: the session settings link is not shown');
+        let url;
+        try { url = new URL(dom.link.href); } catch { fail('unbound: the session settings link is not a URL'); }
+        if (url.origin !== new URL(baseURL).origin || url.username || url.password || url.search || url.hash) fail('unbound: the session settings link is not a plain same-origin link');
+        const match = SETTINGS_LINK_PATH.exec(url.pathname);
+        if (!match) fail('unbound: the session settings link has an unexpected structure');
+        for (const id of [...dom.user, ...dom.assistant]) if (!UUID_V4.test(id || '')) fail('invalid: a stable message id is malformed');
+        if (new Set(dom.user).size !== dom.user.length || new Set(dom.assistant).size !== dom.assistant.length) fail('ambiguous: a stable message id is duplicated');
+        return { sessionId: match[2].toLowerCase(), user: dom.user, assistant: dom.assistant };
+    }
     return {
         evidence,
         // Observes only this page's main frame, the configured origin and the selected agent's `/webchat/stream` GET.
@@ -63,8 +94,46 @@ export function createCopilotDiagnostics({ now = () => new Date().toISOString(),
         beforeSubmit() {
             if (tab) {
                 this.requireWebchatTab();
-                tab.submissionAttempts.push({ at: now() });
+                const at = now();
+                tab.submissionAttempts.push({ at });
+                if (pending) pending.beforeSubmitAt = at;
             }
+        },
+        // Before each real submission: the owned session and the existing stable user and assistant ids. The tab binding
+        // and the document must be the ones the stream was observed on.
+        async snapshotWebchatMessages(page, { baseURL }) {
+            if (!tab) throw new Error('WebChat tab observation was not enabled for these diagnostics.');
+            this.requireWebchatTab();
+            const dom = await readWebchat(page, baseURL);
+            if (tab.sessionId && tab.sessionId !== dom.sessionId) fail('mismatched: the conversation session changed');
+            this.requireWebchatTab();
+            tab.sessionId = dom.sessionId;
+            pending = { sessionId: dom.sessionId, user: new Set(dom.user), assistant: new Set(dom.assistant), beforeSubmitAt: null };
+        },
+        // True once exactly one new stable user message and one new stable assistant message exist for the snapshotted
+        // session; false while either is still missing (a delayed id stays pending, none is ever fabricated). More than
+        // one new id of a kind, a changed session or an invalidated document fails at once.
+        async pairResolved(page, { baseURL }) {
+            if (!tab) return true;
+            if (!pending) fail('unanchored: no submission snapshot exists');
+            if (pending.beforeSubmitAt === null) fail('unanchored: the submission time was not recorded before the click');
+            this.requireWebchatTab();
+            const dom = await readWebchat(page, baseURL);
+            this.requireWebchatTab();
+            if (dom.sessionId !== pending.sessionId) fail('mismatched: the conversation session changed');
+            for (const id of pending.user) if (!dom.user.includes(id)) fail('inconsistent: an earlier user message disappeared');
+            const newUser = dom.user.filter((id) => !pending.user.has(id));
+            const newAssistant = dom.assistant.filter((id) => !pending.assistant.has(id));
+            if (newUser.length > 1 || newAssistant.length > 1) fail(`ambiguous: ${newUser.length} new user and ${newAssistant.length} new assistant message ids`);
+            if (newUser.length === 0 || newAssistant.length === 0) return false;
+            tab.pairs.push({ userMessageId: newUser[0], assistantMessageId: newAssistant[0], beforeSubmitAt: pending.beforeSubmitAt, pairObservedAt: now() });
+            pending = null;
+            return true;
+        },
+        // The bound has been reached without a resolved pair: hold, naming only counts.
+        requirePairResolved() {
+            if (!tab) return;
+            if (pending) fail(`held: no single new user and assistant pair appeared for the submission (${tab.pairs.length} resolved so far)`);
         },
         observe(texts) {
             const failure = texts.find(text => COPILOT_TERMINAL_FAILURE.test(text));

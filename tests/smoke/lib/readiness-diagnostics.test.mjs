@@ -115,6 +115,8 @@ function fakePage() {
         on(event, handler) { handlers[event].add(handler); },
         off(event, handler) { handlers[event].delete(handler); },
         request(url, { frame = main, method = 'GET' } = {}) { for (const handler of [...handlers.request]) handler({ url: () => url, frame: () => frame, method: () => method }); },
+        dom: null,
+        async evaluate() { if (!this.dom) throw new Error('no DOM configured'); return structuredClone(this.dom); },
         navigate(frame = main) { for (const handler of [...handlers.framenavigated]) handler(frame); },
     };
 }
@@ -134,7 +136,7 @@ test('WebChat tab observation captures the owned main-frame stream and records o
     assert.equal(state.requireWebchatTab(), TAB_A);
     state.beforeSubmit();
     state.submitted();
-    assert.deepEqual(state.evidence.webchatTab, { observationStartedAt: 't1', tabId: TAB_A, status: 'observed', streamRequests: 2, distinctTabIds: 1, navigationsAfterBinding: 0, submissionAttempts: [{ at: 't2' }] });
+    assert.deepEqual(state.evidence.webchatTab, { observationStartedAt: 't1', tabId: TAB_A, status: 'observed', streamRequests: 2, distinctTabIds: 1, navigationsAfterBinding: 0, sessionId: null, submissionAttempts: [{ at: 't2' }], pairs: [] });
     assert.deepEqual(state.evidence.submissions, [{ at: 't3' }], 'the existing submission timing is unchanged and follows the attempt');
     assert.doesNotMatch(JSON.stringify(state.evidence), /page-instance-secret|127\.0\.0\.1|roboTeamAgent|\/webchat/, 'no URL, query value or route is recorded');
 });
@@ -265,4 +267,195 @@ test('a main-frame document replacement after the binding invalidates it and is 
     assert.deepEqual(state.evidence.webchatTab.submissionAttempts, [{ at: 't2' }], 'the earlier attempt is evidence, not repaired');
     state.stopWebchatTab();
     assert.equal(page.listenerCount, 0);
+});
+
+// --- the stable message pair of a submission, read passively from the WebChat DOM ---
+const SESSION = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+const OTHER_SESSION = '1b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e';
+const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const LINK = `${BASE}/base-agent-additional-server/roboTeamAgent/3001/conversation-skills/default-robot/${SESSION}`;
+const dom = ({ href = LINK, hidden = false, user = [], assistant = [], link = { hidden, href } } = {}) => ({ link, user, assistant });
+function bound(extra = {}) {
+    const clock = { value: 0 };
+    const state = createCopilotDiagnostics({ webchatTab: true, now: () => `t${++clock.value}`, ...extra });
+    const page = fakePage();
+    state.observeWebchatTab(page, { baseURL: BASE, agent: 'roboTeamAgent' });
+    page.request(streamUrl(TAB_A));
+    return { state, page };
+}
+const snapshot = (state, page, value) => { page.dom = value; return state.snapshotWebchatMessages(page, { baseURL: BASE }); };
+const resolve = (state, page, value) => { page.dom = value; return state.pairResolved(page, { baseURL: BASE }); };
+
+test('the owned session is captured from a valid settings link and nothing else of the link is kept', async () => {
+    const { state, page } = bound();
+    await snapshot(state, page, dom({ user: [uuid(1)], assistant: [uuid(2)] }));
+    assert.equal(state.evidence.webchatTab.sessionId, SESSION);
+    assert.doesNotMatch(JSON.stringify(state.evidence), /conversation-skills|default-robot|127\.0\.0\.1|http/);
+    // Robot ids need not be UUIDs; they are only validated.
+    for (const robot of ['abc', 'a1-b2-c3', 'x'.repeat(64)]) {
+        const fresh = bound();
+        await snapshot(fresh.state, fresh.page, dom({ href: LINK.replace('default-robot', robot) }));
+        assert.equal(fresh.state.evidence.webchatTab.sessionId, SESSION);
+    }
+});
+
+test('a hidden, foreign, malformed or unstructured settings link is rejected and never bound', async () => {
+    const bad = {
+        'hidden': dom({ hidden: true }),
+        'absent': dom({ link: null }),
+        'foreign origin': dom({ href: LINK.replace(BASE, 'https://evil.example') }),
+        'other port': dom({ href: LINK.replace(BASE, 'http://127.0.0.1:18081') }),
+        'wrong prefix': dom({ href: LINK.replace('roboTeamAgent/3001', 'roboTeamAgent/3002') }),
+        'wrong segment': dom({ href: LINK.replace('conversation-skills', 'conversation-settings') }),
+        'extra segment': dom({ href: `${LINK}/extra` }),
+        'missing session': dom({ href: LINK.replace(`/${SESSION}`, '') }),
+        'session not v4': dom({ href: LINK.replace(SESSION, '0a1b2c3d-4e5f-1a6b-8c7d-9e0f1a2b3c4d') }),
+        'session not a uuid': dom({ href: LINK.replace(SESSION, 'not-a-session') }),
+        'robot too short': dom({ href: LINK.replace('default-robot', 'ab') }),
+        'robot uppercase': dom({ href: LINK.replace('default-robot', 'Default-Robot') }),
+        'robot too long': dom({ href: LINK.replace('default-robot', 'x'.repeat(65)) }),
+        'query value': dom({ href: `${LINK}?token=secret` }),
+        'fragment': dom({ href: `${LINK}#x` }),
+        'not a url': dom({ href: 'not a url' }),
+        'malformed message id': dom({ user: ['not-a-uuid'] }),
+        'duplicated message id': dom({ assistant: [uuid(2), uuid(2)] }),
+    };
+    for (const [name, value] of Object.entries(bad)) {
+        const { state, page } = bound();
+        await assert.rejects(snapshot(state, page, value), /message pair is (?:unbound|invalid|ambiguous)/, name);
+        assert.equal(state.evidence.webchatTab.sessionId, null, `${name}: nothing bound`);
+    }
+});
+
+test('exactly one new stable user and assistant pair is recorded with its times, and nothing else', async () => {
+    const { state, page } = bound();
+    await snapshot(state, page, dom({ user: [uuid(1)], assistant: [uuid(2)] }));
+    state.beforeSubmit();
+    state.submitted();
+    // Zero new ids: still pending. The optimistic bubbles carry no id and are not in the id lists at all.
+    assert.equal(await resolve(state, page, dom({ user: [uuid(1)], assistant: [uuid(2)] })), false);
+    assert.throws(() => state.requirePairResolved(), /held/);
+    assert.equal(await resolve(state, page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(4)] })), true);
+    state.requirePairResolved();
+    assert.deepEqual(state.evidence.webchatTab.pairs, [{ userMessageId: uuid(3), assistantMessageId: uuid(4), beforeSubmitAt: 't2', pairObservedAt: 't4' }]);
+    assert.doesNotMatch(JSON.stringify(state.evidence), /conversation-skills|http|127\.0\.0\.1|message text/);
+    // A second submission snapshots everything that exists, including the first pair.
+    await snapshot(state, page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(4)] }));
+    state.beforeSubmit();
+    assert.equal(await resolve(state, page, dom({ user: [uuid(1), uuid(3), uuid(5)], assistant: [uuid(2), uuid(4), uuid(6)] })), true);
+    assert.equal(state.evidence.webchatTab.pairs.length, 2);
+    assert.equal(state.evidence.webchatTab.pairs[1].userMessageId, uuid(5));
+});
+
+test('a delayed id stays pending within the bounds, and an ambiguous or mismatched pair holds', async () => {
+    const mk = async () => { const x = bound(); await snapshot(x.state, x.page, dom({ user: [uuid(1)], assistant: [uuid(2)] })); x.state.beforeSubmit(); return x; };
+    // The user id appears first, the assistant id later: pending, then resolved.
+    let { state, page } = await mk();
+    assert.equal(await resolve(state, page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2)] })), false);
+    assert.equal(await resolve(state, page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(4)] })), true);
+    // At the bound without a pair: held, and nothing was fabricated.
+    ({ state, page } = await mk());
+    assert.equal(await resolve(state, page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2)] })), false);
+    assert.throws(() => state.requirePairResolved(), /held: no single new user and assistant pair/);
+    assert.deepEqual(state.evidence.webchatTab.pairs, []);
+    // More than one new id of either kind is ambiguous at once; a new pair is never chosen among several.
+    ({ state, page } = await mk());
+    await assert.rejects(resolve(state, page, dom({ user: [uuid(1), uuid(3), uuid(5)], assistant: [uuid(2), uuid(4)] })), /ambiguous: 2 new user and 1 new assistant/);
+    ({ state, page } = await mk());
+    await assert.rejects(resolve(state, page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(4), uuid(6)] })), /ambiguous: 1 new user and 2 new assistant/);
+    // A changed session, a hidden link or an earlier id that vanished is a mismatch.
+    ({ state, page } = await mk());
+    await assert.rejects(resolve(state, page, dom({ href: LINK.replace(SESSION, OTHER_SESSION), user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(4)] })), /mismatched: the conversation session changed/);
+    ({ state, page } = await mk());
+    await assert.rejects(resolve(state, page, dom({ hidden: true, user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(4)] })), /unbound/);
+    ({ state, page } = await mk());
+    await assert.rejects(resolve(state, page, dom({ user: [uuid(3)], assistant: [uuid(2), uuid(4)] })), /inconsistent/);
+    // A submission time that was not taken before the click cannot anchor a pair.
+    const unanchored = bound();
+    await snapshot(unanchored.state, unanchored.page, dom({ user: [], assistant: [] }));
+    await assert.rejects(resolve(unanchored.state, unanchored.page, dom({ user: [uuid(3)], assistant: [uuid(4)] })), /unanchored: the submission time/);
+});
+
+test('a document change between the snapshot and the pair fails, and a session change across submissions fails', async () => {
+    const { state, page } = bound();
+    await snapshot(state, page, dom({ user: [uuid(1)], assistant: [uuid(2)] }));
+    state.beforeSubmit();
+    page.navigate();
+    await assert.rejects(resolve(state, page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(4)] })), /tab identity is invalidated/);
+    assert.deepEqual(state.evidence.webchatTab.pairs, []);
+    const next = bound();
+    await snapshot(next.state, next.page, dom({}));
+    await assert.rejects(snapshot(next.state, next.page, dom({ href: LINK.replace(SESSION, OTHER_SESSION) })), /mismatched: the conversation session changed/);
+    // Without a bound stream there is no tab identity to attribute a pair to.
+    const unbound = createCopilotDiagnostics({ webchatTab: true });
+    unbound.observeWebchatTab(fakePage(), { baseURL: BASE, agent: 'roboTeamAgent' });
+    await assert.rejects(snapshot(unbound, Object.assign(fakePage(), {}), dom({})), /tab identity is missing/);
+});
+
+test('non-opted callers keep their contract: the pair methods are inert or refused', async () => {
+    const plain = createCopilotDiagnostics({ now: () => 'fixed' });
+    await assert.rejects(plain.snapshotWebchatMessages(fakePage(), { baseURL: BASE }), /not enabled/);
+    assert.equal(await plain.pairResolved(fakePage(), { baseURL: BASE }), true);
+    plain.requirePairResolved();
+    plain.beforeSubmit();
+    assert.deepEqual(Object.keys(plain.evidence), ['firstTerminalError', 'submissions', 'replyOutcome']);
+});
+
+test('the real WebChat DOM selectors ignore optimistic bubbles, task wrappers and the typing indicator and honor the link state', { timeout: 60_000 }, async (t) => {
+    const { chromium } = await import('@playwright/test');
+    const browser = await chromium.launch({ headless: true });
+    t.after(() => browser.close());
+    const page = await browser.newPage();
+    const html = ({ hiddenLink = false, extra = '', idLess = '' } = {}) => `<base href="${BASE}/"><main>
+        <a id="sessionSettingsLink" ${hiddenLink ? 'hidden' : ''} href="${LINK.replace(BASE, '')}">Conversation skills</a>
+        <div id="chatList">
+          <div class="wa-message in" data-message-id="${uuid(2)}"><div class="wa-message-bubble">intro text</div></div>
+          <div class="wa-message out" data-message-id="${uuid(1)}"><div class="wa-message-bubble">earlier prompt text</div></div>
+          ${idLess}${extra}
+        </div></main>`;
+    // Optimistic and live bubbles carry no id; a task wrapper has only data-task-id; the typing indicator is excluded even with an id.
+    const noise = `<div class="wa-message out"><div class="wa-message-bubble">optimistic prompt without an id</div></div>
+          <div class="wa-message in"><div class="wa-message-bubble">live bubble without an id</div></div>
+          <div class="wa-message in wa-task-item" data-task-id="t1" data-assistant-message-id="${uuid(9)}"><div class="wa-message-bubble"></div></div>
+          <div class="wa-message in wa-typing" data-message-id="${uuid(8)}"></div>`;
+    const state = createCopilotDiagnostics({ webchatTab: true, now: () => 'now' });
+    // The page double supplies the bound stream; the DOM is the real one (a base element gives it the configured origin).
+    const double = fakePage();
+    state.observeWebchatTab(double, { baseURL: BASE, agent: 'roboTeamAgent' });
+    double.request(streamUrl(TAB_A));
+    double.evaluate = (fn) => page.evaluate(fn);
+    await page.setContent(html());
+    await state.snapshotWebchatMessages(double, { baseURL: BASE });
+    assert.equal(state.evidence.webchatTab.sessionId, SESSION);
+    state.beforeSubmit();
+    await page.setContent(html({ idLess: noise }));
+    assert.equal(await state.pairResolved(double, { baseURL: BASE }), false, 'id-less bubbles, the task wrapper and the typing indicator add nothing');
+    // A hidden pending assistant anchor that carries a stable id counts; a user id is still missing.
+    await page.setContent(html({ idLess: noise, extra: `<div class="wa-message in" hidden data-message-id="${uuid(4)}"><div class="wa-message-bubble"></div></div>` }));
+    assert.equal(await state.pairResolved(double, { baseURL: BASE }), false, 'only the pending assistant anchor is new');
+    await page.setContent(html({ idLess: noise, extra: `<div class="wa-message out" data-message-id="${uuid(3)}"></div><div class="wa-message in" hidden data-message-id="${uuid(4)}"><div class="wa-message-bubble"></div></div>` }));
+    assert.equal(await state.pairResolved(double, { baseURL: BASE }), true, 'the pending anchor and the new user id form one pair');
+    assert.equal(state.evidence.webchatTab.pairs[0].assistantMessageId, uuid(4));
+    assert.equal(state.evidence.webchatTab.pairs[0].userMessageId, uuid(3));
+    await page.setContent(html({ hiddenLink: true }));
+    const later = createCopilotDiagnostics({ webchatTab: true });
+    const laterPage = fakePage();
+    later.observeWebchatTab(laterPage, { baseURL: BASE, agent: 'roboTeamAgent' });
+    laterPage.request(streamUrl(TAB_A));
+    laterPage.evaluate = (fn) => page.evaluate(fn);
+    await assert.rejects(later.snapshotWebchatMessages(laterPage, { baseURL: BASE }), /session settings link is not shown/);
+});
+
+test('the semantic-routing cases snapshot before the attempt time and wait for the pair within the existing poll budget', async () => {
+    const { readFileSync } = await import('node:fs');
+    const spec = readFileSync(new URL('../specs/70-copilot-semantic-routing.spec.mjs', import.meta.url), 'utf8');
+    const send = spec.slice(spec.indexOf('async function sendAndWaitForReply'), spec.indexOf("test.describe('AKU memory"));
+    const snapshotAt = send.indexOf('.snapshotWebchatMessages(page, { baseURL: smokeConfig.baseURL })');
+    assert.ok(snapshotAt > send.indexOf('fill(prompt)') && snapshotAt < send.indexOf('.beforeSubmit();'), 'snapshot precedes the attempt time');
+    assert.ok(send.indexOf('.beforeSubmit();') < send.indexOf("locator('#send').click()"));
+    assert.match(send, /pairResolved\(page, \{ baseURL: smokeConfig\.baseURL \}\)\) return texts\.join/);
+    assert.match(send, /if \(replySeen\) diagnostics\.get\(page\)\.requirePairResolved\(\);\s+diagnostics\.get\(page\)\.timedOut\(\)/);
+    assert.equal((send.match(/replied\(\)/g) || []).length, 1, 'the reply is recorded once, as before');
+    assert.match(send, /const polls = Math\.ceil\(timeoutMs \/ 3_000\)/);
+    assert.doesNotMatch(send, /setTimeout|timeout:\s*\d/, 'no new timeout');
 });
