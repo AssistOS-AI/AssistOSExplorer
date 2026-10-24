@@ -12,7 +12,7 @@ const TAB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function createCopilotDiagnostics({ now = () => new Date().toISOString(), webchatTab = false } = {}) {
     const evidence = { firstTerminalError: null, submissions: [], replyOutcome: 'not-submitted' };
     // Opt-in: callers that do not ask keep the artifact exactly as it was.
-    const tab = webchatTab ? { observationStartedAt: null, tabId: null, status: 'not-observed', streamRequests: 0, distinctTabIds: 0, submissionAttempts: [] } : null;
+    const tab = webchatTab ? { observationStartedAt: null, tabId: null, status: 'not-observed', streamRequests: 0, distinctTabIds: 0, navigationsAfterBinding: 0, submissionAttempts: [] } : null;
     if (tab) evidence.webchatTab = tab;
     const identities = new Set();
     let stopObserving = null;
@@ -33,13 +33,24 @@ export function createCopilotDiagnostics({ now = () => new Date().toISOString(),
                 if (url.origin !== origin || url.pathname !== WEBCHAT_STREAM_PATH || url.searchParams.get('agent') !== agent) return;
                 tab.streamRequests += 1;
                 const id = url.searchParams.get('tabId');
+                // An invalidated binding is never rebound: a replaced document has to be started over explicitly.
+                if (tab.status === 'invalidated') return;
                 if (!TAB_ID.test(id || '')) { tab.status = 'invalid'; return; }
                 identities.add(id);
                 tab.distinctTabIds = identities.size;
                 if (identities.size === 1) { tab.tabId = id; if (tab.status !== 'invalid') tab.status = 'observed'; } else { tab.tabId = null; tab.status = 'ambiguous'; }
             };
+            // Authentication navigations before the first stream are expected. Once a stream has been observed, any later
+            // main-frame navigation replaces or may replace the document that owns the id, so the binding is invalidated.
+            const onNavigated = (frame) => {
+                if (frame !== page.mainFrame() || tab.streamRequests === 0) return;
+                tab.navigationsAfterBinding += 1;
+                tab.tabId = null;
+                tab.status = 'invalidated';
+            };
             page.on('request', onRequest);
-            stopObserving = () => page.off('request', onRequest);
+            page.on('framenavigated', onNavigated);
+            stopObserving = () => { page.off('request', onRequest); page.off('framenavigated', onNavigated); };
         },
         stopWebchatTab() { stopObserving?.(); stopObserving = null; },
         // The one tab id of this page's owned stream, or a clear failure: missing, malformed, or more than one id.

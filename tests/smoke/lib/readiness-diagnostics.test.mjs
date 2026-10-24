@@ -106,14 +106,16 @@ const streamUrl = (tabId, { base = BASE, path = '/webchat/stream', agent = 'robo
     return `${base}${path}?${params}`;
 };
 function fakePage() {
-    const handlers = new Set();
+    const handlers = { request: new Set(), framenavigated: new Set() };
     const main = { name: 'main' };
     return {
         main, handlers,
+        get listenerCount() { return handlers.request.size + handlers.framenavigated.size; },
         mainFrame: () => main,
-        on(event, handler) { assert.equal(event, 'request'); handlers.add(handler); },
-        off(event, handler) { assert.equal(event, 'request'); handlers.delete(handler); },
-        request(url, { frame = main, method = 'GET' } = {}) { for (const handler of [...handlers]) handler({ url: () => url, frame: () => frame, method: () => method }); },
+        on(event, handler) { handlers[event].add(handler); },
+        off(event, handler) { handlers[event].delete(handler); },
+        request(url, { frame = main, method = 'GET' } = {}) { for (const handler of [...handlers.request]) handler({ url: () => url, frame: () => frame, method: () => method }); },
+        navigate(frame = main) { for (const handler of [...handlers.framenavigated]) handler(frame); },
     };
 }
 const observed = (extra = {}) => {
@@ -132,7 +134,7 @@ test('WebChat tab observation captures the owned main-frame stream and records o
     assert.equal(state.requireWebchatTab(), TAB_A);
     state.beforeSubmit();
     state.submitted();
-    assert.deepEqual(state.evidence.webchatTab, { observationStartedAt: 't1', tabId: TAB_A, status: 'observed', streamRequests: 2, distinctTabIds: 1, submissionAttempts: [{ at: 't2' }] });
+    assert.deepEqual(state.evidence.webchatTab, { observationStartedAt: 't1', tabId: TAB_A, status: 'observed', streamRequests: 2, distinctTabIds: 1, navigationsAfterBinding: 0, submissionAttempts: [{ at: 't2' }] });
     assert.deepEqual(state.evidence.submissions, [{ at: 't3' }], 'the existing submission timing is unchanged and follows the attempt');
     assert.doesNotMatch(JSON.stringify(state.evidence), /page-instance-secret|127\.0\.0\.1|roboTeamAgent|\/webchat/, 'no URL, query value or route is recorded');
 });
@@ -190,11 +192,11 @@ test('WebChat tab observation starts before connection setup and each attempt ti
 
 test('WebChat tab observation leaves no listener or capture after stop and refuses a second start', () => {
     const { state, page } = observed();
-    assert.equal(page.handlers.size, 1);
+    assert.equal(page.listenerCount, 2, 'the request and navigation listeners are registered');
     assert.throws(() => state.observeWebchatTab(page, { baseURL: BASE, agent: 'roboTeamAgent' }), /already running/);
     state.stopWebchatTab();
     state.stopWebchatTab();
-    assert.equal(page.handlers.size, 0);
+    assert.equal(page.listenerCount, 0, 'both listeners are removed at stop');
     page.request(streamUrl(TAB_A));
     assert.equal(state.evidence.webchatTab.streamRequests, 0);
     assert.throws(() => state.requireWebchatTab(), /missing/);
@@ -225,4 +227,42 @@ test('the semantic-routing cases opt in, observe before sign-in and take the att
     assert.match(spec, /afterEach[\s\S]*stopWebchatTab\(\)[\s\S]*testInfo\.attach\('copilot-terminal_codex\.json'/, 'listeners are removed and the evidence attached afterwards');
     const other = readFileSync(new URL('../specs/05-copilot-folder-launch.spec.mjs', import.meta.url), 'utf8');
     assert.doesNotMatch(other, /webchatTab/, 'other callers do not opt in');
+});
+
+test('a main-frame document replacement after the binding invalidates it and is never rebound', () => {
+    // Before the first stream: the sign-in redirects navigate freely.
+    let { state, page } = observed();
+    page.navigate(); page.navigate();
+    page.request(streamUrl(TAB_A));
+    assert.equal(state.requireWebchatTab(), TAB_A);
+    assert.equal(state.evidence.webchatTab.navigationsAfterBinding, 0);
+    // A same-id EventSource reconnect without a navigation keeps the binding.
+    page.request(streamUrl(TAB_A));
+    assert.equal(state.requireWebchatTab(), TAB_A);
+    // A child-frame navigation is not the owned document.
+    page.navigate({ name: 'child' });
+    assert.equal(state.requireWebchatTab(), TAB_A);
+
+    // A navigation after binding but before the submission: the attempt fails and no attempt time is recorded.
+    page.navigate();
+    assert.throws(() => state.beforeSubmit(), /invalidated/);
+    assert.deepEqual(state.evidence.webchatTab.submissionAttempts, []);
+    assert.equal(state.evidence.webchatTab.tabId, null);
+    assert.equal(state.evidence.webchatTab.navigationsAfterBinding, 1);
+    // The replaced document's new stream, even with the old or a new id, never rebinds.
+    page.request(streamUrl(TAB_A));
+    page.request(streamUrl(TAB_B));
+    assert.throws(() => state.requireWebchatTab(), /invalidated/);
+    assert.throws(() => state.beforeSubmit(), /invalidated/);
+
+    // A navigation during the turn: the post-reply check fails.
+    ({ state, page } = observed());
+    page.request(streamUrl(TAB_A));
+    state.beforeSubmit();
+    state.submitted();
+    page.navigate();
+    assert.throws(() => state.requireWebchatTab(), /invalidated: 1 owned stream request\(s\), 1 distinct/);
+    assert.deepEqual(state.evidence.webchatTab.submissionAttempts, [{ at: 't2' }], 'the earlier attempt is evidence, not repaired');
+    state.stopWebchatTab();
+    assert.equal(page.listenerCount, 0);
 });
