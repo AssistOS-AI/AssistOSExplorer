@@ -367,6 +367,75 @@ test('authentication visits only its final surface and preserves a separate serv
         });
       }
     }
+    await t.test('the deep-link gate sees the empty /auth/login redirect only as a main-frame navigation request', async () => {
+      // The gate's own observers: the exact function text of specs/61-github-dpu-token-ownership.spec.mjs runs here.
+      const { smokeConfig } = await import('./config.mjs');
+      assert.equal(new URL(smokeConfig.baseURL).origin, baseURL);
+      const gateSource = fs.readFileSync(new URL('../specs/61-github-dpu-token-ownership.spec.mjs', import.meta.url), 'utf8');
+      const fromGate = (name) => {
+        const match = new RegExp(`\n(function ${name}\\([\\s\\S]*?\n\\})\n`).exec(gateSource);
+        assert.ok(match, `the gate defines ${name}`);
+        return new Function('smokeConfig', `${match[1]}\nreturn ${name};`)(smokeConfig);
+      };
+      const observeCommitted = fromGate('observeCommittedMainFrameNavigations');
+      const observeLoginRequests = fromGate('observeLoginNavigationRequests');
+      sso = true;
+      redirectDelay = 0;
+      loginPath = providerPath;
+      loginOrigin = '';
+      setupComplete = true;
+      account = providerAccount;
+      principalUsername = '';
+      resetAccounts();
+      const foreignServer = http.createServer((incoming, response) => { response.setHeader('content-type', 'text/html'); response.end('<h1>Other origin</h1>'); });
+      await new Promise((resolve) => foreignServer.listen(0, '127.0.0.1', resolve));
+      const context = await browser.newContext({ baseURL });
+      const page = await context.newPage();
+      const returnTarget = '/explorer/index.html#file-exp/Confidential/My%20Space';
+      const target = '/service/#file-exp/Confidential/My%20Space';
+      try {
+        const committed = observeCommitted(page);
+        const loginRequests = observeLoginRequests(page);
+        const listeners = page.listenerCount('request') + page.listenerCount('framenavigated');
+        // (c) Each of these reaches /auth/login (or a lookalike) without being a main-frame GET navigation to this origin.
+        const other = `/auth/login?returnTo=${encodeURIComponent(returnTarget)}`;
+        await page.goto('about:blank');
+        await page.setContent(`<iframe id="child" src="${baseURL}${other}"></iframe>`);
+        await page.waitForLoadState('load');
+        assert.equal(page.frames().length, 2, 'the child frame navigated to the login');
+        await page.evaluate(async (url) => { await fetch(url).catch(() => null); }, `${baseURL}${other}`);
+        await page.goto(`${baseURL}/auth/login-lookalike?returnTo=${encodeURIComponent(returnTarget)}`);
+        await page.goto(`${baseURL.replace('127.0.0.1', 'localhost')}${other}`);
+        await page.goto(`http://127.0.0.1:${foreignServer.address().port}${other}`);
+        await page.setContent(`<form id="post" action="${baseURL}${other}" method="post"><input name="username" value="x"></form>`);
+        await Promise.all([page.waitForNavigation(), page.evaluate(() => document.querySelector('#post').submit())]);
+        assert.deepEqual(loginRequests.requests, [], 'none of the lookalike requests is recorded');
+        // The real hop: the helper opens /auth/login, which answers with an empty redirect to the wizard.
+        committed.navigations.length = 0;
+        const principal = await signIn(page, providerAccount, target, { requireConfiguredPrincipal: true });
+        assert.equal(principal.canonicalUsername, providerAccount.username);
+        // (a) The old observer misses the hop: no document committed at /auth/login.
+        assert.equal(committed.navigations.some(({ pathname }) => pathname === '/auth/login'), false, 'the committed navigations never include /auth/login');
+        assert.deepEqual(committed.navigations.map(({ pathname }) => pathname), [providerPath, '/service/']);
+        // (b) The request observer sees exactly that hop with the exact decoded returnTo.
+        assert.deepEqual(loginRequests.requests, [{ pathname: '/auth/login', hash: '', returnTo: target }]);
+        // (d) The committed final destination is still asserted by its fragment.
+        assert.deepEqual(committed.navigations.at(-1), { pathname: '/service/', hash: '#file-exp/Confidential/My%20Space' });
+        assert.throws(() => assert.deepEqual(committed.navigations.at(-1), { pathname: '/service/', hash: '#file-exp/Confidential/Other' }));
+        assert.throws(() => assert.deepEqual(committed.navigations.at(-1), { pathname: '/explorer/index.html', hash: '#file-exp/Confidential/My%20Space' }));
+        // Stopping removes both listeners and nothing is recorded afterwards.
+        committed.stop();
+        loginRequests.stop();
+        assert.equal(page.listenerCount('request') + page.listenerCount('framenavigated'), listeners - 2);
+        const before = loginRequests.requests.length;
+        await page.goto(`${baseURL}${other}`);
+        assert.equal(loginRequests.requests.length, before);
+      } finally {
+        await context.close();
+        foreignServer.closeAllConnections?.();
+        await new Promise((resolve) => foreignServer.close(resolve));
+      }
+    });
   } finally {
     await browser?.close();
     server.closeAllConnections();

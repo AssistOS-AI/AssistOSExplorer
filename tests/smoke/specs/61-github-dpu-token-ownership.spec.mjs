@@ -6,6 +6,40 @@ import { dpuData } from '../lib/dpu-data.mjs';
 import { assertExplorerDirectory, openExplorer } from '../lib/explorer.mjs';
 import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 
+// The documents the main frame committed. Fragments belong to this browser state, so the final destination is asserted
+// here. lib/auth-navigation.test.mjs runs this exact function text.
+function observeCommittedMainFrameNavigations(page) {
+  const navigations = [];
+  const onFrameNavigated = (frame) => {
+    if (frame !== page.mainFrame()) return;
+    const location = new URL(frame.url());
+    navigations.push({
+      pathname: location.pathname,
+      hash: location.hash,
+      ...(location.pathname === '/auth/login' ? { returnTo: location.searchParams.get('returnTo') } : {}),
+    });
+  };
+  page.on('framenavigated', onFrameNavigated);
+  return { navigations, stop: () => page.off('framenavigated', onFrameNavigated) };
+}
+
+// The main frame's GET navigation requests to this deployment's /auth/login. The Router answers that route with an empty
+// redirect (no intermediate page), so no document commits there and only the request shows the hop and its returnTo.
+// A fragment is never sent, so the recorded hash is the request URL's own. lib/auth-navigation.test.mjs runs this exact
+// function text.
+function observeLoginNavigationRequests(page) {
+  const baseOrigin = new URL(smokeConfig.baseURL).origin;
+  const requests = [];
+  const onRequest = (request) => {
+    if (!request.isNavigationRequest() || request.frame() !== page.mainFrame() || request.method() !== 'GET') return;
+    const url = new URL(request.url());
+    if (url.origin !== baseOrigin || url.pathname !== '/auth/login') return;
+    requests.push({ pathname: url.pathname, hash: url.hash, returnTo: url.searchParams.get('returnTo') });
+  };
+  page.on('request', onRequest);
+  return { requests, stop: () => page.off('request', onRequest) };
+}
+
 function findGitAgentPrincipal(permissions) {
   return Object.keys(permissions.agentPolicies || {}).find((principal) => /\/gitAgent$/.test(principal));
 }
@@ -29,29 +63,25 @@ test.describe('GitHub token DPU ownership @external', () => {
       .filter((cookie) => isAuthCookie(cookie.name));
     expect(initialAuthCookies).toEqual([]);
 
-    const navigations = [];
-    page.on('framenavigated', (frame) => {
-      if (frame !== page.mainFrame()) return;
-      const location = new URL(frame.url());
-      navigations.push({
-        pathname: location.pathname,
-        hash: location.hash,
-        ...(location.pathname === '/auth/login' ? { returnTo: location.searchParams.get('returnTo') } : {}),
+    const committed = observeCommittedMainFrameNavigations(page);
+    const loginRequests = observeLoginNavigationRequests(page);
+    try {
+      await openExplorer(page, { hash: 'file-exp/Confidential/My%20Space' });
+      await assertExplorerDirectory(page, '/Confidential/My Space');
+
+      expect(loginRequests.requests).toContainEqual({
+        pathname: '/auth/login',
+        hash: '',
+        returnTo: '/explorer/index.html#file-exp/Confidential/My%20Space',
       });
-    });
-
-    await openExplorer(page, { hash: 'file-exp/Confidential/My%20Space' });
-    await assertExplorerDirectory(page, '/Confidential/My Space');
-
-    expect(navigations).toContainEqual({
-      pathname: '/auth/login',
-      hash: '',
-      returnTo: '/explorer/index.html#file-exp/Confidential/My%20Space',
-    });
-    expect(navigations.at(-1)).toEqual({
-      pathname: '/explorer/index.html',
-      hash: '#file-exp/Confidential/My%20Space',
-    });
+      expect(committed.navigations.at(-1)).toEqual({
+        pathname: '/explorer/index.html',
+        hash: '#file-exp/Confidential/My%20Space',
+      });
+    } finally {
+      committed.stop();
+      loginRequests.stop();
+    }
   });
 
   test('manual token is stored user-owned, visible in Explorer, and removed on disconnect', async ({ page }) => {
