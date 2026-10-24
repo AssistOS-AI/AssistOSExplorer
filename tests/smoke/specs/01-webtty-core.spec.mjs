@@ -1248,15 +1248,33 @@ test.describe('Ploinky core WebTTY release gate', () => {
         message: 'targeted restart must remove the exact predecessor agent container',
         timeout: smokeConfig.timeouts.relay,
       }).toBe(false);
-      await expect(replacementVictim.terminalPage.locator('#status')).not.toHaveText('Connected');
-      replacementVictimDiagnostics.setExpectedOffline(false);
-      expect(
-        replacementVictimDiagnostics.actionableEvents(),
-        'active target replacement may interrupt transport but must not produce an unhandled browser failure',
-      ).toEqual([]);
-      // The restart changed the edge generation; refresh the browser proof before the one DELETE.
-      await closeTerminal(replacementVictim, { refreshProof: true });
-      await replacementVictimDiagnostics.flush();
+      let replacementVictimOutcome = null;
+      try {
+        // The client ends a retired terminal's stream with the server's exit notification and shows exactly Closed.
+        await expect(replacementVictim.terminalPage.locator('#status')).toHaveText('Closed');
+        replacementVictimDiagnostics.setExpectedOffline(false);
+        expect(
+          replacementVictimDiagnostics.actionableEvents(),
+          'active target replacement may interrupt transport but must not produce an unhandled browser failure',
+        ).toEqual([]);
+        // The restart changed the edge generation; refresh the browser proof before the one DELETE.
+        await closeTerminal(replacementVictim, { refreshProof: true });
+      } catch (error) {
+        replacementVictimOutcome = error;
+        throw error;
+      } finally {
+        // The victim's evidence is persisted even when the wait or the assertion above fails. A failure of the flush
+        // itself never replaces that original error; it is recorded by name only, because its message can quote values.
+        try {
+          await replacementVictimDiagnostics.flush();
+        } catch (flushError) {
+          if (!replacementVictimOutcome) throw flushError;
+          await testInfo.attach('webtty-replacement-victim-diagnostics-flush-failure.json', {
+            body: Buffer.from(JSON.stringify({ stage: 'replacement-victim-diagnostics-flush', error: String(flushError?.name || 'Error') })),
+            contentType: 'application/json',
+          });
+        }
+      }
 
       const replacementRuntimeBeforeStale = collectWebttyRuntimeEvidence({
         baseURL: smokeConfig.baseURL,
