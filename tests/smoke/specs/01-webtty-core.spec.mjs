@@ -563,6 +563,32 @@ function requireWatcherAccount() {
   };
 }
 
+// Runs `body`, then always persists its evidence. The evidence handling never replaces the body's failure: when the
+// body failed, a failing `persist` is recorded by error name only through `record` (its message can quote values), and
+// a failing `record` is only reported, so the body's own error is the one thrown. When the body succeeded, a failing
+// `persist` is the failure. lib/webtty-core-profile.test.mjs runs this exact function text.
+async function persistEvidenceAfter(body, persist, record, report = (message) => console.error(message)) {
+  let bodyFailed = false;
+  try {
+    await body();
+  } catch (error) {
+    bodyFailed = true;
+    throw error;
+  } finally {
+    try {
+      await persist();
+    } catch (persistError) {
+      if (!bodyFailed) throw persistError;
+      const failure = { stage: 'diagnostics-flush', error: String(persistError?.name || 'Error') };
+      try {
+        await record(failure);
+      } catch (recordError) {
+        report(`Diagnostic artifact write failed: ${failure.stage} ${failure.error}; recording it failed with ${String(recordError?.name || 'Error')}`);
+      }
+    }
+  }
+}
+
 // Observes the primary page between the deliberate logout and the intentional re-login. Navigation requests count at
 // the request, so a redirect hop that never commits a document is seen too. The wizard's own Google start POST is
 // counted by itself, independent of any navigation or Google script request. Only counts are kept: no URL, query or
@@ -1248,8 +1274,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         message: 'targeted restart must remove the exact predecessor agent container',
         timeout: smokeConfig.timeouts.relay,
       }).toBe(false);
-      let replacementVictimOutcome = null;
-      try {
+      await persistEvidenceAfter(async () => {
         // The client ends a retired terminal's stream with the server's exit notification and shows exactly Closed.
         await expect(replacementVictim.terminalPage.locator('#status')).toHaveText('Closed');
         replacementVictimDiagnostics.setExpectedOffline(false);
@@ -1259,22 +1284,10 @@ test.describe('Ploinky core WebTTY release gate', () => {
         ).toEqual([]);
         // The restart changed the edge generation; refresh the browser proof before the one DELETE.
         await closeTerminal(replacementVictim, { refreshProof: true });
-      } catch (error) {
-        replacementVictimOutcome = error;
-        throw error;
-      } finally {
-        // The victim's evidence is persisted even when the wait or the assertion above fails. A failure of the flush
-        // itself never replaces that original error; it is recorded by name only, because its message can quote values.
-        try {
-          await replacementVictimDiagnostics.flush();
-        } catch (flushError) {
-          if (!replacementVictimOutcome) throw flushError;
-          await testInfo.attach('webtty-replacement-victim-diagnostics-flush-failure.json', {
-            body: Buffer.from(JSON.stringify({ stage: 'replacement-victim-diagnostics-flush', error: String(flushError?.name || 'Error') })),
-            contentType: 'application/json',
-          });
-        }
-      }
+      }, () => replacementVictimDiagnostics.flush(), (failure) => testInfo.attach('webtty-replacement-victim-diagnostics-flush-failure.json', {
+        body: Buffer.from(JSON.stringify(failure)),
+        contentType: 'application/json',
+      }));
 
       const replacementRuntimeBeforeStale = collectWebttyRuntimeEvidence({
         baseURL: smokeConfig.baseURL,

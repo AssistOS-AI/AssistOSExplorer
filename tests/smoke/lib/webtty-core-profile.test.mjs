@@ -145,3 +145,74 @@ test('WebTTY core profile collects exactly one enabled Playwright test', { timeo
     fs.rmSync(artifactRoot, { recursive: true, force: true });
   }
 });
+
+// The gate's own function text runs here, so these cases prove the control flow the live gate uses.
+test('replacement victim evidence is persisted after the body and never replaces the body failure', async () => {
+  const webttySpec = fs.readFileSync(new URL('../specs/01-webtty-core.spec.mjs', import.meta.url), 'utf8');
+  const match = /\n(async function persistEvidenceAfter\([\s\S]*?\n\})\n/.exec(webttySpec);
+  assert.ok(match, 'the gate defines persistEvidenceAfter');
+  const persistEvidenceAfter = new Function(`${match[1]}\nreturn persistEvidenceAfter;`)();
+  assert.match(
+    webttySpec,
+    /await persistEvidenceAfter\(async \(\) => \{[\s\S]+?toHaveText\('Closed'\)[\s\S]+?\}, \(\) => replacementVictimDiagnostics\.flush\(\), \(failure\) => testInfo\.attach\(/,
+    'the replacement victim step persists its diagnostics through the guarded function',
+  );
+  const named = (name, message) => Object.assign(new Error(message), { name });
+  const run = async ({ body, persist, record }) => {
+    const calls = { persist: 0, record: [], report: [] };
+    let thrown;
+    let threw = false;
+    try {
+      await persistEvidenceAfter(
+        body,
+        async () => { calls.persist += 1; await persist(); },
+        async (failure) => { calls.record.push(failure); await record(failure); },
+        (message) => calls.report.push(message),
+      );
+    } catch (error) {
+      threw = true;
+      thrown = error;
+    }
+    return { ...calls, threw, thrown };
+  };
+  const primary = new Error('the victim never reached Closed');
+  const failBody = async () => { throw primary; };
+  const flushFailure = async () => { throw named('FlushError', 'secret-value-in-message'); };
+  const attachFailure = async () => { throw named('AttachError', 'secret-attach-message'); };
+  const nothing = async () => {};
+
+  // Primary failure, flush failure and attachment failure: the primary error is still the one thrown.
+  let result = await run({ body: failBody, persist: flushFailure, record: attachFailure });
+  assert.equal(result.thrown, primary);
+  assert.equal(result.persist, 1);
+  assert.deepEqual(result.record, [{ stage: 'diagnostics-flush', error: 'FlushError' }]);
+  assert.equal(result.report.length, 1);
+  assert.doesNotMatch(result.report[0], /secret/, 'the report carries error names only');
+
+  // Primary failure, flush failure, attachment success: the primary error is preserved and a name-only record is made.
+  result = await run({ body: failBody, persist: flushFailure, record: nothing });
+  assert.equal(result.thrown, primary);
+  assert.deepEqual(result.record, [{ stage: 'diagnostics-flush', error: 'FlushError' }]);
+  assert.doesNotMatch(JSON.stringify(result.record), /secret/);
+  assert.deepEqual(result.report, []);
+
+  // Primary failure with a working flush: flushed once, nothing recorded, primary thrown.
+  result = await run({ body: failBody, persist: nothing, record: attachFailure });
+  assert.equal(result.thrown, primary);
+  assert.equal(result.persist, 1);
+  assert.deepEqual(result.record, []);
+
+  // A falsy thrown value is still a body failure and is not replaced by a flush failure.
+  const falsy = await persistEvidenceAfter(async () => { throw 0; }, flushFailure, nothing).then(() => 'resolved', (error) => error);
+  assert.equal(falsy, 0);
+
+  // Success with a flush failure: that failure is thrown and nothing is recorded.
+  result = await run({ body: nothing, persist: flushFailure, record: attachFailure });
+  assert.equal(result.thrown?.name, 'FlushError');
+  assert.deepEqual(result.record, []);
+
+  // Success with a working flush resolves after exactly one flush.
+  result = await run({ body: nothing, persist: nothing, record: attachFailure });
+  assert.equal(result.threw, false);
+  assert.equal(result.persist, 1);
+});
