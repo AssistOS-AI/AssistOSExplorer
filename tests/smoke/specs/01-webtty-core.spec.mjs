@@ -20,6 +20,7 @@ import { diagnosticEventSignature } from '../lib/diagnostic-ledger.mjs';
 import { createReadinessDiagnostics, withFailureArtifact } from '../lib/readiness-diagnostics.mjs';
 import { assertExplorerDirectory, openExplorer } from '../lib/explorer.mjs';
 import { resolvePloinkyExecutable } from '../lib/ploinky-executable.mjs';
+import { liveSessionsPanel, LIVE_SESSIONS_PAGE_FRAME } from '../lib/live-sessions.mjs';
 import {
   captureNestedPodmanEventCursor,
   collectAgentProcessRows,
@@ -565,9 +566,12 @@ async function attachFromLiveSessions(page, id, role) {
   await waitForExplorerPluginRender(page);
   const host = page.locator('[data-app-plugin-key="explorer/live-sessions"]');
   await host.locator('button:visible').click();
-  const panel = page.getByRole('dialog', { name: 'Live Sessions', exact: true });
+  // `panel` is the shell's expanded-modal dialog. The list, rows and viewer belong to the Live Sessions page it frames
+  // (`content`), and a shell row's terminal is one more frame inside that page (`#liveSessionsFrame iframe`).
+  const { dialog: panel, content } = liveSessionsPanel(page);
   await expect(panel).toBeVisible();
-  const row = panel.locator(`li[data-session-id="${id}"]`);
+  await expect(panel.locator(LIVE_SESSIONS_PAGE_FRAME)).toHaveAttribute('referrerpolicy', 'no-referrer');
+  const row = content.locator(`li[data-session-id="${id}"]`);
   await expect(row).toBeVisible();
   const attachment = page.waitForResponse((response) => (
     new URL(response.url()).pathname === '/webtty/attachments' && response.request().method() === 'POST'
@@ -585,17 +589,25 @@ async function attachFromLiveSessions(page, id, role) {
   expect(tokenResponse.status()).toBe(201);
   const attach = (await tokenResponse.json()).attach;
   expect(typeof attach === 'string' && /^[A-Za-z0-9_-]{32}$/.test(attach), 'the attach response must contain an opaque token').toBe(true);
-  const frame = panel.locator('#liveSessionsFrame iframe');
+  const frame = content.locator('#liveSessionsFrame iframe');
   await expect(frame).toHaveAttribute('referrerpolicy', 'no-referrer');
   await expect.poll(() => frame.evaluate((element) => ({ search: element.contentWindow.location.search, hash: element.contentWindow.location.hash })))
     .toEqual({ search: '', hash: '' });
-  expect(await page.evaluate((token) => {
-    const stores = [window.sessionStorage, window.localStorage];
-    const iframe = document.querySelector('#liveSessionsFrame iframe');
-    stores.push(iframe.contentWindow.sessionStorage, iframe.contentWindow.localStorage);
-    return stores.some((storage) => Object.keys(storage).some((key) => storage.getItem(key)?.includes(token)));
-  }, attach), 'attach tokens must never reach parent or iframe browser storage').toBe(false);
-  return { panel, row, frame: panel.frameLocator('#liveSessionsFrame iframe') };
+  // Three same-origin documents could hold the token: the shell, the Live Sessions page frame and its terminal frame.
+  // A missing frame must throw, so none of them is skipped.
+  const shellLeak = await page.evaluate((token) => (
+    [window.sessionStorage, window.localStorage].some((storage) => Object.keys(storage).some((key) => storage.getItem(key)?.includes(token)))
+  ), attach);
+  const frameLeaks = await frame.evaluate((terminal, token) => {
+    const holds = (stores) => stores.some((storage) => Object.keys(storage).some((key) => storage.getItem(key)?.includes(token)));
+    return {
+      pageFrame: holds([window.sessionStorage, window.localStorage]),
+      terminalFrame: holds([terminal.contentWindow.sessionStorage, terminal.contentWindow.localStorage]),
+    };
+  }, attach);
+  expect({ shell: shellLeak, ...frameLeaks }, 'attach tokens must never reach shell, Live Sessions page or terminal frame browser storage')
+    .toEqual({ shell: false, pageFrame: false, terminalFrame: false });
+  return { panel, content, row, frame: content.frameLocator('#liveSessionsFrame iframe') };
 }
 
 async function restartPloinkyTarget(target, fixture) {
@@ -945,6 +957,9 @@ test.describe('Ploinky core WebTTY release gate', () => {
         try { return fs.readFileSync(path.join(fixture.nestedRoot, 'tab-close-marker.txt'), 'utf8').trim(); } catch { return ''; }
       }, { message: 'the same reattached shell must execute input after its original tab closes' }).toBe(tabCloseMarker);
       await closeTerminal(first, { requestPage: page });
+      // The page closes the view of a shell that exited when it next reads the list. Until then it still shows an owned
+      // running shell, and Close panel would ask Keep running / Stop it / Cancel instead of closing.
+      await expect(tabCloseView.content.locator('#liveSessionsViewer')).toBeHidden({ timeout: smokeConfig.timeouts.navigation });
       await tabCloseView.panel.getByRole('button', { name: 'Close panel', exact: true }).click();
       await expect(tabCloseView.panel).toBeHidden();
       await firstDiagnostics.flush();

@@ -203,23 +203,49 @@ export async function discoverSource(page) {
     return sources[0];
 }
 
-export async function openWatch(page, id) {
+// The Live Sessions panel is the shell's expanded-modal dialog (role dialog, named by its title). The list, the viewer,
+// the Detach control and the stream output belong to the Live Sessions page that dialog frames in
+// `iframe.expanded-modal-frame` (expanded-modal.js mountFrameContent); a shell row's terminal is one more frame inside
+// that page (`#liveSessionsFrame iframe`). `dialog` is the shell and `content` is the framed page.
+export const LIVE_SESSIONS_PAGE_FRAME = 'iframe.expanded-modal-frame';
+
+export function liveSessionsPanel(page) {
     const dialog = page.getByRole('dialog', { name: 'Live Sessions', exact: true });
+    return { dialog, content: dialog.frameLocator(LIVE_SESSIONS_PAGE_FRAME) };
+}
+
+export async function openWatch(page, id) {
+    const { dialog, content } = liveSessionsPanel(page);
     if (!await dialog.isVisible()) await page.locator('[data-app-plugin-key="explorer/live-sessions"] button:visible').click();
     await dialog.waitFor({ state: 'visible' });
     const key = `${LIVE_BASE}:${id}`;
-    const watch = dialog.locator(`[data-session-id="${key}"][data-session-action="attach"]`);
+    const watch = content.locator(`[data-session-id="${key}"][data-session-action="attach"]`);
     await watch.waitFor({ state: 'visible' });
     await watch.click();
-    const output = dialog.locator('#liveSessionsFrame pre.live-session-output');
+    const output = content.locator('#liveSessionsFrame pre.live-session-output');
     await output.waitFor({ state: 'visible' });
     assert.equal(await output.count(), 1, 'Watch must expose exactly one output container.');
-    return { dialog, output, form: dialog.locator('.live-session-message-form') };
+    return { dialog, content, output, form: content.locator('.live-session-message-form') };
 }
 
+// Detach view, the page's own control (`requestDetachViewer`). Strict: the viewer must be shown, the exact control must
+// exist and be clicked, and the viewer must then be gone. A missing control or an open close choice fails here.
 export async function detachWatch(page) {
-    const button = page.locator('[data-local-action="detachViewer"]');
-    if (await button.isVisible()) await button.click();
+    const { dialog, content } = liveSessionsPanel(page);
+    await dialog.waitFor({ state: 'visible' });
+    const viewer = content.locator('#liveSessionsViewer');
+    await viewer.waitFor({ state: 'visible' });
+    await content.locator('[data-local-action="requestDetachViewer"]').click();
+    await viewer.waitFor({ state: 'hidden' });
+}
+
+// Cleanup: detaches only a viewer that is shown. The panel never opened, or no view is attached, means there is
+// nothing to detach. Whenever a viewer is shown, the same strict detach runs, so a changed control cannot be skipped.
+export async function detachWatchIfShown(page) {
+    const { dialog, content } = liveSessionsPanel(page);
+    if (!await dialog.isVisible() || !await content.locator('#liveSessionsViewer').isVisible()) return false;
+    await detachWatch(page);
+    return true;
 }
 
 export async function restartRoboTeam({ executable, workspaceRoot, timeoutMs = 300_000 }) {

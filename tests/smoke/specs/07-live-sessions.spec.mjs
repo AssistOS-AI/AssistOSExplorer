@@ -18,7 +18,7 @@ import { findSecretLeaks } from '../lib/security.mjs';
 import { redactTraceText, findTraceCredentialResidue } from '../lib/redacted-trace.mjs';
 import { ROBOTEAM_BASE, LIVE_BASE, ENDED, foreignAccount, assertLivePrincipals, assertNoNativeRefusal,
     workload, assertExecutionFile, openSse, executionText, assertOrderedFrames, liveRequest, inventory,
-    discoverSource, openWatch, detachWatch, validateNativeEvidence, verifyNativeExecutable,
+    discoverSource, openWatch, detachWatch, detachWatchIfShown, liveSessionsPanel, validateNativeEvidence, verifyNativeExecutable,
     restartRoboTeam, observeFinitePageWork, nativeProcessIdentity,
     replayApplicationMatches } from '../lib/live-sessions.mjs';
 
@@ -114,7 +114,7 @@ async function withFixture(browser, testInfo, operation) {
             for (const reader of readers.splice(0)) await reader.close();
             for (const { page, finite } of diagnostics) {
                 if (page.isClosed()) continue;
-                await detachWatch(page);
+                await detachWatchIfShown(page);
                 await finite.settle();
                 // Closing all pages removes modal pollers, WebChat EventSources,
                 // and observer readers before the service is replaced.
@@ -152,7 +152,7 @@ async function withFixture(browser, testInfo, operation) {
         hasPrimary = true;
     } finally {
         for (const reader of readers.splice(0)) await attempt(`close reader ${++cleanupIndex}`, () => reader.close());
-        for (const { page } of diagnostics) if (!page.isClosed()) await attempt(`detach viewer ${++cleanupIndex}`, () => detachWatch(page));
+        for (const { page } of diagnostics) if (!page.isClosed()) await attempt(`detach viewer ${++cleanupIndex}`, () => detachWatchIfShown(page));
         for (const run of runs) {
             await attempt(`stop owned public row ${run.id}`, async () => {
                 if (!admin || admin.isClosed()) {
@@ -347,11 +347,12 @@ async function assertStopped(fixture, turn, observer) {
     const stopResponse = observer.waitForResponse(response => new URL(response.url()).pathname === `${LIVE_BASE}/${turn.row.id}/stop`
         && response.request().method() === 'POST');
     const key = `${LIVE_BASE}:${turn.row.id}`;
-    const panel = observer.getByRole('dialog', { name: 'Live Sessions', exact: true });
-    const pause = panel.locator(`[data-session-id="${key}"][data-session-action="kill"]`);
+    // The run's Stop control is in the Live Sessions page framed by the observer's panel dialog.
+    const { content } = liveSessionsPanel(observer);
+    const pause = content.locator(`[data-session-id="${key}"][data-session-action="kill"]`);
     await expect(pause).toHaveText('Pause workflow');
     await pause.click();
-    const confirm = panel.locator(`[data-session-id="${key}"][data-session-action="confirm-kill"]`);
+    const confirm = content.locator(`[data-session-id="${key}"][data-session-action="confirm-kill"]`);
     await expect(confirm).toHaveText('Confirm pause');
     await confirm.click();
     expect((await stopResponse).status()).toBe(200);
@@ -457,6 +458,11 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
             }
             expect(await owner.evaluate(() => globalThis.__lsExecuted)).toBeUndefined();
             expect(await admin.evaluate(() => globalThis.__lsExecuted)).toBeUndefined();
+            // The output renders in the Live Sessions page frame, so a script that ran there sets its global, not the shell's.
+            for (const watched of [ownerWatch, adminWatch]) {
+                expect(await watched.output.evaluate(element => element.ownerDocument.defaultView.__lsExecuted),
+                    'rendered output must not execute in the Live Sessions page frame').toBeUndefined();
+            }
 
             await detachWatch(owner);
             await expect.poll(async () => (await inventory(admin)).find(row => row.id === turn.row.id)?.viewerCount).toBe(3);
@@ -476,7 +482,7 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
             expect(replay.indexOf(turn.work.first)).toBeGreaterThanOrEqual(0);
             expect(replay.indexOf(turn.work.first)).toBeLessThan(replay.indexOf(turn.work.second));
             const popupPromise = admin.context().waitForEvent('page');
-            await adminWatch.dialog.locator(`[data-session-id="${LIVE_BASE}:${turn.row.id}"][data-session-action="pop-out"]`).click();
+            await adminWatch.content.locator(`[data-session-id="${LIVE_BASE}:${turn.row.id}"][data-session-action="pop-out"]`).click();
             const standalone = await popupPromise;
             await standalone.waitForURL(new URL(turn.row.viewUrl, smokeConfig.baseURL).href);
             expect(await standalone.evaluate(() => window.opener)).toBeNull();

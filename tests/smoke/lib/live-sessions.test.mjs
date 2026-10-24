@@ -10,7 +10,7 @@ import { chromium, request } from '@playwright/test';
 import { foreignAccount, assertLivePrincipals, assertNoNativeRefusal, workload, assertExecutionFile,
     parseSse, executionText, assertOrderedFrames, validateNativeEvidence, activeTurnProcesses,
     requiresCopilotSourceVerification, observeFinitePageWork, assertNativeProcessIdentity,
-    liveRequest, openWatch, LIVE_BASE, replayApplicationMatches } from './live-sessions.mjs';
+    liveRequest, openWatch, detachWatch, detachWatchIfShown, liveSessionsPanel, LIVE_BASE, replayApplicationMatches } from './live-sessions.mjs';
 
 const ordinary = id => ({ canonicalId: id, canonicalUsername: `${id}@example.test`, roles: ['user'] });
 const admin = { ...ordinary('admin'), roles: ['admin'] };
@@ -57,19 +57,43 @@ test('mutation sends the validated Origin and CSRF proof through actual APIReque
     assert.equal(mutations.length, 1, 'a foreign proof origin must fail before mutation dispatch');
 });
 
-test('Watch selects one output container even when production output spans share its CSS class', async t => {
+// The production structure: the shell's expanded-modal dialog frames the Live Sessions page in
+// iframe.expanded-modal-frame, and that page holds the rows, the viewer, Detach view and the stream output.
+const livePageHtml = ({ detachAction = 'requestDetachViewer', viewerShown = false } = {}) => `<!doctype html><body>
+    <ul id="liveSessionsList"><li data-session-id="${LIVE_BASE}:fixture_run">
+        <button data-session-id="${LIVE_BASE}:fixture_run" data-session-action="attach">Watch</button></li></ul>
+    <section id="liveSessionsViewer" ${viewerShown ? '' : 'hidden'}>
+        <button data-local-action="${detachAction}">Detach view</button>
+        <div id="liveSessionsFrame"><pre class="live-session-output"><span class="live-session-output">same marker</span><span class="live-session-assistant">same marker</span></pre></div>
+        <form class="live-session-message-form"></form>
+    </section>
+    <script>
+        const viewer = document.querySelector('#liveSessionsViewer');
+        document.querySelector('[data-session-action="attach"]').addEventListener('click', () => { viewer.hidden = false; });
+        document.querySelector('[data-local-action="requestDetachViewer"]')?.addEventListener('click', () => { viewer.hidden = true; });
+    </script></body>`;
+const shellHtml = (pageOptions) => `<div role="dialog" aria-label="Live Sessions">
+    <button aria-label="Close panel"></button>
+    <iframe class="expanded-modal-frame" title="Live Sessions" referrerpolicy="no-referrer" srcdoc="${livePageHtml(pageOptions).replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"></iframe>
+</div>`;
+const framedPage = async (t, pageOptions, shell = shellHtml) => {
     const browser = await chromium.launch({ headless: true });
     t.after(() => browser.close());
     const page = await browser.newPage();
-    await page.setContent(`<div role="dialog" aria-label="Live Sessions">
-        <button data-session-id="${LIVE_BASE}:fixture_run" data-session-action="attach">Watch</button>
-        <div id="liveSessionsFrame"><pre class="live-session-output"><span class="live-session-output">same marker</span><span class="live-session-assistant">same marker</span></pre></div>
-        <form class="live-session-message-form"></form>
-    </div>`);
+    page.setDefaultTimeout(1500);
+    await page.setContent(shell(pageOptions));
+    return page;
+};
+
+test('Watch selects one output container inside the framed Live Sessions page even when output spans share its CSS class', async t => {
+    const page = await framedPage(t);
     const watch = await openWatch(page, 'fixture_run');
+    assert.equal(await watch.dialog.locator('iframe.expanded-modal-frame').count(), 1, 'the dialog is the shell that frames the page');
     assert.equal(await watch.output.count(), 1);
     assert.equal(await watch.output.evaluate(element => element.tagName), 'PRE');
+    assert.equal(await watch.output.evaluate(element => element.ownerDocument.defaultView.parent === element.ownerDocument.defaultView), false, 'the output belongs to the framed page, not the shell');
     assert.equal(await watch.output.textContent(), 'same markersame marker');
+    assert.equal(await watch.form.count(), 1);
     const applied = await watch.output.locator(':scope > span').evaluateAll(spans => spans.map(span => ({
         text: span.textContent || '', style: span.className.replace(/^live-session-/, ''),
     })));
@@ -77,8 +101,47 @@ test('Watch selects one output container even when production output spans share
         { event: 'output', id: '1', data: { text: 'same marker', style: 'output' } },
         { event: 'output', id: '2', data: { text: 'same marker', style: 'assistant' } },
     ], applied), true);
-    await page.locator('#liveSessionsFrame').evaluate(frame => frame.append(frame.querySelector('pre').cloneNode(true)));
+    await watch.content.locator('#liveSessionsFrame').evaluate(frame => frame.append(frame.querySelector('pre').cloneNode(true)));
     await assert.rejects(openWatch(page, 'fixture_run'), /strict mode violation|exactly one output container/);
+});
+
+test('Watch does not accept the old structure with the rows directly in the dialog', async t => {
+    const page = await framedPage(t, undefined, () => `<div role="dialog" aria-label="Live Sessions">
+        <button data-session-id="${LIVE_BASE}:fixture_run" data-session-action="attach">Watch</button>
+        <div id="liveSessionsFrame"><pre class="live-session-output"></pre></div></div>`);
+    await assert.rejects(openWatch(page, 'fixture_run'), /Timeout.*data-session-action="attach"/s);
+});
+
+test('Detach view clicks the exact page control and requires the viewer to go away', async t => {
+    const page = await framedPage(t);
+    const watch = await openWatch(page, 'fixture_run');
+    assert.equal(await watch.content.locator('#liveSessionsViewer').isVisible(), true);
+    await detachWatch(page);
+    assert.equal(await watch.content.locator('#liveSessionsViewer').isVisible(), false);
+    await assert.rejects(detachWatch(page), /Timeout.*liveSessionsViewer/s, 'strict detach needs a shown viewer');
+});
+
+test('Detach view cannot silently skip: a renamed control or a control outside the page frame fails', async t => {
+    const renamed = await framedPage(t, { detachAction: 'detachViewer', viewerShown: true });
+    await assert.rejects(detachWatch(renamed), /Timeout.*requestDetachViewer/s);
+    await assert.rejects(detachWatchIfShown(renamed), /Timeout.*requestDetachViewer/s, 'a shown viewer is never skipped by the cleanup form');
+    const shellOnly = await framedPage(t, { detachAction: 'detachViewer', viewerShown: true }, pageOptions => `${shellHtml(pageOptions)}
+        <button data-local-action="requestDetachViewer">Detach view</button>`);
+    await assert.rejects(detachWatch(shellOnly), /Timeout.*requestDetachViewer/s, 'the shell document is not the page that owns the control');
+});
+
+test('cleanup detach does nothing without a panel or a shown viewer and detaches a shown viewer', async t => {
+    const browser = await chromium.launch({ headless: true });
+    t.after(() => browser.close());
+    const bare = await browser.newPage();
+    bare.setDefaultTimeout(1500);
+    await bare.setContent('<main>Explorer without the panel</main>');
+    assert.equal(await detachWatchIfShown(bare), false);
+    const idle = await framedPage(t);
+    assert.equal(await detachWatchIfShown(idle), false, 'a panel without an attached view has nothing to detach');
+    await openWatch(idle, 'fixture_run');
+    assert.equal(await detachWatchIfShown(idle), true);
+    assert.equal(await liveSessionsPanel(idle).content.locator('#liveSessionsViewer').isVisible(), false);
 });
 
 test('foreign account requires explicit validated method-specific inputs without echoing secrets', () => {
