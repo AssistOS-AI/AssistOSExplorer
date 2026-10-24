@@ -97,6 +97,7 @@ function explorerFixture(config) {
     presenter.state.selectedPath = target;
     fileExp.querySelector('#editorFileName').textContent = basename(target);
     loader.depth -= 1;
+    if (raceArmed && config.raceAt === 'file-open') { raceArmed = false; startRace(); }
   }
   body.addEventListener('click', (event) => {
     const cell = event.target.closest('[data-entry-path]');
@@ -199,8 +200,23 @@ function explorerFixture(config) {
     }
   }
 
+  // Arms a change for the moment a trial click hovers the Git control: while
+  // that trial is still in flight, a second supported trigger appears
+  // (duplicate) or the control turns busy. Only a check of the Git control
+  // itself can set it off.
+  function startRace() {
+    const control = host.querySelector('[data-app-plugin-trigger="gitAgent/git"], #gitButton');
+    control.addEventListener('pointerover', () => {
+      if (config.race === 'duplicate') host.append(pluginMount(lazyTrigger()));
+      else control.setAttribute('aria-busy', 'true');
+      report('race', config.race);
+    }, { once: true });
+  }
+  let raceArmed = Boolean(config.race);
+
   let releaseRender = () => {};
   window.__fixture = {
+    startRace,
     release() {
       releaseRender();
       delete presenter.__appPluginRenderPromise;
@@ -210,6 +226,7 @@ function explorerFixture(config) {
   setTimeout(async () => {
     await navigate(config.structure === 'non-root' ? '/Confidential' : '/');
     mountGit();
+    if (raceArmed && config.raceAt === 'boot') { raceArmed = false; startRace(); }
     document.getElementById('before_webskel_loader')?.remove();
     if (config.structure === 'no-presenter') delete fileExp.webSkelPresenter;
     if (config.structure === 'pending-render') {
@@ -229,7 +246,7 @@ function explorerFixture(config) {
 
 function createFixture() {
   const fixture = { log: [], options: {} };
-  const defaults = { git: 'lazy', block: '', structure: '', panel: 'overview', bootDelayMs: 150, panelDelayMs: 150,
+  const defaults = { git: 'lazy', block: '', structure: '', race: '', raceAt: '', panel: 'overview', bootDelayMs: 150, panelDelayMs: 150,
     replaceAfterMs: 400, pluginModule: PLUGIN_MODULE };
   fixture.reset = (options = {}) => {
     fixture.log.length = 0;
@@ -395,6 +412,36 @@ test('the production benchmark fails the Git step when the panel never finishes 
   assert.equal(fixture.count('/fixture/event/activation/lazy'), 1, 'the failed step activated Git once and never retried');
 });
 
+// A second supported control, or a busy state, that appears while the
+// non-activating trial waits must be seen before the control is accepted.
+const RACE_REASONS = { duplicate: /2 supported Git controls are visible/, busy: /the Git control is busy/ };
+
+test('the production benchmark refuses a second Git control that appears during the Git step check', { timeout: 120_000 }, async () => {
+  fixture.reset({ git: 'lazy', race: 'duplicate', raceAt: 'file-open' });
+  const run = await runBenchmark(1);
+  assert.equal(run.code, 1, run.explain);
+  const [iteration] = run.report.iterations;
+  assert.deepEqual(iteration.steps.map((step) => [step.name, step.status]),
+    SCENARIO.map((name) => [name, name === 'open-git-panel' ? 'failed' : 'passed']), run.explain);
+  assert.match(iteration.error.message, RACE_REASONS.duplicate);
+  assert.deepEqual(stepsOf(iteration, (pathname) => pathname === '/fixture/event/race/duplicate'), ['open-git-panel'],
+    'the race happened during the Git step check');
+  assert.equal(fixture.count('/fixture/event/activation/lazy'), 0, 'neither control was clicked');
+  assert.equal(fixture.count(PLUGIN_MODULE), 0);
+});
+
+test('the production benchmark refuses a Git control that turns busy during the readiness check', { timeout: 120_000 }, async () => {
+  fixture.reset({ git: 'lazy', race: 'busy', raceAt: 'boot' });
+  const run = await runBenchmark(1);
+  assert.equal(run.code, 1, run.explain);
+  const [iteration] = run.report.iterations;
+  assert.deepEqual(iteration.steps.map((step) => [step.name, step.status]),
+    [['router-login-page', 'passed'], ['login-to-explorer-interactive', 'failed']], run.explain);
+  assert.match(iteration.error.message, RACE_REASONS.busy);
+  assert.equal(fixture.count('/fixture/event/race/busy'), 1, 'the race happened');
+  assert.equal(fixture.count('/fixture/event/activation/lazy'), 0);
+});
+
 // ---- direct readiness and Git-step checks on the fixture page ---------------
 async function fixturePage(options) {
   fixture.reset(options);
@@ -508,6 +555,40 @@ test('the existing structural gates still hold readiness, and a released delay p
         await page.waitForTimeout(500);
         await page.evaluate(() => window.__fixture.release());
         await ready;
+      } finally {
+        await context.close();
+      }
+    });
+  }
+});
+
+test('a duplicate or busy state that appears during the trial is refused by readiness and by the Git step', async (t) => {
+  const { waitForExplorerInteractive, openGitPanel } = await import('../scripts/run-ui-benchmark.mjs');
+  for (const race of ['duplicate', 'busy']) {
+    await t.test(`readiness: ${race}`, async () => {
+      const { page, context, events } = await fixturePage({ git: 'lazy', race, raceAt: 'boot' });
+      try {
+        await assert.rejects(waitForExplorerInteractive(page, readinessConfig()), (error) => {
+          assert.match(error.message, /^Timeout 1500ms exceeded waiting for one actionable Explorer Git control/);
+          assert.match(error.message, RACE_REASONS[race]);
+          return true;
+        });
+        assert.deepEqual(touches(await events()), [{ type: 'race', form: race }]);
+      } finally {
+        await context.close();
+      }
+    });
+    await t.test(`Git step: ${race}`, async () => {
+      const { page, context, events } = await fixturePage({ git: 'lazy', race });
+      try {
+        await waitForExplorerInteractive(page, readinessConfig({ timeoutMs: 5_000 }));
+        // As the measured steps do, move the pointer away from Git first, so
+        // the Git step's own trial is what hovers it.
+        await page.mouse.move(0, 0);
+        await page.evaluate(() => window.__fixture.startRace());
+        await assert.rejects(openGitPanel(page, readinessConfig()), RACE_REASONS[race]);
+        assert.deepEqual(touches(await events()), [{ type: 'race', form: race }], 'nothing was clicked');
+        assert.equal(await page.locator('git-panel').count(), 0);
       } finally {
         await context.close();
       }

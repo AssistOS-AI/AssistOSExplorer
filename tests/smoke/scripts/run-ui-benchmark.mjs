@@ -703,54 +703,73 @@ function timeoutError(timeoutMs, what) {
   return new Error(`Timeout ${timeoutMs}ms exceeded waiting for ${what}.`);
 }
 
+// Finds the visible supported Git controls and, when exactly one is visible,
+// whether it is blocked. Returns `{ control }` for one usable control, or
+// `{ reason }` with fixed text. Every handle it does not return is disposed.
+async function inspectGitControls(page) {
+  const visible = [];
+  for (const control of GIT_CONTROLS) {
+    const handles = await page.$$(control.selector);
+    for (const handle of handles) {
+      if (await handle.isVisible().catch(() => false)) visible.push({ form: control.form, handle });
+      else await handle.dispose().catch(() => {});
+    }
+  }
+  const release = async () => { for (const { handle } of visible) await handle.dispose().catch(() => {}); };
+  if (visible.length !== 1) {
+    await release();
+    return { reason: visible.length ? `${visible.length} supported Git controls are visible` : 'no supported Git control is visible' };
+  }
+  const [control] = visible;
+  const blocked = await control.handle.evaluate((element) => {
+    if (!element.isConnected) return 'detached';
+    if (element.disabled || element.matches(':disabled')) return 'disabled';
+    if (element.closest('[aria-disabled="true"]')) return 'aria-disabled';
+    if (element.closest('[aria-busy="true"]') || element.hasAttribute('data-app-plugin-loading')) return 'busy';
+    if (element.closest('[hidden], [inert]')) return 'hidden';
+    return '';
+  }).catch(() => 'detached');
+  if (blocked) {
+    await release();
+    return { reason: `the Git control is ${blocked}` };
+  }
+  return { control };
+}
+
 // Resolves the one visible supported Git control and proves, with Playwright's
 // non-activating trial, that it would accept an ordinary click. The trial may
 // hover the control, but it never presses, clicks or focuses it, so Git is not
-// activated, imported, mounted or opened. A control replaced while polling is
-// resolved again; more than one visible control, or a hidden, disabled, busy,
-// detached or obstructed one, keeps waiting and fails at the deadline.
+// activated, imported, mounted or opened. The trial can wait, so the whole
+// inspection is repeated after it: the same element must still be the only
+// visible supported control and still not be disabled, busy or loading. A
+// control replaced while polling is resolved again; anything else keeps
+// waiting and fails at the deadline.
 async function selectGitControl(page, deadline, timeoutMs) {
   let reason = 'no supported Git control is visible';
   while (Date.now() < deadline) {
-    const visible = [];
-    for (const control of GIT_CONTROLS) {
-      const handles = await page.$$(control.selector);
-      for (const handle of handles) {
-        if (await handle.isVisible().catch(() => false)) visible.push({ form: control.form, handle });
-        else await handle.dispose().catch(() => {});
-      }
-    }
-    if (visible.length === 0) {
-      reason = 'no supported Git control is visible';
-    } else if (visible.length > 1) {
-      reason = `${visible.length} supported Git controls are visible`;
+    const before = await inspectGitControls(page);
+    if (before.reason) {
+      reason = before.reason;
     } else {
-      const [control] = visible;
-      const blocked = await control.handle.evaluate((element) => {
-        if (!element.isConnected) return 'detached';
-        if (element.disabled || element.matches(':disabled')) return 'disabled';
-        if (element.closest('[aria-disabled="true"]')) return 'aria-disabled';
-        if (element.closest('[aria-busy="true"]') || element.hasAttribute('data-app-plugin-loading')) return 'busy';
-        if (element.closest('[hidden], [inert]')) return 'hidden';
-        return '';
-      }).catch(() => 'detached');
-      if (blocked) {
-        reason = `the Git control is ${blocked}`;
-      } else {
-        try {
-          await control.handle.click({ trial: true, timeout: Math.min(GIT_CONTROL_ATTEMPT_MS, remainingMs(deadline)) });
-          // The control must still be the same visible, attached element.
-          if (await control.handle.evaluate((element) => element.isConnected).catch(() => false)
-            && await control.handle.isVisible().catch(() => false)) {
-            return control;
-          }
-          reason = 'the Git control is detached';
-        } catch {
-          reason = 'the Git control is not actionable';
+      const { control } = before;
+      let accepted = false;
+      try {
+        await control.handle.click({ trial: true, timeout: Math.min(GIT_CONTROL_ATTEMPT_MS, remainingMs(deadline)) });
+        const after = await inspectGitControls(page);
+        if (after.reason) {
+          reason = after.reason;
+        } else {
+          accepted = await control.handle.evaluate((element, current) => element === current, after.control.handle)
+            .catch(() => false);
+          await after.control.handle.dispose().catch(() => {});
+          if (!accepted) reason = 'the Git control changed during the check';
         }
+      } catch {
+        reason = 'the Git control is not actionable';
       }
+      if (accepted) return control;
+      await control.handle.dispose().catch(() => {});
     }
-    for (const { handle } of visible) await handle.dispose().catch(() => {});
     await new Promise((resolve) => setTimeout(resolve, Math.min(GIT_CONTROL_POLL_MS, remainingMs(deadline))));
   }
   throw timeoutError(timeoutMs, `one actionable Explorer Git control (${reason})`);
