@@ -5,8 +5,9 @@ import { createCopilotDiagnostics } from '../lib/copilot-terminal-diagnostics.mj
 
 const diagnostics = new WeakMap();
 
-test.beforeEach(async ({ page }) => { diagnostics.set(page, createCopilotDiagnostics()); });
+test.beforeEach(async ({ page }) => { diagnostics.set(page, createCopilotDiagnostics({ webchatTab: true })); });
 test.afterEach(async ({ page }, testInfo) => {
+    diagnostics.get(page)?.stopWebchatTab();
     await testInfo.attach('copilot-terminal_codex.json', {
         body: Buffer.from(JSON.stringify(diagnostics.get(page)?.evidence || {}, null, 2)),
         contentType: 'application/json',
@@ -29,6 +30,8 @@ function copilotWebchatPath() {
 }
 
 async function openCopilotWebchat(page, account = smokeConfig.primaryUser) {
+    // Registered before sign-in and navigation, so the page's first stream connection cannot be missed.
+    diagnostics.get(page).observeWebchatTab(page, { baseURL: smokeConfig.baseURL, agent: smokeConfig.webchatAgent });
     await signIn(page, account, copilotWebchatPath());
     await expect(page.locator('#cmd')).toBeVisible();
     await expect(page.locator('#send')).toBeVisible();
@@ -59,6 +62,8 @@ async function sendAndWaitForReply(page, prompt, introCount, timeoutMs) {
         input.selectionEnd = input.value.length;
         input.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    // The bound tab identity is required and the attempt time is taken immediately before the click.
+    diagnostics.get(page).beforeSubmit();
     await page.locator('#send').click();
     diagnostics.get(page).submitted();
 
@@ -75,6 +80,8 @@ async function sendAndWaitForReply(page, prompt, introCount, timeoutMs) {
                 texts.push(await msgs.nth(j).innerText());
             }
             diagnostics.get(page).replied();
+            // A tab id that changed during the turn would make its attribution ambiguous.
+            diagnostics.get(page).requireWebchatTab();
             return texts.join('\n');
         }
     }

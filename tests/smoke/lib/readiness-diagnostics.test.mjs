@@ -93,3 +93,136 @@ test('diagnostic payloads redact fabricated secrets before attachment or error m
         assert.doesNotMatch(text, /fabricated-private-secret/);
     } finally { if (previous === undefined) delete process.env.SMOKE_PASSWORD; else process.env.SMOKE_PASSWORD = previous; }
 });
+
+// WebChat tab observation for the semantic-routing cases, with a page double that emits the same `request` events.
+const TAB_A = '3f1c2a9e-5b7d-4c1a-9e2f-0a1b2c3d4e5f';
+const TAB_B = '8d2e4f60-1a2b-4c3d-8e4f-5a6b7c8d9e0f';
+const BASE = 'http://127.0.0.1:18080';
+const streamUrl = (tabId, { base = BASE, path = '/webchat/stream', agent = 'roboTeamAgent' } = {}) => {
+    const params = new URLSearchParams();
+    if (tabId !== undefined) params.set('tabId', tabId);
+    params.set('pageInstanceId', 'page-instance-secret');
+    params.set('agent', agent);
+    return `${base}${path}?${params}`;
+};
+function fakePage() {
+    const handlers = new Set();
+    const main = { name: 'main' };
+    return {
+        main, handlers,
+        mainFrame: () => main,
+        on(event, handler) { assert.equal(event, 'request'); handlers.add(handler); },
+        off(event, handler) { assert.equal(event, 'request'); handlers.delete(handler); },
+        request(url, { frame = main, method = 'GET' } = {}) { for (const handler of [...handlers]) handler({ url: () => url, frame: () => frame, method: () => method }); },
+    };
+}
+const observed = (extra = {}) => {
+    const clock = { value: 0, events: [] };
+    const state = createCopilotDiagnostics({ webchatTab: true, now: () => { clock.value += 1; clock.events.push(clock.value); return `t${clock.value}`; }, ...extra });
+    const page = fakePage();
+    state.observeWebchatTab(page, { baseURL: BASE, agent: 'roboTeamAgent' });
+    return { state, page, clock };
+};
+
+test('WebChat tab observation captures the owned main-frame stream and records only the opaque id and times', () => {
+    const { state, page } = observed();
+    assert.equal(state.evidence.webchatTab.observationStartedAt, 't1');
+    page.request(streamUrl(TAB_A));
+    page.request(streamUrl(TAB_A));
+    assert.equal(state.requireWebchatTab(), TAB_A);
+    state.beforeSubmit();
+    state.submitted();
+    assert.deepEqual(state.evidence.webchatTab, { observationStartedAt: 't1', tabId: TAB_A, status: 'observed', streamRequests: 2, distinctTabIds: 1, submissionAttempts: [{ at: 't2' }] });
+    assert.deepEqual(state.evidence.submissions, [{ at: 't3' }], 'the existing submission timing is unchanged and follows the attempt');
+    assert.doesNotMatch(JSON.stringify(state.evidence), /page-instance-secret|127\.0\.0\.1|roboTeamAgent|\/webchat/, 'no URL, query value or route is recorded');
+});
+
+test('WebChat tab observation ignores foreign frames, origins, routes, agents and methods', () => {
+    const { state, page } = observed();
+    page.request(streamUrl(TAB_A), { frame: { name: 'child' } });
+    page.request(streamUrl(TAB_A, { base: 'http://127.0.0.1:18081' }));
+    page.request(streamUrl(TAB_A, { base: 'http://localhost:18080' }));
+    page.request(streamUrl(TAB_A, { path: '/webchat/input' }));
+    page.request(streamUrl(TAB_A, { path: '/webchat/stream/extra' }));
+    page.request(streamUrl(TAB_A, { path: '/other/webchat/stream' }));
+    page.request(streamUrl(TAB_A, { agent: 'otherAgent' }));
+    page.request(streamUrl(TAB_A), { method: 'POST' });
+    assert.equal(state.evidence.webchatTab.streamRequests, 0);
+    assert.throws(() => state.requireWebchatTab(), /tab identity is missing/);
+    assert.throws(() => state.beforeSubmit(), /missing/);
+    assert.deepEqual(state.evidence.webchatTab.submissionAttempts, [], 'no attempt is recorded without a bound identity');
+    page.request(streamUrl(TAB_B));
+    assert.equal(state.requireWebchatTab(), TAB_B, 'only the owned route binds');
+});
+
+test('WebChat tab observation fails on a missing, malformed, changed or ambiguous identity', () => {
+    for (const bad of [undefined, '', 'not-a-uuid', 'a'.repeat(300)]) {
+        const { state, page } = observed();
+        page.request(streamUrl(bad));
+        assert.throws(() => state.requireWebchatTab(), /invalid/);
+        page.request(streamUrl(TAB_A));
+        assert.throws(() => state.requireWebchatTab(), /invalid/, 'a later valid id does not repair an invalid one');
+    }
+    const { state, page } = observed();
+    page.request(streamUrl(TAB_A));
+    assert.equal(state.requireWebchatTab(), TAB_A);
+    page.request(streamUrl(TAB_B));
+    assert.throws(() => state.requireWebchatTab(), /ambiguous: 2 owned stream request\(s\), 2 distinct/);
+    assert.throws(() => state.beforeSubmit(), /ambiguous/);
+    page.request(streamUrl(TAB_A));
+    assert.throws(() => state.requireWebchatTab(), /ambiguous/, 'the last id is never silently taken');
+    assert.equal(state.evidence.webchatTab.tabId, null);
+    assert.equal(state.evidence.webchatTab.distinctTabIds, 2);
+});
+
+test('WebChat tab observation starts before connection setup and each attempt time precedes its click', () => {
+    const order = [];
+    const { state, page } = observed();
+    // The page double has no click; the helper order is: bind, attempt time, click, existing submission time.
+    page.request(streamUrl(TAB_A));
+    const attempt = () => { state.beforeSubmit(); order.push(`attempt:${state.evidence.webchatTab.submissionAttempts.at(-1).at}`); order.push('click'); state.submitted(); };
+    attempt();
+    attempt();
+    assert.deepEqual(order, ['attempt:t2', 'click', 'attempt:t4', 'click']);
+    assert.deepEqual(state.evidence.webchatTab.submissionAttempts, [{ at: 't2' }, { at: 't4' }]);
+    assert.equal(state.evidence.webchatTab.observationStartedAt, 't1', 'observation started before any stream request');
+});
+
+test('WebChat tab observation leaves no listener or capture after stop and refuses a second start', () => {
+    const { state, page } = observed();
+    assert.equal(page.handlers.size, 1);
+    assert.throws(() => state.observeWebchatTab(page, { baseURL: BASE, agent: 'roboTeamAgent' }), /already running/);
+    state.stopWebchatTab();
+    state.stopWebchatTab();
+    assert.equal(page.handlers.size, 0);
+    page.request(streamUrl(TAB_A));
+    assert.equal(state.evidence.webchatTab.streamRequests, 0);
+    assert.throws(() => state.requireWebchatTab(), /missing/);
+});
+
+test('WebChat tab observation is opt-in and leaves other callers\' artifact shape unchanged', () => {
+    const plain = createCopilotDiagnostics({ now: () => 'fixed' });
+    assert.deepEqual(Object.keys(plain.evidence), ['firstTerminalError', 'submissions', 'replyOutcome']);
+    plain.beforeSubmit();
+    plain.submitted();
+    assert.deepEqual(plain.evidence, { firstTerminalError: null, submissions: [{ at: 'fixed' }], replyOutcome: 'waiting' });
+    assert.throws(() => plain.observeWebchatTab(fakePage(), { baseURL: BASE, agent: 'x' }), /not enabled/);
+    assert.throws(() => plain.requireWebchatTab(), /not enabled/);
+    assert.equal(JSON.stringify(plain.evidence).includes('webchatTab'), false);
+});
+
+test('the semantic-routing cases opt in, observe before sign-in and take the attempt time just before the click', async () => {
+    const { readFileSync } = await import('node:fs');
+    const spec = readFileSync(new URL('../specs/70-copilot-semantic-routing.spec.mjs', import.meta.url), 'utf8');
+    assert.match(spec, /createCopilotDiagnostics\(\{ webchatTab: true \}\)/);
+    const open = spec.slice(spec.indexOf('async function openCopilotWebchat'), spec.indexOf('async function waitForIntro'));
+    assert.ok(open.indexOf('.observeWebchatTab(page, { baseURL: smokeConfig.baseURL, agent: smokeConfig.webchatAgent })') >= 0);
+    assert.ok(open.indexOf('.observeWebchatTab(') < open.indexOf('await signIn('), 'the observer is registered before sign-in and navigation');
+    const send = spec.slice(spec.indexOf('async function sendAndWaitForReply'), spec.indexOf("test.describe('AKU memory"));
+    assert.ok(send.indexOf('.beforeSubmit();') > send.indexOf("fill(prompt)"));
+    assert.ok(send.indexOf('.beforeSubmit();') < send.indexOf("locator('#send').click()"), 'the attempt is recorded before the click');
+    assert.ok(send.indexOf("locator('#send').click()") < send.indexOf('.submitted();'), 'the existing submission time is unchanged after the click');
+    assert.match(spec, /afterEach[\s\S]*stopWebchatTab\(\)[\s\S]*testInfo\.attach\('copilot-terminal_codex\.json'/, 'listeners are removed and the evidence attached afterwards');
+    const other = readFileSync(new URL('../specs/05-copilot-folder-launch.spec.mjs', import.meta.url), 'utf8');
+    assert.doesNotMatch(other, /webchatTab/, 'other callers do not opt in');
+});
