@@ -459,3 +459,39 @@ test('the semantic-routing cases snapshot before the attempt time and wait for t
     assert.match(send, /const polls = Math\.ceil\(timeoutMs \/ 3_000\)/);
     assert.doesNotMatch(send, /setTimeout|timeout:\s*\d/, 'no new timeout');
 });
+
+test('one id seen in both roles is rejected early, in the snapshot and in the new pair', async () => {
+    const { state, page } = bound();
+    await assert.rejects(snapshot(state, page, dom({ user: [uuid(1)], assistant: [uuid(1)] })), /ambiguous: a stable message id is used in both roles/);
+    assert.equal(state.evidence.webchatTab.sessionId, null, 'nothing was bound');
+    const mk = async () => { const x = bound(); await snapshot(x.state, x.page, dom({ user: [uuid(1)], assistant: [uuid(2)] })); x.state.beforeSubmit(); return x; };
+    // The same new id as the user and the assistant message: not a pair.
+    let sample = await mk();
+    await assert.rejects(resolve(sample.state, sample.page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(3)] })), /used in both roles/);
+    assert.deepEqual(sample.state.evidence.webchatTab.pairs, []);
+    // An earlier user id that now also appears as an assistant message, and the reverse.
+    sample = await mk();
+    await assert.rejects(resolve(sample.state, sample.page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(1)] })), /used in both roles/);
+    sample = await mk();
+    await assert.rejects(resolve(sample.state, sample.page, dom({ user: [uuid(1), uuid(2)], assistant: [uuid(2), uuid(4)] })), /used in both roles/);
+});
+
+test('only earlier user ids must persist: a vanished assistant anchor is allowed and a vanished user message fails', async () => {
+    const mk = async () => {
+        const x = bound();
+        await snapshot(x.state, x.page, dom({ user: [uuid(1), uuid(3)], assistant: [uuid(2), uuid(4)] }));
+        x.state.beforeSubmit();
+        return x;
+    };
+    // A completed silent slash command keeps only its input: its assistant anchor is removed by the product.
+    let sample = await mk();
+    assert.equal(await resolve(sample.state, sample.page, dom({ user: [uuid(1), uuid(3), uuid(5)], assistant: [uuid(2), uuid(6)] })), true);
+    assert.deepEqual(sample.state.evidence.webchatTab.pairs.map((p) => [p.userMessageId, p.assistantMessageId]), [[uuid(5), uuid(6)]]);
+    // Every earlier assistant id gone is still fine; the pending state is unaffected.
+    sample = await mk();
+    assert.equal(await resolve(sample.state, sample.page, dom({ user: [uuid(1), uuid(3)], assistant: [] })), false);
+    assert.equal(await resolve(sample.state, sample.page, dom({ user: [uuid(1), uuid(3), uuid(5)], assistant: [uuid(6)] })), true);
+    // A vanished earlier user message is an inconsistent history and fails.
+    sample = await mk();
+    await assert.rejects(resolve(sample.state, sample.page, dom({ user: [uuid(3), uuid(5)], assistant: [uuid(2), uuid(4), uuid(6)] })), /inconsistent: an earlier user message disappeared/);
+});

@@ -45,6 +45,8 @@ export function createCopilotDiagnostics({ now = () => new Date().toISOString(),
         if (!match) fail('unbound: the session settings link has an unexpected structure');
         for (const id of [...dom.user, ...dom.assistant]) if (!UUID_V4.test(id || '')) fail('invalid: a stable message id is malformed');
         if (new Set(dom.user).size !== dom.user.length || new Set(dom.assistant).size !== dom.assistant.length) fail('ambiguous: a stable message id is duplicated');
+        // One id never names both a user and an assistant message; seeing it in both roles is rejected at once.
+        if (dom.user.some((id) => dom.assistant.includes(id))) fail('ambiguous: a stable message id is used in both roles');
         return { sessionId: match[2].toLowerCase(), user: dom.user, assistant: dom.assistant };
     }
     return {
@@ -121,6 +123,10 @@ export function createCopilotDiagnostics({ now = () => new Date().toISOString(),
             const dom = await readWebchat(page, baseURL);
             this.requireWebchatTab();
             if (dom.sessionId !== pending.sessionId) fail('mismatched: the conversation session changed');
+            // Only earlier USER ids must persist. The product intentionally removes the assistant anchor of a completed slash
+            // command that has no visible output (a silent command keeps only its input: roboTeamAgent copilot
+            // storage/conversationSessionStore.mjs, `silentCommand`, which omits the assistant message from the snapshot),
+            // so an earlier ASSISTANT id may legitimately vanish and is deliberately not retained here.
             for (const id of pending.user) if (!dom.user.includes(id)) fail('inconsistent: an earlier user message disappeared');
             const newUser = dom.user.filter((id) => !pending.user.has(id));
             const newAssistant = dom.assistant.filter((id) => !pending.assistant.has(id));
