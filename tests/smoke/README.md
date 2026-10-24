@@ -743,6 +743,38 @@ ScreenShare gate, and none of those gates substitutes for another.
 The focused authentication navigation regression uses installed Chromium:
 `node --test lib/auth-navigation.test.mjs`.
 
+### Google script abort during password sign-in
+
+When Google sign-in is available, the UserPersisto wizard loads Google's script
+(`https://accounts.google.com/gsi/client`) on its own page. If that script is
+still loading when a password sign-in navigates to the Router callback, Chromium
+aborts it with `net::ERR_ABORTED`. On a page with attached diagnostics,
+`signIn` opens one checkpoint for the sign-in and may acknowledge exactly that
+abort, and only after the authenticated principal is verified. The proof comes
+from the existing metadata-only CDP observer: one GET `Script` request at the
+exact address, without redirect, from the bound wizard document's main-frame
+loader; a successful (200) password submission from that document; a main-frame
+navigation from that document to the same-origin `/auth/callback` and then the
+intended destination, which finishes loading; the abort timestamped after that
+navigation starts and before the destination loads, observed identically by CDP
+and Playwright; and no other actionable event in the checkpoint. The original
+abort stays in the evidence next to a separate `navigationcancellation` record
+of the sanitized proof (no query, fragment, header, cookie, body, account,
+transaction or credential value). Unsupported CDP, truncated evidence, a
+missing or ambiguous observation, another sign-in method, or any other error
+closes the checkpoint without acknowledging anything, and the original sign-in
+exception is still the one reported. Cleanup POST failures, Google HTTP, TLS or
+network errors, unrelated requests, console errors and page errors are never
+acknowledged.
+
+Before following a password handoff, the wizard retires its Google transaction
+through `google/cancel` and waits a bounded time for that request, so a clean
+sign-in has no failed cleanup request. A cleanup that fails, is refused or times
+out releases the valid sign-in but remains a strict diagnostics failure. The
+actual-service Chromium regression is
+`node --test lib/auth-navigation-cancellation.test.mjs`; it never contacts
+Google, because Google's address resolves to a local socket that never answers.
+
 ## Ploinky Core WebTTY Release Gate
 
 Run the administrator/ordinary-user WebTTY gate against a fresh local Box and

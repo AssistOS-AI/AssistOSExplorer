@@ -2,7 +2,14 @@ import { createHmac } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { expect, recordPageNavigationFailure } from './fixtures.mjs';
+import {
+  acknowledgePageNavigationCancellation,
+  checkpointPageDiagnostics,
+  closePageDiagnosticsCheckpoint,
+  expect,
+  hasPageDiagnostics,
+  recordPageNavigationFailure,
+} from './fixtures.mjs';
 import { beginAuthNavigationDiagnostics } from './auth-navigation-diagnostics.mjs';
 import { smokeConfig } from './config.mjs';
 import { getWithoutKeepAlive } from './api-probe.mjs';
@@ -368,6 +375,12 @@ export async function signIn(
   { requireConfiguredPrincipal = false, totpClock } = {},
 ) {
   const navigation = await beginAuthNavigationDiagnostics(page, account);
+  // A page with attached diagnostics gets one checkpoint for this sign-in.
+  // Only a proven navigation abort of the wizard's Google script is ever
+  // acknowledged in it; every other outcome closes it acknowledging nothing.
+  const checkpoint = hasPageDiagnostics(page) ? checkpointPageDiagnostics(page, 'authentication navigation') : null;
+  let checkpointOpen = Boolean(checkpoint);
+  let failed = false;
   let stage = 'session-check';
   try {
     const sessionOk = await hasAuthenticatedSession(page.request);
@@ -414,6 +427,9 @@ export async function signIn(
       ]);
     } else if (loginUrl.pathname === USERPERSISTO_LOGIN_PATH) {
       stage = 'login-submit-navigation';
+      if (checkpoint && account.signInMethod === 'password') {
+        await navigation.bindWizardDocument({ expectedOrigin: smokeOrigin, pathname: USERPERSISTO_LOGIN_PATH });
+      }
       await signInThroughUserPersisto(page, account, { totpClock });
     }
 
@@ -430,12 +446,29 @@ export async function signIn(
     if (new URL(page.url()).pathname === USERPERSISTO_LOGIN_PATH) {
       throw new Error(`Login did not leave UserPersisto for ${account.username}.`);
     }
-    return await readAuthenticatedPrincipal(page, requireConfiguredPrincipal ? account : undefined);
+    const principal = await readAuthenticatedPrincipal(page, requireConfiguredPrincipal ? account : undefined);
+    if (checkpoint) {
+      const cancellation = await navigation.provePasswordNavigation({
+        expectedOrigin: smokeOrigin,
+        returnTo,
+        timeoutMs: smokeConfig.timeouts.navigation,
+      });
+      if (cancellation && acknowledgePageNavigationCancellation(page, checkpoint, cancellation)) checkpointOpen = false;
+    }
+    return principal;
   } catch (error) {
+    failed = true;
     recordPageNavigationFailure(page, navigation.failure(error, stage));
     throw error;
   } finally {
-    await navigation.dispose();
+    try {
+      if (checkpointOpen) closePageDiagnosticsCheckpoint(page, checkpoint);
+    } catch (closeError) {
+      // The original sign-in failure is the one reported.
+      if (!failed) throw closeError;
+    } finally {
+      await navigation.dispose();
+    }
   }
 }
 

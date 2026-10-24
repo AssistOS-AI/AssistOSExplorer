@@ -4,7 +4,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import {assertPageDiagnosticsClean, attachPageDiagnostics, expectNoUnfilteredBrowserErrors} from './fixtures.mjs';
+import {
+    acknowledgePageNavigationCancellation,
+    assertPageDiagnosticsClean,
+    attachPageDiagnostics,
+    checkpointPageDiagnostics,
+    closePageDiagnosticsCheckpoint,
+    expectNoUnfilteredBrowserErrors,
+    hasPageDiagnostics,
+} from './fixtures.mjs';
 import {createReleaseGateFailureCollector} from './release-gate-failures.mjs';
 
 test('page cleanliness requires a ledger and rejects any unacknowledged failure without clearing evidence', () => {
@@ -67,4 +75,100 @@ test('final diagnostics retain late close errors and fail the release gate witho
     } finally {
         fs.rmSync(directory, {recursive: true, force: true});
     }
+});
+
+const GIS = 'https://accounts.google.com/gsi/client';
+const gisCancellation = () => Object.freeze({
+    signature: Object.freeze({kind: 'requestfailed', type: 'error', url: GIS, method: 'GET', failure: 'net::ERR_ABORTED'}),
+    proof: Object.freeze({request: 'Google sign-in script', url: GIS, failure: 'net::ERR_ABORTED', destination: 'http://127.0.0.1/service/'}),
+});
+const failedRequest = (url, method = 'GET', errorText = 'net::ERR_ABORTED') => ({
+    url: () => url, method: () => method, failure: () => ({errorText}),
+});
+
+test('fixture wrappers detect attached controllers and close a page checkpoint without clearing strict failures', () => {
+    const page = new EventEmitter();
+    assert.equal(hasPageDiagnostics(page), false);
+    const first = attachPageDiagnostics(page, {}, 'first');
+    const second = attachPageDiagnostics(page, {}, 'second');
+    assert.equal(hasPageDiagnostics(page), true);
+    const checkpoint = checkpointPageDiagnostics(page, 'authentication navigation');
+    page.emit('requestfailed', failedRequest(GIS));
+    closePageDiagnosticsCheckpoint(page, checkpoint);
+    assert.equal(first.actionableEvents().length, 1);
+    assert.equal(second.actionableEvents().length, 1);
+    assert.throws(() => assertPageDiagnosticsClean(page), /browser console, page, or network errors/);
+    assert.throws(() => closePageDiagnosticsCheckpoint(page, checkpoint), /unknown or already consumed/);
+    assert.throws(() => closePageDiagnosticsCheckpoint(new EventEmitter(), checkpoint), /does not belong to this page/);
+});
+
+test('a proven Google script abort is acknowledged only as the sole checkpoint event and its evidence is retained', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'navigation-cancellation-'));
+    try {
+        const page = new EventEmitter();
+        const diagnostics = attachPageDiagnostics(page, {outputPath: (...parts) => path.join(directory, ...parts)}, 'auth');
+        const checkpoint = checkpointPageDiagnostics(page, 'authentication navigation');
+        page.emit('requestfailed', failedRequest(GIS));
+        assert.equal(acknowledgePageNavigationCancellation(page, checkpoint, gisCancellation()), true);
+        assert.deepEqual(diagnostics.actionableEvents(), []);
+        assert.deepEqual(diagnostics.events.map(({kind}) => kind), ['requestfailed', 'navigationcancellation'], 'the original abort stays in the evidence');
+        assert.throws(() => closePageDiagnosticsCheckpoint(page, checkpoint), /unknown or already consumed/, 'acknowledgement consumed the checkpoint');
+        assert.throws(() => acknowledgePageNavigationCancellation(page, checkpoint, gisCancellation()), /unknown or already consumed/,
+            'a consumed checkpoint cannot be replayed');
+        await diagnostics.flush();
+        const saved = JSON.parse(fs.readFileSync(path.join(directory, 'diagnostics/auth.browser-events.json'), 'utf8'));
+        assert.deepEqual(saved.map(({kind}) => kind), ['requestfailed', 'navigationcancellation']);
+        assert.equal(saved[1].proof.url, GIS);
+    } finally {
+        fs.rmSync(directory, {recursive: true, force: true});
+    }
+});
+
+test('any other checkpoint event or signature refuses the cancellation acknowledgement and leaves everything actionable', async (t) => {
+    const extras = {
+        'cleanup POST abort': (page) => page.emit('requestfailed', failedRequest('http://127.0.0.1/service/auth/google/cancel', 'POST')),
+        'cleanup HTTP 500': (page) => page.emit('response', {status: () => 500, url: () => 'http://127.0.0.1/service/auth/google/cancel', request: () => ({method: () => 'POST'})}),
+        'unrelated request': (page) => page.emit('requestfailed', failedRequest('http://127.0.0.1/explorer/app.js')),
+        'console error': (page) => page.emit('console', {type: () => 'error', text: () => 'unexpected', location: () => ({})}),
+        'page error': (page) => page.emit('pageerror', new Error('unexpected')),
+        'duplicate abort': (page) => page.emit('requestfailed', failedRequest(GIS)),
+    };
+    for (const [name, extra] of Object.entries(extras)) {
+        await t.test(name, () => {
+            const page = new EventEmitter();
+            const diagnostics = attachPageDiagnostics(page, {}, 'auth');
+            const checkpoint = checkpointPageDiagnostics(page, 'authentication navigation');
+            page.emit('requestfailed', failedRequest(GIS));
+            extra(page);
+            assert.equal(acknowledgePageNavigationCancellation(page, checkpoint, gisCancellation()), false);
+            assert.equal(diagnostics.actionableEvents().length, 2);
+            closePageDiagnosticsCheckpoint(page, checkpoint);
+            assert.equal(diagnostics.actionableEvents().length, 2);
+        });
+    }
+    const signatures = {
+        'query variant': {url: `${GIS}?x=1`},
+        'wrong method': {method: 'POST'},
+        'non-abort failure': {failure: 'net::ERR_FAILED'},
+        'other kind': {kind: 'response'},
+    };
+    for (const [name, change] of Object.entries(signatures)) {
+        await t.test(`signature ${name}`, () => {
+            const page = new EventEmitter();
+            const diagnostics = attachPageDiagnostics(page, {}, 'auth');
+            const checkpoint = checkpointPageDiagnostics(page, 'authentication navigation');
+            page.emit('requestfailed', failedRequest(GIS));
+            const cancellation = gisCancellation();
+            assert.equal(acknowledgePageNavigationCancellation(page, checkpoint, {...cancellation, signature: {...cancellation.signature, ...change}}), false);
+            assert.equal(diagnostics.actionableEvents().length, 1);
+        });
+    }
+    await t.test('a different failed request with the exact signature shape is not acknowledged', () => {
+        const page = new EventEmitter();
+        const diagnostics = attachPageDiagnostics(page, {}, 'auth');
+        const checkpoint = checkpointPageDiagnostics(page, 'authentication navigation');
+        page.emit('requestfailed', failedRequest(`${GIS}?variant=1`));
+        assert.equal(acknowledgePageNavigationCancellation(page, checkpoint, gisCancellation()), false);
+        assert.equal(diagnostics.actionableEvents().length, 1);
+    });
 });

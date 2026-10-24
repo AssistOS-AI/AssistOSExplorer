@@ -4,6 +4,7 @@ import path from 'node:path';
 import { expect, test as base } from '@playwright/test';
 
 import { smokeConfig } from './config.mjs';
+import { GOOGLE_SIGN_IN_SCRIPT_URL } from './auth-navigation-diagnostics.mjs';
 import { createDiagnosticLedger } from './diagnostic-ledger.mjs';
 import { findTraceCredentialResidue, redactTraceText } from './redacted-trace.mjs';
 import { createRedactor, findSecretLeaks } from './security.mjs';
@@ -61,6 +62,10 @@ export function recordPageNavigationFailure(page, snapshot) {
   }
 }
 
+export function hasPageDiagnostics(page) {
+  return (diagnosticControllers.get(page)?.size || 0) > 0;
+}
+
 export function checkpointPageDiagnostics(page, label) {
   const controllers = [...(diagnosticControllers.get(page) || [])];
   if (controllers.length === 0) {
@@ -97,6 +102,60 @@ export function acknowledgeExactPageDiagnostics(page, checkpoint, expectedSignat
   return checkpoint.entries.map(({ controller, checkpoint: controllerCheckpoint }) => (
     controller.acknowledgeExact(controllerCheckpoint, expectedSignatures)
   ));
+}
+
+function requirePageCheckpoint(page, checkpoint) {
+  if (checkpoint?.page !== page || !Array.isArray(checkpoint?.entries)) {
+    throw new Error('the diagnostic checkpoint does not belong to this page');
+  }
+  return checkpoint;
+}
+
+// Consumes a page checkpoint without acknowledging any event, so whatever it
+// covered stays actionable. Every controller is closed before an error is
+// reported.
+export function closePageDiagnosticsCheckpoint(page, checkpoint) {
+  let firstError = null;
+  for (const { controller, checkpoint: token } of requirePageCheckpoint(page, checkpoint).entries) {
+    try {
+      controller.closeWithoutAcknowledgement(token);
+    } catch (error) {
+      firstError ||= error;
+    }
+  }
+  if (firstError) throw firstError;
+}
+
+// Acknowledges one proven navigation cancellation, the exact Google sign-in
+// script abort described by `cancellation.signature`, when it is the only
+// actionable event in the checkpoint of every controller. The original event
+// stays in the evidence, next to a separate informational record of the
+// sanitized proof. Anything else returns false and acknowledges nothing; the
+// caller then closes the checkpoint, leaving every event actionable.
+export function acknowledgePageNavigationCancellation(page, checkpoint, cancellation) {
+  requirePageCheckpoint(page, checkpoint);
+  const signature = cancellation?.signature;
+  if (signature?.kind !== 'requestfailed' || signature.type !== 'error' || signature.url !== GOOGLE_SIGN_IN_SCRIPT_URL
+    || signature.method !== 'GET' || signature.failure !== 'net::ERR_ABORTED' || !cancellation.proof) {
+    return false;
+  }
+  const expected = [{
+    kind: 'requestfailed', type: 'error', url: createRedactor()(signature.url), method: 'GET', failure: 'net::ERR_ABORTED',
+  }];
+  for (const { controller, checkpoint: token } of checkpoint.entries) {
+    try {
+      controller.assertExact(token, expected);
+    } catch (error) {
+      // A consumed or foreign checkpoint is a caller error, not ineligibility.
+      if (!/unexpected diagnostic event multiset/.test(String(error?.message))) throw error;
+      return false;
+    }
+  }
+  acknowledgeExactPageDiagnostics(page, checkpoint, expected);
+  for (const { controller } of checkpoint.entries) {
+    controller.events.push({ kind: 'navigationcancellation', type: 'info', acknowledged: expected[0], proof: cancellation.proof });
+  }
+  return true;
 }
 
 export function installRtcProbe(context, { networkLane = '', expectedTurnEndpoint = null } = {}) {
@@ -325,6 +384,7 @@ export function attachPageDiagnostics(page, testInfo, label = 'page') {
     checkpoint: ledger.checkpoint,
     acknowledgeExact: ledger.acknowledgeExact,
     assertExact: ledger.assertExact,
+    closeWithoutAcknowledgement: ledger.closeWithoutAcknowledgement,
     pause() { paused = true; },
     resume() { paused = false; },
     setExpectedOffline(value) { expectedOffline = Boolean(value); },
