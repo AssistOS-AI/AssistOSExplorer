@@ -9,12 +9,13 @@ import {
   assertPageDiagnosticsClean,
   attachPageDiagnostics,
   checkpointPageDiagnostics,
+  closePageDiagnosticsCheckpoint,
   expect,
   test,
 } from '../lib/fixtures.mjs';
 import { assertDistinctAuthenticatedPrincipals, hasAuthenticatedSession, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
 import { USERPERSISTO_LOGIN_PATH } from '../lib/auth-wizard.mjs';
-import { captureRouterRecoveryAuthentication, expectedRouterRecoveryDiagnostics, recoveryConsoleText } from '../lib/webtty-router-recovery.mjs';
+import { acknowledgeRouterRecovery, armRouterRecoveryObservation, captureRouterRecoveryAuthentication, RouterRecoveryProofError } from '../lib/webtty-router-recovery.mjs';
 import { cleanupWebttyTerminals, requireDetachedShell, registerCreatedTerminal } from '../lib/webtty-terminal-cleanup.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { diagnosticEventSignature } from '../lib/diagnostic-ledger.mjs';
@@ -829,6 +830,10 @@ test.describe('Ploinky core WebTTY release gate', () => {
     let cleanupPage = page;
     let primaryFailure = null;
     let primaryAuthLifecycle = null;
+    let recoveryObservation = null;
+    let recoveryCheckpointOpen = false;
+    let recoveryLedger = null;
+    let primaryRecoveryCheckpoint = null;
     try {
       await observeExplorerPluginReadiness(page);
       await openExplorer(page, { hash: fixture.explorerHash });
@@ -1598,6 +1603,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
         replacementRuntime,
         replacementGitAgent,
       );
+      // Independent recorders for the recovery terminal exist before it opens, so its first stream cannot be missed.
+      recoveryObservation = await armRouterRecoveryObservation(page.context(), { baseURL: smokeConfig.baseURL, timeoutMs: smokeConfig.timeouts.action });
       const restartRecoveryTerminal = await openTerminalFromExplorer(
         page,
         fixture.nestedDirectoryPath,
@@ -1638,6 +1645,12 @@ test.describe('Ploinky core WebTTY release gate', () => {
         principal: await readAuthenticatedPrincipal(page, smokeConfig.primaryUser),
         timeoutMs: smokeConfig.timeouts.action,
       });
+      await recoveryObservation.bind({
+        page: restartRecoveryTerminal.terminalPage,
+        sessionId: restartRecoveryTerminal.session.id,
+        viewId: restartRecoveryTerminal.viewId,
+        mode: recoveryAuthentication.mode,
+      });
       await waitForExplorerPluginRender(page);
       assertPageDiagnosticsClean(page, 'Explorer must be error-free before Router fault injection');
       // Only the recovery terminal is the outage target. Stop unrelated Explorer
@@ -1645,17 +1658,13 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await page.goto('about:blank', {waitUntil: 'load'});
       expect(page.url()).toBe('about:blank');
       assertPageDiagnosticsClean(page, 'quiescing Explorer must not hide browser failures');
-      const primaryRecoveryCheckpoint = checkpointPageDiagnostics(page, 'quiescent Explorer during Router recovery');
+      primaryRecoveryCheckpoint = checkpointPageDiagnostics(page, 'quiescent Explorer during Router recovery');
       const explorerQuiescedAt = new Date().toISOString();
       expect(recoveryDiagnostics.actionableEvents(), 'the recovery terminal must remain error-free before Router crash').toEqual([]);
       const recoveryCheckpoint = recoveryDiagnostics.checkpoint('exact prior-epoch Router stream invalidation');
+      recoveryCheckpointOpen = true;
+      recoveryLedger = { diagnostics: recoveryDiagnostics, checkpoint: recoveryCheckpoint };
       const recoveryStreamPath = `/webtty/sessions/${encodeURIComponent(restartRecoveryTerminal.session.id)}/stream?view=${encodeURIComponent(restartRecoveryTerminal.viewId)}`;
-      const recoveryConsole = restartRecoveryTerminal.terminalPage.waitForEvent('console', {
-        predicate: (message) => message.type() === 'error'
-          && message.text() === recoveryConsoleText(recoveryAuthentication.mode)
-          && message.location().url === new URL(recoveryStreamPath, smokeConfig.baseURL).toString(),
-        timeout: smokeConfig.timeouts.relay,
-      });
       const crashedRouter = crashExactRoutingServer(replacementRuntime, replacementGitAgent);
       let recoveredRouter = null;
       let routerRecoveryFailure = '';
@@ -1684,39 +1693,76 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(routerRecoveryFailure).toBe('');
       expect(recoveredRouter).toBeTruthy();
       const routerRecoveredAt = new Date().toISOString();
-      const recoveredAuthentication = await recoveryAuthentication.recoverAfterCleanup({
-        streamPath: recoveryStreamPath,
-        verifyCleanup: async () => {
-          await waitForAgentExecDelta(
-            replacementRuntime,
-            replacementGitAgent,
-            replacementGitAgent.execIds,
-            0,
-          );
-          await waitForAgentProcess(replacementRuntime, replacementGitAgent, restartSleepPattern, false);
-          await waitForAgentMarker(replacementRuntime, replacementGitAgent, recoveryTerminalMarker, false);
-          expect(collectWebttyRecoveryDirectoryState(replacementRuntime)).toEqual({
-            recordCount: 0,
-            temporaryCount: 0,
-            otherCount: 0,
+      const recoveryMilestones = { cleanupVerified: false, retiredRouteProbed: false, stopDispatched: false, stopSettled: false, diagnosticsAcknowledged: false, terminalClosed: false };
+      let recoveryStage = 'cleanup';
+      let recoveryValidation = null;
+      let recoveryFailure = null;
+      let recoveredAuthentication = null;
+      // The observation is persisted in sanitized form, on success and on failure, and its error never carries the
+      // view, session or returnTo values that the raw diagnostics and assertions would quote.
+      await persistEvidenceAfter(async () => {
+        try {
+          recoveredAuthentication = await recoveryAuthentication.recoverAfterCleanup({
+            streamPath: recoveryStreamPath,
+            verifyCleanup: async () => {
+              await waitForAgentExecDelta(
+                replacementRuntime,
+                replacementGitAgent,
+                replacementGitAgent.execIds,
+                0,
+              );
+              await waitForAgentProcess(replacementRuntime, replacementGitAgent, restartSleepPattern, false);
+              await waitForAgentMarker(replacementRuntime, replacementGitAgent, recoveryTerminalMarker, false);
+              expect(collectWebttyRecoveryDirectoryState(replacementRuntime)).toEqual({
+                recordCount: 0,
+                temporaryCount: 0,
+                otherCount: 0,
+              });
+              recoveryMilestones.cleanupVerified = true;
+              recoveryStage = 'stop';
+            },
+            // Only after the independent cleanup: the client's own pagehide handler sends its one close intent and
+            // stops the retry timer. The terminal is not navigated or closed until every owned request has settled.
+            stopProducer: async () => {
+              recoveryMilestones.retiredRouteProbed = true;
+              recoveryMilestones.stopDispatched = true;
+              await recoveryObservation.stopAfterCleanup();
+              recoveryMilestones.stopSettled = true;
+              recoveryStage = 'diagnostics';
+            },
+            closeTerminal: async () => {
+              recoveryValidation = await recoveryObservation.validate();
+              acknowledgeRouterRecovery(recoveryDiagnostics, recoveryCheckpoint, recoveryValidation.signatures);
+              recoveryCheckpointOpen = false;
+              recoveryMilestones.diagnosticsAcknowledged = true;
+              expect(recoveryDiagnostics.actionableEvents().length, 'Router recovery diagnostics must match the exact derived records').toBe(0);
+              // The final native close must not send a second close intent or produce any diagnostic.
+              const finalCloseCheckpoint = recoveryDiagnostics.checkpoint('final native close of the recovery terminal');
+              try {
+                await restartRecoveryTerminal.terminalPage.close();
+                recoveryDiagnostics.acknowledgeExact(finalCloseCheckpoint, []);
+              } catch (error) {
+                recoveryDiagnostics.closeWithoutAcknowledgement(finalCloseCheckpoint);
+                throw new RouterRecoveryProofError('final-close', String(error?.name || 'Error'));
+              }
+              recoveryMilestones.terminalClosed = true;
+              recoveryStage = 'reauthentication';
+            },
+            signIn: () => signIn(page, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true }),
+            readCookies: () => page.context().cookies(smokeConfig.baseURL),
           });
-        },
-        closeTerminal: async () => {
-          await expect(restartRecoveryTerminal.terminalPage.locator('#status')).not.toHaveText('Connected');
-          await recoveryConsole;
-          recoveryDiagnostics.acknowledgeExact(
-            recoveryCheckpoint,
-            expectedRouterRecoveryDiagnostics(smokeConfig.baseURL, restartRecoveryTerminal.session.id, recoveryAuthentication.mode, restartRecoveryTerminal.viewId),
-          );
-          expect(recoveryDiagnostics.actionableEvents(), 'Router recovery diagnostics must match the exact prior-epoch stream').toEqual([]);
-          // The exact backend cleanup was proved above. SSO is still expired here;
-          // the authenticated DELETE absence probe follows re-login below.
-          await restartRecoveryTerminal.terminalPage.close();
-          await recoveryDiagnostics.flush();
-        },
-        signIn: () => signIn(page, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true }),
-        readCookies: () => page.context().cookies(smokeConfig.baseURL),
-      });
+        } catch (error) {
+          recoveryFailure = error instanceof RouterRecoveryProofError ? error : new RouterRecoveryProofError(recoveryStage, String(error?.name || 'Error'));
+          throw recoveryFailure;
+        }
+      }, () => testInfo.attach('webtty-router-recovery-oracle.json', {
+        body: Buffer.from(JSON.stringify(recoveryObservation.project({ validation: recoveryValidation, failure: recoveryFailure, milestones: recoveryMilestones }), null, 2)),
+        contentType: 'application/json',
+      }), (failure) => testInfo.attach('webtty-router-recovery-oracle-persist-failure.json', {
+        body: Buffer.from(JSON.stringify(failure)),
+        contentType: 'application/json',
+      }));
+      await recoveryObservation.dispose();
 
       await openExplorer(page, {
         account: smokeConfig.primaryUser,
@@ -1724,6 +1770,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       });
       await assertExplorerDirectory(page, fixture.parentDirectoryPath);
       acknowledgeExactPageDiagnostics(page, primaryRecoveryCheckpoint, []);
+      primaryRecoveryCheckpoint = null;
       assertPageDiagnosticsClean(page, 'Explorer must reopen cleanly after verified Router recovery');
       const cleanupCheckpoint = checkpointPageDiagnostics(page, 'authenticated prior Router terminal DELETE');
       await closeTerminal(restartRecoveryTerminal, { requestPage: page, allowMissing: true });
@@ -1881,6 +1928,11 @@ test.describe('Ploinky core WebTTY release gate', () => {
     } finally {
       // Idempotent: the observer must be gone before the cleanup sign-in below navigates the primary page.
       primaryAuthLifecycle?.stop();
+      // A failed recovery proof leaves every event actionable: close the open checkpoints without acknowledging anything,
+      // and release the recovery recorders before the authorized teardown signs in.
+      if (recoveryCheckpointOpen) { recoveryCheckpointOpen = false; recoveryLedger.diagnostics.closeWithoutAcknowledgement(recoveryLedger.checkpoint); }
+      if (primaryRecoveryCheckpoint) { const open = primaryRecoveryCheckpoint; primaryRecoveryCheckpoint = null; closePageDiagnosticsCheckpoint(page, open); }
+      await recoveryObservation?.dispose();
       await cleanupWebttyTerminals({
         terminals,
         priorFailure: primaryFailure,

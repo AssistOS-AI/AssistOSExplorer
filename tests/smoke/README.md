@@ -892,6 +892,25 @@ and both pre-navigation and post-navigation checks remain strict. This wait is
 not evidence of a fix for terminal startup or cleanup failures. Evidence records the quiesce,
 Router recovery, and Explorer reopen timestamps; no global error filter is used.
 
+The recovery terminal's expected diagnostics are derived from independent records, never from diagnostic counts. Before
+the terminal opens, the gate arms a transparent native `EventSource` observer for terminal documents, a context request
+recorder and a CDP session that records request identity, frame, loader and paired start and terminal times. After the
+Router restarts and the independent backend cleanup assertions pass, one bounded HTTP request to the exact retired
+stream with the prior credential proves that route's body (401 with the exact login body for SSO, 404 `not_found` for
+local auth); it is not evidence about the unreadable bodies of the browser's EventSource attempts. The gate then
+dispatches the terminal document's own `pagehide` event: the unchanged client sends one close intent (view and keep
+policy), clears its retry timer and closes its stream, and shows `Disconnected` with Kill disabled. The gate waits for
+every owned request to settle and validates a unique one-to-one join between the Playwright and CDP records: the
+original stream's `ERR_INCOMPLETE_CHUNKED_ENCODING`, at least one refused retry (401 or 404, JSON, correlated native
+CLOSED error) with at most its own `ERR_ABORTED`, at most one headerless stream cancelled by the stop, and exactly one
+close intent. Missing, duplicate, redirected, overlapping, foreign-frame or ambiguous records fail. Only then does the
+unchanged ledger acknowledge the derived set, the terminal closes natively without a second intent, and the session is
+renewed. The sanitized projection (`webtty-router-recovery-oracle.json`) keeps aliases, statuses, failures and relative
+times, never the view, session or returnTo values. A failed proof leaves every event actionable and forbids the normal
+reauthentication and reopen assertions; the authorized outer teardown still runs. Run
+`node --test lib/webtty-router-recovery.test.mjs lib/webtty-router-recovery-browser.test.mjs lib/webtty-core-profile.test.mjs lib/diagnostic-ledger.test.mjs lib/page-diagnostics.test.mjs`
+with `PLOINKY_ROOT` set to a Ploinky checkout whose `cli/server/webtty/webtty.js` is the pinned client.
+
 The listener gate always requires `required-loopback`, requires exactly one
 listener for each eligible `required-assigned-managed-gateway`, and requires no
 listener for an `inactive-unassigned-managed-gateway`. The inactive state

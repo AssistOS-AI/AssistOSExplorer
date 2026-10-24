@@ -216,3 +216,42 @@ test('replacement victim evidence is persisted after the body and never replaces
   assert.equal(result.threw, false);
   assert.equal(result.persist, 1);
 });
+
+test('Router recovery stops the producer only after independent cleanup and derives its diagnostics from validated records', () => {
+  const webttySpec = fs.readFileSync(new URL('../specs/01-webtty-core.spec.mjs', import.meta.url), 'utf8');
+  const at = (text, from = 0) => {
+    const index = webttySpec.indexOf(text, from);
+    assert.ok(index >= 0, `the gate contains ${text}`);
+    return index;
+  };
+  // Recorders exist before the recovery terminal opens and are bound before the Router crash.
+  const arm = at('await armRouterRecoveryObservation(page.context()');
+  const open = at('const restartRecoveryTerminal = await openTerminalFromExplorer(', arm);
+  const bind = at('await recoveryObservation.bind({', open);
+  const crash = at('const crashedRouter = crashExactRoutingServer(', bind);
+  assert.ok(arm < open && open < bind && bind < crash);
+  // The lifecycle stop comes after the existing independent cleanup assertions and before the terminal close.
+  const recover = at('recoveredAuthentication = await recoveryAuthentication.recoverAfterCleanup({', crash);
+  const cleanup = at('verifyCleanup: async () => {', recover);
+  const marker = at('waitForAgentMarker(replacementRuntime, replacementGitAgent, recoveryTerminalMarker, false)', cleanup);
+  const directory = at('collectWebttyRecoveryDirectoryState(replacementRuntime)', marker);
+  const stop = at('stopProducer: async () => {', directory);
+  const stopCall = at('await recoveryObservation.stopAfterCleanup()', stop);
+  const close = at('closeTerminal: async () => {', stopCall);
+  const validate = at('await recoveryObservation.validate()', close);
+  const acknowledge = at('acknowledgeRouterRecovery(recoveryDiagnostics, recoveryCheckpoint, recoveryValidation.signatures)', validate);
+  const nativeClose = at('await restartRecoveryTerminal.terminalPage.close()', acknowledge);
+  const signInStep = at('signIn: () => signIn(page, smokeConfig.primaryUser', nativeClose);
+  assert.ok(cleanup < marker && marker < directory && directory < stop && stop < stopCall && stopCall < close
+    && close < validate && validate < acknowledge && acknowledge < nativeClose && nativeClose < signInStep);
+  // No old four-event acknowledgement, copied counts, raw flush or console wait for the recovery terminal.
+  const section = webttySpec.slice(open, signInStep);
+  assert.doesNotMatch(section, /expectedRouterRecoveryDiagnostics|recoveryConsole|recoveryDiagnostics\.flush\(|acknowledgeExact\(\s*recoveryCheckpoint/);
+  assert.match(section, /final native close of the recovery terminal/);
+  // The proof is persisted sanitized and its failure carries only a stage and classification.
+  assert.match(webttySpec.slice(at('await persistEvidenceAfter(async () => {', crash)), /persistEvidenceAfter\(async \(\) => \{[\s\S]+?new RouterRecoveryProofError\(recoveryStage, String\(error\?\.name \|\| 'Error'\)\)[\s\S]+?webtty-router-recovery-oracle\.json/);
+  // Failure leaves events actionable and releases the recorders before the authorized teardown signs in.
+  const finallyBlock = webttySpec.slice(at('closePageDiagnosticsCheckpoint(page, open)'), at('await cleanupWebttyTerminals({'));
+  assert.match(finallyBlock, /await recoveryObservation\?\.dispose\(\)/);
+  assert.match(webttySpec.slice(at('if (recoveryCheckpointOpen)'), at('await cleanupWebttyTerminals({')), /closeWithoutAcknowledgement\(recoveryLedger\.checkpoint\)/);
+});
