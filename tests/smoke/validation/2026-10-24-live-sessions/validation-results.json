@@ -2,19 +2,38 @@
   "formatVersion": 1,
   "kind": "live-sessions-validation-history",
   "branch": "live-sessions",
-  "asOf": "2026-10-24T14:57:39.718Z",
+  "asOf": "2026-10-24T15:57:29.181Z",
   "status": "incomplete",
   "currentSourcePair": {
     "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
-    "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+    "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
   },
   "currentGeneration": {
-    "number": 5,
-    "startedAt": "2026-10-24T14:35:24.625272606Z",
-    "windowEnds": "2026-10-24T15:05:24.625272606Z",
-    "state": "held after failed WebTTY case; supporting cases not started"
+    "number": 6,
+    "startedAt": "2026-10-24T15:36:01.707Z",
+    "windowEnds": "2026-10-24T16:06:01Z",
+    "state": "Ten saved supporting cases completed: nine passed, one failed. Later live state is not observed by this snapshot."
   },
   "sourceCounts": [
+    {
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "ledgerAsOf": "2026-10-24T15:57:29.181Z",
+      "evidenceThrough": "2026-10-24T15:51:25Z",
+      "evidenceSha256": "44a163b53d602a83cdc897d1a07aa9fbcabc954ba072086c4a910790ea8f22f4",
+      "currentCandidate": true,
+      "selectedDistinct": 26,
+      "passed": 9,
+      "failed": 1,
+      "notRun": 16,
+      "skipped": 0,
+      "cancelled": 0,
+      "flaky": 0,
+      "retryAttempts": 0,
+      "passesApplyToFinalRetainedGeneration": false
+    },
     {
       "sourcePair": {
         "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
@@ -22,7 +41,7 @@
       },
       "ledgerAsOf": "2026-10-24T14:57:39.718Z",
       "evidenceSha256": "972821e341640ff3df719df74bdde21288a0ade3f93e1c17cb0c72abcdfb3d1f",
-      "currentCandidate": true,
+      "currentCandidate": false,
       "selectedDistinct": 26,
       "passed": 0,
       "failed": 1,
@@ -780,6 +799,260 @@
       },
       "status": "not-run",
       "recordedAttemptIds": []
+    },
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam Live Sessions preserve owner controls, observer replay, and private scope",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam restart retires old Live Sessions and admits a newly verified run",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "00-router-auth.spec.mjs::router landing and Explorer shell load through the router",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "recordedAttemptIds": [
+        "ls-r6-s00a-20261024T154847Z"
+      ]
+    },
+    {
+      "identity": "00-router-auth.spec.mjs::routed WebChat shell loads for the configured smoke agent",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "recordedAttemptIds": [
+        "ls-r6-s00b-20261024T154854Z"
+      ]
+    },
+    {
+      "identity": "01-webtty-core.spec.mjs::local administrator controls the mounted workspace while an ordinary user is denied",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "03-optional-agents.spec.mjs::OnlyOffice, Scribe, STT, and Umami start disabled and can be enabled through Marketplace",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "04-marketplace-lifecycle.spec.mjs::Configure stays gated while a no-wait agent starts and unlocks after refresh",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "recordedAttemptIds": [
+        "ls-r6-s04-20261024T154901Z"
+      ]
+    },
+    {
+      "identity": "05-copilot-folder-launch.spec.mjs::opens a working Copilot from a newly created folder",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::file uploads land in the selected working directory and are suggested in sibling sessions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "recordedAttemptIds": [
+        "ls-r6-s10a-20261024T154940Z"
+      ]
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::folder uploads preserve nested paths in the selected working directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "recordedAttemptIds": [
+        "ls-r6-s10b-20261024T154953Z"
+      ]
+    },
+    {
+      "identity": "20-webchat-tags.spec.mjs::provider-looking @ tags are not offered as dispatch suggestions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "recordedAttemptIds": [
+        "ls-r6-s20-20261024T154924Z"
+      ]
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::standalone loader serves the authenticated dashboard and a guest invitation",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::two Explorer accounts can join one room and exchange chat",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::dashboard header exposes audio/video and privacy settings",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::settings controls expose inline help on hover and focus",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "33-umami-routing.spec.mjs::authenticated dashboard keeps HTML, assets, API, and navigation under its base path",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "40-webmeet-tagged-research.spec.mjs::provider-looking @ tags stay ordinary meeting chat",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "50-onlyoffice-dpu.spec.mjs::Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "60-github-git-sync.spec.mjs::Git modal exposes GitHub authentication controls without leaking tokens",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "recordedAttemptIds": [
+        "ls-r6-s60-20261024T154933Z"
+      ]
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::fresh signed-out Explorer deep link survives login and mounts the exact directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "failed",
+      "recordedAttemptIds": [
+        "ls-r6-s61a-20261024T155003Z"
+      ]
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::manual token is stored user-owned, visible in Explorer, and removed on disconnect",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "recordedAttemptIds": [
+        "ls-r6-s61b-20261024T155058Z"
+      ]
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::a foreign agent-owned token record is denied without changing ownership or encrypted material",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "recordedAttemptIds": [
+        "ls-r6-s61c-20261024T155115Z"
+      ]
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::creates and resolves an AKU knowledge unit via /exec aku-memory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language execution prompt to Open Interpreter",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language web search prompt to the web-search launcher",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::treats @web-search token as ordinary chat, not a launcher dispatch",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
     }
   ],
   "runs": [
@@ -1205,6 +1478,786 @@
         ],
         "completeFixtureDeletionProven": false
       }
+    },
+    {
+      "runId": "ls-r6-s00a-20261024T154847Z",
+      "generation": 6,
+      "identity": "00-router-auth.spec.mjs::router landing and Explorer shell load through the router",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "innerExitCode": 0,
+      "startedAt": "2026-10-24T15:48:47Z",
+      "completedAt": "2026-10-24T15:48:53Z",
+      "processDurationSeconds": 6,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:48:49.667Z",
+        "duration": 3727.4700000000003,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "testDurationMs": 1615,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "3fc092b2f95d6473414ac60b8b877323673aa693cf4e548c8f8c5e752930999f",
+          "bytes": 985
+        },
+        {
+          "kind": "run-log",
+          "sha256": "3b32bf61af91d4de25782903a76939ffb970f3fc4fb3867fffdc4cc61285f127",
+          "bytes": 788
+        },
+        {
+          "kind": "test-results",
+          "sha256": "6ec460f7bc3464111fbb37d06bc1b6115aa417b13e3a49dd7f162035d5029c4f",
+          "bytes": 4063
+        },
+        {
+          "kind": "discovery",
+          "sha256": "105f6cf8432831259d2f952f8ad44e932547e962427f3dfbfe6ba0fa44ca995e",
+          "bytes": 286
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "e2af59917343db14369c21e33419d2e243d2065acc2976002759202e61f23ef4",
+          "bytes": 365
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/00-router-auth.spec.mjs --grep router landing and Explorer shell load through the router",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied."
+    },
+    {
+      "runId": "ls-r6-s00b-20261024T154854Z",
+      "generation": 6,
+      "identity": "00-router-auth.spec.mjs::routed WebChat shell loads for the configured smoke agent",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "innerExitCode": 0,
+      "startedAt": "2026-10-24T15:48:54Z",
+      "completedAt": "2026-10-24T15:49:01Z",
+      "processDurationSeconds": 7,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:48:55.855Z",
+        "duration": 5310.491,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "testDurationMs": 3498,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "e0e09f8408897b749aa318d86092cde290d2019bf273d15c83b9eefb6737fe14",
+          "bytes": 985
+        },
+        {
+          "kind": "run-log",
+          "sha256": "83d940359acf246f34feb741ade166d169c1d0933acf6634b7da7e0f54e90c9e",
+          "bytes": 790
+        },
+        {
+          "kind": "test-results",
+          "sha256": "d644166143aa140a4af906a3546396c17dd74e0d33d63018b3165963bbc2a169",
+          "bytes": 4054
+        },
+        {
+          "kind": "discovery",
+          "sha256": "0144b836b64a4fe59ccdaca8d0183aafbdb4f7fe5d62c41c991ccc4481693bb8",
+          "bytes": 286
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "ccc4ae5454566cd3e16be412dd93bc13b321ee9e74a1bd2fa81b725567d09482",
+          "bytes": 365
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/00-router-auth.spec.mjs --grep routed WebChat shell loads for the configured smoke agent",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied."
+    },
+    {
+      "runId": "ls-r6-s04-20261024T154901Z",
+      "generation": 6,
+      "identity": "04-marketplace-lifecycle.spec.mjs::Configure stays gated while a no-wait agent starts and unlocks after refresh",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "innerExitCode": 0,
+      "startedAt": "2026-10-24T15:49:02Z",
+      "completedAt": "2026-10-24T15:49:24Z",
+      "processDurationSeconds": 22,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:49:03.712Z",
+        "duration": 19836.832000000002,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "testDurationMs": 17773,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "86fefd7d679332ef0dac38cfdd1389f48f487e220b3e87dffb6f8110cc6bf0f0",
+          "bytes": 1015
+        },
+        {
+          "kind": "run-log",
+          "sha256": "7f0ed097c799e0c305775ad87734816e98a79311e21ffd384c318d1fd4172a08",
+          "bytes": 869
+        },
+        {
+          "kind": "test-results",
+          "sha256": "414f7e3ab33ab18c012df9507504062c503987e8287ba366f50d4b23d21d4369",
+          "bytes": 4116
+        },
+        {
+          "kind": "discovery",
+          "sha256": "5bc69630ba3c53b7ae2d552bbc78d9ab6d88c5b9f785c4c7a8c141782dd00498",
+          "bytes": 315
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "ab563a8ab973c3a7c71fee69088d87c63ff467e3d65d63dfa2b4087e29b5a42b",
+          "bytes": 394
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/04-marketplace-lifecycle.spec.mjs --grep Configure stays gated while a no-wait agent starts and unlocks after refresh",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied."
+    },
+    {
+      "runId": "ls-r6-s20-20261024T154924Z",
+      "generation": 6,
+      "identity": "20-webchat-tags.spec.mjs::provider-looking @ tags are not offered as dispatch suggestions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "innerExitCode": 0,
+      "startedAt": "2026-10-24T15:49:24Z",
+      "completedAt": "2026-10-24T15:49:33Z",
+      "processDurationSeconds": 9,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:49:26.051Z",
+        "duration": 6452.866,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "testDurationMs": 4467,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "9adb551357351057edd5cc18b72aca5f34eaa3e121e7a5386ac547f4b553e654",
+          "bytes": 990
+        },
+        {
+          "kind": "run-log",
+          "sha256": "0bfbe2ac30f0873206347aa578fc81c43916ab91ee51cfc3da6894056f753718",
+          "bytes": 769
+        },
+        {
+          "kind": "test-results",
+          "sha256": "48ff085e8c64159e359868791a6ed705834f4808607f60dc7a9949f7c4bfcc82",
+          "bytes": 4040
+        },
+        {
+          "kind": "discovery",
+          "sha256": "0a9b8ef6a5f28f4bb740eea8c6ac978ab28b444314b7a6a10a994b56330dd3ad",
+          "bytes": 293
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "8ce750d31ecf0471a260f1e68e0d70e034c642bacebfe15a2363fbdc6cd2862c",
+          "bytes": 372
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/20-webchat-tags.spec.mjs --grep provider-looking @ tags are not offered as dispatch suggestions",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied."
+    },
+    {
+      "runId": "ls-r6-s60-20261024T154933Z",
+      "generation": 6,
+      "identity": "60-github-git-sync.spec.mjs::Git modal exposes GitHub authentication controls without leaking tokens",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "innerExitCode": 0,
+      "startedAt": "2026-10-24T15:49:33Z",
+      "completedAt": "2026-10-24T15:49:39Z",
+      "processDurationSeconds": 6,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:49:34.981Z",
+        "duration": 4275.761,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "testDurationMs": 2679,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "59f2d9321ddea2359871704995c4c41256f4d83e1f21565d827824f933ac162f",
+          "bytes": 1015
+        },
+        {
+          "kind": "run-log",
+          "sha256": "48fc30e8dd50397946080ac31aa1d4ec7015a6474516fda50bd42e0c0ab5a5e8",
+          "bytes": 828
+        },
+        {
+          "kind": "test-results",
+          "sha256": "58de982cf5e2c66cf463a2aa67a7dd9b8c65055ce3c824aecb1b7c6cf46c6f30",
+          "bytes": 4115
+        },
+        {
+          "kind": "discovery",
+          "sha256": "747d309f0b27dece597da90e1b26525786a675ee3bb4f4ac9e35e2ba7cc6aec1",
+          "bytes": 304
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "694be2f10f47ec25de09956d50d6132841f15e1d926d468263c2524141ff885c",
+          "bytes": 383
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/60-github-git-sync.spec.mjs --grep Git modal exposes GitHub authentication controls without leaking tokens",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "SMOKE_GITHUB=1",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied."
+    },
+    {
+      "runId": "ls-r6-s10a-20261024T154940Z",
+      "generation": 6,
+      "identity": "10-webchat-upload-scope.spec.mjs::file uploads land in the selected working directory and are suggested in sibling sessions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "innerExitCode": 0,
+      "startedAt": "2026-10-24T15:49:40Z",
+      "completedAt": "2026-10-24T15:49:53Z",
+      "processDurationSeconds": 13,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:49:41.734Z",
+        "duration": 10775.763,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "testDurationMs": 9122,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "38127302a04e97cc238f4b26b5822509053765a6ac0edb93bda40ef9d55f0747",
+          "bytes": 1027
+        },
+        {
+          "kind": "run-log",
+          "sha256": "5455845c7d7596ef031f610b593a77654c98e89890fb5abe6af46deb407d0d69",
+          "bytes": 909
+        },
+        {
+          "kind": "test-results",
+          "sha256": "0d0da751af23d2f4466b3f28f27d0d79b5ec4d06ba1cd1e04ea43785879daf91",
+          "bytes": 4122
+        },
+        {
+          "kind": "discovery",
+          "sha256": "1de1d95ae07715424f26f569c8072dde9006f27dffe11166a3a62e775488d502",
+          "bytes": 327
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "c267ce67d7e50f24a4c5c2c08b2bf82a6242688aeeef6aa9c856278dceb77d51",
+          "bytes": 406
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/10-webchat-upload-scope.spec.mjs --grep file uploads land in the selected working directory and are suggested in sibling sessions",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied."
+    },
+    {
+      "runId": "ls-r6-s10b-20261024T154953Z",
+      "generation": 6,
+      "identity": "10-webchat-upload-scope.spec.mjs::folder uploads preserve nested paths in the selected working directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "innerExitCode": 0,
+      "startedAt": "2026-10-24T15:49:53Z",
+      "completedAt": "2026-10-24T15:50:03Z",
+      "processDurationSeconds": 10,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:49:55.037Z",
+        "duration": 8114.589,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "testDurationMs": 6104,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "854d64be950232be461db1d40a9562791a915ab075744c40607ba9d189110f84",
+          "bytes": 1008
+        },
+        {
+          "kind": "run-log",
+          "sha256": "8e519ff7ce47bf8c9c97aadc3633d05b3f375a11ad33b37ef58af1e89c5b0a5c",
+          "bytes": 852
+        },
+        {
+          "kind": "test-results",
+          "sha256": "d9a48896e20689ba57c2734142b2f1fc36939809e4692bcf19185362e3b84972",
+          "bytes": 4102
+        },
+        {
+          "kind": "discovery",
+          "sha256": "1156aa989d9e44c4947df39a53e21ebf222239ab99046bfb153de7bf9ec39b7d",
+          "bytes": 308
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "ac3dc433fe63e8a0206cbbc6919b61a0514b57955b11b13087c18354301f1370",
+          "bytes": 387
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/10-webchat-upload-scope.spec.mjs --grep folder uploads preserve nested paths in the selected working directory",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied."
+    },
+    {
+      "runId": "ls-r6-s61a-20261024T155003Z",
+      "generation": 6,
+      "identity": "61-github-dpu-token-ownership.spec.mjs::fresh signed-out Explorer deep link survives login and mounts the exact directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "failed",
+      "exitCode": 1,
+      "innerExitCode": 1,
+      "startedAt": "2026-10-24T15:50:03Z",
+      "completedAt": "2026-10-24T15:50:10Z",
+      "processDurationSeconds": 7,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:50:05.635Z",
+        "duration": 4468.193,
+        "expected": 0,
+        "skipped": 0,
+        "unexpected": 1,
+        "flaky": 0
+      },
+      "testDurationMs": 1661,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "failed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "e33cb7b4a118bdb9512c6756133e7de4496cd9c93fca80ce3cd4ab9e1cb3e016",
+          "bytes": 1038
+        },
+        {
+          "kind": "run-log",
+          "sha256": "8ef150ac321f30ce20833ee64d23554d1244afec9e7e177b36466c4bef4a3d6f",
+          "bytes": 3129
+        },
+        {
+          "kind": "test-results",
+          "sha256": "4ae50ba6f6922e457cb71b133a402c2ff8955e47ad3be975f863d58853106760",
+          "bytes": 8841
+        },
+        {
+          "kind": "discovery",
+          "sha256": "0a067241ecdc12ee56f362f8bc36ae47b92cbb71ad3e3d9b7d2629cc1d8584c8",
+          "bytes": 325
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "7477cbaa5e57f267b4e336f1440e3e5da360012a00a050a3c8aa1913711ff328",
+          "bytes": 406
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/61-github-dpu-token-ownership.spec.mjs --grep fresh signed-out Explorer deep link survives login and mounts the exact directory",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "SMOKE_GITHUB=1",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied.",
+      "failureSummary": "Expected navigation through /auth/login was absent from recorded main-frame navigations.",
+      "failureObservation": {
+        "assertion": "toContainEqual expected navigation record",
+        "sourceLocation": {
+          "file": "specs/61-github-dpu-token-ownership.spec.mjs",
+          "line": 46,
+          "column": 25
+        },
+        "expectedPathname": "/auth/login",
+        "receivedPathnames": [
+          "/base-agent-additional-server/userPersistoAgent/7000/service/auth/",
+          "/explorer/index.html"
+        ],
+        "exactDirectoryAssertionPrecedesFailure": true,
+        "partialPassCredit": false,
+        "topLevelErrorCount": 0,
+        "testErrorCount": 1,
+        "separateStepResults": false,
+        "cause": "No root-cause finding is made by this artifact audit."
+      }
+    },
+    {
+      "runId": "ls-r6-s61b-20261024T155058Z",
+      "generation": 6,
+      "identity": "61-github-dpu-token-ownership.spec.mjs::manual token is stored user-owned, visible in Explorer, and removed on disconnect",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "innerExitCode": 0,
+      "startedAt": "2026-10-24T15:50:58Z",
+      "completedAt": "2026-10-24T15:51:07Z",
+      "processDurationSeconds": 9,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:51:00.217Z",
+        "duration": 6543.447999999999,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "testDurationMs": 3762,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "415589cfdb7344e06c77bf370bc2d2749942c522ec23cd8a3db12eeddef088b6",
+          "bytes": 1038
+        },
+        {
+          "kind": "run-log",
+          "sha256": "8ac11c03164a91e2e1e5606fb8bc779c554513e40cb65e24d74eb5d0ae0ad193",
+          "bytes": 910
+        },
+        {
+          "kind": "test-results",
+          "sha256": "8fdeb8f99b2fb3b658b66084520405f523f73cc4d6a71a7527c23b2ba69bcf13",
+          "bytes": 4192
+        },
+        {
+          "kind": "discovery",
+          "sha256": "620381151f5416c57b3e6359049a6d12c5ed8fb28a7f4eafeffdad3fd72022b7",
+          "bytes": 325
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "dd3e3dd0d73ef3a1a11c75696592b00398aeedb1f2887ae4d77be66e918ed5b5",
+          "bytes": 404
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/61-github-dpu-token-ownership.spec.mjs --grep manual token is stored user-owned, visible in Explorer, and removed on disconnect",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "SMOKE_GITHUB=1",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied."
+    },
+    {
+      "runId": "ls-r6-s61c-20261024T155115Z",
+      "generation": 6,
+      "identity": "61-github-dpu-token-ownership.spec.mjs::a foreign agent-owned token record is denied without changing ownership or encrypted material",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "innerExitCode": 0,
+      "startedAt": "2026-10-24T15:51:15Z",
+      "completedAt": "2026-10-24T15:51:25Z",
+      "processDurationSeconds": 10,
+      "reporterStats": {
+        "startTime": "2026-10-24T15:51:17.323Z",
+        "duration": 7520.557,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "testDurationMs": 4744,
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "b32f00c51109b1035c9d8fee00fc8c6d07ca40a10793b1ac0832bdb9021b7e6d",
+          "bytes": 1051
+        },
+        {
+          "kind": "run-log",
+          "sha256": "46b4ee650e54b98f44f56b4e62619f1e95c1eb6a49f5e2766187cbcce5f82492",
+          "bytes": 949
+        },
+        {
+          "kind": "test-results",
+          "sha256": "854f67d5ebf56462b2e8849abc8b9ad8a00edc5efeba2b4317730d0bc91a96bd",
+          "bytes": 4196
+        },
+        {
+          "kind": "discovery",
+          "sha256": "a24e21b7ac5e844c7cab59798a9d71005ee21e45f1564474dea0cfa4fafcadd6",
+          "bytes": 337
+        },
+        {
+          "kind": "outcomes",
+          "sha256": "06b56778461c39dcc259c7dbba6b847c3fdda2b4e469ccde037d9b0ad940d689",
+          "bytes": 416
+        },
+        {
+          "kind": "preflight",
+          "sha256": "8ebc2ca8098b3958907444878e41f42f736a4ceeb8298781849ec6ba84d44e6e",
+          "bytes": 4924
+        }
+      ],
+      "evidenceKind": "Saved canonical runner records and structured results; artifact audit only, no live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "canonicalCommand": "npm test -- specs/61-github-dpu-token-ownership.spec.mjs --grep a foreign agent-owned token record is denied without changing ownership or encrypted material",
+      "workingDirectory": "tests/smoke",
+      "nonSecretFlags": "SMOKE_GITHUB=1",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "commonPostflightQualification": "Canonical runner logged no common postflight failure; no separate postflight state snapshot is implied."
     }
   ],
   "historicalGeneration2SemanticMeasurements": [
@@ -1476,13 +2529,14 @@
     "historicalPassesSatisfyCurrentGate": false
   },
   "evidence": {
-    "currentLedgerSha256": "972821e341640ff3df719df74bdde21288a0ade3f93e1c17cb0c72abcdfb3d1f",
+    "currentLedgerSha256": "44a163b53d602a83cdc897d1a07aa9fbcabc954ba072086c4a910790ea8f22f4",
     "historicalQuartetAuditSha256": "395eb294c28e7d112a317039ff0f01694b22c5f8488788354701d8fb279d048b",
     "selectedAcceptanceLedgerSha256": "a965fdb4daed72c9bc809c6808c4e14af47f9b365ad02d1cb144ec4aff027101",
     "acceptanceSelection": "required-local-acceptance or fresh-live-sessions",
     "selectedDistinctCases": 26,
     "requiredLocalCases": 24,
-    "freshLiveSessionsCases": 2
+    "freshLiveSessionsCases": 2,
+    "generation6AuditSha256": "2be3d78480d21786a919ac8529f6372f7f9eb3b46f0cae9963a526cf581acd5b"
   },
   "qualifications": [
     "Counts are per exact source pair and are not summed across candidates.",
@@ -1492,6 +2546,129 @@
     "Unit-suite and synthetic-probe counts are not aggregated into live E2E acceptance.",
     "The remaining selected cases and final retained quartet remain incomplete as of this snapshot.",
     "This reference preserves saved evidence and does not rerun validation.",
-    "Source revisions may have advanced after this snapshot; later results require a dated update."
-  ]
+    "Source revisions may have advanced after this snapshot; later results require a dated update.",
+    "Current de326894 source pair has nine passed, one failed and sixteen unrun identities; the WebTTY case has not run on this pair.",
+    "The initial missing-GEN wrapper refusal is a non-test event, not an extra failed or skipped case.",
+    "Discovery records mark list-only entries skipped with no results; these are not runtime skips.",
+    "Nine supporting passes do not satisfy the four final retained-generation release identities."
+  ],
+  "evidenceThrough": "2026-10-24T15:51:25Z",
+  "previousSnapshotAsOf": "2026-10-24T14:57:39.718Z",
+  "generation6": {
+    "sourcePair": {
+      "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+      "explorer": "de32689404ca8069eb3b5830dd5deb2be2f1f33f"
+    },
+    "startedAt": "2026-10-24T15:36:01.707Z",
+    "deadline": "2026-10-24T16:06:01Z",
+    "imageEngineId": "sha256:46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+    "imageReference": "docker.io/assistos/ploinky-box@sha256:882f950f191007e70745f0494991dbe44e4150564e55a1a1602e1a1f16c5aa12",
+    "generationMaxAgeMs": 1800000,
+    "sourceInventory": {
+      "AdvancedLanguageAgent": {
+        "commit": "40b617098d252fe9affaaeb73bc731789996717d",
+        "role": "deployed-source"
+      },
+      "DocumentationSkills": {
+        "commit": "f27aa098b8f9deffc7592a2745079e93ba822990",
+        "role": "deployed-source"
+      },
+      "OnlyOfficeAgent": {
+        "commit": "a173c0d8c620d4a2a6345ecb9af5f720808b97c8",
+        "role": "deployed-source"
+      },
+      "Ploinky-Worker": {
+        "commit": "64aa8a0c0e4e918c05f3f0264b45438652f67a6c",
+        "role": "provenance-reference"
+      },
+      "UmamiAgent": {
+        "commit": "9364e8fe76817d3feb9107b153c4c352475ba7dc",
+        "role": "deployed-source"
+      },
+      "achillesAgentLib": {
+        "commit": "ef515b2d88a817eea60d1a3a6d3dc6c5f406bfca",
+        "role": "provenance-reference"
+      },
+      "copilot-agents": {
+        "commit": "fe11fab74790b6c7794fa22281a597dc6cbb45e1",
+        "role": "deployed-source"
+      },
+      "explorer": {
+        "commit": "de32689404ca8069eb3b5830dd5deb2be2f1f33f",
+        "role": "deployed-source"
+      },
+      "local-llms": {
+        "commit": "05b19fcc9047f63994aec27e3e8589c2385b4ba0",
+        "role": "deployed-source"
+      },
+      "ploinky": {
+        "commit": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "role": "deployed-source"
+      },
+      "webmeet": {
+        "commit": "d3a2769118e1c910f4d4408fd0798d9e542e0aba",
+        "role": "deployed-source"
+      }
+    },
+    "recordedManifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+    "passed": 9,
+    "failed": 1,
+    "skipped": 0,
+    "cancelled": 0,
+    "retryAttempts": 0,
+    "failedCase": "61-github-dpu-token-ownership.spec.mjs::fresh signed-out Explorer deep link survives login and mounts the exact directory",
+    "failureStoppedSequence": true,
+    "postFailureCheck": {
+      "recordedAt": "2026-10-24T15:50:46Z",
+      "boxRunning": true,
+      "startedAtUnix": 1792856161,
+      "imageId": "sha256:46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+      "runningAgentCount": 9,
+      "cleanSourceRecords": 3,
+      "expectedPloinkyPrefixPresent": true,
+      "expectedExplorerPrefixPresent": true,
+      "liveSessionsHttpStatus": 200,
+      "liveSessionsCount": 0,
+      "evidenceType": "Recorded operator read-only check; not rerun by artifact audit."
+    },
+    "continuationSemantics": {
+      "61a": "Source body contains no token-store or fixture-creation operation. Directory assertion was reached before the recorded later failure; no partial-case pass.",
+      "61b": "Passed full case contains successful disconnect and absent secret/permission assertions.",
+      "61c": "Passed full case contains finally restoration of its fixture key; no separate post-restoration filesystem observation was recorded."
+    },
+    "nonTestRefusal": {
+      "recordedAt": "2026-10-24T15:48:23Z",
+      "exitCode": 1,
+      "reason": "Missing GEN environment input; wrapper refused before npm/run artifact creation.",
+      "countsAsTest": false
+    },
+    "artifactHashes": {
+      "aggregateLog": {
+        "sha256": "62d5aeb74560b2db3642b72d323f06dbbede132773de6984e757aa33842ea529",
+        "bytes": 3844
+      },
+      "initialRefusalLog": {
+        "sha256": "6bb3950627c58ac85a684a58b35048c2e8805c394198d59c5f5e4d91cf4f57c9",
+        "bytes": 55
+      },
+      "sharedCheck": {
+        "sha256": "c2dc6aead10d5310fef62496529684748b0a8e544f2280d454dd39c1a6fbd1de",
+        "bytes": 494
+      }
+    },
+    "defaultReadiness": {
+      "evidenceSha256": "876ae78681b99cdfdb9fdcdbc782f3b501a5f585c19fd521a0f4f890614e07ac",
+      "recordCount": 15,
+      "declaredProtocolCount": 9,
+      "allDeclaredReady": true,
+      "capturedAt": "2026-10-24T15:47:40.100Z",
+      "tuplesUnchanged": true,
+      "postflightCapturedAt": "2026-10-24T15:47:40.487Z",
+      "ageAtPostflightMs": 698780,
+      "inventorySha256": "77fd22734c4bf2e3e0408ccd887d27436904bd36152aa4ae523ee9ecc7f5e6a0",
+      "manifestSha256": "8c08043bee9c28920448937772aadacfa813265d63d1e9e1bef00f75890bdc58",
+      "protectedUnchanged": true,
+      "qualification": "Reused saved default graph readiness capture; no new probes or broader optional-readiness claim."
+    }
+  }
 }

@@ -1,11 +1,11 @@
 # Live Sessions validation reference, 24 October 2026
 
-This snapshot preserves UI benchmark measurements and selected live E2E results as of 2026-10-24T14:57:39.718Z. Validation is incomplete. The current source pair at that time has zero passed cases, one failed case and 25 unrun cases out of 26 selected identities. Four earlier passes belong to an older source pair and a retired deployment.
+This snapshot preserves UI benchmark measurements and selected live E2E results as of 2026-10-24T15:57:29.181Z, with G6 execution evidence through 2026-10-24T15:51:25Z. Validation is incomplete. The current source pair has nine passed cases, one failed case and sixteen unrun cases out of 26 selected identities. The WebTTY case has not run on this pair. Earlier results remain bound to their original source pairs and generations.
 
 | File | Contents |
 | --- | --- |
 | [benchmark-metrics.json](benchmark-metrics.json) | Two saved UI observations, all three timing samples for every step, numerical summaries, browser/CPU/network measurements, provenance and the actual comparator refusal |
-| [validation-results.json](validation-results.json) | Per-candidate coverage for 26 identities, seven recorded E2E runs, durations, outcomes, historical semantic measurements and incomplete release gates |
+| [validation-results.json](validation-results.json) | Per-candidate coverage for 26 identities, seventeen recorded E2E runs, durations, outcomes, historical semantic measurements and incomplete release gates |
 
 The original artifacts remain outside the repository. SHA-256 values in these files identify the source artifacts. The reference omits credentials, cookies, headers, request/response bodies, query values, account identities, private host paths, file contents and raw request waterfalls. Publication did not rerun a benchmark, login, deployment or live probe.
 
@@ -60,15 +60,16 @@ Both selected files were reported as 20 bytes, but their contents differ. Concur
 
 ## Live E2E history
 
-Every source pair below uses Ploinky `7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0`. Explorer revisions are `c9e9e695aedbfc584e10b1d6114282cd7d19636f`, `51c7f9da4277038425dfa99ac0a5cc0169ec9cfb` and current-at-snapshot `4cbc523661d8255d7765c07ca52ec40dc5e43dc9`.
+Every source pair below uses Ploinky `7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0`. Current Explorer is `de32689404ca8069eb3b5830dd5deb2be2f1f33f`. The JSON preserves full historical source identities and the earlier 14:57 snapshot remains in repository history. Benchmark observations still use their original c9 source and deployment; no new benchmark has run on the current pair.
 
 | Explorer revision | Passed | Failed | Unrun | Skipped | Cancelled | Scope |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `4cbc5236` | 0 | 1 | 25 | 0 | 0 | Current at snapshot |
+| `de326894` | 9 | 1 | 16 | 0 | 0 | Current at snapshot |
+| `4cbc5236` | 0 | 1 | 25 | 0 | 0 | Historical |
 | `c9e9e695` | 4 | 1 | 21 | 0 | 0 | Historical |
 | `51c7f9da` | 0 | 1 | 25 | 0 | 0 | Historical |
 
-These rows describe the same selected identities across different candidates. Their counts must not be summed. Partial progress inside a failed test remains a failure. Unit suites and synthetic probes do not count toward these live outcomes.
+These rows describe the same selected identities across different candidates. Their counts must not be summed. Partial progress inside a failed test remains a failure. Unit suites, discovery entries and synthetic probes do not count toward these live outcomes.
 
 | Run | Generation | Explorer | Outcome | Process seconds | Reporter ms | Exit |
 | --- | ---: | --- | --- | ---: | ---: | ---: |
@@ -79,7 +80,27 @@ These rows describe the same selected identities across different candidates. Th
 | ls-r3-w01-20261024T125445Z | 3 | `c9e9e695` | failed | 32 | 29527.033 | 1 |
 | ls-r4-w01-20261024T133836Z | 4 | `51c7f9da` | failed | 79 | 77016.541 | 1 |
 | ls-r5-w01-20261024T144931Z | 5 | `4cbc5236` | failed | 44 | 41911.556 | 1 |
+| ls-r6-s00a-20261024T154847Z | 6 | `de326894` | passed | 6 | 3727.470 | 0 |
+| ls-r6-s00b-20261024T154854Z | 6 | `de326894` | passed | 7 | 5310.491 | 0 |
+| ls-r6-s04-20261024T154901Z | 6 | `de326894` | passed | 22 | 19836.832 | 0 |
+| ls-r6-s20-20261024T154924Z | 6 | `de326894` | passed | 9 | 6452.866 | 0 |
+| ls-r6-s60-20261024T154933Z | 6 | `de326894` | passed | 6 | 4275.761 | 0 |
+| ls-r6-s10a-20261024T154940Z | 6 | `de326894` | passed | 13 | 10775.763 | 0 |
+| ls-r6-s10b-20261024T154953Z | 6 | `de326894` | passed | 10 | 8114.589 | 0 |
+| ls-r6-s61a-20261024T155003Z | 6 | `de326894` | failed | 7 | 4468.193 | 1 |
+| ls-r6-s61b-20261024T155058Z | 6 | `de326894` | passed | 9 | 6543.448 | 0 |
+| ls-r6-s61c-20261024T155115Z | 6 | `de326894` | passed | 10 | 7520.557 | 0 |
 
-Generation 2 passed the four official identities on one generation, but that deployment was later retired. Generation 3 failed the WebTTY case at the Live Sessions entry assertion. Generation 4 failed the WebTTY case on three aborted browser requests. Generation 5 failed the WebTTY case on replacement-session stream diagnostics. Earlier successful assertions in those failed runs are not partial acceptance passes. The JSON retains the exact test identities, retries, worker settings, source pairs and result hashes.
+Generation 2 passed four official identities but was later retired. Generations 3, 4 and 5 each failed the WebTTY identity on their respective source pairs. These outcomes remain historical and provide no current-candidate acceptance credit.
 
-The final retained-generation quartet remains pending. It requires four exact identities, each in its own invocation, on one retained fresh generation within the 30-minute age limit. Historical passes and the older benchmark do not close that gate. Later runs or source revisions require a dated update to this reference.
+Generation 6's ten canonical invocations ran from 15:48:47 to 15:51:25 UTC. Nine passed and the first GitHub identity, 61a, failed. Each invocation discovered exactly one identity, used one worker and zero retries, and recorded the same source pair, image and generation start. No runtime case skipped, retried, canceled or flaked. List-only discovery records contain empty results and a skipped label; that label is not a runtime skip. A runner preflight check is also not an additional E2E case.
+
+The 61a assertion expected a main-frame navigation through `/auth/login`. The saved navigation array instead contains the sign-in service path followed by Explorer. The exact-directory assertion appears before the failing assertion in the saved error context. The case remains failed; this observation makes no root-cause claim. Its source body performs no token-store or fixture-creation operation.
+
+The sequence stopped after 61a. A saved check at 15:50:46 UTC records the same Box start and image, nine running agents, three clean source records, and an HTTP 200 Live Sessions response with zero sessions. The sequence resumed with 61b at 15:50:58 UTC. The complete 61b case passed its disconnect and absent-secret/permission assertions. The complete 61c case passed with its fixture-key restoration in `finally`; no separate post-restoration filesystem snapshot was recorded. These are saved observations, not a fresh state probe.
+
+The initial attempt at 15:48:23 UTC exited 1 because `GEN` was missing. It stopped before npm and before creation of a run artifact. It is preserved as a non-test event and is not added to the ten cases.
+
+Default graph readiness has fifteen saved records, including nine successful declared-protocol observations. The generation started at 15:36:01.707 UTC; its unchanged 30-minute deadline was 16:06:01 UTC. All ten test invocations completed before that deadline. This does not prove later live state or optional service readiness.
+
+The final retained-generation quartet remains pending. It requires four exact identities, each in its own invocation, on one retained fresh generation within the 30-minute age limit. Historical passes, supporting cases and the older benchmark do not close that gate. Later runs or source revisions require a dated update to this reference.
