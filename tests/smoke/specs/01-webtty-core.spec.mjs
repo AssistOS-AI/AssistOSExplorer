@@ -15,7 +15,7 @@ import {
 } from '../lib/fixtures.mjs';
 import { assertDistinctAuthenticatedPrincipals, hasAuthenticatedSession, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
 import { USERPERSISTO_LOGIN_PATH } from '../lib/auth-wizard.mjs';
-import { acknowledgeRouterRecovery, armRouterRecoveryObservation, captureRouterRecoveryAuthentication, RouterRecoveryProofError } from '../lib/webtty-router-recovery.mjs';
+import { acknowledgeRouterRecovery, armRouterRecoveryObservation, finalizeRouterRecoveryFailure, captureRouterRecoveryAuthentication, RouterRecoveryProofError } from '../lib/webtty-router-recovery.mjs';
 import { cleanupWebttyTerminals, requireDetachedShell, registerCreatedTerminal } from '../lib/webtty-terminal-cleanup.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { diagnosticEventSignature } from '../lib/diagnostic-ledger.mjs';
@@ -833,6 +833,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
     let recoveryObservation = null;
     let recoveryCheckpointOpen = false;
     let recoveryLedger = null;
+    let recoveryProofComplete = false;
+    let recoveryMilestones = {};
     let primaryRecoveryCheckpoint = null;
     try {
       await observeExplorerPluginReadiness(page);
@@ -1693,7 +1695,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(routerRecoveryFailure).toBe('');
       expect(recoveredRouter).toBeTruthy();
       const routerRecoveredAt = new Date().toISOString();
-      const recoveryMilestones = { cleanupVerified: false, retiredRouteProbed: false, stopDispatched: false, stopSettled: false, diagnosticsAcknowledged: false, terminalClosed: false };
+      recoveryMilestones = { cleanupVerified: false, retiredRouteProbed: false, stopDispatched: false, stopSettled: false, diagnosticsAcknowledged: false, terminalClosed: false };
       let recoveryStage = 'cleanup';
       let recoveryValidation = null;
       let recoveryFailure = null;
@@ -1763,6 +1765,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         contentType: 'application/json',
       }));
       await recoveryObservation.dispose();
+      recoveryProofComplete = true;
 
       await openExplorer(page, {
         account: smokeConfig.primaryUser,
@@ -1928,11 +1931,27 @@ test.describe('Ploinky core WebTTY release gate', () => {
     } finally {
       // Idempotent: the observer must be gone before the cleanup sign-in below navigates the primary page.
       primaryAuthLifecycle?.stop();
-      // A failed recovery proof leaves every event actionable: close the open checkpoints without acknowledging anything,
-      // and release the recovery recorders before the authorized teardown signs in.
-      if (recoveryCheckpointOpen) { recoveryCheckpointOpen = false; recoveryLedger.diagnostics.closeWithoutAcknowledgement(recoveryLedger.checkpoint); }
-      if (primaryRecoveryCheckpoint) { const open = primaryRecoveryCheckpoint; primaryRecoveryCheckpoint = null; closePageDiagnosticsCheckpoint(page, open); }
-      await recoveryObservation?.dispose();
+      // A failed recovery proof leaves every event actionable. Before the authorized teardown signs in, the owned recovery
+      // producer is ended (it would otherwise keep retrying), a sanitized snapshot is kept, the open checkpoints are
+      // closed without acknowledgement and the recorders are released. This is failure cleanup, never evidence that the
+      // independent backend cleanup passed, and it cannot replace the primary error.
+      if (recoveryObservation && !recoveryProofComplete) {
+        await finalizeRouterRecoveryFailure({
+          observation: recoveryObservation,
+          persist: (finalization) => testInfo.attach('webtty-router-recovery-oracle-failure-cleanup.json', {
+            body: Buffer.from(JSON.stringify(recoveryObservation.project({ milestones: recoveryMilestones, finalization }), null, 2)),
+            contentType: 'application/json',
+          }),
+          closeCheckpoints: () => {
+            if (recoveryCheckpointOpen) { recoveryCheckpointOpen = false; recoveryLedger.diagnostics.closeWithoutAcknowledgement(recoveryLedger.checkpoint); }
+            if (primaryRecoveryCheckpoint) { const open = primaryRecoveryCheckpoint; primaryRecoveryCheckpoint = null; closePageDiagnosticsCheckpoint(page, open); }
+          },
+        });
+      } else if (primaryRecoveryCheckpoint) {
+        const open = primaryRecoveryCheckpoint;
+        primaryRecoveryCheckpoint = null;
+        closePageDiagnosticsCheckpoint(page, open);
+      }
       await cleanupWebttyTerminals({
         terminals,
         priorFailure: primaryFailure,

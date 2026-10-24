@@ -250,8 +250,13 @@ test('Router recovery stops the producer only after independent cleanup and deri
   assert.match(section, /final native close of the recovery terminal/);
   // The proof is persisted sanitized and its failure carries only a stage and classification.
   assert.match(webttySpec.slice(at('await persistEvidenceAfter(async () => {', crash)), /persistEvidenceAfter\(async \(\) => \{[\s\S]+?new RouterRecoveryProofError\(recoveryStage, String\(error\?\.name \|\| 'Error'\)\)[\s\S]+?webtty-router-recovery-oracle\.json/);
-  // Failure leaves events actionable and releases the recorders before the authorized teardown signs in.
-  const finallyBlock = webttySpec.slice(at('closePageDiagnosticsCheckpoint(page, open)'), at('await cleanupWebttyTerminals({'));
-  assert.match(finallyBlock, /await recoveryObservation\?\.dispose\(\)/);
-  assert.match(webttySpec.slice(at('if (recoveryCheckpointOpen)'), at('await cleanupWebttyTerminals({')), /closeWithoutAcknowledgement\(recoveryLedger\.checkpoint\)/);
+  // Failure finalization runs before the authorized teardown signs in: the owned producer is ended, a sanitized snapshot is
+  // kept, the checkpoints are closed without acknowledgement and the recorders are released, in that order.
+  const teardown = at('await cleanupWebttyTerminals({');
+  const finalize = at('await finalizeRouterRecoveryFailure({', at('Idempotent: the observer must be gone'));
+  assert.ok(finalize < teardown, 'the finalization precedes the teardown authentication');
+  const finalization = webttySpec.slice(finalize, teardown);
+  assert.match(finalization, /observation: recoveryObservation,[\s\S]+persist: \(finalization\) => testInfo\.attach\('webtty-router-recovery-oracle-failure-cleanup\.json'[\s\S]+closeCheckpoints: \(\) => \{[\s\S]+closeWithoutAcknowledgement\(recoveryLedger\.checkpoint\)[\s\S]+closePageDiagnosticsCheckpoint\(page, open\)/);
+  assert.match(webttySpec.slice(at('if (recoveryObservation && !recoveryProofComplete)')), /!recoveryProofComplete/);
+  assert.doesNotMatch(finalization, /backendCleanupVerified: true|cleanupVerified: true/, 'failure cleanup is never labelled as backend cleanup evidence');
 });

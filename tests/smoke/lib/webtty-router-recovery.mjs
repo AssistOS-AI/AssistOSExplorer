@@ -407,7 +407,11 @@ export async function armRouterRecoveryObservation(context, { baseURL, timeoutMs
         record.status = response.status();
         record.contentType = response.headers()['content-type'] || null;
         // Only a fetch body is readable; an EventSource refusal body is never claimed.
-        if (record.role === 'intent') record.body = response.body().then((buffer) => buffer.toString(), () => null);
+        // Its completion is tracked separately and never awaited by a snapshot: a body that never finishes keeps the
+        // request unsettled until the existing deadline, instead of hanging the observation.
+        if (record.role === 'intent') {
+            record.body = response.body().then((buffer) => { record.bodyText = buffer.toString(); }, () => { record.bodyText = null; });
+        }
     });
     on(context, 'requestfailed', (request) => { const record = records.get(request); if (record) record.failure = request.failure()?.errorText ?? 'unknown'; });
 
@@ -422,6 +426,27 @@ export async function armRouterRecoveryObservation(context, { baseURL, timeoutMs
             ? { ok: false, error: 'not_authenticated', login: `/auth/login?${new URLSearchParams({ returnTo: intentPath })}` }
             : { ok: false, error: 'not_found' };
     };
+    // Every wait of this observation ends at the existing deadline with a classified failure.
+    const within = (promise, ms, stage, classification) => {
+        let timer;
+        return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new RouterRecoveryProofError(stage, classification)), ms); })])
+            .finally(() => clearTimeout(timer));
+    };
+    const dispatchPagehide = (page) => within(page.evaluate(() => {
+        const before = performance.timeOrigin + performance.now();
+        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+        const after = performance.timeOrigin + performance.now();
+        return { before, after, status: document.getElementById('status')?.textContent ?? null, killDisabled: document.getElementById('kill')?.disabled ?? null };
+    }), timeoutMs, 'stop', 'dispatch-deadline');
+    // True once every owned request is settled; false when the deadline passes first.
+    const waitSettled = async () => {
+        const deadline = Date.now() + timeoutMs;
+        for (;;) {
+            if (settled(await snapshot())) return true;
+            if (Date.now() >= deadline) return false;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+    };
     const snapshot = async () => {
         need(bound, 'bind', 'not-bound');
         const { page, sessionId, viewId, mode } = bound;
@@ -431,17 +456,16 @@ export async function armRouterRecoveryObservation(context, { baseURL, timeoutMs
         for (const record of own) {
             if (record.role !== 'intent') continue;
             try { record.correctBody = isDeepStrictEqual(JSON.parse(record.postData ?? 'null'), { view: viewId, policy: 'keep' }); } catch { record.correctBody = false; }
-            // The response body is read once the response exists; until then it is neither valid nor invalid.
-            if (record.bodyChecked || !record.body) continue;
-            const text = await record.body;
+            // The body is neither valid nor invalid until it has completely arrived.
+            if (record.bodyChecked || record.bodyText === undefined) continue;
             record.bodyChecked = true;
-            try { record.bodyValid = isDeepStrictEqual(JSON.parse(text), intentBodyExpected(mode, sessionId)); } catch { record.bodyValid = false; }
+            try { record.bodyValid = isDeepStrictEqual(JSON.parse(record.bodyText), intentBodyExpected(mode, sessionId)); } catch { record.bodyValid = false; }
         }
-        const nativeState = page.isClosed() ? null : await page.evaluate((expected) => {
+        const nativeState = page.isClosed() ? null : await within(page.evaluate((expected) => {
             const observation = window.__routerRecoveryNative;
             if (!observation) return null;
             return { compatible: observation.compatible, events: observation.events.map(({ url, ...event }) => ({ ...event, ...(url === undefined ? {} : { exactUrl: url === expected }) })) };
-        }, new URL(`/webtty/sessions/${encodeURIComponent(sessionId)}/stream?view=${encodeURIComponent(viewId)}`, origin).toString());
+        }, new URL(`/webtty/sessions/${encodeURIComponent(sessionId)}/stream?view=${encodeURIComponent(viewId)}`, origin).toString()), timeoutMs, 'snapshot', 'native-read-deadline');
         const cdp = state.network.filter((entry) => entry.session === sessionId && (entry.role === 'intent' || entry.view === viewId));
         const raw = {
             mode, binding: { ...bound.binding, navigations: bound.navigations },
@@ -479,19 +503,35 @@ export async function armRouterRecoveryObservation(context, { baseURL, timeoutMs
         // waits for every owned request to reach a terminal state. It does not navigate or close the page.
         async stopAfterCleanup() {
             need(bound && !stopRecord, 'stop', 'out-of-order');
-            stopRecord = await bound.page.evaluate(() => {
-                const before = performance.timeOrigin + performance.now();
-                window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
-                const after = performance.timeOrigin + performance.now();
-                return { before, after, status: document.getElementById('status')?.textContent ?? null, killDisabled: document.getElementById('kill')?.disabled ?? null };
-            });
-            const deadline = Date.now() + timeoutMs;
-            for (;;) {
-                const raw = await snapshot();
-                if (settled(raw)) return { before: stopRecord.before, after: stopRecord.after };
-                need(Date.now() < deadline, 'stop', 'settle-deadline');
-                await new Promise((resolve) => setTimeout(resolve, 25));
+            stopRecord = await dispatchPagehide(bound.page);
+            need(await waitSettled(), 'stop', 'settle-deadline');
+            return { before: stopRecord.before, after: stopRecord.after };
+        },
+        // Failure cleanup for an owned producer that is still running (for example after a cleanup or probe failure that
+        // came before the stop): the client's own pagehide, or closing the owned page, ends its retries. It never throws
+        // and is never evidence that the independent backend cleanup passed.
+        async finalizeFailure() {
+            const outcome = { kind: 'failure-cleanup', backendCleanupEvidence: false, bound: Boolean(bound), producerStopped: false, alreadyStopped: Boolean(stopRecord), pageClosed: false, snapshotRequests: 0, failures: [] };
+            const note = (stage, error) => outcome.failures.push({ stage, error: String(error?.classification || error?.name || 'Error') });
+            if (bound && stopRecord) {
+                outcome.producerStopped = true;
+            } else if (bound && !bound.page.isClosed()) {
+                try {
+                    stopRecord = await dispatchPagehide(bound.page);
+                    outcome.producerStopped = true;
+                    if (!await waitSettled()) note('settle', { classification: 'deadline' });
+                } catch (error) {
+                    note('stop', error);
+                    try { await bound.page.close(); outcome.pageClosed = true; outcome.producerStopped = true; } catch (closeError) { note('close-page', closeError); }
+                }
+            } else if (bound) {
+                outcome.pageClosed = true;
+                outcome.producerStopped = true;
             }
+            if (bound) {
+                try { outcome.snapshotRequests = (await snapshot()).playwright.length; } catch (error) { note('snapshot', error); outcome.snapshotRequests = lastRaw?.playwright.length ?? 0; }
+            }
+            return outcome;
         },
         // The expected diagnostic signatures, derived only from validated records.
         async validate() {
@@ -500,8 +540,8 @@ export async function armRouterRecoveryObservation(context, { baseURL, timeoutMs
             return validation;
         },
         // The sanitized projection of the latest records; safe on success and failure.
-        project({ validation = null, failure = null, milestones = {} } = {}) {
-            return projectRouterRecoveryObservation(lastRaw, { validation, failure, milestones, cleanup: { ...cleanup } });
+        project({ validation = null, failure = null, milestones = {}, finalization = null } = {}) {
+            return { ...projectRouterRecoveryObservation(lastRaw, { validation, failure, milestones, cleanup: { ...cleanup } }), failureFinalization: finalization };
         },
         // Idempotent and non-throwing: failures are counted, not raised, so a teardown cannot mask the primary error.
         async dispose() {
@@ -516,4 +556,25 @@ export async function armRouterRecoveryObservation(context, { baseURL, timeoutMs
             return { ...cleanup };
         },
     };
+}
+
+// The failure finalization of the outer gate, in its fixed order and with the primary error untouched: it never throws,
+// and any failure inside it is recorded by stage and error name only. (1) End the owned producer (the client's own
+// pagehide, or closing its page) and take a final snapshot; (2) persist the sanitized projection, labelled as failure
+// cleanup and never as evidence that the independent backend cleanup passed; (3) close the open checkpoints without
+// acknowledging anything; (4) release the recorders, all before the authorized teardown signs in.
+export async function finalizeRouterRecoveryFailure({ observation, persist, closeCheckpoints, report = (message) => console.error(message) }) {
+    const sequence = [];
+    const failures = [];
+    const note = (stage, error) => {
+        const name = String(error?.name || 'Error');
+        failures.push({ stage, error: name });
+        report(`Router recovery failure finalization: ${stage} ${name}`);
+    };
+    let finalization = null;
+    try { finalization = await observation.finalizeFailure(); sequence.push('stop-producer'); } catch (error) { note('stop-producer', error); }
+    try { await persist(finalization); sequence.push('persist'); } catch (error) { note('persist', error); }
+    try { closeCheckpoints(); sequence.push('close-checkpoints'); } catch (error) { note('close-checkpoints', error); }
+    try { await observation.dispose(); sequence.push('dispose'); } catch (error) { note('dispose', error); }
+    return { sequence, failures, finalization };
 }

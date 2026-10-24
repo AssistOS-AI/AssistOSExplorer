@@ -3,7 +3,7 @@ import http from 'node:http';
 import test from 'node:test';
 
 import { captureRouterRecoveryAuthentication, expectedRouterRecoveryDiagnostics, validateRouterRecoveryObservation,
-    projectRouterRecoveryObservation, acknowledgeRouterRecovery, RouterRecoveryProofError } from './webtty-router-recovery.mjs';
+    projectRouterRecoveryObservation, acknowledgeRouterRecovery, finalizeRouterRecoveryFailure, RouterRecoveryProofError } from './webtty-router-recovery.mjs';
 import { createDiagnosticLedger } from './diagnostic-ledger.mjs';
 
 const principal = Object.freeze({ id: 'USER.Owner', roles: ['admin'] });
@@ -334,4 +334,33 @@ test('the sanitized projection and safe errors carry no view, session or returnT
     assert.throws(() => ledger.assertNoOpenCheckpoints(), /unconsumed/);
     ledger.closeWithoutAcknowledgement(token);
     ledger.assertNoOpenCheckpoints();
+});
+
+test('failure finalization runs in its fixed order, never throws and records its own failures by stage and name only', async () => {
+    const make = (failing = null) => {
+        const order = [];
+        const step = (name, value) => async () => { order.push(name); if (failing === name) throw Object.assign(new Error(`SECRET-${name}-detail ${viewId}`), { name: `${name}Error` }); return value; };
+        return {
+            order,
+            observation: { finalizeFailure: step('stop', { kind: 'failure-cleanup', producerStopped: true }), dispose: step('dispose') },
+            persist: step('persist'),
+            closeCheckpoints: () => { order.push('checkpoints'); if (failing === 'checkpoints') throw new Error(`SECRET-checkpoints ${viewId}`); },
+        };
+    };
+    const reports = [];
+    const clean = make();
+    const result = await finalizeRouterRecoveryFailure({ ...clean, report: (message) => reports.push(message) });
+    assert.deepEqual(clean.order, ['stop', 'persist', 'checkpoints', 'dispose']);
+    assert.deepEqual(result.sequence, ['stop-producer', 'persist', 'close-checkpoints', 'dispose']);
+    assert.deepEqual(reports, []);
+    for (const failing of ['stop', 'persist', 'checkpoints', 'dispose']) {
+        const sample = make(failing);
+        const outcome = await finalizeRouterRecoveryFailure({ ...sample, report: (message) => reports.push(message) });
+        assert.deepEqual(sample.order, ['stop', 'persist', 'checkpoints', 'dispose'], `${failing}: every later step still runs`);
+        assert.equal(outcome.failures.length, 1);
+        assert.equal(outcome.sequence.length, 3);
+    }
+    const surface = JSON.stringify(reports);
+    assert.doesNotMatch(surface, /SECRET|V{32}/, 'only stage and error name are reported');
+    assert.equal(reports.length, 4);
 });

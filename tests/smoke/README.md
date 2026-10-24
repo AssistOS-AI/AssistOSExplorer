@@ -906,8 +906,12 @@ CLOSED error) with at most its own `ERR_ABORTED`, at most one headerless stream 
 close intent. Missing, duplicate, redirected, overlapping, foreign-frame or ambiguous records fail. Only then does the
 unchanged ledger acknowledge the derived set, the terminal closes natively without a second intent, and the session is
 renewed. The sanitized projection (`webtty-router-recovery-oracle.json`) keeps aliases, statuses, failures and relative
-times, never the view, session or returnTo values. A failed proof leaves every event actionable and forbids the normal
-reauthentication and reopen assertions; the authorized outer teardown still runs. Run
+times, never the view, session or returnTo values. Every wait ends at the existing deadline with a classified failure, including a close-intent response whose body
+never finishes. A failed proof leaves every event actionable and forbids the normal reauthentication and reopen
+assertions. Before the authorized outer teardown signs in, failure finalization ends the owned producer (its own
+`pagehide`, or closing its page), keeps a sanitized non-empty snapshot labelled as failure cleanup (never as evidence
+that the backend cleanup passed), closes the open checkpoints without acknowledgement and releases the recorders; the
+primary error is always the one thrown and finalization failures are recorded by stage and name only. Run
 `node --test lib/webtty-router-recovery.test.mjs lib/webtty-router-recovery-browser.test.mjs lib/webtty-core-profile.test.mjs lib/diagnostic-ledger.test.mjs lib/page-diagnostics.test.mjs`
 with `PLOINKY_ROOT` set to a Ploinky checkout whose `cli/server/webtty/webtty.js` is the pinned client.
 

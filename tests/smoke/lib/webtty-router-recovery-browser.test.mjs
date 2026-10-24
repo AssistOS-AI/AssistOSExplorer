@@ -26,6 +26,8 @@ if (process.argv.includes('--router-recovery-fixture-server')) {
     let mode = 'sso';
     let holdAt = 0;
     let holdHeaders = false;
+    let holdIntentBody = false;
+    let badProbe = false;
     let fault = false;
     let count = 0;
     const events = [];
@@ -45,6 +47,8 @@ if (process.argv.includes('--router-recovery-fixture-server')) {
             mode = url.searchParams.get('mode');
             holdAt = Number(url.searchParams.get('holdAt'));
             holdHeaders = url.searchParams.get('headers') === '1';
+            holdIntentBody = url.searchParams.get('intentBody') === 'hold';
+            badProbe = url.searchParams.get('probe') === 'bad';
             return json(res, 200, { ok: true });
         }
         if (url.pathname === '/state') return json(res, 200, { count, events });
@@ -89,6 +93,13 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
             let validBody = false;
             try { assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), { view: VIEW_ID, policy: 'keep' }); validBody = true; } catch { /* recorded below */ }
             record('close-intent', { method: req.method, validBody, jsonType: req.headers['content-type'] === 'application/json', originMatches: req.headers.origin === `http://${req.headers.host}` });
+            if (holdIntentBody) {
+                // Headers arrive; the body never finishes. Only the server's own stop ends it.
+                res.writeHead(mode === 'sso' ? 401 : 404, { 'content-type': 'application/json', 'content-length': '512' });
+                res.write('{"ok"');
+                held.add(res);
+                return undefined;
+            }
             return json(res, mode === 'sso' ? 401 : 404, refusalBody(mode, INTENT_PATH));
         }
         if (req.url === STREAM_PATH && req.method === 'GET') {
@@ -97,6 +108,7 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
                 // renewed session with plain absence.
                 const renewed = /private-new-session/.test(req.headers.cookie || '');
                 record(renewed ? 'renewed-probe' : 'direct-probe', { priorCookieMatches: req.headers.cookie === `${mode === 'sso' ? 'ploinky_sso' : 'ploinky_jwt'}=${PRIOR_SECRET}`, acceptMatches: req.headers.accept === 'text/event-stream' });
+                if (badProbe && !renewed) return json(res, 200, { ok: true });
                 return renewed ? json(res, 404, { ok: false, error: 'not_found' }) : json(res, mode === 'sso' ? 401 : 404, refusalBody(mode, STREAM_PATH));
             }
             if (!fault) {
@@ -145,12 +157,12 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
         return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label}: deadline`)), ms); })]).finally(() => clearTimeout(timer));
     };
 
-    async function startFixture(browser, mode, { holdAt = 0, holdHeaders = false } = {}) {
+    async function startFixture(browser, mode, { holdAt = 0, holdHeaders = false, holdIntentBody = false, badProbe = false } = {}) {
         const child = fork(here, ['--router-recovery-fixture-server', clientPath], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
         const [{ port }] = await bound(once(child, 'message'), 'fixture server start');
         const origin = `http://127.0.0.1:${port}`;
         const api = async (path) => (await bound(fetch(origin + path, { signal: AbortSignal.timeout(15_000) }), `fixture ${path}`)).json();
-        await api(`/settings?mode=${mode}&holdAt=${holdAt}&headers=${holdHeaders ? 1 : 0}`);
+        await api(`/settings?mode=${mode}&holdAt=${holdAt}&headers=${holdHeaders ? 1 : 0}&intentBody=${holdIntentBody ? 'hold' : 'normal'}&probe=${badProbe ? 'bad' : 'good'}`);
         const context = await browser.newContext();
         await context.addCookies([{ name: 'fixture_auth', value: 'private-fixture-value', url: origin }]);
         let stopped = false;
@@ -167,7 +179,7 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
     }
 
     const { attachPageDiagnostics } = await import('./fixtures.mjs');
-    const { armRouterRecoveryObservation, captureRouterRecoveryAuthentication, acknowledgeRouterRecovery, RouterRecoveryProofError } = await import('./webtty-router-recovery.mjs');
+    const { armRouterRecoveryObservation, captureRouterRecoveryAuthentication, acknowledgeRouterRecovery, finalizeRouterRecoveryFailure, RouterRecoveryProofError } = await import('./webtty-router-recovery.mjs');
     const { spawnSync } = await import('node:child_process');
     const { createHash } = await import('node:crypto');
     const PINNED_CLIENT_SHA256 = '273258130933db8582430d46fe279e00baa0b2af3b9e0e9963573198cc2924f7';
@@ -179,18 +191,18 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
 
     const closure = [];
     // One real scenario: independent fixture server, unchanged client and an unchanged control, actual diagnostics.
-    async function scenario(t, { mode = 'sso', refusals = 1, held = false, backlog = false, armLate = false } = {}) {
+    async function scenario(t, { mode = 'sso', refusals = 1, held = false, backlog = false, armLate = false, holdIntentBody = false, badProbe = false, timeoutMs = 15_000 } = {}) {
         const browser = await chromium.launch({ headless: true });
         t.after(() => browser.close());
         const holdHeaders = held === 'headers';
         const wanted = refusals + (holdHeaders ? 1 : 0);
         const needed = held ? refusals + 1 : refusals;
-        const target = await startFixture(browser, mode, { holdAt: held ? refusals + 1 : 0, holdHeaders });
+        const target = await startFixture(browser, mode, { holdAt: held ? refusals + 1 : 0, holdHeaders, holdIntentBody, badProbe });
         const control = await startFixture(browser, mode);
         t.after(() => control.stop());
         t.after(async () => { await target.stop(); });
         const page = armLate ? await target.context.newPage() : null;
-        const observation = await armRouterRecoveryObservation(target.context, { baseURL: target.origin, timeoutMs: 15_000 });
+        const observation = await armRouterRecoveryObservation(target.context, { baseURL: target.origin, timeoutMs });
         t.after(async () => { closure.push({ label: t.name, ...(await observation.dispose()) }); });
         const terminal = page || await target.context.newPage();
         const diagnostics = attachPageDiagnostics(terminal, { outputPath() { throw new Error('Raw diagnostics flush is forbidden here.'); } }, 'recovery');
@@ -348,6 +360,82 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
         for (const sentinel of [SESSION_ID, VIEW_ID, 'returnTo', 'login', '127.0.0.1', encodeURIComponent(STREAM_PATH)]) assert.equal(projection.includes(sentinel), false);
         assert.match(projection, /"classification":"multiset-mismatch"/);
     });
+
+    for (const deadline of [250, 3_000]) test(`a close-intent response that sends headers but never finishes its body ends at the existing ${deadline} ms deadline with a classified failure`, { timeout: 120_000 }, async (t) => {
+        const s = await scenario(t, { mode: 'sso', refusals: 1, holdIntentBody: true, timeoutMs: deadline });
+        await induceRefusals(s);
+        await s.target.api('/cleanup-marker');
+        const started = Date.now();
+        await assert.rejects(s.observation.stopAfterCleanup(), (error) => error instanceof RouterRecoveryProofError && `${error.stage}: ${error.classification}` === 'stop: settle-deadline');
+        const elapsed = Date.now() - started;
+        assert.ok(elapsed >= deadline * 0.8 && elapsed < deadline + 800, `the failure came at the deadline, not later (${elapsed} ms of ${deadline})`);
+        // A validation after the failed settlement is still a prompt, classified refusal (the intent has no terminal yet), never a hang.
+        await assert.rejects(s.observation.validate(), (error) => error instanceof RouterRecoveryProofError && `${error.stage}: ${error.classification}` === 'join: timing');
+        const projection = s.observation.project({ failure: new RouterRecoveryProofError('stop', 'settle-deadline') });
+        assert.ok(projection.requests.length >= 3 && projection.requests.some((r) => r.role === 'intent' && r.status === 401));
+        s.diagnostics.closeWithoutAcknowledgement(s.checkpoint);
+        const closed = await s.observation.dispose();
+        assert.equal(closed.cdpDetachFailed, 0);
+        await s.terminal.close();
+        assert.equal((await serverEvents(s)).filter((e) => e.kind === 'close-intent').length, 1);
+        // The held response is released by the server's own stop; its exit code is checked by the closure test.
+    });
+
+    for (const failing of ['cleanup', 'probe']) {
+        test(`a ${failing} failure before the stop ends the owned producer, keeps a snapshot, closes the checkpoints and preserves the primary error`, { timeout: 120_000 }, async (t) => {
+            const s = await scenario(t, { mode: 'sso', refusals: 1, badProbe: failing === 'probe' });
+            await induceRefusals(s);
+            const trace = [];
+            const recovery = captureRouterRecoveryAuthentication({ baseURL: s.target.origin, cookies: [loopbackCookie('sso', PRIOR_SECRET)], principal: PRINCIPAL, timeoutMs: 8_000 });
+            await recovery.proveRestartedAuthentication();
+            let primary = null;
+            try {
+                await recovery.recoverAfterCleanup({
+                    streamPath: STREAM_PATH,
+                    verifyCleanup: async () => { trace.push('cleanup'); if (failing === 'cleanup') throw new Error('PRIMARY-CLEANUP-FAILURE'); await s.target.api('/cleanup-marker'); },
+                    stopProducer: async () => { trace.push('stop'); await s.observation.stopAfterCleanup(); },
+                    closeTerminal: async () => { trace.push('close'); },
+                    signIn: async () => { trace.push('sign-in'); return PRINCIPAL; },
+                    readCookies: async () => [loopbackCookie('sso', NEW_SECRET)],
+                });
+            } catch (error) {
+                primary = error;
+            }
+            assert.match(primary?.message || '', failing === 'cleanup' ? /PRIMARY-CLEANUP-FAILURE/ : /retired stream route must refuse the prior credential/);
+            assert.deepEqual(trace, ['cleanup'], 'nothing after the failure ran, in particular no stop and no re-login');
+            const countBefore = (await s.target.api('/state')).count;
+            const attached = [];
+            const result = await finalizeRouterRecoveryFailure({
+                observation: s.observation,
+                persist: async (finalization) => { trace.push('persist'); attached.push(s.observation.project({ milestones: { cleanupVerified: false }, finalization })); },
+                closeCheckpoints: () => { trace.push('close-checkpoints'); s.diagnostics.closeWithoutAcknowledgement(s.checkpoint); },
+                report: () => assert.fail('no finalization step may fail here'),
+            });
+            trace.push('teardown-authentication');
+            assert.deepEqual(result.sequence, ['stop-producer', 'persist', 'close-checkpoints', 'dispose']);
+            assert.deepEqual(trace, ['cleanup', 'persist', 'close-checkpoints', 'teardown-authentication']);
+            assert.deepEqual(result.failures, []);
+            // The producer is stopped before the teardown authentication: the client shows its stopped state and the
+            // unchanged control keeps retrying while the target does not.
+            assert.equal(result.finalization.producerStopped, true);
+            assert.equal(await s.terminal.evaluate(() => document.getElementById('status').textContent), 'Disconnected');
+            await bound(s.control.api(`/wait?count=${s.needed + 2}`), 'control retries');
+            assert.equal((await s.target.api('/state')).count, countBefore, 'the target no longer retries');
+            const events = await serverEvents(s);
+            assert.equal(events.filter((e) => e.kind === 'close-intent').length, 1, 'the client sent its one close intent');
+            // A non-empty sanitized snapshot, labelled as failure cleanup and not as backend-cleanup evidence.
+            assert.ok(attached[0].requests.length >= 3 && attached[0].requests.every((r) => !('url' in r)));
+            assert.equal(attached[0].failureFinalization.kind, 'failure-cleanup');
+            assert.equal(attached[0].failureFinalization.backendCleanupEvidence, false);
+            assert.equal(attached[0].milestones.cleanupVerified, false);
+            assert.ok(attached[0].failureFinalization.snapshotRequests >= 3);
+            assert.equal(JSON.stringify(attached[0]).includes(SESSION_ID) || JSON.stringify(attached[0]).includes(VIEW_ID), false);
+            // The checkpoints are closed without acknowledgement: events stay actionable and none is left open.
+            assert.throws(() => s.diagnostics.closeWithoutAcknowledgement(s.checkpoint), /already consumed/);
+            assert.ok(s.diagnostics.actionableEvents().length >= 4, 'the observed events remain actionable');
+            assert.ok((await s.observation.dispose()).listenersRemoved >= 4);
+        });
+    }
 
     test('resource closure: listeners, CDP sessions, servers and browsers are all released', () => {
         assert.ok(closure.length >= 8, `observed scenarios disposed (${closure.length})`);
