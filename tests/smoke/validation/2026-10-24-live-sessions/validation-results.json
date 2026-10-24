@@ -1,0 +1,1497 @@
+{
+  "formatVersion": 1,
+  "kind": "live-sessions-validation-history",
+  "branch": "live-sessions",
+  "asOf": "2026-10-24T14:57:39.718Z",
+  "status": "incomplete",
+  "currentSourcePair": {
+    "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+    "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+  },
+  "currentGeneration": {
+    "number": 5,
+    "startedAt": "2026-10-24T14:35:24.625272606Z",
+    "windowEnds": "2026-10-24T15:05:24.625272606Z",
+    "state": "held after failed WebTTY case; supporting cases not started"
+  },
+  "sourceCounts": [
+    {
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "ledgerAsOf": "2026-10-24T14:57:39.718Z",
+      "evidenceSha256": "972821e341640ff3df719df74bdde21288a0ade3f93e1c17cb0c72abcdfb3d1f",
+      "currentCandidate": true,
+      "selectedDistinct": 26,
+      "passed": 0,
+      "failed": 1,
+      "notRun": 25,
+      "skipped": 0,
+      "cancelled": 0,
+      "passesApplyToFinalRetainedGeneration": false
+    },
+    {
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "ledgerAsOf": "2026-10-24T13:00:47.219Z",
+      "evidenceSha256": "265632e3ae5cb12e636fd14568d28a114c9d1bc4b33a458e1578b6e2255d3d2b",
+      "currentCandidate": false,
+      "selectedDistinct": 26,
+      "passed": 4,
+      "failed": 1,
+      "notRun": 21,
+      "skipped": 0,
+      "cancelled": 0,
+      "passesApplyToFinalRetainedGeneration": false
+    },
+    {
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "ledgerAsOf": "2026-10-24T13:47:07.515Z",
+      "evidenceSha256": "1ca6f9e5951f246fd2f1a4752def7b95b78040cbc66db170d66b2c440597f0f8",
+      "currentCandidate": false,
+      "selectedDistinct": 26,
+      "passed": 0,
+      "failed": 1,
+      "notRun": 25,
+      "skipped": 0,
+      "cancelled": 0,
+      "passesApplyToFinalRetainedGeneration": false
+    }
+  ],
+  "selectedCases": [
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam Live Sessions preserve owner controls, observer replay, and private scope",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam restart retires old Live Sessions and admits a newly verified run",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "00-router-auth.spec.mjs::router landing and Explorer shell load through the router",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "00-router-auth.spec.mjs::routed WebChat shell loads for the configured smoke agent",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "01-webtty-core.spec.mjs::local administrator controls the mounted workspace while an ordinary user is denied",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "failed",
+      "recordedAttemptIds": [
+        "ls-r5-w01-20261024T144931Z"
+      ]
+    },
+    {
+      "identity": "03-optional-agents.spec.mjs::OnlyOffice, Scribe, STT, and Umami start disabled and can be enabled through Marketplace",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "04-marketplace-lifecycle.spec.mjs::Configure stays gated while a no-wait agent starts and unlocks after refresh",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "05-copilot-folder-launch.spec.mjs::opens a working Copilot from a newly created folder",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::file uploads land in the selected working directory and are suggested in sibling sessions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::folder uploads preserve nested paths in the selected working directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "20-webchat-tags.spec.mjs::provider-looking @ tags are not offered as dispatch suggestions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::standalone loader serves the authenticated dashboard and a guest invitation",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::two Explorer accounts can join one room and exchange chat",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::dashboard header exposes audio/video and privacy settings",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::settings controls expose inline help on hover and focus",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "33-umami-routing.spec.mjs::authenticated dashboard keeps HTML, assets, API, and navigation under its base path",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "40-webmeet-tagged-research.spec.mjs::provider-looking @ tags stay ordinary meeting chat",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "50-onlyoffice-dpu.spec.mjs::Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "60-github-git-sync.spec.mjs::Git modal exposes GitHub authentication controls without leaking tokens",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::fresh signed-out Explorer deep link survives login and mounts the exact directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::manual token is stored user-owned, visible in Explorer, and removed on disconnect",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::a foreign agent-owned token record is denied without changing ownership or encrypted material",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::creates and resolves an AKU knowledge unit via /exec aku-memory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language execution prompt to Open Interpreter",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language web search prompt to the web-search launcher",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::treats @web-search token as ordinary chat, not a launcher dispatch",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam Live Sessions preserve owner controls, observer replay, and private scope",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam restart retires old Live Sessions and admits a newly verified run",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "00-router-auth.spec.mjs::router landing and Explorer shell load through the router",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "00-router-auth.spec.mjs::routed WebChat shell loads for the configured smoke agent",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "01-webtty-core.spec.mjs::local administrator controls the mounted workspace while an ordinary user is denied",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "failed",
+      "recordedAttemptIds": [
+        "ls-r3-w01-20261024T125445Z"
+      ]
+    },
+    {
+      "identity": "03-optional-agents.spec.mjs::OnlyOffice, Scribe, STT, and Umami start disabled and can be enabled through Marketplace",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "04-marketplace-lifecycle.spec.mjs::Configure stays gated while a no-wait agent starts and unlocks after refresh",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "05-copilot-folder-launch.spec.mjs::opens a working Copilot from a newly created folder",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "historical-pass",
+      "recordedAttemptIds": [
+        "ls-q05-20261024T114027Z"
+      ]
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::file uploads land in the selected working directory and are suggested in sibling sessions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::folder uploads preserve nested paths in the selected working directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "20-webchat-tags.spec.mjs::provider-looking @ tags are not offered as dispatch suggestions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::standalone loader serves the authenticated dashboard and a guest invitation",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "historical-pass",
+      "recordedAttemptIds": [
+        "ls-q30-20261024T114104Z"
+      ]
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::two Explorer accounts can join one room and exchange chat",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "historical-pass",
+      "recordedAttemptIds": [
+        "ls-q30media-20261024T114121Z"
+      ]
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::dashboard header exposes audio/video and privacy settings",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::settings controls expose inline help on hover and focus",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "33-umami-routing.spec.mjs::authenticated dashboard keeps HTML, assets, API, and navigation under its base path",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "40-webmeet-tagged-research.spec.mjs::provider-looking @ tags stay ordinary meeting chat",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "50-onlyoffice-dpu.spec.mjs::Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "historical-pass",
+      "recordedAttemptIds": [
+        "ls-q50-20261024T114143Z"
+      ]
+    },
+    {
+      "identity": "60-github-git-sync.spec.mjs::Git modal exposes GitHub authentication controls without leaking tokens",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::fresh signed-out Explorer deep link survives login and mounts the exact directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::manual token is stored user-owned, visible in Explorer, and removed on disconnect",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::a foreign agent-owned token record is denied without changing ownership or encrypted material",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::creates and resolves an AKU knowledge unit via /exec aku-memory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language execution prompt to Open Interpreter",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language web search prompt to the web-search launcher",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::treats @web-search token as ordinary chat, not a launcher dispatch",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam Live Sessions preserve owner controls, observer replay, and private scope",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam restart retires old Live Sessions and admits a newly verified run",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "00-router-auth.spec.mjs::router landing and Explorer shell load through the router",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "00-router-auth.spec.mjs::routed WebChat shell loads for the configured smoke agent",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "01-webtty-core.spec.mjs::local administrator controls the mounted workspace while an ordinary user is denied",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "failed",
+      "recordedAttemptIds": [
+        "ls-r4-w01-20261024T133836Z"
+      ]
+    },
+    {
+      "identity": "03-optional-agents.spec.mjs::OnlyOffice, Scribe, STT, and Umami start disabled and can be enabled through Marketplace",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "04-marketplace-lifecycle.spec.mjs::Configure stays gated while a no-wait agent starts and unlocks after refresh",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "05-copilot-folder-launch.spec.mjs::opens a working Copilot from a newly created folder",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::file uploads land in the selected working directory and are suggested in sibling sessions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "10-webchat-upload-scope.spec.mjs::folder uploads preserve nested paths in the selected working directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "20-webchat-tags.spec.mjs::provider-looking @ tags are not offered as dispatch suggestions",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::standalone loader serves the authenticated dashboard and a guest invitation",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "30-webmeet-room-chat.spec.mjs::two Explorer accounts can join one room and exchange chat",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::dashboard header exposes audio/video and privacy settings",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "31-webmeet-settings.spec.mjs::settings controls expose inline help on hover and focus",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "33-umami-routing.spec.mjs::authenticated dashboard keeps HTML, assets, API, and navigation under its base path",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "40-webmeet-tagged-research.spec.mjs::provider-looking @ tags stay ordinary meeting chat",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "50-onlyoffice-dpu.spec.mjs::Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "60-github-git-sync.spec.mjs::Git modal exposes GitHub authentication controls without leaking tokens",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::fresh signed-out Explorer deep link survives login and mounts the exact directory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::manual token is stored user-owned, visible in Explorer, and removed on disconnect",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "61-github-dpu-token-ownership.spec.mjs::a foreign agent-owned token record is denied without changing ownership or encrypted material",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::creates and resolves an AKU knowledge unit via /exec aku-memory",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language execution prompt to Open Interpreter",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::routes a natural-language web search prompt to the web-search launcher",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    },
+    {
+      "identity": "70-copilot-semantic-routing.spec.mjs::treats @web-search token as ordinary chat, not a launcher dispatch",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "not-run",
+      "recordedAttemptIds": []
+    }
+  ],
+  "runs": [
+    {
+      "runId": "ls-r5-w01-20261024T144931Z",
+      "generation": 5,
+      "identity": "01-webtty-core.spec.mjs::local administrator controls the mounted workspace while an ordinary user is denied",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "4cbc523661d8255d7765c07ca52ec40dc5e43dc9"
+      },
+      "status": "failed",
+      "exitCode": 1,
+      "startedAt": "2026-10-24T14:49:31Z",
+      "completedAt": "2026-10-24T14:50:15Z",
+      "processDurationSeconds": 44,
+      "reporterStats": {
+        "startTime": "2026-10-24T14:49:33.113Z",
+        "duration": 41911.556000000004,
+        "expected": 0,
+        "skipped": 0,
+        "unexpected": 1,
+        "flaky": 0
+      },
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "failed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "f123d93ddb63d6a0d6dc0356dab7380eed7179845d7975a144b49a4d583a61b2",
+          "bytes": 1031
+        },
+        {
+          "kind": "run-log",
+          "sha256": "b76cd21c615054305ce634d1df2954788a45e8741f3443cf7131f0e1f17410d3",
+          "bytes": 5634
+        },
+        {
+          "kind": "test-results",
+          "sha256": "030a6274b97463e268a2e3a42d474550f223461acf8238e9e71a4e4b602875a9",
+          "bytes": 27806
+        }
+      ],
+      "evidenceKind": "Previously audited saved E2E records, reused without a live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "failureSummary": "Replacement-victim diagnostics retained two stream 404 responses and two corresponding console errors.",
+      "cleanupObservation": {
+        "recordedAt": "2026-10-24T14:50:53.985Z",
+        "responseStatus": 200,
+        "totalSessions": 4,
+        "cleanupErrorCountInResult": 0,
+        "recordedSessionCount": 4,
+        "recordedExitedSessionCount": 4,
+        "recordedViewerCounts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "completeFixtureDeletionProven": false
+      }
+    },
+    {
+      "runId": "ls-r3-w01-20261024T125445Z",
+      "generation": 3,
+      "identity": "01-webtty-core.spec.mjs::local administrator controls the mounted workspace while an ordinary user is denied",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "failed",
+      "exitCode": 1,
+      "startedAt": "2026-10-24T12:54:45Z",
+      "completedAt": "2026-10-24T12:55:17Z",
+      "processDurationSeconds": 32,
+      "reporterStats": {
+        "startTime": "2026-10-24T12:54:47.715Z",
+        "duration": 29527.033000000003,
+        "expected": 0,
+        "skipped": 0,
+        "unexpected": 1,
+        "flaky": 0
+      },
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "failed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "1a0e9b232974501746d8ea56aa26426e53002eb19611a5c94f67834675970296",
+          "bytes": 1030
+        },
+        {
+          "kind": "run-log",
+          "sha256": "a9ccc684076ac06a27758ee6a4217261f24f43ca1a24364eb1483995a0060066",
+          "bytes": 4004
+        },
+        {
+          "kind": "test-results",
+          "sha256": "c1124e3354c54b00d3173c704743d5c5e66e962b0896f865e33c21184b94e01f",
+          "bytes": 21681
+        }
+      ],
+      "evidenceKind": "Previously audited saved E2E records, reused without a live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "failureSummary": "Live Sessions entry was not visible in the parent dialog within the assertion timeout.",
+      "cleanupObservation": {
+        "recordedAt": "2026-10-24T12:57:40.270Z",
+        "responseStatus": 200,
+        "totalSessions": 1,
+        "recordedSessionCount": 1,
+        "recordedExitedSessionCount": 1,
+        "recordedViewerCounts": [
+          0
+        ],
+        "completeFixtureDeletionProven": false
+      }
+    },
+    {
+      "runId": "ls-q05-20261024T114027Z",
+      "generation": 2,
+      "identity": "05-copilot-folder-launch.spec.mjs::opens a working Copilot from a newly created folder",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "startedAt": "2026-10-24T11:40:27Z",
+      "completedAt": "2026-10-24T11:41:04Z",
+      "processDurationSeconds": 37,
+      "reporterStats": {
+        "startTime": "2026-10-24T11:40:30.250Z",
+        "duration": 33112.530999999995,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "b778df8c659543de1070afc08531538f482847564f624ed01ee4b32d2430e65e",
+          "bytes": 556
+        },
+        {
+          "kind": "run-log",
+          "sha256": "74b135d69004e8698088ce3c1f573f719a04bb2c8a433f155053509514fc7e41",
+          "bytes": 829
+        },
+        {
+          "kind": "test-results",
+          "sha256": "d342d41319148a654634531afafcce564cc2155d4a5ebe48e52f280cfda2b2a3",
+          "bytes": 6082
+        }
+      ],
+      "evidenceKind": "Previously audited saved E2E records, reused without a live rerun.",
+      "partialStepsCountedAsPasses": false
+    },
+    {
+      "runId": "ls-q30-20261024T114104Z",
+      "generation": 2,
+      "identity": "30-webmeet-room-chat.spec.mjs::standalone loader serves the authenticated dashboard and a guest invitation",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "startedAt": "2026-10-24T11:41:04Z",
+      "completedAt": "2026-10-24T11:41:21Z",
+      "processDurationSeconds": 17,
+      "reporterStats": {
+        "startTime": "2026-10-24T11:41:06.574Z",
+        "duration": 14713.39,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "54b7a0e3494aff8c6553e853733a36048771fd122115b58be54223a80e516b5e",
+          "bytes": 576
+        },
+        {
+          "kind": "run-log",
+          "sha256": "28067d616b1d40b7f25917e040e325c6be6e637028895d97787a8fc2703304ec",
+          "bytes": 820
+        },
+        {
+          "kind": "test-results",
+          "sha256": "fce0c7dc8988b82f83e031c5ed47040cc4af7a2928c6e63c6187a5ca79eedbf3",
+          "bytes": 4065
+        }
+      ],
+      "evidenceKind": "Previously audited saved E2E records, reused without a live rerun.",
+      "partialStepsCountedAsPasses": false
+    },
+    {
+      "runId": "ls-q30media-20261024T114121Z",
+      "generation": 2,
+      "identity": "30-webmeet-room-chat.spec.mjs::two Explorer accounts can join one room and exchange chat",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "startedAt": "2026-10-24T11:41:22Z",
+      "completedAt": "2026-10-24T11:41:43Z",
+      "processDurationSeconds": 21,
+      "reporterStats": {
+        "startTime": "2026-10-24T11:41:23.618Z",
+        "duration": 19191.237,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "b080fddbdb8d64bd86954104bd7f95fa7a7d3791bc7aa0062efa92d6fe5f78ea",
+          "bytes": 638
+        },
+        {
+          "kind": "run-log",
+          "sha256": "5601f411436ca7ab530b8b0ed024fc3d604f6e9e72b6049663d28de5c4f3839f",
+          "bytes": 769
+        },
+        {
+          "kind": "test-results",
+          "sha256": "bcdf8e7415405e674add33d0042381c1de7143cdd60df1215c2689cf63ec5493",
+          "bytes": 28331
+        }
+      ],
+      "evidenceKind": "Previously audited saved E2E records, reused without a live rerun.",
+      "partialStepsCountedAsPasses": false
+    },
+    {
+      "runId": "ls-q50-20261024T114143Z",
+      "generation": 2,
+      "identity": "50-onlyoffice-dpu.spec.mjs::Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "c9e9e695aedbfc584e10b1d6114282cd7d19636f"
+      },
+      "status": "passed",
+      "exitCode": 0,
+      "startedAt": "2026-10-24T11:41:43Z",
+      "completedAt": "2026-10-24T11:45:22Z",
+      "processDurationSeconds": 219,
+      "reporterStats": {
+        "startTime": "2026-10-24T11:41:45.362Z",
+        "duration": 216658.877,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "bff37ac5d9c851abc8a09d333510ac47762a473199626bcde4aba238e9f29510",
+          "bytes": 622
+        },
+        {
+          "kind": "run-log",
+          "sha256": "492b7b3f5189bad76facb89b53580fe9f777b558b7dc2fc209238d80f023d1c6",
+          "bytes": 933
+        },
+        {
+          "kind": "test-results",
+          "sha256": "c39d34bb27f5ad66a525fa142ea8e201115ea9a6f0a05af3feef1fd660909fcc",
+          "bytes": 8230
+        }
+      ],
+      "evidenceKind": "Previously audited saved E2E records, reused without a live rerun.",
+      "partialStepsCountedAsPasses": false
+    },
+    {
+      "runId": "ls-r4-w01-20261024T133836Z",
+      "generation": 4,
+      "identity": "01-webtty-core.spec.mjs::local administrator controls the mounted workspace while an ordinary user is denied",
+      "sourcePair": {
+        "ploinky": "7c9fabdb016e81067e6a0d5bd6cf00033cf64fe0",
+        "explorer": "51c7f9da4277038425dfa99ac0a5cc0169ec9cfb"
+      },
+      "status": "failed",
+      "exitCode": 1,
+      "startedAt": "2026-10-24T13:38:36Z",
+      "completedAt": "2026-10-24T13:39:55Z",
+      "processDurationSeconds": 79,
+      "reporterStats": {
+        "startTime": "2026-10-24T13:38:38.184Z",
+        "duration": 77016.54100000001,
+        "expected": 0,
+        "skipped": 0,
+        "unexpected": 1,
+        "flaky": 0
+      },
+      "workers": 1,
+      "projects": [
+        {
+          "name": "chromium",
+          "retries": 0
+        }
+      ],
+      "attempts": [
+        {
+          "status": "failed",
+          "retry": 0
+        }
+      ],
+      "artifactHashes": [
+        {
+          "kind": "run-metadata",
+          "sha256": "08928ab53d7c33dc1897dfae9dd43ba2fba0da05199cba71ac8bfec2898b16e0",
+          "bytes": 1030
+        },
+        {
+          "kind": "run-log",
+          "sha256": "8f1227a85ec12999134d628d9a16ec14616f40b663826953a9c50360e999bba6",
+          "bytes": 6416
+        },
+        {
+          "kind": "test-results",
+          "sha256": "691d3ae4a289631c55efb17d726e60b8af88b5cb6b8f17b79cf6d6de648a0b5b",
+          "bytes": 26249
+        }
+      ],
+      "evidenceKind": "Previously audited saved E2E records, reused without a live rerun.",
+      "partialStepsCountedAsPasses": false,
+      "failureSummary": "Browser diagnostics retained three aborted requests before Router fault injection.",
+      "cleanupObservation": {
+        "recordedAt": "2026-10-24T13:42:41.507Z",
+        "responseStatus": 200,
+        "totalSessions": 6,
+        "recordedSessionCount": 6,
+        "recordedExitedSessionCount": 6,
+        "recordedViewerCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "completeFixtureDeletionProven": false
+      }
+    }
+  ],
+  "historicalGeneration2SemanticMeasurements": [
+    {
+      "runId": "ls-q05-20261024T114027Z",
+      "measurements": [
+        {
+          "measurement": "copilot-421-success-evidence",
+          "values": {
+            "completionTokenObserved": true,
+            "terminal421Observed": false
+          }
+        },
+        {
+          "measurement": "copilot-terminal",
+          "values": {
+            "firstTerminalError": null,
+            "submissionCount": 1
+          }
+        }
+      ],
+      "qualification": "Numeric and boolean measurement fields copied from the saved audited semantic projections. Account identities, content hashes and document contents are omitted."
+    },
+    {
+      "runId": "ls-q30-20261024T114104Z",
+      "measurements": [],
+      "qualification": "Numeric and boolean measurement fields copied from the saved audited semantic projections. Account identities, content hashes and document contents are omitted."
+    },
+    {
+      "runId": "ls-q30media-20261024T114121Z",
+      "measurements": [
+        {
+          "measurement": "webmeet-authenticated-participant-identities",
+          "values": {
+            "distinctCanonicalIds": true,
+            "distinctCanonicalUsernames": true,
+            "distinctLiveKitIdentities": true
+          }
+        },
+        {
+          "measurement": "headless-member-bidirectional-audio-video-rtp",
+          "values": {
+            "outbound-rtp:audio": {
+              "packetsBefore": 5,
+              "packetsAfter": 22,
+              "bytesBefore": 48,
+              "bytesAfter": 1279,
+              "framesAfter": 0
+            },
+            "outbound-rtp:video": {
+              "packetsBefore": 0,
+              "packetsAfter": 60,
+              "bytesBefore": 0,
+              "bytesAfter": 35066,
+              "framesAfter": 18
+            },
+            "inbound-rtp:audio": {
+              "packetsBefore": 16,
+              "packetsAfter": 37,
+              "bytesBefore": 890,
+              "bytesAfter": 2757,
+              "framesAfter": 0
+            },
+            "inbound-rtp:video": {
+              "packetsBefore": 0,
+              "packetsAfter": 9,
+              "bytesBefore": 0,
+              "bytesAfter": 3437,
+              "framesAfter": 8
+            }
+          }
+        },
+        {
+          "measurement": "headless-owner-bidirectional-audio-video-rtp",
+          "values": {
+            "outbound-rtp:audio": {
+              "packetsBefore": 17,
+              "packetsAfter": 39,
+              "bytesBefore": 894,
+              "bytesAfter": 2871,
+              "framesAfter": 0
+            },
+            "outbound-rtp:video": {
+              "packetsBefore": 50,
+              "packetsAfter": 143,
+              "bytesBefore": 23680,
+              "bytesAfter": 101676,
+              "framesAfter": 42
+            },
+            "inbound-rtp:audio": {
+              "packetsBefore": 4,
+              "packetsAfter": 22,
+              "bytesBefore": 44,
+              "bytesAfter": 1348,
+              "framesAfter": 0
+            },
+            "inbound-rtp:video": {
+              "packetsBefore": 0,
+              "packetsAfter": 9,
+              "bytesBefore": 0,
+              "bytesAfter": 3754,
+              "framesAfter": 9
+            }
+          }
+        },
+        {
+          "measurement": "headless-member-media-publication-dom-datachannel",
+          "values": {
+            "livePublications": 4,
+            "playingVisibleVideos": 2,
+            "dataChannels": [
+              {
+                "messagesSent": 0,
+                "messagesReceived": 0
+              },
+              {
+                "messagesSent": 7,
+                "messagesReceived": 0
+              },
+              {
+                "messagesSent": 0,
+                "messagesReceived": 0
+              },
+              {
+                "messagesSent": 0,
+                "messagesReceived": 4
+              },
+              {
+                "messagesSent": 0,
+                "messagesReceived": 0
+              },
+              {
+                "messagesSent": 0,
+                "messagesReceived": 0
+              }
+            ]
+          }
+        },
+        {
+          "measurement": "headless-owner-media-publication-dom-datachannel",
+          "values": {
+            "livePublications": 4,
+            "playingVisibleVideos": 2,
+            "dataChannels": [
+              {
+                "messagesSent": 0,
+                "messagesReceived": 0
+              },
+              {
+                "messagesSent": 7,
+                "messagesReceived": 0
+              },
+              {
+                "messagesSent": 0,
+                "messagesReceived": 0
+              },
+              {
+                "messagesSent": 0,
+                "messagesReceived": 7
+              },
+              {
+                "messagesSent": 0,
+                "messagesReceived": 0
+              },
+              {
+                "messagesSent": 0,
+                "messagesReceived": 0
+              }
+            ]
+          }
+        },
+        {
+          "measurement": "webmeet-secondary-final-rtc",
+          "values": {
+            "selectedCandidatePairs": [
+              {
+                "connected": true,
+                "selected": true,
+                "remotePort": 7882,
+                "bytesSent": 67373,
+                "bytesReceived": 1926
+              },
+              {
+                "connected": true,
+                "selected": true,
+                "remotePort": 7882,
+                "bytesSent": 2897,
+                "bytesReceived": 15311
+              }
+            ]
+          }
+        },
+        {
+          "measurement": "webmeet-primary-final-rtc",
+          "values": {
+            "selectedCandidatePairs": [
+              {
+                "connected": true,
+                "selected": true,
+                "remotePort": 7882,
+                "bytesSent": 139694,
+                "bytesReceived": 2096
+              },
+              {
+                "connected": true,
+                "selected": true,
+                "remotePort": 7882,
+                "bytesSent": 2882,
+                "bytesReceived": 15540
+              }
+            ]
+          }
+        },
+        {
+          "measurement": "webmeet-cleanup",
+          "values": {
+            "attempted": true,
+            "deleted": true
+          }
+        }
+      ],
+      "qualification": "Numeric and boolean measurement fields copied from the saved audited semantic projections. Account identities, content hashes and document contents are omitted."
+    },
+    {
+      "runId": "ls-q50-20261024T114143Z",
+      "measurements": [
+        {
+          "measurement": "onlyoffice-release-evidence",
+          "values": {
+            "before": {
+              "blobBytes": 2286
+            },
+            "callback": {
+              "blobBytes": 45034
+            },
+            "outstandingUnchangedFromCallback": true,
+            "drain": {
+              "blobBytes": 45050
+            },
+            "targetedRestart": {
+              "code": 0,
+              "elapsedMs": 93990,
+              "timeoutMs": 300000
+            },
+            "continuedEditSavedAndReopened": true,
+            "markersObservedAfterRestart": {
+              "explicitSaveMarker": true,
+              "outstandingMarker": true
+            }
+          }
+        }
+      ],
+      "qualification": "Numeric and boolean measurement fields copied from the saved audited semantic projections. Account identities, content hashes and document contents are omitted."
+    }
+  ],
+  "finalRetainedQuartet": {
+    "status": "pending",
+    "requiredCount": 4,
+    "requiredSameGeneration": true,
+    "maximumGenerationAgeMinutes": 30,
+    "memberIdentities": [
+      "05-copilot-folder-launch.spec.mjs::opens a working Copilot from a newly created folder",
+      "30-webmeet-room-chat.spec.mjs::standalone loader serves the authenticated dashboard and a guest invitation",
+      "30-webmeet-room-chat.spec.mjs::two Explorer accounts can join one room and exchange chat",
+      "50-onlyoffice-dpu.spec.mjs::Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart"
+    ],
+    "currentCandidatePassCount": 0,
+    "historicalGeneration2PassCount": 4,
+    "historicalPassesSatisfyCurrentGate": false
+  },
+  "evidence": {
+    "currentLedgerSha256": "972821e341640ff3df719df74bdde21288a0ade3f93e1c17cb0c72abcdfb3d1f",
+    "historicalQuartetAuditSha256": "395eb294c28e7d112a317039ff0f01694b22c5f8488788354701d8fb279d048b",
+    "selectedAcceptanceLedgerSha256": "a965fdb4daed72c9bc809c6808c4e14af47f9b365ad02d1cb144ec4aff027101",
+    "acceptanceSelection": "required-local-acceptance or fresh-live-sessions",
+    "selectedDistinctCases": 26,
+    "requiredLocalCases": 24,
+    "freshLiveSessionsCases": 2
+  },
+  "qualifications": [
+    "Counts are per exact source pair and are not summed across candidates.",
+    "Historical generation-2 passes belong to the earlier candidate and a retired generation.",
+    "Failed cases remain failed even when earlier assertions succeeded.",
+    "Skipped, cancelled, missing, blocked or unrun cases are not passes.",
+    "Unit-suite and synthetic-probe counts are not aggregated into live E2E acceptance.",
+    "The remaining selected cases and final retained quartet remain incomplete as of this snapshot.",
+    "This reference preserves saved evidence and does not rerun validation.",
+    "Source revisions may have advanced after this snapshot; later results require a dated update."
+  ]
+}
