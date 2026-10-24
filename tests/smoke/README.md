@@ -587,7 +587,30 @@ click is not strictly comparable. The default origin is `http://localhost:8080`;
 recorded against `http://127.0.0.1:8080` have a different target and are not
 comparable with it. Pass `--directory-path` and `--file-path` naming a safe,
 existing, non-secret workspace entry rather than relying on the `/.env`
-default. Offline checks: `node --test lib/ui-benchmark-auth.test.mjs`.
+default. Both must be entries of the workspace root listing, for example
+`--directory-path /AdvancedLanguageAgent --file-path /test1.backlog`: the
+runner opens the directory from the root and returns with one Up, and it opens
+the file after returning to the root. A nested file such as
+`/AdvancedLanguageAgent/README.md` is never found and fails readiness; the
+runner does not navigate into folders to find it. Offline checks:
+`node --test lib/ui-benchmark-auth.test.mjs lib/ui-benchmark-readiness.test.mjs`.
+
+Git is mandatory. Explorer loads the Git toolbar component only on first use,
+so before that the toolbar shows the host's on-demand trigger
+(`#fileExpToolbarPlugins button[data-app-plugin-trigger="gitAgent/git"]`) and,
+once mounted, the component's `#gitButton`. Explorer readiness accepts exactly
+one visible control of either form, and no other trigger, text match or
+location. That control must pass Playwright's non-activating trial click: it
+must not be disabled, `aria-disabled`, busy, loading, hidden, detached or
+covered. The trial may hover the control but never presses, clicks or focuses
+it, so readiness does not import, mount or open Git. Two visible controls are
+ambiguous and fail. The root listing is checked again after the Git check, and
+the whole readiness wait shares the one `--timeout-ms` budget.
+`open-git-panel` clicks that control once and still waits for the Git panel to
+finish its repository overview or credentials gate with no global loader; a
+modal shell alone does not count. Earlier runner revisions waited for
+`#gitButton` before Git was used, so they could not become interactive against
+an Explorer that loads Git on demand.
 
 Run the baseline only after its full agent graph is admitted and stable:
 

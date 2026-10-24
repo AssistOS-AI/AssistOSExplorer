@@ -685,9 +685,78 @@ async function waitForWorkspaceFile(page, expectedPath, timeoutMs) {
   }, { targetPath: expectedPath, targetName: filename }, { timeout: timeoutMs });
 }
 
-async function waitForExplorerInteractive(page, config) {
-  await page.locator('#page_content').waitFor({ state: 'visible', timeout: config.timeoutMs });
-  await page.locator('#before_webskel_loader').waitFor({ state: 'detached', timeout: config.timeoutMs });
+// Explorer's two supported Git controls: the host's on-demand trigger, shown
+// until Git is first used, and the mounted Git component's own button. Git is
+// mandatory; no other trigger, text match or location counts.
+const GIT_CONTROLS = Object.freeze([
+  Object.freeze({ form: 'lazy', selector: '#fileExpToolbarPlugins button[data-app-plugin-trigger="gitAgent/git"]' }),
+  Object.freeze({ form: 'mounted', selector: '#gitButton' }),
+]);
+const GIT_CONTROL_POLL_MS = 50;
+const GIT_CONTROL_ATTEMPT_MS = 500;
+
+function remainingMs(deadline) {
+  return Math.max(1, deadline - Date.now());
+}
+
+function timeoutError(timeoutMs, what) {
+  return new Error(`Timeout ${timeoutMs}ms exceeded waiting for ${what}.`);
+}
+
+// Resolves the one visible supported Git control and proves, with Playwright's
+// non-activating trial, that it would accept an ordinary click. The trial may
+// hover the control, but it never presses, clicks or focuses it, so Git is not
+// activated, imported, mounted or opened. A control replaced while polling is
+// resolved again; more than one visible control, or a hidden, disabled, busy,
+// detached or obstructed one, keeps waiting and fails at the deadline.
+async function selectGitControl(page, deadline, timeoutMs) {
+  let reason = 'no supported Git control is visible';
+  while (Date.now() < deadline) {
+    const visible = [];
+    for (const control of GIT_CONTROLS) {
+      const handles = await page.$$(control.selector);
+      for (const handle of handles) {
+        if (await handle.isVisible().catch(() => false)) visible.push({ form: control.form, handle });
+        else await handle.dispose().catch(() => {});
+      }
+    }
+    if (visible.length === 0) {
+      reason = 'no supported Git control is visible';
+    } else if (visible.length > 1) {
+      reason = `${visible.length} supported Git controls are visible`;
+    } else {
+      const [control] = visible;
+      const blocked = await control.handle.evaluate((element) => {
+        if (!element.isConnected) return 'detached';
+        if (element.disabled || element.matches(':disabled')) return 'disabled';
+        if (element.closest('[aria-disabled="true"]')) return 'aria-disabled';
+        if (element.closest('[aria-busy="true"]') || element.hasAttribute('data-app-plugin-loading')) return 'busy';
+        if (element.closest('[hidden], [inert]')) return 'hidden';
+        return '';
+      }).catch(() => 'detached');
+      if (blocked) {
+        reason = `the Git control is ${blocked}`;
+      } else {
+        try {
+          await control.handle.click({ trial: true, timeout: Math.min(GIT_CONTROL_ATTEMPT_MS, remainingMs(deadline)) });
+          // The control must still be the same visible, attached element.
+          if (await control.handle.evaluate((element) => element.isConnected).catch(() => false)
+            && await control.handle.isVisible().catch(() => false)) {
+            return control;
+          }
+          reason = 'the Git control is detached';
+        } catch {
+          reason = 'the Git control is not actionable';
+        }
+      }
+    }
+    for (const { handle } of visible) await handle.dispose().catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, Math.min(GIT_CONTROL_POLL_MS, remainingMs(deadline))));
+  }
+  throw timeoutError(timeoutMs, `one actionable Explorer Git control (${reason})`);
+}
+
+async function waitForExplorerStructure(page, config, deadline) {
   await page.waitForFunction(({ directoryPath, filePath }) => {
     const explorer = document.querySelector('file-exp');
     const presenter = explorer?.webSkelPresenter;
@@ -697,9 +766,10 @@ async function waitForExplorerInteractive(page, config) {
     );
     return Boolean(
       window.webSkel
+      && document.querySelector('#page_content')
+      && !document.querySelector('#before_webskel_loader')
       && presenter
       && presenter.state?.path === '/'
-      && document.querySelector('#gitButton')
       && entryPaths.has('/Confidential')
       && entryPaths.has(directoryPath)
       && entryPaths.has(filePath)
@@ -709,7 +779,67 @@ async function waitForExplorerInteractive(page, config) {
   }, {
     directoryPath: config.directoryPath,
     filePath: config.filePath,
-  }, { timeout: config.timeoutMs });
+  }, { timeout: remainingMs(deadline) });
+}
+
+// Explorer is interactive when its shell, root listing and required root
+// entries are settled and exactly one supported Git control is actionable.
+// The structure is checked again after the Git check. Everything shares one
+// `timeoutMs` budget; a timeout reports that budget, never page content.
+export async function waitForExplorerInteractive(page, config) {
+  const deadline = Date.now() + config.timeoutMs;
+  const step = async (what, action) => {
+    try {
+      await action();
+    } catch (error) {
+      if (error?.name === 'TimeoutError') throw timeoutError(config.timeoutMs, what);
+      throw error;
+    }
+  };
+  await step('the Explorer page content', () => page.locator('#page_content')
+    .waitFor({ state: 'visible', timeout: remainingMs(deadline) }));
+  await step('the initial loader to close', () => page.locator('#before_webskel_loader')
+    .waitFor({ state: 'detached', timeout: remainingMs(deadline) }));
+  await step('the Explorer root listing', () => waitForExplorerStructure(page, config, deadline));
+  const control = await selectGitControl(page, deadline, config.timeoutMs);
+  await control.handle.dispose().catch(() => {});
+  await step('the Explorer root listing after the Git check', async () => {
+    await page.locator('#page_content').waitFor({ state: 'visible', timeout: remainingMs(deadline) });
+    await waitForExplorerStructure(page, config, deadline);
+  });
+}
+
+// Opens Git through its one supported control with a single ordinary click
+// and waits for the Git panel to finish loading its repository overview or
+// its credentials gate. A modal shell alone is not enough.
+export async function openGitPanel(page, config) {
+  const deadline = Date.now() + config.timeoutMs;
+  const control = await selectGitControl(page, deadline, config.timeoutMs);
+  try {
+    await control.handle.click({ timeout: remainingMs(deadline) });
+  } finally {
+    await control.handle.dispose().catch(() => {});
+  }
+  await page.locator('git-panel .git-panel').waitFor({
+    state: 'visible',
+    timeout: config.timeoutMs,
+  });
+  await page.waitForFunction(() => {
+    const modal = document.querySelector('git-panel');
+    const presenter = modal?.webSkelPresenter;
+    return Boolean(
+      presenter
+      && !presenter.state?.repoOverviewsLoading
+      && (presenter.state?.repoOverviewsLoaded || presenter.state?.credentialsGate)
+      && Number(window.__assistosExplorerGlobalLoader?.depth || 0) === 0,
+    );
+  }, null, { timeout: config.timeoutMs });
+  return {
+    readiness: await page.locator('git-panel').evaluate((modal) => {
+      const state = modal.webSkelPresenter?.state || {};
+      return state.credentialsGate ? 'credentials-gate' : 'repository-overview';
+    }),
+  };
 }
 
 function entryLocator(page, entryPath) {
@@ -979,29 +1109,7 @@ async function runIteration(browser, config, index) {
       return { path: config.filePath };
     });
 
-    await measureStep(state, 'open-git-panel', async () => {
-      await page.locator('#gitButton').click();
-      await page.locator('git-panel .git-panel').waitFor({
-        state: 'visible',
-        timeout: config.timeoutMs,
-      });
-      await page.waitForFunction(() => {
-        const modal = document.querySelector('git-panel');
-        const presenter = modal?.webSkelPresenter;
-        return Boolean(
-          presenter
-          && !presenter.state?.repoOverviewsLoading
-          && (presenter.state?.repoOverviewsLoaded || presenter.state?.credentialsGate)
-          && Number(window.__assistosExplorerGlobalLoader?.depth || 0) === 0,
-        );
-      }, null, { timeout: config.timeoutMs });
-      return {
-        readiness: await page.locator('git-panel').evaluate((modal) => {
-          const state = modal.webSkelPresenter?.state || {};
-          return state.credentialsGate ? 'credentials-gate' : 'repository-overview';
-        }),
-      };
-    });
+    await measureStep(state, 'open-git-panel', () => openGitPanel(page, config));
   } catch (error) {
     failure = error;
   }
