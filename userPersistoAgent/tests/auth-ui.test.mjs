@@ -1906,9 +1906,16 @@ test('both real adapters cancel a delayed Google start only when the wizard can 
                 await settle();
                 await settle();
                 assert.deepEqual(fixture.navigated, [], 'a Google start never navigates');
-                const cancellations = fixture.calls.filter((call) => /attempt(?:\/|-)cancel$/.test(call.url) && call.body.googleTransaction);
+                // SSO retires the transaction through its own browser-bound
+                // route; OIDC keeps its interaction-bound cancellation.
+                const cancellations = flow === 'sso'
+                    ? fixture.calls.filter((call) => /\/(?:google|attempt)\/cancel$/.test(call.url))
+                    : fixture.calls.filter((call) => /attempt(?:\/|-)cancel$/.test(call.url) && call.body.googleTransaction);
                 if (transition === 'next') {
                     assert.deepEqual(cancellations, [], 'Next keeps the page transaction for a later Back');
+                } else if (flow === 'sso') {
+                    assert.deepEqual(cancellations.map((call) => [call.url, call.body, call.options.keepalive]),
+                        [['https://workspace.example:9443/prefix/service/auth/google/cancel', { transaction: GOOGLE_TRANSACTION }, true]]);
                 } else {
                     assert.deepEqual(cancellations.map((call) => call.body.googleTransaction), [GOOGLE_TRANSACTION]);
                 }
@@ -1956,4 +1963,361 @@ test('the real OIDC adapter submits password and signup completions only after t
             if (action === 'password') assert.deepEqual(formFields(submitted), { csrf: 'csrf-token', email: 'member@example.test', password: 'a native password' });
         });
     }
+});
+
+// ============================================================================
+// SSO Google cleanup: fixed transaction-bound route and completion barrier
+// ============================================================================
+
+test('SSO adapter retires Google through the fixed browser-bound route and only that cleanup is keepalive', async () => {
+    const { adapter, calls, navigated } = ssoFixture({ post: ({ url }) => (url.endsWith('/google/cancel')
+        ? { ok: true, redirectUrl: '/prefix/service/auth/?requestId=req-1&state=state-1&notice=google-cancelled' }
+        : { ok: true, code: 'c', redirectUri: 'https://workspace.example:9443/auth/callback', state: 'state-1', challenge: signupChallenge(),
+            challengeKey: 'k', publicKey: { challenge: 'AQID', allowCredentials: [] } }) });
+    await adapter.cancelGoogle({ transaction: GOOGLE_TRANSACTION, cancelUrl: 'https://foreign.example/cancel', credentialUrl: '/elsewhere' });
+    const cleanup = calls.at(-1);
+    assert.equal(cleanup.url, 'https://workspace.example:9443/prefix/service/auth/google/cancel');
+    assert.deepEqual(cleanup.body, { transaction: GOOGLE_TRANSACTION }, 'no parent, state or caller-provided field travels');
+    assert.deepEqual([cleanup.options.method, cleanup.options.headers['Content-Type'], cleanup.options.credentials, cleanup.options.keepalive],
+        ['POST', 'application/json', 'same-origin', true]);
+    assert.deepEqual(navigated, [], 'the cleanup response redirect is never followed');
+    await adapter.attempt();
+    await adapter.cancel();
+    await adapter.discover('a@example.test');
+    await adapter.passwordLogin({ email: 'a@example.test', password: 'a password value' });
+    await adapter.startSignup({ email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' });
+    await adapter.createSignup({ email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' });
+    await adapter.verifySignup('246810');
+    await adapter.startEmail({ email: 'a@example.test', purpose: 'login' });
+    await adapter.verifyEmail('123456');
+    await adapter.verifyTotp({ email: 'a@example.test', token: '654321' });
+    await adapter.passkeyOptions('a@example.test');
+    await adapter.startGoogle();
+    const others = calls.filter((call) => call !== cleanup);
+    assert.equal(others.length, 12);
+    assert.deepEqual(others.filter((call) => 'keepalive' in call.options), [], 'credential, signup and ordinary cancellation requests are not keepalive');
+    const refused = ssoFixture({ post: () => ({ ok: false, status: 400, error: 'invalid_request' }) });
+    await assert.rejects(refused.adapter.cancelGoogle({ transaction: GOOGLE_TRANSACTION }), (error) => error.code === 'invalid_request' && error.status === 400);
+    assert.deepEqual(refused.navigated, []);
+});
+
+// A clock whose timeouts the test fires itself.
+function timerClock(start = Date.now()) {
+    const clock = fakeClock(start);
+    clock.timers = [];
+    clock.setTimeout = (fn, ms) => { const timer = { fn, ms, cleared: false }; clock.timers.push(timer); return timer; };
+    clock.clearTimeout = (timer) => { if (timer) timer.cleared = true; };
+    clock.live = () => clock.timers.filter((timer) => !timer.cleared);
+    clock.fire = (timer) => { if (!timer.cleared) { timer.cleared = true; timer.fn(); } };
+    return clock;
+}
+const T1 = GOOGLE_TRANSACTION;
+const T2 = 'c'.repeat(64);
+
+// Google is enabled; its starts and cancellations wait until the test settles them.
+function completionAdapter(clock, { expiresIn = 5 * 60 * 1000, ...overrides } = {}) {
+    const calls = { start: 0, cancel: [], complete: [], continued: [], order: [] };
+    const starts = [];
+    const cancellations = [];
+    const adapter = baseAdapter({
+        attempt: async () => wizardState({ expiresAt: clock.now() + expiresIn, methods: { ...ALL_METHODS, google: true } }),
+        startGoogle: () => { calls.start += 1; const pending = deferred(); starts.push(pending); return pending.promise; },
+        cancelGoogle: ({ transaction }) => {
+            calls.cancel.push(transaction);
+            calls.order.push(`cancel:${transaction.slice(0, 1)}`);
+            const pending = deferred();
+            cancellations.push(pending);
+            return pending.promise;
+        },
+        completeGoogle: async () => `/prefix/service/auth/google/resume/${'b'.repeat(64)}`,
+        continueGoogle: (path) => { calls.continued.push(path); },
+        complete: (result) => { calls.complete.push(result); calls.order.push('complete'); },
+        ...overrides,
+    });
+    return { adapter, calls, starts, cancellations };
+}
+async function completionWizard({ startResolved = true, gis, adapter: overrides, credentials, clock = timerClock() } = {}) {
+    const google = gis || fakeGis();
+    const fixture = completionAdapter(clock, overrides);
+    const mounted = await mount({ adapter: fixture.adapter, clock, gis: google.gis, credentials });
+    if (startResolved) { fixture.starts[0].resolve(gisStart(T1)); await settle(); await settle(); }
+    return { ...mounted, ...fixture, clock, google };
+}
+async function submitWizardPassword(root) {
+    await submitEmail(root);
+    root.querySelector('[name="password"]').value = 'a password value';
+    await root.querySelector('form.password-panel').fire('submit');
+    await settle();
+}
+
+test('an SSO handoff cancels the page Google transaction first and navigates once after that request settles', async () => {
+    const wizard = await completionWizard();
+    await submitWizardPassword(wizard.root);
+    assert.equal(h1(wizard.root).textContent, 'Signing you in…');
+    assert.deepEqual(wizard.calls.cancel, [T1], 'the cleanup begins before navigation');
+    assert.deepEqual(wizard.calls.complete, [], 'a pending cleanup response holds the navigation');
+    assert.deepEqual(wizard.clock.live().map((timer) => timer.ms), [5_000]);
+    wizard.cancellations[0].resolve({ ok: true });
+    await settle();
+    assert.deepEqual(wizard.calls.order, ['cancel:a', 'complete']);
+    assert.deepEqual(wizard.calls.complete, [{ code: 'handoff' }]);
+    assert.deepEqual(wizard.clock.live(), [], 'settlement releases the deadline');
+    wizard.google.state.pagehide?.();
+    wizard.dispose();
+    await settle();
+    assert.deepEqual(wizard.calls.cancel, [T1], 'hide and disposal never duplicate the retirement');
+    assert.equal(wizard.calls.complete.length, 1);
+    assert.equal(wizard.calls.start, 1, 'completing issues no replacement start');
+    assert.equal(wizard.google.state.renders, 1);
+});
+
+test('without outstanding Google work an SSO handoff navigates at once with no deadline', async () => {
+    const clock = timerClock();
+    const fixture = completionAdapter(clock);
+    fixture.adapter.attempt = async () => wizardState({ expiresAt: clock.now() + 60_000 });
+    const { root } = await mount({ adapter: fixture.adapter, clock, gis: fakeGis().gis });
+    await submitWizardPassword(root);
+    assert.deepEqual([fixture.calls.start, fixture.calls.cancel.length, fixture.calls.complete.length, clock.timers.length], [0, 0, 1, 0]);
+});
+
+test('the completion wait has one total budget, shortened to the remaining sign-in lifetime', async (t) => {
+    await t.test('an unanswered cleanup releases the handoff at the deadline, once', async () => {
+        const wizard = await completionWizard();
+        await submitWizardPassword(wizard.root);
+        const [deadline] = wizard.clock.live();
+        assert.equal(deadline.ms, 5_000);
+        wizard.clock.fire(deadline);
+        await settle();
+        assert.equal(wizard.calls.complete.length, 1);
+        wizard.cancellations[0].resolve({ ok: true });
+        await settle();
+        assert.equal(wizard.calls.complete.length, 1, 'a late settlement cannot navigate again');
+    });
+    await t.test('near expiry the wait is the remaining lifetime', async () => {
+        const wizard = await completionWizard({ adapter: { expiresIn: 1_200 } });
+        await submitWizardPassword(wizard.root);
+        assert.deepEqual(wizard.clock.live().map((timer) => timer.ms), [1_200]);
+    });
+    await t.test('a delayed start and its delayed cancellation share the single deadline', async () => {
+        const wizard = await completionWizard({ startResolved: false });
+        await submitWizardPassword(wizard.root);
+        assert.deepEqual([wizard.calls.cancel, wizard.calls.complete.length], [[], 0], 'the issued start is still outstanding');
+        wizard.starts[0].resolve(gisStart(T2));
+        await settle();
+        assert.deepEqual(wizard.calls.cancel, [T2], 'the late handle is retired inside the same wait');
+        assert.deepEqual(wizard.clock.timers.map((timer) => timer.ms), [5_000], 'no second budget is allocated');
+        wizard.clock.fire(wizard.clock.timers[0]);
+        await settle();
+        assert.equal(wizard.calls.complete.length, 1);
+    });
+    for (const order of ['settled just before the deadline', 'settled just after the deadline']) {
+        await t.test(order, async () => {
+            const wizard = await completionWizard();
+            await submitWizardPassword(wizard.root);
+            const [deadline] = wizard.clock.live();
+            if (order.includes('before')) { wizard.cancellations[0].resolve({ ok: true }); await settle(); wizard.clock.fire(deadline); }
+            else { wizard.clock.fire(deadline); await settle(); wizard.cancellations[0].resolve({ ok: true }); }
+            await settle();
+            assert.equal(wizard.calls.complete.length, 1);
+        });
+    }
+});
+
+test('a start result arriving while completing is retired before the navigation and never rendered', async () => {
+    const wizard = await completionWizard({ startResolved: false });
+    await submitWizardPassword(wizard.root);
+    wizard.starts[0].resolve(gisStart(T2));
+    await settle();
+    assert.deepEqual([wizard.calls.cancel, wizard.calls.complete.length], [[T2], 0]);
+    wizard.cancellations[0].resolve({ ok: true });
+    await settle();
+    assert.deepEqual(wizard.calls.order, ['cancel:c', 'complete']);
+    assert.equal(wizard.google.state.renders, 0);
+    assert.equal(wizard.calls.start, 1);
+});
+
+test('a start still waiting behind an earlier retirement is never sent once the page is completing', async () => {
+    const wizard = await completionWizard({ adapter: { completeGoogle: async () => { throw fail('google_failed'); } } });
+    wizard.google.credential();
+    await settle();
+    assert.deepEqual(wizard.calls.cancel, [T1], 'the failed credential retires its transaction');
+    await submitEmail(wizard.root);
+    await button(wizard.root, 'Back').fire('click');
+    await settle();
+    assert.equal(wizard.calls.start, 1, 'the replacement start waits for the earlier retirement');
+    await submitWizardPassword(wizard.root);
+    assert.deepEqual([wizard.calls.cancel, wizard.calls.complete.length], [[T1], 0], 'the earlier actual request is part of the wait');
+    wizard.cancellations[0].resolve({ ok: true });
+    await settle();
+    await settle();
+    assert.equal(wizard.calls.start, 1, 'no start is sent after ownership moved to completion');
+    assert.equal(wizard.calls.complete.length, 1);
+});
+
+test('hiding or disposing the page during the wait revokes navigation but keeps the retirement', async (t) => {
+    for (const interruption of ['pagehide', 'dispose']) {
+        await t.test(interruption, async () => {
+            const wizard = await completionWizard();
+            await submitWizardPassword(wizard.root);
+            if (interruption === 'pagehide') wizard.google.state.pagehide();
+            else wizard.dispose();
+            await settle();
+            assert.deepEqual(wizard.clock.live(), [], 'the wait and its deadline are released');
+            wizard.cancellations[0].resolve({ ok: true });
+            await settle();
+            assert.deepEqual(wizard.calls.complete, [], 'a later settlement cannot navigate');
+            assert.deepEqual(wizard.calls.cancel, [T1], 'the retirement already sent is neither repeated nor abandoned');
+            assert.equal(wizard.calls.start, 1);
+        });
+    }
+});
+
+test('a failed cleanup or start still releases the valid handoff without a sign-in error', async (t) => {
+    await t.test('cancellation rejected', async () => {
+        const wizard = await completionWizard();
+        await submitWizardPassword(wizard.root);
+        wizard.cancellations[0].reject(fail('invalid_request', { status: 400 }));
+        await settle();
+        assert.equal(wizard.calls.complete.length, 1);
+        assert.equal(h1(wizard.root).textContent, 'Signing you in…');
+        assert.equal(alertText(wizard.root), '', 'a cleanup failure is not a password error');
+    });
+    await t.test('cancellation throws synchronously', async () => {
+        const wizard = await completionWizard({ adapter: { cancelGoogle: () => { throw new Error('offline'); } } });
+        await submitWizardPassword(wizard.root);
+        assert.equal(wizard.calls.complete.length, 1);
+    });
+    await t.test('start rejected', async () => {
+        const wizard = await completionWizard({ startResolved: false });
+        await submitWizardPassword(wizard.root);
+        wizard.starts[0].reject(fail('google_unavailable', { status: 503 }));
+        await settle();
+        assert.deepEqual([wizard.calls.cancel, wizard.calls.complete.length], [[], 1]);
+    });
+});
+
+test('completion never waits for Google\'s script', async () => {
+    const google = fakeGis();
+    let loads = 0;
+    google.gis.load = () => { loads += 1; return new Promise(() => {}); };
+    const wizard = await completionWizard({ gis: google });
+    assert.equal(loads, 1, 'the script is still loading');
+    await submitWizardPassword(wizard.root);
+    wizard.cancellations[0].resolve({ ok: true });
+    await settle();
+    assert.equal(wizard.calls.complete.length, 1);
+});
+
+test('every SSO completion path retires Google before its navigation', async (t) => {
+    const methods = {
+        password: { drive: async (root) => submitWizardPassword(root) },
+        'direct signup': {
+            adapter: { discover: async () => UNKNOWN, attempt: undefined, createSignup: async () => ({ code: 'handoff' }) },
+            signupVerification: 'none',
+            drive: async (root) => {
+                await submitEmail(root, 'new@example.test');
+                await root.querySelector('form.signup-offer-panel').fire('submit');
+                await createAccount(root);
+            },
+        },
+        'verified signup': {
+            adapter: { discover: async () => UNKNOWN },
+            drive: async (root) => {
+                await submitEmail(root, 'new@example.test');
+                await root.querySelector('form.signup-offer-panel').fire('submit');
+                await createAccount(root);
+                root.querySelector('[name="code"]').value = '123456';
+                await root.querySelector('form.signup-code-panel').fire('submit');
+            },
+        },
+        'email code': {
+            drive: async (root) => {
+                await submitEmail(root);
+                await button(root, 'Try another way').fire('click');
+                await button(root, 'Email me a code').fire('click');
+                root.querySelector('[name="code"]').value = '123456';
+                await root.querySelector('form.code-panel').fire('submit');
+            },
+        },
+        totp: {
+            drive: async (root) => {
+                await submitEmail(root);
+                await button(root, 'Try another way').fire('click');
+                await button(root, 'Use an authenticator app').fire('click');
+                root.querySelector('[name="token"]').value = '123456';
+                await root.querySelector('form.totp-panel').fire('submit');
+            },
+        },
+        passkey: {
+            credentials: { get: async () => ({ id: 'key', type: 'public-key', rawId: Uint8Array.of(1).buffer, response: {
+                clientDataJSON: Uint8Array.of(1).buffer, authenticatorData: Uint8Array.of(2).buffer, signature: Uint8Array.of(3).buffer } }) },
+            drive: async (root) => {
+                await submitEmail(root);
+                await button(root, 'Try another way').fire('click');
+                await button(root, 'Use a passkey').fire('click');
+            },
+        },
+        'uncertain signup replay': {
+            adapter: { discover: async () => UNKNOWN, startSignup: async () => { throw fail('server_error', { status: 500 }); } },
+            replayAfterFirstAttempt: true,
+            drive: async (root) => {
+                await submitEmail(root, 'new@example.test');
+                await root.querySelector('form.signup-offer-panel').fire('submit');
+                await createAccount(root);
+            },
+        },
+    };
+    for (const [name, method] of Object.entries(methods)) {
+        await t.test(name, async () => {
+            const clock = timerClock();
+            let attempts = 0;
+            const overrides = { ...(method.adapter || {}) };
+            delete overrides.attempt;
+            overrides.attempt = async () => {
+                attempts += 1;
+                if (method.replayAfterFirstAttempt && attempts > 1) return { completed: true, handoff: { code: 'replayed' } };
+                return wizardState({ expiresAt: clock.now() + 60_000, methods: { ...ALL_METHODS, google: true },
+                    signup: { email: true, google: false, ...(method.signupVerification ? { verification: method.signupVerification } : {}) } });
+            };
+            const wizard = await completionWizard({ clock, adapter: overrides, credentials: method.credentials });
+            await method.drive(wizard.root);
+            await settle();
+            assert.deepEqual([wizard.calls.cancel, wizard.calls.complete.length], [[T1], 0], `${name} waits for the actual cleanup`);
+            wizard.cancellations[0].resolve({ ok: true });
+            await settle();
+            assert.deepEqual(wizard.calls.order, ['cancel:a', 'complete']);
+            assert.deepEqual(wizard.calls.complete, [{ code: method.replayAfterFirstAttempt ? 'replayed' : 'handoff' }]);
+        });
+    }
+    await t.test('boot replay', async () => {
+        const clock = timerClock();
+        const fixture = completionAdapter(clock, { attempt: async () => ({ completed: true, handoff: { code: 'replayed' } }) });
+        await mount({ adapter: fixture.adapter, clock, gis: fakeGis().gis });
+        assert.deepEqual([fixture.calls.start, fixture.calls.cancel.length, fixture.calls.complete, clock.timers.length],
+            [0, 0, [{ code: 'replayed' }], 0], 'a replayed handoff before any Google work completes at once');
+    });
+});
+
+test('an OIDC completion stays an immediate native submission while Google work is pending', async () => {
+    const wizard = await completionWizard({ adapter: { flow: 'oidc', abort: () => {} } });
+    await submitEmail(wizard.root);
+    wizard.root.querySelector('[name="password"]').value = 'a password value';
+    const submitted = wizard.root.querySelector('form.password-panel').fire('submit');
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(wizard.calls.complete.length, 1, 'the credential-bearing form is submitted without a cleanup wait');
+    await submitted;
+    assert.deepEqual([wizard.calls.cancel, wizard.clock.timers.length], [[], 0]);
+});
+
+test('a verified Google credential keeps its own handoff and is never cancelled by completion cleanup', async () => {
+    const wizard = await completionWizard();
+    wizard.google.credential();
+    await settle();
+    await settle();
+    assert.equal(wizard.calls.continued.length, 1);
+    wizard.google.state.pagehide();
+    wizard.dispose();
+    await settle();
+    assert.deepEqual([wizard.calls.cancel, wizard.calls.complete, wizard.clock.timers.length], [[], [], 0]);
 });

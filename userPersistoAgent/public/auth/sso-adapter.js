@@ -23,13 +23,14 @@ export function createSsoAdapter({ location, fetch, navigate }) {
         return error;
     }
 
-    async function post(path, body) {
+    async function post(path, body, { keepalive = false } = {}) {
         const url = new URL(path, location.href);
         const response = await fetch(url.toString(), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
             body: JSON.stringify(body || {}),
+            ...(keepalive ? { keepalive: true } : {}),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.ok === false) throw requestError(data, response.status);
@@ -111,8 +112,12 @@ export function createSsoAdapter({ location, fetch, navigate }) {
         continueGoogle(redirectUrl) {
             navigate(redirectUrl);
         },
+        // A completed sign-in consumes the parent request and then leaves the
+        // page, so the abandoned Google transaction is retired through its own
+        // browser-bound route, which needs no parent. Only this cleanup is
+        // keepalive, so it is still delivered while the document unloads.
         cancelGoogle(result) {
-            return post('attempt/cancel', { requestId, googleTransaction: result.transaction });
+            return post('google/cancel', { transaction: result.transaction }, { keepalive: true });
         },
         restart() {
             const target = new URLSearchParams();
