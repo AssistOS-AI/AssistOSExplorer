@@ -13930,5 +13930,666 @@
   ],
   "previousSnapshotAsOf": "2026-10-24T14:57:39.718Z",
   "measurementRunsUnchanged": true,
-  "currentCandidateBenchmarkStatus": "pending; saved c9 measurements remain historical and are not reassigned to de326894"
+  "currentCandidateBenchmarkStatus": "independent-artifact-audit-complete-descriptive-comparison-only",
+  "continuation": {
+    "asOf": "2026-10-25T23:45:00.333Z",
+    "protocol": {
+      "processesPerTarget": 3,
+      "iterationsPerProcess": 1,
+      "stepsPerIteration": 10
+    },
+    "qa": {
+      "runs": [
+        {
+          "directory": "bench-qa-current-single-1-20261025165945",
+          "resultSHA256": "77c254123afdaf9ef568469a98268a5f7712758ab77a103fccafc4b009d67220",
+          "outcomeSHA256": "4dd4d0f2bfaf7c7481cf21afe49d149301893dd1d999c48e739f24ff49d160b2"
+        },
+        {
+          "directory": "bench-qa-current-single-2-20261025170007",
+          "resultSHA256": "43d8902e802b5f6805dc31646baf9b9f22238f1cd8823611ac483da4ca8d1f35",
+          "outcomeSHA256": "7d9fcede2481cea9404f546b2e164734137a5dddc24a0fd00bc638a64d47fe04"
+        },
+        {
+          "directory": "bench-qa-current-single-3-20261025170029",
+          "resultSHA256": "a8e2514bdd15a5b9b149a5580915ed6f8d88719d5be3c7dee2327229daaf1c86",
+          "outcomeSHA256": "346154d25f020960c2a4db508890a96d7e4535abf590710bab18a4e41907143b"
+        }
+      ],
+      "passedSteps": 30,
+      "deploymentMetadataKnown": false,
+      "controlledComparison": false,
+      "evidenceKind": "Saved independent QA audit; not rerun during publication.",
+      "qualifications": [
+        "Three separate native one-iteration reports, each with a fresh browser process; not a native three-context run",
+        "Each run contains three canceled HTTP204 requests also marked failed",
+        "Bounded artifact credential scan had no matches; no claim about arbitrary secrets or historical file absence",
+        "QA deployed source/image unknown; preserve strict cross-origin comparator refusal",
+        "At the time of the earlier QA-only audit, the final apparatus measurement was pending. The completed apparatus measurements and independent comparison are recorded below."
+      ]
+    },
+    "apparatus": {
+      "status": "three-native-runs-independently-audited",
+      "sourcePair": {
+        "ploinky": "c4382eb49a24f06c1aa9033180719e156c916dc8",
+        "explorer": "123f0a176433439f9f96cc2099b96bfb99a96d84"
+      },
+      "actualBegan": "2026-10-25T23:34:04.680Z",
+      "actualEnded": "2026-10-25T23:34:28.872Z",
+      "sequenceExit": 0,
+      "totalPassedSteps": 30,
+      "beforeAgeMs": 1685079,
+      "afterAgeMs": 1709271,
+      "runs": [
+        {
+          "invocation": 1,
+          "status": 0,
+          "headless": true,
+          "iterations": 1,
+          "resultSHA256": "87e722bcce5232c0d9a6d9b8ab022548da1d844078f463a4a927138ca4f2b729",
+          "before": {
+            "at": "2026-10-25T23:34:04.680Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1685079
+          },
+          "after": {
+            "at": "2026-10-25T23:34:13.231Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1693630
+          }
+        },
+        {
+          "invocation": 2,
+          "status": 0,
+          "headless": true,
+          "iterations": 1,
+          "resultSHA256": "05600ca30a58a777c6cc9d9534d3f60f89aa1784fab53b027fbcd2fc6020ee0f",
+          "before": {
+            "at": "2026-10-25T23:34:13.278Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1693677
+          },
+          "after": {
+            "at": "2026-10-25T23:34:20.948Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1701347
+          }
+        },
+        {
+          "invocation": 3,
+          "status": 0,
+          "headless": true,
+          "iterations": 1,
+          "resultSHA256": "af68504eae572c5423a7be67e98f8e73869a2580993c51cb30d33af0fcd9412e",
+          "before": {
+            "at": "2026-10-25T23:34:21.000Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1701399
+          },
+          "after": {
+            "at": "2026-10-25T23:34:28.872Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1709271
+          }
+        }
+      ],
+      "audits": [
+        {
+          "resultSHA256": "87e722bcce5232c0d9a6d9b8ab022548da1d844078f463a4a927138ca4f2b729",
+          "steps": 10,
+          "attemptsPerStep": 1,
+          "passedIterations": 1,
+          "diagnostics": {
+            "consoleErrors": 0,
+            "consoleWarnings": 0,
+            "pageErrors": 0
+          },
+          "networkTails": {
+            "complete": 10,
+            "cutoff": 0,
+            "invalid": 0
+          },
+          "network": {
+            "failed": 4,
+            "canceled": 4,
+            "http401403": 0,
+            "statusCounts": {
+              "200": 449,
+              "204": 3,
+              "302": 2,
+              "303": 1,
+              "null": 1
+            }
+          },
+          "before": {
+            "at": "2026-10-25T23:34:04.680Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1685079
+          },
+          "after": {
+            "at": "2026-10-25T23:34:13.231Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1693630
+          },
+          "controls": {
+            "platform": "linux",
+            "architecture": "x64",
+            "osRelease": "7.0.0-38-generic",
+            "nodeVersion": "v24.22.1",
+            "browser": "chromium",
+            "browserVersion": "148.0.7778.96",
+            "headless": true,
+            "cacheDisabled": true,
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            }
+          },
+          "scenarioFingerprint": "52a526e47ff40a6efd5dcb2f87b44335b38713d9b20785aeedf5fa94cdd7fd15"
+        },
+        {
+          "resultSHA256": "05600ca30a58a777c6cc9d9534d3f60f89aa1784fab53b027fbcd2fc6020ee0f",
+          "steps": 10,
+          "attemptsPerStep": 1,
+          "passedIterations": 1,
+          "diagnostics": {
+            "consoleErrors": 0,
+            "consoleWarnings": 0,
+            "pageErrors": 0
+          },
+          "networkTails": {
+            "complete": 10,
+            "cutoff": 0,
+            "invalid": 0
+          },
+          "network": {
+            "failed": 4,
+            "canceled": 4,
+            "http401403": 0,
+            "statusCounts": {
+              "200": 449,
+              "204": 3,
+              "302": 2,
+              "303": 1,
+              "null": 1
+            }
+          },
+          "before": {
+            "at": "2026-10-25T23:34:13.278Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1693677
+          },
+          "after": {
+            "at": "2026-10-25T23:34:20.948Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1701347
+          },
+          "controls": {
+            "platform": "linux",
+            "architecture": "x64",
+            "osRelease": "7.0.0-38-generic",
+            "nodeVersion": "v24.22.1",
+            "browser": "chromium",
+            "browserVersion": "148.0.7778.96",
+            "headless": true,
+            "cacheDisabled": true,
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            }
+          },
+          "scenarioFingerprint": "52a526e47ff40a6efd5dcb2f87b44335b38713d9b20785aeedf5fa94cdd7fd15"
+        },
+        {
+          "resultSHA256": "af68504eae572c5423a7be67e98f8e73869a2580993c51cb30d33af0fcd9412e",
+          "steps": 10,
+          "attemptsPerStep": 1,
+          "passedIterations": 1,
+          "diagnostics": {
+            "consoleErrors": 0,
+            "consoleWarnings": 0,
+            "pageErrors": 0
+          },
+          "networkTails": {
+            "complete": 10,
+            "cutoff": 0,
+            "invalid": 0
+          },
+          "network": {
+            "failed": 4,
+            "canceled": 4,
+            "http401403": 0,
+            "statusCounts": {
+              "200": 449,
+              "204": 3,
+              "302": 2,
+              "303": 1,
+              "null": 1
+            }
+          },
+          "before": {
+            "at": "2026-10-25T23:34:21.000Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1701399
+          },
+          "after": {
+            "at": "2026-10-25T23:34:28.872Z",
+            "boxId": "0657b712ccad88d38b2a1414b633ee0a15c41b5facba6c156d9c4992ef90f428",
+            "startedAt": "2026-10-26T01:05:59.601767012+02:00",
+            "imageId": "46b06b0a8965e828d134ee87e5ad9f767d142b154f2732e0367016d2410303bc",
+            "ageMs": 1709271
+          },
+          "controls": {
+            "platform": "linux",
+            "architecture": "x64",
+            "osRelease": "7.0.0-38-generic",
+            "nodeVersion": "v24.22.1",
+            "browser": "chromium",
+            "browserVersion": "148.0.7778.96",
+            "headless": true,
+            "cacheDisabled": true,
+            "viewport": {
+              "width": 1440,
+              "height": 1000
+            }
+          },
+          "scenarioFingerprint": "52a526e47ff40a6efd5dcb2f87b44335b38713d9b20785aeedf5fa94cdd7fd15"
+        }
+      ],
+      "evidenceKind": "Operator observations followed by independent read-only artifact audit on the apparatus; no publication rerun."
+    },
+    "comparison": {
+      "schemaVersion": 1,
+      "evidenceKind": "Independent read-only artifact audit on Apparatus; sanitized transcription",
+      "sourcePair": {
+        "ploinky": "c4382eb49a24f06c1aa9033180719e156c916dc8",
+        "explorer": "123f0a176433439f9f96cc2099b96bfb99a96d84"
+      },
+      "metricsHelperSha256": "9210540354126de4d71660371324d292704cc89d3db2e0344b1221dab26799ee",
+      "protocol": {
+        "nativeInvocationsPerCohort": 3,
+        "iterationsPerInvocation": 1,
+        "stepsPerIteration": 10,
+        "attemptsPerStep": 1,
+        "allSixPassed": true,
+        "consoleErrors": 0,
+        "pageErrors": 0,
+        "warnings": 0,
+        "http401403": 0,
+        "completeNetworkTailsTotal": 60,
+        "cutoffTails": 0,
+        "invalidTails": 0
+      },
+      "strictComparator": {
+        "exitCode": 1,
+        "expectedRefusal": true,
+        "error": "Error: Benchmark target controls do not match.",
+        "directComparisonPassed": false,
+        "rawReportsUnmodified": true
+      },
+      "qualification": {
+        "controlledComparison": false,
+        "statement": "Descriptive cross-environment timings only. QA deployment metadata is empty; source, image, data and age are unknown. Different origins, network paths and request counts prevent an attributable controlled speedup claim.",
+        "summaryMethod": "Frozen summarizeBenchmarkIterations over each cohort's three raw iteration records; interpolated p95, n=3."
+      },
+      "steps": [
+        {
+          "name": "router-login-page",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 2270.757,
+              "p95": 2581.931
+            },
+            "settledMs": {
+              "median": 3028.413,
+              "p95": 3567.439
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 384.425,
+              "p95": 1506.721
+            },
+            "settledMs": {
+              "median": 1392.581,
+              "p95": 1995.436
+            }
+          }
+        },
+        {
+          "name": "login-to-explorer-interactive",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 5231.1,
+              "p95": 5518.272
+            },
+            "settledMs": {
+              "median": 6216.153,
+              "p95": 6342.303
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 1547.098,
+              "p95": 1555.212
+            },
+            "settledMs": {
+              "median": 1826.743,
+              "p95": 1878.582
+            }
+          }
+        },
+        {
+          "name": "refresh-root-listing",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 561.412,
+              "p95": 709.22
+            },
+            "settledMs": {
+              "median": 990.872,
+              "p95": 1274.737
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 201.712,
+              "p95": 207.364
+            },
+            "settledMs": {
+              "median": 376.93,
+              "p95": 384.485
+            }
+          }
+        },
+        {
+          "name": "open-workspace-directory",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 618.372,
+              "p95": 662.126
+            },
+            "settledMs": {
+              "median": 1021.093,
+              "p95": 1249.25
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 217.172,
+              "p95": 217.233
+            },
+            "settledMs": {
+              "median": 418.437,
+              "p95": 419.05
+            }
+          }
+        },
+        {
+          "name": "return-root-from-workspace-directory",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 71.768,
+              "p95": 75.256
+            },
+            "settledMs": {
+              "median": 543.416,
+              "p95": 552.565
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 79.627,
+              "p95": 86.659
+            },
+            "settledMs": {
+              "median": 264.171,
+              "p95": 277.978
+            }
+          }
+        },
+        {
+          "name": "open-confidential",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 458.684,
+              "p95": 482.105
+            },
+            "settledMs": {
+              "median": 812.096,
+              "p95": 881.809
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 146.88,
+              "p95": 180.639
+            },
+            "settledMs": {
+              "median": 323.435,
+              "p95": 379.168
+            }
+          }
+        },
+        {
+          "name": "open-confidential-my-space",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 458.867,
+              "p95": 472.676
+            },
+            "settledMs": {
+              "median": 803.953,
+              "p95": 808.465
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 152.836,
+              "p95": 177.473
+            },
+            "settledMs": {
+              "median": 336.803,
+              "p95": 354.986
+            }
+          }
+        },
+        {
+          "name": "return-root-from-confidential",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 76.815,
+              "p95": 84.302
+            },
+            "settledMs": {
+              "median": 594.886,
+              "p95": 921.725
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 69.605,
+              "p95": 83.903
+            },
+            "settledMs": {
+              "median": 266.263,
+              "p95": 270.945
+            }
+          }
+        },
+        {
+          "name": "open-workspace-file",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 635.019,
+              "p95": 694.237
+            },
+            "settledMs": {
+              "median": 1161.495,
+              "p95": 1223.505
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 207.413,
+              "p95": 217.899
+            },
+            "settledMs": {
+              "median": 419.763,
+              "p95": 420.485
+            }
+          }
+        },
+        {
+          "name": "open-git-panel",
+          "samplesPerCohort": 3,
+          "completeTailsPerCohort": 3,
+          "qa": {
+            "visibleMs": {
+              "median": 4635.553,
+              "p95": 5203.964
+            },
+            "settledMs": {
+              "median": 5415.189,
+              "p95": 5894.741
+            }
+          },
+          "apparatus": {
+            "visibleMs": {
+              "median": 1147.069,
+              "p95": 1200.345
+            },
+            "settledMs": {
+              "median": 1299.134,
+              "p95": 1351.931
+            }
+          }
+        }
+      ],
+      "networkPerInvocation": {
+        "qa": {
+          "requests": 429,
+          "failed": 3,
+          "canceled": 3,
+          "statusCounts": {
+            "200": 424,
+            "204": 3,
+            "302": 2
+          }
+        },
+        "apparatus": {
+          "requests": 456,
+          "failed": 4,
+          "canceled": 4,
+          "statusCounts": {
+            "200": 449,
+            "204": 3,
+            "302": 2,
+            "303": 1,
+            "null": 1
+          }
+        },
+        "sharedCanceled": "Three POSTs to /explorer/mcp, /dpuAgent/mcp, /gitAgent/mcp recorded with status204.",
+        "apparatusAdditionalCanceled": {
+          "sequence": 21,
+          "method": "POST",
+          "target": "<external>",
+          "type": "Ping",
+          "step": "background",
+          "status": null,
+          "failed": true,
+          "canceled": true,
+          "destinationAndCause": "Unavailable in sanitized artifacts; retained without causal attribution"
+        },
+        "additionalRedirect": "Apparatus /auth/login returns303; QA has no303. Counts are not identical."
+      },
+      "apparatusMeasurementWindow": {
+        "began": "2026-10-25T23:34:04.680Z",
+        "ended": "2026-10-25T23:34:28.872Z",
+        "agesMs": [
+          [
+            1685079,
+            1693630
+          ],
+          [
+            1693677,
+            1701347
+          ],
+          [
+            1701399,
+            1709271
+          ]
+        ],
+        "sameOriginalBoxAndImage": true,
+        "allBelow30Minutes": true
+      },
+      "postBenchmarkQuiet": {
+        "verdict": "PASS",
+        "observedAt": "2026-10-25T23:36:16.672Z",
+        "ageMs": 1817071,
+        "afterFreshnessDeadline": true,
+        "newFreshnessClaim": false,
+        "retainedBox": true,
+        "registryCount": 12,
+        "activeTuplesMatch": true,
+        "pinnedImages": true,
+        "readOnlyCode": true,
+        "hostBrowserHarnessProcesses": 0,
+        "lifecyclePullWorkers": 0,
+        "workspaceLeaseAbsent": true,
+        "protectedFourUnchanged": true,
+        "outerStable": true,
+        "noHealthAuthRestartTeardownOrMutation": true
+      }
+    },
+    "historicalMeasurementsUnchanged": true,
+    "qualifications": [
+      "Each apparatus invocation has four records marked both failed and canceled, including three HTTP 204 and one null status. QA has three. Counts overlap and must not be summed.",
+      "The additional canceled event is a background external Ping POST, sequence 21, with null status. Its destination and cause are unavailable in the sanitized artifacts. Apparatus also records a 303 for /auth/login; QA does not.",
+      "Zero benchmark browser errors or warnings does not erase the two separately classified OnlyOffice E2E console errors.",
+      "QA deployed source/image unknown. Descriptive observations only; strict comparator exit 1 is a refusal, not a comparison pass.",
+      "The final quiet audit occurred after the original freshness deadline and supplies no new freshness credit."
+    ],
+    "comparisonEvidenceSha256": "80e89b45738c6d6954a31b88007b777680d05f8307ad6786a1e632416baf0e1d"
+  }
 }
