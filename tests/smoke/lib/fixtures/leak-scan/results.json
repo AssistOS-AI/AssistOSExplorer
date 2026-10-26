@@ -1,0 +1,122 @@
+{
+  "config": {
+    "configFile": "/Users/danielsava/c5-fix-2026-10-26/leak-scan-gen/leakgen.config.mjs",
+    "rootDir": "/Users/danielsava/c5-fix-2026-10-26/leak-scan-gen",
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/Users/danielsava/c5-fix-2026-10-26/leak-scan-gen/out/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "/Users/danielsava/c5-fix-2026-10-26/leak-scan-gen",
+        "testIgnore": [],
+        "testMatch": [
+          "leakgen.spec.mjs"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "html",
+        {
+          "open": "never",
+          "outputFolder": "/Users/danielsava/c5-fix-2026-10-26/leak-scan-gen/out/playwright-report"
+        }
+      ],
+      [
+        "json",
+        {
+          "outputFile": "/Users/danielsava/c5-fix-2026-10-26/leak-scan-gen/out/test-results/results.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.60.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "leakgen.spec.mjs",
+      "file": "leakgen.spec.mjs",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "leak-scan fixture attaches one evidence body",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 87,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-26T15:52:24.686Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "copilot-live-skills-evidence.json",
+                      "contentType": "application/json",
+                      "body": "eyJraW5kIjoibGVhay1zY2FuLWZpeHR1cmUiLCJldmlkZW5jZSI6ImV5SmhiR2NpT2lKdWIyNWxJaXdpZEhsd0lqb2lTbGRVSW4wLmV5SmxlSEFpT2pFNU1qUTVPVEl3TURBc0luTjFZaUk2SW14bFlXc3RjMk5oYmkxbWFYaDBkWEpsTFc1dmRDMWhMV055WldSbGJuUnBZV3dpZlEuIn0="
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "f8e6a442c9bd244ef3e4-581fed5779d44ffb1cc1",
+          "file": "leakgen.spec.mjs",
+          "line": 5,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-26T15:52:24.202Z",
+    "duration": 793.4250000000001,
+    "expected": 1,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

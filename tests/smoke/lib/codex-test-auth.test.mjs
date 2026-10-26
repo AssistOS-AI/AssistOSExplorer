@@ -8,8 +8,18 @@ import {
   CodexAuthError, EXIT_CODES, EXIT_REASONS, RUN_TIMEOUT_MS, RUN_WATCHDOG_MS, acceptCopyBack, acquireRunLock, adoptQuarantine, assertArtifactDirectory, assertNoQuarantine, assertPrivateRoot,
   classifyTurnFailure, collectScanReferences, createCredentialSession, createInflight, describeFailure, inspectLock, inspectStream, loadStream, lockStatus, planRecovery, readInflight,
   removeInflight, resolveAuthPaths, resultLine, retireStream, robotDeleteAccepted, scanLeaks, seedStream, sha256Hex, summarizeAuth,
-  validateAuthArtifact,
+  validateAuthArtifact, assertNoOtherGateInflight, assertNoOtherRouteInflight, c5Names, decideRunOutcome, ensurePrivateRoot, inflightPresent,
 } from './codex-test-auth.mjs';
+import { deriveAccessOnlyBytes, extractOwnerCredential } from './codex-test-auth-owner.mjs';
+
+// This file builds route-A credentials (synthetic only) and refuses to start under the account's own home.
+{
+  const realHome = os.userInfo().homedir;
+  const realOf = (value) => { try { return fs.realpathSync(value); } catch { return path.resolve(value); } };
+  if (!process.env.HOME || path.resolve(process.env.HOME) === path.resolve(realHome) || realOf(process.env.HOME) === realOf(realHome)) {
+    throw new Error('Refusing to start: run with HOME set to a temporary directory.');
+  }
+}
 
 // Synthetic, unsigned JWT-shaped tokens only. Nothing here is, or was copied from, a real credential.
 const NOW = Date.parse('2026-10-03T12:00:00.000Z');
@@ -656,7 +666,7 @@ test('scanLeaks finds raw token values and the whole-file base64 and reports fie
   const cleanDir = path.join(base, 'clean');
   fs.mkdirSync(cleanDir);
   fs.writeFileSync(path.join(cleanDir, 'a.txt'), 'ok');
-  assert.deepEqual(scanLeaks(cleanDir, [stream]), { leaks: [], filesScanned: 1 });
+  assert.deepEqual(scanLeaks(cleanDir, [stream]), { leaks: [], filesScanned: 1, undecodable: [] });
 });
 
 test('classifyTurnFailure flags 401, unauthorized, login and refresh-token texts as authRejectionSuspected', () => {
@@ -1004,4 +1014,180 @@ test('the parent watchdog outlasts the spec test timeout, and both come from one
   assert.match(cli, /RUN_WATCHDOG_MS/);
   assert.doesNotMatch(cli, /const RUN_WATCHDOG_MS\s*=/, 'the CLI must import the constant, not redefine it');
   assert.doesNotMatch(cli, /\b\d+ \* 60_000/, 'the CLI carries no literal run duration');
+});
+
+// ---- gate c5 (spec 06): its own marker, the gate grammar and the decoder-backed leak scan ---------------------------------------------
+
+const C5_RUN_ID = '0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f';
+const c5Marker = (runId = C5_RUN_ID) => ({ route: 'owner', gate: 'c5', runId, ...c5Names(runId) });
+
+test('a C5 marker makes seed, retire, adopt, the route-B preflight and run, and a C2 run refuse, each with its own reason', async (t) => {
+  const { paths, proc } = setup(t, { stream: auth() });
+  createInflight(paths, c5Marker());
+  assert.equal(inflightPresent(paths, { route: 'owner', gate: 'c5' }), true);
+  // The route-B and C2 markers are untouched by the C5 marker.
+  assert.equal(inflightPresent(paths), false);
+  assert.equal(inflightPresent(paths, { route: 'owner' }), false);
+  fs.rmSync(paths.streamFile);
+  await assert.rejects(seedWith(paths, proc, () => assert.fail('the operator step must not run')), failure('STREAM_UNSAFE', 'inflight-present'));
+  fs.writeFileSync(paths.streamFile, auth(), { mode: 0o600 });
+  assert.throws(() => retireStream(paths, { now: NOW, procRoot: proc.dir }), failure('STREAM_UNSAFE', 'inflight-present'));
+  fs.writeFileSync(path.join(paths.streamDir, 'quarantine-r1.json'), auth({ seed: 'q' }), { mode: 0o600 });
+  assert.throws(() => adoptQuarantine(paths, { runId: 'r1', now: NOW, procRoot: proc.dir }), failure('STREAM_UNSAFE', 'inflight-present'));
+  // Route B (its preflight and its run both call this first) refuses the route-A C5 marker.
+  assert.throws(() => assertNoOtherRouteInflight(paths, 'stream'), failure('STREAM_UNSAFE', 'inflight-other-route'));
+  // A C2 run on route A refuses the other gate's marker; the C5 gate itself does not.
+  assert.throws(() => assertNoOtherGateInflight(paths, 'c2'), failure('STREAM_UNSAFE', 'inflight-other-gate'));
+  assertNoOtherGateInflight(paths, 'c5');
+  assertNoOtherRouteInflight(paths, 'owner');
+  removeInflight(paths, { route: 'owner', gate: 'c5' });
+  assertNoOtherGateInflight(paths, 'c2');
+  assertNoOtherRouteInflight(paths, 'stream');
+});
+
+test('a C2 marker makes the C5 gate refuse with inflight-other-gate, and an unknown gate is a usage error', (t) => {
+  const { paths } = setup(t, { stream: auth() });
+  createInflight(paths, { runId: 'c2-run', robotName: 'codex-auth-test-c2-run', folder: 'codex-auth-c2-run', route: 'owner' });
+  assert.throws(() => assertNoOtherGateInflight(paths, 'c5'), failure('STREAM_UNSAFE', 'inflight-other-gate'));
+  assertNoOtherGateInflight(paths, 'c2');
+  assert.throws(() => assertNoOtherGateInflight(paths, 'c3'), failure('USAGE', 'bad-variable'));
+  assert.throws(() => inflightPresent(paths, { route: 'stream', gate: 'c5' }), failure('USAGE', 'route-mismatch'));
+});
+
+test('planRecovery for gate c5 owns only copilot-live robots and refuses any but the marker\'s, without affecting gate c2', () => {
+  const marker = { gate: 'c5', runId: C5_RUN_ID, ...c5Names(C5_RUN_ID) };
+  const own = { id: 'own-robot', name: marker.robotName, codexAuthPresent: true };
+  const stray = { id: 'stray-robot', name: 'copilot-live-11111111-2222-4333-8444-555555555555', codexAuthPresent: false };
+  const other = { id: 'c2-robot', name: 'codex-auth-test-x', codexAuthPresent: true };
+  const defaults = { id: 'default', name: 'default', codexAuthPresent: null };
+  assert.throws(() => planRecovery({ gate: 'c5', inflight: marker, robots: [own, stray] }), failure('RUNTIME_PREREQ_FAILED', 'unowned-leftover-robot'));
+  assert.throws(() => planRecovery({ gate: 'c5', inflight: null, robots: [stray] }), failure('RUNTIME_PREREQ_FAILED', 'unowned-leftover-robot'));
+  assert.deepEqual(planRecovery({ gate: 'c5', inflight: marker, robots: [own, other, defaults] }), { action: 'copy-back-then-delete', robot: own });
+  assert.deepEqual(planRecovery({ gate: 'c5', inflight: marker, robots: [other] }), { action: 'folder-only', robot: null });
+  assert.deepEqual(planRecovery({ gate: 'c5', inflight: null, robots: [other, defaults] }), { action: 'none', robot: null });
+  // Gate c2 ignores C5 robots and keeps its own family rule.
+  assert.deepEqual(planRecovery({ gate: 'c2', inflight: null, robots: [own, stray, defaults] }), { action: 'none', robot: null });
+  assert.throws(() => planRecovery({ gate: 'c2', inflight: null, robots: [other] }), failure('RUNTIME_PREREQ_FAILED', 'unowned-leftover-robot'));
+  assert.throws(() => planRecovery({ gate: 'x', inflight: null, robots: [] }), failure('USAGE', 'bad-variable'));
+});
+
+test('the C5 marker is created once with O_EXCL and mode 0600, holds exactly the derived names, and refuses any other content', (t) => {
+  const { paths } = setup(t, { stream: auth() });
+  ensurePrivateRoot(paths);
+  const created = createInflight(paths, c5Marker());
+  assert.deepEqual(created, { gate: 'c5', runId: C5_RUN_ID, ...c5Names(C5_RUN_ID) });
+  const stat = fs.lstatSync(paths.ownerC5InflightPath);
+  assert.equal(stat.mode & 0o777, 0o600);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(paths.ownerC5InflightPath, 'utf8'))).sort(), ['folder', 'gate', 'repositoryName', 'robotName', 'runId']);
+  assert.throws(() => createInflight(paths, c5Marker()), failure('STREAM_UNSAFE', 'inflight-present'));
+  assert.deepEqual(readInflight(paths, { route: 'owner', gate: 'c5' }), created);
+  assertPrivateRoot(paths);
+  removeInflight(paths, { route: 'owner', gate: 'c5' });
+  // A name that is not derived from the run id, a run id that is not a UUID v4, or a missing name is refused at creation.
+  for (const change of [{ robotName: 'copilot-live-11111111-2222-4333-8444-555555555555' }, { folder: 'copilot-live-skills-other' },
+    { repositoryName: undefined }, { runId: 'not-a-uuid' }, { runId: C5_RUN_ID.toUpperCase() }]) {
+    assert.throws(() => createInflight(paths, { ...c5Marker(), ...change }), failure('USAGE', 'bad-variable'), JSON.stringify(change));
+  }
+  assert.equal(fs.existsSync(paths.ownerC5InflightPath), false);
+  // A tampered marker on disk is refused, never followed.
+  for (const tampered of [{ ...c5Marker(), route: undefined, robotName: 'copilot-live-11111111-2222-4333-8444-555555555555' },
+    { gate: 'c5', runId: C5_RUN_ID, ...c5Names(C5_RUN_ID), extra: true }, { gate: 'c2', runId: C5_RUN_ID, ...c5Names(C5_RUN_ID) }]) {
+    delete tampered.route;
+    fs.writeFileSync(paths.ownerC5InflightPath, JSON.stringify(tampered), { mode: 0o600 });
+    assert.throws(() => readInflight(paths, { route: 'owner', gate: 'c5' }), failure('STREAM_UNSAFE', 'inflight-present'));
+    fs.rmSync(paths.ownerC5InflightPath);
+  }
+  // A loosened mode is refused by the ROOT check.
+  fs.writeFileSync(paths.ownerC5InflightPath, '{}', { mode: 0o644 });
+  fs.chmodSync(paths.ownerC5InflightPath, 0o644);
+  assert.throws(() => assertPrivateRoot(paths), failure('STREAM_UNSAFE', 'owner-or-mode'));
+});
+
+test('the C5 reasons are filed under one code each and the table keeps its 13 codes', () => {
+  for (const [code, reason] of [['STREAM_UNSAFE', 'inflight-other-gate'], ['RUNTIME_PREREQ_FAILED', 'generation-window'],
+    ['CLEANUP_INCOMPLETE', 'source-not-unregistered'], ['CLEANUP_INCOMPLETE', 'links-not-removed'], ['LEAK_DETECTED', 'artifact-undecodable']]) {
+    assert.ok(EXIT_REASONS[code].includes(reason), `${code} ${reason}`);
+    assert.equal(Object.values(EXIT_REASONS).filter((reasons) => reasons.includes(reason)).length, 1, reason);
+  }
+  assert.equal(Object.keys(EXIT_CODES).length, 13);
+});
+
+// A derived (access-only) credential as route A injects it, from a synthetic owner login.
+function derivedCredential() {
+  const owner = Buffer.from(JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: null, last_refresh: new Date(NOW - HOUR).toISOString(),
+    tokens: { id_token: jwt('id-owner'), refresh_token: 'rt-fake-owner-0123456789abcdef', account_id: 'acct-fake-c5-0001',
+      access_token: `${b64({ alg: 'none', typ: 'JWT' })}.${b64({ exp: Math.floor((NOW + 240 * HOUR) / 1000), 'https://api.openai.com/auth': { chatgpt_account_id: 'acct-fake-c5-0001' } })}.fake-signature` } }));
+  const derived = deriveAccessOnlyBytes(extractOwnerCredential(owner, { now: NOW }));
+  return { derived, token: JSON.parse(derived).tokens.access_token };
+}
+
+const FIXTURES = new URL('./fixtures/leak-scan/', import.meta.url);
+// The fabricated token the fixture generator attached (lib/leak-scan-decoders.test.mjs records the generator).
+const FIXTURE_TOKEN = `${b64({ alg: 'none', typ: 'JWT' })}.${b64({ exp: 1924992000, sub: 'leak-scan-fixture-not-a-credential' })}.`;
+
+test('scanLeaks finds a derived token raw, in base64 at every alignment, in base64url, in a results.json attachment and in the HTML report zip', (t) => {
+  const base = sandbox(t);
+  const { derived, token } = derivedCredential();
+  const dir = path.join(base, 'artifacts');
+  fs.mkdirSync(dir);
+  const write = (name, text) => fs.writeFileSync(path.join(dir, name), text);
+  write('raw.log', `noise ${token} noise`);
+  for (const offset of [0, 1, 2]) {
+    const prefix = Buffer.from('xyz'.slice(0, offset));
+    write(`b64-${offset}.txt`, `body:${Buffer.concat([prefix, Buffer.from(`{"evidence":"${token}"}`)]).toString('base64')}`);
+    write(`b64url-${offset}.txt`, Buffer.concat([prefix, Buffer.from(`evidence=${token};`)]).toString('base64url'));
+  }
+  // Real Playwright 1.60 output: the attachment body is base64 in results.json and lives inside the deflated zip of index.html.
+  const fixtureReport = fs.readFileSync(new URL('results.json', FIXTURES), 'utf8');
+  const fixtureHtml = fs.readFileSync(new URL('index.html', FIXTURES), 'utf8');
+  assert.equal(fixtureReport.includes(FIXTURE_TOKEN) || fixtureHtml.includes(FIXTURE_TOKEN), false, 'the fixtures carry the token only encoded');
+  fs.mkdirSync(path.join(dir, 'test-results'));
+  write(path.join('test-results', 'results.json'), fixtureReport);
+  fs.mkdirSync(path.join(dir, 'playwright-report'));
+  write(path.join('playwright-report', 'index.html'), fixtureHtml);
+  const fixtureSet = Buffer.from(JSON.stringify({ tokens: { access_token: FIXTURE_TOKEN } }));
+  const { leaks, undecodable } = scanLeaks(dir, [derived, fixtureSet]);
+  const by = (file) => leaks.filter((entry) => entry.file === file).map((entry) => entry.field);
+  assert.ok(by('raw.log').includes('accessToken'));
+  for (const offset of [0, 1, 2]) {
+    assert.ok(by(`b64-${offset}.txt`).includes('accessToken'), `base64 at offset ${offset}`);
+    assert.ok(by(`b64url-${offset}.txt`).includes('accessToken'), `base64url at offset ${offset}`);
+  }
+  assert.ok(by(path.join('test-results', 'results.json')).includes('accessToken'), 'the results.json attachment body');
+  assert.ok(by(path.join('playwright-report', 'index.html')).includes('accessToken'), 'the HTML report zip');
+  assert.deepEqual(undecodable, []);
+  const report = JSON.stringify({ leaks, undecodable });
+  for (const secret of [token, FIXTURE_TOKEN, 'acct-fake-c5-0001']) assert.equal(report.includes(secret), false, 'only field names are reported');
+  for (const entry of leaks) assert.deepEqual(Object.keys(entry).sort(), ['field', 'file']);
+  // Negative control: the same real report without the token in the reference set is clean, so the hits come from the token.
+  const clean = scanLeaks(path.join(dir, 'playwright-report'), [derived]);
+  assert.deepEqual(clean, { leaks: [], filesScanned: 1, undecodable: [] });
+});
+
+test('scanLeaks reports a truncated embedded zip, an undecodable zip file and an oversized file as undecodable, and the run outcome fails closed', (t) => {
+  const base = sandbox(t);
+  const { derived } = derivedCredential();
+  const dir = path.join(base, 'artifacts');
+  fs.mkdirSync(dir);
+  const html = fs.readFileSync(new URL('index.html', FIXTURES), 'utf8');
+  const start = html.indexOf('data:application/zip;base64,') + 'data:application/zip;base64,'.length;
+  // Cut the embedded zip in half, on a base64 group boundary, so only the zip structure is broken.
+  const cut = start + Math.floor((html.indexOf('<', start) - start) / 8) * 4;
+  fs.writeFileSync(path.join(dir, 'truncated.html'), `${html.slice(0, cut)}</template>`);
+  fs.writeFileSync(path.join(dir, 'broken.zip'), Buffer.from('PK\u0003\u0004 not a zip'));
+  // A sparse file one byte over the scan limit; it is never read.
+  const big = path.join(dir, 'oversized.bin');
+  fs.writeFileSync(big, '');
+  fs.truncateSync(big, 512 * 1024 * 1024 + 1);
+  const { leaks, undecodable } = scanLeaks(dir, [derived]);
+  assert.deepEqual(leaks, []);
+  assert.deepEqual(undecodable.map((entry) => entry.file).sort(), ['broken.zip', 'oversized.bin', 'truncated.html']);
+  assert.deepEqual(undecodable.find((entry) => entry.file === 'oversized.bin'), { file: 'oversized.bin', reason: 'oversize' });
+  const complete = { credentialPersisted: true, credentialRemoved: true, robotDeleted: true, folderDeleted: true };
+  const passed = { code: 'OK', reason: null, cleanup: complete };
+  assert.deepEqual(decideRunOutcome({ leaks: [], undecodable, result: passed, exitedCode: 0 }),
+    { refreshedDuringRun: false, authRejectionSuspected: false, cleanup: 'complete', result: 'failed', code: 'LEAK_DETECTED', reason: 'artifact-undecodable' });
+  assert.equal(decideRunOutcome({ leaks: [], undecodable: [], result: passed, exitedCode: 0 }).code, 'OK');
+  // A found token keeps its own reason ahead of an undecodable file.
+  assert.equal(decideRunOutcome({ leaks: [{ file: 'a', field: 'accessToken' }], undecodable, result: passed, exitedCode: 0 }).reason, 'artifact-contains-token');
 });

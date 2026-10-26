@@ -11,7 +11,7 @@ import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { setComposer, waitForWebchatIdle } from '../lib/webchat.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
 import {
-  CodexAuthError, RUN_TIMEOUT_MS, acquireRunLock, assertNoOtherRouteInflight, assertNoQuarantine, assertPrivateRoot, classifyTurnFailure, createCredentialSession,
+  CodexAuthError, RUN_TIMEOUT_MS, acquireRunLock, assertNoOtherGateInflight, assertNoOtherRouteInflight, assertNoQuarantine, assertPrivateRoot, classifyTurnFailure, createCredentialSession,
   createInflight, ensurePrivateRoot, isRunId, planRecovery, readInflight, removeInflight, resolveAuthPaths, robotDeleteAccepted,
 } from '../lib/codex-test-auth.mjs';
 import { createOwnerCredentialSession, ownerDirectoryFor, resolveCredentialSource, resolveOwnerAuthPath } from '../lib/codex-test-auth-owner.mjs';
@@ -151,7 +151,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
         assert.ok(box && smokeConfig.workspaceRoot && smokeConfig.baseURL, 'Set the exact Box, base URL and workspace root.');
         workspaceRoot = assertBoxWorkspacePath(fs.realpathSync(smokeConfig.workspaceRoot));
         paths = resolveAuthPaths(process.env);
-        runtime = createCodexRuntime({ box });
+        runtime = createCodexRuntime({ box, gate: 'c2' });
       } catch (error) { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'binding'); }
       await credentialPhase(BUDGET.setup + BUDGET.recovery, async () => {
         if (route === 'owner') {
@@ -163,13 +163,16 @@ test.describe('Codex-authenticated Copilot native turn', () => {
           ? createOwnerCredentialSession({ paths, runtime, runId, runDeadline: testStartedAt + RUN_TIMEOUT_MS, injectWindowMs: BUDGET.inject + BUDGET.turn + TURN_SLACK_MS })
           : createCredentialSession({ paths, runtime, runId });
         session.holdLock(true);
-        if (route === 'owner') assertNoOtherRouteInflight(paths, 'owner');
-        else recordBefore(session.load().summary);
+        if (route === 'owner') {
+          assertNoOtherRouteInflight(paths, 'owner');
+          // Route A also carries spec 06 (gate c5), whose crashed run only its own code recovers.
+          assertNoOtherGateInflight(paths, 'c2');
+        } else recordBefore(session.load().summary);
         try { await runtime.registryRuntime(workspaceRoot); } catch (error) { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'binding'); }
-        const inflight = readInflight(paths, { route });
+        const inflight = readInflight(paths, { route, gate: 'c2' });
         let inventory;
         try { inventory = await runtime.robotInventory(); } catch (error) { throw classify(error, 'RUNTIME_PREREQ_FAILED', 'binding'); }
-        const plan = planRecovery({ inflight, robots: inventory });
+        const plan = planRecovery({ gate: 'c2', inflight, robots: inventory });
         if (inflight) recoveryPending = { inflight, robot: plan.robot ? { robotId: plan.robot.id, robotName: plan.robot.name } : null };
         if (plan.action === 'copy-back-then-delete') {
           result.cleanup.credentialPersisted = false;
@@ -216,7 +219,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
             await deleteRobot(stale, inflight.robotName);
           }
           await deleteDirectoryIfPresent(page, `/${inflight.folder}`);
-          removeInflight(paths, { route });
+          removeInflight(paths, { route, gate: 'c2' });
           result.recovered = true;
           recoveryPending = null;
         }).catch((error) => { throw classify(error, 'CLEANUP_INCOMPLETE', 'recovery-incomplete'); });
@@ -237,7 +240,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
 
       // Step 4: the marker first, then the robot.
       await within(BUDGET.create, async () => {
-        createInflight(paths, { runId, robotName, folder, route });
+        createInflight(paths, { runId, robotName, folder, route, gate: 'c2' });
         inflightCreated = true;
         result.cleanup.robotDeleted = false;
         const created = await roboTeamApi(await dashboardPage(), { method: 'POST', path: 'api/robots', body: { name: robotName, codingAgents: ['codex'] } });
@@ -431,7 +434,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
         } catch (error) { note('binding-after', error); fail(error, 'IDENTITY_MISMATCH', 'binding-changed'); }
       }
       if (paths && lock && inflightCreated && !cleanupFailure && result.cleanup.robotDeleted && result.cleanup.folderDeleted && credentialSettled) {
-        try { removeInflight(paths, { route }); } catch (error) { note('marker', error); cleanupFailure ??= new CodexAuthError('CLEANUP_INCOMPLETE', 'folder-not-deleted'); }
+        try { removeInflight(paths, { route, gate: 'c2' }); } catch (error) { note('marker', error); cleanupFailure ??= new CodexAuthError('CLEANUP_INCOMPLETE', 'folder-not-deleted'); }
       }
       if (recoveryPending && !cleanupFailure) cleanupFailure = new CodexAuthError('CLEANUP_INCOMPLETE', 'recovery-incomplete');
       if (chat && !chat.isClosed()) await chat.close().catch(() => {});

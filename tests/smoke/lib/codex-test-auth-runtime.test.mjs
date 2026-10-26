@@ -19,7 +19,8 @@ const uid = process.getuid();
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const SECRET = 'rt-fake-RUNTIME-SECRET-0123456789abcdef';
 const authBytes = (extra = '') => Buffer.from(JSON.stringify({ auth_mode: 'chatgpt', tokens: { refresh_token: SECRET, account_id: 'acct-fake-runtime' }, extra }));
-const ROBOT = { robotId: 'codex-auth-test-r1-ab12', robotName: 'codex-auth-test-r1' };
+// Spec 07 robots are gate c2. Every in-container program takes the gate with the robot (lib/codex-test-auth-runtime.mjs).
+const ROBOT = { robotId: 'codex-auth-test-r1-ab12', robotName: 'codex-auth-test-r1', gate: 'c2' };
 
 function world(t, { robot = ROBOT, codingAgents = ['codex'], name = robot.robotName, schema = 'roboteam-robot-v1' } = {}) {
   const data = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cta-rt-')));
@@ -91,19 +92,19 @@ test('injectCodexAuth refuses wrong robots, unsafe directories, an existing or d
   const input = authBytes();
   // Boundary robot ids: 2 and 65 characters, traversal, uppercase and bad names are argument errors; 3 and 64 are valid ids.
   for (const robotId of ['ab', 'a'.repeat(65), '../codex-auth-test-r1-ab12', 'Default', 'codex auth', '', 'a/b', null]) {
-    await rejectsWith(injectCodexAuth({ robotId, robotName: ROBOT.robotName }, { ...w.options, input }), 'INVALID_ARGUMENT');
+    await rejectsWith(injectCodexAuth({ robotId, robotName: ROBOT.robotName, gate: 'c2' }, { ...w.options, input }), 'INVALID_ARGUMENT');
   }
   for (const robotName of ['default', 'codex-auth-test-', 'codex-auth-test-a b', `codex-auth-test-${'x'.repeat(65)}`, 'Codex-auth-test-r1', 7]) {
-    await rejectsWith(injectCodexAuth({ robotId: ROBOT.robotId, robotName }, { ...w.options, input }), 'INVALID_ARGUMENT');
+    await rejectsWith(injectCodexAuth({ robotId: ROBOT.robotId, robotName, gate: 'c2' }, { ...w.options, input }), 'INVALID_ARGUMENT');
   }
   for (const id of ['abc', 'a'.repeat(64)]) {
     const name = `codex-auth-test-${id.slice(0, 5)}`;
     w.mk(id, name);
-    assert.equal((await injectCodexAuth({ robotId: id, robotName: name }, { ...w.options, input })).ok, true, id);
+    assert.equal((await injectCodexAuth({ robotId: id, robotName: name, gate: 'c2' }, { ...w.options, input })).ok, true, id);
   }
   // Unknown, mismatched and non-codex robots.
-  await rejectsWith(injectCodexAuth({ robotId: 'codex-auth-test-zz-0000', robotName: 'codex-auth-test-zz' }, { ...w.options, input }), 'ROBOT_NOT_FOUND');
-  await rejectsWith(injectCodexAuth({ robotId: ROBOT.robotId, robotName: 'codex-auth-test-other' }, { ...w.options, input }), 'WRONG_ROBOT');
+  await rejectsWith(injectCodexAuth({ robotId: 'codex-auth-test-zz-0000', robotName: 'codex-auth-test-zz', gate: 'c2' }, { ...w.options, input }), 'ROBOT_NOT_FOUND');
+  await rejectsWith(injectCodexAuth({ robotId: ROBOT.robotId, robotName: 'codex-auth-test-other', gate: 'c2' }, { ...w.options, input }), 'WRONG_ROBOT');
   for (const [agents, schema] of [[['opencode'], undefined], [['codex', 'opencode'], undefined], [[], undefined], [['codex'], 'roboteam-robot-v2']]) {
     const other = world(t, { codingAgents: agents, ...(schema ? { schema } : {}) });
     await rejectsWith(injectCodexAuth(other.robot, { ...other.options, input }), 'WRONG_ROBOT');
@@ -198,7 +199,7 @@ test('readCodexAuthForCopyBack refuses symlinks and hard links and reports BUSY 
   await rejectsWith(readCodexAuthForCopyBack(linked.robot, linked.options), 'UNSAFE_PATH');
   // Wrong robot or unsafe directory.
   await rejectsWith(readCodexAuthForCopyBack({ ...ROBOT, robotName: 'codex-auth-test-other' }, w.options), 'WRONG_ROBOT');
-  await rejectsWith(readCodexAuthForCopyBack({ robotId: '../x', robotName: ROBOT.robotName }, w.options), 'INVALID_ARGUMENT');
+  await rejectsWith(readCodexAuthForCopyBack({ robotId: '../x', robotName: ROBOT.robotName, gate: 'c2' }, w.options), 'INVALID_ARGUMENT');
 });
 
 test('removeCodexAuth removes only the expected bytes and is idempotent', async (t) => {
@@ -254,7 +255,7 @@ function turnFixture(t, { workspaceName = 'work space é' } = {}) {
   ].map(record).join('');
   fs.writeFileSync(path.join(sessions, `${sessionId}.json`), JSON.stringify(session));
   fs.writeFileSync(path.join(alaSessions, `${sessionId}.jsonl`), transcript);
-  const args = { workspaceRoot, folder, robotId: w.robot.robotId, completionToken: token };
+  const args = { workspaceRoot, folder, robotId: w.robot.robotId, completionToken: token, gate: 'c2' };
   return { ...w, workspaceRoot, folder, base, sessionId, token, sessions, alaSessions, session, transcript, args, record,
     transcriptFile: path.join(alaSessions, `${sessionId}.jsonl`), sessionFile: path.join(sessions, `${sessionId}.json`) };
 }
@@ -378,8 +379,8 @@ test('readCodexClientIdentity resolves the shell-codex selection to its generati
   assert.deepEqual(await readCodexClientIdentity(clean.robot, clean.options), { ok: true, package: '@openai/codex', version: '0.160.0', generation,
     cli: { count: 1, openaiBaseUrlSet: false, openaiApiKeySet: false }, codexConfigTomlPresent: true });
   // Without a robot only the client is read.
-  assert.deepEqual(await readCodexClientIdentity({}, clean.options), { ok: true, package: '@openai/codex', version: '0.160.0', generation, cli: null, codexConfigTomlPresent: null });
-  await rejectsWith(readCodexClientIdentity({ robotId: clean.robot.robotId, robotName: null }, clean.options), 'INVALID_ARGUMENT');
+  assert.deepEqual(await readCodexClientIdentity({ gate: 'c2' }, clean.options), { ok: true, package: '@openai/codex', version: '0.160.0', generation, cli: null, codexConfigTomlPresent: null });
+  await rejectsWith(readCodexClientIdentity({ robotId: clean.robot.robotId, robotName: null, gate: 'c2' }, clean.options), 'INVALID_ARGUMENT');
   // A stamp that disagrees, an unlinked tool cache, a selection outside the generations and an unreadable CLI environment.
   const mismatch = world(t);
   toolCacheFixture(mismatch, { stampVersion: '0.159.0' });
@@ -440,17 +441,17 @@ test('every program runs from its serialized text against the fake runtime', asy
   fs.mkdirSync(alaTarget, { recursive: true });
   const bytes = authBytes('all-programs');
   const run = (fn, args, input = '', options = w.options) => runSerialized(fn, args, options, input);
-  assert.deepEqual(run(readRobotInventory, { prefix: 'codex-auth-test-' }).json,
-    { ok: true, robots: [{ id: w.robot.robotId, name: w.robot.robotName, codingAgents: ['codex'], codexAuthPresent: false }] });
+  assert.deepEqual(run(readRobotInventory, { gate: 'c2' }).json,
+    { ok: true, robots: [{ id: w.robot.robotId, name: w.robot.robotName, codingAgents: ['codex'], codexAuthPresent: false }], authFilesPresent: 0 });
   assert.equal(run(readCodexClientIdentity, w.robot).json.generation, generation);
   assert.equal(run(injectCodexAuth, w.robot, bytes).json.ok, true);
-  assert.deepEqual(run(readRobotInventory, { prefix: 'codex-auth-test-' }).json.robots[0].codexAuthPresent, true);
+  assert.deepEqual(run(readRobotInventory, { gate: 'c2' }).json.robots[0].codexAuthPresent, true);
   assert.equal(run(readCodexAuthForCopyBack, w.robot).json.size, bytes.length);
-  assert.deepEqual(run(waitRobotCliExit, { robotName: w.robot.robotName }).json, { ok: true, count: 0 });
+  assert.deepEqual(run(waitRobotCliExit, { robotName: w.robot.robotName, gate: 'c2' }).json, { ok: true, count: 0 });
   assert.deepEqual(run(removeCodexAuth, w.robot, JSON.stringify({ expectedSha256: sha(bytes) })).json, { ok: true, removed: true });
-  assert.deepEqual(run(readAlaSource, {}, '', { ...w.options, alaPath: alaTarget }).json, { ok: true, realpath: alaTarget });
-  assert.deepEqual(await readAlaSource({}, { ...w.options, alaPath: alaTarget }), { ok: true, realpath: alaTarget });
-  await rejectsWith(readAlaSource({}, { ...w.options, alaPath: path.join(w.data, 'absent') }), 'NOT_FOUND');
+  assert.deepEqual(run(readAlaSource, { gate: 'c2' }, '', { ...w.options, alaPath: alaTarget }).json, { ok: true, realpath: alaTarget });
+  assert.deepEqual(await readAlaSource({ gate: 'c2' }, { ...w.options, alaPath: alaTarget }), { ok: true, realpath: alaTarget });
+  await rejectsWith(readAlaSource({ gate: 'c2' }, { ...w.options, alaPath: path.join(w.data, 'absent') }), 'NOT_FOUND');
   const turn = turnFixture(t);
   assert.equal(run(readCodexTurnIdentity, turn.args, '', turn.options).json.ala.finalContainsToken, true);
 });
@@ -463,17 +464,24 @@ test('the robot inventory reports credential presence for test robots only and c
   fs.writeFileSync(path.join(broken.root, 'metadata.json'), '{not json');
   fs.writeFileSync(w.auth, authBytes('test-robot'), { mode: 0o600 });
   fs.mkdirSync(path.join(w.data, 'robots', 'NotARobot'));
-  const result = await readRobotInventory({ prefix: 'codex-auth-test-' }, w.options);
+  const result = await readRobotInventory({ gate: 'c2' }, w.options);
   const byId = Object.fromEntries(result.robots.map((robot) => [robot.id, robot]));
   assert.equal(result.robots.length, 3);
   assert.deepEqual(byId[w.robot.robotId], { id: w.robot.robotId, name: w.robot.robotName, codingAgents: ['codex'], codexAuthPresent: true });
   assert.deepEqual(byId['default-d3472e'], { id: 'default-d3472e', name: 'default', codingAgents: ['opencode'], codexAuthPresent: null });
-  assert.deepEqual(byId['broken-robot-0001'], { id: 'broken-robot-0001', name: null, codingAgents: null, codexAuthPresent: null });
-  await rejectsWith(readRobotInventory({ prefix: 'other-' }, w.options), 'INVALID_ARGUMENT');
+  // A robot directory without readable metadata may be a crashed run's: its credential presence is reported too (G5).
+  assert.deepEqual(byId['broken-robot-0001'], { id: 'broken-robot-0001', name: null, codingAgents: null, codexAuthPresent: false });
+  // Every native credential file is counted, in every robot directory, without reading it.
+  assert.equal(result.authFilesPresent, 2);
+  fs.writeFileSync(broken.auth, authBytes('broken-robot'), { mode: 0o600 });
+  const again = await readRobotInventory({ gate: 'c2' }, w.options);
+  assert.equal(again.authFilesPresent, 3);
+  assert.equal(again.robots.find((robot) => robot.id === 'broken-robot-0001').codexAuthPresent, true);
+  await rejectsWith(readRobotInventory({ gate: 'other' }, w.options), 'INVALID_ARGUMENT');
   await rejectsWith(readRobotInventory({}, w.options), 'INVALID_ARGUMENT');
   const empty = world(t);
   fs.rmSync(path.join(empty.data, 'robots'), { recursive: true });
-  await rejectsWith(readRobotInventory({ prefix: 'codex-auth-test-' }, empty.options), 'UNSAFE_PATH');
+  await rejectsWith(readRobotInventory({ gate: 'c2' }, empty.options), 'UNSAFE_PATH');
 });
 
 test('the host runner keeps credential bytes on stdin only and maps failures to codes', async (t) => {
@@ -487,7 +495,7 @@ test('the host runner keeps credential bytes on stdin only and maps failures to 
     calls.push({ argv, input, limits });
     return replies.shift() || { exitCode: 0, stdout: Buffer.from('{"ok":true}\n') };
   };
-  const runtime = createCodexRuntime({ box: BOX, runCommand, sleep: async () => {} });
+  const runtime = createCodexRuntime({ box: BOX, gate: 'c2', runCommand, sleep: async () => {} });
   runtime.bindRoboTeam(RT);
   await runtime.inject(w.robot, bytes);
   const [{ argv, input }] = calls;
@@ -531,7 +539,7 @@ test('the host runner keeps credential bytes on stdin only and maps failures to 
   await assert.rejects(runtime.waitCliExit(w.robot.robotName, { timeoutMs: 0, intervalMs: 1 }), (error) => error.code === 'TIMEOUT');
   // An unbound runtime and a bad box name are refused before any command runs.
   calls.length = 0;
-  await assert.rejects(createCodexRuntime({ box: BOX, runCommand }).inject(w.robot, bytes));
+  await assert.rejects(createCodexRuntime({ box: BOX, gate: 'c2', runCommand }).inject(w.robot, bytes));
   assert.throws(() => createCodexRuntime({ box: '../etc' }));
   assert.equal(calls.length, 0);
 });
@@ -596,9 +604,9 @@ test('the client identity for preflight and the binding needs only codex/current
   const generation = toolCacheFixture(warm, { selection: false });
   assert.equal(fs.existsSync(path.join(warm.data, 'tool-cache', 'shell-selections')), false);
   const expected = { ok: true, package: '@openai/codex', version: '0.160.0', generation, cli: null, codexConfigTomlPresent: null };
-  assert.deepEqual(await readCodexClientIdentity({}, warm.options), expected);
-  assert.deepEqual(runSerialized(readCodexClientIdentity, {}, warm.options).json, expected);
-  assert.deepEqual(await readCodexClientIdentity({ robotId: null, robotName: null }, warm.options), expected);
+  assert.deepEqual(await readCodexClientIdentity({ gate: 'c2' }, warm.options), expected);
+  assert.deepEqual(runSerialized(readCodexClientIdentity, { gate: 'c2' }, warm.options).json, expected);
+  assert.deepEqual(await readCodexClientIdentity({ robotId: null, robotName: null, gate: 'c2' }, warm.options), expected);
   // With a robot the codex-only selection is required, and it is absent until that robot's CLI has started.
   await rejectsWith(readCodexClientIdentity(warm.robot, warm.options), 'NOT_FOUND');
   assert.deepEqual(runSerialized(readCodexClientIdentity, warm.robot, warm.options).json, { ok: false, code: 'NOT_FOUND' });
@@ -609,30 +617,30 @@ test('the client identity for preflight and the binding needs only codex/current
   const withRobot = await readCodexClientIdentity(started.robot, started.options);
   assert.equal(withRobot.generation, startedGeneration);
   assert.equal(withRobot.cli.count, 1);
-  assert.equal((await readCodexClientIdentity({}, started.options)).generation, withRobot.generation);
+  assert.equal((await readCodexClientIdentity({ gate: 'c2' }, started.options)).generation, withRobot.generation);
   // current.json problems: missing, another name, a version that disagrees with the package or the stamp, a bad or absent generation.
   const missing = world(t);
   toolCacheFixture(missing, { selection: false, current: false });
-  await rejectsWith(readCodexClientIdentity({}, missing.options), 'NOT_FOUND');
+  await rejectsWith(readCodexClientIdentity({ gate: 'c2' }, missing.options), 'NOT_FOUND');
   const mismatch = world(t);
   toolCacheFixture(mismatch, { selection: false, currentVersion: '0.159.0' });
-  await rejectsWith(readCodexClientIdentity({}, mismatch.options), 'MALFORMED');
+  await rejectsWith(readCodexClientIdentity({ gate: 'c2' }, mismatch.options), 'MALFORMED');
   const stamp = world(t);
   toolCacheFixture(stamp, { selection: false, stampVersion: '0.159.0' });
-  await rejectsWith(readCodexClientIdentity({}, stamp.options), 'MALFORMED');
+  await rejectsWith(readCodexClientIdentity({ gate: 'c2' }, stamp.options), 'MALFORMED');
   const other = world(t);
   toolCacheFixture(other, { selection: false });
   const currentFile = path.join(other.data, 'tool-cache', 'codex', 'current.json');
   const good = JSON.parse(fs.readFileSync(currentFile, 'utf8'));
   for (const bad of [{ ...good, name: 'opencode' }, { ...good, generation: '../x' }, { ...good, generation: 'a'.repeat(64) }, { ...good, generation: 7 }]) {
     fs.writeFileSync(currentFile, JSON.stringify(bad));
-    await rejectsWith(readCodexClientIdentity({}, other.options), 'MALFORMED');
+    await rejectsWith(readCodexClientIdentity({ gate: 'c2' }, other.options), 'MALFORMED');
   }
   fs.writeFileSync(currentFile, 'not json');
-  await rejectsWith(readCodexClientIdentity({}, other.options), 'MALFORMED');
+  await rejectsWith(readCodexClientIdentity({ gate: 'c2' }, other.options), 'MALFORMED');
   fs.rmSync(currentFile);
   fs.symlinkSync(path.join(other.data, 'elsewhere.json'), currentFile);
-  await rejectsWith(readCodexClientIdentity({}, other.options), 'UNSAFE_PATH');
+  await rejectsWith(readCodexClientIdentity({ gate: 'c2' }, other.options), 'UNSAFE_PATH');
 });
 
 function pollFixture(replies) {
@@ -721,7 +729,7 @@ function nativeFixture(t, bytes = Buffer.from('fake native binary bytes '.repeat
   fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(binary, bytes, { mode: 0o755 });
   const options = { ...w.options, platform: 'linux-x64' };
-  return { ...w, generation, binary, bytes, options, args: { generation: GENERATION, relativePaths: { 'linux-x64': NATIVE_PATH } } };
+  return { ...w, generation, binary, bytes, options, args: { gate: 'c2', generation: GENERATION, relativePaths: { 'linux-x64': NATIVE_PATH } } };
 }
 
 test('readCodexNativeDigest hashes the allowlisted native file below the generation for the current platform and refuses symlinks, traversal and missing files', async (t) => {
@@ -736,30 +744,30 @@ test('readCodexNativeDigest hashes the allowlisted native file below the generat
   // The default platform is the container's own; an entry for another platform gives no digest and reads nothing.
   assert.deepEqual(await readCodexNativeDigest(f.args, { ...f.options, platform: 'darwin-arm64' }),
     { ok: true, generation: GENERATION, platform: 'darwin-arm64', sha256: null, size: null });
-  assert.deepEqual(await readCodexNativeDigest({ generation: GENERATION, relativePaths: {} }, f.options),
+  assert.deepEqual(await readCodexNativeDigest({ gate: 'c2', generation: GENERATION, relativePaths: {} }, f.options),
     { ok: true, generation: GENERATION, platform: 'linux-x64', sha256: null, size: null });
   const own = `${process.platform}-${process.arch}`;
-  const inferred = await readCodexNativeDigest({ generation: GENERATION, relativePaths: { [own]: NATIVE_PATH } }, { ...f.options, platform: undefined });
+  const inferred = await readCodexNativeDigest({ gate: 'c2', generation: GENERATION, relativePaths: { [own]: NATIVE_PATH } }, { ...f.options, platform: undefined });
   assert.equal(inferred.platform, own);
   assert.equal(inferred.sha256, sha(f.bytes));
   // Arguments: the generation id and every relative path are validated before anything is read.
   const bad = ['../x', '/etc/passwd', 'a//b', '', 'a/./b', 'a/../b', 'a b/c', 'a/b\\c', `${'a/'.repeat(16)}a`, 'a'.repeat(129), `${'a'.repeat(100)}/`.repeat(6), '.hidden/x', 7, null, ['x']];
   for (const relative of bad) {
-    await rejectsWith(readCodexNativeDigest({ generation: GENERATION, relativePaths: { 'linux-x64': relative } }, f.options), 'INVALID_ARGUMENT');
+    await rejectsWith(readCodexNativeDigest({ gate: 'c2', generation: GENERATION, relativePaths: { 'linux-x64': relative } }, f.options), 'INVALID_ARGUMENT');
     assert.equal(runSerialized(readCodexNativeDigest, { generation: GENERATION, relativePaths: { 'linux-x64': relative } }, f.options).json.code, 'INVALID_ARGUMENT');
   }
   // A malformed entry for another platform is refused too.
-  await rejectsWith(readCodexNativeDigest({ generation: GENERATION, relativePaths: { 'linux-x64': NATIVE_PATH, 'linux-arm64': '../x' } }, f.options), 'INVALID_ARGUMENT');
+  await rejectsWith(readCodexNativeDigest({ gate: 'c2', generation: GENERATION, relativePaths: { 'linux-x64': NATIVE_PATH, 'linux-arm64': '../x' } }, f.options), 'INVALID_ARGUMENT');
   for (const generation of ['', 'A'.repeat(64), 'a'.repeat(63), `${'a'.repeat(62)}..`, '../'.repeat(22), 7, null, undefined]) {
-    await rejectsWith(readCodexNativeDigest({ generation, relativePaths: f.args.relativePaths }, f.options), 'INVALID_ARGUMENT');
+    await rejectsWith(readCodexNativeDigest({ gate: 'c2', generation, relativePaths: f.args.relativePaths }, f.options), 'INVALID_ARGUMENT');
   }
   for (const relativePaths of [null, undefined, [NATIVE_PATH], NATIVE_PATH]) {
-    await rejectsWith(readCodexNativeDigest({ generation: GENERATION, relativePaths }, f.options), 'INVALID_ARGUMENT');
+    await rejectsWith(readCodexNativeDigest({ gate: 'c2', generation: GENERATION, relativePaths }, f.options), 'INVALID_ARGUMENT');
   }
   await rejectsWith(readCodexNativeDigest(undefined, f.options), 'INVALID_ARGUMENT');
   // Missing generation, missing file, and a symlinked or non-directory generation.
-  await rejectsWith(readCodexNativeDigest({ generation: sha('another'), relativePaths: f.args.relativePaths }, f.options), 'NOT_FOUND');
-  await rejectsWith(readCodexNativeDigest({ generation: GENERATION, relativePaths: { 'linux-x64': 'lib/missing/codex' } }, f.options), 'NOT_FOUND');
+  await rejectsWith(readCodexNativeDigest({ gate: 'c2', generation: sha('another'), relativePaths: f.args.relativePaths }, f.options), 'NOT_FOUND');
+  await rejectsWith(readCodexNativeDigest({ gate: 'c2', generation: GENERATION, relativePaths: { 'linux-x64': 'lib/missing/codex' } }, f.options), 'NOT_FOUND');
   const vendor = path.join(f.generation, 'lib', 'node_modules', '@openai', 'codex-linux-x64', 'vendor');
   // A symlinked intermediate directory is refused, even though the file behind it is the right one.
   const moved = path.join(f.data, 'moved-vendor');
@@ -797,7 +805,7 @@ test('the host runtime asks for the native digest with non-secret arguments only
     calls.push({ argv, input, limits });
     return { exitCode: 0, stdout: Buffer.from(`${JSON.stringify(digest)}\n`) };
   };
-  const runtime = createCodexRuntime({ box: BOX, runCommand, sleep: async () => {} });
+  const runtime = createCodexRuntime({ box: BOX, gate: 'c2', runCommand, sleep: async () => {} });
   runtime.bindRoboTeam(RT);
   assert.deepEqual(await runtime.nativeDigest({ generation: GENERATION, relativePaths: { 'linux-x64': NATIVE_PATH } }), digest);
   assert.equal(calls.length, 1);
@@ -810,7 +818,7 @@ test('the host runtime asks for the native digest with non-secret arguments only
   assert.match(argv[12], new RegExp(`"generation":"${GENERATION}"`));
   assert.match(argv[12], /"relativePaths":\{"linux-x64":"lib\/node_modules/);
   // A program failure is a code, never a message.
-  const failing = createCodexRuntime({ box: BOX, runCommand: async () => ({ exitCode: 1, stdout: Buffer.from('{"ok":false,"code":"UNSAFE_PATH"}\n') }) });
+  const failing = createCodexRuntime({ box: BOX, gate: 'c2', runCommand: async () => ({ exitCode: 1, stdout: Buffer.from('{"ok":false,"code":"UNSAFE_PATH"}\n') }) });
   failing.bindRoboTeam(RT);
   await assert.rejects(failing.nativeDigest({ generation: GENERATION, relativePaths: {} }), (error) => error instanceof RuntimeProgramError && error.code === 'UNSAFE_PATH');
 });
@@ -895,7 +903,7 @@ test('discardCodexAuth removes a leftover copy inside the container, reports onl
   const replies = [];
   const runCommand = async (argv, input = '', limits = {}) => { calls.push({ argv, input, limits }); return replies.shift(); };
   const sleeps = [];
-  const runtime = createCodexRuntime({ box: BOX, runCommand, sleep: async (milliseconds) => { sleeps.push(milliseconds); } });
+  const runtime = createCodexRuntime({ box: BOX, gate: 'c2', runCommand, sleep: async (milliseconds) => { sleeps.push(milliseconds); } });
   runtime.bindRoboTeam(RT);
   const busy = { exitCode: 1, stdout: Buffer.from('{"ok":false,"code":"BUSY"}\n') };
   replies.push(busy, busy, { exitCode: 0, stdout: Buffer.from('{"ok":true,"removed":true,"accessOnly":true}\n') });

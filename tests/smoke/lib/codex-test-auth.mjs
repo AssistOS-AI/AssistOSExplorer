@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { findSecretLeaks } from './security.mjs';
+import { LeakScanDecodeError, embeddedZipEntries, readZipEntries, secretNeedles } from './leak-scan-decoders.mjs';
 
 // Host side of the Codex-authenticated Copilot gate. The tests own exactly one Codex login cache, the "stream",
 // which is seeded once from a separate login, copied into a run-owned robot for one bounded turn, and copied back
@@ -46,18 +46,18 @@ export const EXIT_REASONS = Object.freeze({
   LOCK_HELD: Object.freeze(['live-owner', 'ambiguous-owner']),
   STREAM_UNSAFE: Object.freeze(['location', 'owner-or-mode', 'seed-source-missing', 'seed-source-symlink', 'seed-already-present',
     'seed-equals-live-cache', 'main-login-changed', 'quarantine-pending', 'quarantine-missing', 'inflight-present', 'scan-reference-missing',
-    'access-near-expiry', 'inflight-other-route', 'derived-not-access-only',
+    'access-near-expiry', 'inflight-other-route', 'derived-not-access-only', 'inflight-other-gate',
     ...OWNER_UNSAFE.map((name) => `owner-unsafe:${name}`), ...AUTH_INVALID.map((name) => `auth-invalid:${name}`)]),
   RUNTIME_PREREQ_FAILED: Object.freeze(['binding', 'not-admin', 'selection-count', 'unowned-leftover-robot', 'version-pin',
-    'cli-start-budget', 'codex-client-missing', 'target-exists', 'client-unqualified']),
+    'cli-start-budget', 'codex-client-missing', 'target-exists', 'client-unqualified', 'generation-window']),
   NATIVE_TURN_FAILED: Object.freeze(['failed', 'timeout']),
   IDENTITY_MISMATCH: Object.freeze(['backend', 'robot', 'provider-env', 'config-toml', 'binary', 'transcript-missing',
     'transcript-mismatch', 'binding-changed']),
   COPYBACK_REFUSED: Object.freeze(['invalid', 'other-account', 'stale-last-refresh', 'stream-changed', 'runtime-auth-missing',
     'runtime-copy-changed']),
   CLEANUP_INCOMPLETE: Object.freeze(['credential-not-persisted', 'credential-not-removed', 'robot-not-deleted',
-    'folder-not-deleted', 'recovery-incomplete']),
-  LEAK_DETECTED: Object.freeze(['artifact-contains-token']),
+    'folder-not-deleted', 'recovery-incomplete', 'links-not-removed', 'source-not-unregistered']),
+  LEAK_DETECTED: Object.freeze(['artifact-contains-token', 'artifact-undecodable']),
 });
 
 export class CodexAuthError extends Error {
@@ -150,6 +150,8 @@ export function resolveAuthPaths(env) {
   return Object.freeze({
     root, stream, streamsDir: path.join(root, 'streams'), streamDir, streamFile: path.join(streamDir, 'auth.json'),
     lockPath: path.join(root, 'run.lock'), inflightPath: path.join(root, 'inflight.json'), ownerInflightPath: path.join(root, 'inflight-owner.json'),
+    // Route A, gate c5 (spec 06): its own marker, so a crashed C5 run is only ever recovered by C5 code.
+    ownerC5InflightPath: path.join(root, 'inflight-owner-c5.json'),
     seedDir: path.join(root, 'seed'), seedHome: path.join(root, 'seed', 'home'), seedCodexHome: path.join(root, 'seed', 'codex'),
     retiredDir: path.join(root, 'retired'),
     // Opened only by `seedStream` (route B) and by route A's owner module, never by another function of this library.
@@ -186,6 +188,7 @@ export function assertPrivateRoot(paths, { forbiddenRoots = [], uid = currentUid
   checkPrivateEntry(paths.streamFile, { directory: false, uid });
   checkPrivateEntry(paths.inflightPath, { directory: false, uid });
   checkPrivateEntry(paths.ownerInflightPath, { directory: false, uid });
+  checkPrivateEntry(paths.ownerC5InflightPath, { directory: false, uid });
   for (const name of listStreamFiles(paths, /^quarantine-[A-Za-z0-9_-]+\.json$/)) {
     checkPrivateEntry(path.join(paths.streamDir, name), { directory: false, uid });
   }
@@ -477,21 +480,28 @@ export function loadStream(paths, { now = Date.now(), uid = currentUid() } = {})
 }
 
 const INFLIGHT_ROUTES = ['stream', 'owner'];
+// c2 is spec 07 (either route); c5 is spec 06, route A only.
+export const GATES = Object.freeze(['c2', 'c5']);
 
-function inflightFile(paths, route) {
-  if (!INFLIGHT_ROUTES.includes(route)) throw fail('USAGE', 'bad-variable');
+function inflightFile(paths, route, gate = 'c2') {
+  if (!INFLIGHT_ROUTES.includes(route) || !GATES.includes(gate)) throw fail('USAGE', 'bad-variable');
+  if (gate === 'c5') {
+    if (route !== 'owner') throw fail('USAGE', 'route-mismatch');
+    return paths.ownerC5InflightPath;
+  }
   return route === 'owner' ? paths.ownerInflightPath : paths.inflightPath;
 }
 
-export function inflightPresent(paths, { route = 'stream' } = {}) {
-  try { fs.lstatSync(inflightFile(paths, route)); return true; } catch (error) {
+export function inflightPresent(paths, { route = 'stream', gate = 'c2' } = {}) {
+  try { fs.lstatSync(inflightFile(paths, route, gate)); return true; } catch (error) {
     if (enoent(error)) return false;
     throw error;
   }
 }
 
-// The stream-only commands refuse while either route's marker exists.
-const anyInflightPresent = (paths) => inflightPresent(paths) || inflightPresent(paths, { route: 'owner' });
+// The stream-only commands refuse while any marker exists, of either route and either gate.
+const anyInflightPresent = (paths) => inflightPresent(paths) || inflightPresent(paths, { route: 'owner' })
+  || inflightPresent(paths, { route: 'owner', gate: 'c5' });
 
 export function listQuarantines(paths) {
   return listStreamFiles(paths, /^quarantine-[A-Za-z0-9_-]+\.json$/).map((name) => name.slice('quarantine-'.length, -'.json'.length));
@@ -731,24 +741,47 @@ export function acceptCopyBack(paths, { loadedSha256, loadedBytes, runtimeBytes,
 
 const ROBOT_NAME = /^codex-auth-test-[A-Za-z0-9_-]{1,64}$/;
 const FOLDER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+export const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const C5_MARKER_KEYS = ['folder', 'gate', 'repositoryName', 'robotName', 'runId'];
 
-export function createInflight(paths, { runId, robotName, folder, route = 'stream' }) {
-  const file = inflightFile(paths, route);
-  if (!isRunId(runId) || !ROBOT_NAME.test(robotName) || !FOLDER_NAME.test(folder)) throw fail('USAGE', 'bad-variable');
+// Every name of a C5 run is derived from its run id (lib/copilot-live-skills.mjs `createLiveSkillsFixture`). The marker must hold exactly
+// these values, so a marker can never point recovery at anything the run did not own.
+export function c5Names(runId) {
+  if (typeof runId !== 'string' || !UUID_V4.test(runId)) throw fail('USAGE', 'bad-variable');
+  return { robotName: `copilot-live-${runId}`, folder: `copilot-live-skills-${runId}`, repositoryName: `copilot-live-source-${runId}` };
+}
+
+function validC5Marker(marker) {
+  if (marker === null || typeof marker !== 'object' || Array.isArray(marker)) return false;
+  if (JSON.stringify(Object.keys(marker).sort()) !== JSON.stringify(C5_MARKER_KEYS) || marker.gate !== 'c5' || !UUID_V4.test(String(marker.runId))) return false;
+  const names = c5Names(marker.runId);
+  return marker.robotName === names.robotName && marker.folder === names.folder && marker.repositoryName === names.repositoryName;
+}
+
+export function createInflight(paths, { runId, robotName, folder, route = 'stream', gate = 'c2', repositoryName }) {
+  const file = inflightFile(paths, route, gate);
+  let marker;
+  if (gate === 'c5') {
+    marker = { gate, runId, robotName, folder, repositoryName };
+    if (!validC5Marker(marker)) throw fail('USAGE', 'bad-variable');
+  } else {
+    if (!isRunId(runId) || !ROBOT_NAME.test(robotName) || !FOLDER_NAME.test(folder)) throw fail('USAGE', 'bad-variable');
+    marker = { runId, robotName, folder };
+  }
   // Route B only exists while a stream exists. Route A has no stream.
   if (route === 'stream' && !exists(paths.streamFile)) throw fail('NOT_SEEDED', 'no-stream');
   try {
-    writeExclusive(file, Buffer.from(JSON.stringify({ runId, robotName, folder })));
+    writeExclusive(file, Buffer.from(JSON.stringify(marker)));
     fsyncDirectory(paths.root);
   } catch (error) {
     if (error.code === 'EEXIST') throw fail('STREAM_UNSAFE', 'inflight-present');
     throw error;
   }
-  return { runId, robotName, folder };
+  return { ...marker };
 }
 
-export function readInflight(paths, { uid = currentUid(), route = 'stream' } = {}) {
-  const file = inflightFile(paths, route);
+export function readInflight(paths, { uid = currentUid(), route = 'stream', gate = 'c2' } = {}) {
+  const file = inflightFile(paths, route, gate);
   let bytes;
   try { bytes = readRegular(file, { limit: 4096, uid }); } catch (error) {
     if (enoent(error)) return null;
@@ -756,21 +789,36 @@ export function readInflight(paths, { uid = currentUid(), route = 'stream' } = {
   }
   try {
     const marker = JSON.parse(bytes.toString('utf8'));
+    if (gate === 'c5') {
+      if (!validC5Marker(marker)) throw new Error('invalid');
+      return { gate: 'c5', runId: marker.runId, robotName: marker.robotName, folder: marker.folder, repositoryName: marker.repositoryName };
+    }
     if (!isRunId(marker.runId) || !ROBOT_NAME.test(marker.robotName) || !FOLDER_NAME.test(marker.folder)) throw new Error('invalid');
     return { runId: marker.runId, robotName: marker.robotName, folder: marker.folder };
   } catch { throw fail('STREAM_UNSAFE', 'inflight-present'); }
 }
 
-export function removeInflight(paths, { route = 'stream' } = {}) {
-  const file = inflightFile(paths, route);
+export function removeInflight(paths, { route = 'stream', gate = 'c2' } = {}) {
+  const file = inflightFile(paths, route, gate);
   try { fs.unlinkSync(file); fsyncDirectory(paths.root); } catch (error) { if (!enoent(error)) throw error; }
 }
 
-// Each route refuses the other route's marker before any recovery, so a route-A copy is never handled by route-B code.
+// Each route refuses the other route's marker before any recovery, so a route-A copy is never handled by route-B code. The C5 marker
+// belongs to route A, so route B refuses it too.
 export function assertNoOtherRouteInflight(paths, route) {
-  const other = route === 'owner' ? 'stream' : route === 'stream' ? 'owner' : null;
-  if (other === null) throw fail('USAGE', 'bad-variable');
-  if (inflightPresent(paths, { route: other })) throw fail('STREAM_UNSAFE', 'inflight-other-route');
+  if (route === 'owner') {
+    if (inflightPresent(paths, { route: 'stream' })) throw fail('STREAM_UNSAFE', 'inflight-other-route');
+    return;
+  }
+  if (route !== 'stream') throw fail('USAGE', 'bad-variable');
+  if (inflightPresent(paths, { route: 'owner' }) || inflightPresent(paths, { route: 'owner', gate: 'c5' })) throw fail('STREAM_UNSAFE', 'inflight-other-route');
+}
+
+// Route A carries two gates. Each refuses the other gate's marker before any recovery, so a crashed run is only recovered by its own code.
+export function assertNoOtherGateInflight(paths, gate) {
+  if (!GATES.includes(gate)) throw fail('USAGE', 'bad-variable');
+  const other = gate === 'c5' ? 'c2' : 'c5';
+  if (inflightPresent(paths, { route: 'owner', gate: other })) throw fail('STREAM_UNSAFE', 'inflight-other-gate');
 }
 
 // A run refuses while an unresolved quarantine exists. The operator resolves it with `adopt` or `retire`.
@@ -778,12 +826,15 @@ export function assertNoQuarantine(paths) {
   if (listQuarantines(paths).length > 0) throw fail('STREAM_UNSAFE', 'quarantine-pending');
 }
 
-const TEST_ROBOT_PREFIX = 'codex-auth-test-';
+// The robot name family each gate owns. Any family member is a run-owned test robot of that gate.
+export const GATE_ROBOT_PREFIX = Object.freeze({ c2: 'codex-auth-test-', c5: 'copilot-live-' });
 
-// Recovery touches only the robot named by `inflight.json`. Any other test robot is the operator's to delete.
+// Recovery touches only the robot named by the gate's marker. Any other robot of the gate's family is the operator's to delete.
 // `robots` is the in-RoboTeam inventory: `[{ id, name, codexAuthPresent }]`.
-export function planRecovery({ inflight, robots }) {
-  const test = robots.filter((robot) => typeof robot.name === 'string' && robot.name.startsWith(TEST_ROBOT_PREFIX));
+export function planRecovery({ gate = 'c2', inflight, robots }) {
+  if (!GATES.includes(gate)) throw fail('USAGE', 'bad-variable');
+  const prefix = GATE_ROBOT_PREFIX[gate];
+  const test = robots.filter((robot) => typeof robot.name === 'string' && robot.name.startsWith(prefix));
   if (test.some((robot) => robot.name !== inflight?.robotName)) throw fail('RUNTIME_PREREQ_FAILED', 'unowned-leftover-robot');
   if (!inflight) return { action: 'none', robot: null };
   const robot = test.find((entry) => entry.name === inflight.robotName) || null;
@@ -923,21 +974,46 @@ export function collectScanReferences(paths, { uid = currentUid() } = {}) {
   return sets;
 }
 
-// Reports the relative file and a camelCase field name only. Never a value.
+export const SCAN_FILE_LIMIT = 512 * 1024 * 1024;
+
+// The field names whose needles (raw, base64 and base64url at every alignment; lib/leak-scan-decoders.mjs) occur in `bytes`.
+function leakedFields(bytes, needles) {
+  const text = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : String(bytes);
+  return needles.filter(({ forms }) => forms.some((form) => text.includes(form))).map(({ name }) => name);
+}
+
+// Reports the relative file and a camelCase field name only. Never a value. A file the scan cannot fully read is never skipped
+// silently: an oversized or unreadable file, and an embedded or on-disk zip that cannot be decoded, is listed in `undecodable` with a
+// fixed reason, and the caller fails closed on it.
 export function scanLeaks(directory, tokenSets) {
   const secrets = leakSecrets(tokenSets);
   // A scan with nothing to look for would pass vacuously, which must never read as clean.
   if (secrets.length === 0) throw fail('STREAM_UNSAFE', 'scan-reference-missing');
+  const needles = secrets.map(({ name, value }) => ({ name, forms: secretNeedles(value).filter((form) => form.length >= 8) }));
   const leaks = [];
+  const undecodable = [];
   let filesScanned = 0;
+  const record = (file, fields) => { for (const field of new Set(fields)) leaks.push({ file: path.relative(directory, file), field }); };
   for (const file of walk(directory)) {
-    const stat = fs.lstatSync(file);
-    if (stat.size > 512 * 1024 * 1024) continue;
+    const relative = path.relative(directory, file);
+    let bytes;
+    try {
+      const stat = fs.lstatSync(file);
+      if (stat.size > SCAN_FILE_LIMIT) { undecodable.push({ file: relative, reason: 'oversize' }); continue; }
+      bytes = fs.readFileSync(file);
+    } catch { undecodable.push({ file: relative, reason: 'unreadable' }); continue; }
     filesScanned += 1;
-    const text = fs.readFileSync(file).toString('utf8');
-    for (const field of new Set(findSecretLeaks(text, secrets))) leaks.push({ file: path.relative(directory, file), field });
+    record(file, leakedFields(bytes, needles));
+    try {
+      // Playwright's HTML report embeds the report and its attachments as a deflated zip; an on-disk zip hides its entries the same way.
+      const entries = file.endsWith('.zip') ? readZipEntries(bytes) : file.endsWith('.html') ? embeddedZipEntries(bytes.toString('utf8')) : [];
+      for (const entry of entries) record(file, leakedFields(entry.data, needles));
+    } catch (error) {
+      if (!(error instanceof LeakScanDecodeError)) throw error;
+      undecodable.push({ file: relative, reason: error.reason });
+    }
   }
-  return { leaks, filesScanned };
+  return { leaks, filesScanned, undecodable };
 }
 
 const AUTH_REJECTION = /\b401\b|unauthori[sz]ed|not logged in|log ?in|refresh token|token (?:expired|revoked|was already used)/i;
@@ -961,13 +1037,16 @@ export function describeFailure(error) {
   return { code: 'INTERNAL', reason: 'exception' };
 }
 
-// The outcome of one `run`, for both routes. Pure. Precedence: a leak (27), an unproven leak-scan coverage (route A, 14), a missing
-// result file, incomplete cleanup (26), the worker's first failure, a failing Playwright exit, then success.
-export function decideRunOutcome({ leaks, coverageFailure = false, result, exitedCode }) {
+// The outcome of one `run`, for both routes. Pure. Precedence: a leak (27), an artifact the scan could not fully decode (27), an unproven
+// leak-scan coverage (route A, 14), a missing result file, incomplete cleanup (26), the worker's first failure, a failing Playwright exit,
+// then success.
+export function decideRunOutcome({ leaks, undecodable = [], coverageFailure = false, result, exitedCode }) {
   const leaked = Array.isArray(leaks) ? leaks.length > 0 : Number(leaks) > 0;
+  const opaque = Array.isArray(undecodable) ? undecodable.length > 0 : Number(undecodable) > 0;
   const summary = { refreshedDuringRun: result?.stream?.refreshedDuringRun === true, authRejectionSuspected: result?.authRejectionSuspected === true,
     cleanup: result?.cleanup && Object.values(result.cleanup).every(Boolean) ? 'complete' : 'incomplete' };
   if (leaked) return { ...summary, result: 'failed', code: 'LEAK_DETECTED', reason: 'artifact-contains-token' };
+  if (opaque) return { ...summary, result: 'failed', code: 'LEAK_DETECTED', reason: 'artifact-undecodable' };
   if (coverageFailure) return { ...summary, result: 'failed', code: 'STREAM_UNSAFE', reason: 'scan-reference-missing' };
   if (result === null || result === undefined) return { ...summary, cleanup: 'incomplete', result: 'failed', code: 'INTERNAL', reason: 'no-result-file' };
   if (result.code === 'CLEANUP_INCOMPLETE' || (result.code !== 'OK' && summary.cleanup === 'incomplete')) {

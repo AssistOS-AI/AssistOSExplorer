@@ -11,6 +11,9 @@ import { program, readRegistryAndRuntime, validateLiveSkillsRuntimeBinding } fro
 // appear in argv, in JavaScript source, or in a syntax-error or stack excerpt. Failure output is a code, never a message.
 
 export const TEST_ROBOT_PREFIX = 'codex-auth-test-';
+// Spec 06 (gate c5) robots: `copilot-live-<uuid v4>`, from lib/copilot-live-skills.mjs `createLiveSkillsFixture`.
+export const C5_ROBOT_PREFIX = 'copilot-live-';
+export const RUNTIME_GATES = Object.freeze(['c2', 'c5']);
 
 const PROGRAM_CODES = ['INVALID_ARGUMENT', 'ROBOT_NOT_FOUND', 'WRONG_ROBOT', 'UNSAFE_PATH', 'TARGET_EXISTS', 'PAYLOAD_TOO_LARGE',
   'WRITE_VERIFY_FAILED', 'BUSY', 'NOT_FOUND', 'REMOVE_MISMATCH', 'TRANSCRIPT_MISSING', 'MALFORMED'];
@@ -33,7 +36,11 @@ async function makeHelpers(options = {}) {
   const procRoot = options.procRoot || '/proc';
   const expectedUid = Number.isInteger(options.expectedUid) ? options.expectedUid : 0;
   const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/;
-  const ROBOT_NAME = /^codex-auth-test-[A-Za-z0-9_-]{1,64}$/;
+  // A fixed table, never a caller-supplied pattern: each gate can only ever name its own robots.
+  const ROBOT_NAMES = {
+    c2: { prefix: 'codex-auth-test-', pattern: /^codex-auth-test-[A-Za-z0-9_-]{1,64}$/ },
+    c5: { prefix: 'copilot-live-', pattern: /^copilot-live-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/ },
+  };
   const AUTH_LIMIT = 64 * 1024;
   const O = fs.constants;
   const fail = (code) => Object.assign(new Error(code), { code });
@@ -74,8 +81,14 @@ async function makeHelpers(options = {}) {
     }
     return { bytes: Buffer.concat(chunks), exceeded };
   };
-  const validRobot = ({ robotId, robotName } = {}) => {
-    if (typeof robotId !== 'string' || !ROBOT_ID.test(robotId) || typeof robotName !== 'string' || !ROBOT_NAME.test(robotName)) {
+  const gateOf = (args) => {
+    const gate = args?.gate;
+    if (typeof gate !== 'string' || !Object.hasOwn(ROBOT_NAMES, gate)) throw fail('INVALID_ARGUMENT');
+    return ROBOT_NAMES[gate];
+  };
+  const validName = (robotName, gate) => typeof robotName === 'string' && gateOf({ gate }).pattern.test(robotName);
+  const validRobot = ({ robotId, robotName, gate } = {}) => {
+    if (typeof robotId !== 'string' || !ROBOT_ID.test(robotId) || !validName(robotName, gate)) {
       throw fail('INVALID_ARGUMENT');
     }
     return { robotId, robotName };
@@ -147,28 +160,33 @@ async function makeHelpers(options = {}) {
         && filled(value.last_refresh) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value.last_refresh);
     } catch { return false; }
   };
-  return { fs, dataRoot, procRoot, expectedUid, AUTH_LIMIT, fail, sha256, lstat, readNoFollow, readJson, readStdin, validRobot, checkRobot,
-    commandLines, robotCli, environmentNames, accessOnly, ROBOT_ID };
+  return { fs, dataRoot, procRoot, expectedUid, AUTH_LIMIT, fail, sha256, lstat, readNoFollow, readJson, readStdin, gateOf, validName, validRobot,
+    checkRobot, commandLines, robotCli, environmentNames, accessOnly, ROBOT_ID };
 }
 
-// Lists every robot, and for test robots only whether a native credential file is present (an lstat, never a read).
-export async function readRobotInventory({ prefix } = {}, options = {}) {
+// Lists every robot, and for the gate's test robots and every robot directory without readable metadata whether a native credential file is
+// present (an lstat, never a read). `authFilesPresent` counts native credential files across every robot directory, so an operator check
+// can prove that none is left anywhere.
+export async function readRobotInventory(args = {}, options = {}) {
   const h = await makeHelpers(options);
-  if (prefix !== 'codex-auth-test-') throw h.fail('INVALID_ARGUMENT');
+  const { prefix } = h.gateOf(args);
   const robots = `${h.dataRoot}/robots`;
   const stat = h.lstat(robots);
   if (stat === null || stat.isSymbolicLink() || !stat.isDirectory()) throw h.fail('UNSAFE_PATH');
   const result = [];
+  let authFilesPresent = 0;
   for (const entry of h.fs.readdirSync(robots, { withFileTypes: true })) {
     if (!entry.isDirectory() || !h.ROBOT_ID.test(entry.name)) continue;
     let metadata = null;
     try { metadata = h.readJson(`${robots}/${entry.name}/metadata.json`, 64 * 1024); } catch { /* reported with a null name */ }
     const name = typeof metadata?.name === 'string' ? metadata.name : null;
     const codingAgents = Array.isArray(metadata?.codingAgents) ? metadata.codingAgents.filter((agent) => typeof agent === 'string') : null;
-    const owned = name !== null && name.startsWith(prefix);
-    result.push({ id: entry.name, name, codingAgents, codexAuthPresent: owned ? h.lstat(`${robots}/${entry.name}/home/.codex/auth.json`) !== null : null });
+    const owned = name === null || name.startsWith(prefix);
+    const authPresent = h.lstat(`${robots}/${entry.name}/home/.codex/auth.json`) !== null;
+    if (authPresent) authFilesPresent += 1;
+    result.push({ id: entry.name, name, codingAgents, codexAuthPresent: owned ? authPresent : null });
   }
-  return { ok: true, robots: result };
+  return { ok: true, robots: result, authFilesPresent };
 }
 
 // The Codex client RoboTeam resolves for robot CLIs, from the tool cache. Two sources, because they exist at different times:
@@ -176,10 +194,11 @@ export async function readRobotInventory({ prefix } = {}, options = {}) {
 //     a codex-only robot's CLI has started, so only step 7 of the run reads it;
 //   - without a robot (preflight and the binding): `codex/current.json` and its generation, which RoboTeam's startup warm-up
 //     writes for the all-agents bundle, so they exist on any deployed RoboTeam.
-export async function readCodexClientIdentity({ robotId = null, robotName = null } = {}, options = {}) {
+export async function readCodexClientIdentity({ robotId = null, robotName = null, gate } = {}, options = {}) {
   const h = await makeHelpers(options);
+  h.gateOf({ gate });
   const withRobot = robotId !== null || robotName !== null;
-  const robot = withRobot ? h.checkRobot({ robotId, robotName }) : null;
+  const robot = withRobot ? h.checkRobot({ robotId, robotName, gate }) : null;
   const generations = `${h.dataRoot}/tool-cache/codex/generations/`;
   let generation;
   let announced = null;
@@ -223,8 +242,9 @@ export async function readCodexClientIdentity({ robotId = null, robotName = null
 // Hashes the native Codex binary of one tool-cache generation, so the host can tell which exact build a robot would run. The relative
 // path comes from the host's allowlist, one entry per platform. It is checked segment by segment and nothing outside the generation
 // is read. The digest of a public binary is not a credential.
-export async function readCodexNativeDigest({ generation, relativePaths } = {}, options = {}) {
+export async function readCodexNativeDigest({ generation, relativePaths, gate } = {}, options = {}) {
   const h = await makeHelpers(options);
+  h.gateOf({ gate });
   if (typeof generation !== 'string' || !/^[0-9a-f]{64}$/.test(generation) || relativePaths === null || typeof relativePaths !== 'object'
     || Array.isArray(relativePaths)) throw h.fail('INVALID_ARGUMENT');
   const segmentsOf = (relative) => {
@@ -349,8 +369,9 @@ export async function discardCodexAuth(args, options = {}) {
 
 // Reads RoboTeam's session file and ALA's own transcript for the run folder. Never a credential file and never the
 // retired robot-scoped session path. Only booleans and fixed fields are returned.
-export async function readCodexTurnIdentity({ workspaceRoot, folder, robotId, completionToken } = {}, options = {}) {
+export async function readCodexTurnIdentity({ workspaceRoot, folder, robotId, completionToken, gate } = {}, options = {}) {
   const h = await makeHelpers(options);
+  h.gateOf({ gate });
   if (typeof workspaceRoot !== 'string' || !workspaceRoot.startsWith('/') || workspaceRoot === '/' || workspaceRoot.endsWith('/')
     || workspaceRoot.includes('\0') || /(?:^|\/)\.\.?(?:\/|$)/.test(workspaceRoot)
     || typeof folder !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(folder)
@@ -391,15 +412,16 @@ export async function readCodexTurnIdentity({ workspaceRoot, folder, robotId, co
 }
 
 // Counts robot CLI processes (cmdline holds robot-cli.mjs and --robot=<name>). The caller polls until zero.
-export async function waitRobotCliExit({ robotName } = {}, options = {}) {
+export async function waitRobotCliExit({ robotName, gate } = {}, options = {}) {
   const h = await makeHelpers(options);
-  if (typeof robotName !== 'string' || !/^codex-auth-test-[A-Za-z0-9_-]{1,64}$/.test(robotName)) throw h.fail('INVALID_ARGUMENT');
+  if (!h.validName(robotName, gate)) throw h.fail('INVALID_ARGUMENT');
   return { ok: true, count: h.robotCli(robotName).length };
 }
 
 // The linked ALA source as the RoboTeam container sees it.
 export async function readAlaSource(args = {}, options = {}) {
   const h = await makeHelpers(options);
+  h.gateOf(args);
   try { return { ok: true, realpath: h.fs.realpathSync(options.alaPath || '/Agent/linked/AdvancedLanguageAgent') }; } catch { throw h.fail('NOT_FOUND'); }
 }
 
@@ -518,9 +540,14 @@ export function bindingUnchanged(before, after) {
   try { assert.deepStrictEqual(left, right); return true; } catch { return false; }
 }
 
-export function createCodexRuntime({ box, runCommand = defaultRunCommand, git = defaultGit, sleep = defaultSleep } = {}) {
+// `gate` is fixed for the runtime's lifetime and passed to every in-RoboTeam program, which checks the robot name against that gate's
+// own grammar. There is no default: spec 07 passes 'c2' and spec 06 'c5'.
+export function createCodexRuntime({ box, gate, runCommand = defaultRunCommand, git = defaultGit, sleep = defaultSleep } = {}) {
   assert.ok(typeof box === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(box), 'Set the exact SMOKE_PLOINKY_BOX_CONTAINER name.');
+  if (!RUNTIME_GATES.includes(gate)) throw new CodexAuthError('USAGE', 'bad-variable');
   let roboTeamContainerId = null;
+  // Only the identity fields travel, with the runtime's own gate; a caller cannot widen the gate per call.
+  const robotArgs = (robot) => ({ robotId: robot?.robotId, robotName: robot?.robotName, gate });
   const inRoboTeam = async (fn, args, { input = '', options = {}, timeoutMs } = {}) => {
     assert.ok(roboTeamContainerId, 'The RoboTeam runtime is not bound.');
     return parseResult(await runCommand(['exec', '-i', '--user', 'podman', box, 'podman', 'exec', '-i', roboTeamContainerId,
@@ -549,14 +576,17 @@ export function createCodexRuntime({ box, runCommand = defaultRunCommand, git = 
       roboTeamContainerId = containerId;
     },
     // RoboTeam level.
-    async robotInventory() { return (await inRoboTeam(readRobotInventory, { prefix: TEST_ROBOT_PREFIX })).robots; },
-    async clientIdentity(robot = {}) { return inRoboTeam(readCodexClientIdentity, { robotId: robot.robotId ?? null, robotName: robot.robotName ?? null }); },
-    async inject(robot, bytes) { return inRoboTeam(injectCodexAuth, robot, { input: bytes }); },
+    gate,
+    async robotInventory() { return (await api.robotInventoryReport()).robots; },
+    // The inventory with the count of native credential files across every robot directory.
+    async robotInventoryReport() { const { robots, authFilesPresent } = await inRoboTeam(readRobotInventory, { gate }); return { robots, authFilesPresent }; },
+    async clientIdentity(robot = {}) { return inRoboTeam(readCodexClientIdentity, { robotId: robot.robotId ?? null, robotName: robot.robotName ?? null, gate }); },
+    async inject(robot, bytes) { return inRoboTeam(injectCodexAuth, robotArgs(robot), { input: bytes }); },
     async readForCopyBack(robot, { timeoutMs = 30_000, intervalMs = 1000 } = {}) {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
         try {
-          const result = await inRoboTeam(readCodexAuthForCopyBack, robot);
+          const result = await inRoboTeam(readCodexAuthForCopyBack, robotArgs(robot));
           return { bytes: Buffer.from(result.base64, 'base64'), size: result.size, mode: result.mode };
         } catch (error) {
           if (error.code !== 'BUSY' || Date.now() >= deadline) throw error;
@@ -564,15 +594,15 @@ export function createCodexRuntime({ box, runCommand = defaultRunCommand, git = 
         }
       }
     },
-    async remove(robot, expectedSha256) { return inRoboTeam(removeCodexAuth, robot, { input: JSON.stringify({ expectedSha256 }) }); },
+    async remove(robot, expectedSha256) { return inRoboTeam(removeCodexAuth, robotArgs(robot), { input: JSON.stringify({ expectedSha256 }) }); },
     // Route A: the native binary's digest for the generation the robot would run (non-secret arguments, empty stdin).
-    async nativeDigest({ generation, relativePaths }) { return inRoboTeam(readCodexNativeDigest, { generation, relativePaths }, { timeoutMs: 60_000 }); },
+    async nativeDigest({ generation, relativePaths }) { return inRoboTeam(readCodexNativeDigest, { generation, relativePaths, gate }, { timeoutMs: 60_000 }); },
     // Route-A recovery: removes the leftover copy inside the container and polls BUSY like `readForCopyBack`.
     async discard(robot, { timeoutMs = 30_000, intervalMs = 1000 } = {}) {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
         try {
-          const { removed, accessOnly } = await inRoboTeam(discardCodexAuth, robot);
+          const { removed, accessOnly } = await inRoboTeam(discardCodexAuth, robotArgs(robot));
           return { removed, accessOnly };
         } catch (error) {
           if (error.code !== 'BUSY' || Date.now() >= deadline) throw error;
@@ -580,8 +610,8 @@ export function createCodexRuntime({ box, runCommand = defaultRunCommand, git = 
         }
       }
     },
-    async turnIdentity(args) { return inRoboTeam(readCodexTurnIdentity, args); },
-    async cliCount(robotName) { return (await inRoboTeam(waitRobotCliExit, { robotName })).count; },
+    async turnIdentity(args) { return inRoboTeam(readCodexTurnIdentity, { ...args, gate }); },
+    async cliCount(robotName) { return (await inRoboTeam(waitRobotCliExit, { robotName, gate })).count; },
     async waitCliExit(robotName, { timeoutMs = 180_000, intervalMs = 2000 } = {}) {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
@@ -590,7 +620,7 @@ export function createCodexRuntime({ box, runCommand = defaultRunCommand, git = 
         await sleep(intervalMs);
       }
     },
-    async alaRealpath() { return (await inRoboTeam(readAlaSource, {})).realpath; },
+    async alaRealpath() { return (await inRoboTeam(readAlaSource, { gate })).realpath; },
     // The binding recorded before and after the run, from read-only sources only.
     async readBinding({ workspaceRoot, smokeRepository, includeClient = true }) {
       const outer = await api.inspectBox();

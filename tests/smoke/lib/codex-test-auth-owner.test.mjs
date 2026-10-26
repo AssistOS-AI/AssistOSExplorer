@@ -1363,6 +1363,8 @@ test('the spec wires route A in the documented order: recovery before the owner 
     const calls = [...spec.matchAll(new RegExp(`\\b${name}\\(([^;]*?)\\)(?:;|\\))`, 'g'))].map((match) => match[1]).filter((argument) => argument.startsWith('paths'));
     assert.ok(calls.length >= 1, name);
     for (const argument of calls) assert.match(argument, /\broute\b/, `${name}(${argument})`);
+    // Spec 07 is gate c2: every marker call names it, so it can never touch the spec 06 (c5) marker.
+    for (const argument of calls) assert.match(argument, /\bgate: 'c2'/, `${name}(${argument})`);
   }
   // ROOT is created only by ensurePrivateRoot, under route A, with the owner directory forbidden.
   assert.equal(spec.split('ensurePrivateRoot(paths').length, 2);
@@ -1374,10 +1376,10 @@ test('the spec wires route A in the documented order: recovery before the owner 
   }
   assert.match(spec, /if \(route === 'stream'\) recordBefore\(session\.state\.loaded\.summary\)/);
   // Order: browser recovery (marker removal), then the recovery refusal, then the owner read, then the new marker, then qualification, then injection.
-  const recovery = at('removeInflight(paths, { route })');
+  const recovery = at("removeInflight(paths, { route, gate: 'c2' })");
   const refusal = at('if (recoveryRefusal) throw recoveryRefusal;');
   const load = at('await session.load({ ownerFile: resolved.file })');
-  const marker = at('createInflight(paths, { runId, robotName, folder, route })');
+  const marker = at("createInflight(paths, { runId, robotName, folder, route, gate: 'c2' })");
   const qualify = at('checkClientQualification({ runtime, identity: client })');
   const inject = at('await session.inject(robot)');
   assert.ok(recovery < refusal && refusal < load && load < marker && marker < qualify && qualify < inject, 'the steps are out of order');

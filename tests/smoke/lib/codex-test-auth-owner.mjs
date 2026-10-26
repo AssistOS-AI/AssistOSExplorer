@@ -276,6 +276,8 @@ export function planOwnerRun({ pendingRecovery, ownerGateFailure }) {
 
 // The credential bytes of one run, with their moves. `runtime` is the Box runner (inject, readForCopyBack, remove, discard). Nothing
 // is written: the derived bytes stay in memory, in the robot copy and nowhere else. The session needs the host lock to be held.
+// `injectWindowMs` is the time the credential is still needed after the inject: a fixed number (spec 07), or a function evaluated at
+// inject time (spec 06, whose window ends at a fixed deadline).
 export function createOwnerCredentialSession({ runtime, runDeadline, injectWindowMs, now = Date.now, uid = currentUid(), readOwner = readOwnerAuth }) {
   const state = { lockHeld: false, loaded: null, runtimeBytes: null, persisted: false, removed: false, injected: false, injectConfirmed: false,
     derived: false, accountClaim: null, gates: { atDerive: null, atInject: null }, runtimeCopy: null, recoveredCopy: null };
@@ -319,7 +321,8 @@ export function createOwnerCredentialSession({ runtime, runDeadline, injectWindo
     async inject(robot) {
       needLock();
       if (!state.loaded || state.gates.atDerive?.result !== 'pass') throw fail('USAGE', 'bad-variable');
-      gate('atInject', { expMs: state.loaded.expMs, now: now(), remainingRunMs: injectWindowMs });
+      const windowMs = typeof injectWindowMs === 'function' ? injectWindowMs() : injectWindowMs;
+      gate('atInject', { expMs: state.loaded.expMs, now: now(), remainingRunMs: windowMs });
       state.injected = true;
       await runtime.inject(robot, state.loaded.derived);
       state.injectConfirmed = true;

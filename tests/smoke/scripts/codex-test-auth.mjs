@@ -103,11 +103,11 @@ async function seed(paths, env) {
 }
 
 // Box-level, read-only facts for the report. Anything that fails here is an unmet prerequisite.
-async function readRuntimeFacts(env) {
+async function readRuntimeFacts(env, gate = 'c2') {
   const box = env.SMOKE_PLOINKY_BOX_CONTAINER;
   const workspaceRoot = env.SMOKE_WORKSPACE_ROOT;
   if (typeof box !== 'string' || box === '' || !absoluteEnv(workspaceRoot)) throw new CodexAuthError('USAGE', 'bad-variable');
-  const runtime = createCodexRuntime({ box });
+  const runtime = createCodexRuntime({ box, gate });
   try {
     const outer = await runtime.inspectBox();
     const registry = await runtime.registryRuntime(workspaceRoot);
@@ -156,11 +156,16 @@ async function preflight(paths, env) {
 
 async function scanLeaksCommand(paths, env, argv) {
   const directory = assertArtifactDirectory(argv[3] ?? env.SMOKE_ARTIFACT_DIR, { paths, forbiddenRoots: forbiddenRoots({ ...env, SMOKE_ARTIFACT_DIR: undefined }) });
-  const { leaks, filesScanned } = scanLeaks(directory, collectScanReferences(paths));
+  return scanVerdict(scanLeaks(directory, collectScanReferences(paths)), { stream: paths.stream, artifactDirectory: directory });
+}
+
+// A found token and an artifact the scan could not fully decode both fail with exit 27; findings carry file and field names only.
+function scanVerdict({ leaks, filesScanned, undecodable }, extra) {
   const leaked = leaks.length > 0;
-  return { command: 'scan-leaks', result: leaked ? 'failed' : 'done', code: leaked ? 'LEAK_DETECTED' : 'OK',
-    reason: leaked ? 'artifact-contains-token' : null, stream: paths.stream, artifactDirectory: directory, leaks: leaks.length, filesScanned,
-    findings: leaks };
+  const opaque = undecodable.length > 0;
+  return { command: 'scan-leaks', result: leaked || opaque ? 'failed' : 'done', code: leaked || opaque ? 'LEAK_DETECTED' : 'OK',
+    reason: leaked ? 'artifact-contains-token' : opaque ? 'artifact-undecodable' : null, ...extra, leaks: leaks.length, filesScanned,
+    findings: leaks, undecodable };
 }
 
 // The directories route A must keep every other root away from: the located owner directory joins the forbidden roots of ROOT and of the
@@ -234,11 +239,7 @@ async function scanLeaksOwner(paths, env, argv) {
       if (!(error instanceof CodexAuthError)) throw error;
       return { command: 'scan-leaks', result: 'failed', ...describeFailure(error), stream: null, artifactDirectory: directory, ownerReferences };
     }
-    const { leaks, filesScanned } = scanned;
-    const leaked = leaks.length > 0;
-    return { command: 'scan-leaks', result: leaked ? 'failed' : 'done', code: leaked ? 'LEAK_DETECTED' : 'OK',
-      reason: leaked ? 'artifact-contains-token' : null, stream: null, artifactDirectory: directory, leaks: leaks.length, filesScanned,
-      findings: leaks, ownerReferences };
+    return { ...scanVerdict(scanned, { stream: null, artifactDirectory: directory }), ownerReferences };
   } finally { for (const buffer of ownerBuffers) buffer.fill(0); }
 }
 
@@ -296,8 +297,8 @@ async function run(paths, env) {
   for (const quarantine of listQuarantines(paths).filter((id) => !quarantinesBefore.has(id))) {
     try { sets.push(fs.readFileSync(path.join(paths.streamDir, `quarantine-${quarantine}.json`))); } catch { /* skipped */ }
   }
-  const { leaks } = scanLeaks(directory, sets);
-  return { ...base, ...decideRunOutcome({ leaks, result, exitedCode: exited.code }) };
+  const { leaks, undecodable } = scanLeaks(directory, sets);
+  return { ...base, ...decideRunOutcome({ leaks, undecodable, result, exitedCode: exited.code }), undecodable: undecodable.length };
 }
 
 // Route A. The parent reads the owner login before and after the worker runs and keeps both reads in memory. They are the leak-scan
@@ -355,11 +356,12 @@ async function runOwner(paths, env) {
     references = [...(pre ? ownerScanReferences(pre) : []), ...(post ? ownerScanReferences(post) : [])];
     // With no owner read at all and a worker that never derived a credential, nothing could have leaked, so the scan is skipped.
     let leaks = [];
+    let undecodable = [];
     let leakScan = 'skipped';
-    if (references.length > 0) { ({ leaks } = scanLeaks(directory, references)); leakScan = 'scanned'; }
-    const outcome = decideRunOutcome({ leaks, coverageFailure: coverage === 'unproven', result, exitedCode: exited.code });
+    if (references.length > 0) { ({ leaks, undecodable } = scanLeaks(directory, references)); leakScan = 'scanned'; }
+    const outcome = decideRunOutcome({ leaks, undecodable, coverageFailure: coverage === 'unproven', result, exitedCode: exited.code });
     return { ...base, ...outcome, ownerGate, spawnedForRecovery: plan.spawnedForRecovery, ownerChangedDuringRun: pre && post ? !pre.equals(post) : null,
-      leakScanCoverage: coverage, leakScan };
+      leakScanCoverage: coverage, leakScan, undecodable: undecodable.length };
   } finally {
     pre?.fill(0);
     post?.fill(0);
