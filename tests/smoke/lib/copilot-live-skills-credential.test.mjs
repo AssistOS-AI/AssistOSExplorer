@@ -471,12 +471,29 @@ for (const [point, robot, authPresent, discardResult] of [
     assert.equal(c.runtime.calls.includes('remove-links'), false, 'recovery never removes links one by one');
     assert.equal(readInflight(c.paths, { route: 'owner', gate: 'c5' }), null);
     assert.equal(lifecycle.result.recovered, true);
-    // (f) and G13: recovery never reads the owner login, and recovered comes before derived.
+    // (f): recovery never reads the owner login (the reader of this case fails the test if it is called).
     assert.ok(c.logs.indexOf('[codex-auth] c5 stage recovered') > c.logs.indexOf('[codex-auth] c5 stage begin'));
     await lifecycle.finish();
     if (authPresent) assert.deepEqual(readResult(c).recoveredCopy, { removed: true, accessOnly: true });
   });
 }
+
+test('G13: after a recovery the same run reads the owner login, so the stages are begin, recovered, derived, and nothing is read before', async (t) => {
+  const runtime = fakeRuntime({ robots: [{ id: ROBOT.robotId, name: NAMES.robotName }], authPresent: true, discardResult: { removed: true, accessOnly: true } });
+  const c = setup(t, { runtime });
+  fs.mkdirSync(c.paths.root, { recursive: true, mode: 0o700 });
+  createInflight(c.paths, { route: 'owner', gate: 'c5', runId: RUN_ID, ...NAMES });
+  const lifecycle = c.create();
+  await lifecycle.begin({ workspaceRoot: c.workspaceRoot });
+  await lifecycle.recover({ create: createLiveSkillsFixture, ownedFor: ownedFor(c) });
+  assert.deepEqual(c.ownerReads, [], 'no owner read before the recovery completed');
+  runtime.robots.length = 0;
+  await lifecycle.derive();
+  assert.equal(c.ownerReads.length, 1);
+  const stages = c.logs.map((line) => line.replace('[codex-auth] c5 stage ', ''));
+  assert.deepEqual(stages.slice(0, 3), ['begin', 'recovered', 'derived']);
+  await lifecycle.finish();
+});
 
 test('G4: a copy that was not access-only is refused only after the robot and folders are gone', async (t) => {
   const c = crashedAt(t, { robot: true, authPresent: true, discardResult: { removed: true, accessOnly: false } });

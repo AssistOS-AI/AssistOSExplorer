@@ -151,13 +151,20 @@ test.describe('Deployed Copilot live skills', () => {
             let approvalFailure;
             const remaining = () => Math.max(1, LIVE_SKILLS_TURN_TIMEOUT_MS - (Date.now() - hostStarted));
             // A native completion that fails or runs out of time is classified from the sanitized chat text (G10); it is never retried.
+            // A harness failure (a capture refused by the binding, source or runtime guards) is never a native turn failure: it stops
+            // the poll at once and is raised as it is, like an approval refusal.
+            let captureFailure;
             const nativeFailure = async (error) => {
+                if (captureFailure) return captureFailure;
                 if (error instanceof CodexAuthError || approvalFailure) return error;
                 const visible = await copilot.locator('#chatList').innerText({ timeout: 5000 }).catch(() => '');
                 return classifyLiveSkillsTurnFailure(visible.slice(-4000), { timedOut: Date.now() - hostStarted >= LIVE_SKILLS_TURN_TIMEOUT_MS });
             };
             try { await expect.poll(async () => {
-                snapshot = await reader.capture({ sessionId, fixture });
+                try { snapshot = await reader.capture({ sessionId, fixture }); } catch (error) {
+                    captureFailure = error;
+                    return true;
+                }
                 evidence.lastRuntime = snapshot;
                 evidence.currentPhase.elapsedMs = Date.now() - hostStarted;
                 try {
@@ -171,6 +178,7 @@ test.describe('Deployed Copilot live skills', () => {
                 return isCompletedLiveSkillsTurn(snapshot, baselineIds);
             }, { timeout: remaining(), intervals: [500], message: `${label}: one completed persisted native turn within 150 seconds` }).toBe(true); }
             catch (error) { throw await nativeFailure(error); }
+            if (captureFailure) throw captureFailure;
             if (approvalFailure) throw approvalFailure;
             if (snapshot?.session?.messages?.some(message => message.role === 'assistant' && !baselineIds.includes(message.id) && message.status === 'failed')) {
                 throw await nativeFailure(new Error('native completion failed'));
@@ -324,8 +332,10 @@ test.describe('Deployed Copilot live skills', () => {
                 const found = (await runtime.robotInventory().catch(() => [])).filter(entry => entry.name === fixture.robotName);
                 if (found.length === 1) fixture.robotId = found[0].id;
             }
-            if (robot()) settled = await lifecycle.settle(robot());
-            else settled = { cliExited: true, credentialSettled: true };
+            try {
+                if (robot()) settled = await lifecycle.settle(robot());
+                else settled = { cliExited: true, credentialSettled: true };
+            } catch (error) { settled = { cliExited: false, credentialSettled: false }; failureCollector.add('credential settle', error); }
             if (!settled.cliExited) cleanupErrors.push('credential or CLI did not settle; retain ownership');
             if (owned && cleanupErrors.length === 0) {
                 try {
@@ -341,11 +351,15 @@ test.describe('Deployed Copilot live skills', () => {
             if (errors.length) failureCollector.add('browser errors', new Error(liveSkillsDiagnosticText(errors)));
             if (evidence.result !== 'passed' || primaryError || failureCollector.failures.length) evidence.result = 'failed';
             evidence.secondaryFailures = failureCollector.failures.map(error => error.message);
-            await failureCollector.required('live-skills evidence attachment', () => testInfo.attach('copilot-live-skills-evidence.json', {
-                body: Buffer.from(liveSkillsDiagnosticText(evidence)), contentType: 'application/json',
-            }));
-            // The generation check, the marker (only with every cleanup flag true), result.json and the host lock, always last.
-            evidence.credential = await lifecycle.finish();
+            try {
+                await failureCollector.required('live-skills evidence attachment', () => testInfo.attach('copilot-live-skills-evidence.json', {
+                    body: Buffer.from(liveSkillsDiagnosticText(evidence)), contentType: 'application/json',
+                }));
+            } finally {
+                // The generation check, the marker (only with every cleanup flag true), result.json and the host lock, always last,
+                // whatever happened before.
+                evidence.credential = await lifecycle.finish();
+            }
         }
         failureCollector.throwIfAny({ primaryError, label: 'deployed Copilot live skills' });
         assert.equal(evidence.credential.code, 'OK', `codex-test-auth ${evidence.credential.code} ${evidence.credential.reason}`);

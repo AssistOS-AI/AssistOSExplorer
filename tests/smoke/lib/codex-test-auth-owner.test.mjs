@@ -1526,8 +1526,8 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(stubLog)}, JSON.stringify({ args, list: args.includes('--list'), gate: process.env.CODEX_TEST_AUTH_GATE ?? null,
   live: process.env.SMOKE_COPILOT_LIVE_SKILLS ?? null, native: process.env.SMOKE_COPILOT_CODEX ?? null, source: process.env.CODEX_TEST_AUTH_SOURCE ?? null,
   runId: process.env.SMOKE_RUN_ID ?? null }) + '\\n');
-if (args.includes('--list')) { console.log('Total: 1 test in 1 file'); process.exit(0); }
 const scenario = JSON.parse(process.env.STUB_SCENARIO);
+if (args.includes('--list')) { console.log(scenario.listed ?? 'Total: 1 test in 1 file'); process.exit(0); }
 const directory = path.join(process.env.SMOKE_ARTIFACT_DIR, 'codex-auth');
 if (scenario.truncatedZip) fs.writeFileSync(path.join(process.env.SMOKE_ARTIFACT_DIR, 'trace.zip'), 'PK\\u0003\\u0004 truncated');
 if (scenario.result) fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ ...scenario.result, runId: process.env.SMOKE_RUN_ID }));
@@ -1577,8 +1577,10 @@ test('gate c5: the parent runs spec 06 with the C5 flags and a UUID v4 run id, a
     assert.ok(run.args.includes('specs/06-copilot-live-skills.spec.mjs') && !run.args.some((arg) => arg.includes('07-copilot-codex-native')));
     assert.deepEqual([run.gate, run.live, run.native, run.source, run.runId], ['c5', '1', null, 'owner', passed.line.runId]);
   }
-  assert.deepEqual(Object.keys(passed.parent).sort(), ['cleanup', 'code', 'leakScanCoverage', 'leaks', 'reason', 'runId', 'undecodable']);
-  assert.deepEqual(passed.parent, { runId: passed.line.runId, code: 'OK', reason: null, leakScanCoverage: 'proven', leaks: 0, undecodable: 0, cleanup: C5_FLAGS });
+  // Exactly the receipt contract's keys: runId, code, leakScanCoverage, leaks, undecodable and the six cleanup flags.
+  assert.deepEqual(Object.keys(passed.parent).sort(), ['cleanup', 'code', 'leakScanCoverage', 'leaks', 'runId', 'undecodable']);
+  assert.deepEqual(Object.keys(passed.parent.cleanup), Object.keys(C5_FLAGS));
+  assert.deepEqual(passed.parent, { runId: passed.line.runId, code: 'OK', leakScanCoverage: 'proven', leaks: 0, undecodable: 0, cleanup: C5_FLAGS });
   assert.equal(fs.lstatSync(passed.parentFile).mode & 0o777, 0o600);
   // An operator-supplied run id must be a UUID v4 for c5.
   const badId = p.run({ scenario: { result: C5_PASS, exit: 0 }, extra: { SMOKE_RUN_ID: 'codex-auth-20261026T120000Z-1' } });
@@ -1598,6 +1600,11 @@ test('gate c5: the parent result reports the worker cleanup flags and failure; a
   const missing = p.run({ scenario: { exit: 1 } });
   assert.deepEqual([missing.line.code, missing.line.reason], ['INTERNAL', 'no-result-file']);
   assert.deepEqual(missing.parent.cleanup, Object.fromEntries(Object.keys(C5_FLAGS).map((flag) => [flag, false])));
+  // A failure after the spawn decision (here the selection count) still leaves a failing verdict, not a missing one.
+  const selection = p.run({ scenario: { listed: 'Total: 2 tests in 1 file', exit: 0 } });
+  assert.deepEqual([selection.status, selection.line.code, selection.line.reason], [20, 'RUNTIME_PREREQ_FAILED', 'selection-count']);
+  assert.deepEqual([selection.parent.code, selection.parent.leakScanCoverage], ['RUNTIME_PREREQ_FAILED', 'unproven']);
+  assert.equal(selection.runs.filter((run) => !run.list).length, 0, 'the run itself never started');
 });
 
 test('G7 at the parent: an undecodable artifact fails the C5 run with LEAK_DETECTED artifact-undecodable, also in parent-result.json', (t) => {

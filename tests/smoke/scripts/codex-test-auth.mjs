@@ -318,11 +318,12 @@ async function run(paths, env) {
 }
 
 // G6: <SMOKE_ARTIFACT_DIR>/codex-auth/parent-result.json, the C5 parent's verdict that receipt v2 reads. Exactly these keys: the run id,
-// the outcome code and reason, the leak-scan coverage, the leak and undecodable counts, and the six cleanup flags of the worker's
-// result.json (all false when there is none). Created once, 0600, never overwritten; it carries no token, file name or field name.
+// the outcome code, the leak-scan coverage, the leak and undecodable counts, and the six cleanup flags of the worker's result.json (all
+// false when there is none). The reason stays in the stdout line. Created once, 0600, never overwritten; it carries no token, file name
+// or field name.
 function writeParentResult(directory, { runId, outcome, coverage, leaks, undecodable, result }) {
   const flags = Object.fromEntries(C5_CLEANUP_FLAGS.map((flag) => [flag, result?.cleanup?.[flag] === true]));
-  const record = { runId, code: outcome.code ?? 'OK', reason: outcome.reason ?? null, leakScanCoverage: coverage,
+  const record = { runId, code: outcome.code ?? 'OK', leakScanCoverage: coverage,
     leaks: Array.isArray(leaks) ? leaks.length : 0, undecodable: Array.isArray(undecodable) ? undecodable.length : 0, cleanup: flags };
   const folder = path.join(directory, 'codex-auth');
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -371,11 +372,12 @@ async function runOwner(paths, env, gate) {
   const ownerGate = ownerGateFailure ? ownerGateFailure.reason : 'pass';
   // Every owner buffer and every buffer derived from one is wiped in the `finally`, after the scan has read them.
   let references = [];
+  let parentWritten = false;
   try {
     const plan = planOwnerRun({ pendingRecovery, ownerGateFailure });
     if (!plan.spawn) {
       const early = { ...base, result: 'failed', ...plan.earlyFailure, ownerGate, spawnedForRecovery: false };
-      if (gate === 'c5') writeParentResult(directory, { runId, outcome: early, coverage: 'n/a', leaks: [], undecodable: [], result: null });
+      if (gate === 'c5') { parentWritten = true; writeParentResult(directory, { runId, outcome: early, coverage: 'n/a', leaks: [], undecodable: [], result: null }); }
       return early;
     }
     const childEnv = { ...env, ...profile.childEnv, SMOKE_RUN_ID: runId, SMOKE_ARTIFACT_DIR: directory,
@@ -405,8 +407,15 @@ async function runOwner(paths, env, gate) {
     const line = { ...base, ...outcome, ownerGate, spawnedForRecovery: plan.spawnedForRecovery, ownerChangedDuringRun: pre && post ? !pre.equals(post) : null,
       leakScanCoverage: coverage, leakScan, undecodable: undecodable.length };
     // G6: the parent's verdict for the receipt, written after the scan, on every outcome of a C5 run.
-    if (gate === 'c5') writeParentResult(directory, { runId, outcome: line, coverage, leaks, undecodable, result });
+    if (gate === 'c5') { parentWritten = true; writeParentResult(directory, { runId, outcome: line, coverage, leaks, undecodable, result }); }
     return line;
+  } catch (error) {
+    // A failure after the spawn decision (for example the selection count) still leaves a failing verdict, never a missing one.
+    if (gate === 'c5' && !parentWritten) {
+      parentWritten = true;
+      try { writeParentResult(directory, { runId, outcome: describeFailure(error), coverage: 'unproven', leaks: [], undecodable: [], result: null }); } catch { /* the original failure is reported */ }
+    }
+    throw error;
   } finally {
     pre?.fill(0);
     post?.fill(0);
