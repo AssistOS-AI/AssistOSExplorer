@@ -71,6 +71,10 @@ const DISPOSITIONS = Object.freeze({
     signals: ['verified-router-client'],
     disposition: 'Loads the mounted Ploinky AgentMcpClient for the workflow listing script.',
   },
+  'roboTeamAgent/server/proxy-pool/proxy-client.mjs': {
+    signals: ['verified-router-client'],
+    disposition: 'Delegates proxy leases, releases, and assignment reads to the mounted Ploinky AgentMcpClient descriptor verifier.',
+  },
   'roboTeamAgent/server/soul-gateway-connection.mjs': {
     signals: ['generated-router-key'],
     disposition: 'Sends the generated agent credential only through the verified generated-local Router descriptor transport, which refreshes and checks the descriptor before each request.',
