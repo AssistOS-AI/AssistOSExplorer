@@ -84,7 +84,7 @@ async function harness(t) {
     const contractFiles = ['server/robot-skillsets.mjs', 'copilot/src/lib/storage/conversationSessionStore.mjs', 'copilot/src/lib/execution/alaTranscript.mjs'];
     const contractHashes = Object.fromEntries(contractFiles.map(file => [file, liveSkillsHash(fs.readFileSync(`${codeRoot}/${file}`))]));
     const operate = async action => { let result; await operateLiveSkillsFixture({ action, fixture, workspaceRoot: root, expectedRepository: repository, contractHashes },
-        { codeRoot, dataRoot, service, emit: value => { result = value; } }); return result; };
+        { codeRoot, dataRoot, service, fsApi, emit: value => { result = value; } }); return result; };
     const makeController = overrides => createOwnedLiveSkillsFixture({ fixture, workspaceRoot: root, api, listRepositories, fsTool, operate, ...overrides });
     const controller = makeController();
     const inventory = id => skillCatalogRequest({ skillsets: service, robot: robots.get(fixture.robotId), input: id ? { sessionId: id } : {} });

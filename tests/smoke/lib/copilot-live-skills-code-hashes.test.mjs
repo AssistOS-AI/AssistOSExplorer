@@ -5,6 +5,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { readLiveSkillsCodeHashes as candidate } from './copilot-live-skills-runtime.mjs';
+import { createLiveSkillsFixture } from './copilot-live-skills.mjs';
+import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
 
 // Baseline reproduction loads only the self-contained helper, without product imports.
 const baseline = process.env.LIVE_SKILLS_BASELINE_HELPER;
@@ -181,4 +183,36 @@ test('serialized helper has no ambient dependencies and retains production defau
     assert.deepEqual(await serialized({ expectedRepository: f.repository, contractFiles: files }, { codeRoot: f.code, fsApi: f.api }), await f.run());
     assert.match(candidate.toString(), /codeRoot = '\/code'/);
     assert.doesNotMatch(candidate.toString(), /import\(['"](?:\/code|\.\/)/);
+});
+
+// The fixture operation checks its contract by the same descriptor identity as the reader. Real same-content copies are
+// placed under /code, so only the modelled bind (equal dev/ino) makes them the verified source objects.
+test('fixture contract hashes accept a bind-mounted /code with equal dev/ino and reject a different inode', async t => {
+    const f = fixture(t);
+    for (const file of files) {
+        fs.mkdirSync(path.dirname(`${f.code}/${file}`), { recursive: true });
+        fs.copyFileSync(`${f.source}/${file}`, `${f.code}/${file}`);
+    }
+    const contractHashes = Object.fromEntries(files.map(file => [file, hash(fs.readFileSync(`${f.source}/${file}`))]));
+    const prepare = async owned => {
+        let emitted = null;
+        const runGit = args => (args[0] === '--version' ? 'git version 2.0.0\n' : args.includes('--show-toplevel') ? `${owned.repositoryRoot}\n` : '');
+        await operateLiveSkillsFixture({ action: 'prepare', fixture: owned, workspaceRoot: f.root, expectedRepository: f.repository, contractHashes },
+            { codeRoot: f.code, fsApi: f.api, runGit, emit: value => { emitted = value; } });
+        return emitted;
+    };
+    const bound = createLiveSkillsFixture(f.root);
+    assert.equal((await prepare(bound))?.prepared, true);
+    assert.ok(fs.lstatSync(bound.workspace).isDirectory());
+    assert.deepEqual(f.reads, files.map(file => `${f.code}/${file}`), 'The contract bytes are read through the runtime path.');
+    // One file is a copy (another inode) under the bound root.
+    f.aliases.delete(`${f.code}/${files[0]}`);
+    const copiedFile = createLiveSkillsFixture(f.root);
+    await assert.rejects(prepare(copiedFile), /not the verified source file object/);
+    assert.equal(fs.lstatSync(copiedFile.workspace, { throwIfNoEntry: false }), undefined, 'Nothing is created after a refused contract.');
+    // The whole /code is a copy.
+    f.aliases.clear();
+    const copiedRoot = createLiveSkillsFixture(f.root);
+    await assert.rejects(prepare(copiedRoot), /not the verified source directory object/);
+    assert.equal(fs.lstatSync(copiedRoot.workspace, { throwIfNoEntry: false }), undefined);
 });

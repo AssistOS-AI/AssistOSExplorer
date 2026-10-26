@@ -1,8 +1,11 @@
 import { inspectSessionSkillLinks } from './copilot-live-skills.mjs';
+// A cycle with the runtime module, which ships this function; only the function binding is used, at call time.
+import { readLiveSkillsCodeHashes } from './copilot-live-skills-runtime.mjs';
 
 // Shipped only to the verified RoboTeam runtime. Actions are finite and confined to one run's paths.
+// `fsApi` reaches only the contract-hash read; offline tests use it to model a bind mount and macOS's missing /proc.
 export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot, expectedRepository, contractHashes }, {
-    codeRoot = '/code', dataRoot = '/data', service: suppliedService, runGit,
+    codeRoot = '/code', dataRoot = '/data', service: suppliedService, runGit, fsApi,
     emit = value => console.log(JSON.stringify(value)),
 } = {}) {
     const assert = (await import('node:assert/strict')).default;
@@ -23,13 +26,10 @@ export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot,
     assert.equal(fixture.robotName, `copilot-live-${fixture.runId}`);
     assert.ok(expectedRepository && expectedRepository.startsWith(`${workspaceRoot}/`));
     assert.ok(contractHashes && Object.keys(contractHashes).length > 0);
-    for (const [file, digest] of Object.entries(contractHashes)) {
-        assert.ok(/^[a-zA-Z0-9/.-]+\.mjs$/.test(file) && !file.split('/').includes('..'));
-        const source = `${expectedRepository}/roboTeamAgent/${file}`;
-        assert.equal(fs.realpathSync(source), source);
-        assert.equal(fs.realpathSync(`${codeRoot}/${file}`), source);
-        assert.equal(hash(fs.readFileSync(source)), digest, 'Fixture operation source differs from the verified checkout.');
-    }
+    // Ploinky binds /code directly from the verified source, so /code is the same directory object under another name and a
+    // realpath comparison cannot hold. The contract is checked by descriptor identity (dev/ino) and the bytes read through /code.
+    assert.deepEqual(await readLiveSkillsCodeHashes({ expectedRepository, contractFiles: Object.keys(contractHashes) }, { codeRoot, fsApi }),
+        contractHashes, 'Fixture operation source differs from the verified checkout.');
     const markerName = '.set2-live-fixture_codex.json';
     const ownership = { version: 1, runId: fixture.runId, workspace: fixture.workspace, repositoryRoot: fixture.repositoryRoot, robotName: fixture.robotName };
     function readRegular(file, root, limit = 1024 * 1024) {

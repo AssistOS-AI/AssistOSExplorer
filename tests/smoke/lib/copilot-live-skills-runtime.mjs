@@ -55,8 +55,9 @@ function command(args, input = '') {
 
 // The function source is shipped to the Box, so it may reference no module binding. Every path travels as a JSON value.
 export function program(fn, args) {
-    const helpers = (fn === readLiveSkillsSnapshot ? `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\n` : '')
-        + ([readLiveSkillsSnapshot, operateLiveSkillsFixture].includes(fn) ? `const inspectSessionSkillLinks = ${inspectSessionSkillLinks.toString()};\n` : '');
+    // Both the snapshot reader and the fixture operation check the contract by descriptor identity and guard the session links.
+    const helpers = [readLiveSkillsSnapshot, operateLiveSkillsFixture].includes(fn)
+        ? `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\nconst inspectSessionSkillLinks = ${inspectSessionSkillLinks.toString()};\n` : '';
     return `${helpers}(${fn.toString()})(${JSON.stringify(args)}).catch(() => { console.error('Invalid read-only runtime evidence'); process.exitCode = 1; });\n`;
 }
 

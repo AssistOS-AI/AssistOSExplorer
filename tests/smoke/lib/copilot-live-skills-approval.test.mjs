@@ -85,6 +85,9 @@ const corruptions = {
     'catalog revision mismatch': input => { input.snapshot.catalog.revision = 'b'.repeat(64); },
     'changed current helper': input => { input.snapshot.capturedFiles[input.fixture.control.name].helperSha256 = 'b'.repeat(64); },
     'excluded skill': input => { input.snapshot.session.skillExecution.entries.pop(); },
+    'skills directory of another session': input => { input.snapshot.session.skillExecution.skillsDirectory = `${input.fixture.workspace}/.roboteam/sessions/${randomUUID()}/skills`; },
+    'live link outside the session skills directory': input => { input.snapshot.liveLinks[input.fixture.control.name].destination = `${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}`; },
+    'retargeted managed link': input => { input.snapshot.catalog.links[0].target = `${input.fixture.repositoryRoot}/skills/foreign`; },
     'truncated detail': input => { input.ui.detail = input.ui.detail.slice(0, -1); },
 };
 for (const [name, corrupt] of Object.entries(corruptions)) test(`approval rejects ${name}`, () => {

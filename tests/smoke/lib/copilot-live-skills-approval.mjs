@@ -112,6 +112,10 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
     assert.equal(snapshot.catalog.revision, activeRevision);
     assert.equal(liveSkillsHash(snapshot.catalog.links), activeRevision);
     assert.ok(selected.length > 0 && new Set(selected.map(skill => skill.name)).size === selected.length);
+    // RoboTeam installs the managed links in the session-private skills directory and the sandbox projects that directory at
+    // <workspace>/.agents/skills, which is the path the native command names (alaSkillMountArguments).
+    const skillsDirectory = `${workspace}/.roboteam/sessions/${sessionId}/skills`;
+    assert.equal(snapshot.session.skillExecution.skillsDirectory, skillsDirectory, 'Skill directory must belong to this session.');
     const files = new Map();
     for (const skill of selected) {
         const source = liveSkillSources(fixture, skill, workspaceRoot);
@@ -122,12 +126,12 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
         assert.ok(snapshot.session.skillExecution.entries.some(item => item.identity === entry[0].identity));
         const destination = `${workspace}/.agents/skills/${skill.name}`;
         const sourcePath = `${fixture.repositoryRoot}/skills/${skill.name}`;
-        const links = snapshot.catalog.links.filter(link => link.destination === destination);
+        const links = snapshot.catalog.links.filter(link => link.name === skill.name);
         assert.equal(links.length, 1);
-        assert.equal(links[0].repoName, fixture.repositoryName);
-        assert.equal(links[0].sourcePath, `skills/${skill.name}`);
-        assert.equal(snapshot.liveLinks[skill.name].destination, destination);
-        assert.equal(snapshot.liveLinks[skill.name].linkTarget, links[0].linkTarget);
+        assert.equal(links[0].source, sourcePath);
+        assert.equal(links[0].target, sourcePath);
+        assert.equal(snapshot.liveLinks[skill.name].destination, `${skillsDirectory}/${skill.name}`);
+        assert.equal(snapshot.liveLinks[skill.name].linkTarget, links[0].target);
         assert.equal(snapshot.liveLinks[skill.name].resolvedSource, sourcePath);
         assert.equal(entry[0].sourcePath, sourcePath);
         for (const directory of [destination, sourcePath]) {

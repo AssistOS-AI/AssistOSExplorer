@@ -67,10 +67,15 @@ function productionCase(t) {
         fs.appendFileSync(target, `\nimport { writeFileSync as set2EvaluationWrite } from 'node:fs';\nset2EvaluationWrite(${JSON.stringify(marker)}, ${JSON.stringify(JSON.stringify({ evaluated: file }))}, { flag: 'wx', mode: 0o600 });\n`);
         return target;
     }
+    // macOS has no /proc: map only the descriptor observation of the contract-hash read; every file operation stays real.
+    const descriptors = new Map();
+    const fsApi = { ...fs, openSync(file, flags) { const fd = fs.openSync(file, flags); descriptors.set(fd, file); return fd; },
+        closeSync(fd) { descriptors.delete(fd); return fs.closeSync(fd); },
+        realpathSync(file) { if (process.platform !== 'linux' && /^\/proc\/self\/fd\/\d+$/.test(file)) return fs.realpathSync(descriptors.get(Number(path.basename(file)))); return fs.realpathSync(file); } };
     const run = async () => {
         try {
             await operateLiveSkillsFixture({ action: 'seed-defaults', fixture, workspaceRoot: root,
-                expectedRepository: repository, contractHashes }, { codeRoot, dataRoot,
+                expectedRepository: repository, contractHashes }, { codeRoot, dataRoot, fsApi,
                 emit: () => assert.fail('The existing-policy control must never reach mutation success.') });
             assert.fail('Expected the normal existing-policy refusal or the earlier source guard.');
         } catch (error) { return error; }
@@ -110,7 +115,8 @@ for (const file of imports) {
         assert.equal(c.ownedState(), before, 'Owned policy/link state changed.');
         assert.equal(fs.existsSync(c.marker), false, 'Foreign source alias evaluated before the source guard.');
         assert.equal(error.code, 'ERR_ASSERTION');
-        assert.match(error.message, /Expected values to be strictly equal/);
+        // The descriptor-identity contract read refuses the symlinked contract path (it was a realpath equality before /code became a bind).
+        assert.match(error.message, /Contract path must remain canonical without symlinks/);
         assert.doesNotMatch(error.message, /existing owned robot policy/);
     });
 }

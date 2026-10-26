@@ -371,6 +371,48 @@ test('runtime mounts accept the exact production tuples, including a space and U
     assert.equal(c.validate(full), full);
 });
 
+// Ploinky 56a7cc07 (cli/sandbox/docker/agentServiceManager.js) binds the agent source read-only at /code and the admitted
+// dependency node_modules read-only at /code/node_modules and at its own path; there is no staged code- directory any more.
+test('a Ploinky 56a7cc07 runtime (direct /code, /code/node_modules plus dependency record) validates', t => {
+    const c = mountCase(t);
+    const code = c.runtime.mounts.filter(mount => mount.Destination === '/code');
+    assert.deepEqual(code, [{ Type: 'bind', Source: c.source, Destination: '/code', RW: false }]);
+    assert.ok(!c.runtime.mounts.some(mount => mount.Source.includes('/container-runtime/owned-runtime/code-')), 'The case must not stage /code.');
+    const modules = c.runtime.dependencies.nodeModulesPath;
+    assert.deepEqual(c.runtime.mounts.filter(mount => mount.Destination === '/code/node_modules'), [{ Type: 'bind', Source: modules, Destination: '/code/node_modules', RW: false }]);
+    assert.deepEqual(c.runtime.mounts.filter(mount => mount.Destination === modules), [{ Type: 'bind', Source: modules, Destination: modules, RW: false }]);
+    assert.equal(c.validate(), c.runtime);
+    // The same runtime without its dependency record is refused, so the record is what admits /code/node_modules.
+    assert.throws(() => c.validate(c.clone(value => { delete value.dependencies; })), /admitted store dependency record/);
+});
+
+// Ploinky 56a7cc07 masks the Box host state <root>/.ploinky-box read-only in every agent runtime, with an empty guard directory
+// (cli/utils/runtime/controllerStateGuards.js: source <tmp>/ploinky-runtime-guards/<digest>/host). It overlaps no path the evidence reads.
+test('a runtime with the read-only .ploinky-box host-state mask validates', t => {
+    const c = mountCase(t);
+    const mask = bindMount('/tmp/ploinky-runtime-guards/0123456789abcdef01234567/host', `${c.root}/.ploinky-box`, false);
+    const masked = c.clone(value => value.mounts.push(mask));
+    assert.equal(c.validate(masked), masked);
+    assert.equal(c.validate(masked, { fixtureWorkspace: `${c.root}/copilot-live-skills-${randomUUID()}` }), masked);
+    // Control: the same guard source mounted over a protected path is still refused, so the mask passes because of where it lands.
+    assert.throws(() => c.validate(c.clone(value => value.mounts.push(bindMount(mask.Source, `${c.source}/server`, false)))));
+});
+
+test('the reader accepts an outer Box with the read-only .ploinky-box host-state mount', async t => {
+    const f = fixture(t);
+    const setup = readerSetup(f);
+    setup.state.outerMounts.push({ Type: 'bind', Source: '/tmp/ploinky-runtime-guards/0123456789abcdef01234567/host',
+        Destination: `${f.directory}/.ploinky-box`, RW: false });
+    const reader = await setup.create();
+    assert.equal(reader.workspaceRoot, f.directory);
+    assert.deepEqual((await reader.finish()).runtime, setup.runtime);
+    // Control: the same outer mount over the verified RoboTeam source is refused.
+    const shadowed = readerSetup(f);
+    shadowed.state.outerMounts.push({ Type: 'bind', Source: '/tmp/ploinky-runtime-guards/0123456789abcdef01234567/host',
+        Destination: `${f.repository}/roboTeamAgent`, RW: false });
+    await assert.rejects(shadowed.create());
+});
+
 test('the read-only controller pin is accepted only for a source that lives below it, and only as an exact read-only self bind', t => {
     const c = mountCase(t, { repositoryRelative: '.ploinky/repos/AchillesIDE' });
     const pin = path.join(c.root, '.ploinky');
