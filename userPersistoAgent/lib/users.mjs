@@ -1,6 +1,7 @@
 import { getStore, flush } from './store.mjs';
 import { recordAudit } from './audit.mjs';
 import { serializePersisted as serialize } from './serial.mjs';
+import { withPersistenceScope } from './persistence-scope.mjs';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/;
@@ -8,6 +9,8 @@ const USER_ID_RE = /^USER\.[0-9a-z]+$/i;
 const USER_STATUSES = new Set(['active', 'blocked']);
 const PRIVATE_USER_FIELDS = new Set(['passwordHash', 'loginAttempts', 'lastLoginAttempt']);
 const USER_SCAN_PAGE_SIZE = 500;
+const USERNAME_MAX_LENGTH = 64;
+const USERNAME_BACKFILL_KEY = 'users.usernameBackfill';
 
 function userError(code, message = code) {
     const error = new Error(message);
@@ -33,9 +36,20 @@ export function hasVerifiedMailbox(user) {
     return Boolean(user && typeof user.email === 'string' && user.email && user.emailVerifiedAt);
 }
 
-function normalizeUsername(username) {
+// Downstream agents treat a username of `admin` as administrator and use `:`
+// as a separator in subjects, so neither may ever be set as a username.
+function isReservedUsername(username) {
+    const lowered = String(username || '').toLowerCase();
+    return lowered === 'admin' || lowered.includes(':');
+}
+
+// `keepReserved` lets an update echo back a reserved name the account already
+// stored before reservation existed; new reserved values are still rejected.
+function normalizeUsername(username, { keepReserved = '' } = {}) {
     const normalized = String(username || '').trim();
     if (!normalized) return '';
+    const unchanged = Boolean(keepReserved) && normalized.toLowerCase() === String(keepReserved).trim().toLowerCase();
+    if (isReservedUsername(normalized) && !unchanged) throw userError('reserved_username', 'This username is reserved.');
     if (!USERNAME_RE.test(normalized)) {
         throw userError('invalid_username', 'Username must be 3-64 characters and use letters, numbers, dot, underscore, or dash.');
     }
@@ -57,6 +71,47 @@ async function findUserByUsername(store, username, excludeUserId = '') {
         const totalCount = Number(result.filteredCount ?? result.totalCount);
         if (!objects.length || (Number.isFinite(totalCount) && start >= totalCount) || objects.length < USER_SCAN_PAGE_SIZE) return null;
     }
+}
+
+// One paginated scan into a lowercase Set, so derivation never rescans per attempt.
+export async function loadTakenUsernames(store) {
+    const taken = new Set();
+    let start = 0;
+    while (true) {
+        const result = await store.select('user', {}, { start, pageSize: USER_SCAN_PAGE_SIZE });
+        const objects = result.objects || [];
+        for (const candidate of objects) {
+            const name = String(candidate.username || '').trim().toLowerCase();
+            if (name) taken.add(name);
+        }
+        start += objects.length;
+        const totalCount = Number(result.filteredCount ?? result.totalCount);
+        if (!objects.length || (Number.isFinite(totalCount) && start >= totalCount) || objects.length < USER_SCAN_PAGE_SIZE) return taken;
+    }
+}
+
+function trimUsernameEdges(value) {
+    return value.replace(/^[^a-z0-9]+/, '').replace(/[.-]+$/, '');
+}
+
+// Derives a unique, valid username from the email local part. The chosen value
+// is added to `takenSet` so repeated calls over one scan stay unique.
+export function deriveUsernameFromEmail(email, takenSet = new Set()) {
+    const address = String(email || '').trim().toLowerCase();
+    const at = address.lastIndexOf('@');
+    const local = (at >= 0 ? address.slice(0, at) : address).split('+')[0];
+    let base = trimUsernameEdges(local.replace(/[^a-z0-9._-]/g, '-').replace(/-{2,}/g, '-'));
+    base = trimUsernameEdges(base.slice(0, USERNAME_MAX_LENGTH));
+    if (!base) base = 'user';
+    if (base.length < 3) base = `${base}-user`;
+    const free = (candidate) => !isReservedUsername(candidate) && !takenSet.has(candidate);
+    let chosen = base;
+    for (let n = 2; !free(chosen); n++) {
+        const suffix = `-${n}`;
+        chosen = `${trimUsernameEdges(base.slice(0, USERNAME_MAX_LENGTH - suffix.length))}${suffix}`;
+    }
+    takenSet.add(chosen);
+    return chosen;
 }
 
 export async function getUserByEmail(email) {
@@ -171,7 +226,7 @@ export function updateUser(userId, patch = {}, { actorId = 'system' } = {}) {
             if (email !== user.email) throw userError('email_change_unsupported', 'Email addresses cannot be changed here.');
         }
         if (patch.username !== undefined) {
-            const username = normalizeUsername(patch.username);
+            const username = normalizeUsername(patch.username, { keepReserved: user.username });
             if (username && await findUserByUsername(store, username, user.id)) throw userError('username_taken', 'Username is already in use.');
             update.username = username;
         }
@@ -191,6 +246,65 @@ export function updateUser(userId, patch = {}, { actorId = 'system' } = {}) {
         await flush();
         return sanitizeUser(next);
     });
+}
+
+// One-time startup migration: gives every existing account that has an email but
+// no username a derived one. No outer users lock is taken because updateUser
+// locks itself and the lock is not reentrant. It never throws, because a failed
+// startup restarts the SSO provider; the marker is written only if nothing failed.
+export async function backfillUsernames() {
+    const summary = { skipped: false, updated: 0, failed: 0 };
+    try {
+        const store = await getStore();
+        if (await store.getSystemSettingByKey(USERNAME_BACKFILL_KEY)) return { ...summary, skipped: true };
+        const taken = await loadTakenUsernames(store);
+        const targets = [];
+        let start = 0;
+        while (true) {
+            const result = await store.select('user', {}, { sortBy: 'createdAt', start, pageSize: USER_SCAN_PAGE_SIZE });
+            const objects = result.objects || [];
+            for (const user of objects) {
+                if (!String(user.username || '').trim() && String(user.email || '').trim()) targets.push({ id: user.id, email: user.email });
+            }
+            start += objects.length;
+            const totalCount = Number(result.filteredCount ?? result.totalCount);
+            if (!objects.length || (Number.isFinite(totalCount) && start >= totalCount) || objects.length < USER_SCAN_PAGE_SIZE) break;
+        }
+        for (const target of targets) {
+            let code = '';
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    await updateUser(target.id, { username: deriveUsernameFromEmail(target.email, taken) }, { actorId: 'username-backfill' });
+                    code = '';
+                    summary.updated++;
+                    break;
+                } catch (error) {
+                    code = String(error?.code || 'unknown_error');
+                    if (code !== 'username_taken') break;
+                }
+            }
+            if (code) {
+                summary.failed++;
+                console.error(`[userPersisto] username backfill skipped ${target.id}: ${code}`);
+            }
+        }
+        if (!summary.failed) {
+            await withPersistenceScope(async () => {
+                const completedAt = new Date().toISOString();
+                await store.createSystemSetting({
+                    key: USERNAME_BACKFILL_KEY,
+                    value: { completedAt },
+                    updatedAt: completedAt,
+                    updatedBy: 'username-backfill',
+                });
+                await flush();
+            });
+        }
+    } catch (error) {
+        summary.failed++;
+        console.error(`[userPersisto] username backfill failed: ${String(error?.code || 'unknown_error')}`);
+    }
+    return summary;
 }
 
 export async function listUsers({ start = 0, pageSize = 50, search = '', excludeOnlyRole = '', includeRoleCounts = false } = {}) {

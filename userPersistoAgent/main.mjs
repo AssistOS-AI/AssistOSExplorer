@@ -5,6 +5,7 @@ import { getStore } from './lib/store.mjs';
 import { ensureSeedData } from './lib/bootstrap.mjs';
 import { startService } from './service/index.mjs';
 import { getOidcProvider } from './lib/oidc/provider.mjs';
+import { backfillUsernames } from './lib/users.mjs';
 
 function parsePort(value, name) {
     if (!/^[1-9][0-9]{0,4}$/.test(String(value)) || Number(value) > 65535) {
@@ -79,6 +80,8 @@ const startup = (async () => {
     store = await getStore();
     await ensureSeedData();
     await getOidcProvider();
+    // Runs before any request writer exists; it never throws out of startup.
+    await backfillUsernames();
     if (stopping) return;
     service = startService(servicePort);
     if (!service.listening) await once(service, 'listening');
