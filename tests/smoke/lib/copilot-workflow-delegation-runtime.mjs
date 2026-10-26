@@ -3,13 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createLiveSkillsRuntimeReader, readLiveSkillsCodeHashes, validateLiveSkillsRuntimeBinding, liveSkillsProtectedSources, normalizeLiveSkillsImageId } from './copilot-live-skills-runtime.mjs';
-import { liveSkillsHash } from './copilot-live-skills.mjs';
+import { inspectSessionSkillLinks, liveSkillsHash } from './copilot-live-skills.mjs';
 import { inspectBoxWorkspace } from './box-workspace.mjs';
 import { validateWorkspaceSourceMount } from './live-box.mjs';
 import { requireMount, rejectShadows } from './local-snapshot-bindings.mjs';
 
 export function delegationProgram(fn, args) {
-    return `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\n(${fn.toString()})(${JSON.stringify(args)}).catch(() => { console.error('Invalid bounded delegation evidence'); process.exitCode = 1; });\n`;
+    return `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\nconst inspectSessionSkillLinks = ${inspectSessionSkillLinks.toString()};\n(${fn.toString()})(${JSON.stringify(args)}).catch(() => { console.error('Invalid bounded delegation evidence'); process.exitCode = 1; });\n`;
 }
 
 export function delegationContractFiles(repository, fsApi = fs) {
@@ -78,7 +78,7 @@ export async function readDelegationSnapshot({ fixture, workspaceRoot, frontSess
     let workflow, flows;
     try {
         db.exec('BEGIN');
-        workflow = new WorkflowRegistry({ database: { db, file: databaseFile } }).getSync(fixture.workflowId);
+        workflow = new WorkflowRegistry({ directory: `${dataRoot}/roboflow/flows`, workspaceRoot }).getSync(fixture.workflowId);
         const store = new TaskFlowStore({ database: { db, file: databaseFile } });
         flows = db.prepare('SELECT id FROM workflow_runs').all().map(row => store.getSync(row.id))
             .filter(flow => flow.workflowTypeId === fixture.workflowId || flow.folder === fixture.workspace);
@@ -96,7 +96,7 @@ export async function readDelegationSnapshot({ fixture, workspaceRoot, frontSess
     const { workflowIdForTask } = await import(pathToFileURL(`${codeRoot}/copilot/src/lib/webchat/webchatWorkflowStatus.mjs`).href);
     function session(id, rawTask = null) {
         assert.match(id, /^[a-f0-9-]{36}$/);
-        const metadata = json(`${fixture.workspace}/.roboteam/sessions/${id}.json`, fixture.workspace);
+        const metadata = json(`${fixture.workspace}/.roboteam/sessions/${id}/config.json`, fixture.workspace);
         const composed = new ConversationSessionStore({ workingDir: fixture.workspace }).loadSession(id);
         let native;
         try { native = alaTranscript.readSessionSync(alaSessionsRoot(fixture.workspace), id); }
@@ -125,7 +125,7 @@ export async function readDelegationSnapshot({ fixture, workspaceRoot, frontSess
             .filter(id => fs.lstatSync(`${tasksRoot}/${id}/task.json`, { throwIfNoEntry: false }))
             .map(id => ({ id, record: json(`${tasksRoot}/${id}/task.json`, fixture.workspace) }))
             .filter(({ record }) => record.robotId === fixture.robotId && record.request?.runtimeTaskId === instance.runtimeTaskId && record.request?.workflowRunId === flow.id);
-        if (matches.length && fs.lstatSync(`${fixture.workspace}/.roboteam/sessions/${matches[0].id}.json`, { throwIfNoEntry: false })
+        if (matches.length && fs.lstatSync(`${fixture.workspace}/.roboteam/sessions/${matches[0].id}/config.json`, { throwIfNoEntry: false })
             && fs.lstatSync(`${tasksRoot}/${matches[0].id}/executions/${instance.runtimeTaskId}.json`, { throwIfNoEntry: false })) {
             assert.equal(matches.length, 1);
             const definition = matches[0].record;
@@ -151,17 +151,18 @@ export async function readDelegationSnapshot({ fixture, workspaceRoot, frontSess
                 const receiptFile = `${receiptRoot}/${fixture.runId}_codex.json`;
                 if (fs.existsSync(receiptFile)) receipt = json(receiptFile, fixture.workspace);
             }
-            const link = `${fixture.workspace}/.agents/skills/${fixture.skillName}`;
-            if (fs.existsSync(link)) {
-                assert.ok(fs.lstatSync(link).isSymbolicLink()); assert.equal(fs.realpathSync(link), `${fixture.repositoryRoot}/skills/${fixture.skillName}`);
-                const installed = json(`${fixture.workspace}/.agents/.roboteam-links.json`, fixture.workspace);
-                assert.ok(Array.isArray(installed));
-                const selected = installed.filter(entry => entry.destination === link); assert.equal(selected.length, 1);
-                assert.equal(selected[0].repoName, fixture.repositoryName); assert.equal(selected[0].sourcePath, `skills/${fixture.skillName}`);
-                assert.equal(fs.readlinkSync(link), selected[0].linkTarget);
-                selectedLink = { source: fs.realpathSync(link), revision: hash(installed), destination: link, linkTarget: selected[0].linkTarget,
-                    helperSha256: hash(bytes(`${fixture.repositoryRoot}/skills/${fixture.skillName}/receipt.mjs`, fixture.repositoryRoot)) };
-            }
+            const execution = child.session.skillExecution;
+            const installed = await inspectSessionSkillLinks({ workspace: fixture.workspace, sessionId: definition.id, execution }, { fsApi: fs });
+            const selected = installed.links.filter(link => link.name === fixture.skillName); assert.equal(selected.length, 1);
+            const link = `${installed.directory}/${fixture.skillName}`;
+            assert.equal(fs.realpathSync(link), `${fixture.repositoryRoot}/skills/${fixture.skillName}`);
+            const { alaSkillMountArguments } = await import(pathToFileURL(`${codeRoot}/copilot/src/lib/execution/alaSkillMounts.mjs`).href);
+            const destination = `${fixture.workspace}/.agents/skills`;
+            const args = alaSkillMountArguments({ snapshot: execution, workspaceRoot, cwd: fixture.workspace, includeClaude: false });
+            assert.deepEqual(args.slice(-5), ['--folder', installed.directory, 'at', destination, 'expose']);
+            selectedLink = { source: selected[0].source, revision: execution.revision, destination: `${destination}/${fixture.skillName}`, linkTarget: selected[0].target,
+                helperSha256: hash(bytes(`${fixture.repositoryRoot}/skills/${fixture.skillName}/receipt.mjs`, fixture.repositoryRoot)) };
+            installed.recheck();
         }
     }
     for (const task of tasks) {

@@ -56,12 +56,13 @@ async function harness(t) {
     const runtimeManager = { workspaceRoot: root, skillsets, resolveCwd: async folder => { assert.equal(folder, fixture.workspace); return folder; },
         async startTask(robot, type, request) { dispatched = { robot, type, request }; return { taskId: request.runtimeTaskId }; }, stopTask: async () => assert.fail('No native stop.') };
     const service = new RoboFlowService({ robotStore, runtimeManager, skillsets, database, workspaceRoot: root });
+    await service.store.initialize();
     const workflow = await service.createWorkflow(delegationWorkflow(fixture)); assert.deepEqual(workflow.coverage.tasks[0].matchingRobotIds, [fixture.robotId]);
     registerProject({ dataDir: dataRoot, workspaceRoot: root }, fixture.workspace);
     const frontSessionId = randomUUID(), frontTurnId = randomUUID(), assistantId = randomUUID();
-    const sessionDir = `${fixture.workspace}/.roboteam/sessions`; fs.mkdirSync(sessionDir, { recursive: true });
+    const sessionDir = `${fixture.workspace}/.roboteam/sessions`; fs.mkdirSync(`${sessionDir}/${frontSessionId}`, { recursive: true });
     const frontMetadata = { version: 2, sessionId: frontSessionId, cwd: fixture.workspace, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), turns: [] };
-    fs.writeFileSync(`${sessionDir}/${frontSessionId}.json`, JSON.stringify(frontMetadata));
+    fs.writeFileSync(`${sessionDir}/${frontSessionId}/config.json`, JSON.stringify(frontMetadata));
     const descriptors = new Map(), fsApi = { ...fs, openSync(file, flags) { const fd = fs.openSync(file, flags); descriptors.set(fd, file); return fd; }, closeSync(fd) { descriptors.delete(fd); return fs.closeSync(fd); },
         realpathSync(file) { if (process.platform !== 'linux' && /^\/proc\/self\/fd\/\d+$/.test(file)) return fs.realpathSync(descriptors.get(Number(path.basename(file)))); return fs.realpathSync(file); } };
     const contractFiles = delegationContractFiles(repository), contractHashes = Object.fromEntries(contractFiles.map(file => [file, liveSkillsHash(fs.readFileSync(`${codeRoot}/${file}`))]));
@@ -69,21 +70,33 @@ async function harness(t) {
         contractFiles, contractHashes, expectedAla, markerFile: C4_WORKER_MARKER, baselineFiles }, { codeRoot, dataRoot, fsApi, emit: result => { value = result; } }); return value; };
     const baseline = await capture(); const startedAt = Date.now() - 1;
     const rawTools = [];
-    const launchReply = await action({ promptText: JSON.stringify({ action: 'start', workflowTypeId: fixture.workflowId, objective: delegationObjective(fixture), folder: fixture.workspace }),
+    const launchReply = await action({ promptText: JSON.stringify({ workflow: fixture.workflowId, prompt: delegationObjective(fixture) }),
         workingDir: fixture.workspace, agentClient: { async callToolWithoutWait(tool, input) { rawTools.push({ tool, input }); assert.equal(tool, 'roboflow_start_flow'); return service.startFlow(input); } } });
     assert.match(launchReply, /workflow started/); assert.equal(rawTools.length, 1); assert.ok(dispatched);
     const flow = (await service.store.list())[0], instance = flow.instances[0];
     const runtime = { taskId: instance.runtimeTaskId, robotId: fixture.robotId, type: dispatched.type, state: 'running', request: dispatched.request,
         alaSessionId: dispatched.request.alaSessionId, createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), result: '', logTail: '' };
     saveTaskExecution({ dataDir: dataRoot, workspaceRoot: root }, runtime);
-    const snapshotExecution = await installLiveSkills({ service: skillsets, robot: dispatched.robot, policyId: runtime.alaSessionId, cwd: fixture.workspace, client });
+    const snapshotExecution = await installLiveSkills({ service: skillsets, robot: dispatched.robot, policyId: runtime.alaSessionId,
+        sessionId: runtime.alaSessionId, cwd: fixture.workspace, client, workflowExecution: true });
     const { release, ...execution } = snapshotExecution; await release();
     const childTurnId = randomUUID(), childMetadata = { version: 2, sessionId: runtime.alaSessionId, cwd: fixture.workspace, skillPolicyRef: runtime.alaSessionId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
         engine: { type: 'ala', version: 1, sessionId: runtime.alaSessionId, home: workerHome, cwd: fixture.workspace, robotId: fixture.robotId, backend: 'codex' },
         skillExecution: { ...execution, active: false }, turns: [{ turnId: childTurnId, userMessageId: randomUUID(), assistantMessageId: randomUUID(), timestamp: new Date().toISOString(), status: 'completed', tasks: [] }] };
-    const childFile = `${sessionDir}/${runtime.alaSessionId}.json`; fs.writeFileSync(childFile, JSON.stringify(childMetadata));
+    const childFile = `${sessionDir}/${runtime.alaSessionId}/config.json`; fs.mkdirSync(path.dirname(childFile), { recursive: true }); fs.writeFileSync(childFile, JSON.stringify(childMetadata));
     const helper = `${fixture.workspace}/.agents/skills/${fixture.skillName}/receipt.mjs`;
-    const executionResult = spawnSync(process.execPath, [helper], { cwd: fixture.workspace, env: { ...process.env, HOME: workerHome }, encoding: 'utf8', timeout: 10_000 }); assert.equal(executionResult.status, 0, executionResult.stderr);
+    const { alaSkillMountArguments } = await module('copilot/src/lib/execution/alaSkillMounts.mjs');
+    const nativeSkills = `${fixture.workspace}/.agents/skills`;
+    assert.deepEqual(alaSkillMountArguments({ snapshot: execution, workspaceRoot: root, cwd: fixture.workspace, includeClaude: false }),
+        ['--folder', execution.skillsDirectory, 'at', nativeSkills, 'expose']);
+    // Model the native overlay only while the synthetic helper child runs; the host project retains no shared robot links.
+    fs.mkdirSync(path.dirname(nativeSkills), { recursive: true });
+    const runHelper = (file, home) => {
+        fs.symlinkSync(execution.skillsDirectory, nativeSkills);
+        try { return spawnSync(process.execPath, [file], { cwd: fixture.workspace, env: { ...process.env, HOME: home }, encoding: 'utf8', timeout: 10_000 }); }
+        finally { fs.unlinkSync(nativeSkills); }
+    };
+    const executionResult = runHelper(helper, workerHome); assert.equal(executionResult.status, 0, executionResult.stderr);
     const final = executionResult.stdout.trimEnd();
     function transcript(id, turnId, user, finalText, agent, continuationId, at) {
         const filename = `${fixture.workspace}/.roboteam/.ala/sessions/${id}.jsonl`; fs.mkdirSync(path.dirname(filename), { recursive: true });
@@ -106,11 +119,11 @@ async function harness(t) {
     frontMetadata.engine = { type: 'ala', version: 1, sessionId: frontSessionId, cwd: fixture.workspace, home: `${dataRoot}/robots/existing-front/home`, backend: 'opencode', robotId: 'existing-front' };
     frontMetadata.skillExecution = { active: false, live: true };
     frontMetadata.turns = [{ turnId: frontTurnId, userMessageId: randomUUID(), assistantMessageId: assistantId, timestamp: new Date(startedAt).toISOString(), status: 'completed', tasks: [taskId] }];
-    fs.writeFileSync(`${sessionDir}/${frontSessionId}.json`, JSON.stringify(frontMetadata));
+    fs.writeFileSync(`${sessionDir}/${frontSessionId}/config.json`, JSON.stringify(frontMetadata));
     await transcript(frontSessionId, frontTurnId, delegationPrompt(fixture), launchReply, 'opencode', 'c4-front-session', new Date(startedAt).toISOString());
     const snapshot = await capture(baseline.userFiles);
     const input = { snapshot, fixture, baseline, frontRobotId: 'existing-front', frontBackend: 'opencode', startedAt, finishedAt: Date.now() + 1 };
-    return { root, fixture, source, baseline, snapshot, input, service, robots, helper, workerHome, rawTools, runtime, capture };
+    return { root, fixture, source, baseline, snapshot, input, service, robots, helper, workerHome, rawTools, runtime, capture, runHelper };
 }
 
 test('C4 old delegation wiring cannot satisfy the current launch-workflow contract', () => {
@@ -172,19 +185,39 @@ for (const [name, corrupt] of Object.entries(corruptions)) test(`C4 rejects ${na
 test('C4 helper refuses execution from the front home and refuses copied/replayed helpers', async t => {
     const c = await harness(t);
     const frontHome = `${c.root}/_data/robots/existing-front/home`;
-    const wrongHome = spawnSync(process.execPath, [c.helper], { cwd: c.fixture.workspace, env: { ...process.env, HOME: frontHome }, encoding: 'utf8' });
+    const wrongHome = c.runHelper(c.helper, frontHome);
     assert.notEqual(wrongHome.status, 0); assert.match(wrongHome.stderr, /ENOENT/);
     const copy = `${c.fixture.workspace}/copy.mjs`; fs.copyFileSync(`${c.fixture.repositoryRoot}/skills/${c.fixture.skillName}/receipt.mjs`, copy);
-    assert.notEqual(spawnSync(process.execPath, [copy], { cwd: c.fixture.workspace, env: { ...process.env, HOME: c.workerHome } }).status, 0);
-    assert.notEqual(spawnSync(process.execPath, [c.helper], { cwd: c.fixture.workspace, env: { ...process.env, HOME: c.workerHome } }).status, 0);
+    assert.notEqual(c.runHelper(copy, c.workerHome).status, 0);
+    assert.notEqual(c.runHelper(c.helper, c.workerHome).status, 0);
 });
 
 test('C4 reader treats missing child session publication as incomplete evidence and never file-only success', async t => {
-    const c = await harness(t), child = `${c.fixture.workspace}/.roboteam/sessions/${c.runtime.alaSessionId}.json`;
+    const c = await harness(t), child = `${c.fixture.workspace}/.roboteam/sessions/${c.runtime.alaSessionId}/config.json`;
     fs.renameSync(child, `${child}.saved`);
     const incomplete = await c.capture(c.baseline.userFiles); assert.equal(incomplete.child, null);
     assert.throws(() => validateWorkflowDelegation({ ...c.input, snapshot: incomplete }));
     fs.renameSync(`${child}.saved`, child);
+});
+
+for (const field of ['skillsDirectory', 'revision']) test(`C4 reader rejects a foreign child skill ${field}`, async t => {
+    const c = await harness(t), file = `${c.fixture.workspace}/.roboteam/sessions/${c.runtime.alaSessionId}/config.json`;
+    const metadata = JSON.parse(fs.readFileSync(file, 'utf8'));
+    metadata.skillExecution[field] += '-foreign';
+    fs.writeFileSync(file, JSON.stringify(metadata));
+    await assert.rejects(c.capture(c.baseline.userFiles), field === 'skillsDirectory' ? /Skill directory must belong to this session/ : /Execution revision differs/);
+});
+
+test('C4 reader rejects a retargeted child skill link', async t => {
+    const c = await harness(t), link = `${c.fixture.workspace}/.roboteam/sessions/${c.runtime.alaSessionId}/skills/${c.fixture.skillName}`;
+    fs.unlinkSync(link); fs.symlinkSync(`${c.root}/DocumentationSkills/skills/human-report`, link);
+    await assert.rejects(c.capture(c.baseline.userFiles), /Session skill link was retargeted/);
+});
+
+test('C4 reader rejects retired shared skill records instead of treating them as session evidence', async t => {
+    const c = await harness(t);
+    fs.writeFileSync(`${c.fixture.workspace}/.agents/.roboteam-links.json`, '[]');
+    await assert.rejects(c.capture(c.baseline.userFiles), /Legacy shared skill records are not session evidence/);
 });
 
 test('C4 reader refuses changed source before evaluating it or reading proof state', async t => {
@@ -271,7 +304,7 @@ for (const [backend, continuation] of Object.entries({
     const records = fs.readFileSync(transcriptFile, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
     const record = records.find(row => row.type === 'continuation'); record.agent = backend; record.continuation = continuation;
     fs.writeFileSync(transcriptFile, records.map(row => JSON.stringify(row)).join('\n') + '\n');
-    const metadataFile = `${c.fixture.workspace}/.roboteam/sessions/${id}.json`;
+    const metadataFile = `${c.fixture.workspace}/.roboteam/sessions/${id}/config.json`;
     const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8')); metadata.engine.backend = backend;
     fs.writeFileSync(metadataFile, JSON.stringify(metadata));
     const snapshot = await c.capture(c.baseline.userFiles);
