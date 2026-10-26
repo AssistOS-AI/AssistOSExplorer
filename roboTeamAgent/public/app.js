@@ -456,9 +456,17 @@ async function loadRobotProxies() {
     try { listing = await api('api/robot-proxies'); } catch { return; }
     robotProxies = listing.proxies || {};
     useProxy = listing.useProxy !== false;
-    useProxyToggle.checked = useProxy;
+    showUseProxy();
     useProxyField.hidden = listing.available !== true;
     showRobotProxies();
+}
+
+// A workstation picks its connection when it starts, so the switch reaches running robots only after a restart.
+function showUseProxy() {
+    useProxyToggle.checked = useProxy;
+    useProxyField.title = useProxy
+        ? 'On for every robot: robots connect through their proxy. A running robot switches at its next start; stop and start it to apply now.'
+        : 'Off for every robot: robots connect directly and keep their proxy reserved. A running robot switches at its next start; stop and start it to apply now.';
 }
 
 useProxyToggle.addEventListener('change', async () => {
@@ -466,10 +474,7 @@ useProxyToggle.addEventListener('change', async () => {
     useProxyToggle.disabled = true;
     try {
         useProxy = (await api('api/proxy-settings', { method: 'PUT', body: { useProxy: requested } })).useProxy !== false;
-        formMessage.textContent = useProxy
-            ? 'Robots use proxies from their next workstation start.'
-            : 'Robots connect directly from their next workstation start; their proxies stay reserved.';
-        formMessage.className = 'message';
+        showUseProxy();
         showRobotProxies();
     } catch (error) { useProxyToggle.checked = !requested; showError(error); }
     finally { useProxyToggle.disabled = false; }
