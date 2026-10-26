@@ -893,8 +893,8 @@ test('a flow stores the signed owner and every dispatched phase carries owner an
 
 test('child workflows inherit the parent owner', async t => {
     const f = await fixture(t);
-    await f.service.createWorkflow({ id: 'child', name: 'Child', entryTaskId: 'one', tasks: [task('one')], edges: [] });
-    await f.service.createWorkflow({ id: 'parent', name: 'Parent', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
+    await f.service.createWorkflow({ id: 'child', name: 'Child', description: 'Child workflow', entryTaskId: 'one', tasks: [task('one')], edges: [] });
+    await f.service.createWorkflow({ id: 'parent', name: 'Parent', description: 'Parent workflow', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
         edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' }, { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });
     const parent = await f.service.startFlow({ workflowTypeId: 'parent', objective: 'Work', ownerPrincipal: 'user:alice' });
     await f.finish(0, `# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n# workflow\nchild\n# prompt\nDo it.`);
