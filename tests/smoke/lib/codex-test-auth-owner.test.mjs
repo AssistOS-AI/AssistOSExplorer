@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   CodexAuthError, EXIT_CODES, EXIT_REASONS, RUN_TIMEOUT_MS, acquireRunLock, assertArtifactDirectory, assertNoOtherRouteInflight, assertPrivateRoot, adoptQuarantine,
@@ -1512,22 +1512,53 @@ test('the synthetic-owner script writes a 0600 managed login that extractOwnerCr
 // ---- gate c5: the parent (G12, G13, G6, G7) --------------------------------------------------------------------------------------------
 
 // A scratch copy of tests/smoke whose Playwright runner is a stub, as in the route-A run test above, for CODEX_TEST_AUTH_GATE=c5.
-function c5Parent(t) {
+function c5Parent(t, { realReporters = false } = {}) {
   const base = sandbox(t);
   const scratch = path.join(base, 'smoke');
   fs.mkdirSync(path.join(scratch, 'scripts'), { recursive: true });
   fs.cpSync(path.join(SMOKE_DIR, 'lib'), path.join(scratch, 'lib'), { recursive: true });
   fs.copyFileSync(CLI, path.join(scratch, 'scripts', 'codex-test-auth.mjs'));
+  const configFile = path.join(scratch, 'playwright.config.mjs');
+  if (realReporters) {
+    fs.mkdirSync(path.join(scratch, 'specs'));
+    fs.writeFileSync(path.join(scratch, 'specs', '06-copilot-live-skills.spec.mjs'), `
+import { test } from ${JSON.stringify(pathToFileURL(path.join(SMOKE_DIR, 'node_modules/@playwright/test/index.mjs')).href)};
+const count = JSON.parse(process.env.STUB_SCENARIO).testCount ?? 1;
+for (let index = 0; index < count; index += 1) test('reporter lifecycle ' + index, async () => {});
+`);
+    // Keep the production reporters and output paths. Only the browser-free spec and account setup differ.
+    fs.writeFileSync(configFile, `
+import config from ${JSON.stringify(pathToFileURL(path.join(SMOKE_DIR, 'playwright.config.mjs')).href)};
+export default { ...config, testDir: ${JSON.stringify(path.join(scratch, 'specs'))}, globalSetup: undefined,
+  reporter: config.reporter.map(([name, options]) => [name === './lib/redacted-reporter.mjs'
+    ? ${JSON.stringify(path.join(SMOKE_DIR, 'lib/redacted-reporter.mjs'))} : name, options]) };
+`);
+  }
   const stubLog = path.join(base, 'stub-runs.jsonl');
   fs.writeFileSync(path.join(scratch, 'scripts', 'run-playwright.mjs'), `
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(stubLog)}, JSON.stringify({ args, list: args.includes('--list'), gate: process.env.CODEX_TEST_AUTH_GATE ?? null,
   live: process.env.SMOKE_COPILOT_LIVE_SKILLS ?? null, native: process.env.SMOKE_COPILOT_CODEX ?? null, source: process.env.CODEX_TEST_AUTH_SOURCE ?? null,
-  runId: process.env.SMOKE_RUN_ID ?? null }) + '\\n');
+  runId: process.env.SMOKE_RUN_ID ?? null, artifactDir: process.env.SMOKE_ARTIFACT_DIR }) + '\\n');
 const scenario = JSON.parse(process.env.STUB_SCENARIO);
-if (args.includes('--list')) { console.log(scenario.listed ?? 'Total: 1 test in 1 file'); process.exit(0); }
+if (${realReporters}) {
+  const invoke = (extraArgs, extraEnv = {}) => {
+    const child = spawnSync(process.execPath, [${JSON.stringify(path.join(SMOKE_DIR, 'node_modules/playwright/cli.js'))},
+      'test', '--config', ${JSON.stringify(configFile)}, ...args, ...extraArgs], {
+      env: { ...process.env, ...extraEnv }, stdio: 'inherit', timeout: 30_000,
+    });
+    if (child.error) throw child.error;
+    if (child.status !== 0) process.exit(child.status ?? 1);
+  };
+  if (args.includes('--list')) { invoke([]); process.exit(0); }
+  // Match the real runner's discovery followed by terminal execution, including exclusive reporter writes.
+  invoke(['--list'], { SMOKE_DISCOVERY_ONLY: '1' });
+  invoke([]);
+  if (scenario.repeatTerminal) invoke([]);
+} else if (args.includes('--list')) { console.log(scenario.listed ?? 'Total: 1 test in 1 file'); process.exit(0); }
 const directory = path.join(process.env.SMOKE_ARTIFACT_DIR, 'codex-auth');
 if (scenario.truncatedZip) fs.writeFileSync(path.join(process.env.SMOKE_ARTIFACT_DIR, 'trace.zip'), 'PK\\u0003\\u0004 truncated');
 if (scenario.result) fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ ...scenario.result, runId: process.env.SMOKE_RUN_ID }));
@@ -1566,6 +1597,36 @@ process.exit(scenario.exit);
 const C5_FLAGS = Object.freeze({ credentialPersisted: true, credentialRemoved: true, linksRemoved: true, sourceUnregistered: true, robotDeleted: true, folderDeleted: true });
 const C5_PASS = Object.freeze({ code: 'OK', reason: null, gate: 'c5', owner: { derived: true }, cleanup: C5_FLAGS });
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+test('gate c5: real Playwright parent listing cannot occupy discovery or terminal artifacts', { timeout: 120_000 }, (t) => {
+  const p = c5Parent(t, { realReporters: true });
+  const passed = p.run({ scenario: { result: C5_PASS, exit: 0 } });
+  assert.equal(passed.status, 0, JSON.stringify(passed.line));
+  assert.equal(passed.parent.code, 'OK');
+  assert.equal(passed.runs.length, 2);
+  assert.equal(passed.runs[0].artifactDir, path.join(passed.artifacts, 'parent-selection'));
+  assert.equal(passed.runs[1].artifactDir, passed.artifacts);
+  const read = (root, name) => JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
+  for (const root of [passed.runs[0].artifactDir, passed.artifacts]) {
+    const discovery = read(root, 'ledger-discovery_codex.json');
+    assert.equal(discovery.records.length, 1);
+    assert.deepEqual(discovery.records[0].results, [], 'listing must not execute the test');
+  }
+  assert.equal(fs.existsSync(path.join(passed.runs[0].artifactDir, 'ledger-outcomes_codex.json')), false);
+  const terminal = read(passed.artifacts, 'ledger-outcomes_codex.json');
+  assert.equal(terminal.status, 'passed');
+  assert.deepEqual(terminal.records[0].results, [{ status: 'passed', retry: 0 }]);
+  assert.equal(read(passed.artifacts, 'test-results/results.json').stats.expected, 1);
+
+  const rejected = p.run({ scenario: { result: C5_PASS, exit: 0, testCount: 2 } });
+  assert.deepEqual([rejected.status, rejected.line.reason, rejected.runs.length], [20, 'selection-count', 1]);
+  assert.equal(fs.existsSync(path.join(rejected.artifacts, 'ledger-outcomes_codex.json')), false);
+
+  const duplicate = p.run({ scenario: { result: C5_PASS, exit: 0, repeatTerminal: true } });
+  assert.notEqual(duplicate.status, 0, 'an existing terminal ledger must still fail closed');
+  assert.match(fs.readFileSync(path.join(duplicate.artifacts, 'codex-auth/playwright.log'), 'utf8'), /Smoke ledger artifact write failed/);
+  assert.deepEqual(read(duplicate.artifacts, 'ledger-outcomes_codex.json'), terminal, 'exclusive writes must preserve the original ledger');
+});
 
 test('gate c5: the parent runs spec 06 with the C5 flags and a UUID v4 run id, and writes parent-result.json with exactly the receipt keys', (t) => {
   const p = c5Parent(t);

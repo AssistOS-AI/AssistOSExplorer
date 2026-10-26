@@ -385,7 +385,9 @@ async function runOwner(paths, env, gate) {
       // Only an override is passed on. For the default path the worker resolves it itself, so its result says `default`.
       ...(ownerSource === 'override' ? { CODEX_TEST_AUTH_OWNER_AUTH: ownerFile } : {}) };
     const playwrightArgs = ['--project=chromium', '--workers=1', '--retries=0', profile.spec];
-    const listed = await runPlaywright([...playwrightArgs, '--list'], childEnv, ['ignore', 'pipe', 'pipe']);
+    // Playwright listing runs reporters too. Keep its outputs inside the scan root, away from the real runner's exclusive ledger files.
+    const selectionEnv = { ...childEnv, SMOKE_ARTIFACT_DIR: path.join(directory, 'parent-selection'), SMOKE_DISCOVERY_ONLY: '1' };
+    const listed = await runPlaywright([...playwrightArgs, '--list'], selectionEnv, ['ignore', 'pipe', 'pipe']);
     if (listed.code !== 0 || !/Total: 1 tests? in 1 files?/.test(listed.output)) throw new CodexAuthError('RUNTIME_PREREQ_FAILED', 'selection-count');
     const logDirectory = path.join(directory, 'codex-auth');
     fs.mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
