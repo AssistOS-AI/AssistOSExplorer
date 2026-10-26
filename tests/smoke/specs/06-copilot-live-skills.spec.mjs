@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { test, expect } from '../lib/fixtures.mjs';
-import { smokeConfig } from '../lib/config.mjs';
+import { smokeConfig, smokeArtifactPath } from '../lib/config.mjs';
 import { openExplorer } from '../lib/explorer.mjs';
 import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { setComposer, waitForWebchatIdle, cancelWebchatGenerationIfActive } from '../lib/webchat.mjs';
@@ -17,6 +17,10 @@ import {
 } from '../lib/copilot-live-skills.mjs';
 import { assertLiveSkillsLivePreflight, createOwnedLiveSkillsFixture, liveSkillsPhasePlan, liveSkillsOwnedLaunchURL, defaultRobotEvidence } from '../lib/copilot-live-skills-fixture.mjs';
 import { createLiveSkillsRuntimeReader } from '../lib/copilot-live-skills-runtime.mjs';
+import { CodexAuthError, resolveAuthPaths } from '../lib/codex-test-auth.mjs';
+import { ownerDirectoryFor } from '../lib/codex-test-auth-owner.mjs';
+import { createCodexRuntime } from '../lib/codex-test-auth-runtime.mjs';
+import { C5_TEST_TIMEOUT_MS, classifyLiveSkillsTurnFailure, createLiveSkillsCredentialLifecycle } from '../lib/copilot-live-skills-credential.mjs';
 import {
     ROBOTEAM_BASE_PATH, conversationFromSkillsURL, roboTeamRobotId, roboTeamApi, openConversationSkills,
     conversationSkillsState, setConversationSkill, refreshConversationSkills,
@@ -27,22 +31,32 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 // The conversation skill steps drive RoboTeam's Conversation skills page (WebChat menu), not an Explorer Settings tab.
 // Status: unexecuted until the deployment gate (D1/D2); Copilot-family flows are excluded from the 2026-10-02 post-merge acceptance.
-// This spec is blocked on SET-2 phase6 credential preflight and independently verified B+C setup.
+// It runs only under the route-A parent (`npm run test:copilot-live-skills`), which gives the run-owned Codex-only robot an access-only
+// credential derived from the owner login, for a qualified exact Codex build, and removes it before the robot is deleted
+// (lib/copilot-live-skills-credential.mjs). The release verifier is the one the runner hands down; there is no fallback.
 // This gate deliberately submits exactly seven native turns. A failed completion is never retried.
 test.describe('Deployed Copilot live skills', () => {
     test.skip(!enabled, 'Opt in with SMOKE_COPILOT_LIVE_SKILLS=1 and exact host/release pins.');
-    test.beforeAll(() => assertLiveSkillsLivePreflight());
+    test.beforeAll(() => assertLiveSkillsLivePreflight(process.env));
     test('one native conversation consumes local edits, additions, disable, re-enable and deletion', async ({ page }, testInfo) => {
-        test.setTimeout(25 * 60_000);
+        test.setTimeout(C5_TEST_TIMEOUT_MS);
+        const testStartedAt = Date.now();
         assert.equal(testInfo.retry, 0, 'Acceptance retries are forbidden.');
         assert.equal(testInfo.project.retries, 0, 'Configure zero retries for this gate.');
         assert.equal(testInfo.config.workers, 1, 'Run this gate with one worker.');
         assert.ok(smokeConfig.flags.failOnBrowserErrors, 'Browser errors may not be ignored by this gate.');
+        const { runId } = assertLiveSkillsLivePreflight(process.env);
+        assert.equal(path.resolve(here, '../../../../ploinky/tests/release/verifyExplorerReleaseBundle.mjs'), process.env.SMOKE_COPILOT_RELEASE_VERIFIER);
         // The Box mounts the workspace at its own host path. The verified root exists before any fixture does.
-        const reader = await createLiveSkillsRuntimeReader({ baseURL: smokeConfig.baseURL,
-            verifierPath: process.env.SMOKE_COPILOT_RELEASE_VERIFIER || path.resolve(here, '../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs') });
+        const reader = await createLiveSkillsRuntimeReader({ baseURL: smokeConfig.baseURL, verifierPath: process.env.SMOKE_COPILOT_RELEASE_VERIFIER });
         const workspaceRoot = reader.workspaceRoot;
-        const fixture = createLiveSkillsFixture(workspaceRoot);
+        const fixture = createLiveSkillsFixture(workspaceRoot, { runId });
+        const robot = () => (fixture.robotId ? { robotId: fixture.robotId, robotName: fixture.robotName } : null);
+        const paths = resolveAuthPaths(process.env);
+        const runtime = createCodexRuntime({ box: process.env.SMOKE_PLOINKY_BOX_CONTAINER, gate: 'c5' });
+        const lifecycle = createLiveSkillsCredentialLifecycle({ env: process.env, paths, runtime, runId, testStartedAt,
+            boxStartedAt: reader.release.liveBox.box.startedAt, resultFile: smokeArtifactPath('codex-auth', 'result.json'),
+            forbiddenRoots: [smokeConfig.repoRoot, workspaceRoot, smokeConfig.artifactRoot, ownerDirectoryFor(process.env, paths)].filter(Boolean) });
         const evidence = { kind: 'deployed-copilot-live-skills', runId: fixture.runId, phases: [], result: 'running', cleanup: 'pending' };
         evidence.releaseBefore = reader.release;
         const errors = [];
@@ -110,7 +124,9 @@ test.describe('Deployed Copilot live skills', () => {
             await unchangedPolicies();
             await copilot.bringToFront();
         }
-        async function turn({ label, selected, available, absent, revisionChange }) {
+        async function turn({ label, selected, available, absent, revisionChange }, index) {
+            // The window fence and the qualified-build check come first, so a turn that cannot finish in the window is never submitted.
+            await lifecycle.beforeTurn(robot(), index);
             evidence.currentPhase = { label, stage: 'baseline', startedAt: new Date().toISOString() };
             assert.equal(await browserSessionId(), sessionId, 'Browser changed conversation between phases.');
             await waitForWebchatIdle(copilot, smokeConfig.timeouts.navigation);
@@ -127,13 +143,20 @@ test.describe('Deployed Copilot live skills', () => {
             const input = copilot.waitForResponse(response => new URL(response.url()).pathname === '/webchat/input'
                 && response.request().method() === 'POST', { timeout: smokeConfig.timeouts.action });
             await setComposer(copilot, prompt);
+            lifecycle.beforeSubmit();
             await copilot.locator('#send').click();
             assert.equal((await input).status(), 204, 'Browser input was not accepted.');
             evidence.currentPhase.stage = 'persisted native completion';
             let snapshot;
             let approvalFailure;
             const remaining = () => Math.max(1, LIVE_SKILLS_TURN_TIMEOUT_MS - (Date.now() - hostStarted));
-            await expect.poll(async () => {
+            // A native completion that fails or runs out of time is classified from the sanitized chat text (G10); it is never retried.
+            const nativeFailure = async (error) => {
+                if (error instanceof CodexAuthError || approvalFailure) return error;
+                const visible = await copilot.locator('#chatList').innerText({ timeout: 5000 }).catch(() => '');
+                return classifyLiveSkillsTurnFailure(visible.slice(-4000), { timedOut: Date.now() - hostStarted >= LIVE_SKILLS_TURN_TIMEOUT_MS });
+            };
+            try { await expect.poll(async () => {
                 snapshot = await reader.capture({ sessionId, fixture });
                 evidence.lastRuntime = snapshot;
                 evidence.currentPhase.elapsedMs = Date.now() - hostStarted;
@@ -146,8 +169,12 @@ test.describe('Deployed Copilot live skills', () => {
                     return true;
                 }
                 return isCompletedLiveSkillsTurn(snapshot, baselineIds);
-            }, { timeout: remaining(), intervals: [500], message: `${label}: one completed persisted native turn within 150 seconds` }).toBe(true);
+            }, { timeout: remaining(), intervals: [500], message: `${label}: one completed persisted native turn within 150 seconds` }).toBe(true); }
+            catch (error) { throw await nativeFailure(error); }
             if (approvalFailure) throw approvalFailure;
+            if (snapshot?.session?.messages?.some(message => message.role === 'assistant' && !baselineIds.includes(message.id) && message.status === 'failed')) {
+                throw await nativeFailure(new Error('native completion failed'));
+            }
             evidence.currentPhase.stage = 'browser completion';
             await waitForWebchatIdle(copilot, remaining());
             assert.ok(Date.now() - hostStarted <= LIVE_SKILLS_TURN_TIMEOUT_MS, `${label} exceeded the 150 second completion budget.`);
@@ -171,11 +198,16 @@ test.describe('Deployed Copilot live skills', () => {
             receiptNames = Object.keys(snapshot.receipts);
             receiptHashes = Object.fromEntries(Object.entries(snapshot.receipts).map(([name, receipt]) => [name, liveSkillsHash(receipt)]));
             evidence.phases.push({ label, ...proof, durationMs: Date.now() - hostStarted, approvals: evidence.currentPhase.approvals });
+            lifecycle.turnCompleted();
             await unchangedPolicies();
             assert.deepEqual(errors, [], 'Browser errors occurred during the composed gate.');
             evidence.currentPhase.stage = 'passed';
         }
+        let settled = { cliExited: false, credentialSettled: false };
         try {
+            // Before sign-in, under the host lock: the exec-chain half of any recovery of a crashed C5 run.
+            evidence.currentPhase = { label: 'setup', stage: 'credential lifecycle begin' };
+            await lifecycle.begin({ workspaceRoot });
             evidence.currentPhase = { label: 'setup', stage: 'Explorer and fixture setup' };
             await openExplorer(page);
             observe(page);
@@ -194,11 +226,18 @@ test.describe('Deployed Copilot live skills', () => {
                     const payload = await response.json();
                     return payload.repositories;
                 }) });
+            // The browser half of a recovery (from observed state only), then the owner read and the marker, before anything of this run exists.
+            await lifecycle.recover({ create: createLiveSkillsFixture, ownedFor: recovered => createOwnedLiveSkillsFixture({ fixture: recovered, workspaceRoot, fsTool,
+                api: request => roboTeamApi(roboTeam, request), operate: (action, options) => reader.fixtureOperation(action, recovered, options),
+                listRepositories: async () => assert.fail('Recovery never registers a source.') }) });
+            await lifecycle.derive();
+            lifecycle.mark(fixture);
             existingDefaultBefore = await defaultPreservation();
             evidence.ownership = await owned.setup();
             receiptDirectoryCreated = true;
             defaultsBefore = policyEvidence(await catalog(), null, fixture.robotName);
             copilot = await page.context().newPage();
+            const cliDeadline = Date.now() + 180_000;
             await copilot.goto(liveSkillsOwnedLaunchURL(smokeConfig.baseURL, fixture), { waitUntil: 'domcontentloaded' });
             await expect(copilot.locator('#cmd')).toBeEditable({ timeout: smokeConfig.timeouts.navigation });
             await waitForWebchatIdle(copilot, smokeConfig.timeouts.navigation);
@@ -219,28 +258,31 @@ test.describe('Deployed Copilot live skills', () => {
             assert.equal(probe[0].enabled, true);
             probeIdentity = probe[0].identity;
             assert.equal(probeIdentity, `${fixture.repositoryName}/${fixture.probe.name}`);
-            await turn(phases[0]);
+            // The exact client build the robot's CLI runs is qualified, then the credential goes in, only just before the first turn.
+            await lifecycle.qualify(robot(), { cliDeadline });
+            await lifecycle.inject(robot());
+            await turn(phases[0], 0);
 
             fixture.probe.descriptorMarker = randomUUID();
             await owned.writeSource(`${fixture.repositoryName}/skills/${fixture.probe.name}/SKILL.md`, liveSkillSources(fixture, fixture.probe, workspaceRoot).descriptor);
-            await turn(phases[1]);
+            await turn(phases[1], 1);
 
             fixture.probe.helperMarker = randomUUID();
             await owned.writeSource(`${fixture.repositoryName}/skills/${fixture.probe.name}/receipt.mjs`, liveSkillSources(fixture, fixture.probe, workspaceRoot).helper);
-            await turn(phases[2]);
+            await turn(phases[2], 2);
 
             await owned.installSkill(fixture.added);
-            await turn(phases[3]);
+            await turn(phases[3], 3);
 
             await toggleProbe(false);
-            await turn(phases[4]);
+            await turn(phases[4], 4);
 
             await toggleProbe(true);
-            await turn(phases[5]);
+            await turn(phases[5], 5);
 
             const removed = await fsTool('delete_directory', { path: `${fixture.repositoryName}/skills/${fixture.probe.name}` });
             assert.match(removed.rawText || '', /^Successfully deleted directory /);
-            await turn(phases[6]);
+            await turn(phases[6], 6);
             assert.equal(evidence.phases.length, 7);
             assert.equal(new Set(turnIds).size, 7);
             evidence.releaseAfter = await reader.finish();
@@ -248,6 +290,7 @@ test.describe('Deployed Copilot live skills', () => {
             evidence.result = 'passed';
         } catch (error) {
             primaryError = error;
+            lifecycle.recordFailure(error);
             await failureCollector.required('pre-cleanup failure capture', () => captureLiveSkillsFailure({
                 error, evidence, collector: failureCollector, copilot, testInfo,
                 captureRuntime: sessionId && receiptDirectoryCreated ? () => reader.capture({ sessionId, fixture }) : null,
@@ -276,9 +319,18 @@ test.describe('Deployed Copilot live skills', () => {
             for (const candidate of [settings, copilot]) {
                 if (candidate && !candidate.isClosed()) await candidate.close().catch(error => { cleanupErrors.push('popup close failed'); failureCollector.add('popup close', error); });
             }
+            // G2: the credential is checked and removed by hash, then the CLI must exit, and only then do the owned resources go.
+            if (!fixture.robotId && owned?.state.robotCreationAttempted) {
+                const found = (await runtime.robotInventory().catch(() => [])).filter(entry => entry.name === fixture.robotName);
+                if (found.length === 1) fixture.robotId = found[0].id;
+            }
+            if (robot()) settled = await lifecycle.settle(robot());
+            else settled = { cliExited: true, credentialSettled: true };
+            if (!settled.cliExited) cleanupErrors.push('credential or CLI did not settle; retain ownership');
             if (owned && cleanupErrors.length === 0) {
                 try {
-                    await owned.cleanup({ quiescent: true });
+                    await lifecycle.cleanup(owned);
+                    assert.equal(owned.state.cleanup, 'passed', 'Owned fixture cleanup did not complete.');
                     if (existingDefaultBefore) assert.deepEqual(await defaultPreservation(), existingDefaultBefore, 'Existing default changed during cleanup.');
                 }
                 catch (error) { cleanupErrors.push('owned fixture cleanup failed; retain ownership'); failureCollector.add('owned fixture cleanup', error); }
@@ -292,7 +344,10 @@ test.describe('Deployed Copilot live skills', () => {
             await failureCollector.required('live-skills evidence attachment', () => testInfo.attach('copilot-live-skills-evidence.json', {
                 body: Buffer.from(liveSkillsDiagnosticText(evidence)), contentType: 'application/json',
             }));
+            // The generation check, the marker (only with every cleanup flag true), result.json and the host lock, always last.
+            evidence.credential = await lifecycle.finish();
         }
         failureCollector.throwIfAny({ primaryError, label: 'deployed Copilot live skills' });
+        assert.equal(evidence.credential.code, 'OK', `codex-test-auth ${evidence.credential.code} ${evidence.credential.reason}`);
     });
 });

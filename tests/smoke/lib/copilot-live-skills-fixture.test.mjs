@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { createLiveSkillsFixture, liveSkillSources, liveSkillsHash, liveSkillsPrompt, policyEvidence, validateLiveSkillsTurn } from './copilot-live-skills.mjs';
 import { readLiveSkillsSnapshot } from './copilot-live-skills-runtime.mjs';
-import { createOwnedLiveSkillsFixture, liveSkillsPhasePlan, defaultRobotEvidence, assertLiveSkillsLivePreflight, liveSkillsOwnedLaunchURL } from './copilot-live-skills-fixture.mjs';
+import { createOwnedLiveSkillsFixture, liveSkillsPhasePlan, defaultRobotEvidence, assertLiveSkillsLivePreflight, liveSkillsOwnedLaunchURL, assertCodexDelegationLiveBlocked, LIVE_SKILLS_RELEASE_VERIFIER } from './copilot-live-skills-fixture.mjs';
 import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
 import { withLiveSkillsProjection } from './copilot-live-skills-test-fixture.mjs';
 
@@ -93,12 +93,140 @@ async function harness(t) {
         registerProject, installLiveSkills, alaSkillMountArguments, createTranscriptRecorder, expectedAla, contractFiles, operate, fsApi, makeController };
 }
 
-test('step4 deployed spec uses owned registration before conversation setup and refuses reserved live execution', () => {
+// The complete C5 environment the route-A parent hands to the runner (scripts/codex-test-auth.mjs, CODEX_TEST_AUTH_GATE=c5).
+const C5_ENV = Object.freeze({ SMOKE_COPILOT_LIVE_SKILLS: '1', CODEX_TEST_AUTH_GATE: 'c5', CODEX_TEST_AUTH_SOURCE: 'owner',
+    SMOKE_RUN_ID: '0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f', CODEX_TEST_AUTH_ROOT: '/state/assistos-codex-test-auth', SMOKE_ARTIFACT_DIR: '/evidence/c5',
+    SMOKE_WORKSPACE_ROOT: '/work/box', SMOKE_RELEASE_MANIFEST: '/evidence/manifest.json', SMOKE_ALA_COMMAND: '/work/box/AdvancedLanguageAgent/bin/ala.mjs',
+    SMOKE_DEPLOYMENT_MODE: 'box', SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-fake', SMOKE_BOX_BASE_URL: 'http://127.0.0.1:8097',
+    SMOKE_COPILOT_RELEASE_VERIFIER: LIVE_SKILLS_RELEASE_VERIFIER });
+
+test('step4 deployed spec uses owned registration before conversation setup and runs the route-A preflight with its environment', () => {
     const source = fs.readFileSync(new URL('../specs/06-copilot-live-skills.spec.mjs', import.meta.url), 'utf8');
     assert.ok(source.includes('evidence.ownership = await owned.setup()'), 'Spec still uses an unregistered workspace source.');
     assert.ok(source.includes('liveSkillsOwnedLaunchURL'), 'Spec still launches the existing default robot.');
-    assert.match(source, /test\.beforeAll\(\(\) => assertLiveSkillsLivePreflight\(\)\)/);
-    assert.throws(assertLiveSkillsLivePreflight, /phase6.*independently verified B\+C/);
+    assert.match(source, /test\.beforeAll\(\(\) => assertLiveSkillsLivePreflight\(process\.env\)\)/);
+    assert.doesNotMatch(source, /verifyCopilot421Bundle/, 'Spec 06 must not fall back to the 421 verifier.');
+    // The lifecycle order: begin, recovery, derive, marker, setup, qualify, inject, then the first turn.
+    const order = ['lifecycle.begin(', 'lifecycle.recover(', 'lifecycle.derive()', 'lifecycle.mark(fixture)', 'evidence.ownership = await owned.setup()',
+        'lifecycle.qualify(robot()', 'lifecycle.inject(robot())', 'await turn(phases[0], 0)'].map(needle => source.indexOf(needle));
+    assert.ok(order.every(index => index >= 0) && order.every((index, at) => at === 0 || index > order[at - 1]), `lifecycle order ${order}`);
+    // G2 in the finally block: settle (copy check, removal, CLI exit), then the owned cleanup, then finish.
+    const settle = source.indexOf('settled = await lifecycle.settle(robot())'), cleanup = source.indexOf('await lifecycle.cleanup(owned)'),
+        finish = source.indexOf('evidence.credential = await lifecycle.finish()');
+    assert.ok(settle > 0 && settle < cleanup && cleanup < finish);
+    assert.ok(source.indexOf('await lifecycle.beforeTurn(robot(), index)') < source.indexOf("evidence.currentPhase = { label, stage: 'baseline'"));
+    assert.ok(source.indexOf('lifecycle.beforeSubmit()') < source.indexOf("await copilot.locator('#send').click()"));
+});
+
+test('the C5 preflight refuses an empty environment, naming SMOKE_COPILOT_LIVE_SKILLS, and returns the run identity for a complete one', () => {
+    assert.throws(() => assertLiveSkillsLivePreflight({}), /SMOKE_COPILOT_LIVE_SKILLS/);
+    assert.deepEqual(assertLiveSkillsLivePreflight(C5_ENV), { runId: C5_ENV.SMOKE_RUN_ID, gate: 'c5', route: 'owner' });
+    assert.ok(Object.isFrozen(assertLiveSkillsLivePreflight(C5_ENV)));
+    assert.throws(() => assertLiveSkillsLivePreflight({ ...C5_ENV, CODEX_TEST_AUTH_SOURCE: 'stream' }), /route-mismatch/);
+});
+
+// Each of the nine prerequisites, removed or broken alone, is refused with a message naming it and no value.
+const PREREQUISITES = [
+    ['SMOKE_COPILOT_LIVE_SKILLS', undefined], ['SMOKE_COPILOT_LIVE_SKILLS', '0'],
+    ['CODEX_TEST_AUTH_GATE', undefined], ['CODEX_TEST_AUTH_GATE', 'c2'],
+    ['CODEX_TEST_AUTH_SOURCE', undefined],
+    ['SMOKE_RUN_ID', undefined], ['SMOKE_RUN_ID', 'codex-auth-20261026T120000Z-1'], ['SMOKE_RUN_ID', '0F2B6C1E-8A4D-4C3B-9E5F-7A1B2C3D4E5F'],
+    ['CODEX_TEST_AUTH_ROOT', undefined], ['CODEX_TEST_AUTH_ROOT', 'relative/root'], ['SMOKE_ARTIFACT_DIR', undefined], ['SMOKE_ARTIFACT_DIR', '/evidence/../c5'],
+    ['SMOKE_WORKSPACE_ROOT', undefined], ['SMOKE_RELEASE_MANIFEST', undefined], ['SMOKE_ALA_COMMAND', undefined], ['SMOKE_ALA_COMMAND', 'ala.mjs'],
+    ['SMOKE_DEPLOYMENT_MODE', undefined], ['SMOKE_DEPLOYMENT_MODE', 'local'], ['SMOKE_PLOINKY_BOX_CONTAINER', undefined], ['SMOKE_BOX_BASE_URL', undefined],
+    ['SMOKE_SOURCE_VERIFICATION', 'local-snapshot'],
+    ['CODEX_TEST_AUTH_OWNER_AUTH', 'relative/auth.json'],
+    ['SMOKE_COPILOT_RELEASE_VERIFIER', undefined],
+    ['SMOKE_COPILOT_RELEASE_VERIFIER', LIVE_SKILLS_RELEASE_VERIFIER.replace('verifyExplorerReleaseBundle.mjs', 'verifyCopilot421Bundle.mjs')],
+    ['SMOKE_COPILOT_RELEASE_VERIFIER', '/elsewhere/tests/release/verifyExplorerReleaseBundle.mjs'],
+];
+for (const [name, value] of PREREQUISITES) {
+    test(`the C5 preflight refuses ${name}=${value === undefined ? '(unset)' : JSON.stringify(value)} and names it`, () => {
+        const env = { ...C5_ENV };
+        if (value === undefined) delete env[name]; else env[name] = value;
+        assert.throws(() => assertLiveSkillsLivePreflight(env), error => error.message.includes(name)
+            && !Object.values(C5_ENV).some(secret => secret.length > 8 && error.message.includes(secret)));
+    });
+}
+
+test('the C5 preflight accepts an unset or release source verification and an absolute owner override', () => {
+    for (const extra of [{ SMOKE_SOURCE_VERIFICATION: 'release' }, { SMOKE_SOURCE_VERIFICATION: '' }, { CODEX_TEST_AUTH_OWNER_AUTH: '/synthetic/auth.json' }]) {
+        assert.equal(assertLiveSkillsLivePreflight({ ...C5_ENV, ...extra }).gate, 'c5', JSON.stringify(extra));
+    }
+});
+
+test('C4 stays blocked even for the complete C5 environment', () => {
+    assert.throws(() => assertCodexDelegationLiveBlocked(), /phase6.*independently verified B\+C/);
+    assert.equal(assertLiveSkillsLivePreflight(C5_ENV).gate, 'c5');
+});
+
+// The recovery mode of remove-folders (a crashed C5 run): offline, with a fake /proc and fake /data, and no robot left.
+function recoveryCase(t, { robotId = null } = {}) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'c5 recovery ü ')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const fixture = createLiveSkillsFixture(root, { runId: '0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f' });
+    fixture.robotId = robotId;
+    const repository = `${root}/AchillesIDE`, codeRoot = `${repository}/roboTeamAgent`, dataRoot = `${root}/_data`, procRoot = `${root}/_proc`;
+    for (const directory of [`${codeRoot}/server`, `${dataRoot}/robots`, procRoot]) fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(`${codeRoot}/server/one.mjs`, 'export const one = 1;\n');
+    const contractHashes = { 'server/one.mjs': liveSkillsHash(fs.readFileSync(`${codeRoot}/server/one.mjs`)) };
+    const ownership = { version: 1, runId: fixture.runId, workspace: fixture.workspace, repositoryRoot: fixture.repositoryRoot, robotName: fixture.robotName };
+    for (const folder of [fixture.repositoryRoot, fixture.workspace]) {
+        fs.mkdirSync(folder);
+        fs.writeFileSync(`${folder}/.set2-live-fixture_codex.json`, JSON.stringify(ownership) + '\n');
+    }
+    // An unfinished turn record, as a crash mid-turn leaves it.
+    const sessionId = randomUUID();
+    fs.mkdirSync(`${fixture.workspace}/.roboteam/sessions/${sessionId}`, { recursive: true });
+    fs.writeFileSync(`${fixture.workspace}/.roboteam/sessions/${sessionId}/config.json`, JSON.stringify({ version: 2, sessionId, cwd: fixture.workspace,
+        skillExecution: { active: true }, turns: [{ status: 'pending' }] }));
+    const descriptors = new Map();
+    const fsApi = { ...fs, openSync(file, flags) { const fd = fs.openSync(file, flags); descriptors.set(fd, file); return fd; },
+        closeSync(fd) { descriptors.delete(fd); return fs.closeSync(fd); },
+        realpathSync(file) { if (process.platform !== 'linux' && /^\/proc\/self\/fd\/\d+$/.test(file)) return fs.realpathSync(descriptors.get(Number(path.basename(file)))); return fs.realpathSync(file); } };
+    const addProcess = (pid, cwd, args = ['node', 'x.mjs']) => {
+        fs.mkdirSync(`${procRoot}/${pid}`);
+        fs.symlinkSync(cwd, `${procRoot}/${pid}/cwd`);
+        fs.writeFileSync(`${procRoot}/${pid}/cmdline`, `${args.join('\0')}\0`);
+    };
+    const run = (extra = {}) => operateLiveSkillsFixture({ action: 'remove-folders', recovery: true, fixture, workspaceRoot: root, expectedRepository: repository, contractHashes, ...extra },
+        { codeRoot, dataRoot, procRoot, fsApi, emit: () => {} });
+    return { root, fixture, dataRoot, procRoot, addProcess, run };
+}
+
+test('recovery-mode remove-folders refuses while a process cwd is under the fixture, and succeeds with no processes and an unfinished turn', async t => {
+    const c = recoveryCase(t);
+    c.addProcess(41, `${c.fixture.workspace}/.roboteam`);
+    await assert.rejects(c.run(), /still uses the owned folders/);
+    assert.ok(fs.existsSync(c.fixture.workspace) && fs.existsSync(c.fixture.repositoryRoot), 'nothing is removed on a refusal');
+    fs.rmSync(`${c.procRoot}/41`, { recursive: true });
+    // A command line that names the robot storage or a root by `--flag=<path>` is refused as well.
+    c.addProcess(42, '/', ['node', '/code/server/robot-cli.mjs', `--cwd=${c.fixture.repositoryRoot}`]);
+    await assert.rejects(c.run(), /still uses the owned folders/);
+    fs.rmSync(`${c.procRoot}/42`, { recursive: true });
+    c.addProcess(43, '/');
+    await c.run();
+    assert.equal(fs.existsSync(c.fixture.workspace), false);
+    assert.equal(fs.existsSync(c.fixture.repositoryRoot), false);
+    // Absent roots are skipped, so a second recovery is a no-op.
+    await c.run();
+});
+
+test('recovery-mode remove-folders refuses while the owned robot exists, and refuses a present root without its ownership marker', async t => {
+    const named = recoveryCase(t);
+    fs.mkdirSync(`${named.dataRoot}/robots/other-id-0001`);
+    fs.writeFileSync(`${named.dataRoot}/robots/other-id-0001/metadata.json`, JSON.stringify({ name: named.fixture.robotName }));
+    await assert.rejects(named.run(), /Delete the owned robot before recovering its folders/);
+    const byId = recoveryCase(t, { robotId: 'owned-robot-0001' });
+    fs.mkdirSync(`${byId.dataRoot}/robots/owned-robot-0001`);
+    fs.writeFileSync(`${byId.dataRoot}/robots/owned-robot-0001/metadata.json`, '{}');
+    await assert.rejects(byId.run(), /Delete the owned robot before recovering its folders/);
+    const unmarked = recoveryCase(t);
+    fs.rmSync(`${unmarked.fixture.workspace}/.set2-live-fixture_codex.json`);
+    await assert.rejects(unmarked.run());
+    assert.ok(fs.existsSync(unmarked.fixture.workspace) && fs.existsSync(unmarked.fixture.repositoryRoot), 'a root without its marker is never removed');
+    // Only remove-folders has a recovery mode.
+    await assert.rejects(unmarked.run({ action: 'remove-links' }), /Only remove-folders has a recovery mode/);
 });
 
 test('owned setup discovers a real Git source, registers only a new Codex robot and seeds whole-source defaults', async t => {

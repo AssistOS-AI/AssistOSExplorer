@@ -543,13 +543,15 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
     return {
         release,
         workspaceRoot: hostWorkspace,
-        async fixtureOperation(action, fixture) {
+        // `recovery` (remove-folders only) is the C5 recovery of a crashed run's folders (lib/copilot-live-skills-fixture-runtime.mjs).
+        async fixtureOperation(action, fixture, { recovery = false } = {}) {
             assert.ok(['prepare', 'seed-defaults', 'remove-links', 'remove-folders'].includes(action));
+            assert.ok(recovery === false || (recovery === true && action === 'remove-folders'));
             assert.equal(fixture.workspace, liveSkillsWorkspace(hostWorkspace, fixture.folder));
             const runtime = await binding(fixture.workspace, fixture.repositoryRoot);
             return runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
                 'node', '--input-type=module', '-'], program(operateLiveSkillsFixture, {
-                action, fixture, workspaceRoot: hostWorkspace, expectedRepository, contractHashes: codeHashes,
+                action, fixture, workspaceRoot: hostWorkspace, expectedRepository, contractHashes: codeHashes, ...(recovery ? { recovery } : {}),
             }));
         },
         async capture({ sessionId, fixture }) {

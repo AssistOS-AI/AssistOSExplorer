@@ -8,7 +8,7 @@ import { assertExplorerDirectory, openExplorer } from '../lib/explorer.mjs';
 import { setComposer, waitForWebchatIdle, cancelWebchatGenerationIfActive } from '../lib/webchat.mjs';
 import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi, roboTeamRobotId, conversationFromSkillsURL } from '../lib/conversation-skills.mjs';
-import { assertLiveSkillsLivePreflight, defaultRobotEvidence } from '../lib/copilot-live-skills-fixture.mjs';
+import { assertCodexDelegationLiveBlocked, defaultRobotEvidence } from '../lib/copilot-live-skills-fixture.mjs';
 import { liveSkillsHash } from '../lib/copilot-live-skills.mjs';
 import { liveSkillsDiagnosticText, observeLiveSkillsBrowser } from '../lib/copilot-live-skills-diagnostics.mjs';
 import { createWorkflowDelegationFixture, delegationPrompt, delegationObjective, validateWorkflowDelegation } from '../lib/copilot-workflow-delegation.mjs';
@@ -20,8 +20,8 @@ const terminal = status => ['completed', 'failed', 'paused', 'terminated'].inclu
 
 test.describe('Copilot delegated Codex workflow', () => {
     test.skip(!smokeConfig.flags.codexDelegation, 'Set SMOKE_CODEX_DELEGATION=1 with exact release pins for the C4 gate.');
-    // Discovery is available. Enabled execution remains blocked until the reviewed phase6 runner exists.
-    test.beforeAll(() => assertLiveSkillsLivePreflight());
+    // Discovery is available. Enabled execution stays refused: the target codexAgent was removed, a product decision.
+    test.beforeAll(() => assertCodexDelegationLiveBlocked());
     test('launches one terminal workflow through Copilot with one matching Codex child', async ({ page }, testInfo) => {
         test.setTimeout(Math.max(smokeConfig.timeouts.test, smokeConfig.timeouts.relay + 180_000));
         assert.equal(testInfo.retry, 0); assert.equal(testInfo.project.retries, 0); assert.equal(testInfo.config.workers, 1);

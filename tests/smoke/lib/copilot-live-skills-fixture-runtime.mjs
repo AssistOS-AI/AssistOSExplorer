@@ -4,8 +4,9 @@ import { readLiveSkillsCodeHashes } from './copilot-live-skills-runtime.mjs';
 
 // Shipped only to the verified RoboTeam runtime. Actions are finite and confined to one run's paths.
 // `fsApi` reaches only the contract-hash read; offline tests use it to model a bind mount and macOS's missing /proc.
-export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot, expectedRepository, contractHashes }, {
-    codeRoot = '/code', dataRoot = '/data', service: suppliedService, runGit, fsApi,
+// `recovery: true` (remove-folders only) is the C5 recovery of a crashed run: see the recovery branch below. `procRoot` is a test seam.
+export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot, expectedRepository, contractHashes, recovery = false }, {
+    codeRoot = '/code', dataRoot = '/data', procRoot = '/proc', service: suppliedService, runGit, fsApi,
     emit = value => console.log(JSON.stringify(value)),
 } = {}) {
     const assert = (await import('node:assert/strict')).default;
@@ -16,6 +17,7 @@ export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot,
     const { execFileSync } = await import('node:child_process');
     const hash = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex');
     assert.ok(['prepare', 'seed-defaults', 'remove-links', 'remove-folders'].includes(action), 'Unknown fixture action.');
+    assert.ok(recovery === false || (recovery === true && action === 'remove-folders'), 'Only remove-folders has a recovery mode.');
     assert.match(fixture.runId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.ok(path.isAbsolute(workspaceRoot) && path.normalize(workspaceRoot) === workspaceRoot && workspaceRoot !== '/');
     assert.equal(fs.realpathSync(workspaceRoot), workspaceRoot);
@@ -110,6 +112,52 @@ export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot,
         assert.equal(git(['-C', fixture.repositoryRoot, 'rev-parse', '--show-toplevel']).trim(), fixture.repositoryRoot);
         fs.mkdirSync(`${fixture.workspace}/.receipts`, { mode: 0o700 });
         return emit({ ownership, git: { root: fixture.repositoryRoot, committed: false }, prepared: true });
+    }
+    if (recovery) {
+        // A crashed run can leave unfinished turn records, so native quiescence is proven differently: the owned robot no longer exists
+        // (its metadata is absent, by id when known and by name otherwise), and no process in this container has a cwd, or a command line
+        // argument, inside either owned root or the robot's storage. Only roots that are present are removed, and each must still carry its
+        // ownership marker; a present root without one is refused, which leaves its cleanup to an operator.
+        const robots = `${dataRoot}/robots`;
+        if (fixture.robotId) {
+            assert.match(fixture.robotId, /^[a-z0-9][a-z0-9-]{2,63}$/);
+            assert.equal(fs.lstatSync(`${robots}/${fixture.robotId}/metadata.json`, { throwIfNoEntry: false }), undefined, 'Delete the owned robot before recovering its folders.');
+        }
+        for (const name of fs.existsSync(robots) ? fs.readdirSync(robots) : []) {
+            const file = `${robots}/${name}/metadata.json`;
+            if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) continue;
+            let metadata = null;
+            try { metadata = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { metadata = null; }
+            assert.notEqual(metadata?.name, fixture.robotName, 'Delete the owned robot before recovering its folders.');
+        }
+        const watched = [fixture.workspace, fixture.repositoryRoot, ...(fixture.robotId ? [`${robots}/${fixture.robotId}`] : [])];
+        const within = value => watched.some(root => value === root || value.startsWith(`${root}/`));
+        for (const pid of fs.readdirSync(procRoot).filter(name => /^[0-9]+$/.test(name))) {
+            let cwd = null, args = [];
+            try { cwd = fs.readlinkSync(`${procRoot}/${pid}/cwd`); } catch (error) {
+                if (error.code === 'ENOENT') continue;
+                throw new Error('A process cwd cannot be inspected; recovery of the owned folders is refused.');
+            }
+            try { args = fs.readFileSync(`${procRoot}/${pid}/cmdline`).toString('utf8').split('\0').filter(Boolean); } catch (error) {
+                if (error.code === 'ENOENT') continue;
+                throw new Error('A process command line cannot be inspected; recovery of the owned folders is refused.');
+            }
+            assert.ok(!within(cwd) && !args.some(arg => within(arg) || watched.some(root => arg.includes(`=${root}`))),
+                'A process still uses the owned folders or robot storage; recovery is refused.');
+        }
+        const present = [fixture.repositoryRoot, fixture.workspace].filter(root => fs.lstatSync(root, { throwIfNoEntry: false }) !== undefined);
+        for (const root of present) {
+            assert.equal(fs.realpathSync(root), root, 'Owned fixture folder was replaced.');
+            assert.ok(fs.lstatSync(root).isDirectory());
+            assert.deepEqual(json(`${root}/${markerName}`, root), ownership, 'Fixture ownership marker differs.');
+        }
+        const projectFile = `${dataRoot}/projects/${hash(fixture.workspace)}.json`;
+        if (fs.existsSync(projectFile)) {
+            assert.deepEqual(json(projectFile, dataRoot), { cwd: fixture.workspace }, 'Owned project registry reference changed.');
+            fs.unlinkSync(projectFile);
+        }
+        for (const root of present) fs.rmSync(root, { recursive: true });
+        return emit({ removed: present, recovery: true });
     }
     ownedPaths();
     if (action === 'remove-folders') {

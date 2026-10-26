@@ -105,8 +105,10 @@ export function liveSkillsWorkspace(workspaceRoot, folder) {
     return path.posix.join(assertBoxWorkspacePath(workspaceRoot), folder);
 }
 
-export function createLiveSkillsFixture(workspaceRoot) {
-    const runId = randomUUID();
+// `runId` is the parent's SMOKE_RUN_ID for the credential gate (one identity for the lock, the marker and every owned name); the
+// offline suites omit it and get a fresh one.
+export function createLiveSkillsFixture(workspaceRoot, { runId = randomUUID() } = {}) {
+    assert.match(runId, UUID, 'The live skills run id must be a UUID v4.');
     const folder = `copilot-live-skills-${runId}`;
     const prefix = `live-${runId.slice(0, 8)}`;
     const make = (role) => ({ name: `${prefix}-${role}`, descriptorMarker: randomUUID(), helperMarker: randomUUID() });

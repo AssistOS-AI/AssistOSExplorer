@@ -209,7 +209,9 @@ test('the rewritten settings steps and the gate documents carry the unexecuted l
     assert.ok(read('specs/06-copilot-live-skills.spec.mjs').includes(LABEL), 'spec 06 needs the label.');
     assert.ok(read('copilot-live-skills.md').includes(LABEL), 'copilot-live-skills.md needs the label.');
     assert.ok(read('README.md').includes(LABEL), 'README.md needs the label.');
-    assert.match(read('specs/06-copilot-live-skills.spec.mjs'), /blocked on SET-2/);
+    // The SET-2 block is replaced by the route-A C5 preflight, which runs with the environment it checks.
+    assert.doesNotMatch(read('specs/06-copilot-live-skills.spec.mjs'), /blocked on SET-2/);
+    assert.match(read('specs/06-copilot-live-skills.spec.mjs'), /assertLiveSkillsLivePreflight\(process\.env\)/);
 });
 
 test('the gate documents name RoboTeam\'s Conversation skills page instead of the retired settings surface', () => {

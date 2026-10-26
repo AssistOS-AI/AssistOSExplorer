@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { liveSkillsHash } from './copilot-live-skills.mjs';
+import { LIVE_SKILLS_RELEASE_VERIFIER, assertCodexDelegationLiveBlocked, assertLiveSkillsLivePreflight } from './copilot-live-skills-fixture.mjs';
 import { createWorkflowDelegationFixture, delegationWorkflow, delegationObjective, delegationPrompt, delegationSkillSources, validateWorkflowDelegation, C4_WORKER_MARKER } from './copilot-workflow-delegation.mjs';
 import { readDelegationSnapshot, delegationContractFiles, delegationProgram } from './copilot-workflow-delegation-runtime.mjs';
 
@@ -115,7 +116,18 @@ async function harness(t) {
 test('C4 old delegation wiring cannot satisfy the current launch-workflow contract', () => {
     const source = fs.readFileSync(new URL('../specs/06-copilot-codex-delegation.spec.mjs', import.meta.url), 'utf8');
     assert.ok(source.includes('validateWorkflowDelegation'), 'The deployed spec still accepts retired agent dispatch/file-only evidence.');
-    assert.match(source, /assertLiveSkillsLivePreflight/);
+    // C4 is refused unconditionally by its own block, never by the C5 preflight, so a complete C5 environment cannot unblock it.
+    assert.match(source, /test\.beforeAll\(\(\) => assertCodexDelegationLiveBlocked\(\)\)/);
+    assert.doesNotMatch(source, /assertLiveSkillsLivePreflight/);
+    const c5 = { SMOKE_COPILOT_LIVE_SKILLS: '1', CODEX_TEST_AUTH_GATE: 'c5', CODEX_TEST_AUTH_SOURCE: 'owner', SMOKE_RUN_ID: '0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f',
+        CODEX_TEST_AUTH_ROOT: '/state/root', SMOKE_ARTIFACT_DIR: '/artifacts', SMOKE_WORKSPACE_ROOT: '/w', SMOKE_RELEASE_MANIFEST: '/m.json', SMOKE_ALA_COMMAND: '/w/ala.mjs',
+        SMOKE_DEPLOYMENT_MODE: 'box', SMOKE_PLOINKY_BOX_CONTAINER: 'box', SMOKE_BOX_BASE_URL: 'http://127.0.0.1:8080', SMOKE_COPILOT_RELEASE_VERIFIER: LIVE_SKILLS_RELEASE_VERIFIER };
+    assert.equal(assertLiveSkillsLivePreflight(c5).gate, 'c5', 'control: the C5 environment itself is complete');
+    const saved = { ...process.env };
+    try {
+        Object.assign(process.env, c5);
+        assert.throws(() => assertCodexDelegationLiveBlocked(), /phase6.*independently verified B\+C/);
+    } finally { for (const name of Object.keys(c5)) { if (Object.hasOwn(saved, name)) process.env[name] = saved[name]; else delete process.env[name]; } }
 });
 
 test('C4 current launch-workflow, matching service, synthetic child ALA and real helper prove delegated file ownership', async t => {
