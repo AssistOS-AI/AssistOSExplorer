@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { approveLiveSkillsRequest, validateLiveSkillsApproval, parseLiveSkillsApprovalCommand } from './copilot-live-skills-approval.mjs';
 import { currentLiveSkillsCase } from './copilot-live-skills-test-fixture.mjs';
-import { createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt } from './copilot-live-skills.mjs';
+import { createLiveSkillsFixture, liveSkillSources, liveSkillsHash, liveSkillsPrompt } from './copilot-live-skills.mjs';
 
 // Approval commands run in the ALA-native /workspace namespace; the observer evidence uses the admitted outer root.
 const workspaceRoot = '/srv/fresh-workspace';
@@ -87,7 +87,13 @@ const corruptions = {
     'excluded skill': input => { input.snapshot.session.skillExecution.entries.pop(); },
     'skills directory of another session': input => { input.snapshot.session.skillExecution.skillsDirectory = `${input.fixture.workspace}/.roboteam/sessions/${randomUUID()}/skills`; },
     'live link outside the session skills directory': input => { input.snapshot.liveLinks[input.fixture.control.name].destination = `${input.fixture.workspace}/.agents/skills/${input.fixture.control.name}`; },
-    'retargeted managed link': input => { input.snapshot.catalog.links[0].target = `${input.fixture.repositoryRoot}/skills/foreign`; },
+    // The revision is recomputed, so only the managed link's own target check can refuse it.
+    'retargeted managed link': input => {
+        input.snapshot.catalog.links[0].target = `${input.fixture.repositoryRoot}/skills/foreign`;
+        const revision = liveSkillsHash(input.snapshot.catalog.links);
+        input.snapshot.catalog.revision = revision;
+        input.snapshot.session.skillExecution.revision = revision;
+    },
     'truncated detail': input => { input.ui.detail = input.ui.detail.slice(0, -1); },
 };
 for (const [name, corrupt] of Object.entries(corruptions)) test(`approval rejects ${name}`, () => {

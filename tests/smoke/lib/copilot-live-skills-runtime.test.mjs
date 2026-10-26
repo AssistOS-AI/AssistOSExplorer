@@ -395,7 +395,8 @@ test('a runtime with the read-only .ploinky-box host-state mask validates', t =>
     assert.equal(c.validate(masked), masked);
     assert.equal(c.validate(masked, { fixtureWorkspace: `${c.root}/copilot-live-skills-${randomUUID()}` }), masked);
     // Control: the same guard source mounted over a protected path is still refused, so the mask passes because of where it lands.
-    assert.throws(() => c.validate(c.clone(value => value.mounts.push(bindMount(mask.Source, `${c.source}/server`, false)))));
+    assert.throws(() => c.validate(c.clone(value => value.mounts.push(bindMount(mask.Source, `${c.source}/server`, false)))),
+        /mount shadowing a verified source or runtime/);
 });
 
 test('the reader accepts an outer Box with the read-only .ploinky-box host-state mount', async t => {
@@ -410,7 +411,7 @@ test('the reader accepts an outer Box with the read-only .ploinky-box host-state
     const shadowed = readerSetup(f);
     shadowed.state.outerMounts.push({ Type: 'bind', Source: '/tmp/ploinky-runtime-guards/0123456789abcdef01234567/host',
         Destination: `${f.repository}/roboTeamAgent`, RW: false });
-    await assert.rejects(shadowed.create());
+    await assert.rejects(shadowed.create(), /mount shadowing a verified source or runtime/);
 });
 
 test('the read-only controller pin is accepted only for a source that lives below it, and only as an exact read-only self bind', t => {
