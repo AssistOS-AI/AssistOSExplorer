@@ -54,7 +54,7 @@ body { margin: 0; min-width: 280px; background: var(--account-bg); color: var(--
 a { color: var(--account-link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .account-shell { width: min(1000px, calc(100% - 48px)); margin: 0 auto; }
-.account-embedded .account-shell { width: 100%; max-width: none; margin: 0; padding: 0 4px 16px; }
+.account-embedded .account-shell { width: 100%; max-width: none; margin: 0; padding: 8px 8px 16px; }
 .account-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding: 24px 0 14px; border-bottom: 1px solid var(--account-border); font-size: 14px; }
 .account-header:not(:has(.account-navigation a:not([hidden]))),
 :root[data-account-view="account"] .account-header,
