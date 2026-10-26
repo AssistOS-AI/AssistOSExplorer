@@ -68,7 +68,7 @@ test('management tool map no longer exposes retired account-creation or password
 
 test('account navigation hides each management link without its capability, including after revocation', () => {
     const links = ['admin.users.manage', 'admin.agentSettings.manage'].map((capability) => ({ dataset: { capability }, hidden: false }));
-    const document = { querySelectorAll: () => links };
+    const document = { querySelectorAll: selector => selector === '[data-capability]' ? links : [] };
     updateAccountNavigation(document, { roles: ['admin'] });
     assert.deepEqual(links.map((link) => link.hidden), [true, true]);
     updateAccountNavigation(document, { capabilities: ['admin.users.manage'] });
@@ -79,11 +79,40 @@ test('account navigation hides each management link without its capability, incl
     assert.deepEqual(links.map((link) => link.hidden), [true, true]);
 });
 
-test('every account page marks only its own navigation tab as current beside sign out, without a product header', async () => {
+test('view configuration narrows capabilities and persists across provider navigation', () => {
+    for (const view of ['account', 'administration', 'invalid', '']) {
+        for (const capabilities of [[], ['admin.users.manage'], ['admin.agentSettings.manage'], ['admin.users.manage', 'admin.agentSettings.manage']]) {
+            const links = [
+                ['./', undefined], ['users.html', 'admin.users.manage'], ['roles.html', 'admin.users.manage'],
+                ['applications.html', 'admin.agentSettings.manage'], ['authentication.html', 'admin.agentSettings.manage'],
+            ].map(([href, capability]) => ({ dataset: { capability }, href,
+                getAttribute() { return this.href; }, setAttribute(_name, value) { this.href = value; } }));
+            const document = { baseURI: 'https://example.test/service/dashboard/users.html',
+                defaultView: { location: { search: `?view=${view}&showSignOut=0` } },
+                querySelectorAll: selector => selector === '[data-capability]' ? links.slice(1) : links };
+            updateAccountNavigation(document, { roles: ['admin'], capabilities });
+            links.forEach((link, index) => {
+                const permitted = index === 0 || capabilities.includes(link.dataset.capability);
+                assert.equal(link.hidden, !permitted || view === 'account' || (view === 'administration' && index === 0));
+                const url = new URL(link.href, document.baseURI);
+                assert.equal(url.searchParams.get('view'), ['account', 'administration'].includes(view) ? view : null);
+                assert.equal(url.searchParams.get('showSignOut'), '0');
+            });
+            updateAccountNavigation(document, null);
+            assert.ok(links.slice(1).every(link => link.hidden));
+        }
+    }
+});
+
+test('every account page keeps sign out with the page heading and navigation in its own header', async () => {
     for (const [file, href] of [['index.html', './'], ['users.html', 'users.html'], ['roles.html', 'roles.html'], ['applications.html', 'applications.html'], ['authentication.html', 'authentication.html']]) {
         const html = await readFile(new URL(`../public/dashboard/${file}`, import.meta.url), 'utf8');
         assert.deepEqual([...html.matchAll(/<a href="([^"]+)"[^>]* aria-current="page"/g)].map((match) => match[1]), [href], file);
-        assert.match(html, /<\/nav>\s*<a class="account-sign-out" href="\/auth\/logout">Sign out<\/a>\s*<\/header>/, file);
+        const header = html.match(/<header class="account-header">([\s\S]*?)<\/header>/)?.[1];
+        assert.ok(header, file);
+        assert.doesNotMatch(header, /account-sign-out/, file);
+        assert.match(html, /<div class="page-heading"><div class="page-heading-copy">[\s\S]*?<\/div><a class="account-sign-out" href="\/auth\/logout">Sign out<\/a><\/div>/, file);
+        assert.equal([...html.matchAll(/class="account-sign-out"/g)].length, 1, file);
         assert.doesNotMatch(html, /account-brand|>UserPersisto<\/a>/, file);
     }
 });

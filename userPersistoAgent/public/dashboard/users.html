@@ -19,10 +19,9 @@
                     <a href="applications.html" data-capability="admin.agentSettings.manage" hidden>Applications</a>
                     <a href="authentication.html" data-capability="admin.agentSettings.manage" hidden>Authentication policy</a>
                 </nav>
-                <a class="account-sign-out" href="/auth/logout">Sign out</a>
             </header>
             <main id="management-root" data-initial-panel="users" data-settings-scope="page">
-                <div class="page-heading"><h1>Users</h1><p>Find accounts, manage their details and choose who can access your workspace.</p><p data-admin-only hidden>Accounts are created when people sign in with Google or a verified email code. There is no separate account-creation form here.</p></div>
+                <div class="page-heading"><div class="page-heading-copy"><h1>Users</h1><p>Find accounts, manage their details and choose who can access your workspace.</p><p data-admin-only hidden>Accounts are created when people sign in with Google or a verified email code. There is no separate account-creation form here.</p></div><a class="account-sign-out" href="/auth/logout">Sign out</a></div>
                 <p id="userpersistoStatus" class="userpersisto-status" role="status" aria-live="polite">Loading…</p>
                 <a id="management-login" class="button-link" href="/auth/login" hidden>Sign in again</a>
                 <fieldset id="management-controls" class="management-controls" disabled hidden>

@@ -13,29 +13,15 @@
         <h1>Administration</h1>
         <a class="gray-button" href="/explorer/index.html">Back to Explorer</a>
     </header>
-    <p>Account administration is managed in UserPersisto. Each link opens a separate tab.</p>
-    <p id="account-status" role="status" aria-live="polite">Checking account access…</p>
-    <nav class="account-page-links" aria-label="Administration pages">
-        <a href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/users.html" target="_blank" rel="noopener noreferrer" data-account-access="users" hidden>Users</a>
-        <a href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/applications.html" target="_blank" rel="noopener noreferrer" data-account-access="settings" hidden>Applications</a>
+    <p>Manage your account and administration in Explorer Settings. Administration requires the appropriate account permissions.</p>
+    <nav class="account-page-links" aria-label="Account settings">
+        <a href="../index.html?settings=account#file-exp/">My Account</a>
+        <a href="../index.html?settings=users#file-exp/">Administration</a>
     </nav>
-    <a href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/" target="_blank" rel="noopener noreferrer">My Account</a>
 </main>
 <script type="module">
     import { initializeTheme } from '../shared/ui/theme.js';
-    import { fetchAccountAccess } from '../web-components/modals/settings-modal/settings-users-controller.js';
-
     initializeTheme();
-    const status = document.getElementById('account-status');
-    try {
-        const access = await fetchAccountAccess();
-        document.querySelectorAll('[data-account-access]').forEach((link) => {
-            link.hidden = !access[link.dataset.accountAccess];
-        });
-        status.textContent = access.users || access.settings ? '' : 'Administrator access is required.';
-    } catch (_) {
-        status.textContent = 'Account access could not be verified. Open My Account to sign in again.';
-    }
 </script>
 </body>
 </html>

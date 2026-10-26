@@ -15,6 +15,8 @@ All [Explorer](wiki.html#definition-explorer) registration and login flows use [
 
 ## Core Content
 
+The authenticated profile includes `installationAdministratorId`, read from the durable installation setup record. It is empty when no identifier was recorded; it never falls back to the current caller, a matching email or another administrator. Downstream products may use this identifier for initial ownership of imported content. It does not confer a role or capability on the caller and does not replace current authorization checks.
+
 ### Installation setup and the initial administrator
 
 A new durable store contains roles and capabilities but no user account. Setup state is an explicit persisted record, `systemSetting` key `installation.setup` with value `{ complete: true, initialAdministratorId, method, completedAt }`, where `method` is `google`, `passwordSignup` or `initialPassword`. An absent record means unclaimed. Authority derives only from this committed record, never from the current user count: restarting, deleting, blocking or demoting accounts, or an empty users table, never reopens public ownership. The application never deletes the record, and a malformed record fails closed as claimed.

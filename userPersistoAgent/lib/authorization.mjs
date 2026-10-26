@@ -2,6 +2,7 @@ import { getStore } from './store.mjs';
 import { getUserById, getUserRoles, hasVerifiedMailbox } from './users.mjs';
 import { getEnabledAuthMethods } from './auth/methods.mjs';
 import { GOOGLE_ISSUER } from './externalIdentities.mjs';
+import { readInstallationSetup } from './setup.mjs';
 
 export async function getUserCapabilities(userId) {
     const store = await getStore();
@@ -96,6 +97,7 @@ export async function getProfile(userId) {
         user: safeUser,
         roles,
         capabilities,
+        installationAdministratorId: (await readInstallationSetup(store)).initialAdministratorId,
         emailVerified: hasVerifiedMailbox(user),
         authMethods,
         allowedAuthMethods: await getEnabledAuthMethods(),

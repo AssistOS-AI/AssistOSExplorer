@@ -90,6 +90,8 @@ export class SettingsModal {
             selectedAgentAvatarEnabled: true,
             canManageAgentAvatars: false,
             usersAccessChecked: false,
+            accountDashboardUrl: '',
+            accountServiceError: '',
             usersAccess: false,
             accountSettingsAccess: false,
             hardwareAccessChecked: false,

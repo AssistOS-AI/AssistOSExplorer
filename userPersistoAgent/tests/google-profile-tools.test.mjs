@@ -39,6 +39,19 @@ test('profile projects a linked Google label without exposing identity or transa
     assert.doesNotMatch(JSON.stringify(profile), /private-subject|identityKey|googleAuthTransaction|passwordHash/);
 }));
 
+test('profile identifies the recorded installation administrator, never the caller or another administrator', async () => fixture(async (store) => {
+    const owner = await createUser({ email: 'system@example.test', roles: ['admin'] });
+    const member = await createUser({ email: 'reader@example.test', roles: ['selfRegistered'] });
+    const context = { actorUserId: member.id };
+    assert.equal((await runTool('userpersisto_profile_get', {}, context)).installationAdministratorId, '');
+    await store.createSystemSetting({ key: 'installation.setup', value: { complete: true, initialAdministratorId: owner.id, method: 'initialPassword', completedAt: new Date().toISOString() } });
+    await flush();
+    const profile = await runTool('userpersisto_profile_get', {}, context);
+    assert.equal(profile.installationAdministratorId, owner.id);
+    assert.deepEqual(profile.roles, ['selfRegistered']);
+    assert.ok(!profile.capabilities.includes('admin.users.manage'));
+}));
+
 test('Google status and policy source require current administrative capability and never return a secret', async () => fixture(async () => {
     const admin = await createUser({ email: 'admin@example.test', roles: ['admin'], emailVerified: true });
     const secondAdmin = await createUser({ email: 'backup@example.test', roles: ['admin'], emailVerified: true });

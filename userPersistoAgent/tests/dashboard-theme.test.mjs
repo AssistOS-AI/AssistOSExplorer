@@ -10,7 +10,7 @@ function browser({ storage = {}, dark = false, blocked = false } = {}) {
     const system = { matches: dark, addEventListener: (_name, handler) => listeners.set('system', handler) };
     const window = { localStorage: { getItem: (key) => { if (blocked) throw new Error('Storage blocked'); return storage[key] || null; } },
         matchMedia: () => system, addEventListener: (name, handler) => listeners.set(name, handler) };
-    runInNewContext(source, { window, document: { documentElement: root } });
+    runInNewContext(source, { window, URLSearchParams, document: { documentElement: root } });
     return { root, listeners, storage, system };
 }
 

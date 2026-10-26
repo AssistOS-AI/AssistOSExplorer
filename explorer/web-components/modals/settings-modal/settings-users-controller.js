@@ -1,5 +1,8 @@
-export async function fetchAccountAccess(fetchImplementation = globalThis.fetch) {
-    const response = await fetchImplementation('/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/api/profile', {
+import { buildAccountPageUrl, loadAccountDashboardUrl } from './settings-account-service.js';
+
+export async function fetchAccountAccess(fetchImplementation = globalThis.fetch, dashboard = undefined) {
+    const base = dashboard ?? await loadAccountDashboardUrl();
+    const response = await fetchImplementation(buildAccountPageUrl(base, 'api/profile'), {
         cache: 'no-store',
         credentials: 'same-origin',
         headers: { Accept: 'application/json' },
@@ -20,10 +23,19 @@ export const usersController = {
         if (this.state.usersAccessChecked) return;
         this.state.usersAccessChecked = true;
         try {
-            const access = await fetchAccountAccess();
+            const dashboard = await loadAccountDashboardUrl();
+            if (this.hardwareClosed) return;
+            this.state.accountDashboardUrl = dashboard;
+            this.state.accountServiceError = '';
+            const access = await fetchAccountAccess(globalThis.fetch, dashboard);
+            if (this.hardwareClosed) return;
             this.state.usersAccess = access.users;
             this.state.accountSettingsAccess = access.settings;
         } catch (_) {
+            if (this.hardwareClosed) return;
+            if (!this.state.accountDashboardUrl) {
+                this.state.accountServiceError = 'The account integration is unavailable. Refresh Settings to try again.';
+            }
             this.state.usersAccess = false;
             this.state.accountSettingsAccess = false;
         }

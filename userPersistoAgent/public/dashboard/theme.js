@@ -1,4 +1,9 @@
 (() => {
+    document.documentElement.classList.toggle('account-embedded', window.self !== window.top);
+    const parameters = new URLSearchParams(window.location?.search || '');
+    const view = parameters.get('view');
+    if (view === 'account' || view === 'administration') document.documentElement.dataset.accountView = view;
+    if (parameters.get('showSignOut') === '0') document.documentElement.dataset.hideSignOut = 'true';
     const keys = ['assistosExplorerTheme', 'webchat_theme'];
     const system = window.matchMedia?.('(prefers-color-scheme: dark)');
     function storedTheme() {

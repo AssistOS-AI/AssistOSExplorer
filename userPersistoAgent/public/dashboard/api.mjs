@@ -43,4 +43,18 @@ export function updateAccountNavigation(document, profile) {
     (document.querySelectorAll?.('[data-capability]') || []).forEach((link) => {
         link.hidden = !profile?.capabilities?.includes(link.dataset.capability);
     });
+    const parameters = new URLSearchParams(document.defaultView?.location?.search || '');
+    const view = parameters.get('view');
+    const configured = view === 'account' || view === 'administration';
+    (document.querySelectorAll?.('.account-navigation a') || []).forEach((link) => {
+        const capability = link.dataset.capability;
+        const allowed = !capability || profile?.capabilities?.includes(capability);
+        link.hidden = !allowed || view === 'account'
+            || (view === 'administration' && !capability);
+        const destination = new URL(link.getAttribute('href'), document.baseURI);
+        if (destination.origin !== new URL(document.baseURI).origin) return;
+        if (configured) destination.searchParams.set('view', view);
+        if (parameters.get('showSignOut') === '0') destination.searchParams.set('showSignOut', '0');
+        link.setAttribute('href', destination.pathname + destination.search + destination.hash);
+    });
 }

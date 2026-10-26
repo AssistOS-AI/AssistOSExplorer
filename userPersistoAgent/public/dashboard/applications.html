@@ -19,10 +19,9 @@
                     <a href="applications.html" data-capability="admin.agentSettings.manage" aria-current="page" hidden>Applications</a>
                     <a href="authentication.html" data-capability="admin.agentSettings.manage" hidden>Authentication policy</a>
                 </nav>
-                <a class="account-sign-out" href="/auth/logout">Sign out</a>
             </header>
             <main id="management-root" data-initial-panel="applications" data-settings-scope="page">
-                <div class="page-heading"><h1>Applications</h1><p>Manage applications that use your account to sign in.</p></div>
+                <div class="page-heading"><div class="page-heading-copy"><h1>Applications</h1><p>Manage applications that use your account to sign in.</p></div><a class="account-sign-out" href="/auth/logout">Sign out</a></div>
                 <p id="userpersistoStatus" class="userpersisto-status" role="status" aria-live="polite">Loading…</p>
                 <a id="management-login" class="button-link" href="/auth/login" hidden>Sign in again</a>
                 <fieldset id="management-controls" class="management-controls" disabled hidden>
