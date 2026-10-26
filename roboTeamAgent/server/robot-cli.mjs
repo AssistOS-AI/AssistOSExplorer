@@ -34,6 +34,8 @@ try {
     releaseUsage = context.releaseUsage;
     const { setRobotContext } = await import('../copilot/src/lib/execution/robotContext.mjs');
     setRobotContext(context);
+    // The copilot publishes its runs to Live Sessions; robot tasks never do.
+    process.env.ROBOTEAM_LIVE_PUBLISH = 'copilot';
     const { main } = await import('../copilot/src/index.mjs');
     await main(args, { workflowSkills: true, systemPrompt: WORKSPACE_COPILOT_PROMPT });
 } catch (error) {

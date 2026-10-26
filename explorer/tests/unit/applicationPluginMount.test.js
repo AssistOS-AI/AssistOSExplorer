@@ -44,6 +44,8 @@ class FakeNode {
         return siblings[siblings.indexOf(this) + 1] || null;
     }
 
+    append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
+
     setAttribute(name, value) { this.attrs.set(name, String(value)); }
     getAttribute(name) { return this.attrs.has(name) ? this.attrs.get(name) : null; }
     hasAttribute(name) { return this.attrs.has(name); }
@@ -118,6 +120,8 @@ function createHarness({ plugins }) {
     const root = new FakeNode('root', { isRoot: true });
     const barContainer = new FakeNode('div', { id: 'fileExpPluginBar', classes: ['app-plugin-bar'] });
     const accountContainer = new FakeNode('div', { id: 'fileExpAccountMenuPlugins', classes: ['app-plugin-account-slot'] });
+    const toolbarContainer = new FakeNode('div', { id: 'fileExpToolbarPlugins', classes: ['app-toolbar-slot'] });
+    root.appendChild(toolbarContainer);
     root.appendChild(barContainer);
     root.appendChild(accountContainer);
 
@@ -184,6 +188,7 @@ function createHarness({ plugins }) {
         events,
         barContainer,
         accountContainer,
+        toolbarContainer,
         gate: (kind, name) => gate(kind === 'register' ? registrationGates : renderGates, name),
         max: () => ({ registrations: maxRegistrationsInFlight, renders: maxRendersInFlight }),
         restore() {
@@ -329,6 +334,65 @@ test('T2: a finished plugin is finalized while a slower sibling is still renderi
         await rendering;
         assert.equal(mountB.querySelector('plugin-b').hasAttribute('data-app-plugin-loading'), false);
         assert.deepEqual(keysIn(harness.barContainer), ['agent/a', 'agent/b']);
+    } finally {
+        harness.restore();
+    }
+});
+
+test('mountOnStart: the toolbar slot mounts only opted-in plugins at start and leaves the others on demand', async () => {
+    const harness = createHarness({
+        plugins: {
+            'file-exp:toolbar': [
+                plugin('plain', 'plugin-plain', 1),
+                plugin('eager', 'plugin-eager', 2, { mountOnStart: true }),
+                plugin('explicit-off', 'plugin-off', 3, { mountOnStart: false }),
+            ]
+        }
+    });
+    try {
+        const rendering = renderApplicationPluginSlots(harness.fileExp);
+        await tick();
+        assert.deepEqual(harness.events.filter((event) => event.startsWith('register-')), ['register-start:plugin-eager']);
+        // While it loads, the opted-in plugin shows the loading placeholder, never the on-demand trigger.
+        const loadingMount = harness.toolbarContainer.querySelectorAll('[data-app-plugin-key]')
+            .find((node) => node.getAttribute('data-app-plugin-key') === 'agent/eager');
+        assert.ok(loadingMount.querySelector('[data-app-plugin-loading]'));
+        assert.equal(loadingMount.querySelector('[data-app-plugin-trigger]'), null);
+        harness.gate('register', 'plugin-eager').resolve();
+        await tick();
+        harness.gate('render', 'plugin-eager').resolve();
+        await rendering;
+
+        assert.deepEqual(keysIn(harness.toolbarContainer), ['agent/plain', 'agent/eager', 'agent/explicit-off']);
+        const mounts = new Map(harness.toolbarContainer.querySelectorAll('[data-app-plugin-key]')
+            .map((node) => [node.getAttribute('data-app-plugin-key'), node]));
+        for (const [key, component] of [['agent/plain', 'plugin-plain'], ['agent/explicit-off', 'plugin-off']]) {
+            assert.ok(mounts.get(key).querySelector('[data-app-plugin-trigger]'), `${key} keeps its on-demand trigger`);
+            assert.equal(mounts.get(key).querySelector(component), null, `${key} is not mounted`);
+        }
+        assert.ok(mounts.get('agent/eager').querySelector('plugin-eager'), 'the opted-in plugin is mounted');
+        assert.equal(mounts.get('agent/eager').querySelector('[data-app-plugin-trigger]'), null);
+        assert.equal(mounts.get('agent/eager').querySelector('[data-app-plugin-loading]'), null, 'loading state finalized');
+
+        // A second render updates the mounted plugin and never registers or mounts it again.
+        await renderApplicationPluginSlots(harness.fileExp);
+        assert.equal(harness.events.filter((event) => event === 'register-start:plugin-eager').length, 1);
+        assert.equal(harness.toolbarContainer.querySelectorAll('plugin-eager').length, 1);
+        assert.deepEqual(keysIn(harness.toolbarContainer), ['agent/plain', 'agent/eager', 'agent/explicit-off']);
+    } finally {
+        harness.restore();
+    }
+});
+
+test('mountOnStart: without an opted-in plugin the toolbar slot registers and mounts nothing', async () => {
+    const harness = createHarness({
+        plugins: { 'file-exp:toolbar': [plugin('plain', 'plugin-plain', 1), plugin('other', 'plugin-other', 2)] }
+    });
+    try {
+        await renderApplicationPluginSlots(harness.fileExp);
+        assert.deepEqual(harness.events, []);
+        assert.equal(harness.toolbarContainer.querySelectorAll('[data-app-plugin-trigger]').length, 2);
+        assert.equal(harness.toolbarContainer.querySelectorAll('plugin-plain').length, 0);
     } finally {
         harness.restore();
     }

@@ -18,9 +18,14 @@ test('QA provisions exact default-branch ALA before admission without a dependen
     assert.match(workflow, /\[ -e "\$ALA_DIR" \] \|\| \[ -L "\$ALA_DIR" \]/);
     assert.match(workflow, /git clone --single-branch --branch "\$ALA_BRANCH" "\$ALA_URL" "\$ALA_DIR"/);
     assert.match(workflow, /node --input-type=module - "\$WORK_DIR\/AdvancedLanguageAgent" <<'NODE'/);
-    assert.match(workflow, /\$\(git -C "\$ALA_DIR" rev-parse HEAD\)" != "\$ALA_COMMIT"/);
-    assert.match(workflow, /git -C "\$ALA_DIR" status --porcelain/);
-    assert.equal(workflow.match(/^          verify_ala_checkout$/gm)?.length, 3);
+    // The checkout is verified only in the source sandbox, once the QA Box is prepared:
+    // clean, at its reviewed origin, on the selected branch, commit and upstream.
+    assert.doesNotMatch(workflow, /git -C "\$ALA_DIR"/);
+    assert.match(workflow, /const \{ pin, upstream \} = productionAdapters\(\)\.sourceCheck\(directory, \{ engine, image \}\);/);
+    assert.match(workflow, /if \(pin\.commit !== commit \|\| pin\.branch !== branch \|\| upstream !== `origin\/\$\{branch\}`\) process\.exit\(1\);/);
+    const calls = [...workflow.matchAll(/^          verify_ala_checkout$/gm)].map(match => match.index);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every(index => index > workflow.indexOf('prepareBoxForCommand')));
     assert.ok(marker < workflow.indexOf('"$PLOINKY" start explorer "${BRANCH_ARGS[@]}"'));
     assert.doesNotMatch(script, /npm|git clone|node_modules|symlinkSync|achilles-loader|selectedAgentLib/);
 });

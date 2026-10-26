@@ -175,7 +175,12 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 update(runtime.sessionStore.loadSession(sessionId), context);
             } else if (engineStarted) update(runtime.sessionStore.loadSession(sessionId), context);
             if (emitOutput && (!engineStarted || !context.sourceTabId)) fail(error, context, sessionId);
-        } finally { active.delete(operationId); diag('execute.finally', { activeOperations: active.size }); }
+        } finally {
+            active.delete(operationId);
+            // A claim whose turn published no run is dropped.
+            runtime.livePublisher?.releaseOwner(context.liveOwner);
+            diag('execute.finally', { activeOperations: active.size });
+        }
     };
     return {
         receive(raw) {
@@ -202,11 +207,21 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             }
             const message = normalizeWebchatMessage(raw);
             if (!message.rawText.trim()) return;
-            const context = captureContext(message, runtime.workingDir);
-            const connection = connectionFor(context);
             // Only selection/control commands serialize. Turns acquire their own session lease
             // and must not block another conversation or conceal duplicate-turn contention.
             const startsTurn = !message.rawText.trim().startsWith('/') || /^\/exec(?:\s|$)/.test(message.rawText.trim());
+            // A message proves its owner on arrival, with the Router-signed token and
+            // arguments, before queueing, preparation or attachment materialization.
+            // Turns, skill commands and task continuations publish with it.
+            const liveOwner = message.invocationToken && runtime.livePublisher
+                ? runtime.livePublisher.claimOwner(message.invocationToken, message.signedArgs) : null;
+            let context;
+            try { context = captureContext(message, runtime.workingDir); } catch (error) {
+                runtime.livePublisher?.releaseOwner(liveOwner);
+                throw error;
+            }
+            if (liveOwner) context.liveOwner = liveOwner;
+            const connection = connectionFor(context);
             logDiagnostic(runtime.workingDir, 'webchat.input.received', {
                 kind: startsTurn ? (/^\/exec(?:\s|$)/.test(message.rawText.trim()) ? 'exec' : 'turn') : 'command',
                 sessionId: connection.sessionId, sourceTabId: context.sourceTabId || null,
@@ -216,6 +231,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 if (!startsTurn) return execution;
             }).catch((error) => {
                 logDiagnostic(runtime.workingDir, 'webchat.chain.error', { sessionId: connection.sessionId, ...errorFields(error) });
+                runtime.livePublisher?.releaseOwner(context.liveOwner);
                 fail(error, context, connection.sessionId);
             });
             track(connection.chain);

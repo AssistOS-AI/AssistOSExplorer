@@ -77,7 +77,8 @@ export function saveTaskExecution(options, task) {
     const record = { taskId: task.taskId, robotId: task.robotId, type: task.type,
         state: task.state, createdAt: task.createdAt, startedAt: task.startedAt, completedAt: task.completedAt,
         logTail: task.logTail, result: task.result, error: task.error, request: task.request,
-        alaSessionId: task.alaSessionId, skillExecution: task.skillExecution, legacySkillSelection: task.legacySkillSelection };
+        alaSessionId: task.alaSessionId, skillExecution: task.skillExecution, legacySkillSelection: task.legacySkillSelection,
+        ...(task.ownerBinding ? { ownerBinding: task.ownerBinding } : {}) };
     const metadata = assertSafeAchillesPrivatePath(cwd, `tasks/${id}/task.json`, { ...projectOptions(options), type: 'file' });
     if (!fs.existsSync(metadata)) {
         atomicWrite(metadata, JSON.stringify({ version: 1, id, robotId: task.robotId, type: task.type,

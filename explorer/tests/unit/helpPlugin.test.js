@@ -48,7 +48,7 @@ test('Help plugin is a discoverable Explorer toolbar application with a modal de
     const toolbarPluginIds = (normalized.application['file-exp:toolbar'] || [])
         .map((plugin) => plugin.id);
     // WebMeet's toolbar plugin lives in the webmeet repository, so only this repository's plugins are aggregated.
-    assert.deepEqual(toolbarPluginIds, ['git', 'marketplace', 'soul-gateway-configure', 'roboteam', 'observability', 'help']);
+    assert.deepEqual(toolbarPluginIds, ['git', 'marketplace', 'soul-gateway-configure', 'roboteam', 'observability', 'live-sessions', 'help']);
 });
 
 test('Help modal exposes the six documented, accessible topics', async () => {

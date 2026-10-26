@@ -28,6 +28,8 @@
  *   - `abort`       - shared { success, error } surface (per-middleware
  *                     instances are created when chains run)
  *   - `invokeModel` - cascade re-entry hook (installed by request runtime)
+ *   - `streamOwner` - request-scoped owner of primed streams (installed by
+ *                     the route's respond step, shared with every fork)
  *
  * Construction does not freeze anything: middlewares are expected to mutate.
  * Frozen sub-objects (snapshot, services) come from the caller.
@@ -115,6 +117,10 @@ export function createKernelContext(input = {}) {
         // middleware can dispatch a child model through the same kernel.
         invokeModel: input.invokeModel ?? null,
 
+        // Owner of the streams primed for this request.  Retry and cascade
+        // fork the context, so forks share the parent's owner.
+        streamOwner: input.streamOwner ?? null,
+
         // Application context. Route-scope middleware reads ctx.appCtx
         // for things like config.env and the database handle.
         appCtx: input.appCtx ?? null,
@@ -153,6 +159,7 @@ export function forkKernelContext(parent, overrides = {}) {
         log: parent.log,
         appCtx: parent.appCtx,
         invokeModel: parent.invokeModel,
+        streamOwner: parent.streamOwner,
         request: parent.request,
         metadata: parent.metadata,
         ...overrides,

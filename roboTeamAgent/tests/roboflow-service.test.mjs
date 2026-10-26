@@ -867,3 +867,105 @@ test('forced failure affects only its phase and keeps workflow state priority', 
     }
     assert.deepEqual(f.stopped, []);
 });
+
+// Live Sessions ownership: flows keep the signed principal of whoever started
+// them; every phase, child flow and continuation carries it unchanged.
+test('a flow stores the signed owner and every dispatched phase carries owner and phase association', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow(graph());
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work', createdBy: 'alice', ownerPrincipal: 'user:alice' });
+    assert.equal((await f.service.store.get(flow.id)).ownerPrincipal, 'user:alice');
+    const first = (await f.service.getFlow(flow.id)).instances[0];
+    assert.equal(f.started[0].request.ownerPrincipal, 'user:alice');
+    assert.equal(f.started[0].request.workflowRunId, flow.id);
+    assert.equal(f.started[0].request.workflowInstanceId, first.id);
+    await f.finish(0, '#Edge\na-b');
+    const second = (await f.service.getFlow(flow.id)).instances[1];
+    assert.equal(f.started[1].request.ownerPrincipal, 'user:alice');
+    assert.equal(f.started[1].request.workflowInstanceId, second.id);
+    // Unsigned or malformed owners are the system owner.
+    for (const owner of [undefined, null, 'alice', '', 'user:']) {
+        const other = await f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work', ownerPrincipal: owner });
+        assert.equal((await f.service.store.get(other.id)).ownerPrincipal, null, String(owner));
+        assert.equal(f.started.at(-1).request.ownerPrincipal, null, String(owner));
+    }
+});
+
+test('child workflows inherit the parent owner', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow({ id: 'child', name: 'Child', entryTaskId: 'one', tasks: [task('one')], edges: [] });
+    await f.service.createWorkflow({ id: 'parent', name: 'Parent', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
+        edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' }, { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });
+    const parent = await f.service.startFlow({ workflowTypeId: 'parent', objective: 'Work', ownerPrincipal: 'user:alice' });
+    await f.finish(0, `# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n# workflow\nchild\n# prompt\nDo it.`);
+    const [childId] = (await f.service.getFlow(parent.id)).instances[0].childFlowIds;
+    assert.equal((await f.service.store.get(childId)).ownerPrincipal, 'user:alice');
+    assert.equal(f.started[1].request.ownerPrincipal, 'user:alice');
+    assert.equal(f.started[1].request.workflowRunId, childId);
+});
+
+test('a re-dispatched never-started phase keeps the flow owner', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow(graph());
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work', ownerPrincipal: 'user:alice' });
+    await f.service.pauseFlow(flow.id);
+    await f.service.resumeInstance(flow.id, (await f.service.getFlow(flow.id)).instances[0].id, 'Again');
+    assert.equal(f.started.length, 2);
+    assert.equal(f.started[1].request.ownerPrincipal, 'user:alice');
+});
+
+test('runtime admission events never change phase state or start time', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow(graph());
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work' });
+    f.service.onRuntimeTaskEvent({ kind: 'admitted', taskId: f.started[0].taskId, state: 'running' });
+    while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
+    const [phase] = (await f.service.getFlow(flow.id)).instances;
+    assert.equal(phase.state, 'queued');
+    assert.equal(phase.startedAt, null);
+});
+
+test('with the Live Sessions source wired after it, RoboFlow still advances and the phase row ends', async t => {
+    const { LiveSessionsRegistry } = await import('../server/live-sessions/registry.mjs');
+    const { RuntimeLiveSource, composeTaskObservers } = await import('../server/live-sessions/runtime-source.mjs');
+    const f = await fixture(t);
+    await f.service.createWorkflow(graph());
+    const registry = new LiveSessionsRegistry({ log: () => {} });
+    const source = new RuntimeLiveSource({ registry, runtimeManager: f.service.runtimeManager, robotStore: f.service.robotStore, roboflow: f.service, workspaceRoot: f.root });
+    const order = [];
+    const observe = composeTaskObservers(event => { order.push(`roboflow:${event.kind}`); f.service.onRuntimeTaskEvent(event); },
+        [event => { order.push(`live:${event.kind}`); source.onRuntimeTaskEvent(event); }]);
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work', ownerPrincipal: 'user:alice' });
+    const first = f.started[0];
+    // The real runtime announces admission with the request's owner and phase.
+    observe({ kind: 'admitted', robotId: first.robot.id, robotName: first.robot.name, taskId: first.taskId, type: first.type, state: 'queued',
+        cwd: first.request.cwd, ownerPrincipal: first.request.ownerPrincipal, workflowRunId: first.request.workflowRunId, workflowInstanceId: first.request.workflowInstanceId });
+    observe({ kind: 'progress', taskId: first.taskId, chunk: 'working' });
+    observe({ kind: 'terminal', taskId: first.taskId, state: 'completed', result: '#Edge\na-b' });
+    while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
+    assert.equal(f.service.bindings.has(first.taskId), false, 'RoboFlow forgot the binding');
+    assert.equal(f.started.length, 2, 'RoboFlow advanced to the next phase');
+    assert.equal((await f.service.getFlow(flow.id)).instances[0].state, 'completed');
+    const [row] = registry.list({ principal: 'user:alice', canAdmin: false });
+    assert.equal(row.kind, 'workflow-phase');
+    assert.equal(row.status, 'finished');
+    assert.deepEqual(order, ['roboflow:admitted', 'live:admitted', 'roboflow:progress', 'live:progress', 'roboflow:terminal', 'live:terminal']);
+});
+
+test('RoboFlow continuations name their phase, and a message to a phase that is not running is run_ended', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow(graph());
+    const options = [];
+    const resumeTask = f.service.runtimeManager.resumeTask;
+    f.service.runtimeManager.resumeTask = (robot, taskId, prompt, opts = {}) => { options.push(opts); return resumeTask(robot, taskId, prompt, opts); };
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work' });
+    const [phase] = (await f.service.getFlow(flow.id)).instances;
+    f.service.onRuntimeTaskEvent({ kind: 'state', taskId: f.started[0].taskId, state: 'running' });
+    while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
+    await f.finish(0, 'Partial', 'paused');
+    await assert.rejects(f.service.messageInstance(flow.id, phase.id, 'hello'), (error) => error.liveOutcome === 'run_ended');
+    await f.service.resumeInstance(flow.id, phase.id, 'Continue');
+    assert.equal(options.length, 1);
+    assert.equal(options[0].workflowInstanceId, phase.id);
+    assert.match(options[0].runtimeTaskId, /^[0-9a-f-]{36}$/u);
+});

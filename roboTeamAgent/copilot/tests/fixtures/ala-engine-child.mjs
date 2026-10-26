@@ -1,4 +1,6 @@
 import fs from 'node:fs/promises';
+import net from 'node:net';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
@@ -52,12 +54,35 @@ const emit = (event) => {
 process.on('SIGINT', async () => { await state.close().catch(() => {}); process.exit(130); });
 emit({ type: 'session-ready', sessionId: id });
 emit({ type: 'coding-agent-selected', agent: backend, permissionMode: value('--permissions') });
-emit({ type: 'coding-agent-message', agent: backend, message: 'Visible progress' });
+// A turn can complete without any visible coding-agent output.
+if (!prompt.includes('NO_VISIBLE_MESSAGES')) emit({ type: 'coding-agent-message', agent: backend, message: 'Visible progress' });
 if (prompt.includes('FORCED_FAILURE')) {
     const { reportTaskBlocked } = await import('../../src/skills/report-task-blocked/scripts/run.mjs');
     const directory = args[args.indexOf('roboteam-task-failure') - 2];
     await reportTaskBlocked({ message: 'Stopped at deployment: required access is unavailable.' }, { directory });
     setInterval(() => {}, 1000);
+} else if (prompt.includes('LIVE_CONTROL')) {
+    // Live Sessions messages arrive as control records after the prompt. The
+    // display text says how to answer: accept, reject, or exit without a receipt.
+    const records = [];
+    emit({ type: 'coding-agent-message', agent: backend, message: 'READY', outputKind: 'assistant', outputComplete: true });
+    for (let next = await stdinLines.next(); !next.done; next = await stdinLines.next()) {
+        const record = JSON.parse(next.value);
+        records.push(record);
+        if (record.type !== 'message') continue;
+        if (record.displayText === 'accept') {
+            emit({ type: 'message-accepted', id: 'unrelated-id', delivery: 'delivered' });
+            emit({ type: 'message-accepted', id: record.id, delivery: 'delivered' });
+        } else if (record.displayText === 'reject') {
+            emit({ type: 'message-rejected', id: record.id, error: 'Fixture rejected the message.' });
+        } else if (record.displayText === 'exit') break;
+    }
+    const output = JSON.stringify({ records });
+    emit({ type: 'coding-agent-final', agent: backend, message: output });
+    await recorder.finish({ result: output, status: 'completed' });
+    await state.close();
+    process.stdout.write(`${output}\n`);
+    process.stdin.destroy();
 } else if (prompt.includes('MALFORMED')) {
     process.stderr.write('@@ALA_EVENT@@{invalid\n');
     setInterval(() => {}, 1000);
@@ -91,7 +116,22 @@ if (prompt.includes('FORCED_FAILURE')) {
             ...(args[index + 2] === 'at' ? { target: args[index + 3], expose: args[index + 4] === 'expose' } : {}) }] : []),
         effortOverride: value('--effort') ?? null, repositories: process.env.ALA_TASK_REPOSITORIES, model: value('--model') || config.models[backend] || null, modelOverride: value('--model') || null, ca: value('--ca') || null,
         credential: process.env.PLOINKY_AGENT_SECRET || process.env.SSO_ACCESS_TOKEN || null,
+        livePublish: process.env.ROBOTEAM_LIVE_PUBLISH ?? null,
         privatePrompt: !args.some((arg) => arg.includes('PRIVATE_USER_PROMPT')) });
+    if (prompt.includes('LIVE_TASK')) {
+        // A delegated task notification through the turn's task socket, sent
+        // without waiting for its acknowledgement: RoboTeam observes the task
+        // while the turn is ending.
+        const { eventToken } = JSON.parse(await fs.readFile(path.join(folder, 'context.json'), 'utf8'));
+        const socket = net.connect(path.join(folder, 'tasks.sock'));
+        await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+        socket.on('error', () => {});
+        socket.write(`${JSON.stringify({ token: eventToken, id: randomUUID(), event: { type: 'task-started',
+            task: { agentName: 'otherAgent', taskId: 'remote-live-task', toolName: 'long_job' } } })}\n`);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        // The child exits without waiting for the acknowledgement.
+        socket.unref();
+    }
     if (prompt.includes('QUEUED_FOLLOWUP')) {
         emit({ type: 'message-accepted', id: 'queued-input', delivery: 'queued' });
         emit({ type: 'coding-agent-final', agent: backend, message: 'Initial result before queued follow-up' });

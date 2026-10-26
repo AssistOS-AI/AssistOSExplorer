@@ -1,0 +1,13 @@
+{
+  "pluginCategory": "application",
+  "id": "roboteam-terminal-profiles",
+  "label": "RoboTeam",
+  "contributionType": "terminal-profile-source",
+  "location": [
+    "terminal-profiles:source"
+  ],
+  "terminalProfiles": {
+    "version": 1,
+    "base": "/base-agent-additional-server/roboTeamAgent/3001/api/terminal-profiles"
+  }
+}

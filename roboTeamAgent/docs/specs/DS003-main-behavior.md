@@ -1,6 +1,6 @@
 ---
 title: DS003-main-behavior
-summary: Defines workspace robots, concurrent CLI conversations, retained visible workstations, observable delegated ALA tasks, global graph workflows and recurring scheduled execution.
+summary: Defines workspace robots, concurrent CLI conversations, retained visible workstations, observable delegated ALA tasks, global graph workflows, recurring scheduled execution and live agent runs.
 ---
 
 ## Introduction
@@ -19,6 +19,7 @@ RoboTeam lets workspace administrators maintain durable robots and lets internal
 | Graph authoring and execution | Generate and refine global task graphs, dispatch robot tasks by matching skillsets, coordinate sequential child workflows, and inspect durable run history and final responses. |
 | Scheduled workflows | Administrators persist interval or timezone-aware daily jobs; the running service starts ordinary graph workflows, skips restart backlogs and prevents overlap with the same job's unfinished execution. |
 | Queued observable ALA execution | Native asynchronous MCP start tools queue work per robot, stream ALA messages through Ploinky task logs, and reach a terminal state when the ALA process exits. |
+| Live agent runs | Copilot turns, delegated copilot tasks, robot tasks and workflow phases appear in Explorer's Live Sessions list, where their signed owner can watch, message and stop them and an administrator can watch and stop them. |
 
 ### Workspace robot administration
 
@@ -75,3 +76,7 @@ AchillesCLI's front copilot automatically mounts the builtin `bash` and `launch-
 All three start tools must advertise `resumeTaskForRobot` through Ploinky's native continuation contract and `sendMessageToRobotTask` for input during execution. Cancelling their native Ploinky task must terminate only the selected ALA work, preserve the GUI container, and return an opaque continuation handle bound to the exact interrupted RoboTeam task. Resume must reject mismatched handles or missing native session state. It must continue the saved ALA conversation with its pinned backend and cwd, without repeating the original prompt. A paused manual-control task resumes ahead of the paused FIFO queue and clears manual-control mode; other continuations keep FIFO order. GUI continuation adds a fresh-screen instruction, while Simple continuation uses only the supplied prompt or Continue. Active input must use the declared message tool and report native delivery or sequential queueing without another concurrent ALA process. The continued native task must stay on the same AchillesCLI local task timeline and must issue another continuation handle if it is paused again. Cancelling one queued task must not interrupt the active task ahead of it.
 
 Local instruction-skill selection is a live conversation policy. The default robot receives the bundled copilot skillset. Other optional skills must come from registered robot repositories resolved through the Ploinky marketplace endpoint; RoboTeam must not scan the workspace or its projects for catalogs. Explicit empty selection stays empty, apart from required read-only skills. Each external turn or dequeued continuation installs the current selected links after queue wait. Source edits are visible through existing links during execution. Historical pinned catalogs require restoring a live selection before execution. The Conversation skills page and terminal continuations share the same policy reference. The CLI uses the configured policy but must not expose repository or skill administration commands. `/list robots` reads names from the current workspace robot store without ALA; terminal and WebChat must expose the same command catalog. DS006 defines live installation, migration, scope and historical recovery.
+
+### Live agent runs
+
+RoboTeam must publish every running copilot turn, task delegated by the copilot to another agent, robot task and workflow phase to Explorer's Live Sessions list while it runs, and keep it listed for one hour after it ends. Only the signed owner and administrators see a run; owner messages reach the running agent with a correlated receipt, and Stop stops the run (for a workflow phase, it pauses the whole workflow). Publishing must never delay or fail the run itself. DS008 owns the contract.

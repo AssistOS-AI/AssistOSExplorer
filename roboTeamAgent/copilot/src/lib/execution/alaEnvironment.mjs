@@ -1,10 +1,11 @@
 import path from 'node:path';
 
 // Native engine environment stays filtered; direct SDK scripts receive an explicit task context.
+// The Live Sessions publishing switch belongs to the copilot process only.
 export function nativeEnvironment(env, home) {
     const result = {};
     for (const [key, value] of Object.entries(env)) {
-        if (/^(PLOINKY_|SSO_|ACHILLES_MODEL_|ALA_TASK_REPOSITORIES$|ALA_CONFIG_PATH$)|token|secret|password|authorization|cookie|api_?key|credential|private_?key/i.test(key)) continue;
+        if (/^(PLOINKY_|SSO_|ACHILLES_MODEL_|ALA_TASK_REPOSITORIES$|ALA_CONFIG_PATH$|ROBOTEAM_LIVE_PUBLISH$)|token|secret|password|authorization|cookie|api_?key|credential|private_?key/i.test(key)) continue;
         result[key] = value;
     }
     return { ...result, HOME: home, CODEX_HOME: path.join(home, '.codex'),

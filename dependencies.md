@@ -1,5 +1,7 @@
 # Deployment helper dependencies
 
+Live Sessions adds no package or runtime dependency. Source validation and aggregation use native URL, Fetch, AbortController and EventSource APIs. The agent stream view uses Explorer's existing WebSkel lifecycle and styles; its offline tests use Node's built-in test runner. Browser modules retain the repository's `.js` ES-module convention, and the shared URL validator uses `.mjs` because both Node discovery and browser modules import it.
+
 The Hardware limits panel adds no dependency. Browser modules retain Explorer's
 existing `.js` ES-module convention and use native Fetch, AbortController,
 WebSkel lifecycle, and shared Explorer styles. Policy and lifecycle authority

@@ -1,0 +1,33 @@
+{
+  "pluginCategory": "application",
+  "id": "live-sessions",
+  "component": "live-sessions-tool-button",
+  "location": ["file-exp:toolbar"],
+  "locationOrder": 380,
+  "label": "Live Sessions",
+  "tooltip": "Watch and manage live terminals and agent runs",
+  "icon": "./icon.svg",
+  "presenter": "LiveSessionsToolButton",
+  "type": "embedded",
+  "adminOnly": false,
+  "autoPin": false,
+  "mountOnStart": true,
+  "toolbarModal": {
+    "mode": "iframe",
+    "url": "/explorer/IDE-plugins/live-sessions/live-sessions-page.html",
+    "readyTitle": "Live Sessions",
+    "fullscreen": true
+  },
+  "dependencies": [
+    {
+      "component": "live-sessions-modal",
+      "presenter": "LiveSessionsModal",
+      "type": "modal"
+    },
+    {
+      "component": "live-session-stream-view",
+      "presenter": "LiveSessionStreamView",
+      "type": "embedded"
+    }
+  ]
+}

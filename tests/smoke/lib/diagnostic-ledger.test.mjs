@@ -103,3 +103,30 @@ test('unconsumed checkpoints fail closed', () => {
   ledger.checkpoint('forgotten negative probe');
   assert.throws(() => ledger.assertNoOpenCheckpoints(), /forgotten negative probe/);
 });
+
+test('closing a checkpoint without acknowledgement consumes only it and leaves every event actionable', () => {
+  const events = [];
+  const ledger = createDiagnosticLedger(events, { isActionable: (event) => event.type === 'error' });
+  const outer = ledger.checkpoint('outer operation');
+  const inner = ledger.checkpoint('authentication navigation');
+  events.push(...recoveryEvents());
+  assert.equal(ledger.closeWithoutAcknowledgement(inner), undefined, 'closure returns no acknowledgement');
+  assert.equal(ledger.actionableEvents().length, 4);
+  assert.equal(events.length, 4, 'closure removes no evidence');
+  assert.throws(() => ledger.closeWithoutAcknowledgement(inner), /unknown or already consumed/);
+  assert.throws(() => ledger.acknowledgeExact(inner, expectedRecovery), /unknown or already consumed/);
+  assert.throws(() => ledger.assertExact(inner, expectedRecovery), /unknown or already consumed/);
+  assert.throws(() => ledger.assertNoOpenCheckpoints(), /outer operation/);
+  assert.deepEqual(ledger.acknowledgeExact(outer, expectedRecovery), expectedRecovery, 'another checkpoint is unaffected');
+  assert.doesNotThrow(() => ledger.assertNoOpenCheckpoints());
+});
+
+test('a checkpoint of another ledger or an acknowledged one cannot be closed', () => {
+  const first = createDiagnosticLedger([]);
+  const second = createDiagnosticLedger([]);
+  const token = first.checkpoint('owned elsewhere');
+  assert.throws(() => second.closeWithoutAcknowledgement(token), /unknown or already consumed/);
+  assert.throws(() => second.closeWithoutAcknowledgement({ label: 'owned elsewhere', start: 0 }), /unknown or already consumed/);
+  first.acknowledgeExact(token, []);
+  assert.throws(() => first.closeWithoutAcknowledgement(token), /unknown or already consumed/);
+});

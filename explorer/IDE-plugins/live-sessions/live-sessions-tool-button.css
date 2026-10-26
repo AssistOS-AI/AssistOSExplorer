@@ -1,0 +1,43 @@
+live-sessions-tool-button {
+    display: block;
+    width: 100%;
+    text-align: center;
+}
+
+.app-toolbar-slot live-sessions-tool-button,
+live-sessions-tool-button[data-host-orientation="horizontal"] {
+    width: auto;
+    text-align: initial;
+}
+
+live-sessions-tool-button .live-sessions-tool {
+    display: inline-flex;
+    justify-content: center;
+}
+
+live-sessions-tool-button button[hidden] {
+    display: none;
+}
+
+live-sessions-tool-button .app-plugin-tool-button {
+    position: relative;
+}
+
+live-sessions-tool-button .live-sessions-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    color: var(--surface, #fff);
+    background: var(--danger, #b91c1c);
+    font-size: var(--font-xs, 11px);
+    font-weight: var(--font-semibold, 600);
+    line-height: 18px;
+    text-align: center;
+}
+
+live-sessions-tool-button .live-sessions-badge[hidden] {
+    display: none;
+}

@@ -18,6 +18,7 @@ import { createPloinkyTaskContext } from '../ploinky/ploinkyTaskContext.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { webchatTurnLogUrl } from '../webchat/webchatTurnLog.mjs';
 import { codingAgentLabel } from '../webchat/webchatProgressState.mjs';
+import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
 
 const BACKENDS = ['codex', 'opencode', 'pi', 'claude'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
@@ -87,8 +88,14 @@ function interrupted() {
     return Object.assign(new Error('Execution interrupted.'), { name: 'AbortError', code: 'ABORT_ERR', exitCode: 130 });
 }
 
+// A Live Sessions title from the first line of the user's message.
+function liveTitle(text) {
+    const first = String(text || '').trim().split(/\r?\n/u)[0].trim();
+    return first ? `Copilot · ${first.length > 120 ? `${first.slice(0, 119)}…` : first}` : 'Copilot turn';
+}
+
 export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settings = workspaceSettings,
-    interactions, backgroundTasks, installation, execution = {}, webchatLogsBase = '', modelCache = null } = {}) {
+    interactions, backgroundTasks, installation, execution = {}, webchatLogsBase = '', modelCache = null, livePublisher = null } = {}) {
     if (!sessionStore || !skillCatalog) throw new TypeError('ALA requires a session store and Anthropic skill catalog.');
     const active = new Set();
     let closed = false;
@@ -163,6 +170,10 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
         active.add(operation);
         let release, catalogRelease, turn, scriptContext, child, childDone, failureChannel, forcedFailure;
+        // The Live Sessions run of this turn, published from its first message
+        // until its end, and the outcome it ends with.
+        let live = null;
+        let liveResult = null;
         // Diagnostics only: phase records with elapsed time, so a hang is a missing end and a throw an error record.
         const phase = (event, extra = {}) => logDiagnostic(workingDir, `turn.${event}`, { sessionId, turnId,
             elapsedMs: Math.round(performance.now() - responseStarted), ...extra });
@@ -181,7 +192,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         phase('start');
         const env = { ...process.env };
         const sanitize = createSanitizer(context, env);
-        const emit = async (event) => { await onEvent?.(sanitize(event)); };
+        const emit = async (event) => {
+            const clean = sanitize(event);
+            live?.event(clean);
+            await onEvent?.(clean);
+        };
         try {
             controller.signal.throwIfAborted();
             const robotName = String(process.env.ROBOTEAM_COPILOT_ROBOT_NAME || '').trim();
@@ -211,6 +226,13 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             turn = await sessionStore.beginTurn({ sessionId, turnId, text: sanitize(context.rawText || prompt),
                 attachments: sanitize(context.attachments || []), references: sanitize(context.references || []) });
             phase('turn.begun');
+            // The run and its transcript link exist before ALA starts, so a
+            // failed or stopped turn still links its recorded output.
+            live = createLiveTurn(livePublisher, { title: sanitize(liveTitle(context.rawText || prompt)), cwd, owner: context.liveOwner || null,
+                robot: robotName || execution.robotId || '',
+                transcriptUrl: webchatLogsBase && execution.captureTurnLogs !== false
+                    ? webchatTurnLogUrl(webchatLogsBase, sessionId, turn.assistantMessageId) : '',
+                abort: () => controller.abort(interrupted()) });
             await emit({ type: 'turn-started', ...turn, turnId });
             const captured = { ...context, workingDir: cwd, sessionId, turnId,
                 assistantMessageId: turn.assistantMessageId, signal: controller.signal,
@@ -277,13 +299,20 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             // agent with `prompt` and records `displayText` as the user's message.
             child.stdin.write(`${JSON.stringify({ type: 'prompt', prompt: sanitize(nativePrompt),
                 displayText: sanitize(context.rawText || prompt) })}\n`);
-            onControl?.((message) => {
+            // Control records follow the prompt. Live Sessions messages use the
+            // same writer, with the control request id as the ALA message id.
+            const writeControl = (message) => {
                 if (message.type === 'message') message = { ...message, displayText: message.message, message: buildTaskPrompt({ task: message.message }) };
-                if (!child.stdin.destroyed && !controller.signal.aborted) child.stdin.write(JSON.stringify(message) + '\n');
-            });
+                if (child.stdin.destroyed || controller.signal.aborted) return false;
+                child.stdin.write(JSON.stringify(message) + '\n');
+                return true;
+            };
+            onControl?.(writeControl);
+            live?.attach(writeControl);
             childDone = consumeChild(child, { config: { ...config, skillExecution: snapshot.revision ? { revision: snapshot.revision, catalogId: snapshot.catalogId } : null }, controller, context: captured, sessionId, turnId,
                 assistantMessageId: turn.assistantMessageId, emit, sanitize });
             const outputText = await childDone;
+            live?.childExited();
             phase('childDone.resolved');
             if (failureChannel) {
                 await failureChannel.close();
@@ -302,7 +331,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             let thinkingUrl = '';
             if (captured.sourceTabId && webchatLogsBase && execution.captureTurnLogs !== false) {
                 const recorded = readAlaSession(cwd, sessionId)?.turns.find((entry) => entry.turnId === turnId);
-                if (recorded?.messages.length || recorded?.tools.length) {
+                if (recorded?.messages?.length || recorded?.tools?.length) {
                     thinkingUrl = webchatTurnLogUrl(webchatLogsBase, sessionId, turn.assistantMessageId);
                     finalText = `${outputText}\n\n[View Thinking](${thinkingUrl})`;
                 }
@@ -310,6 +339,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText,
                 { durationMs: Math.max(0, Math.round(performance.now() - responseStarted)), thinkingUrl });
             phase('completeTurn.done');
+            liveResult = { status: 'finished', code: 0 };
             return { outputText: finalText, session: completed, turnId, userMessageId: turn.userMessageId,
                 assistantMessageId: turn.assistantMessageId, backend };
         } catch (cause) {
@@ -317,6 +347,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const cancelled = !forcedFailure && (controller.signal.aborted || cause?.exitCode === 130);
             const error = forcedFailure || (cancelled ? interrupted() : new Error(sanitize(cause?.message || String(cause)), { cause }));
             if (!cancelled && !forcedFailure && cause?.exitCode !== undefined) error.exitCode = cause.exitCode;
+            liveResult = cancelled ? { status: 'stopped', reason: 'stopped' }
+                : { status: 'failed', reason: error.message, ...(Number.isSafeInteger(error.exitCode) ? { code: error.exitCode } : {}) };
             if (turn) {
                 error.session = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, error.message,
                     { status: cancelled ? 'interrupted' : 'failed', durationMs: Math.max(0, Math.round(performance.now() - responseStarted)) });
@@ -330,6 +362,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             phase('finally.entered', { hasLease: Boolean(release), hasChild: Boolean(childDone) });
             try {
                 if (childDone) await step('childDone.catch', () => childDone.catch(() => {}));
+                live?.childExited();
                 if (failureChannel) await step('failureChannel.close', () => failureChannel.close());
                 if (scriptContext) await step('scriptContext.close', () => scriptContext.close());
             } finally {
@@ -338,6 +371,9 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                         phase('finally.step.start', { step: 'active.delete/finish' });
                         active.delete(operation); finish();
                         phase('finally.step.end', { step: 'active.delete/finish' });
+                        // Last, after the task notification channel closed, so
+                        // delegated tasks of this turn start before it ends.
+                        live?.end(liveResult || { status: 'failed', reason: 'The turn ended unexpectedly.' });
                     }
                 }
             }

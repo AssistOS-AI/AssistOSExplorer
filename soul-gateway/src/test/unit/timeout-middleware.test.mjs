@@ -135,6 +135,30 @@ describe('timeoutMiddleware', () => {
             /ctx\.target\.model is required/
         );
     });
+
+    it('cancels the upstream request and closes its source when a leased stream is disposed unread', async () => {
+        const ctx = makeLeaseCtx({});
+        const source = {
+            returned: 0,
+            [Symbol.asyncIterator]() {
+                return this;
+            },
+            async next() {
+                return { done: false, value: TEXT_EVENT };
+            },
+            async return() {
+                this.returned++;
+                return { done: true, value: undefined };
+            },
+        };
+        const signal = await lease(ctx, () => source);
+        assert.equal(signal.aborted, false);
+
+        await ctx.response[Symbol.asyncIterator]().return();
+
+        assert.equal(signal.aborted, true);
+        assert.equal(source.returned, 1);
+    });
 });
 
 describe('the content-gap deadline of a leased stream', () => {

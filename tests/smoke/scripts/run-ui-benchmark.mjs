@@ -22,6 +22,16 @@ import {
   summarizeRequests,
   summarizeValues,
 } from '../lib/ui-benchmark-metrics.mjs';
+import {
+  AUTHENTICATION_SURFACES,
+  LEGACY_LOGIN_PATH,
+  bindAuthenticationDocument,
+  clickInBoundDocument,
+  completeThroughWizard,
+  fillInBoundDocument,
+  prepareUserPersistoAccount,
+  waitForAuthenticationSurface,
+} from '../lib/auth-wizard.mjs';
 
 const smokeRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const repoRoot = path.dirname(path.dirname(smokeRoot));
@@ -45,7 +55,7 @@ function printHelp() {
   console.log(`Explorer UI benchmark
 
 Usage:
-  npm run benchmark:ui -- --base-url http://127.0.0.1:8080 --label master
+  npm run benchmark:ui -- --base-url http://localhost:8080 --label master
 
 Options:
   --base-url <url>         Router origin (or UI_BENCHMARK_BASE_URL / SMOKE_BASE_URL)
@@ -61,10 +71,14 @@ Options:
   --headed                 Show Chromium
   --help                   Show this help
 
-Credentials are accepted only through UI_BENCHMARK_USERNAME and
-UI_BENCHMARK_PASSWORD (falling back to SMOKE_USERNAME / SMOKE_PASSWORD and
-then the documented local admin defaults). Passwords are never written to the
-result.`);
+Credentials are accepted only through the environment, never as options.
+Ploinky's local login form uses UI_BENCHMARK_USERNAME and UI_BENCHMARK_PASSWORD
+(falling back to SMOKE_USERNAME / SMOKE_PASSWORD and then the documented local
+admin defaults). UserPersisto signs in an existing password account with
+UI_BENCHMARK_LOGIN_EMAIL (or SMOKE_LOGIN_EMAIL, or a username that is already
+an email) and UI_BENCHMARK_ACCOUNT_PASSWORD (or SMOKE_ACCOUNT_PASSWORD). The
+benchmark never signs up, never uses email codes or authenticators, and never
+substitutes another password. Passwords are never written to the result.`);
 }
 
 function parseArgs(argv) {
@@ -125,6 +139,24 @@ function createRunId(label) {
   return `${label}-${stamp}-${process.pid}`;
 }
 
+// Local-form credentials keep their documented precedence. A UserPersisto
+// account needs its own email and account password; neither falls back to the
+// local-form password, a generated run password or a default.
+export function benchmarkCredentials(env) {
+  const username = String(env.UI_BENCHMARK_USERNAME || env.SMOKE_USERNAME || 'admin');
+  const loginEmail = String(
+    env.UI_BENCHMARK_LOGIN_EMAIL
+      || env.SMOKE_LOGIN_EMAIL
+      || (username.includes('@') ? username : ''),
+  ).trim();
+  return {
+    username,
+    password: String(env.UI_BENCHMARK_PASSWORD || env.SMOKE_PASSWORD || 'admin'),
+    loginEmail,
+    accountPassword: String(env.UI_BENCHMARK_ACCOUNT_PASSWORD || env.SMOKE_ACCOUNT_PASSWORD || ''),
+  };
+}
+
 function loadConfig(argv) {
   const args = parseArgs(argv);
   if (args.help) return { help: true };
@@ -133,7 +165,7 @@ function loadConfig(argv) {
       || process.env.UI_BENCHMARK_BASE_URL
       || process.env.SMOKE_BASE_URL
       || process.env.PLAYWRIGHT_BASE_URL
-      || 'http://127.0.0.1:8080',
+      || 'http://localhost:8080',
   );
   const label = normalizeBenchmarkLabel(args.label || process.env.UI_BENCHMARK_LABEL);
   const runId = createRunId(label);
@@ -172,16 +204,7 @@ function loadConfig(argv) {
       600_000,
     ),
     headless: !args.headed && !envBoolean(process.env.UI_BENCHMARK_HEADED, false),
-    username: String(
-      process.env.UI_BENCHMARK_USERNAME
-        || process.env.SMOKE_USERNAME
-        || 'admin',
-    ),
-    password: String(
-      process.env.UI_BENCHMARK_PASSWORD
-        || process.env.SMOKE_PASSWORD
-        || 'admin',
-    ),
+    ...benchmarkCredentials(process.env),
     deployment: {
       id: optionalIdentifier(
         args['deployment-id'] || process.env.UI_BENCHMARK_DEPLOYMENT_ID,
@@ -662,9 +685,97 @@ async function waitForWorkspaceFile(page, expectedPath, timeoutMs) {
   }, { targetPath: expectedPath, targetName: filename }, { timeout: timeoutMs });
 }
 
-async function waitForExplorerInteractive(page, config) {
-  await page.locator('#page_content').waitFor({ state: 'visible', timeout: config.timeoutMs });
-  await page.locator('#before_webskel_loader').waitFor({ state: 'detached', timeout: config.timeoutMs });
+// Explorer's two supported Git controls: the host's on-demand trigger, shown
+// until Git is first used, and the mounted Git component's own button. Git is
+// mandatory; no other trigger, text match or location counts.
+const GIT_CONTROLS = Object.freeze([
+  Object.freeze({ form: 'lazy', selector: '#fileExpToolbarPlugins button[data-app-plugin-trigger="gitAgent/git"]' }),
+  Object.freeze({ form: 'mounted', selector: '#gitButton' }),
+]);
+const GIT_CONTROL_POLL_MS = 50;
+const GIT_CONTROL_ATTEMPT_MS = 500;
+
+function remainingMs(deadline) {
+  return Math.max(1, deadline - Date.now());
+}
+
+function timeoutError(timeoutMs, what) {
+  return new Error(`Timeout ${timeoutMs}ms exceeded waiting for ${what}.`);
+}
+
+// Finds the visible supported Git controls and, when exactly one is visible,
+// whether it is blocked. Returns `{ control }` for one usable control, or
+// `{ reason }` with fixed text. Every handle it does not return is disposed.
+async function inspectGitControls(page) {
+  const visible = [];
+  for (const control of GIT_CONTROLS) {
+    const handles = await page.$$(control.selector);
+    for (const handle of handles) {
+      if (await handle.isVisible().catch(() => false)) visible.push({ form: control.form, handle });
+      else await handle.dispose().catch(() => {});
+    }
+  }
+  const release = async () => { for (const { handle } of visible) await handle.dispose().catch(() => {}); };
+  if (visible.length !== 1) {
+    await release();
+    return { reason: visible.length ? `${visible.length} supported Git controls are visible` : 'no supported Git control is visible' };
+  }
+  const [control] = visible;
+  const blocked = await control.handle.evaluate((element) => {
+    if (!element.isConnected) return 'detached';
+    if (element.disabled || element.matches(':disabled')) return 'disabled';
+    if (element.closest('[aria-disabled="true"]')) return 'aria-disabled';
+    if (element.closest('[aria-busy="true"]') || element.hasAttribute('data-app-plugin-loading')) return 'busy';
+    if (element.closest('[hidden], [inert]')) return 'hidden';
+    return '';
+  }).catch(() => 'detached');
+  if (blocked) {
+    await release();
+    return { reason: `the Git control is ${blocked}` };
+  }
+  return { control };
+}
+
+// Resolves the one visible supported Git control and proves, with Playwright's
+// non-activating trial, that it would accept an ordinary click. The trial may
+// hover the control, but it never presses, clicks or focuses it, so Git is not
+// activated, imported, mounted or opened. The trial can wait, so the whole
+// inspection is repeated after it: the same element must still be the only
+// visible supported control and still not be disabled, busy or loading. A
+// control replaced while polling is resolved again; anything else keeps
+// waiting and fails at the deadline.
+async function selectGitControl(page, deadline, timeoutMs) {
+  let reason = 'no supported Git control is visible';
+  while (Date.now() < deadline) {
+    const before = await inspectGitControls(page);
+    if (before.reason) {
+      reason = before.reason;
+    } else {
+      const { control } = before;
+      let accepted = false;
+      try {
+        await control.handle.click({ trial: true, timeout: Math.min(GIT_CONTROL_ATTEMPT_MS, remainingMs(deadline)) });
+        const after = await inspectGitControls(page);
+        if (after.reason) {
+          reason = after.reason;
+        } else {
+          accepted = await control.handle.evaluate((element, current) => element === current, after.control.handle)
+            .catch(() => false);
+          await after.control.handle.dispose().catch(() => {});
+          if (!accepted) reason = 'the Git control changed during the check';
+        }
+      } catch {
+        reason = 'the Git control is not actionable';
+      }
+      if (accepted) return control;
+      await control.handle.dispose().catch(() => {});
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(GIT_CONTROL_POLL_MS, remainingMs(deadline))));
+  }
+  throw timeoutError(timeoutMs, `one actionable Explorer Git control (${reason})`);
+}
+
+async function waitForExplorerStructure(page, config, deadline) {
   await page.waitForFunction(({ directoryPath, filePath }) => {
     const explorer = document.querySelector('file-exp');
     const presenter = explorer?.webSkelPresenter;
@@ -674,9 +785,10 @@ async function waitForExplorerInteractive(page, config) {
     );
     return Boolean(
       window.webSkel
+      && document.querySelector('#page_content')
+      && !document.querySelector('#before_webskel_loader')
       && presenter
       && presenter.state?.path === '/'
-      && document.querySelector('#gitButton')
       && entryPaths.has('/Confidential')
       && entryPaths.has(directoryPath)
       && entryPaths.has(filePath)
@@ -686,7 +798,67 @@ async function waitForExplorerInteractive(page, config) {
   }, {
     directoryPath: config.directoryPath,
     filePath: config.filePath,
-  }, { timeout: config.timeoutMs });
+  }, { timeout: remainingMs(deadline) });
+}
+
+// Explorer is interactive when its shell, root listing and required root
+// entries are settled and exactly one supported Git control is actionable.
+// The structure is checked again after the Git check. Everything shares one
+// `timeoutMs` budget; a timeout reports that budget, never page content.
+export async function waitForExplorerInteractive(page, config) {
+  const deadline = Date.now() + config.timeoutMs;
+  const step = async (what, action) => {
+    try {
+      await action();
+    } catch (error) {
+      if (error?.name === 'TimeoutError') throw timeoutError(config.timeoutMs, what);
+      throw error;
+    }
+  };
+  await step('the Explorer page content', () => page.locator('#page_content')
+    .waitFor({ state: 'visible', timeout: remainingMs(deadline) }));
+  await step('the initial loader to close', () => page.locator('#before_webskel_loader')
+    .waitFor({ state: 'detached', timeout: remainingMs(deadline) }));
+  await step('the Explorer root listing', () => waitForExplorerStructure(page, config, deadline));
+  const control = await selectGitControl(page, deadline, config.timeoutMs);
+  await control.handle.dispose().catch(() => {});
+  await step('the Explorer root listing after the Git check', async () => {
+    await page.locator('#page_content').waitFor({ state: 'visible', timeout: remainingMs(deadline) });
+    await waitForExplorerStructure(page, config, deadline);
+  });
+}
+
+// Opens Git through its one supported control with a single ordinary click
+// and waits for the Git panel to finish loading its repository overview or
+// its credentials gate. A modal shell alone is not enough.
+export async function openGitPanel(page, config) {
+  const deadline = Date.now() + config.timeoutMs;
+  const control = await selectGitControl(page, deadline, config.timeoutMs);
+  try {
+    await control.handle.click({ timeout: remainingMs(deadline) });
+  } finally {
+    await control.handle.dispose().catch(() => {});
+  }
+  await page.locator('git-panel .git-panel').waitFor({
+    state: 'visible',
+    timeout: config.timeoutMs,
+  });
+  await page.waitForFunction(() => {
+    const modal = document.querySelector('git-panel');
+    const presenter = modal?.webSkelPresenter;
+    return Boolean(
+      presenter
+      && !presenter.state?.repoOverviewsLoading
+      && (presenter.state?.repoOverviewsLoaded || presenter.state?.credentialsGate)
+      && Number(window.__assistosExplorerGlobalLoader?.depth || 0) === 0,
+    );
+  }, null, { timeout: config.timeoutMs });
+  return {
+    readiness: await page.locator('git-panel').evaluate((modal) => {
+      const state = modal.webSkelPresenter?.state || {};
+      return state.credentialsGate ? 'credentials-gate' : 'repository-overview';
+    }),
+  };
 }
 
 function entryLocator(page, entryPath) {
@@ -739,6 +911,112 @@ async function measureStep(state, name, action) {
   return step;
 }
 
+// Fills the local Ploinky form outside the measured steps and returns its
+// submit action. Every credential and the submit are bound to the validated
+// login document at its exact address.
+async function prepareLegacyLogin(page, config, expectedOrigin) {
+  const binding = await bindAuthenticationDocument(page, {
+    expectedOrigin,
+    pathname: LEGACY_LOGIN_PATH,
+    timeoutMs: config.timeoutMs,
+  });
+  await fillInBoundDocument(binding, page.locator('input#username, input[name="username"]').first(), config.username);
+  await fillInBoundDocument(binding, page.locator('input#password, input[name="password"]').first(), config.password);
+  return async () => {
+    const navigation = page.waitForNavigation({ waitUntil: 'load', timeout: config.timeoutMs });
+    navigation.catch(() => {});
+    await clickInBoundDocument(binding, page.locator(
+      'form[action="/auth/login"] button[type="submit"], button[type="submit"], .auth-btn',
+    ).first());
+    await navigation;
+    if (new URL(page.url()).origin !== expectedOrigin) {
+      throw new Error('Authentication left the expected origin.');
+    }
+  };
+}
+
+// Enters the email of an existing UserPersisto password account and its
+// password outside the measured steps and returns the final Log in action.
+// An unknown account refuses before Sign up, so the benchmark creates nothing.
+async function prepareUserPersistoLogin(page, config, expectedOrigin) {
+  if (!config.loginEmail.includes('@')) {
+    throw new Error('BLOCKED: UserPersisto benchmark login needs UI_BENCHMARK_LOGIN_EMAIL or SMOKE_LOGIN_EMAIL.');
+  }
+  if (!config.accountPassword) {
+    throw new Error('BLOCKED: UserPersisto benchmark login needs UI_BENCHMARK_ACCOUNT_PASSWORD or SMOKE_ACCOUNT_PASSWORD for an existing password account.');
+  }
+  const { state, content, binding } = await prepareUserPersistoAccount(page, { loginEmail: config.loginEmail }, {
+    expectedOrigin,
+    timeoutMs: config.timeoutMs,
+    allowSignup: false,
+  });
+  if (state !== 'existing') {
+    throw new Error('BLOCKED: UserPersisto benchmark login supports only an existing password account.');
+  }
+  const passwordInput = content.locator('input[name="password"]');
+  if (await passwordInput.isDisabled()) {
+    throw new Error('BLOCKED: password sign-in is not available for the configured benchmark account.');
+  }
+  await fillInBoundDocument(binding, passwordInput, config.accountPassword);
+  const loginButton = content.getByRole('button', { name: 'Log in', exact: true });
+  return () => completeThroughWizard(page, content, loginButton, config.timeoutMs, {
+    binding,
+    safeRefusal: true,
+  });
+}
+
+// Runs the two measured authentication steps. router-login-page ends when the
+// permitted login surface is rendered; email discovery and credential entry
+// happen between the steps; login-to-explorer-interactive starts immediately
+// before the final submit. `beforeLoginStep` and `waitForInteractive` exist
+// for the regression tests and default to no hook and the real Explorer
+// readiness check.
+export async function runAuthenticationSteps(state, config, {
+  beforeLoginStep = null,
+  waitForInteractive = waitForExplorerInteractive,
+} = {}) {
+  const { page } = state;
+  const expectedOrigin = new URL(config.baseURL).origin;
+  let surface = null;
+  await measureStep(state, 'router-login-page', async () => {
+    const response = await page.goto(`${config.baseURL}/explorer/index.html`, { waitUntil: 'load' });
+    if (response && response.status() >= 400) {
+      throw new Error(`Router returned HTTP ${response.status()} for the Explorer entry route.`);
+    }
+    surface = await waitForAuthenticationSurface(page, {
+      baseURL: config.baseURL,
+      timeoutMs: config.timeoutMs,
+    });
+    return {
+      finalPathname: new URL(page.url()).pathname,
+      responseStatus: response?.status() ?? null,
+    };
+  });
+
+  const submit = surface === AUTHENTICATION_SURFACES.userPersisto
+    ? await prepareUserPersistoLogin(page, config, expectedOrigin)
+    : await prepareLegacyLogin(page, config, expectedOrigin);
+  if (beforeLoginStep) await beforeLoginStep({ surface });
+
+  await measureStep(state, 'login-to-explorer-interactive', async ({ elapsedMs }) => {
+    await submit();
+    const navigationLoadedMs = elapsedMs();
+    await page.locator('#page_content').waitFor({ state: 'visible', timeout: config.timeoutMs });
+    await page.waitForFunction(() => Boolean(
+      window.webSkel
+      && document.querySelector('#page_content')?.children.length,
+    ), null, { timeout: config.timeoutMs });
+    const shellReadyMs = elapsedMs();
+    await waitForInteractive(page, config);
+    return {
+      navigationLoadedMs,
+      shellReadyMs,
+      interactiveReadyMs: elapsedMs(),
+    };
+  });
+  return surface;
+}
+
 export function finalizeStepNetworkSummaries(steps, waterfallRequests) {
   const finalRequests = Array.isArray(waterfallRequests) ? waterfallRequests : [];
   const requestsByStep = new Map();
@@ -786,44 +1064,7 @@ async function runIteration(browser, config, index) {
   let failure = null;
   let initialPagePerformance = null;
   try {
-    await measureStep(state, 'router-login-page', async () => {
-      const response = await page.goto(`${config.baseURL}/explorer/index.html`, { waitUntil: 'load' });
-      if (response && response.status() >= 400) {
-        throw new Error(`Router returned HTTP ${response.status()} for the Explorer entry route.`);
-      }
-      const loginForm = page.locator(
-        'form[action="/auth/login"], input#username, input[name="username"]',
-      ).first();
-      await loginForm.waitFor({ state: 'visible', timeout: config.timeoutMs });
-      return {
-        finalPathname: new URL(page.url()).pathname,
-        responseStatus: response?.status() ?? null,
-      };
-    });
-
-    await page.locator('input#username, input[name="username"]').first().fill(config.username);
-    await page.locator('input#password, input[name="password"]').first().fill(config.password);
-
-    await measureStep(state, 'login-to-explorer-interactive', async ({ elapsedMs }) => {
-      const navigation = page.waitForNavigation({ waitUntil: 'load', timeout: config.timeoutMs });
-      await page.locator(
-        'form[action="/auth/login"] button[type="submit"], button[type="submit"], .auth-btn',
-      ).first().click();
-      await navigation;
-      const navigationLoadedMs = elapsedMs();
-      await page.locator('#page_content').waitFor({ state: 'visible', timeout: config.timeoutMs });
-      await page.waitForFunction(() => Boolean(
-        window.webSkel
-        && document.querySelector('#page_content')?.children.length,
-      ), null, { timeout: config.timeoutMs });
-      const shellReadyMs = elapsedMs();
-      await waitForExplorerInteractive(page, config);
-      return {
-        navigationLoadedMs,
-        shellReadyMs,
-        interactiveReadyMs: elapsedMs(),
-      };
-    });
+    await runAuthenticationSteps(state, config);
     initialPagePerformance = await readPagePerformance(page);
 
     await measureStep(state, 'refresh-root-listing', async () => {
@@ -887,29 +1128,7 @@ async function runIteration(browser, config, index) {
       return { path: config.filePath };
     });
 
-    await measureStep(state, 'open-git-panel', async () => {
-      await page.locator('#gitButton').click();
-      await page.locator('git-panel .git-panel').waitFor({
-        state: 'visible',
-        timeout: config.timeoutMs,
-      });
-      await page.waitForFunction(() => {
-        const modal = document.querySelector('git-panel');
-        const presenter = modal?.webSkelPresenter;
-        return Boolean(
-          presenter
-          && !presenter.state?.repoOverviewsLoading
-          && (presenter.state?.repoOverviewsLoaded || presenter.state?.credentialsGate)
-          && Number(window.__assistosExplorerGlobalLoader?.depth || 0) === 0,
-        );
-      }, null, { timeout: config.timeoutMs });
-      return {
-        readiness: await page.locator('git-panel').evaluate((modal) => {
-          const state = modal.webSkelPresenter?.state || {};
-          return state.credentialsGate ? 'credentials-gate' : 'repository-overview';
-        }),
-      };
-    });
+    await measureStep(state, 'open-git-panel', () => openGitPanel(page, config));
   } catch (error) {
     failure = error;
   }

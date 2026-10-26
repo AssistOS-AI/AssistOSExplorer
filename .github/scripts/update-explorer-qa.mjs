@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { currentQaBox, productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
+import { createGitSandbox, currentQaBox, productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
 
 export const EXPLORER_SOURCE = '.ploinky/repos/AchillesIDE';
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -177,15 +177,17 @@ export async function recoverUnchangedAgentRoute(expected, adapters) {
 /** The service has no Box lifecycle, data-copy, dependency-install, or cache-removal adapter. */
 export function createUpdateService(adapters, scope = QA_SCOPE) {
     const repository = path.join(scope.workspace, EXPLORER_SOURCE);
-    const pins = () => sourcePaths(scope).map(relative => ({ relative,
-        directory: directory(path.join(scope.workspace, relative)), ...adapters.sourcePin(path.join(scope.workspace, relative)) }));
+    // Source checks run in a sandbox made from the exact image of the current QA Box.
+    const pins = current => sourcePaths(scope).map(relative => ({ relative,
+        directory: directory(path.join(scope.workspace, relative)),
+        ...adapters.sourcePin(path.join(scope.workspace, relative), { engine: current.engine, image: current.box.image }) }));
 
     async function snapshot() {
         adapters.assertHost();
         const workspaceIdentity = directory(scope.workspace);
         let current;
         try { current = currentQaBox(adapters.boxes(), scope); } catch { prove(false, 'QA_UPDATE_EXACT_RUNNING_BOX_REQUIRED'); }
-        const sources = pins();
+        const sources = pins(current);
         prove(sources.some(source => source.relative === '.runtime/ploinky')
             && sources.some(source => source.relative === EXPLORER_SOURCE), 'QA_UPDATE_SOURCES_INCOMPLETE');
         // The Box image supplies AchillesAgentLib and is its only identity; the
@@ -240,21 +242,26 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         return affected;
     }
 
+    // Git on the Box-writable checkouts runs only in a sandbox made from the
+    // exact image of the QA Box being updated.
+    const sandboxOf = value => ({ engine: value.current.engine, image: value.current.box.image });
+
     async function candidate(value, requireLocal = false, expectedCommit = null) {
         const prior = source(value);
+        const sandbox = sandboxOf(value);
         prove(SOURCE_ORIGIN.test(prior.origin), 'QA_UPDATE_DEFAULT_BRANCH_REQUIRED');
-        const remote = adapters.remoteDefault(repository);
+        const remote = adapters.remoteDefault(repository, sandbox);
         prove(COMMIT.test(remote.commit)
             && prior.branch === remote.branch && prior.branch !== 'HEAD', 'QA_UPDATE_DEFAULT_BRANCH_REQUIRED');
         // A head that moved after the pin proof is refused before it can be classified as the pinned change.
         prove(expectedCommit === null || remote.commit === expectedCommit, 'QA_UPDATE_REMOTE_MOVED');
-        prove(adapters.upstream(repository) === `origin/${remote.branch}`, 'QA_UPDATE_DEFAULT_UPSTREAM_REQUIRED');
-        const available = adapters.hasCommit(repository, remote.commit);
+        prove(adapters.upstream(repository, sandbox) === `origin/${remote.branch}`, 'QA_UPDATE_DEFAULT_UPSTREAM_REQUIRED');
+        const available = adapters.hasCommit(repository, remote.commit, sandbox);
         prove(!requireLocal || available, 'QA_UPDATE_CANDIDATE_MISSING');
         if (!available) return { ...remote, changedPaths: null, affected: null, local: false };
-        prove(adapters.isAncestor(repository, prior.commit, remote.commit), 'QA_UPDATE_NOT_FAST_FORWARD');
-        const changes = adapters.changes(repository, prior.commit, remote.commit);
-        const classified = classifyChanges(changes, adapters.agentRoots(repository, prior.commit));
+        prove(adapters.isAncestor(repository, prior.commit, remote.commit, sandbox), 'QA_UPDATE_NOT_FAST_FORWARD');
+        const changes = adapters.changes(repository, prior.commit, remote.commit, sandbox);
+        const classified = classifyChanges(changes, adapters.agentRoots(repository, prior.commit, sandbox));
         const browserAgents = [...new Set(classified.browserPaths.map(file => file.path.split('/')[0]))].sort();
         for (const agent of value.runtime.agents.filter(row => row.repo === 'AchillesIDE' && browserAgents.includes(row.agent))) {
             prove(agent.hostPath === path.join(repository, agent.agent), 'QA_UPDATE_STATIC_SOURCE_UNPROVEN');
@@ -286,7 +293,8 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         // Deliberately no runtime readiness or health proof: a running but unhealthy QA can still be redeployed.
         const authority = await snapshot();
         const prior = source(authority);
-        prove(adapters.remoteDefault(repository)?.commit === expectedCommit, 'QA_UPDATE_REMOTE_MOVED');
+        const sandbox = sandboxOf(authority);
+        prove(adapters.remoteDefault(repository, sandbox)?.commit === expectedCommit, 'QA_UPDATE_REMOTE_MOVED');
         const remoteImage = await adapters.remoteBoxImage();
         const remoteImageId = String(remoteImage?.configDigest || '').replace(/^sha256:/, '');
         prove(typeof remoteImage?.reference === 'string' && remoteImage.reference && ID.test(remoteImageId), 'QA_SELECT_IMAGE_UNRESOLVED');
@@ -297,7 +305,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         for (const item of authority.sources.filter(pin => pin.relative === '.runtime/ploinky'
             || pin.relative === 'AdvancedLanguageAgent'
             || (pin.relative.startsWith('.ploinky/repos/') && pin.relative !== EXPLORER_SOURCE))) {
-            const remote = adapters.remoteDefault(path.join(scope.workspace, item.relative));
+            const remote = adapters.remoteDefault(path.join(scope.workspace, item.relative), sandbox);
             prove(pinnedCommit(remote?.commit) && typeof remote.branch === 'string' && remote.branch, 'QA_UPDATE_REMOTE_DEFAULT_INVALID');
             if (item.branch !== remote.branch) reasons.push({ source: item.relative, kind: 'branch', from: item.branch, to: remote.branch });
             if (item.commit !== remote.commit) reasons.push({ source: item.relative, kind: 'commit', from: item.commit, to: remote.commit });
@@ -307,14 +315,14 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             boxImage: { reference: remoteImage.reference, current: currentImageId, remote: remoteImageId }, reasons });
         if (reasons.length) return report('redeploy', false);
         let fetched = false;
-        const lock = await adapters.acquireWorkspaceLock(scope.workspace);
+        const lock = await adapters.acquireWorkspaceLock(scope.workspace, { workspaceRoot: scope.workspace });
         try {
             try {
                 const next = await candidate(authority, false, expectedCommit);
                 prove(next.commit === expectedCommit, 'QA_UPDATE_REMOTE_MOVED');
                 if (prior.commit !== next.commit) {
                     // Fetch changes only Git objects/remote refs; no working tree, runtime or data mutations.
-                    adapters.fetch(repository, next.branch, next.commit);
+                    adapters.fetch(repository, next.branch, next.commit, sandbox);
                     fetched = true;
                     assertRetained(await snapshot(), authority, prior.commit);
                     const selected = await candidate(authority, true, expectedCommit);
@@ -338,12 +346,13 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         directory(receiptDirectory);
         const stat = fs.statSync(receiptDirectory);
         prove(stat.uid === process.getuid() && (stat.mode & 0o077) === 0, 'QA_UPDATE_RECEIPT_NOT_PRIVATE');
-        let lock = await adapters.acquireWorkspaceLock(scope.workspace);
+        const lockOptions = { workspaceRoot: scope.workspace };
+        let lock = await adapters.acquireWorkspaceLock(scope.workspace, lockOptions);
         let authority, next, receipt;
         const touched = [];
         let changed = false;
         const release = () => { lock?.release(); lock = null; };
-        const acquire = async () => { prove(!lock, 'QA_UPDATE_LOCK_STATE_INVALID'); lock = await adapters.acquireWorkspaceLock(scope.workspace); };
+        const acquire = async () => { prove(!lock, 'QA_UPDATE_LOCK_STATE_INVALID'); lock = await adapters.acquireWorkspaceLock(scope.workspace, lockOptions); };
         const writeReceipt = (initial = false) => {
             fs.writeFileSync(receiptFile, JSON.stringify(receipt, null, 2) + '\n', { flag: initial ? 'wx' : 'w', mode: 0o600 });
         };
@@ -367,7 +376,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             prove(next.commit === expectedCommit, 'QA_UPDATE_REMOTE_MOVED');
             if (source(authority).commit !== next.commit) {
                 // Fetch changes only Git objects/remote refs; no working tree, runtime or data mutations.
-                adapters.fetch(repository, next.branch, next.commit);
+                adapters.fetch(repository, next.branch, next.commit, sandboxOf(authority));
                 assertRetained(await snapshot(), authority, source(authority).commit);
                 const selected = await candidate(authority, true, expectedCommit);
                 prove(selected.branch === next.branch && selected.commit === next.commit, 'QA_UPDATE_REMOTE_MOVED');
@@ -383,7 +392,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             }
             assertRetained(await snapshot(), authority, source(authority).commit);
             changed = true;
-            adapters.fastForward(repository, next.commit);
+            adapters.fastForward(repository, next.commit, sandboxOf(authority));
             assertRetained(await snapshot(), authority, next.commit);
             receipt.status = 'restarting'; writeReceipt();
             for (const agent of next.affected) {
@@ -418,7 +427,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
                 if (!lock) await acquire();
                 assertRetained(await snapshot(), authority, next.commit, touched, true);
                 // --keep plus exact clean-candidate proof cannot discard user work.
-                adapters.restore(repository, source(authority).commit);
+                adapters.restore(repository, source(authority).commit, sandboxOf(authority));
                 assertRetained(await snapshot(), authority, source(authority).commit, touched, true);
                 receipt.rollback = 'source-restored'; writeReceipt();
                 for (const name of touched) {
@@ -570,12 +579,18 @@ export function updateProductionAdapters(scope = QA_SCOPE,
     { fetch: registryFetch = (...args) => globalThis.fetch(...args), arch = process.arch } = {}) {
     const base = productionAdapters(scope);
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:PLOINKY_|CLOUDFLARE_|GIT_)/.test(key)));
-    const git = (repo, args, options = {}) => command('git', ['-c', `safe.directory=${repo}`,
-        '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args],
-    { env: { ...env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' }, operation: `git-${args[0]}`, ...options });
-    const gitSucceeds = (repo, args) => {
-        const result = spawnSync('git', ['-c', `safe.directory=${repo}`, '-C', repo, ...args],
-            { env, encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024 });
+    // The Box can write the Explorer checkout and its Git configuration, so Git
+    // never runs on it in the host process. Only merge and reset may write it,
+    // with fetch, which also needs the network like the remote query.
+    const gitSandbox = createGitSandbox({ env });
+    const boxGit = (repo, sandbox, args, { write = false, network = false, timeout = 60_000, encoding = 'utf8' } = {}) => {
+        const result = gitSandbox(repo, sandbox, args, { write, network, timeout, encoding });
+        if (result.error || result.status !== 0) throw Object.assign(new Error('QA_UPDATE_EXTERNAL_COMMAND_FAILED'),
+            { code: 'QA_UPDATE_EXTERNAL_COMMAND_FAILED', operation: `git-${args[0]}` });
+        return result.stdout;
+    };
+    const gitSucceeds = (repo, sandbox, args) => {
+        const result = gitSandbox(repo, sandbox, args);
         prove(!result.error && [0, 1, 128].includes(result.status), 'QA_UPDATE_GIT_PROBE_FAILED');
         return result.status === 0;
     };
@@ -583,25 +598,25 @@ export function updateProductionAdapters(scope = QA_SCOPE,
         assertHost: base.assertHost, machineId: base.machineId, boxes: base.boxes,
         sourcePin: base.sourcePin, verifyAgentLib: base.verifyAgentLib, acquireWorkspaceLock: base.acquireWorkspaceLock,
         remoteBoxImage: boxImageResolver(scope, registryFetch, arch),
-        remoteDefault(repo) {
-            const output = git(repo, ['ls-remote', '--symref', 'origin', 'HEAD']);
+        remoteDefault(repo, sandbox) {
+            const output = boxGit(repo, sandbox, ['ls-remote', '--symref', 'origin', 'HEAD'], { network: true });
             const lines = output.trim().split('\n');
             const refs = lines.map(line => /^ref: refs\/heads\/(.+)\tHEAD$/.exec(line)).filter(Boolean);
             const heads = lines.map(line => /^([a-f0-9]{40})\tHEAD$/.exec(line)).filter(Boolean);
             prove(refs.length === 1 && heads.length === 1, 'QA_UPDATE_REMOTE_DEFAULT_INVALID');
             const branch = refs[0][1];
-            git(repo, ['check-ref-format', `refs/heads/${branch}`]);
+            boxGit(repo, sandbox, ['check-ref-format', `refs/heads/${branch}`]);
             return { branch, commit: heads[0][1] };
         },
-        upstream: repo => git(repo, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).trim(),
-        hasCommit: (repo, commit) => gitSucceeds(repo, ['cat-file', '-e', `${commit}^{commit}`]),
-        isAncestor: (repo, before, after) => gitSucceeds(repo, ['merge-base', '--is-ancestor', before, after]),
-        agentRoots(repo, commit) {
-            return git(repo, ['ls-tree', '-r', '--name-only', '-z', commit]).split('\0')
+        upstream: (repo, sandbox) => boxGit(repo, sandbox, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).trim(),
+        hasCommit: (repo, commit, sandbox) => gitSucceeds(repo, sandbox, ['cat-file', '-e', `${commit}^{commit}`]),
+        isAncestor: (repo, before, after, sandbox) => gitSucceeds(repo, sandbox, ['merge-base', '--is-ancestor', before, after]),
+        agentRoots(repo, commit, sandbox) {
+            return boxGit(repo, sandbox, ['ls-tree', '-r', '--name-only', '-z', commit]).split('\0')
                 .filter(file => /^[^/]+\/manifest\.json$/.test(file)).map(file => file.split('/')[0]);
         },
-        changes(repo, before, after) {
-            const entries = git(repo, ['diff', '--raw', '--no-abbrev', '--no-renames', '-z', before, after, '--']).split('\0');
+        changes(repo, before, after, sandbox) {
+            const entries = boxGit(repo, sandbox, ['diff', '--raw', '--no-abbrev', '--no-renames', '-z', before, after, '--']).split('\0');
             const changes = [];
             for (let index = 0; index < entries.length - 1; index += 2) {
                 const match = /^:([0-9]{6}) ([0-9]{6}) [a-f0-9]{40} [a-f0-9]{40} [ADM]$/.exec(entries[index]);
@@ -610,13 +625,13 @@ export function updateProductionAdapters(scope = QA_SCOPE,
             }
             return changes;
         },
-        fetch(repo, branch, commit) {
-            git(repo, ['fetch', '--no-tags', '--no-recurse-submodules', 'origin',
-                `refs/heads/${branch}:refs/remotes/origin/${branch}`], { timeout: 120_000 });
-            prove(git(repo, ['rev-parse', `refs/remotes/origin/${branch}`]).trim() === commit, 'QA_UPDATE_REMOTE_MOVED');
+        fetch(repo, branch, commit, sandbox) {
+            boxGit(repo, sandbox, ['fetch', '--no-tags', '--no-recurse-submodules', 'origin',
+                `refs/heads/${branch}:refs/remotes/origin/${branch}`], { write: true, network: true, timeout: 120_000 });
+            prove(boxGit(repo, sandbox, ['rev-parse', `refs/remotes/origin/${branch}`]).trim() === commit, 'QA_UPDATE_REMOTE_MOVED');
         },
-        fastForward: (repo, commit) => git(repo, ['merge', '--ff-only', '--no-edit', commit]),
-        restore: (repo, commit) => git(repo, ['reset', '--keep', commit]),
+        fastForward: (repo, commit, sandbox) => boxGit(repo, sandbox, ['merge', '--ff-only', '--no-edit', commit], { write: true }),
+        restore: (repo, commit, sandbox) => boxGit(repo, sandbox, ['reset', '--keep', commit], { write: true }),
         async restart(item, agent) {
             prove(agent.repo === 'AchillesIDE' && NAME.test(agent.agent), 'QA_UPDATE_TARGET_INVALID');
             const lifecycle = path.join(scope.workspace, '.runtime/ploinky/cli/sandbox/docker/targetedContainerLifecycle.js');
@@ -660,7 +675,8 @@ export function updateProductionAdapters(scope = QA_SCOPE,
         },
         async verifyBrowserFiles(item, repository, commit, browserPaths) {
             const expected = browserPaths.map(file => ({ ...file,
-                sha256: file.deleted ? null : digest(git(repository, ['show', `${commit}:${file.path}`], { encoding: null })) }));
+                sha256: file.deleted ? null : digest(boxGit(repository, { engine: item.engine, image: item.box.image },
+                    ['show', `${commit}:${file.path}`], { encoding: 'buffer' })) }));
             const script = `
                 import fs from 'node:fs'; import path from 'node:path'; import crypto from 'node:crypto';
                 import {loadActiveEdgeRoutingGeneration} from '/opt/ploinky/cli/sandbox/edgeGeneration.js';

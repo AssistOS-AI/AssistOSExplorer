@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import test, { after } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 // The Reconcile script of the deploy workflow in its rebuild and fresh-installation form: the route re-proof, the
 // helpers staged once, the preflight, the teardown plan, the capacity admission, the install marker, the teardown, the
@@ -260,7 +261,7 @@ test('the helpers are staged exactly once, before the route re-proof, and the st
     assert.equal(workflow.match(/^ {10}QA_TAIL_HELPER=/gm).length, 1, 'one definition');
     assert.match(workflow, /QA_TAIL_HELPER="\$QA_HELPERS_DIR\/rollback-explorer-qa\.mjs"/);
     const tail = workflow.slice(workflow.indexOf('\n          mkdir -p "$WORK_DIR"\n'));
-    assert.equal(tail.match(/"\$QA_TAIL_HELPER"/g).length, 2, 'the fresh graph readiness and the AgentLib verification');
+    assert.equal(tail.match(/"\$QA_TAIL_HELPER"/g).length, 3, 'the sandboxed ALA verification, the fresh graph readiness and the AgentLib verification');
     assert.doesNotMatch(tail, /"\$QA_HELPERS_DIR\/rollback-explorer-qa\.mjs"/);
 });
 
@@ -321,7 +322,7 @@ test('QA bootstrap preserves operator env formatting and extra settings exactly'
     assert.equal(f.read('.env'), `PLOINKY_MASTER_KEY=${'a'.repeat(64)}\n`);
 });
 
-test('QA admission rejects unsafe env and modified managed sources before any retirement', t => {
+test('QA admission rejects unsafe env and malformed managed sources before any retirement', t => {
     const f = fixture(t);
     f.write('.env', '# retained operator config');
     f.execute('preservation admission');
@@ -329,14 +330,19 @@ test('QA admission rejects unsafe env and modified managed sources before any re
     fs.symlinkSync('missing', path.join(f.target, '.env'));
     assert.throws(() => f.execute('preservation admission'), /Unsafe operator/);
     fs.unlinkSync(path.join(f.target, '.env'));
+    // The root admission proves only the structure of a managed source and runs no Git: the Box can write
+    // these repositories, so cleanliness and origin are proven in the sandbox (qa_prove_managed_sources).
     const runtime = path.join(f.target, '.runtime/ploinky');
     fs.mkdirSync(runtime, { recursive: true });
-    execFileSync('git', ['init', '-q', runtime]);
-    execFileSync('git', ['-C', runtime, 'remote', 'add', 'origin', 'https://github.com/AssistOS-AI/ploinky.git']);
+    assert.throws(() => f.execute('preservation admission'), /Managed source must be its own repository/);
+    fs.mkdirSync(path.join(runtime, '.git'));
     f.execute('preservation admission');
+    fs.rmSync(path.join(runtime, '.git'), { recursive: true });
+    fs.symlinkSync(path.join(f.root, 'elsewhere'), path.join(runtime, '.git'));
+    assert.throws(() => f.execute('preservation admission'), /Managed source must be its own repository/);
     f.write('.runtime/ploinky/local-skill.mjs', 'authored source');
-    assert.throws(() => f.execute('preservation admission'), /Local managed source edits/);
     assert.equal(f.read('.runtime/ploinky/local-skill.mjs'), 'authored source');
+    assert.doesNotMatch(block('preservation admission'), /execFileSync|spawnSync|child_process/);
     assert.ok(at('// END QA preservation admission') < at('# BEGIN QA install marker'), 'the admission precedes the first mutation');
 });
 
@@ -449,6 +455,147 @@ test('the preservation admission runs for an existing workspace without a marker
         assert.doesNotMatch(runAdmissionCall(t, { workspace: 'directory', marker }).stdout, /ADMISSION_CALLED/, marker);
     }
     assert.equal(workflow.match(/^ {12}assert_qa_preservation_admission$/gm).length, 1, 'one call, inside the guard');
+});
+
+// ---------------------------------------------------------------------------------------------
+// The sandboxed Git checks: the managed-source admission, the ALA verification and the runtime head.
+// ---------------------------------------------------------------------------------------------
+
+const ROLLBACK_HELPER = fileURLToPath(new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url));
+const SANDBOX_IMAGE = 'd'.repeat(64);
+
+// A fake engine on PATH: `info` reports rootless Podman, `container inspect` the Box image, and `run` runs the
+// sandboxed command's own script (or Git) as the container would, recording every call. A fake host `git` records any use.
+function fakeSandboxEngine(root) {
+    const bin = path.join(root, 'fake-bin'), record = path.join(root, 'engine.jsonl'), hostGit = path.join(root, 'host-git.jsonl');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'podman'), `#!${process.execPath}
+        const fs = require('node:fs'); const { spawnSync } = require('node:child_process');
+        const args = process.argv.slice(2), input = args[0] === 'run' ? fs.readFileSync(0, 'utf8') : '';
+        fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(args) + '\\n');
+        if (args[0] === 'info') { process.stdout.write(args.join(' ').includes('RootlessNetworkCmd') ? 'true pasta' : 'true'); process.exit(0); }
+        if (args[0] === 'container' && args[1] === 'inspect') { process.stdout.write('sha256:${SANDBOX_IMAGE}\\n'); process.exit(0); }
+        if (args[0] !== 'run') process.exit(40);
+        const entry = args.find(arg => arg.startsWith('--entrypoint='));
+        const image = args.indexOf(${JSON.stringify(SANDBOX_IMAGE)});
+        const result = entry === '--entrypoint=/usr/bin/git'
+            ? spawnSync('/usr/bin/git', args.slice(image + 1), { encoding: 'utf8' })
+            : spawnSync(process.execPath, ['--input-type=module', '-', args.at(-1)], { input, encoding: 'utf8' });
+        process.stdout.write(result.stdout); process.exit(result.status);
+    `, { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}
+        require('node:fs').appendFileSync(${JSON.stringify(hostGit)}, JSON.stringify(process.argv.slice(2)) + '\\n'); process.exit(97);
+    `, { mode: 0o700 });
+    const lines = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+    return { bin, calls: () => lines(record), hostGitCalls: () => lines(hostGit) };
+}
+
+function sourceRepository(directory, origin = 'https://github.com/AssistOS-AI/ploinky.git') {
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'README.md'), 'fixture');
+    const git = (...args) => {
+        const result = spawnSync('git', ['-C', directory, ...args], { encoding: 'utf8', timeout: 10000, env: { ...process.env,
+            GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.test',
+            GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.test' } });
+        assert.equal(result.status, 0, result.stderr); return result.stdout.trim();
+    };
+    git('init', '--initial-branch=main'); git('remote', 'add', 'origin', origin);
+    git('add', '.'); git('commit', '-m', 'Fixture source');
+    return git;
+}
+
+function runSandboxedAdmission(t, { id = EXACT_ID, prepare } = {}) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-sandbox-admission-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const workspace = path.join(root, 'workspace'), engine = fakeSandboxEngine(root);
+    fs.mkdirSync(workspace);
+    prepare?.(workspace);
+    const script = `set -euo pipefail\nQA_TAIL_HELPER='${ROLLBACK_HELPER}'\nQA_EXACT_ENGINE=podman\nQA_EXACT_ID='${id}'\nWORK_DIR='${workspace}'\n${shellBlock('sandboxed git')}\nqa_prove_managed_sources\n`;
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 60000, env: { ...process.env, PATH: engine.bin + path.delimiter + process.env.PATH } });
+    return { result, engine, workspace };
+}
+
+test('the managed-source admission proves every managed source clean in the sandbox of the exact Box and runs no host Git', t => {
+    const { result, engine } = runSandboxedAdmission(t, { prepare: workspace => {
+        sourceRepository(path.join(workspace, '.runtime/ploinky'));
+        sourceRepository(path.join(workspace, '.ploinky/repos/webmeet'), 'https://github.com/AssistOS-AI/webmeet.git');
+    } });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Sandboxed source admission passed for 2 managed sources\./);
+    const runs = engine.calls().filter(args => args[0] === 'run');
+    assert.equal(runs.length, 2, 'one sandbox run per managed source');
+    for (const args of runs) {
+        for (const flag of ['--network=none', '--pull=never', '--read-only', '--cap-drop=ALL', SANDBOX_IMAGE]) assert.ok(args.includes(flag), flag);
+        assert.ok(args.some(arg => /^--volume=.+:ro$/.test(arg)), 'the repository is mounted read-only');
+    }
+    assert.deepEqual(engine.hostGitCalls(), [], 'no Git ran in the host shell');
+});
+
+test('the managed-source admission refuses an edited source, a foreign origin and sources with no Box, and accepts none', t => {
+    const dirty = runSandboxedAdmission(t, { prepare: workspace => {
+        sourceRepository(path.join(workspace, '.runtime/ploinky'));
+        fs.writeFileSync(path.join(workspace, '.runtime/ploinky/local-skill.mjs'), 'authored source');
+    } });
+    assert.notEqual(dirty.result.status, 0);
+    assert.match(dirty.result.stderr, /Managed source \.runtime\/ploinky failed its sandboxed check \(QA_SOURCE_NOT_CLEAN\); local edits require reconciliation/);
+    const foreign = runSandboxedAdmission(t, { prepare: workspace => {
+        sourceRepository(path.join(workspace, '.runtime/ploinky'), 'https://example.test/ploinky.git');
+    } });
+    assert.notEqual(foreign.result.status, 0);
+    assert.match(foreign.result.stderr, /QA_SOURCE_ORIGIN_INVALID/);
+    const noBox = runSandboxedAdmission(t, { id: '', prepare: workspace => sourceRepository(path.join(workspace, '.runtime/ploinky')) });
+    assert.notEqual(noBox.result.status, 0);
+    assert.match(noBox.result.stderr, /Managed sources exist but no QA Box can check them in its sandbox/);
+    assert.equal(noBox.engine.calls().some(args => args[0] === 'run'), false, 'nothing ran without a Box image');
+    const none = runSandboxedAdmission(t, { id: '' });
+    assert.equal(none.result.status, 0, none.result.stderr);
+    assert.match(none.result.stdout, /passed for 0 managed sources/);
+});
+
+test('the preservation admission calls the sandboxed proof after its root step, and the ALA and runtime-head checks use only the sandbox', () => {
+    const calls = [...workflow.matchAll(/^ {10}qa_prove_managed_sources$/gm)];
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].index > at('// END QA preservation admission') && calls[0].index < at('# The admission reads the durable state'));
+    assert.ok(at('# END QA sandboxed git') < at('assert_qa_preservation_admission() {'), 'the sandbox functions precede the admission');
+    assert.ok(at('# END QA helper staging') < at('# BEGIN QA sandboxed git'), 'the sandbox uses the staged helper');
+    assert.doesNotMatch(workflow, /git -C "\$ALA_DIR"/);
+    assert.doesNotMatch(workflow, /\$\(git -C "\$RUNTIME_DIR" rev-parse HEAD\)"/);
+});
+
+test('verify_ala_checkout proves the checkout in the sandbox: clean, selected branch and commit, tracking its upstream', t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-ala-verify-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const engine = fakeSandboxEngine(root), ala = path.join(root, 'ala');
+    const git = sourceRepository(ala, 'https://github.com/AssistOS-AI/AdvancedLanguageAgent.git');
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD'); git('branch', '--set-upstream-to=origin/main', 'main');
+    const commit = git('rev-parse', 'HEAD');
+    const fn = workflow.match(/^ {10}verify_ala_checkout\(\) \{\n[\s\S]*?\n {10}\}\n/m)[0].replace(/^ {10}/gm, '');
+    const run = (expected, branch = 'main') => spawnSync('bash', ['-c', `set -euo pipefail\nQA_TAIL_HELPER='${ROLLBACK_HELPER}'\nBOX_ENGINE=podman\nBOX_INSTANCE=${BOX}\nALA_DIR='${ala}'\nALA_COMMIT='${expected}'\nALA_BRANCH='${branch}'\n${shellBlock('sandboxed git')}\n${fn}\nverify_ala_checkout\n`],
+        { encoding: 'utf8', timeout: 60000, env: { ...process.env, PATH: engine.bin + path.delimiter + process.env.PATH } });
+    const passed = run(commit);
+    assert.equal(passed.status, 0, passed.stdout + passed.stderr);
+    assert.match(passed.stdout, new RegExp(`Verified AdvancedLanguageAgent/main at ${commit}\\.`));
+    for (const refused of [run('0'.repeat(40)), run(commit, 'other')]) {
+        assert.equal(refused.status, 1);
+        assert.match(refused.stdout, /ALA checkout must remain clean and track the selected default-branch commit/);
+    }
+    fs.writeFileSync(path.join(ala, 'edited.txt'), 'local edit');
+    assert.equal(run(commit).status, 1, 'an edited checkout is refused');
+    assert.deepEqual(engine.hostGitCalls(), [], 'no Git ran in the host shell');
+});
+
+test('qa_sandboxed_git runs one Git command in the sandbox of the Box image and prints its output', t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-sandboxed-git-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const engine = fakeSandboxEngine(root), repo = path.join(root, 'runtime');
+    const git = sourceRepository(repo);
+    const result = spawnSync('bash', ['-c', `set -euo pipefail\nQA_TAIL_HELPER='${ROLLBACK_HELPER}'\nBOX_ENGINE=podman\nBOX_INSTANCE=${BOX}\n${shellBlock('sandboxed git')}\nqa_sandboxed_git '${repo}' rev-parse HEAD\n`],
+        { encoding: 'utf8', timeout: 60000, env: { ...process.env, PATH: engine.bin + path.delimiter + process.env.PATH } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), git('rev-parse', 'HEAD'));
+    const run = engine.calls().find(args => args[0] === 'run');
+    assert.ok(run.includes('--network=none') && run.includes(SANDBOX_IMAGE) && run.includes('--entrypoint=/usr/bin/git'));
+    assert.deepEqual(engine.hostGitCalls(), []);
 });
 
 test('QA tunnel lookup reuses one exact tunnel, leaves an absent one to creation, and rejects ambiguity', t => {

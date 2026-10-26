@@ -81,9 +81,19 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     // Cancellation of an abandoned transaction that a new start must wait for,
     // so retries never stack live transactions against the server's cap.
     let googleCleanup = null;
+    // The actual cancellation request of each abandoned transaction, by its
+    // exact handle, until that request settles. Every path reuses it.
+    const googleCancellations = new Map();
+    // Transaction starts already sent, until their result settles, including
+    // the cancellation of a result that arrives after its owner left.
+    const googleStartsInFlight = new Set();
+    // Navigation ownership of the completing screen; leaving the page or
+    // disposal revokes it, never the retirement already under way.
+    let completion = null; // { epoch, release }
     // Leaving the page abandons pending Google work; a page restored from the
     // back/forward cache discards it and renders a fresh transaction.
     const removePageHide = google.onPageHide?.(() => {
+        revokeCompletion();
         googleCompletion?.abort();
         googleStarting = null;
         cancelGoogleSession();
@@ -229,10 +239,54 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
 
     // Adapters prepare the handoff without navigating. The current operation
     // alone may submit the OIDC form or follow a successful SSO callback.
-    function finish(capturedEpoch, result) {
+    // The OIDC completion is a native form that carries the submitted
+    // credentials, so it is submitted at once. A valid SSO handoff first
+    // retires this page's known Google transactions, waiting at most once for
+    // their actual requests, so the navigation does not cut that cleanup off.
+    // A failed or unfinished cleanup never withholds the valid handoff.
+    async function finish(capturedEpoch, result) {
         if (stale(capturedEpoch)) return;
         showCompleting();
+        if (adapter.flow !== 'sso') {
+            adapter.complete?.(result);
+            return;
+        }
+        const owner = { epoch, release: null };
+        completion = owner;
+        const cleanup = retireGoogleForCompletion(owner);
+        if (cleanup) {
+            try { await cleanup; } catch { /* the handoff stays valid */ }
+        }
+        if (disposed || completion !== owner || owner.epoch !== epoch) return;
+        completion = null;
         adapter.complete?.(result);
+    }
+    // Ends Google work for a completing SSO page and returns the bounded wait
+    // for it, or null when nothing is outstanding. One total budget covers a
+    // start already sent and every cancellation, shortened to the remaining
+    // lifetime of the sign-in request. Google's script is never awaited.
+    function retireGoogleForCompletion(owner) {
+        googleOp += 1;
+        googleStarting = null;
+        cancelGoogleSession();
+        const work = [...googleCancellations.values(), ...googleStartsInFlight];
+        const remaining = expiresAt ? expiresAt - ticker.now() : GOOGLE_CLEANUP_WAIT_MS;
+        const budget = Math.min(GOOGLE_CLEANUP_WAIT_MS, remaining);
+        if (!work.length || !(budget > 0)) return null;
+        let timer;
+        return new Promise((resolve) => {
+            owner.release = resolve;
+            timer = (ticker.setTimeout || globalThis.setTimeout)(resolve, budget);
+            Promise.all(work).then(resolve, resolve);
+        }).finally(() => {
+            (ticker.clearTimeout || globalThis.clearTimeout)(timer);
+            owner.release = null;
+        });
+    }
+    function revokeCompletion() {
+        const owner = completion;
+        completion = null;
+        owner?.release?.();
     }
 
     function onTick() {
@@ -282,9 +336,16 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     function ownsGoogle(op, mount) {
         return !disposed && op === googleOp && mount === googleMount && mount?.epoch === epoch;
     }
+    // Settles when the actual cancellation request settles, either way.
     function cancelGoogleHandle(transaction) {
         if (typeof transaction !== 'string' || !transaction) return Promise.resolve();
-        try { return Promise.resolve(adapter.cancelGoogle?.({ transaction })).then(() => {}, () => {}); } catch { return Promise.resolve(); /* expires server-side */ }
+        const pending = googleCancellations.get(transaction);
+        if (pending) return pending;
+        let settled;
+        try { settled = Promise.resolve(adapter.cancelGoogle?.({ transaction })).then(() => {}, () => {}); } catch { return Promise.resolve(); /* expires server-side */ }
+        googleCancellations.set(transaction, settled);
+        settled.then(() => { if (googleCancellations.get(transaction) === settled) googleCancellations.delete(transaction); });
+        return settled;
     }
     // Cancels `transaction` and makes the next start wait (bounded) for it.
     function retireGoogleHandle(transaction) {
@@ -320,16 +381,24 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         const starting = (async () => {
             if (googleCleanup) {
                 await googleCleanup;
-                if (disposed || googleStarting !== starting) throw new Error('google_start_unusable');
+                if (disposed || googleStarting !== starting || screen === 'completing') throw new Error('google_start_unusable');
             }
-            const result = await adapter.startGoogle();
-            if (disposed || googleStarting !== starting || screen === 'expired' || screen === 'completing'
-                || (expiresAt && ticker.now() >= expiresAt) || !usableGoogleStart(result)) {
-                cancelGoogleHandle(result?.transaction);
-                throw new Error('google_start_unusable');
+            let settle;
+            const issued = new Promise((resolve) => { settle = resolve; });
+            googleStartsInFlight.add(issued);
+            try {
+                const result = await adapter.startGoogle();
+                if (disposed || googleStarting !== starting || screen === 'expired' || screen === 'completing'
+                    || (expiresAt && ticker.now() >= expiresAt) || !usableGoogleStart(result)) {
+                    await cancelGoogleHandle(result?.transaction);
+                    throw new Error('google_start_unusable');
+                }
+                googleSession = { transaction: result.transaction, gis: result.gis, consumed: false, handedOff: false };
+                return googleSession;
+            } finally {
+                googleStartsInFlight.delete(issued);
+                settle();
             }
-            googleSession = { transaction: result.transaction, gis: result.gis, consumed: false, handedOff: false };
-            return googleSession;
         })();
         googleStarting = starting;
         const clear = () => { if (googleStarting === starting) googleStarting = null; };
@@ -574,7 +643,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         loginButton.disabled = true;
         try {
             const result = await adapter.passwordLogin({ email, password });
-            finish(capturedEpoch, result);
+            await finish(capturedEpoch, result);
         } catch (error) {
             if (stale(capturedEpoch)) return;
             if (handleGlobalError(error)) return;
@@ -691,7 +760,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             passwordInput.value = '';
             confirmInput.value = '';
             if (stale(capturedEpoch)) return;
-            if (direct) { finish(capturedEpoch, data); return; }
+            if (direct) { await finish(capturedEpoch, data); return; }
             signup = data.challenge;
             locked = false;
             showSignupCode();
@@ -805,7 +874,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         signupBusy(controls, true);
         try {
             const result = await adapter.verifySignup(code);
-            finish(capturedEpoch, result);
+            await finish(capturedEpoch, result);
         } catch (error) {
             if (stale(capturedEpoch)) return;
             codeInput.value = '';
@@ -890,7 +959,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         try {
             const result = await adapter.attempt();
             if (stale(capturedEpoch)) return;
-            if (result.completed) { finish(capturedEpoch, result.handoff); return; }
+            if (result.completed) { await finish(capturedEpoch, result.handoff); return; }
             const attempt = result.attempt?.status === 'active' ? result.attempt : null;
             const live = attempt?.challenge;
             if (attempt?.signupPending && live?.purpose === 'register') {
@@ -1096,7 +1165,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         verifyButton.disabled = true;
         try {
             const result = await adapter.verifyEmail(code);
-            finish(capturedEpoch, result);
+            await finish(capturedEpoch, result);
         } catch (error) {
             if (stale(capturedEpoch)) return;
             codeInput.value = '';
@@ -1124,7 +1193,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             const assertion = await credentials.get({ publicKey: publicKeyRequestFromServer(options.publicKey), signal: controller.signal });
             if (stale(capturedEpoch)) return;
             const result = await adapter.verifyPasskey({ email, challengeKey: options.challengeKey, assertion });
-            finish(capturedEpoch, result);
+            await finish(capturedEpoch, result);
         } catch (error) {
             if (stale(capturedEpoch)) return;
             if (handleGlobalError(error)) return;
@@ -1161,7 +1230,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         verifyButton.disabled = true;
         try {
             const result = await adapter.verifyTotp({ email, token });
-            finish(capturedEpoch, result);
+            await finish(capturedEpoch, result);
         } catch (error) {
             if (stale(capturedEpoch)) return;
             tokenInput.value = '';
@@ -1329,7 +1398,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             return;
         }
         if (stale(capturedEpoch)) return;
-        if (result.completed) { finish(capturedEpoch, result.handoff); return; }
+        if (result.completed) { await finish(capturedEpoch, result.handoff); return; }
         config = {
             setupComplete: result.setupComplete,
             initialPasswordSetup: result.initialPasswordSetup === true,
@@ -1374,6 +1443,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     return {
         dispose() {
             disposed = true;
+            revokeCompletion();
             passkeyAbort?.abort();
             passkeyAbort = null;
             googleMount = null;

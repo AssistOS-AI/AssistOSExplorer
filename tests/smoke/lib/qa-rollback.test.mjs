@@ -8,7 +8,9 @@ import { spawnSync } from 'node:child_process';
 import { resolveExplorerGraphOrSkip } from './explorer-graph.mjs';
 import {
     assertImageOwnedAgentLib, currentQaBox, EXPECTED_DEFAULT_GRAPH, imageAgentLibSourceId, productionAdapters, sanitizeBox,
+    SOURCE_CHECK_SCRIPT, sourcePinFromReport, sourceSandboxArguments,
 } from '../../../.github/scripts/rollback-explorer-qa.mjs';
+import { writeLockModule } from './qa-fake-lock-modules.mjs';
 
 const OLD = 'a'.repeat(64), FRESH = 'c'.repeat(64), IMAGE = 'd'.repeat(64);
 const librarySource = '.ploinky/agentlib/generations/' + 'e'.repeat(40) + '-' + 'f'.repeat(12);
@@ -36,6 +38,10 @@ function fixture(t, { predecessor = true } = {}) {
             { Source: scope.workspace, Destination: scope.workspace, RW: true, Type: 'bind' },
             { Source: path.join(scope.workspace, '.runtime/ploinky'), Destination: '/opt/ploinky', RW: false, Type: 'bind' },
             { Source: path.join(scope.workspace, librarySource), Destination: '/opt/ploinky-agentlib', RW: false, Type: 'bind' },
+            // D6: the mounted checkout is shadowed read-only at its own workspace path, and the
+            // Box state directory is masked by its read-only `empty/` directory.
+            { Source: path.join(scope.workspace, '.runtime/ploinky'), Destination: path.join(scope.workspace, '.runtime/ploinky'), RW: false, Type: 'bind' },
+            { Source: path.join(scope.workspace, '.ploinky-box/empty'), Destination: path.join(scope.workspace, '.ploinky-box'), RW: false, Type: 'bind' },
         ] });
     const box = id => ({ engine: 'podman', box: sanitizeBox(raw(id), scope) });
     const boxes = predecessor ? [box(OLD)] : [];
@@ -348,9 +354,46 @@ test('the expected default graph lists exactly what the Explorer manifests enabl
     assert.deepEqual([...EXPECTED_DEFAULT_GRAPH].sort(), [...graph.runtimes.keys()].sort());
 });
 
-test('production source admission requires a clean owned Git checkout at its captured origin', t => {
-    const f = fixture(t);
-    const repo = path.join(f.scope.workspace, '.runtime/ploinky');
+// A fake engine on PATH. `transparent` runs the sandbox script on the host,
+// which is safe only for benign fixtures; `canned` returns a fixed report and
+// runs nothing. Every invocation is recorded. A fake `git` records any host Git.
+function fakeSandboxEngine(root, { mode, report = null, rootless = 'true' }) {
+    const bin = path.join(root, 'fake-bin'), record = path.join(root, 'engine.jsonl'), hostGit = path.join(root, 'host-git.jsonl');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'podman'), `#!${process.execPath}
+        const fs = require('node:fs'); const { spawnSync } = require('node:child_process');
+        const args = process.argv.slice(2), input = args[0] === 'run' ? fs.readFileSync(0, 'utf8') : '';
+        fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args, input }) + '\\n');
+        if (args[0] === 'info') { process.stdout.write(${JSON.stringify(rootless)}); process.exit(0); }
+        if (args[0] !== 'run') process.exit(40);
+        if (${JSON.stringify(mode)} === 'transparent') {
+            const result = spawnSync(process.execPath, ['--input-type=module', '-', args.at(-1)], { input, encoding: 'utf8' });
+            process.stdout.write(result.stdout); process.exit(result.status);
+        }
+        process.stdout.write(${JSON.stringify(JSON.stringify(report))});
+    `, { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}
+        require('node:fs').appendFileSync(${JSON.stringify(hostGit)}, JSON.stringify(process.argv.slice(2)) + '\\n'); process.exit(97);
+    `, { mode: 0o700 });
+    const calls = () => fs.existsSync(record) ? fs.readFileSync(record, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+    const hostGitCalls = () => fs.existsSync(hostGit) ? fs.readFileSync(hostGit, 'utf8').trim().split('\n') : [];
+    return { bin, calls, hostGitCalls };
+}
+
+// Runs production `sourcePin` in a child whose PATH starts with the fake engine.
+function productionSourcePin(scope, bin, repo, sandbox) {
+    const helper = new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url).href;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        const { productionAdapters } = await import(process.argv[1]);
+        try { process.stdout.write(JSON.stringify({ pin: productionAdapters(JSON.parse(process.argv[2])).sourcePin(process.argv[3], JSON.parse(process.argv[4])) })); }
+        catch (error) { process.stdout.write(JSON.stringify({ code: error.code })); }
+    `, helper, JSON.stringify(scope), repo, JSON.stringify(sandbox)], { encoding: 'utf8', timeout: 20000,
+        env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH } });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+}
+
+function gitFixture(repo) {
     const git = args => {
         const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', timeout: 5000,
             env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
@@ -359,14 +402,107 @@ test('production source admission requires a clean owned Git checkout at its cap
     };
     git(['init', '--initial-branch=main']); git(['remote', 'add', 'origin', 'https://github.com/AssistOS-AI/ploinky.git']);
     git(['add', '.']); git(['commit', '-m', 'Fixture source']);
-    const adapters = productionAdapters(f.scope);
-    const pin = adapters.sourcePin(repo);
-    assert.equal(pin.commit, git(['rev-parse', 'HEAD'])); assert.equal(pin.branch, 'main');
+    return git;
+}
+
+test('production source admission requires a clean owned Git checkout at its captured origin, checked only in the sandbox', t => {
+    const f = fixture(t);
+    const repo = path.join(f.scope.workspace, '.runtime/ploinky');
+    const git = gitFixture(repo);
+    const engine = fakeSandboxEngine(f.root, { mode: 'transparent' });
+    const sandbox = { engine: 'podman', image: IMAGE };
+    assert.deepEqual(productionSourcePin(f.scope, engine.bin, repo, sandbox).pin,
+        { commit: git(['rev-parse', 'HEAD']), branch: 'main', origin: 'https://github.com/AssistOS-AI/ploinky.git' });
     write(path.join(repo, 'local-change'), 'uncommitted');
-    assert.throws(() => adapters.sourcePin(repo), { code: 'QA_SOURCE_NOT_CLEAN' });
+    assert.equal(productionSourcePin(f.scope, engine.bin, repo, sandbox).code, 'QA_SOURCE_NOT_CLEAN');
     fs.unlinkSync(path.join(repo, 'local-change'));
     git(['remote', 'set-url', 'origin', 'https://example.test/unreviewed.git']);
-    assert.throws(() => adapters.sourcePin(repo), { code: 'QA_SOURCE_ORIGIN_INVALID' });
+    assert.equal(productionSourcePin(f.scope, engine.bin, repo, sandbox).code, 'QA_SOURCE_ORIGIN_INVALID');
+    // Without the exact pinned image of a Podman Box nothing runs at all.
+    for (const missing of [null, { engine: 'docker', image: IMAGE }, { engine: 'podman', image: 'latest' }]) {
+        const before = engine.calls().length;
+        assert.equal(productionSourcePin(f.scope, engine.bin, repo, missing).code, 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+        assert.equal(engine.calls().length, before);
+    }
+    assert.deepEqual(engine.hostGitCalls(), [], 'no Git ran in the host process');
+});
+
+test('the source sandbox refuses a rootful engine before running any check', t => {
+    const f = fixture(t);
+    const repo = path.join(f.scope.workspace, '.runtime/ploinky');
+    gitFixture(repo);
+    const engine = fakeSandboxEngine(f.root, { mode: 'transparent', rootless: 'false' });
+    assert.equal(productionSourcePin(f.scope, engine.bin, repo, { engine: 'podman', image: IMAGE }).code, 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+    assert.deepEqual(engine.calls().map(call => call.args[0]), ['info']);
+});
+
+// E9: Box-written Git configuration never executes on the host.
+function fsmonitorFixture(f) {
+    const repo = path.join(f.scope.workspace, '.ploinky/repos/AchillesIDE');
+    const marker = path.join(f.root, 'fsmonitor-ran-on-host');
+    write(path.join(repo, 'README.md'), 'fixture');
+    gitFixture(repo);
+    const hook = path.join(repo, '.git/fsmonitor-hook');
+    fs.writeFileSync(hook, `#!/bin/sh\necho ran >> '${marker}'\nexit 1\n`, { mode: 0o755 });
+    fs.appendFileSync(path.join(repo, '.git/config'), `[core]\n\tfsmonitor = ${hook}\n`);
+    return { repo, marker };
+}
+
+// The status check exactly as the former host-side sourcePin ran it.
+const formerHostStatus = repo => spawnSync('git', ['-c', `safe.directory=${repo}`, '-C', repo, 'status', '--porcelain=v1',
+    '--untracked-files=all', '--ignore-submodules=none'], { encoding: 'utf8', timeout: 20000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
+
+test('E9 control: the former host-side status check executes Box-written core.fsmonitor', t => {
+    const f = fixture(t), { repo, marker } = fsmonitorFixture(f);
+    assert.equal(formerHostStatus(repo).status, 0);
+    assert.equal(fs.existsSync(marker), true, 'the fixture triggers: a host-side check runs the hook');
+});
+
+test('E9: the sandbox script disables Box-written fsmonitor even where it runs', t => {
+    const f = fixture(t), { repo, marker } = fsmonitorFixture(f);
+    const result = spawnSync(process.execPath, ['--input-type=module', '-', repo], { input: SOURCE_CHECK_SCRIPT, encoding: 'utf8', timeout: 20000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).status.status, 0, 'the check itself still reports');
+    assert.equal(fs.existsSync(marker), false);
+});
+
+test('E9: production source admission reports the pin through the sandbox and the host never runs the hook', t => {
+    const f = fixture(t), { repo, marker } = fsmonitorFixture(f);
+    const head = spawnSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
+    // The canned report is what the sandbox returns: the engine fake runs nothing.
+    const ok = stdout => ({ status: 0, stdout });
+    const report = { toplevel: ok(repo + '\n'), status: ok(''), head: ok(head.stdout), origin: ok('https://github.com/AssistOS-AI/ploinky.git\n'), branch: ok('main\n') };
+    const engine = fakeSandboxEngine(f.root, { mode: 'canned', report });
+    const pin = productionSourcePin(f.scope, engine.bin, repo, { engine: 'podman', image: `sha256:${IMAGE}` }).pin;
+    assert.deepEqual(pin, { commit: head.stdout.trim(), branch: 'main', origin: 'https://github.com/AssistOS-AI/ploinky.git' });
+    assert.equal(fs.existsSync(marker), false, 'the hook never ran on the host');
+    assert.deepEqual(engine.hostGitCalls(), [], 'no Git ran in the host process');
+    const run = engine.calls().find(call => call.args[0] === 'run');
+    assert.deepEqual(run.args, sourceSandboxArguments(repo, IMAGE));
+    for (const flag of ['--rm', '--network=none', '--pull=never', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+        '--user=1000:1000', `--volume=${repo}:${repo}:ro`]) assert.ok(run.args.includes(flag), flag);
+    assert.equal(run.input, SOURCE_CHECK_SCRIPT);
+    assert.equal(run.args.filter(arg => arg.startsWith('--volume') || arg.startsWith('--mount') || arg === '-v').length, 1, 'only the repository is mounted');
+    assert.equal(run.args.some(arg => /^--(?:privileged|cap-add|device|network=(?!none))/.test(arg)), false);
+});
+
+test('E9: a sandbox report that is incomplete or failed is refused with the former host-check codes', () => {
+    const repo = '/home/admin/explorerQaWorkspace/.runtime/ploinky';
+    const ok = stdout => ({ status: 0, stdout });
+    const base = { toplevel: ok(repo), status: ok(''), head: ok('e'.repeat(40)), origin: ok('https://github.com/AssistOS-AI/ploinky.git'), branch: ok('main') };
+    assert.deepEqual(sourcePinFromReport(repo, base), { commit: 'e'.repeat(40), branch: 'main', origin: 'https://github.com/AssistOS-AI/ploinky.git' });
+    for (const [change, code] of [
+        [report => { report.status = { status: 128, stdout: '' }; }, 'QA_EXTERNAL_COMMAND_FAILED'],
+        [report => { delete report.head; }, 'QA_EXTERNAL_COMMAND_FAILED'],
+        [report => { report.toplevel = ok('/elsewhere'); }, 'QA_SOURCE_NOT_CLEAN'],
+        [report => { report.status = ok('?? planted\n'); }, 'QA_SOURCE_NOT_CLEAN'],
+        [report => { report.head = ok('HEAD'); }, 'QA_SOURCE_COMMIT_INVALID'],
+        [report => { report.origin = ok('https://example.test/x.git'); }, 'QA_SOURCE_ORIGIN_INVALID'],
+    ]) {
+        const report = structuredClone(base); change(report);
+        assert.throws(() => sourcePinFromReport(repo, report), { code });
+    }
+    assert.throws(() => sourcePinFromReport(repo, null), { code: 'QA_EXTERNAL_COMMAND_FAILED' });
 });
 
 test('exact Box inspection rejects privilege, source-write and publication drift', t => {
@@ -450,4 +586,99 @@ test('production readiness passes both selected QA ports to an independent Box e
         assert.equal(call.args.includes('PLOINKY_ROUTER_HOST_PORT=9000'), false);
         assert.equal(call.args.includes('PLOINKY_MEDIA_HOST_PORT=9001'), false);
     }
+});
+
+// D6: every Box must shadow the mounted checkout read-only at its own workspace
+// path and mask the Box state directory with its read-only `empty/` directory.
+// There is no label or version exception: a Box built by an earlier runtime has
+// neither mount and is refused.
+const shadowOf = (f, raw) => raw.Mounts.find(mount => mount.Destination === path.join(f.scope.workspace, '.runtime/ploinky'));
+const maskOf = (f, raw) => raw.Mounts.find(mount => mount.Destination === path.join(f.scope.workspace, '.ploinky-box'));
+const oldRuntimeBox = f => {
+    const raw = f.raw(OLD);
+    raw.Mounts = raw.Mounts.filter(mount => mount !== shadowOf(f, raw) && mount !== maskOf(f, raw));
+    return raw;
+};
+
+test('D6: Box identity requires exactly one read-only checkout shadow and one read-only mask of the Box state directory', t => {
+    const f = fixture(t);
+    assert.equal(sanitizeBox(f.raw(OLD), f.scope).id, OLD);
+    for (const [label, change] of [
+        ['shadow missing', raw => { raw.Mounts.splice(raw.Mounts.indexOf(shadowOf(f, raw)), 1); }],
+        ['shadow writable', raw => { shadowOf(f, raw).RW = true; }],
+        ['shadow from another source', raw => { shadowOf(f, raw).Source = path.join(f.scope.workspace, 'elsewhere'); }],
+        ['shadow duplicated', raw => { raw.Mounts.push({ ...shadowOf(f, raw) }); }],
+        ['shadow not a bind', raw => { shadowOf(f, raw).Type = 'volume'; }],
+        ['mask missing', raw => { raw.Mounts.splice(raw.Mounts.indexOf(maskOf(f, raw)), 1); }],
+        ['mask writable', raw => { maskOf(f, raw).RW = true; }],
+        ['mask from another source', raw => { maskOf(f, raw).Source = path.join(f.scope.workspace, '.ploinky-box'); }],
+        ['mask from the old home store', raw => { maskOf(f, raw).Source = '/home/admin/.ploinky-box/empty'; }],
+        ['mask duplicated', raw => { raw.Mounts.push({ ...maskOf(f, raw) }); }],
+        ['mask not a bind', raw => { maskOf(f, raw).Type = 'volume'; }],
+    ]) {
+        const raw = f.raw(OLD); change(raw);
+        assert.throws(() => sanitizeBox(raw, f.scope), { code: 'QA_BOX_SOURCE_INVALID' }, label);
+    }
+});
+
+test('Q1: an old-runtime Box (no checkout shadow, no mask) is refused with QA_BOX_SOURCE_INVALID before anything runs in it', t => {
+    const f = fixture(t);
+    assert.throws(() => sanitizeBox(oldRuntimeBox(f), f.scope), { code: 'QA_BOX_SOURCE_INVALID' });
+});
+
+test('Q1: the production Box inspection refuses an old-runtime Box before it executes anything inside it', t => {
+    const f = imageFixture(t), engine = fakeEngine(t, f);
+    const raw = f.rawImage(OLD);
+    engine.setInput(raw, AGENTLIB_REPORT);
+    assert.equal(productionAdapters(f.scope).boxes().length, 1, 'the current-runtime Box is admitted');
+    raw.Mounts = raw.Mounts.filter(mount => mount !== shadowOf(f, raw) && mount !== maskOf(f, raw));
+    engine.setInput(raw, AGENTLIB_REPORT); engine.reset();
+    assert.throws(() => productionAdapters(f.scope).boxes(), { code: 'QA_BOX_SOURCE_INVALID' });
+    assert.equal(engine.calls().some(args => args[0] === 'run' || (args[0] === 'container' && args[1] === 'exec')), false,
+        'the alleged verifier is never executed inside a Box that fails the mount proof');
+});
+
+test('production lock adapter imports the deployed runtime\'s lock module and takes its workspace lock with the workspace root', async t => {
+    const f = fixture(t);
+    const adapters = productionAdapters(f.scope);
+    const runtimeRoot = path.join(f.root, 'workspace-runtime');
+    const moduleUrl = writeLockModule(runtimeRoot);
+    const held = await adapters.acquireWorkspaceLock(runtimeRoot, { workspaceRoot: f.scope.workspace });
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-box/locks/workspace.lock')), true);
+    held.assertHeld();
+    held.release();
+    held.release();
+    assert.throws(() => held.assertHeld(), { code: 'QA_WORKSPACE_LOCK_RELEASED' });
+    assert.equal(fs.existsSync(path.join(f.scope.workspace, '.ploinky-box/locks/workspace.lock')), false);
+    const { calls } = await import(moduleUrl);
+    assert.deepEqual(calls.map(call => call.op), ['acquire', 'assertHeld', 'release']);
+    assert.deepEqual(calls[0].args, [f.scope.box, { workspaceRoot: f.scope.workspace }]);
+    assert.equal(calls[0].args.length, 2, 'the instance and the options, nothing else');
+    await assert.rejects(adapters.acquireWorkspaceLock(runtimeRoot, { workspaceRoot: path.join(f.root, 'absent') }),
+        { code: 'PLOINKY_BOX_WORKSPACE_ABSENT' });
+});
+
+test('the source check reports the upstream from the same sandbox run, never through host Git', t => {
+    const f = fixture(t);
+    const repo = path.join(f.scope.workspace, '.runtime/ploinky');
+    const git = gitFixture(repo);
+    const engine = fakeSandboxEngine(f.root, { mode: 'transparent' });
+    const helper = new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url).href;
+    const check = () => {
+        const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+            const { productionAdapters } = await import(process.argv[1]);
+            process.stdout.write(JSON.stringify(productionAdapters(JSON.parse(process.argv[2])).sourceCheck(process.argv[3], { engine: 'podman', image: process.argv[4] })));
+        `, helper, JSON.stringify(f.scope), repo, IMAGE], { encoding: 'utf8', timeout: 20000,
+            env: { ...process.env, PATH: engine.bin + path.delimiter + process.env.PATH } });
+        assert.equal(result.status, 0, result.stderr);
+        return JSON.parse(result.stdout);
+    };
+    assert.equal(check().upstream, null, 'no upstream configured');
+    git(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    git(['branch', '--set-upstream-to=origin/main', 'main']);
+    const checked = check();
+    assert.equal(checked.upstream, 'origin/main');
+    assert.deepEqual(checked.pin, { commit: git(['rev-parse', 'HEAD']), branch: 'main', origin: 'https://github.com/AssistOS-AI/ploinky.git' });
+    assert.equal(engine.calls().filter(call => call.args[0] === 'run').length, 2, 'one sandbox run per check');
+    assert.deepEqual(engine.hostGitCalls(), []);
 });

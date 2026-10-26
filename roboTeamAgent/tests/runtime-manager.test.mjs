@@ -1101,3 +1101,347 @@ test('with Use Proxy off the workstation connects directly without asking for a 
     assert.equal(run[run.indexOf('--network') + 1], 'pasta');
     assert.ok(run.includes('TZ=UTC'));
 });
+
+// Live Sessions observation: admission, exactly-once terminal, private owner
+// and phase association, transcript identifiers and typed message outcomes.
+test('queued admission is observed with owner and phase association, without a state event or startedAt', async () => {
+    const robot = { id: 'admit-a1b2c3', name: 'Admit' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    manager.shuttingDown = true;
+    const events = [];
+    manager.setTaskObserver((event) => events.push(event));
+    const queued = manager.startTask(robot, 'browser', { cwd: '/workspace/project', task: 'Look', ownerPrincipal: 'user:alice',
+        workflowRunId: `flow_${'a'.repeat(24)}`, workflowInstanceId: `inv_${'b'.repeat(24)}` });
+    assert.deepEqual(events, [{ kind: 'admitted', robotId: robot.id, robotName: 'Admit', taskId: queued.taskId, type: 'browser', state: 'queued',
+        cwd: '/workspace/project', ownerPrincipal: 'user:alice', workflowRunId: `flow_${'a'.repeat(24)}`, workflowInstanceId: `inv_${'b'.repeat(24)}` }]);
+    const status = manager.taskStatus(robot.id, queued.taskId);
+    assert.equal(status.startedAt, undefined);
+    for (const key of ['ownerPrincipal', 'workflowInstanceId', 'transcriptRef', 'terminalEmitted']) assert.equal(Object.hasOwn(status, key), false, key);
+    // Only a signed user principal is kept; anything else is the system owner.
+    for (const owner of ['alice', 'user:', '', null, 7, { id: 'user:alice' }]) {
+        events.length = 0;
+        manager.startTask(robot, 'simple', { cwd: '/workspace/project', task: 'x', ownerPrincipal: owner });
+        assert.equal(events[0].ownerPrincipal, null, JSON.stringify(owner));
+        assert.equal(events[0].workflowRunId, null);
+        assert.equal(events[0].workflowInstanceId, null);
+    }
+});
+
+test('a queued GUI task cancelled before it runs ends with exactly one terminal event', async () => {
+    const robot = { id: 'cancel-a1b2c3', name: 'Cancel' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const active = manager._newTask(robot, 'browser', { cwd: '/workspace' });
+    active.state = 'running';
+    active.child = { kill() {} };
+    manager.activeTasks.set(robot.id, active.taskId);
+    const events = [];
+    manager.setTaskObserver((event) => events.push(event));
+    const waiting = manager.startTask(robot, 'browser', { cwd: '/workspace', task: 'Later' });
+    const stop = manager.stopTask(robot, null, waiting.taskId);
+    await new Promise((resolve) => setImmediate(resolve));
+    manager.stopTask(robot, null, waiting.taskId);
+    await new Promise((resolve) => setImmediate(resolve));
+    manager.activeTasks.delete(robot.id);
+    await manager._drainTaskQueue(robot);
+    const terminal = events.filter((event) => event.kind === 'terminal' && event.taskId === waiting.taskId);
+    assert.equal(terminal.length, 1);
+    assert.deepEqual(terminal[0], { kind: 'terminal', robotId: robot.id, taskId: waiting.taskId, state: 'paused', result: '', error: null });
+    assert.equal(events.some((event) => event.taskId === stop.taskId), false, 'helper stop records are never observed');
+    manager.shuttingDown = true;
+});
+
+test('a CLI task stopped before or after its run starts reports one terminal event', async (t) => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-stop-order-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'order-a1b2c3', name: 'Order' };
+    const dataDir = path.join(root, 'data');
+    await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
+    // Run first, then stop: the run's finally reports the pause.
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+        execFileImpl: async () => ({ stdout: '[]', stderr: '' }), spawnImpl: () => { throw new Error('never spawned'); } });
+    const events = [];
+    manager.setTaskObserver((event) => events.push(event));
+    const first = manager.startTask(robot, 'simple', { cwd: root, task: 'x', ca: 'codex' });
+    manager.stopTask(robot, 'simple', first.taskId);
+    for (let i = 0; i < 200 && !events.some((event) => event.kind === 'terminal'); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(events.filter((event) => event.kind === 'terminal').map((event) => [event.taskId, event.state]), [[first.taskId, 'paused']]);
+    // Stop first, then the queued run: the stop reports it and the run never starts.
+    events.length = 0;
+    manager.shuttingDown = true;
+    const second = manager.startTask(robot, 'simple', { cwd: root, task: 'y', ca: 'codex' });
+    manager.stopTask(robot, 'simple', second.taskId);
+    await new Promise((resolve) => setImmediate(resolve));
+    manager.shuttingDown = false;
+    await manager._runTask(robot, manager.tasks.get(second.taskId));
+    assert.deepEqual(events.filter((event) => event.kind === 'terminal').map((event) => [event.taskId, event.state]), [[second.taskId, 'paused']]);
+    assert.equal(events.some((event) => event.kind === 'state'), false);
+});
+
+test('shutdown reports queued work once and running work through its own exit', async () => {
+    const robot = { id: 'shutdown-a1b2c3', name: 'Shutdown' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache, soulGateway: { close: async () => {} } });
+    manager.shuttingDown = true;
+    const events = [];
+    manager.setTaskObserver((event) => events.push(event));
+    const queued = manager.startTask(robot, 'desktop', { cwd: '/workspace', task: 'Later' });
+    await manager.stopAll();
+    await manager.stopAll();
+    assert.deepEqual(events.filter((event) => event.kind === 'terminal').map((event) => [event.taskId, event.state]), [[queued.taskId, 'paused']]);
+});
+
+test('the first turn-started event binds the task transcript to its own session; nothing else is accepted', async (t) => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-transcript-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'transcript-a1b2c3', name: 'Transcript' };
+    const dataDir = path.join(root, 'data');
+    await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
+    const turn = '11111111-2222-4333-8444-555555555555';
+    const message = '66666666-7777-4888-8999-aaaaaaaaaaaa';
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+        execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
+        spawnImpl: () => {
+            const child = new EventEmitter();
+            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+            setImmediate(() => {
+                const event = (value) => child.stderr.write(`@@ALA_EVENT@@${JSON.stringify(value)}\n`);
+                event({ type: 'turn-started', session: { sessionId: 'other' }, userMessageId: 'x', assistantMessageId: 'not-a-uuid', turnId: turn });
+                event({ type: 'turn-started', session: { big: 'metadata' }, userMessageId: 'x', assistantMessageId: message, turnId: turn });
+                event({ type: 'turn-started', assistantMessageId: '00000000-0000-4000-8000-000000000000', turnId: turn });
+                child.emit('close', 0, null);
+            });
+            return child;
+        } });
+    const events = [];
+    manager.setTaskObserver((event) => events.push(event));
+    const started = manager.startTask(robot, 'simple', { cwd: root, task: 'x', ca: 'codex' });
+    assert.equal(manager.taskTranscriptRef(robot.id, started.taskId), null, 'no transcript before the turn starts');
+    for (let i = 0; i < 200 && !events.some((event) => event.kind === 'terminal'); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    const task = manager.tasks.get(started.taskId);
+    assert.deepEqual(manager.taskTranscriptRef(robot.id, started.taskId), { cwd: task.request.cwd, sessionId: task.alaSessionId, assistantMessageId: message });
+    assert.equal(manager.taskTranscriptRef('other-robot', started.taskId), null);
+    assert.equal(Object.hasOwn(manager.taskStatus(robot.id, started.taskId), 'transcriptRef'), false);
+    assert.equal(events.some((event) => JSON.stringify(event).includes('metadata')), false, 'the event body is never forwarded');
+});
+
+test('task message failures carry typed live outcomes and keep their messages', async () => {
+    const robot = { id: 'typed-a1b2c3', name: 'Typed' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache, messageTimeoutMs: 20 });
+    const outcome = async (promise) => { try { await promise; return 'resolved'; } catch (error) { return [error.liveOutcome, error.message]; } };
+    assert.deepEqual(await outcome(manager.sendTaskMessage(robot, 'missing', 'x')), ['run_ended', 'Task is no longer running; continue it instead.']);
+    const task = { taskId: 'typed-task', robotId: robot.id, state: 'running', pendingMessages: [], controlReady: true };
+    manager.tasks.set(task.taskId, task);
+    const written = [];
+    task.child = { stdin: { write(line) { written.push(JSON.parse(line)); } } };
+    const rejected = manager.sendTaskMessage(robot, task.taskId, 'reject me');
+    const waiter = manager.messageWaiters.get(written[0].id);
+    clearTimeout(waiter.timer);
+    manager.messageWaiters.delete(written[0].id);
+    waiter.reject(manager._messageFailure('rejected', 'Busy.'));
+    assert.deepEqual(await outcome(rejected), ['rejected', 'Busy.']);
+    assert.deepEqual(await outcome(manager.sendTaskMessage(robot, task.taskId, 'nobody answers')),
+        ['unknown', 'Message acknowledgement timed out; delivery is unknown.']);
+    task.controlReady = false;
+    task.pendingMessages = Array.from({ length: 100 }, () => ({}));
+    assert.deepEqual(await outcome(manager.sendTaskMessage(robot, task.taskId, 'full')), ['rejected', 'Task message queue is full.']);
+    // An empty or oversized message is never delivered: rejected, with the same text.
+    assert.deepEqual(await outcome(manager.sendTaskMessage(robot, task.taskId, ' ')), ['rejected', 'Message must contain 1 to 32768 characters.']);
+    assert.deepEqual(await outcome(manager.sendTaskMessage(robot, task.taskId, 'x'.repeat(32769))), ['rejected', 'Message must contain 1 to 32768 characters.']);
+});
+
+test('a message pending when the task ends is reported as run_ended', async (t) => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-ended-message-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'ended-a1b2c3', name: 'Ended' };
+    const dataDir = path.join(root, 'data');
+    await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
+    let child;
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+        execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
+        spawnImpl: () => {
+            child = new EventEmitter();
+            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+            child.stdin = { on() {}, write() {} };
+            setImmediate(() => child.stderr.write(`@@ALA_EVENT@@${JSON.stringify({ type: 'session-ready' })}\n`));
+            return child;
+        } });
+    const started = manager.startTask(robot, 'simple', { cwd: root, task: 'x', ca: 'codex' });
+    for (let i = 0; i < 200 && !manager.tasks.get(started.taskId)?.controlReady; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    const pending = manager.sendTaskMessage(robot, started.taskId, 'late');
+    child.emit('close', 0, null);
+    await assert.rejects(pending, (error) => error.liveOutcome === 'run_ended' && error.message === 'Task ended before the message was acknowledged.');
+});
+
+test('owner and phase association persist with the execution record and survive resume unchanged', async (t) => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-owner-record-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'owner-a1b2c3', name: 'Owner' };
+    const project = path.join(root, 'project');
+    await fs.mkdir(project);
+    const owned = '12345678-1234-4123-8123-123456789abc';
+    const legacy = '12345678-1234-4123-8123-123456789abd';
+    const first = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
+    const task = first._newTask(robot, 'simple', { cwd: project, task: 'original', ca: 'pi', runtimeTaskId: owned, ownerPrincipal: 'user:alice',
+        workflowRunId: `flow_${'c'.repeat(24)}`, workflowInstanceId: `inv_${'d'.repeat(24)}` });
+    task.state = 'completed';
+    await first._saveTask(task);
+    await first._saveTask({ taskId: legacy, robotId: robot.id, type: 'simple', state: 'completed', alaSessionId: legacy,
+        request: { cwd: project, task: 'old', ca: 'pi', ownerPrincipal: 'user:alice' } });
+    const second = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
+    second.shuttingDown = true;
+    const events = [];
+    second.setTaskObserver((event) => events.push(event));
+    const resumed = await second.resumeTask(robot, owned, 'continue');
+    await second.resumeTask(robot, legacy, 'continue');
+    assert.notEqual(resumed.taskId, owned, 'a continuation is a new attempt with its own id');
+    assert.deepEqual(events.map((event) => [event.ownerPrincipal, event.workflowRunId, event.workflowInstanceId]), [
+        ['user:alice', `flow_${'c'.repeat(24)}`, null],
+        [null, null, null],
+    ], 'the bound owner survives; an unbound legacy owner is the system owner; phase association is never inherited');
+});
+
+test('a persisted owner that was tampered with, moved or written under another boot key is the system owner', async (t) => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-owner-tamper-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'tamper-a1b2c3', name: 'Tamper' };
+    const project = path.join(root, 'project');
+    await fs.mkdir(project);
+    const writer = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
+    const ids = ['22345678-1234-4123-8123-123456789ab1', '22345678-1234-4123-8123-123456789ab2', '22345678-1234-4123-8123-123456789ab3'];
+    for (const id of ids) {
+        const task = writer._newTask(robot, 'simple', { cwd: project, task: 'x', ca: 'pi', runtimeTaskId: id, ownerPrincipal: 'user:alice' });
+        task.state = 'completed';
+        await writer._saveTask(task);
+    }
+    const file = (id) => path.join(project, '.roboteam', 'tasks', id, 'executions', `${id}.json`);
+    const tampered = JSON.parse(await fs.readFile(file(ids[0]), 'utf8'));
+    assert.equal(typeof tampered.ownerBinding, 'string');
+    tampered.request.ownerPrincipal = 'user:mallory';
+    await fs.writeFile(file(ids[0]), JSON.stringify(tampered));
+    const moved = JSON.parse(await fs.readFile(file(ids[1]), 'utf8'));
+    moved.ownerBinding = JSON.parse(await fs.readFile(file(ids[2]), 'utf8')).ownerBinding.replace(/^./u, (c) => (c === 'A' ? 'B' : 'A'));
+    await fs.writeFile(file(ids[1]), JSON.stringify(moved));
+    const reader = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
+    reader.shuttingDown = true;
+    const events = [];
+    reader.setTaskObserver((event) => events.push(event));
+    await reader.resumeTask(robot, ids[0], 'go');
+    await reader.resumeTask(robot, ids[1], 'go');
+    await reader.resumeTask(robot, ids[2], 'go');
+    assert.deepEqual(events.map((event) => event.ownerPrincipal), [null, null, 'user:alice']);
+    const restarted = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'next-boot-secret' });
+    restarted.shuttingDown = true;
+    const later = [];
+    restarted.setTaskObserver((event) => later.push(event));
+    await restarted.resumeTask(robot, ids[2], 'go');
+    assert.equal(later[0].ownerPrincipal, null, 'a binding from another service start proves nothing');
+});
+
+test('an attempt reports at most one terminal event whichever paths reach it', () => {
+    const robot = { id: 'once-a1b2c3', name: 'Once' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const events = [];
+    manager.setTaskObserver((event) => events.push(event));
+    const task = manager._newTask(robot, 'simple', {});
+    manager._emitTaskTerminal(task, { state: 'paused', result: '', error: null });
+    manager._emitTaskTerminal(task, { state: 'failed', result: '', error: 'late' });
+    assert.deepEqual(events, [{ kind: 'terminal', robotId: robot.id, taskId: task.taskId, state: 'paused', result: '', error: null }]);
+});
+
+// A stop that lands before the child is spawned ends the attempt: no spawn,
+// paused, exactly one terminal event.
+async function cancellableFixture(t, { gateEnsure = false } = {}) {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-cancel-window-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'window-a1b2c3', name: 'Window' };
+    const dataDir = path.join(root, 'data');
+    await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
+    const spawns = [];
+    let release, ensured;
+    const ensureCalled = new Promise((resolve) => { ensured = resolve; });
+    const gate = new Promise((resolve) => { release = resolve; });
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+        execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
+        skillsets: { policies: { ensure: async () => { ensured(); if (gateEnsure) await gate; } } },
+        spawnImpl: () => {
+            const child = new EventEmitter();
+            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+            spawns.push(child);
+            setImmediate(() => child.emit('close', 0, null));
+            return child;
+        } });
+    return { root, robot, manager, spawns, release, ensureCalled };
+}
+
+test('a stop while the task awaits its skill policy prevents the spawn and reports one paused terminal', async (t) => {
+    const { LiveSessionsRegistry } = await import('../server/live-sessions/registry.mjs');
+    const { RuntimeLiveSource, composeTaskObservers } = await import('../server/live-sessions/runtime-source.mjs');
+    const { root, robot, manager, spawns, release, ensureCalled } = await cancellableFixture(t, { gateEnsure: true });
+    const registry = new LiveSessionsRegistry({ log: () => {} });
+    const source = new RuntimeLiveSource({ registry, runtimeManager: manager, robotStore: { get: async () => robot }, workspaceRoot: root });
+    const events = [];
+    manager.setTaskObserver(composeTaskObservers((event) => events.push(event), [(event) => source.onRuntimeTaskEvent(event)]));
+    const started = manager.startTask(robot, 'simple', { cwd: root, task: 'x', ca: 'codex', ownerPrincipal: 'user:alice' });
+    await ensureCalled;
+    const [row] = registry.list({ principal: 'user:alice', canAdmin: false });
+    assert.deepEqual(await registry.stop(row.id, { principal: 'user:alice', canAdmin: false }), { ok: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    for (let i = 0; i < 200 && !events.some((event) => event.kind === 'terminal'); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(spawns.length, 0, 'the cancelled attempt never spawns');
+    assert.equal(manager.taskStatus(robot.id, started.taskId).state, 'paused');
+    assert.deepEqual(events.filter((event) => event.kind === 'terminal').map((event) => event.state), ['paused']);
+    assert.equal(events.some((event) => event.kind === 'state' && event.state === 'running'), false);
+    assert.equal(registry.list({ principal: 'user:alice', canAdmin: false })[0].status, 'stopped');
+    assert.equal((await registry.stop(row.id, { principal: 'user:alice', canAdmin: false })).status, 409, 'an ended row cannot be stopped again');
+});
+
+test('a stop after the running transition but before the spawn prevents the spawn', async (t) => {
+    const { root, robot, manager, spawns } = await cancellableFixture(t);
+    const events = [];
+    manager.setTaskObserver((event) => {
+        events.push(event);
+        if (event.kind === 'state' && event.state === 'running') manager.stopTask(robot, 'simple', event.taskId);
+    });
+    const started = manager.startTask(robot, 'simple', { cwd: root, task: 'x', ca: 'codex' });
+    for (let i = 0; i < 200 && !events.some((event) => event.kind === 'terminal'); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(spawns.length, 0);
+    assert.equal(manager.taskStatus(robot.id, started.taskId).state, 'paused');
+    assert.deepEqual(events.filter((event) => event.kind === 'terminal').map((event) => event.state), ['paused']);
+});
+
+test('each continuation is a new attempt: own id, phase only when RoboFlow resumes it, and old terminals never end it', async (t) => {
+    const { LiveSessionsRegistry } = await import('../server/live-sessions/registry.mjs');
+    const { RuntimeLiveSource, composeTaskObservers } = await import('../server/live-sessions/runtime-source.mjs');
+    const robot = { id: 'attempt-a1b2c3', name: 'Attempt' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    manager.shuttingDown = true;
+    const registry = new LiveSessionsRegistry({ log: () => {} });
+    const source = new RuntimeLiveSource({ registry, runtimeManager: manager, robotStore: { get: async () => robot }, workspaceRoot: '/workspace' });
+    const events = [];
+    manager.setTaskObserver(composeTaskObservers((event) => events.push(event), [(event) => source.onRuntimeTaskEvent(event)]));
+    const phaseId = '33333333-1234-4123-8123-123456789abc';
+    const flow = `flow_${'e'.repeat(24)}`;
+    const instance = `inv_${'f'.repeat(24)}`;
+    manager.startTask(robot, 'simple', { cwd: '/workspace', task: 'phase', runtimeTaskId: phaseId, alaSessionId: '44444444-1234-4123-8123-123456789abc',
+        workflowRunId: flow, workflowInstanceId: instance, ownerPrincipal: 'user:alice' });
+    assert.throws(() => manager.startTask(robot, 'simple', { cwd: '/workspace', task: 'again', runtimeTaskId: phaseId }), /already in use/);
+    manager.tasks.get(phaseId).state = 'paused';
+    // A continuation through the robot control API: a new id, a robot-task row.
+    const viaControl = await manager.resumeTask(robot, phaseId, 'go on');
+    assert.notEqual(viaControl.taskId, phaseId);
+    const controlEvent = events.find((event) => event.kind === 'admitted' && event.taskId === viaControl.taskId);
+    assert.deepEqual([controlEvent.workflowRunId, controlEvent.workflowInstanceId, controlEvent.ownerPrincipal], [flow, null, 'user:alice']);
+    // A late terminal of the earlier attempt ends only its own row.
+    source.onRuntimeTaskEvent({ kind: 'terminal', taskId: phaseId, state: 'paused', result: '', error: null });
+    const rows = registry.list({ principal: 'user:alice', canAdmin: false });
+    const kinds = Object.fromEntries(rows.map((row) => [row.kind, row.status]));
+    assert.deepEqual(kinds, { 'workflow-phase': 'stopped', 'robot-task': 'waiting' });
+    // RoboFlow's own continuation names its phase explicitly.
+    manager.tasks.get(viaControl.taskId).state = 'paused';
+    const viaRoboFlow = await manager.resumeTask(robot, viaControl.taskId, 'go', { runtimeTaskId: '55555555-1234-4123-8123-123456789abc', workflowInstanceId: instance });
+    const flowEvent = events.find((event) => event.kind === 'admitted' && event.taskId === viaRoboFlow.taskId);
+    assert.deepEqual([flowEvent.workflowRunId, flowEvent.workflowInstanceId, flowEvent.ownerPrincipal], [flow, instance, 'user:alice']);
+});

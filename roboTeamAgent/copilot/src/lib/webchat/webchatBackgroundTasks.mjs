@@ -21,6 +21,10 @@ import {
 
 const TASK_POLL_INTERVAL_MS = 2000;
 const DESCRIPTION_LIMIT = 240;
+// Tasks on RoboTeam itself (robot tasks, RoboFlow launches) are listed by the
+// RoboTeam service as robot tasks and workflow phases; they are not published
+// again as delegated copilot tasks.
+const ROBOTEAM_AGENT = 'roboTeamAgent';
 
 const observers = new WeakMap();
 
@@ -161,6 +165,7 @@ export async function createWebchatBackgroundTaskManager({
     reattachExistingTasks = true,
     onPublish = null,
     agentClientModule: providedAgentClientModule = null,
+    livePublisher = null,
 } = {}) {
     const agentClientModule = providedAgentClientModule || await import('/Agent/client/AgentMcpClient.mjs');
     if (typeof agentClientModule.setAgentTaskObserver !== 'function') {
@@ -171,6 +176,9 @@ export async function createWebchatBackgroundTaskManager({
     const taskModelCatalogs = new Map();
     const taskStartWaiters = new Map();
     const pendingContinuations = new Map();
+    // Live Sessions runs of delegated tasks launched by a copilot turn, by task id.
+    const liveRuns = new Map();
+    let manager = null;
     let closed = false;
     const diagnose = (message, taskId, error, level = 'warn') => {
         if (!closed) emitTaskDiagnostic({ message, taskId, error, level }, emitProtocol);
@@ -187,6 +195,45 @@ export async function createWebchatBackgroundTaskManager({
         taskStartWaiters.delete(key);
     };
 
+    // Status and log from the existing polling become the task's run output and end.
+    const forwardLive = (outgoing) => {
+        const task = outgoing?.task;
+        const run = typeof task?.id === 'string' ? liveRuns.get(task.id) : null;
+        if (!run) return;
+        if (typeof outgoing.logAppend === 'string' && outgoing.logAppend) run.output(outgoing.logAppend, 'output');
+        if (!task.status || task.status === 'ongoing') return;
+        liveRuns.delete(task.id);
+        run.end(task.status === 'finished' ? { status: 'finished' }
+            : task.status === 'paused' ? { status: 'stopped', reason: 'stopped' }
+                : { status: 'failed', reason: trim(task.error) || trim(task.remoteStatus) || 'failed' });
+    };
+
+    // A delegated task is published when a copilot turn or command launches
+    // it, inside that turn, with the turn's owner claim. Reattached tasks are
+    // not announced again. Its only control is Stop, which pauses the task
+    // through the signed cancel call.
+    const startLiveTask = (record, origin) => {
+        if (!livePublisher || !origin || record.targetAgent === ROBOTEAM_AGENT) return;
+        liveRuns.get(record.id)?.end({ status: 'stopped', reason: 'replaced by a continuation' });
+        const run = livePublisher.startRun({
+            kind: 'copilot-task', title: `Delegated task · ${record.description}`,
+            cwd: origin.workingDir || workingDir, robot: record.robotName || process.env.ROBOTEAM_COPILOT_ROBOT_NAME || '',
+            owner: origin.liveOwner || null,
+            onControl: async ({ action }) => {
+                if (action !== 'stop') return { outcome: 'rejected', detail: 'delegated tasks take no messages' };
+                try {
+                    await manager.pauseTask(record.id);
+                    return 'delivered';
+                } catch (error) {
+                    return ['task_not_running', 'task_not_found'].includes(error?.message) ? 'run_ended'
+                        : { outcome: 'unknown', detail: 'the task could not be stopped' };
+                }
+            },
+        });
+        run.status(`Delegated to ${record.targetAgent}${record.toolName ? ` · ${record.toolName}` : ''}`);
+        liveRuns.set(record.id, run);
+    };
+
     const publish = async (payload, { persist = true, workflowSnapshot = false } = {}) => {
         if (closed) return { rejected: true, task: payload?.task };
         let outgoing = payload;
@@ -200,6 +247,7 @@ export async function createWebchatBackgroundTaskManager({
         if (Array.isArray(outgoing?.tasks)) {
             outgoing = { ...outgoing, tasks: outgoing.tasks.map((task) => presentTask(task, taskModelCatalogs)) };
         }
+        forwardLive(outgoing);
         if (typeof onPublish === 'function') await onPublish(outgoing);
         if (emitProtocol) emitTaskEvent(outgoing);
         return outgoing;
@@ -400,6 +448,7 @@ export async function createWebchatBackgroundTaskManager({
             if (active.get(id) === record) active.delete(id);
             return outgoing.task;
         }
+        startLiveTask(record, origin);
         if (!existing && origin?.sessionId && origin?.assistantMessageId && typeof onTaskStarted === 'function') {
             try {
                 await onTaskStarted(record, Object.freeze({ ...association(origin), workingDir,
@@ -478,7 +527,7 @@ export async function createWebchatBackgroundTaskManager({
         }
     }, 250);
 
-    return {
+    manager = {
         activeCount: () => [...active.values()].filter(task => task.status === 'ongoing').length,
         async observeScriptTask(task, origin) {
             if (!task || typeof task.agentName !== 'string' || typeof task.taskId !== 'string'
@@ -701,8 +750,12 @@ export async function createWebchatBackgroundTaskManager({
             taskStartWaiters.clear();
             active.clear();
             taskModelCatalogs.clear();
+            // Runs of tasks still running end on the service as lost when
+            // this copilot disconnects; nothing observes them any more.
+            liveRuns.clear();
         },
     };
+    return manager;
 }
 
 export const __testables = {

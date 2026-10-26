@@ -20,6 +20,10 @@ import { EXECUTION_TASK_TYPES, EXECUTION_TYPES } from './constants.mjs';
 import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
 
 const terminal = state => ['completed', 'failed', 'paused', 'terminated'].includes(state);
+// Live Sessions owner: the signed principal (user:<id>) of the user who started
+// the work. Anything else, including internal callers, is the system owner.
+export const ownerPrincipalOf = value => typeof value === 'string' && /^user:.+/u.test(value) ? value : null;
+const OBSERVED_TASK_EVENTS = new Set(['progress', 'state', 'terminal']);
 const missing = () => Object.assign(new Error('workflow run not found'), { statusCode: 404 });
 
 // A run has one status. Running wins over everything, then pause, then failure:
@@ -175,6 +179,7 @@ export class RoboFlowService {
         return this.schedules.listSync().map(job => {
             const { pendingLaunch, ...record } = job;
             delete record.name;
+            delete record.ownerPrincipal;
             if (this.runFolders.isLegacyDefault(record.folder, root)) record.folder = path.join(root, 'workflow-runs');
             const workflow = this.registry.getSync(job.workflowTypeId);
             const flow = job.lastFlowId && this.store.getSync(job.lastFlowId);
@@ -183,10 +188,13 @@ export class RoboFlowService {
                 lastFlowStatus: flow?.status || null, lastFlowError: flow?.error || null, launching: Boolean(pendingLaunch) };
         });
     }
-    async saveSchedule(input, createdBy, id) { const saved = await this.schedules.save(input, createdBy, id); return (await this.listSchedules()).find(job => job.id === saved.id); }
+    async saveSchedule(input, createdBy, id, { ownerPrincipal = null } = {}) {
+        const saved = await this.schedules.save(input, createdBy, id, { ownerPrincipal: ownerPrincipalOf(ownerPrincipal) });
+        return (await this.listSchedules()).find(job => job.id === saved.id);
+    }
     async deleteSchedule(id) { return this.schedules.remove(id); }
-    async runScheduleNow(id, revision, createdBy) {
-        const flow = await this.scheduler.runNow(id, revision, createdBy);
+    async runScheduleNow(id, revision, createdBy, { ownerPrincipal = null } = {}) {
+        const flow = await this.scheduler.runNow(id, revision, createdBy, { ownerPrincipal: ownerPrincipalOf(ownerPrincipal) });
         return { flow, schedule: (await this.listSchedules()).find(job => job.id === id) || null };
     }
     async startFlow(input, { onCreated, scheduleId, scheduledAt } = {}) {
@@ -202,6 +210,7 @@ export class RoboFlowService {
         let flow;
         try {
             flow = await this.store.createFromWorkflow(this.registry, graph.id, { folder, objective, createdBy: input.createdBy || '',
+                ownerPrincipal: ownerPrincipalOf(input.ownerPrincipal),
                 ...(scheduleId ? { scheduleId, scheduledAt } : {}),
                 ...(graph.kind === 'default' ? { executionType: input.executionType } : {}) }, onCreated);
         } catch (error) {
@@ -270,7 +279,8 @@ export class RoboFlowService {
             const required = node.skillsets.map(identity => selections.find(set => set.id === identity));
             const skillSets = required.filter(item => item.kind === 'skillset').map(item => item.selector);
             const skills = required.filter(item => item.kind === 'skill').map(item => item.selector);
-            const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, workflowRunId: id, skillSets, skills,
+            const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, workflowRunId: id,
+                workflowInstanceId: instance.id, ownerPrincipal: ownerPrincipalOf(flow.ownerPrincipal), skillSets, skills,
                 requiredWorkflowSkillsets: node.skillsets, workflowCreator: node.creator === true, allowsHumanInput: node.allowsHumanInput === true,
                 systemPrompt: [node.creator ? creatorPrompt(flow.graph, node.id, await this.subflows.catalog()) : outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '',
                     node.allowsHumanInput ? 'For a blocking business decision not answered by the prompt or context, use the required require-human-input skill. After its script succeeds, end this execution immediately without a route or creator plan; RoboFlow will wait for the user answer.' : ''].filter(Boolean).join('\n\n') });
@@ -384,7 +394,9 @@ export class RoboFlowService {
         if (!flow) throw missing();
         const instance = flow.instances.find(item => item.id === instanceId);
         if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
-        if (terminal(instance.state) || !instance.runtimeTaskId) throw invalid('only a running phase accepts a live prompt; continue it instead');
+        if (terminal(instance.state) || !instance.runtimeTaskId) {
+            throw Object.assign(invalid('only a running phase accepts a live prompt; continue it instead'), { liveOutcome: 'run_ended' });
+        }
         const message = textField(prompt, 'prompt', 32768, true);
         const robot = await this.robotStore.getByName(instance.robotName);
         if (!robot) throw new Error('Robot is unavailable');
@@ -430,7 +442,7 @@ export class RoboFlowService {
         });
         this.bindings.set(runtimeTaskId, { flowId: id, instanceId, manual: true });
         try {
-            await this.runtimeManager.resumeTask(robot, previous.runtimeTaskId, message, { runtimeTaskId });
+            await this.runtimeManager.resumeTask(robot, previous.runtimeTaskId, message, { runtimeTaskId, workflowInstanceId: instanceId });
         } catch (error) {
             this.bindings.delete(runtimeTaskId);
             await this.store.update(id, current => {
@@ -484,6 +496,8 @@ export class RoboFlowService {
         if (edge) await this._dispatch(id);
     }
     onRuntimeTaskEvent(event) {
+        // Admission and other observation-only events are for Live Sessions.
+        if (!OBSERVED_TASK_EVENTS.has(event?.kind)) return;
         const generation = this.generations.get(event?.taskId);
         if (generation) { if (event.kind === 'terminal') { this.generations.delete(event.taskId); event.state === 'completed' && !event.error ? generation.resolve(event.result) : generation.reject(new Error(event.error || 'Graph generation failed')); } return; }
         const binding = this.bindings.get(event?.taskId);

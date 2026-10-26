@@ -22,7 +22,9 @@ export {
 } from './abort.mjs';
 export {
     createCanonicalStream,
+    createStreamOwner,
     isCanonicalStream,
+    releaseOnEarlyReturn,
     tapStream,
     mapStream,
 } from './canonical-stream.mjs';

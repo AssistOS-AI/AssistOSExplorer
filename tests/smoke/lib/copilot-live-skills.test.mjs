@@ -100,6 +100,8 @@ const corruptions = {
         home: input.snapshot.native.home, workspace: input.fixture.workspace, agent: 'codex', threadId: randomUUID() }; },
     'fresh inventory substituted for captured catalog': input => { input.snapshot.catalog.revision = 'b'.repeat(64); },
     'different captured path': input => { input.snapshot.liveLinks[input.fixture.probe.name].destination += '-other'; },
+    'project path substituted for private skills directory': input => { input.snapshot.session.skillExecution.skillsDirectory = `${input.fixture.workspace}/.agents/skills`; },
+    'host session path forged as receipt invocation': input => { input.snapshot.receipts[`${input.phase}-${input.fixture.probe.name}.json`].invokedPath = `${input.snapshot.session.skillExecution.skillsDirectory}/${input.fixture.probe.name}/receipt.mjs`; },
     'stale catalog descriptor bytes': input => { input.snapshot.capturedFiles[input.fixture.probe.name].descriptorSha256 = 'b'.repeat(64); },
     'stale catalog helper bytes': input => { input.snapshot.capturedFiles[input.fixture.probe.name].helperSha256 = 'b'.repeat(64); },
     'catalog selection mismatch': input => { input.snapshot.session.skillExecution.entries = []; },
@@ -158,14 +160,21 @@ test('pending polling never treats a previous completed assistant as a new nativ
 
 function runtimeFixture(root = ROOT) {
     const repository = `${root}/.ploinky/repos/AchillesIDE`;
+    const objectId = '64a1dedd-e8bd-4f7b-8db4-1c08042a1dff';
+    const payloadPath = `${root}/.ploinky/deps/store/objects/${objectId}/payload`;
+    const nodeModulesPath = `${payloadPath}/node_modules`;
     const runtime = { key: 'owned-runtime', containerId: 'a'.repeat(64), instanceId: randomUUID(), enableGeneration: randomUUID(),
-        startedAt: new Date().toISOString(), imageId: 'sha256:' + 'b'.repeat(64), mounts: [
+        startedAt: new Date().toISOString(), imageId: 'sha256:' + 'b'.repeat(64),
+        dependencies: { schema: 1, mode: 'store', family: 'container', runtimeKey: 'container-linux-x64-glibc-node22',
+            imageId: 'sha256:' + 'b'.repeat(64), inputKey: 'a'.repeat(64), generationId: 'a'.repeat(64), objectId, payloadPath, nodeModulesPath }, mounts: [
             { Type: 'bind', Source: root, Destination: root, RW: true },
             { Type: 'bind', Source: `${root}/.data/roboTeamAgent`, Destination: '/data', RW: true },
             { Type: 'bind', Source: `${repository}/roboTeamAgent`, Destination: `${repository}/roboTeamAgent`, RW: true },
-            { Type: 'bind', Source: `${root}/.ploinky/container-runtime/owned-runtime/code-123`, Destination: '/code', RW: true },
+            { Type: 'bind', Source: `${repository}/roboTeamAgent`, Destination: '/code', RW: false },
             { Type: 'bind', Source: `${root}/.ploinky/container-runtime/owned-runtime/Agent-1-2`, Destination: '/Agent', RW: false },
             { Type: 'bind', Source: '/opt/ploinky-agentlib', Destination: '/opt/ploinky-agentlib', RW: false },
+            { Type: 'bind', Source: nodeModulesPath, Destination: '/code/node_modules', RW: false },
+            { Type: 'bind', Source: nodeModulesPath, Destination: nodeModulesPath, RW: false },
         ] };
     return { runtime, repository };
 }

@@ -244,3 +244,176 @@ test('a failing concurrent probe fails fast despite a hung sibling and maps to t
         console.error = originalError;
     }
 });
+
+// ---- Guarded close: a same-origin frame may ask its user before the panel closes or is replaced ----
+
+function guardedFrame(hook) {
+    const doc = { title: 'Live Sessions' };
+    const contentWindow = { __beforeExpandedModalClose: hook };
+    return {
+        doc, contentWindow, removed: false,
+        get contentDocument() { if (this.unreadable) throw new Error('cross-origin'); return this.doc; },
+        removeAttribute() {}, remove() { this.removed = true; },
+    };
+}
+
+function closingPresenter(hook) {
+    const closes = [];
+    const p = presenter({ assistOS: { UI: { closeModal: (...args) => closes.push(args) } } });
+    p.mode = 'iframe';
+    p.frame = guardedFrame(hook);
+    const frame = p.frame;
+    return { p, frame, closes };
+}
+
+test('X waits for the frame guard, shares one preparation, and only a literal true closes', async () => {
+    const reasons = [];
+    let answer;
+    const { p, frame, closes } = closingPresenter((reason) => { reasons.push(reason); return new Promise((resolve) => { answer = resolve; }); });
+    const first = p.closeModal();
+    const second = p.closeModal();
+    const shared = p.prepareClose('replace');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(reasons, ['close'], 'one question for concurrent requests');
+    assert.equal(closes.length, 0);
+    answer(false);
+    await Promise.all([first, second]);
+    assert.equal(await shared, false);
+    assert.equal(closes.length, 0);
+    assert.equal(p.closed, false);
+    assert.equal(p.frame, frame, 'a refusal keeps the identical frame');
+    assert.equal(frame.removed, false);
+
+    for (const result of ['true', 1, {}, undefined, null]) {
+        frame.contentWindow.__beforeExpandedModalClose = async () => result;
+        await p.closeModal();
+        assert.equal(closes.length, 0, JSON.stringify(result));
+    }
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+        frame.contentWindow.__beforeExpandedModalClose = async () => { throw new Error('page failed'); };
+        await p.closeModal();
+        frame.contentWindow.__beforeExpandedModalClose = () => { throw new Error('sync failure'); };
+        await p.closeModal();
+    } finally {
+        console.warn = warn;
+    }
+    assert.equal(closes.length, 0, 'a failing guard never approves');
+
+    let notified = 0;
+    frame.contentWindow.__onExpandedModalClose = async () => { notified += 1; };
+    frame.contentWindow.__beforeExpandedModalClose = async (reason) => { reasons.push(reason); return true; };
+    await p.closeModal();
+    assert.equal(closes.length, 1);
+    assert.equal(notified, 1, 'post-approval cleanup still runs');
+    assert.equal(p.closed, true);
+    assert.equal(frame.removed, true);
+});
+
+test('a frame without a guard closes as before, and a component panel keeps its own discard check', async () => {
+    const { p, closes } = closingPresenter(undefined);
+    delete p.frame.contentWindow.__beforeExpandedModalClose;
+    assert.equal(p.hasCloseGuard(), false);
+    await p.closeModal();
+    assert.equal(closes.length, 1);
+
+    const component = presenter({ assistOS: { UI: { closeModal: (...args) => closes.push(args) } } });
+    component.mode = 'component';
+    let allow = false;
+    component.contentProxy = { element: { deref: () => ({ webSkelPresenter: { confirmDiscardChanges: () => allow } }) } };
+    await component.closeModal();
+    assert.equal(closes.length, 1);
+    allow = true;
+    await component.closeModal();
+    assert.equal(closes.length, 2);
+});
+
+test('a document that offered the guard cannot approve by losing the hook or its readability; a new document can', async () => {
+    const { p, frame, closes } = closingPresenter(async () => false);
+    p.observeFrameGuard();
+    assert.equal(p.hasCloseGuard(), true);
+    delete frame.contentWindow.__beforeExpandedModalClose;
+    assert.equal(p.hasCloseGuard(), true, 'the same document lost its hook');
+    assert.equal(await p.prepareClose('close'), false);
+    frame.unreadable = true;
+    assert.equal(p.hasCloseGuard(), true, 'the guarded document became unreadable');
+    await p.closeModal();
+    assert.equal(closes.length, 0);
+    // A newly loaded document without the guard is an ordinary page again.
+    frame.unreadable = false;
+    frame.doc = { title: 'Another page' };
+    p.observeFrameGuard();
+    assert.equal(p.hasCloseGuard(), false);
+    await p.closeModal();
+    assert.equal(closes.length, 1);
+});
+
+test('reloading or removing the frame while its guard is still asking answers false without waiting for it', async () => {
+    const { p, closes } = closingPresenter(() => new Promise(() => {}));
+    const closing = p.closeModal();
+    await new Promise((resolve) => setImmediate(resolve));
+    p.cancelLoading();
+    await closing;
+    assert.equal(closes.length, 0);
+    assert.equal(p.closePreparation, null);
+    assert.equal(p.closing, false, 'X works again afterwards');
+});
+
+test('a native dialog cancel cannot remove a guarded frame without asking; other dialogs keep their native cancel', async () => {
+    let asked = 0;
+    const { p, closes } = closingPresenter(async () => { asked += 1; return false; });
+    p.dialog = { id: 'host' };
+    const event = (target) => ({ target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
+    const own = event(p.dialog);
+    p.handleDialogCancel(own);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(own.defaultPrevented, true);
+    assert.equal(asked, 1);
+    assert.equal(closes.length, 0);
+    const nested = event({ id: 'nested' });
+    p.handleDialogCancel(nested);
+    assert.equal(nested.defaultPrevented, false);
+    delete p.frame.contentWindow.__beforeExpandedModalClose;
+    p.guardedDocuments = new WeakSet();
+    p.frameGuarded = false;
+    const plain = event(p.dialog);
+    p.handleDialogCancel(plain);
+    assert.equal(plain.defaultPrevented, false, 'an unguarded panel is unchanged');
+});
+
+test('host Escape on a guarded iframe panel goes through the guarded close; nested, handled and unguarded Escape do not', async () => {
+    const reasons = [];
+    const { p, closes } = closingPresenter(async (reason) => { reasons.push(reason); return false; });
+    p.dialog = { id: 'host' };
+    const key = (target, changes = {}) => ({
+        key: 'Escape', target, defaultPrevented: false, stopped: false,
+        preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }, ...changes,
+    });
+    const onHost = key({ closest: () => p.dialog });
+    p.handleComponentEscape(onHost);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(onHost.defaultPrevented, true);
+    assert.equal(onHost.stopped, true);
+    assert.deepEqual(reasons, ['close'], 'the same question as X');
+    assert.equal(closes.length, 0, 'a refusal keeps the panel');
+    for (const event of [
+        key({ closest: () => ({ id: 'nested dialog' }) }),
+        key({ closest: () => p.dialog }, { defaultPrevented: true }),
+        key({ closest: () => p.dialog }, { key: 'Enter' }),
+    ]) {
+        const handled = event.defaultPrevented;
+        p.handleComponentEscape(event);
+        assert.equal(event.defaultPrevented, handled);
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(reasons, ['close']);
+    // An unguarded iframe panel keeps its previous Escape behaviour: nothing here closes it.
+    delete p.frame.contentWindow.__beforeExpandedModalClose;
+    p.guardedDocuments = new WeakSet();
+    p.frameGuarded = false;
+    const plain = key({ closest: () => p.dialog });
+    p.handleComponentEscape(plain);
+    assert.equal(plain.defaultPrevented, false);
+    assert.equal(closes.length, 0);
+});

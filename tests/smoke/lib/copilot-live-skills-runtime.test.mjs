@@ -5,11 +5,15 @@ import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
     LIVE_SKILLS_CONTRACT_FILES, createLiveSkillsRuntimeReader, normalizeLiveSkillsImageId, program, readLiveSkillsCodeHashes, readLiveSkillsSnapshot,
     readRegistryAndRuntime, validateLiveSkillsRuntimeBinding,
 } from './copilot-live-skills-runtime.mjs';
 import { createLiveSkillsFixture, liveSkillsHash, liveSkillSources, liveSkillsPrompt, policyEvidence, validateLiveSkillsTurn } from './copilot-live-skills.mjs';
+import { createOrchestrationReader } from './live-sessions-orchestration.mjs';
+import { withLiveSkillsProjection } from './copilot-live-skills-test-fixture.mjs';
+import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
 
 const digest = 'a'.repeat(64);
 const files = LIVE_SKILLS_CONTRACT_FILES;
@@ -19,7 +23,7 @@ function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'Achill
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
     const repository = path.join(directory, repositoryRelative);
     const source = path.join(repository, 'roboTeamAgent');
-    const code = path.join(directory, 'code');
+    const code = source;
     const expected = {};
     for (const file of files) {
         fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
@@ -27,9 +31,6 @@ function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'Achill
         fs.writeFileSync(path.join(source, file), data);
         expected[file] = createHash('sha256').update(data).digest('hex');
     }
-    fs.mkdirSync(code);
-    // Match stageSourceTreeWithOverrides: directory entries link into the selected agent mount.
-    for (const name of ['server', 'copilot']) fs.symlinkSync(path.join(source, name), path.join(code, name), 'dir');
     const descriptors = new Map();
     // macOS has no /proc. Map only its descriptor observation; actual files, symlinks,
     // O_NOFOLLOW reads, inode metadata, and mutations all use the real filesystem.
@@ -41,8 +42,9 @@ function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'Achill
             return fs.realpathSync(file);
         },
     };
-    return { directory, repository, source, code, expected, fsApi,
-        read: (overrides = {}) => readLiveSkillsCodeHashes({ expectedRepository: repository, contractFiles: files }, { codeRoot: code, fsApi, ...overrides }) };
+    const result = { directory, repository, source, code, expected, fsApi };
+    result.read = (overrides = {}) => readLiveSkillsCodeHashes({ expectedRepository: repository, contractFiles: files }, { codeRoot: result.code, fsApi, ...overrides });
+    return result;
 }
 
 test('image identity accepts only the full raw Podman and normalized forms', () => {
@@ -57,28 +59,37 @@ test('image identity accepts only the full raw Podman and normalized forms', () 
 // The admitted Box root is the host path itself: the Box mounts the workspace at its own path.
 function readerSetup(f, { root = f.directory, image = 'sha256:' + digest } = {}) {
     const startedAt = new Date().toISOString();
-    const release = { liveBox: { box: { containerId: 'b'.repeat(64), imageId: digest, startedAt }, workspaceSourceMount: { source: root } },
+    const release = { applicationBaseURL: 'http://127.0.0.1:8080', boxBaseURL: 'http://127.0.0.1:8080', imageDigest: digest,
+        agentLib: { commit: 'f'.repeat(40) },
+        liveBox: { box: { containerId: 'b'.repeat(64), imageId: digest, startedAt, semanticLabels: {} }, workspaceSourceMount: { source: root } },
         repositories: { explorer: { repositoryPath: f.repository } } };
-    const codeSource = `${root}/.ploinky/container-runtime/owned-runtime/code-123`;
-    fs.mkdirSync(codeSource, { recursive: true });
+    const codeSource = `${f.repository}/roboTeamAgent`;
+    const objectId = '64a1dedd-e8bd-4f7b-8db4-1c08042a1dff';
+    const payloadPath = `${root}/.ploinky/deps/store/objects/${objectId}/payload`;
+    const nodeModulesPath = `${payloadPath}/node_modules`;
+    fs.mkdirSync(nodeModulesPath, { recursive: true });
     fs.mkdirSync(`${root}/.data/roboTeamAgent`, { recursive: true });
     fs.mkdirSync(`${root}/.ploinky/container-runtime/owned-runtime/Agent-1-2`, { recursive: true });
     const runtime = { key: 'owned-runtime', containerId: 'c'.repeat(64), instanceId: randomUUID(), enableGeneration: randomUUID(),
-        startedAt, imageId: 'sha256:' + 'd'.repeat(64), mounts: [
+        startedAt, imageId: 'sha256:' + 'd'.repeat(64),
+        dependencies: { schema: 1, mode: 'store', family: 'container', runtimeKey: 'container-linux-x64-glibc-node22',
+            imageId: 'sha256:' + 'd'.repeat(64), inputKey: digest, generationId: digest, objectId, payloadPath, nodeModulesPath }, mounts: [
             { Type: 'bind', Source: root, Destination: root, RW: true },
             { Type: 'bind', Source: `${root}/.data/roboTeamAgent`, Destination: '/data', RW: true },
             { Type: 'bind', Source: `${f.repository}/roboTeamAgent`, Destination: `${f.repository}/roboTeamAgent`, RW: true },
-            { Type: 'bind', Source: codeSource, Destination: '/code', RW: true },
+            { Type: 'bind', Source: codeSource, Destination: '/code', RW: false },
             // Production always emits exactly one read-only staged /Agent and one read-only AgentLib grant.
             { Type: 'bind', Source: `${root}/.ploinky/container-runtime/owned-runtime/Agent-1-2`, Destination: '/Agent', RW: false },
             { Type: 'bind', Source: '/opt/ploinky-agentlib', Destination: '/opt/ploinky-agentlib', RW: false },
+            { Type: 'bind', Source: nodeModulesPath, Destination: '/code/node_modules', RW: false },
+            { Type: 'bind', Source: nodeModulesPath, Destination: nodeModulesPath, RW: false },
         ] };
     const state = { image, nestedReads: 0, programs: [], outerMounts: [{ Type: 'bind', Source: root, Destination: root, RW: true }],
         outerEnv: [`PLOINKY_WORKSPACE_ROOT=${root}`], outerWorkingDir: root };
     const runCommand = async (args, input) => {
         if (args[0] === 'inspect') return [{ Id: release.liveBox.box.containerId, Image: state.image, State: { Running: true, StartedAt: startedAt },
             Config: { Env: state.outerEnv, WorkingDir: state.outerWorkingDir }, Mounts: state.outerMounts }];
-        state.nestedReads += 1; state.programs.push(input); return runtime;
+        state.nestedReads += 1; state.programs.push(input); return structuredClone(runtime);
     };
     const alaRoot = path.join(root, 'AdvancedLanguageAgent');
     for (const name of ['bin/ala.mjs', 'src/transcript.mjs', 'package.json']) {
@@ -116,22 +127,175 @@ test('primary: the reader admits a canonical same-path workspace containing a sp
     assert.equal(setup.state.nestedReads, 1);
 });
 
-test('code symlink tree hashes every exact selected source file', async t => {
+test('complete fresh07 production topology constructs and finishes twice without provider work', async t => {
+    const f = fixture(t, 'production workspace ü '), setup = readerSetup(f);
+    const root = f.directory, runtime = setup.runtime;
+    const key = 'ploinky_AchillesIDE_roboTeamAgent_feature-fresh-07-fixture_1ae9bce2';
+    runtime.key = key;
+    const agent = `${root}/.ploinky/container-runtime/${key}/Agent-10645-1792085969146`;
+    fs.mkdirSync(agent, { recursive: true });
+    const deps = runtime.dependencies.nodeModulesPath;
+    // Every tuple from the captured fresh07 inventory, rooted in a real temporary workspace.
+    runtime.mounts = [
+        bindMount(`${root}/DocumentationSkills`, `${root}/DocumentationSkills`),
+        bindMount(root, root),
+        bindMount(`${root}/.data/roboTeamAgent`, '/root'),
+        bindMount('/opt/ploinky-agentlib', '/opt/ploinky-agentlib', false),
+        bindMount(`${root}/.ploinky/run/edge-topology`, '/run/ploinky-edge-topology', false),
+        bindMount(f.source, f.source),
+        bindMount(deps, '/code/node_modules', false),
+        bindMount(`${root}/.ploinky/run/router-descriptors/012f5b11-d3f5-40c3-90da-54ab65b4727f.json`, '/run/ploinky/router-descriptor.json', false),
+        bindMount(agent, '/Agent', false),
+        bindMount(`${root}/.data/roboTeamAgent`, '/data'),
+        bindMount(`${root}/.data/shared`, '/shared'),
+        bindMount(`${root}/.ploinky`, `${root}/.ploinky`, false),
+        bindMount(f.source, '/code', false),
+        bindMount('/tmp/ploinky-runtime-guards/1ae9bce270881824fdc53fe5/data', `${root}/.ploinky/data`, false),
+        bindMount(deps, deps, false),
+        bindMount(`/tmp/ploinky-health-probes/${key}`, '/run/ploinky-health-probes'),
+        bindMount(setup.expectedAla.root, setup.expectedAla.root),
+    ];
+    const reader = await setup.create();
+    assert.deepEqual((await reader.finish()).runtime, runtime);
+    assert.deepEqual((await reader.finish()).runtime, runtime);
+    runtime.dependencies.generationId = 'e'.repeat(64);
+    await assert.rejects(reader.finish(), /replaced, restarted or remounted/);
+    assert.equal(setup.state.nestedReads, 4);
+});
+
+test('orchestration construction runs the real runtime guard and finish before checking its selected container', async t => {
+    const f = fixture(t), setup = readerSetup(f);
+    await assert.rejects(createOrchestrationReader({ release: setup.release, evidence: {}, runtime: { containerId: 'foreign' } }, {
+        env: setup.input.env,
+        createRuntimeReader: input => createLiveSkillsRuntimeReader(input, { collectRelease: async () => setup.release, runCommand: setup.runCommand }),
+    }), error => error.code === 'ERR_ASSERTION' && error.actual === setup.runtime.containerId && error.expected === 'foreign');
+    assert.equal(setup.state.nestedReads, 2, 'Construction and finish must each collect and validate the real mount guard.');
+});
+
+for (const [name, mutate] of Object.entries({
+    'missing admission': v => { delete v.dependencies; },
+    'unknown mode': v => { v.dependencies.mode = 'unknown'; },
+    'foreign family': v => { v.dependencies.family = 'bwrap'; },
+    'malformed toolchain': v => { v.dependencies.runtimeKey = '../container'; },
+    'foreign image': v => { v.dependencies.imageId = 'e'.repeat(64); },
+    'malformed input': v => { v.dependencies.inputKey = ''; },
+    'malformed generation': v => { v.dependencies.generationId = 'short'; },
+    'malformed object': v => { v.dependencies.objectId = '../escape'; },
+    'foreign payload': v => { v.dependencies.payloadPath += '-evil'; },
+    'foreign modules': v => { v.dependencies.nodeModulesPath += '/..'; },
+    'missing submount': v => { v.mounts.splice(6, 1); },
+    'missing companion': v => { v.mounts.splice(7, 1); },
+    'foreign submount': v => { v.mounts[6].Source += '-evil'; },
+    'writable submount': v => { v.mounts[6].RW = true; },
+    'duplicate submount': v => { v.mounts.push(structuredClone(v.mounts[6])); },
+    'writable companion': v => { v.mounts[7].RW = true; },
+    'foreign companion': v => { v.mounts[7].Source += '-evil'; },
+    'duplicate companion': v => { v.mounts.push(structuredClone(v.mounts[7])); },
+    'nested dependency shadow': v => { v.mounts.push(bindMount('/foreign', `${v.dependencies.nodeModulesPath}/package`)); },
+    'nested code dependency shadow': v => { v.mounts.push(bindMount('/foreign', '/code/node_modules/package')); },
+})) test(`dependency admission rejects ${name}`, t => {
+    const c = mountCase(t);
+    assert.throws(() => c.validate(c.clone(mutate)));
+});
+
+test('dependency payload and Agent staging aliases fail canonical validation', t => {
+    for (const field of ['payload', 'agent']) {
+        const c = mountCase(t);
+        const target = field === 'payload' ? c.runtime.dependencies.payloadPath : c.runtime.mounts[4].Source;
+        fs.renameSync(target, `${target}-real`);
+        fs.symlinkSync(`${target}-real`, target);
+        assert.throws(() => c.validate());
+    }
+});
+
+test('serialized collector validates a real canonical object, projects only admission fields and never writes the store', async t => {
+    const f = fixture(t), setup = readerSetup(f), deps = setup.runtime.dependencies;
+    const previousAgentLib = process.env.PLOINKY_AGENTLIB_DIR;
+    process.env.PLOINKY_AGENTLIB_DIR = fs.realpathSync(fileURLToPath(new URL('../../../../ploinky/node_modules/achillesAgentLib', import.meta.url)));
+    t.after(() => {
+        if (previousAgentLib === undefined) delete process.env.PLOINKY_AGENTLIB_DIR;
+        else process.env.PLOINKY_AGENTLIB_DIR = previousAgentLib;
+    });
+    const storeRoot = new URL('../../../../ploinky/cli/utils/dependencies/store/', import.meta.url);
+    const { canonicalDigest, sha256Hex } = await import(new URL('canonical.mjs', storeRoot));
+    const { generationIdFor, FORMAT_NAME, FORMAT_VERSION, OBJECT_OWNER } = await import(new URL('objectStore.mjs', storeRoot));
+    const { hashInstalledTree } = await import(new URL('treeHash.mjs', storeRoot));
+    const { buildResolutionManifest } = await import(new URL('resolution.mjs', storeRoot));
+    const contract = { runtime: { family: deps.family, key: deps.runtimeKey }, toolchain: { imageId: deps.imageId } };
+    deps.inputKey = canonicalDigest(contract);
+    const tree = hashInstalledTree(deps.payloadPath), resolution = buildResolutionManifest(null, { installer: null });
+    deps.generationId = generationIdFor(deps.inputKey, resolution.hash, tree.hash);
+    const object = path.dirname(deps.payloadPath);
+    const manifest = { format: FORMAT_NAME, version: FORMAT_VERSION, owner: OBJECT_OWNER,
+        workspaceId: sha256Hex(f.directory), objectId: deps.objectId, inputKey: deps.inputKey,
+        generationId: deps.generationId, payloadPath: deps.payloadPath, contract, tree, resolution };
+    const manifestBytes = JSON.stringify(manifest);
+    fs.writeFileSync(`${object}/manifest.json`, manifestBytes);
+    fs.writeFileSync(`${object}/complete.json`, JSON.stringify({ manifestSha256: sha256Hex(manifestBytes), generationId: deps.generationId }));
+    const row = { type: 'agent', repoName: 'AchillesIDE', agentName: 'roboTeamAgent', runtime: 'podman',
+        containerId: setup.runtime.containerId, instanceId: setup.runtime.instanceId, enableGeneration: setup.runtime.enableGeneration,
+        dependencies: { ...deps, rebuildToken: 'PRIVATE_ADMISSION_SENTINEL' }, env: 'PRIVATE_ENV_SENTINEL' };
+    const dataModule = source => `data:text/javascript,${encodeURIComponent(source)}`;
+    const execute = (record = row, { race = false } = {}) => {
+        const registryModule = dataModule(`let count=0; export function readAgentRegistrySnapshot(){ count++; return ${JSON.stringify({ [setup.runtime.key]: record })}${race ? " && (count > 1 ? {} : " + JSON.stringify({ [setup.runtime.key]: record }) + ")" : ''}; }`);
+        const inspect = [{ Id: row.containerId, State: { Running: true, StartedAt: setup.runtime.startedAt }, Image: setup.runtime.imageId, Mounts: setup.runtime.mounts }];
+        const processModule = dataModule(`export function execFileSync(){ return ${JSON.stringify(JSON.stringify(inspect))}; }`);
+        let script = program(readRegistryAndRuntime, { workspaceRoot: f.directory });
+        script = script.replace("'/opt/ploinky/cli/utils/agentRegistrySnapshot.js'", JSON.stringify(registryModule))
+            .replace("'node:child_process'", JSON.stringify(processModule));
+        for (const name of ['runtimeDependencies.mjs', 'objectStore.mjs']) {
+            script = script.replace(`'/opt/ploinky/cli/utils/dependencies/store/${name}'`, JSON.stringify(new URL(name, storeRoot).href));
+        }
+        return spawnSync(process.execPath, ['--input-type=module', '-'], { input: script, encoding: 'utf8', timeout: 8000 });
+    };
+    const inventory = () => {
+        const result = {};
+        const walk = directory => { for (const entry of fs.readdirSync(directory)) {
+            const file = path.join(directory, entry), stat = fs.lstatSync(file);
+            result[file] = stat.isDirectory() ? 'directory' : fs.readFileSync(file).toString('hex');
+            if (stat.isDirectory()) walk(file);
+        } };
+        walk(path.join(f.directory, '.ploinky/deps')); return result;
+    };
+    const before = inventory(), success = execute();
+    assert.equal(success.status, 0, success.stderr);
+    assert.deepEqual(JSON.parse(success.stdout).dependencies, deps);
+    assert.doesNotMatch(success.stdout, /PRIVATE_|manifest|contract/);
+    assert.deepEqual(inventory(), before);
+    const retiredOwner = execute({ ...row, repoName: 'AchillesCLI' });
+    assert.equal(retiredOwner.status, 1, 'retired repository ownership must not identify the runtime');
+    assert.equal(retiredOwner.stdout, '');
+    for (const bad of [undefined, { ...deps, mode: 'unknown' }, { ...deps, objectId: randomUUID() },
+        { ...deps, generationId: digest }, { ...deps, payloadPath: `${deps.payloadPath}-evil` },
+        { ...deps, runtimeKey: 'container-linux-arm64-node22' }]) {
+        const rejected = execute({ ...row, dependencies: bad });
+        assert.equal(rejected.status, 1);
+        assert.equal(rejected.stderr.trim(), 'Invalid read-only runtime evidence');
+        assert.equal(rejected.stdout, '');
+    }
+    assert.equal(execute(row, { race: true }).status, 1);
+    fs.unlinkSync(`${object}/complete.json`);
+    assert.equal(execute().status, 1);
+});
+
+test('code observer rejects obsolete staged symlink trees and accepts the canonical source', async t => {
     const f = fixture(t);
-    assert.notEqual(fs.realpathSync(path.join(f.code, files[0])), path.join(f.code, files[0]), 'Fixture reproduces the rejected legitimate /code layout.');
     assert.deepEqual(await f.read(), f.expected);
+    f.code = path.join(f.directory, 'staged-code'); fs.mkdirSync(f.code);
+    for (const name of ['server', 'copilot']) fs.symlinkSync(path.join(f.source, name), path.join(f.code, name), 'dir');
+    await assert.rejects(f.read(), /verified source directory object/);
 });
 
 for (const [name, mutate] of Object.entries({
     'copied runtime bytes': f => {
-        fs.unlinkSync(path.join(f.code, 'server')); fs.cpSync(path.join(f.source, 'server'), path.join(f.code, 'server'), { recursive: true });
+        f.code = path.join(f.directory, 'copied-code'); fs.cpSync(f.source, f.code, { recursive: true });
     },
     'different repository with identical bytes': f => {
         fs.cpSync(path.join(f.source, 'server'), path.join(f.directory, 'other-server'), { recursive: true });
-        fs.unlinkSync(path.join(f.code, 'server')); fs.symlinkSync(path.join(f.directory, 'other-server'), path.join(f.code, 'server'));
+        f.code = path.join(f.directory, 'other-server');
     },
     'another contract file in the same repository': f => {
-        fs.unlinkSync(path.join(f.code, 'server')); fs.mkdirSync(path.join(f.code, 'server'));
+        fs.unlinkSync(path.join(f.code, files[0]));
         fs.symlinkSync(path.join(f.source, files[1]), path.join(f.code, files[0]));
     },
     'symlinked source file': f => {
@@ -152,10 +316,10 @@ test('code observer rejects a link retargeted during the open file read', async 
     f.fsApi.readFileSync = fd => {
         const data = original(fd);
         fs.cpSync(path.join(f.source, 'server'), path.join(f.directory, 'other-server'), { recursive: true });
-        fs.unlinkSync(path.join(f.code, 'server')); fs.symlinkSync(path.join(f.directory, 'other-server'), path.join(f.code, 'server'));
+        fs.renameSync(path.join(f.code, 'server'), path.join(f.code, 'saved-server')); fs.symlinkSync(path.join(f.directory, 'other-server'), path.join(f.code, 'server'));
         return data;
     };
-    await assert.rejects(f.read(), /Runtime contract link changed/);
+    await assert.rejects(f.read(), /canonical without symlinks/);
 });
 
 test('code observer rejects source mutation during the read', async t => {
@@ -229,11 +393,12 @@ for (const [name, mutate, message] of [
     ['a foreign /data source', (v, c) => { v.mounts[1].Source = `${c.root}/.data/other`; }, /\/data/],
     ['a /data source outside the root', (v, c) => { v.mounts[1].Source = '/srv/other/.data/roboTeamAgent'; }, /\/data/],
     ['a foreign staged source', (v, c) => { v.mounts[2].Source = `${c.root}/other/roboTeamAgent`; }, /roboTeamAgent/],
-    ['a /code staged for another runtime', (v, c) => { v.mounts[3].Source = `${c.root}/.ploinky/container-runtime/another/code-123`; }, /staged directory/],
-    ['a /code staged outside the root', (v, c) => { v.mounts[3].Source = `${c.root}-evil/.ploinky/container-runtime/owned-runtime/code-123`; }, /staged directory/],
-    ['a /code with a nested staging path', (v, c) => { v.mounts[3].Source += '/nested'; }, /staged directory/],
-    ['a /code with a traversal staging path', (v, c) => { v.mounts[3].Source += '/../../x'; }, /staged directory/],
-    ['a duplicate /code', (v, c) => { v.mounts.push(structuredClone(v.mounts[3])); }, /one exact \/code/],
+    ['a staged /code', (v, c) => { v.mounts[3].Source = `${c.root}/.ploinky/container-runtime/another/code-123`; }, /source mount at \/code/],
+    ['a /code outside the root', (v, c) => { v.mounts[3].Source = `${c.root}-evil/roboTeamAgent`; }, /source mount at \/code/],
+    ['a /code with a nested path', (v, c) => { v.mounts[3].Source += '/nested'; }, /source mount at \/code/],
+    ['a /code with a traversal path', (v, c) => { v.mounts[3].Source += '/../../x'; }, /source mount at \/code/],
+    ['a duplicate /code', (v, c) => { v.mounts.push(structuredClone(v.mounts[3])); }, /source mount at \/code/],
+    ['a writable /code', v => { v.mounts[3].RW = true; }, /read-only/],
     ['a duplicate /data', (v, c) => { v.mounts.push(structuredClone(v.mounts[1])); }, /exact verified source mount at \/data/],
     ['a traversal runtime key', (v, c) => { v.key = '../owned-runtime'; }, /single path segment/],
     ['an empty runtime key', (v, c) => { v.key = ''; }, /single path segment/],
@@ -284,7 +449,7 @@ test('runtime mounts require canonical sources: symlinked staging, data, source 
     const stagedCode = c.runtime.mounts[3].Source;
     fs.renameSync(stagedCode, `${stagedCode}-real`);
     fs.symlinkSync(`${stagedCode}-real`, stagedCode);
-    assert.throws(() => c.validate(), /\/code/);
+    assert.throws(() => c.validate(), /roboTeamAgent|\/code/);
     fs.unlinkSync(stagedCode);
     fs.renameSync(`${stagedCode}-real`, stagedCode);
     assert.equal(c.validate(), c.runtime);
@@ -354,7 +519,8 @@ test('the reader proves the exact outer root from the inspected Box, not from th
 for (const [name, destination] of [
     ['the persistent data source', f => `${f.directory}/.data/roboTeamAgent`],
     ['an ancestor of the persistent data source', f => `${f.directory}/.data`],
-    ['the staged /code source', f => `${f.directory}/.ploinky/container-runtime/owned-runtime/code-123`],
+    ['the direct /code source', f => `${f.repository}/roboTeamAgent`],
+    ['the admitted dependency source', f => `${f.directory}/.ploinky/deps/store/objects/64a1dedd-e8bd-4f7b-8db4-1c08042a1dff/payload/node_modules`],
     ['the staged /Agent source', f => `${f.directory}/.ploinky/container-runtime/owned-runtime/Agent-1-2`],
     ['the runtime staging directory', f => `${f.directory}/.ploinky/container-runtime/owned-runtime`],
     ['a file below the verified source', f => `${f.repository}/roboTeamAgent/server/robot-store.mjs`],
@@ -510,6 +676,8 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
     for (const directory of ['copilot/src/lib', 'copilot/src/permissions']) {
         fs.cpSync(path.join(pinned, directory), path.join(f.source, directory), { recursive: true });
     }
+    fs.mkdirSync(path.join(f.source, 'shared'), { recursive: true });
+    fs.copyFileSync(path.join(pinned, 'shared/impact-summary.mjs'), path.join(f.source, 'shared/impact-summary.mjs'));
     for (const file of ['server/ala-command.mjs', 'server/workspace-root.mjs']) fs.copyFileSync(path.join(pinned, file), path.join(f.source, file));
     for (const file of files) f.expected[file] = liveSkillsHash(fs.readFileSync(path.join(f.source, file)));
     const owned = createLiveSkillsFixture(f.directory);
@@ -519,8 +687,12 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
     fs.mkdirSync(path.join(workspace, '.receipts'), { recursive: true });
     fs.mkdirSync(path.join(workspace, '.roboteam/sessions'), { recursive: true });
     fs.mkdirSync(path.join(workspace, '.roboteam/.ala/sessions'), { recursive: true });
-    fs.mkdirSync(path.join(workspace, '.agents/skills'), { recursive: true });
-    const selected = [owned.control, owned.probe];
+    fs.mkdirSync(path.join(workspace, '.agents'), { recursive: true });
+    const sessionId = randomUUID(), turnId = randomUUID();
+    const skillsDirectory = path.join(workspace, '.roboteam/sessions', sessionId, 'skills');
+    fs.mkdirSync(skillsDirectory, { recursive: true });
+    // Native revision follows persisted selection order, not alphabetical names.
+    const selected = [owned.probe, owned.control];
     const links = [], entries = [];
     for (const skill of selected) {
         const sourcePath = path.join(owned.repositoryRoot, 'skills', skill.name);
@@ -528,13 +700,12 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
         const source = liveSkillSources(owned, skill, f.directory);
         fs.writeFileSync(path.join(sourcePath, 'SKILL.md'), source.descriptor);
         fs.writeFileSync(path.join(sourcePath, 'receipt.mjs'), source.helper);
-        const destination = path.join(workspace, '.agents/skills', skill.name);
+        const destination = path.join(skillsDirectory, skill.name);
         fs.symlinkSync(sourcePath, destination);
-        links.push({ repoName: owned.repositoryName, sourcePath: `skills/${skill.name}`, destination, linkTarget: sourcePath });
+        links.push({ name: skill.name, source: sourcePath, target: sourcePath });
         entries.push({ name: skill.name, identity: `${owned.repositoryName}/${skill.name}`, source: owned.repositoryName, sourcePath, fingerprint: liveSkillsHash(source) });
     }
-    fs.writeFileSync(path.join(workspace, '.agents/.roboteam-links.json'), JSON.stringify(links));
-    const dataRoot = path.join(f.directory, '_data'), sessionId = randomUUID(), turnId = randomUUID();
+    const dataRoot = path.join(f.directory, '_data');
     const robot = path.join(dataRoot, 'robots', owned.robotId);
     fs.mkdirSync(path.join(robot, 'home'), { recursive: true });
     fs.writeFileSync(path.join(robot, 'metadata.json'), JSON.stringify({ schema: 'roboteam-robot-v1', name: owned.robotName, id: owned.robotId,
@@ -545,9 +716,10 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
     const metadata = { version: 2, sessionId, cwd: workspace, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
         engine: { type: 'ala', version: 1, sessionId, cwd: workspace, home: path.join(robot, 'home'), backend: 'codex', robotId: owned.robotId },
         turns: [{ turnId, userMessageId: randomUUID(), assistantMessageId: randomUUID(), timestamp: new Date().toISOString(), status: 'completed', tasks: [] }],
-        skillPolicyRef: sessionId, skillExecution: { live: true, active: false, entries, revision: liveSkillsHash(links), policyVersion: 1, diagnostics: [] } };
+        skillPolicyRef: sessionId, skillExecution: { live: true, active: false, entries, revision: liveSkillsHash(links), policyVersion: 1, diagnostics: [],
+            skillsDirectory, mounts: links.map(link => ({ source: link.source, target: link.target, expose: true })) } };
     if (thinkingLink) metadata.turns[0].thinkingUrl = `/base-agent-additional-server/roboTeamAgent/3001/webchat-logs/${sessionId}/${metadata.turns[0].assistantMessageId}`;
-    const writeSession = (cwd = workspace) => fs.writeFileSync(path.join(workspace, `.roboteam/sessions/${sessionId}.json`), JSON.stringify({ ...metadata, cwd }));
+    const writeSession = (cwd = workspace) => fs.writeFileSync(path.join(workspace, `.roboteam/sessions/${sessionId}/config.json`), JSON.stringify({ ...metadata, cwd }));
     writeSession();
     const transcriptFile = path.join(workspace, `.roboteam/.ala/sessions/${sessionId}.jsonl`);
     fs.writeFileSync(transcriptFile, JSON.stringify({ seq: 1, type: 'session', id: sessionId, at: new Date().toISOString() }) + '\n');
@@ -575,7 +747,12 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
         await readLiveSkillsSnapshot({ ...args, ...overrides }, { dataRoot, codeRoot: f.code, fsApi: f.fsApi, emit: value => { emitted = value; }, ...options });
         return emitted;
     };
-    return { f, folder, workspace, dataRoot, sessionId, robot, writeSession, args, read, owned, metadata, transcriptFile, initialized, phase, selected, startedAt, finalText };
+    const project = async callback => {
+        const { pathToFileURL } = await import('node:url');
+        const { alaSkillMountArguments } = await import(pathToFileURL(`${f.source}/copilot/src/lib/execution/alaSkillMounts.mjs`).href);
+        return withLiveSkillsProjection({ fixture: owned, workspaceRoot: f.directory, sessionId, execution: metadata.skillExecution, alaSkillMountArguments }, callback);
+    };
+    return { f, folder, workspace, dataRoot, sessionId, robot, writeSession, args, read, owned, metadata, transcriptFile, initialized, phase, selected, startedAt, finalText, skillsDirectory, project };
 }
 
 test('the in-Box reader accepts a same-path root with a space and Unicode and reports the root it used', async t => {
@@ -661,12 +838,22 @@ test('SET2 real links expose helper byte edits with unchanged installed-link rev
 });
 
 for (const [name, corrupt] of Object.entries({
+    'missing session config': c => fs.unlinkSync(path.join(c.workspace, '.roboteam/sessions', c.sessionId, 'config.json')),
+    'missing private skills directory': c => fs.rmSync(c.skillsDirectory, { recursive: true }),
+    'missing private skill link': c => fs.unlinkSync(path.join(c.skillsDirectory, c.owned.probe.name)),
+    'wrong session skills directory': c => { c.metadata.skillExecution.skillsDirectory += '-foreign'; c.writeSession(); },
+    'unknown mount source': c => { c.metadata.skillExecution.mounts[0].source += '-foreign'; c.writeSession(); },
+    'malformed mounts': c => { c.metadata.skillExecution.mounts[0].expose = false; c.writeSession(); },
+    'incorrect native revision': c => { c.metadata.skillExecution.revision = '0'.repeat(64); c.writeSession(); },
+    'duplicate entry names': c => { c.metadata.skillExecution.entries.push(c.metadata.skillExecution.entries[0]); c.writeSession(); },
+    'nonempty project skills': c => { fs.mkdirSync(`${c.workspace}/.agents/skills`); fs.writeFileSync(`${c.workspace}/.agents/skills/foreign`, 'retain'); },
+    'legacy shared record': c => fs.writeFileSync(`${c.workspace}/.agents/.roboteam-links.json`, '[]'),
     'copy replacing installed link': c => {
-        const destination = path.join(c.workspace, '.agents/skills', c.owned.probe.name);
+        const destination = path.join(c.skillsDirectory, c.owned.probe.name);
         fs.unlinkSync(destination); fs.cpSync(path.join(c.owned.repositoryRoot, 'skills', c.owned.probe.name), destination, { recursive: true });
     },
     'retargeted link with identical source bytes': c => {
-        const destination = path.join(c.workspace, '.agents/skills', c.owned.probe.name), decoy = path.join(c.f.directory, 'decoy');
+        const destination = path.join(c.skillsDirectory, c.owned.probe.name), decoy = path.join(c.f.directory, 'decoy');
         fs.cpSync(path.join(c.owned.repositoryRoot, 'skills', c.owned.probe.name), decoy, { recursive: true });
         fs.unlinkSync(destination); fs.symlinkSync(decoy, destination);
     },
@@ -677,7 +864,7 @@ for (const [name, corrupt] of Object.entries({
     'malformed terminated ALA record': c => { fs.appendFileSync(c.transcriptFile, 'malformed\n'); },
     'missing completed ALA transcript': c => { fs.unlinkSync(c.transcriptFile); },
     'symlinked session metadata': c => {
-        const file = path.join(c.workspace, '.roboteam/sessions', c.sessionId + '.json');
+        const file = path.join(c.workspace, '.roboteam/sessions', c.sessionId, 'config.json');
         fs.renameSync(file, file + '.real'); fs.symlinkSync(file + '.real', file);
     },
 })) test(`SET2 reader rejects ${name}`, async t => {
@@ -691,12 +878,98 @@ test('SET2 supported transcript reader ignores only a trailing partial append', 
     assert.equal((await c.read()).native.turns[0].final, 'Current final answer');
 });
 
+test('native private links preserve entry order, duplicate-source sharing, execution-only entries and empty selections', async t => {
+    const c = snapshotCase(t), before = await c.read();
+    assert.deepEqual(before.catalog.links.map(link => link.name), [c.owned.probe.name, c.owned.control.name]);
+    const entry = c.metadata.skillExecution.entries[0];
+    c.metadata.skillExecution.entries.push({ ...entry, name: 'shared-source' }, { ...entry, name: 'execution-only', executionOnly: true });
+    const links = [...before.catalog.links, { name: 'shared-source', source: entry.sourcePath, target: entry.sourcePath }];
+    fs.symlinkSync(entry.sourcePath, `${c.skillsDirectory}/shared-source`);
+    c.metadata.skillExecution.revision = liveSkillsHash(links); c.writeSession();
+    const shared = await c.read();
+    assert.deepEqual(shared.catalog.links, links);
+    assert.equal(shared.session.skillExecution.mounts.length, 2);
+    c.metadata.skillExecution.entries = []; c.metadata.skillExecution.mounts = [];
+    c.metadata.skillExecution.revision = liveSkillsHash([]); c.writeSession();
+    for (const name of fs.readdirSync(c.skillsDirectory)) fs.unlinkSync(`${c.skillsDirectory}/${name}`);
+    assert.deepEqual((await c.read()).catalog.links, []);
+});
+
+test('native hidden-source aliases use first occurrence order and share mounts', async t => {
+    const c = snapshotCase(t), before = await c.read();
+    const source = `${c.workspace}/.roboteam/hidden source ü`; fs.mkdirSync(source);
+    c.metadata.skillExecution.entries.push({ name: 'hidden-one', sourcePath: source }, { name: 'hidden-two', sourcePath: source });
+    const target = '/workspace/roboteam-skill-2';
+    c.metadata.skillExecution.mounts.push({ source, target, expose: true });
+    const links = [...before.catalog.links, ...['hidden-one', 'hidden-two'].map(name => ({ name, source, target }))];
+    for (const name of ['hidden-one', 'hidden-two']) fs.symlinkSync(target, `${c.skillsDirectory}/${name}`);
+    c.metadata.skillExecution.revision = liveSkillsHash(links); c.writeSession();
+    assert.deepEqual((await c.read()).catalog.links, links);
+    await assert.rejects(c.project(() => assert.fail('Must reject an unrepresented mount')), /auxiliary source mounts/);
+    assert.equal(fs.lstatSync(`${c.workspace}/.agents/skills`, { throwIfNoEntry: false }), undefined);
+});
+
+for (const [name, mutate] of Object.entries({
+    'directory replacement': c => { fs.renameSync(c.skillsDirectory, c.skillsDirectory + '-old'); fs.mkdirSync(c.skillsDirectory); for (const entry of c.metadata.skillExecution.entries) fs.symlinkSync(entry.sourcePath, `${c.skillsDirectory}/${entry.name}`); },
+    'membership addition': c => fs.symlinkSync(c.metadata.skillExecution.entries[0].sourcePath, `${c.skillsDirectory}/extra`),
+    'membership removal': c => fs.unlinkSync(`${c.skillsDirectory}/${c.owned.control.name}`),
+    'link retarget': c => { const file = `${c.skillsDirectory}/${c.owned.control.name}`; fs.unlinkSync(file); fs.symlinkSync(c.metadata.skillExecution.entries[0].sourcePath, file); },
+    'session metadata mutation': c => { c.metadata.updatedAt = 'changed'; c.writeSession(); },
+})) test(`snapshot fails closed on ${name} during source capture`, async t => {
+    const c = snapshotCase(t); await c.initialized;
+    const source = `${c.owned.repositoryRoot}/skills/${c.owned.probe.name}/receipt.mjs`;
+    let injected = false;
+    const fsApi = { ...c.f.fsApi, openSync(file, flags) {
+        const fd = c.f.fsApi.openSync(file, flags);
+        if (file === source && !injected) { injected = true; mutate(c); }
+        return fd;
+    } };
+    await assert.rejects(c.read({}, { fsApi }));
+    assert.equal(injected, true);
+});
+
+test('offline helper failure removes its exact projection and snapshot reads do not mutate evidence', async t => {
+    const c = snapshotCase(t); await c.initialized;
+    await assert.rejects(c.project(() => { throw new Error('helper failed'); }), /helper failed/);
+    assert.equal(fs.lstatSync(`${c.workspace}/.agents/skills`, { throwIfNoEntry: false }), undefined);
+    const inventory = root => fs.readdirSync(root, { recursive: true }).sort().map(name => {
+        const file = path.join(root, name), stat = fs.lstatSync(file);
+        return [name, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs,
+            stat.isSymbolicLink() ? fs.readlinkSync(file) : stat.isFile() ? liveSkillsHash(fs.readFileSync(file)) : null];
+    });
+    const before = inventory(c.workspace);
+    await c.read(); await c.read();
+    assert.deepEqual(inventory(c.workspace), before);
+});
+
+test('pre-execution snapshot still refuses nonempty project skills', async t => {
+    const c = snapshotCase(t); delete c.metadata.skillExecution; c.writeSession();
+    fs.mkdirSync(`${c.workspace}/.agents/skills`); fs.writeFileSync(`${c.workspace}/.agents/skills/foreign`, 'retain');
+    await assert.rejects(c.read(), /project skills must remain empty/);
+});
+
+test('serialized observer and cleanup include the self-contained native link guard', async t => {
+    const c = snapshotCase(t); await c.initialized;
+    for (const fn of [readLiveSkillsSnapshot, operateLiveSkillsFixture]) {
+        const serialized = program(fn, {});
+        assert.match(serialized, /const inspectSessionSkillLinks = async function inspectSessionSkillLinks/);
+        // Execute the actual serialized helper, with no module imports or ambient bindings.
+        const guard = serialized.slice(serialized.indexOf('const inspectSessionSkillLinks = '), serialized.indexOf(`(${fn.toString()})`));
+        const result = spawnSync(process.execPath, ['--input-type=module', '-'], {
+            input: guard + `\nconst result = await inspectSessionSkillLinks(${JSON.stringify({ workspace: c.workspace, sessionId: c.sessionId, execution: c.metadata.skillExecution })}); result.recheck(); console.log(JSON.stringify(result.links));`,
+            encoding: 'utf8', timeout: 10_000,
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(JSON.parse(result.stdout).map(link => link.name), c.selected.map(skill => skill.name));
+    }
+});
+
 test('generated helper executes through a real live link and writes one exclusive canonical source receipt', async t => {
     const c = snapshotCase(t); await c.initialized;
     const phase = randomUUID(), skill = c.owned.probe;
     const link = path.join(c.workspace, '.agents/skills', skill.name, 'receipt.mjs');
     const invoke = filename => spawnSync(process.execPath, [filename, phase], { cwd: c.workspace, env: process.env, encoding: 'utf8', timeout: 10_000 });
-    const first = invoke(link);
+    const first = await c.project(() => invoke(link));
     assert.equal(first.status, 0, first.stderr);
     assert.equal(first.stdout.trim(), skill.helperMarker);
     const receiptFile = path.join(c.workspace, '.receipts', `${phase}-${skill.name}.json`);
@@ -707,7 +980,7 @@ test('generated helper executes through a real live link and writes one exclusiv
     assert.equal(receipt.cwd, c.workspace);
     assert.equal(receipt.helperSha256, liveSkillsHash(fs.readFileSync(receipt.resolvedSource)));
     assert.equal(receipt.runId, c.owned.runId);
-    assert.notEqual(invoke(link).status, 0, 'Replaying a phase must fail its exclusive receipt write.');
+    assert.notEqual((await c.project(() => invoke(link))).status, 0, 'Replaying a phase must fail its exclusive receipt write.');
     assert.deepEqual(fs.readFileSync(receiptFile), before);
     const copied = path.join(c.workspace, 'copied-helper.mjs');
     fs.copyFileSync(receipt.resolvedSource, copied);
@@ -750,11 +1023,11 @@ test('SET2 the reader rejects an outer Box mount over its selected ALA source', 
 async function presentationCase(t) {
     const c = snapshotCase(t, 'thinking link ü ', { liveTurn: true, thinkingLink: true });
     await c.initialized;
-    for (const skill of c.selected) {
+    await c.project(async () => { for (const skill of c.selected) {
         const invoked = spawnSync(process.execPath, [path.join(c.workspace, '.agents/skills', skill.name, 'receipt.mjs'), c.phase],
             { cwd: c.workspace, env: process.env, encoding: 'utf8', timeout: 10_000 });
         assert.equal(invoked.status, 0, invoked.stderr);
-    }
+    } });
     const snapshot = await c.read();
     const inventory = { robot: c.owned.robotName, scope: 'conversation', sessionId: c.sessionId, policyVersion: 1,
         policy: { mode: 'live', excludedSkills: [] }, cwd: c.workspace, lastRevision: snapshot.catalog.revision, activeRevision: null };

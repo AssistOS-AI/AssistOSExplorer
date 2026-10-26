@@ -125,11 +125,114 @@ their existing additional image-age policies. DPU fallback discovery still requi
 an image younger than four hours. Changing selection to evade that limit is not
 acceptance.
 
+### Standard release manifest and source inventory
+
+`SMOKE_RELEASE_MANIFEST` must be a current `explorer-release-bundle` manifest
+(`schemaVersion` 1) read by `ploinky/tests/release/verifyExplorerReleaseBundle.mjs`, the
+verifier the runner selects in release mode and hands, as one exact absolute path, to every
+spec through `SMOKE_COPILOT_RELEASE_VERIFIER`. Versionless legacy manifests, other
+versions and other kinds are refused with no fallback to `verifyCopilot421Bundle.mjs`, which
+still requires a separate AchillesCLI source and is kept unchanged. The local-snapshot
+verifier is unchanged and remains development evidence that cannot replace release
+acceptance.
+
+The manifest holds exactly the schema version, the kind, the absolute path and SHA-256 of a
+frozen source inventory, and the immutable `images.ploinkyBox.digest`. Before writing it, the
+operator and an independent coordinator freeze the inventory outside every workspace and
+source directory and record its SHA-256 in the reviewed task checkpoint. Completeness comes
+from recursively examining the exact original-source manifests, selected agents, repos,
+enable and link-install steps and Git package dependencies; the verifier proves every listed
+source but cannot discover an omitted one. The inventory is a strict JSON file with the
+fields `schemaVersion` 1, `kind` `explorer-source-inventory`, `roboTeam`
+(`{"repository": "explorer", "path": "roboTeamAgent"}`) and `repositories`. Each repository
+name maps to exactly a canonical absolute Git `root`, an exact 40-hex `commit` and a `role`
+of `deployed-source` or `provenance-reference`. The required core keys are `ploinky`,
+`explorer` and `achillesAgentLib`; every actual participating source (for example `webmeet`,
+`OnlyOfficeAgent`, `UmamiAgent`, `local-llms`, ALA and `DocumentationSkills`) is listed too.
+Never add an `achillesCLI` entry: RoboTeam is owned by `explorer/roboTeamAgent`, which the
+verifier proves is a tracked real directory inside the verified Explorer checkout.
+
+```sh
+node <ploinky>/tests/release/verifyExplorerReleaseBundle.mjs write \
+  --inventory /abs/evidence/source-inventory.json --inventory-sha256 <reviewed sha256> \
+  --image-digest sha256:<64 hex> --output /abs/evidence/<cohort>/standard-release.json
+node <ploinky>/tests/release/verifyExplorerReleaseBundle.mjs verify \
+  --manifest /abs/evidence/<cohort>/standard-release.json
+```
+
+The writer validates the reviewed hash and every Git root, commit and clean state (including
+untracked files and submodules) first, creates the output exclusively with mode 0600, never
+overwrites, and offers no subset or filter option. Removing a dependency from the inventory
+without updating its reviewed hash fails. The verified result keeps the complete source map
+with each entry's role, and the native Live Sessions evidence must carry that complete map; a
+three-core-only map is refused when the release evidence contains dependencies.
+
+Unit prerequisite: unlike the other ordinary Explorer unit checks, `lib/acceptance-profile.test.mjs`
+exercises the real verifier and therefore reads `ploinky/tests/release/verifyExplorerReleaseBundle.mjs`
+from the sibling Ploinky checkout (`PLOINKY_ROOT` overrides the default `../ploinky`, see
+`tests/helpers/sibling-roots.mjs`). It fails, never skips, when that file is absent, so publish
+the Ploinky verifier before or together with this Explorer change; an older sibling Ploinky
+breaks that unit run (only the opt-in acceptance runs use it today, no CI workflow does).
+
+Role semantics follow the Box's actual AgentLib mode. An `image`-mode Box is verified
+against the AgentLib commit its immutable image records, and the clean Git counterpart of
+that commit must be labeled `provenance-reference` and kept outside
+`<workspace>/achillesAgentLib` so it cannot select local mode; it is not proof of the
+packaged bytes or of the latest deployed default-branch source. A deliberately selected
+`local` mode requires the `deployed-source` label and keeps its existing commit and semantic
+identity checks against the real checkout; a `managed` Box accepts either label. The Live
+Sessions runtime reader still rejects managed `.ploinky/repos` source paths: list the
+original clean source checkouts that the runtime actually uses.
+
+### Standard cohorts and the 30-minute budget
+
+The standard selection is every ledger entry whose disposition is
+`required-local-acceptance` plus the `fresh-live-sessions` cohort, an actual array of 26
+identities (ignore the historical `counts.total` of 44). Other profiles are outside the
+selection; they are neither skipped tests nor passes. Run each cohort on a fresh deployment
+bound to the same candidate and inventory pins:
+
+| Cohort (spec) | Count | Setup |
+| --- | ---: | --- |
+| supporting-00 (`00`) | 2 | Default admitted graph and routed WebChat agent |
+| fresh-webtty (`01`) | 1 | Own early fresh cohort, `SMOKE_WEBTTY_CORE=1`, distinct accounts and private inputs |
+| optional-defaults-and-activation (`03`) | 1 | Own fresh cohort with the four optional selections initially disabled, `SMOKE_OPTIONAL_AGENTS=1` |
+| supporting-04 (`04`) | 1 | Umami catalog initially disabled; the test intercepts lifecycle responses |
+| official-release (`05`) | 1 | Exact title `opens a working Copilot from a newly created folder` |
+| supporting-10 (`10`) | 2 | Default graph; owned upload fixtures |
+| supporting-20 (`20`) | 1 | Default graph |
+| official-release (`30`) | 2 | Separate public-room and media commands; WebMeet and LiveKit ready |
+| supporting-31 (`31`), supporting-40 (`40`) | 2, 1 | WebMeet and LiveKit ready |
+| supporting-33 (`33`) | 1 | Umami ready, `SMOKE_UMAMI=1`, private dashboard inputs |
+| official-release (`50`) | 1 | OnlyOffice globally enabled and ready, `SMOKE_ONLYOFFICE=1`, absolute candidate `SMOKE_PLOINKY_BIN` |
+| supporting-60 (`60`), supporting-61 (`61`) | 1, 3 | `SMOKE_GITHUB=1`; distinct accounts; synthetic tokens rather than a real PAT |
+| semantic (`70`) | 4 | Four separate exact titles, `SMOKE_OPEN_INTERPRETER=1` and real provider prerequisites |
+| fresh-live-sessions (`07`) | 2 | Own fresh cohort, both cases together, `SMOKE_LIVE_SESSIONS=1`, three distinct accounts, native evidence, candidate CLI and ALA command |
+
+The four official-release passes (specs 05, 30 twice and 50) must come from one fresh Box
+generation, each in its own invocation and artifact directory. For the media pass set
+`SMOKE_WEBMEET_HEADLESS=1`, `SMOKE_WEBMEET_MEDIA=1` and `SMOKE_MEDIA_TIMEOUT_MS=60000`; the
+public room needs neither media flags nor a secondary account. WebMeet is disabled by
+default, so enable `webmeet/webmeetAgent` globally (documented command or Marketplace) and
+prove WebMeet and LiveKit ready before preflight; prepare OnlyOffice alone, and neither
+Scribe nor STT is a prerequisite. Spec 03 stays a separate fresh cohort: record its full
+transitive graph (Scribe transitively enables LiveKit) and never pre-enable its four
+selections. Measure startup, account and service setup, all four commands, postflight and a
+margin inside the hard 30-minute generation limit. When the measured sequence cannot fit,
+report a concrete scheduling blocker rather than splitting the official passes across
+generations. A missing, extra, skipped, cancelled, flaky, retried, expected-failure or
+zero-test outcome never counts as a selected pass.
+
 Before lengthy execution, the runner requires the ledger's exact flags and the
 selected account sign-in inputs. Supply `SMOKE_LOGIN_EMAIL` and
 `SMOKE_SIGN_IN_METHOD`, with `SMOKE_ACCOUNT_PASSWORD` for `password`,
 `SMOKE_TOTP_SECRET` for `totp`, or `SMOKE_EMAIL_CODE_COMMAND` for `emailCode`.
 Profiles using two users require the corresponding `SMOKE_SECONDARY_*` inputs.
+The WebTTY core gate (`npm run test:webtty`) also needs a third, distinct administrator that watches a
+shell in Live Sessions. `SMOKE_WEBTTY_WATCHER_USERNAME` is required. `SMOKE_WEBTTY_WATCHER_SIGN_IN_METHOD`
+(`password`, `emailCode` or `totp`, default `emailCode`), `SMOKE_WEBTTY_WATCHER_LOGIN_EMAIL` (default: the
+username), `SMOKE_WEBTTY_WATCHER_PASSWORD`, `SMOKE_WEBTTY_WATCHER_ACCOUNT_PASSWORD` and
+`SMOKE_WEBTTY_WATCHER_TOTP_SECRET` are supplied as the chosen sign-in method needs them. Never commit their values.
 Browser setup verifies the configured administrator and a distinct ordinary user
 through the authenticated identity endpoint. It does not print private values.
 Spec04 additionally requires the installed `UmamiAgent/umamiAgent` catalog fixture, which
@@ -141,6 +244,86 @@ synthetic tokens and needs no real GitHub PAT. Unused optional secrets are not
 required. The official meeting identity requires `SMOKE_WEBMEET_HEADLESS=1`,
 `SMOKE_WEBMEET_MEDIA=1`, and `SMOKE_MEDIA_TIMEOUT_MS=60000`.
 
+### Deployed RoboTeam Live Sessions
+
+Run `npm run test:live-sessions` from this package on a fresh, owned Box. This is the separate `fresh-live-sessions` cohort. It adds two ledger identities and preserves the historical 44 identities, with 24 required outcomes and the WebAssist guest case in its separate opt-in profile. Both browser and inspected Box origins must equal the selected loopback origin, including any custom port. Supply the existing Box/image/source-manifest inputs and an absolute `SMOKE_PLOINKY_BIN` from that exact source candidate.
+
+The runtime guard requires the canonical RoboTeam source directly at `/code`, read-only, and `/Agent` staged under the full registered container key, read-only. It validates the current admitted dependency object through Ploinky's read-only dependency-store validator and requires its exact `node_modules` tree read-only at both `/code/node_modules` and its own canonical path. The dependency toolchain key is distinct from the container key. Inner and outer mounts must preserve these verified sources without shadows.
+
+The source hash reader accepts distinct canonical bind names only when pinned directory and file descriptors prove the same device and inode at the original source and `/code`. The original same-path workspace source grant remains read/write; matching identities do not prove mount permissions. It reads the runtime descriptor and fences both pathnames, descriptors and roots before returning the complete digest map. Symlink staging, copied bytes, hardlinks, replacements and observed metadata changes fail. File checks use bigint identities and nanosecond modification/change timestamps, exclude access time, and limit each contract file to 4 MiB. This observational check cannot guarantee an atomic multi-file snapshot or detect every transient replace-and-restore between checkpoints. Snapshot, orchestration and delegation serialize the shared helper and retain their original `/code` imports and dependency namespace.
+
+The primary account is the administrator observer. The secondary account is the ordinary `user` who creates the Explorer folder and starts the native WebChat turn. Supply a third ordinary account through `SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL` and `SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD`. The supported methods are `password`, `totp` and `emailCode`. They require `SMOKE_LIVE_SESSIONS_FOREIGN_ACCOUNT_PASSWORD`, `SMOKE_LIVE_SESSIONS_FOREIGN_TOTP_SECRET`, or the existing `SMOKE_EMAIL_CODE_COMMAND`, respectively. Optional `SMOKE_LIVE_SESSIONS_FOREIGN_USERNAME` identifies the configured account name. All three verified IDs and account names must differ. Prepare accounts through supported password signup and authenticated role grants before running the suite. Do not place private values in commands, source, or evidence.
+
+Set `SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE` to an absolute external JSON file collected by the operator from the selected deployment before browser execution. It records the real configured provider-backed native CLI and its cache generation. The suite never changes backend, model, effort, executable, or version. No fixture coding-agent binary or provider fallback is supported. Missing authentication, a first provider refusal, or changed native identity fails the cohort. The serial tests prevent a failed first case from launching another native attempt. A skipped remainder still fails acceptance.
+
+| Native evidence field | Required value |
+| --- | --- |
+| `schemaVersion` | `1` |
+| `robotId` | Actual persistent ID of the single robot named `default`, read from the authenticated robot inventory |
+| `workspaceRoot`, `outerContainerId`, `imageDigest` | Exact selected workspace and inspected immutable Box identity |
+| `repositories` | Complete verified source graph, identical to the canonical runner's `SMOKE_COPILOT_RELEASE_EVIDENCE.repositories` |
+| `initialRoboTeam` | Initial `containerId`, `containerName`, `instanceId`, and `enableGeneration` from exact runtime inspection |
+| `native.backend`, `native.model`, `native.effort` | Selected backend and configured model/effort; use JSON null for unconfigured values |
+| `native.version`, `native.cliVersion` | Canonical cache version and actual bounded `--version` output from that executable |
+| `native.executablePath`, `native.realpath`, `native.sha256` | Absolute selected executable, resolved file, and SHA-256 digest |
+| `native.cacheRoot`, `native.generation` | Absolute tool-cache root and 64-hex generation |
+
+The suite rechecks the real executable hash, resolved path, cache descriptor and generation stamp in the exact RoboTeam container before execution. After targeted restart it requires the same native executable identity in the replacement container. The initial runtime binding applies only before replacement.
+
+Set `SMOKE_ALA_COMMAND` to the exact selected deployed ALA `bin/ala.mjs`, under the admitted workspace. The orchestration reader binds its exported transcript implementation and command to the verified source hashes and uses the existing release/runtime mount guards.
+
+The supported workload asks the workspace copilot to list workflows and launch `default` exactly once with a bounded execution objective. Before enrollment and submission, the suite opens the WebChat menu and waits for the visible Conversation skills link and href within the existing expectation timeout. It validates that URL against the selected origin, robot and conversation UUID. The launcher finishes after delegation. Its workflow phase executes the marker command and stays active for owner and observer checks. No system prompt, workflow definition, native configuration or provider is changed.
+
+| Run kind | Required evidence |
+| --- | --- |
+| `copilot-turn` | A new verified-owned row, foreign invisibility, the exact browser conversation and request, and an active native process captured before the launcher ends |
+| `workflow-phase` | The complete durable delegation chain, a new verified-owned row in the exact cwd, the phase's own SSE marker and command-created file, native configuration and identity, owner message, observer replay, pause, transcript and restart |
+
+Sustained owner and observer controls on a `copilot-turn` remain unproved by this cohort. Front capture starts before the single request; missing it fails without another provider attempt. The read-only projection uses canonical `sessionPath` to read each bounded config once and validates its raw cwd/engine/session/robot binding before transcript access. It derives fields from that validated config and the scoped native transcript, without `loadSession` reopening a config or following its engine cwd. ALA's exported `sessionTranscriptPath` selects the scoped path; its exported record reader receives an already-open `O_NOFOLLOW` descriptor with canonical `/proc/self/fd` fences, and its exported fold derives native turns. It opens workflow SQLite read-only in one transaction and uses canonical `getSync` decoding without initializing a store, executing DML or checkpointing. Existing regular WAL/SHM sidecars are required before opening the database; observed replacement, missing/type changes or changed SHM geometry fail the surrounding identity fences. These checks do not claim to prevent every possible filesystem race. Ordinary canonical-writer changes to live DB/WAL bytes are allowed. It requires the selected front session/turn/assistant references to match one background task, one default flow, one phase/runtime task and one ALA session/turn. Missing, stale, foreign or ambiguous links fail. Only bounded identities, states, booleans and digests leave the reader; prompts, reasoning, credentials and complete logs do not.
+
+The process observer receives the orchestration reader's immutable guard-derived ALA binding. It classifies the exact pinned `bin/ala.mjs` at argv position 1 under a proved Node or Bun interpreter before parsing control, cwd, session and turn flags. It reads that public entrypoint through the process root with a bounded read-only descriptor and verifies its frozen hash before and after observation. Exact workflow `robot-task.mjs` wrappers require control, cwd and session flags; their producer grammar has no turn ID. Unknown control advertisements, equals-form flags, malformed actual ALA arguments, source substitution and ambiguous associations fail immediately, including malformed known roles in another cwd.
+
+Selection then requires the inspected init PID namespace, full cwd and observed ALA session/turn IDs. Distinct same-cwd workers are allowed. An ALA must have exactly one proved producer ancestry, either `/code/server/robot-cli.mjs` with `--dir`, or the verified checkout's `roboTeamAgent/server/robot-task.mjs` with matching cwd/session. The ALA and its workflow wrapper count once as an `ala-turn` census row. A live wrapper without a qualified ALA descendant produces a `producer-pending` blocker, carrying no turn or native-success fields. It keeps settlement nonempty until the wrapper retires. Host validators reject unknown row kinds, extra authority fields, duplicates and foreign bindings. Engine-exec processes need not descend from container init. Exactly one frozen native executable must descend from the selected ALA. Bubblewrap wrappers are excluded; a native sandbox may have a different PID namespace. Init, producer, ALA, native and intermediate ancestors retain their start token, parent, namespace, argv and executable identity through final fences. Runtime ID, generation, mounts, running state, init PID and start time also remain unchanged.
+
+Public rows expose no native session or turn ID. Correlation uses verified ownership, exact cwd, the durable chain, lifecycle and independent native/file/SSE proof. Public row, view and transcript IDs are never treated as native IDs. Observer windows compare all scoped durable conversation, turn, background-task, flow, phase and runtime-execution ID sets, including completed short-lived turns, plus unchanged selected process identity. Negative probes must produce no native input acceptance. The one authorized owner POST requires one workflow progress acceptance, exactly one matching native follow-up digest, the owner command-created file and Unicode/literal HTML marker in the phase stream and both viewers. A delivery receipt alone is insufficient.
+
+The UI must say `Pause workflow` and `Confirm pause`. Feature proof requires HTTP 200, stopped SSE, paused flow and phase, no scoped native process, a bounded transcript marker and repeat Stop 409. Cleanup separately terminates only exact correlated disposable flows through authenticated `/api/roboflow/flows/<flowId>/terminate`. It closes readers and viewers, stops owned active rows and requires settled flows, terminal rows, zero viewers and an empty scoped process census before deleting the cwd. Failed or ambiguous ownership/settlement retains the cwd and fails cleanup. After restart, the old exact flow must persist paused without re-execution before a newly verified launch and phase.
+
+Primary errors and every required cleanup failure are projected through own data descriptors, with bounded nested causes/aggregate children, cycle and truncation markers. Configured and lexical credentials are redacted before truncation and checked for residue. Safe JSON is attached, and the thrown summary includes the same child details because Playwright omits `AggregateError.errors`. Attachment failure is another required error and cannot erase the primary failure.
+
+Native process subprocess failures become a short `NativeProcessEvidenceError` before finalization. The host reads only own data fields for stderr, code, signal and killed status. It accepts at most 128 KiB of string or Buffer stderr, redacts configured and lexical credentials, then retains at most 4096 UTF-8 bytes with approximately 512 bytes from the head and the remaining allowance from the tail. Larger input gets a fixed omission marker; credential residue gets the existing safe redaction marker. The cause contains this safe stderr and validated status. Raw error messages, eval commands, stdout, stacks and original causes are excluded. This preserves terminal assertions through the existing finalizer without changing its budgets or the process scanner. Run `node --test lib/live-sessions-process-errors.test.mjs lib/live-sessions-diagnostics.test.mjs` for real exit, signal, timeout, spawn and output-overflow checks plus provider-free Playwright JSON and attachment verification.
+
+The actual metadata subprocess wrapper uses an in-memory bundle of the four canonical diagnostic modules. The host reads their exact source bytes with hashes and validates the fixed relative/builtin import and export graph; no private redactor fork or additional runtime source mount is used. Generated programs must fit below Linux's 128 KiB single-argument bound. Child failures cross as bounded safe projected JSON, including query, connection-close and sidecar-fence children. The host reprojects that payload before throwing it into the fixture finalizer. Raw process error objects, commands and stderr are never substituted for this safe envelope.
+
+The outer orchestration binding uses bounded `podman container inspect <exact-id>` JSON rather than Go templates. It requires exactly one matching immutable container and the required state, image and mount fields, then retains only ID, start time, running state, image and the complete mounts array for the existing generation and shadow-mount fences. The command keeps its eight-second timeout, one-MiB output bound and `SIGKILL` timeout signal. Unrelated inspect fields such as environment values are excluded; command and decoding failures produce a generic error without raw stdout, stderr or causes.
+
+The orchestration reader accepts canonical ALA `.jsonl.lock` files as private auxiliary storage. It opens each lock read-only, validates its owner shape, effective UID, mode, link count, size and descriptor identity, and fences the sessions directory and pathname before and after the read. Lock owner fields, tokens, bytes and hashes never enter results or diagnostics. Recovery files, malformed or partial JSON, symlinks, replacements and mutations fail immediately. The sessions directory permits 512 logical session IDs with at most one transcript and one ordinary lock each, up to 1024 physical leaves. Other directory inventories retain their 512-leaf limit.
+
+A valid lock without its transcript returns a separate incomplete envelope with bounded session IDs and no census, front, task, flow, phase or execution fields. The host retries only validated incomplete envelopes. One monotonic 12-second deadline covers attempts, waits and lightweight source/runtime fences; each command receives its remaining allowance. Polling stops at 128 observations, waits at most 100 ms, and retains at most 512 pending IDs. Every observed pending ID must resolve to its same-ID validated transcript before capture succeeds. A disappeared lock cannot become an empty settlement snapshot. Full guards retain their existing budgets outside this window: one at initialization, two around a normal capture, and none around a `frontOnly` capture.
+
+Run `node --test lib/live-sessions-transcript-locks.test.mjs` on Linux with both pinned `LIVE_SESSIONS_ORCHESTRATION_SOURCE` and `LIVE_SESSIONS_ORCHESTRATION_ALA` inputs, plus `ACHILLES_ALA_COMMAND` pointing to that ALA's `bin/ala.mjs`. Missing inputs or Linux procfs fail the qualified check. The suite calls the real canonical `openSessionState`, compares held-lock and lock-free collector evidence, and checks races, private diagnostics, descriptor cleanup, incomplete decoding, deadlines and guard counts. No provider turn or service start is needed. The canonical metadata probe also compares complete task/flow/native evidence with real producer locks held and after their normal close on Linux.
+
+The observer's portable checks run from this package:
+
+```sh
+node --test lib/live-sessions-process.test.mjs
+node --test lib/live-sessions-orchestration.test.mjs lib/live-sessions-diagnostics.test.mjs lib/release-gate-failures.test.mjs lib/redacted-reporter.test.mjs
+```
+
+On Linux, the process suite executes the exported production observer against neutral Node processes with a sibling init, real descendant native children and two distinct same-cwd workers under exact producer scripts. It checks pinned ALA and native hashes, ID selection, census coalescing, repeated unchanged observations, wrapper-before-child publication, child retirement while its wrapper remains alive, and complete retirement to an empty census. These processes make no provider requests. Metadata fixtures cover malformed flags, unknown/eval advertisements, wrong namespaces/workspaces, ambiguity, missing processes, hash drift and races on every proof member. macOS reports the real `/proc` cases as skipped; Linux acceptance requires no skips. `LIVE_SESSIONS_BASELINE_SNAPSHOT` can supply an immutable historical observer program to reproduce its same-cwd multiplicity or canonical-wrapper grammar failure while both children are alive. Routine checks need no historical checkout. The diagnostic suite runs actual provider-free Playwright subprocesses to reproduce aggregate-child loss and verify complete safe candidate JSON and attachments.
+
+The external metadata API probe is opt-in and needs exact pinned AchillesCLI and ALA source copies. Ordinary Explorer unit checks have no sibling-checkout prerequisite. Set `LIVE_SESSIONS_ORCHESTRATION_SOURCE` to the AchillesCLI repository and `LIVE_SESSIONS_ORCHESTRATION_ALA` to the ALA repository, then run `node --test lib/live-sessions-orchestration.test.mjs`. The same exported collector uses test-only I/O/path injection with actual canonical `sessionPath`, ALA transcript and `getSync` APIs plus real SQLite. Production invokes fixed `/code`, `/data` and real fs defaults. Foreign raw/engine cwd, a config reread race and an actual descriptor-path race prove the foreign transcript is never opened. The generated wrapper also carries simultaneous real query/close/fence failures through host decoding and finalization. The neutral fixture holds an idle canonical writer open and requires unchanged file inventory and exact DB/WAL/session/task bytes. Only existing SHM readmark bytes 100 through 119 may differ; it decodes their five host-endian values and rejects changes to the header, bytes 120 through 127 lock payload, or any other byte. `LIVE_SESSIONS_ORCHESTRATION_EVIDENCE_DIR` optionally saves before/after hashes and decoded changed offsets. Missing WAL and SHM each fail before open without creating files; source drift and foreign runtime owner are also checked. This fixture byte-equality claim does not apply to a live application writer.
+
+```sh
+SMOKE_LIVE_SESSIONS=1 npm test -- --project=chromium --workers=1 --retries=0 specs/07-live-sessions.spec.mjs --list
+npm run test:live-sessions
+```
+
+The first case launches an ordinary owner's real Copilot through Explorer. The native turn computes unpredictable digest markers, writes bounded run-owned proof files, emits their values, and stays active for a bounded wait. An owner message must produce a second file and native assistant/output correlation; a delivery receipt or echoed message cannot satisfy that check. Owner and administrator Watch views receive the same output. The case checks private scope, denied mutations, cursor replay and resync, reopen ordering, literal HTML and Unicode, standalone viewing, administrator Stop, transcript, and reader cleanup. Exact active ALA turn process snapshots show that adding observers creates no additional execution. The suite makes no CPU-zero claim.
+
+The second case closes readers and browser pages before restarting only RoboTeam. It verifies that the old runtime is absent, old run IDs do not reappear, and a newly opened WebChat turn has a new ID and verified ordinary owner on the same outer Box/source generation. Cleanup stops remaining marker-owned runs, waits for terminal state and zero viewers/native turn workers, removes the run folder, and closes every context. Browser diagnostics remain strict throughout.
+
+Acceptance requires exactly two discovered identities and two passed terminal outcomes on attempt zero, with zero skips, retries, or errors. Source discovery and helper checks do not prove deployed behavior. Provider readiness and all deployed observations remain pending until the actual run. This cohort complements the existing terminal WebTTY suite and does not cover every task/workflow producer or resolve the documented ALA socket limitations.
 The WebMeet specs open the WebMeet dashboard URL directly rather than through the Explorer toolbar, so the on-demand enablement does not apply. WebMeet is disabled in the default graph: enable `webmeet/webmeetAgent` in global mode (Marketplace or `ploinky enable agent webmeet/webmeetAgent global`) and wait for it and LiveKit to be Running before any WebMeet gate.
 
 The official release cohort has a second WebMeet gate, the public-room gate, which
@@ -376,11 +559,64 @@ cache disabled. The sequence covers Router/login, Explorer interactive
 readiness, a root refresh, normal workspace directory navigation, DPU-backed
 Confidential navigation, a normal workspace file open, and Git modal readiness.
 
+The runner signs in through whichever login surface the Router serves: Ploinky's
+local `/auth/login` form, or the UserPersisto email-first wizard at its exact
+service path on the benchmark origin. The local form uses
+`UI_BENCHMARK_USERNAME` and `UI_BENCHMARK_PASSWORD` (then `SMOKE_USERNAME` and
+`SMOKE_PASSWORD`, then the local `admin` defaults). UserPersisto supports only an
+existing password account: `UI_BENCHMARK_LOGIN_EMAIL` (then `SMOKE_LOGIN_EMAIL`,
+or a username that is already an email) and `UI_BENCHMARK_ACCOUNT_PASSWORD`
+(then `SMOKE_ACCOUNT_PASSWORD`). Credentials are read only from the
+environment. The runner never signs up, never uses email codes or
+authenticators, and never substitutes the local-form password or a generated
+run password; it refuses as `BLOCKED` when the email or account password is
+missing, the account is unknown or has no password sign-in, or the
+installation is unclaimed. An unknown account sends no sign-up request, so the
+benchmark is safe against QA. The origin and login path are checked before any
+credential is entered, and a different origin or service path refuses with
+the fields untouched. A refused password is reported with fixed text, never
+the wizard's message.
+
+`router-login-page` ends when the login surface is rendered. Email discovery
+and credential entry happen between the two measured steps, and
+`login-to-explorer-interactive` starts immediately before the final **Log in**
+or local form submit. That final submit is a scripted click bound to the
+validated login document rather than a simulated mouse click, so
+`login-to-explorer-interactive` from earlier runner revisions that used a mouse
+click is not strictly comparable. The default origin is `http://localhost:8080`; results
+recorded against `http://127.0.0.1:8080` have a different target and are not
+comparable with it. Pass `--directory-path` and `--file-path` naming a safe,
+existing, non-secret workspace entry rather than relying on the `/.env`
+default. Both must be entries of the workspace root listing, for example
+`--directory-path /AdvancedLanguageAgent --file-path /test1.backlog`: the
+runner opens the directory from the root and returns with one Up, and it opens
+the file after returning to the root. A nested file such as
+`/AdvancedLanguageAgent/README.md` is never found and fails readiness; the
+runner does not navigate into folders to find it. Offline checks:
+`node --test lib/ui-benchmark-auth.test.mjs lib/ui-benchmark-readiness.test.mjs`.
+
+Git is mandatory. Explorer loads the Git toolbar component only on first use,
+so before that the toolbar shows the host's on-demand trigger
+(`#fileExpToolbarPlugins button[data-app-plugin-trigger="gitAgent/git"]`) and,
+once mounted, the component's `#gitButton`. Explorer readiness accepts exactly
+one visible control of either form, and no other trigger, text match or
+location. That control must pass Playwright's non-activating trial click: it
+must not be disabled, `aria-disabled`, busy, loading, hidden, detached or
+covered. The trial may hover the control but never presses, clicks or focuses
+it, so readiness does not import, mount or open Git. Two visible controls are
+ambiguous and fail. The root listing is checked again after the Git check, and
+the whole readiness wait shares the one `--timeout-ms` budget.
+`open-git-panel` clicks that control once and still waits for the Git panel to
+finish its repository overview or credentials gate with no global loader; a
+modal shell alone does not count. Earlier runner revisions waited for
+`#gitButton` before Git was used, so they could not become interactive against
+an Explorer that loads Git on demand.
+
 Run the baseline only after its full agent graph is admitted and stable:
 
 ```bash
 UI_BENCHMARK_LABEL=master \
-UI_BENCHMARK_BASE_URL=http://127.0.0.1:8080 \
+UI_BENCHMARK_BASE_URL=http://localhost:8080 \
 UI_BENCHMARK_PLOINKY_SHA=<deployed-ploinky-sha> \
 UI_BENCHMARK_EXPLORER_SHA=<deployed-explorer-sha> \
 npm run benchmark:ui
@@ -392,7 +628,7 @@ deployed SHAs:
 
 ```bash
 UI_BENCHMARK_LABEL=ploinky-proxy \
-UI_BENCHMARK_BASE_URL=http://127.0.0.1:8080 \
+UI_BENCHMARK_BASE_URL=http://localhost:8080 \
 UI_BENCHMARK_PLOINKY_SHA=<deployed-ploinky-sha> \
 UI_BENCHMARK_EXPLORER_SHA=<deployed-explorer-sha> \
 npm run benchmark:ui
@@ -530,6 +766,38 @@ ScreenShare gate, and none of those gates substitutes for another.
 The focused authentication navigation regression uses installed Chromium:
 `node --test lib/auth-navigation.test.mjs`.
 
+### Google script abort during password sign-in
+
+When Google sign-in is available, the UserPersisto wizard loads Google's script
+(`https://accounts.google.com/gsi/client`) on its own page. If that script is
+still loading when a password sign-in navigates to the Router callback, Chromium
+aborts it with `net::ERR_ABORTED`. On a page with attached diagnostics,
+`signIn` opens one checkpoint for the sign-in and may acknowledge exactly that
+abort, and only after the authenticated principal is verified. The proof comes
+from the existing metadata-only CDP observer: one GET `Script` request at the
+exact address, without redirect, from the bound wizard document's main-frame
+loader; a successful (200) password submission from that document; a main-frame
+navigation from that document to the same-origin `/auth/callback` and then the
+intended destination, which finishes loading; the abort timestamped after that
+navigation starts and before the destination loads, observed identically by CDP
+and Playwright; and no other actionable event in the checkpoint. The original
+abort stays in the evidence next to a separate `navigationcancellation` record
+of the sanitized proof (no query, fragment, header, cookie, body, account,
+transaction or credential value). Unsupported CDP, truncated evidence, a
+missing or ambiguous observation, another sign-in method, or any other error
+closes the checkpoint without acknowledging anything, and the original sign-in
+exception is still the one reported. Cleanup POST failures, Google HTTP, TLS or
+network errors, unrelated requests, console errors and page errors are never
+acknowledged.
+
+Before following a password handoff, the wizard retires its Google transaction
+through `google/cancel` and waits a bounded time for that request, so a clean
+sign-in has no failed cleanup request. A cleanup that fails, is refused or times
+out releases the valid sign-in but remains a strict diagnostics failure. The
+actual-service Chromium regression is
+`node --test lib/auth-navigation-cancellation.test.mjs`; it never contacts
+Google, because Google's address resolves to a local socket that never answers.
+
 ## Ploinky Core WebTTY Release Gate
 
 Run the administrator/ordinary-user WebTTY gate against a fresh local Box and
@@ -566,7 +834,12 @@ cleanup, default Router restart recovery, and Box availability after agent and
 Router lifecycle events. It also proves that an ordinary user does not receive
 the launcher and gets `403` from the page, discovery, and exact launch-record
 session mutation. A direct `?dir=` URL is required to fail closed without
-creating a session. Missing workspace root, non-loopback target, missing exact
+creating a session. The browser mutation proof cookie is bound to the edge
+generation and re-issued only by an authenticated request, so after the
+targeted agent restart the gate refreshes it with one `GET
+/webtty/live-sessions` before its single DELETE, as the WebTTY client's
+confirmed Kill does; every other mutation must succeed or be refused on its
+first attempt. Missing workspace root, non-loopback target, missing exact
 fresh graph runtime, softened assertion, or skipped target state is a hard
 failure while this gate is selected.
 The Box generation must be fresh, but its prebuilt image may be older only when
@@ -584,6 +857,26 @@ The independently verified workspace bind must use the canonical
 terminal working directories, and the Router recovery pid-file path derive
 from that same absolute root. The retired `/workspace` alias is rejected.
 
+The gate's deliberate logout of the primary page returns to the public
+`/auth/logged-out` page, never to the protected Explorer root. It requires the
+same origin, the exact pathname, the `Signed out` heading and one bounded,
+non-retrying, non-redirecting read of `/auth/token` that must answer exactly
+HTTP 401 `{"ok":false,"error":"not_authenticated"}` (a 503, transport error,
+redirect, other payload or malformed body fails). It observes only that page's
+requests from before the logout confirmation until the intentional re-login:
+no `/auth/login` navigation, UserPersisto wizard document, same-origin wizard
+`google/start` POST or `accounts.google.com/gsi` request may occur, and the
+page diagnostics must be clean first. Only the counts are
+recorded, as the `webtty-logout-lifecycle.json` attachment. A logout to the
+root sends the logged-out page to an idle login wizard that starts Google
+sign-in; the later intentional sign-in then abandons that earlier document and
+its cleanup and script requests abort with it. That is abandonment of the old
+document, not a failure of the sign-in finish barrier. The same
+`node --test lib/auth-navigation-cancellation.test.mjs` run executes the gate's
+own observer and probe functions, with their negative controls, and reproduces
+both sequences against the actual UserPersisto service behind the fixture's Router
+stand-in.
+
 The intentional Router crash targets the recovery terminal, not unrelated
 Explorer background traffic. The gate first requires clean primary-page
 diagnostics, navigates that Explorer page to `about:blank`, and keeps the
@@ -598,6 +891,29 @@ excluded from the bounded wait. Failed requests remain diagnostic failures,
 and both pre-navigation and post-navigation checks remain strict. This wait is
 not evidence of a fix for terminal startup or cleanup failures. Evidence records the quiesce,
 Router recovery, and Explorer reopen timestamps; no global error filter is used.
+
+The recovery terminal's expected diagnostics are derived from independent records, never from diagnostic counts. Before
+the terminal opens, the gate arms a transparent native `EventSource` observer for terminal documents, a context request
+recorder and a CDP session that records request identity, frame, loader and paired start and terminal times. After the
+Router restarts and the independent backend cleanup assertions pass, one bounded HTTP request to the exact retired
+stream with the prior credential proves that route's body (401 with the exact login body for SSO, 404 `not_found` for
+local auth); it is not evidence about the unreadable bodies of the browser's EventSource attempts. The gate then
+dispatches the terminal document's own `pagehide` event: the unchanged client sends one close intent (view and keep
+policy), clears its retry timer and closes its stream, and shows `Disconnected` with Kill disabled. The gate waits for
+every owned request to settle and validates a unique one-to-one join between the Playwright and CDP records: the
+original stream's `ERR_INCOMPLETE_CHUNKED_ENCODING`, at least one refused retry (401 or 404, JSON, correlated native
+CLOSED error) with at most its own `ERR_ABORTED`, at most one headerless stream cancelled by the stop, and exactly one
+close intent. Missing, duplicate, redirected, overlapping, foreign-frame or ambiguous records fail. Only then does the
+unchanged ledger acknowledge the derived set, the terminal closes natively without a second intent, and the session is
+renewed. The sanitized projection (`webtty-router-recovery-oracle.json`) keeps aliases, statuses, failures and relative
+times, never the view, session or returnTo values. Every wait ends at the existing deadline with a classified failure, including a close-intent response whose body
+never finishes. A failed proof leaves every event actionable and forbids the normal reauthentication and reopen
+assertions. Before the authorized outer teardown signs in, failure finalization ends the owned producer (its own
+`pagehide`, or closing its page), keeps a sanitized non-empty snapshot labelled as failure cleanup (never as evidence
+that the backend cleanup passed), closes the open checkpoints without acknowledgement and releases the recorders; the
+primary error is always the one thrown and finalization failures are recorded by stage and name only. Run
+`node --test lib/webtty-router-recovery.test.mjs lib/webtty-router-recovery-browser.test.mjs lib/webtty-core-profile.test.mjs lib/diagnostic-ledger.test.mjs lib/page-diagnostics.test.mjs`
+with `PLOINKY_ROOT` set to a Ploinky checkout whose `cli/server/webtty/webtty.js` is the pinned client.
 
 The listener gate always requires `required-loopback`, requires exactly one
 listener for each eligible `required-assigned-managed-gateway`, and requires no
@@ -645,7 +961,10 @@ unchanged.
 
 `npm run test:unit` includes isolated Chromium regressions for these cleanup and
 diagnostic boundaries, so run `npm run install:browsers` before that suite. Missing
-Chromium is a test failure, not a silently skipped lifecycle check.
+Chromium is a test failure, not a silently skipped lifecycle check. The
+authentication cancellation regression also starts the actual UserPersisto
+service, so install `userPersistoAgent` dependencies (`npm ci` there) first; a
+missing dependency is likewise a failure.
 
 The Marketplace lifecycle test controls both the Marketplace snapshot and the
 runtime NDJSON stream with one synthetic lifecycle. It verifies Starting up,
@@ -658,8 +977,9 @@ Opt-in checks:
 - `SMOKE_OPEN_INTERPRETER=1` runs Copilot semantic routing and AKU memory checks that require configured external provider runtime.
 - `SMOKE_CODEX_DELEGATION=1` selects the current C4 workflow delegation spec. Copilot starts one run-owned terminal workflow through `launch-workflow`; exactly one canonical matching Codex-only worker must produce the requested file, helper receipt and completed native child proof. The front backend is recorded separately through `SMOKE_C4_FRONT_BACKEND` and its configuration remains unchanged. Enabled live execution is refused until the reviewed phase6 runner and independently verified B+C setup exist. See [workflow delegation](./copilot-workflow-delegation.md).
 - The ordinary Copilot folder-launch spec requires `SMOKE_RELEASE_MANIFEST` and
-  binds that immutable 421 release bundle to the running outer Box before and
-  after Playwright. For public QA, keep `SMOKE_BASE_URL` on the real public
+  binds that current `explorer-release-bundle` manifest (see "Standard release
+  manifest and source inventory") to the running outer Box before and after
+  Playwright. For public QA, keep `SMOKE_BASE_URL` on the real public
   application and set `SMOKE_BOX_BASE_URL` to the exact host-loopback Router
   publication used only for local Podman generation inspection. The live Box
   inspector still rejects non-loopback, ambiguous, stale, or mismatched outer
@@ -1041,6 +1361,15 @@ Allow known browser noise temporarily while triaging:
 ```bash
 SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
 ```
+
+### QA tooling opt-ins
+
+Two environment variables widen the QA lock-adapter and source-sandbox library tests. Without them the lock adapter test uses a fake lock module and the live sandbox test is skipped; a skip is not a pass.
+
+| Variable | Effect |
+| --- | --- |
+| `QA_REAL_LOCK_MODULE=<absolute path of ploinky-box/locks.mjs>` | The workspace lock adapter test in `qa-rollback.test.mjs` runs against Ploinky's own lock module through a recording shim with a short `timeoutMs`. Read-only: nothing in that checkout is edited. |
+| `QA_SOURCE_SANDBOX_LIVE_IMAGE=<full ID of a local Box image>` | `qa-source-sandbox-live.test.mjs` runs the sandboxed source checks and fast-forward against real rootless Podman. Nothing is pulled; a stopped Podman machine must be started and stopped again by the operator. |
 
 ## Sibling checkouts for the Explorer graph helper
 

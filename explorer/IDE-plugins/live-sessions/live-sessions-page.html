@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Live Sessions</title>
+    <link rel="stylesheet" href="../../shared/ui/ui-common.css">
+    <link rel="stylesheet" href="./live-sessions-page.css">
+</head>
+<body>
+<header class="live-sessions-page-header">
+    <h1>Live Sessions</h1>
+    <a class="gray-button" href="/explorer/index.html">Back to Explorer</a>
+</header>
+<p id="liveSessionsPageStatus" class="live-sessions-page-status" role="status" aria-live="polite">Loading Live Sessions…</p>
+<main id="liveSessionsPage" class="live-sessions-page-main" aria-label="Live Sessions"></main>
+<script type="module">
+    import { startLiveSessionsPage } from './live-sessions-page.js';
+
+    // Inside the Explorer panel the modal header already names the page and offers its own controls.
+    document.body.classList.toggle('embedded', window.parent !== window);
+    startLiveSessionsPage();
+</script>
+</body>
+</html>

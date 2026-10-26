@@ -176,4 +176,39 @@ describe('backendDispatchMiddleware', () => {
 
         assert.deepEqual(releases, [acquiredGeneration]);
     });
+
+    it('releases the generation lease once when a streamed response is disposed unread', async () => {
+        const releases = [];
+        const ctx = makeCtx({
+            services: {
+                backendCatalog: {
+                    acquireGeneration() {
+                        return 7;
+                    },
+                    releaseGeneration(generation) {
+                        releases.push(generation);
+                    },
+                    getTerminalForGeneration() {
+                        return async (innerCtx) => {
+                            innerCtx.response = createCanonicalStream(
+                                (async function* () {
+                                    yield {
+                                        type: 'done',
+                                        data: { finish_reason: 'stop' },
+                                    };
+                                })()
+                            );
+                        };
+                    },
+                },
+            },
+        });
+
+        await compose([backendDispatchMiddleware()])(ctx);
+        const iterator = ctx.response[Symbol.asyncIterator]();
+        await iterator.return();
+        await iterator.return();
+
+        assert.deepEqual(releases, [7]);
+    });
 });

@@ -16,6 +16,13 @@
     "originalFailed": 21,
     "originalSkipped": 19
   },
+  "additiveProfiles": {
+    "historicalIdentityCount": 44,
+    "historicalRequiredCount": 25,
+    "fresh-live-sessions": 2,
+    "currentIdentityCount": 46,
+    "note": "The original counts and provenance describe the historical baseline only. Added identities have no prior execution result."
+  },
   "commonControls": {
     "canonicalRunnerRequired": true,
     "retries": 0,
@@ -35,6 +42,52 @@
     "imagePolicy": "Record explicit pinned identity and the applicable age policy per cohort. DPU explicit selection does not itself validate image pins/age; proposed common preflight owns those checks. No silent switch to evade fallback age checks."
   },
   "identities": [
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam Live Sessions preserve owner controls, observer replay, and private scope",
+      "file": "07-live-sessions.spec.mjs",
+      "title": "RoboTeam Live Sessions preserve owner controls, observer replay, and private scope",
+      "observedStatus": "not-run",
+      "cohort": "fresh-live-sessions",
+      "runner": "npm run test:live-sessions",
+      "selection": {
+        "spec": "specs/07-live-sessions.spec.mjs",
+        "title": "RoboTeam Live Sessions preserve owner controls, observer replay, and private scope"
+      },
+      "requiredFlags": { "SMOKE_LIVE_SESSIONS": "1" },
+      "privateInputNamesOrCategories": [
+        "SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL",
+        "SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD",
+        "Three distinct authenticated accounts with method-specific private inputs; real robot-scoped native provider authentication"
+      ],
+      "prerequisite": "Fresh owned exact-candidate Box, native executable/version evidence, administrator observer and two ordinary users; no provider substitution or refused-probe retries.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Exactly two discovered and passed identities, attempt zero, no skips/errors, production native execution correlation and complete cleanup. Source discovery is not runtime acceptance."
+    },
+    {
+      "identity": "07-live-sessions.spec.mjs::RoboTeam restart retires old Live Sessions and admits a newly verified run",
+      "file": "07-live-sessions.spec.mjs",
+      "title": "RoboTeam restart retires old Live Sessions and admits a newly verified run",
+      "observedStatus": "not-run",
+      "cohort": "fresh-live-sessions",
+      "runner": "npm run test:live-sessions",
+      "selection": {
+        "spec": "specs/07-live-sessions.spec.mjs",
+        "title": "RoboTeam restart retires old Live Sessions and admits a newly verified run"
+      },
+      "requiredFlags": { "SMOKE_LIVE_SESSIONS": "1" },
+      "privateInputNamesOrCategories": [
+        "SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL",
+        "SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD",
+        "Three distinct authenticated accounts with method-specific private inputs; real robot-scoped native provider authentication"
+      ],
+      "prerequisite": "Same outer Box/source generation; exact RoboTeam replacement and unchanged native executable/cache identity; readers/pages quiescent before restart.",
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed",
+      "executionAllowedByThisPlan": false,
+      "acceptanceRule": "Old runtime absent and runs retired, new production WebChat claim verified, native output independently correlated, viewers and workload cleaned."
+    },
     {
       "identity": "00-router-auth.spec.mjs::router landing and Explorer shell load through the router",
       "file": "00-router-auth.spec.mjs",
@@ -98,7 +151,9 @@
         "SMOKE_WEBTTY_CORE": "1"
       },
       "privateInputNamesOrCategories": [
-        "Profile-specific account/sign-in inputs where used; no values in the ledger"
+        "Profile-specific account/sign-in inputs where used; no values in the ledger",
+        "SMOKE_WEBTTY_WATCHER_USERNAME",
+        "Optional by sign-in method, no values in the ledger: SMOKE_WEBTTY_WATCHER_SIGN_IN_METHOD, SMOKE_WEBTTY_WATCHER_LOGIN_EMAIL, SMOKE_WEBTTY_WATCHER_PASSWORD, SMOKE_WEBTTY_WATCHER_ACCOUNT_PASSWORD, SMOKE_WEBTTY_WATCHER_TOTP_SECRET"
       ],
       "prerequisite": "Exact candidate/source, explicit Box/image binding, profile inputs and expected identity manifest.",
       "disposition": "required-local-acceptance",

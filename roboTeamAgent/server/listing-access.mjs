@@ -90,11 +90,12 @@ export async function authorizeRobotListing(req, url, { internalToken = '', env 
 // only after the header and verifier checks and its result is what the
 // signature is checked against. Verifier faults never echo a helper message.
 // canAdmin is the signed administrator decision and only widens projections;
-// per-route administrator checks stay on the forwarded roles.
+// per-route administrator checks stay on the forwarded roles. principal is the
+// signed actor id (user:<id>); internal calls carry none.
 export async function authorizeWorkspaceRequest(req, url, {
     internalToken = '', env = process.env, readBody = async () => Buffer.alloc(0), refusal = ROBOTEAM_ENTITLEMENT_ERROR,
 } = {}) {
-    if (requestActor(req, internalToken)?.internal) return { ok: true, internal: true, canAdmin: false };
+    if (requestActor(req, internalToken)?.internal) return { ok: true, internal: true, canAdmin: false, principal: null };
     if (typeof req.headers['x-ploinky-auth-info'] !== 'string') return deny(401, AUTH_REQUIRED);
     let verifier = null;
     try {
@@ -116,5 +117,19 @@ export async function authorizeWorkspaceRequest(req, url, {
     if (!verified?.ok) return deny(401, AUTH_REQUIRED);
     const decision = listingDecision(verified.payload);
     if (!decision.entitled) return deny(403, refusal);
-    return { ok: true, internal: false, canAdmin: decision.admin };
+    return { ok: true, internal: false, canAdmin: decision.admin, principal: verified.payload.actor.id };
+}
+
+export const LIVE_SESSIONS_USER_REQUIRED = 'Live Sessions require a signed-in user';
+
+// Live Sessions authority: only a verified direct user, identified by the
+// signed principal, with administrator status from the signed decision.
+// Internal-token callers are refused even when they forward user headers or
+// also carry a signed header, because ownership must never come from them.
+export function liveSessionsAccess(access) {
+    if (!access?.ok) return access;
+    if (access.internal !== false || typeof access.principal !== 'string' || !/^user:.+/.test(access.principal)) {
+        return deny(403, LIVE_SESSIONS_USER_REQUIRED);
+    }
+    return { ok: true, principal: access.principal, canAdmin: access.canAdmin === true };
 }

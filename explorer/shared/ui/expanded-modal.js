@@ -22,6 +22,8 @@ function descriptorKey(descriptor = {}) {
 }
 
 let activePanel = null;
+// The different panel waiting while the active one prepares to be replaced. It owns the transition.
+let pendingReplacement = null;
 let pageUnloading = false;
 const RESUME_STORAGE_KEY = "explorer.expandedModal.resume";
 
@@ -82,27 +84,25 @@ export function restoreExpandedModal() {
     return openExpandedModal(openDescriptor);
 }
 
-function updatePanel(record) {
-    if (!record.dialog || record.controller.signal.aborted) return;
-    const presenter = record.dialog.querySelector(EXPANDED_MODAL_COMPONENT)?.webSkelPresenter;
-    void presenter?.updateDescriptor(record.descriptor);
+function panelPresenter(record) {
+    return record?.dialog?.querySelector(EXPANDED_MODAL_COMPONENT)?.webSkelPresenter;
 }
 
-export function openExpandedModal(descriptor = {}) {
-    const ui = globalThis.assistOS?.UI;
-    if (typeof ui?.showModal !== "function") return Promise.resolve();
-    const key = descriptorKey(descriptor);
-    if (activePanel?.key === key && !activePanel.controller.signal.aborted) {
-        activePanel.descriptor = {
-            ...activePanel.descriptor,
-            ...descriptor,
-            props: { ...activePanel.descriptor.props, ...descriptor.props }
-        };
-        persistResume(activePanel.descriptor, activePanel.key);
-        updatePanel(activePanel);
-        return activePanel.closed;
-    }
-    activePanel?.controller.abort();
+function updatePanel(record) {
+    if (!record.dialog || record.controller.signal.aborted) return;
+    void panelPresenter(record)?.updateDescriptor(record.descriptor);
+}
+
+function mergeDescriptor(record, descriptor) {
+    record.descriptor = {
+        ...record.descriptor,
+        ...descriptor,
+        props: { ...record.descriptor.props, ...descriptor.props }
+    };
+}
+
+// The returned close promise also carries isClosed() and opened, which resolves with the dialog or null.
+function createPanelRecord(key, descriptor) {
     const record = { key, descriptor, controller: new AbortController(), dialog: null };
     record.closed = new Promise((resolve) => { record.resolve = resolve; });
     record.closed.isClosed = () => record.controller.signal.aborted;
@@ -113,6 +113,65 @@ export function openExpandedModal(descriptor = {}) {
         record.resolveOpened(null);
         record.resolve();
     }, { once: true });
+    return record;
+}
+
+function isOpen(record) {
+    return Boolean(record) && !record.controller.signal.aborted;
+}
+
+export function openExpandedModal(descriptor = {}) {
+    const ui = globalThis.assistOS?.UI;
+    if (typeof ui?.showModal !== "function") return Promise.resolve();
+    const key = descriptorKey(descriptor);
+    if (activePanel?.key === key && !activePanel.controller.signal.aborted) {
+        mergeDescriptor(activePanel, descriptor);
+        persistResume(activePanel.descriptor, activePanel.key);
+        updatePanel(activePanel);
+        return activePanel.closed;
+    }
+    if (isOpen(pendingReplacement)) {
+        // The first replacement owns the transition: the same request shares it, and a different one is cancelled
+        // without touching the active panel.
+        if (pendingReplacement.key === key) {
+            mergeDescriptor(pendingReplacement, descriptor);
+            return pendingReplacement.closed;
+        }
+        const cancelled = createPanelRecord(key, descriptor);
+        cancelled.controller.abort();
+        return cancelled.closed;
+    }
+    const record = createPanelRecord(key, descriptor);
+    const previous = activePanel;
+    const guard = isOpen(previous) && previous.dialog ? panelPresenter(previous) : null;
+    if (typeof guard?.hasCloseGuard === "function" && typeof guard.prepareClose === "function" && guard.hasCloseGuard()) {
+        // A mounted panel whose content guards its closing stays until it approves the replacement.
+        pendingReplacement = record;
+        Promise.resolve().then(() => guard.prepareClose("replace")).catch(() => false).then((approved) => {
+            if (pendingReplacement === record) pendingReplacement = null;
+            if (!isOpen(record)) return;
+            if (activePanel === previous && isOpen(previous)) {
+                if (approved !== true) {
+                    record.controller.abort();
+                    return;
+                }
+                previous.controller.abort();
+            } else if (isOpen(activePanel)) {
+                record.controller.abort();
+                return;
+            }
+            launchPanel(ui, record);
+        });
+        return record.closed;
+    }
+    // Nothing mounted, or nothing guarded: replace at once.
+    activePanel?.controller.abort();
+    launchPanel(ui, record);
+    return record.closed;
+}
+
+function launchPanel(ui, record) {
+    const { key, descriptor } = record;
     activePanel = record;
     persistResume(descriptor, key);
     const payload = { ...toModalPayload(descriptor), key };

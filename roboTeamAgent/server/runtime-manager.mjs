@@ -34,6 +34,9 @@ const ALA_FAILURE_DETAIL_LIMIT = 4096;
 const TASK_LOG_TAIL_LIMIT = 1024 * 1024;
 const TASK_RESULT_LIMIT = 1024 * 1024;
 const ALA_EVENT_PREFIX = '@@ALA_EVENT@@';
+const OWNER_PRINCIPAL = /^user:.+/u;
+const TRANSCRIPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const MESSAGE_TIMEOUT_MS = 35000;
 const ROBOT_AGENT_STATE_DIRECTORIES = Object.freeze([
     '.codex',
     '.config/opencode',
@@ -266,6 +269,25 @@ export class RuntimeManager {
         // Optional observational hook used by RoboFlow. It never changes task
         // storage or semantics; it only forwards progress and lifecycle events.
         this.taskObserver = typeof options.taskObserver === 'function' ? options.taskObserver : null;
+        this.messageTimeoutMs = Number.isSafeInteger(options.messageTimeoutMs) && options.messageTimeoutMs > 0
+            ? options.messageTimeoutMs : MESSAGE_TIMEOUT_MS;
+        // Owner records live in project folders that robot containers can
+        // write. A persisted owner is trusted only with a binding made under
+        // this service start's secret; anything else is the system owner.
+        this.ownerKey = options.ownerKey
+            ? crypto.createHmac('sha256', String(options.ownerKey)).update('roboteam-live-sessions-owner-v1').digest() : null;
+    }
+
+    _ownerBinding(robotId, alaSessionId, ownerPrincipal) {
+        if (!this.ownerKey || !ownerPrincipal) return null;
+        return crypto.createHmac('sha256', this.ownerKey).update(JSON.stringify(['v1', robotId, alaSessionId, ownerPrincipal])).digest('base64url');
+    }
+
+    _boundOwner(record) {
+        const owner = record?.request?.ownerPrincipal;
+        const expected = this._ownerBinding(record?.robotId, record?.alaSessionId, owner);
+        if (!expected || typeof record.ownerBinding !== 'string' || record.ownerBinding.length !== expected.length) return null;
+        return crypto.timingSafeEqual(Buffer.from(record.ownerBinding), Buffer.from(expected)) ? owner : null;
     }
 
     setTaskObserver(observer) {
@@ -276,6 +298,27 @@ export class RuntimeManager {
         if (!this.taskObserver) return;
         try { this.taskObserver(event); }
         catch (error) { console.error('[roboTeamAgent] task observer failed:', error?.message || error); }
+    }
+
+    // Each execution attempt reports one terminal event, whichever path ends
+    // it: its own run, or a stop or shutdown before it ever started.
+    _emitTaskTerminal(task, fields) {
+        if (task.terminalEmitted) return;
+        task.terminalEmitted = true;
+        this._emitTaskEvent({ kind: 'terminal', robotId: task.robotId, taskId: task.taskId, ...fields });
+    }
+
+    // Message failures carry a typed outcome for Live Sessions; the message
+    // text is unchanged for existing callers.
+    _messageFailure(outcome, message) {
+        return Object.assign(new Error(message), { code: `TASK_MESSAGE_${outcome.toUpperCase()}`, liveOutcome: outcome });
+    }
+
+    // Server-bound transcript location of a task's turn, once its turn started.
+    taskTranscriptRef(robotId, taskId) {
+        const task = this.tasks.get(taskId);
+        if (!task || task.robotId !== robotId || !task.transcriptRef) return null;
+        return { cwd: task.request.cwd, sessionId: task.alaSessionId, assistantMessageId: task.transcriptRef.assistantMessageId };
     }
 
     // Shell and Soul Gateway socket preparation, then (unless `seed` is false) the plugin seed.
@@ -515,7 +558,10 @@ export class RuntimeManager {
             child: null, cancelRequested: false,
             ...(GUI_MODES.has(type) ? { sessionUrl: robotSessionUrl(this.publicBasePath, robot.id) } : {}),
         };
+        if (this.tasks.has(task.taskId)) throw new Error('Task id is already in use.');
         task.alaSessionId = request.alaSessionId || task.taskId;
+        const ownerBinding = this._ownerBinding(robot.id, task.alaSessionId, request.ownerPrincipal);
+        if (ownerBinding) task.ownerBinding = ownerBinding;
         task.pendingMessages = [];
         this.tasks.set(task.taskId, task);
         if (trackLatest) this.latestTask.set(robot.id, task.taskId);
@@ -525,6 +571,10 @@ export class RuntimeManager {
     _enqueueTask(robot, type, request, { first = false } = {}) {
         if (this.deletedRobots.has(robot.id)) throw new Error('robot was deleted');
         request = structuredClone(request);
+        // Owner and workflow phase are fixed when work is admitted. Only a
+        // signed user principal is kept; anything else is the system owner.
+        if (typeof request.ownerPrincipal !== 'string' || !OWNER_PRINCIPAL.test(request.ownerPrincipal)) delete request.ownerPrincipal;
+        if (typeof request.workflowInstanceId !== 'string' || !request.workflowInstanceId) delete request.workflowInstanceId;
         // A new GUI request after all previous GUI work was paused explicitly
         // returns control to automation. Keep the pause while old work remains.
         if (GUI_MODES.has(type) && this.manualControl.has(robot.id)
@@ -533,6 +583,10 @@ export class RuntimeManager {
             this.manualControl.delete(robot.id);
         }
         const task = this._newTask(robot, type, request);
+        this._emitTaskEvent({ kind: 'admitted', robotId: robot.id, robotName: robot.name, taskId: task.taskId, type, state: 'queued',
+            cwd: typeof request.cwd === 'string' ? request.cwd : null, ownerPrincipal: request.ownerPrincipal || null,
+            workflowRunId: typeof request.workflowRunId === 'string' && request.workflowRunId ? request.workflowRunId : null,
+            workflowInstanceId: request.workflowInstanceId || null });
         if (type === 'simple') {
             queueMicrotask(() => { if (!this.shuttingDown) void this._runTask(robot, task); });
             return { taskId: task.taskId, state: task.state, queuePosition: 0 };
@@ -656,6 +710,9 @@ export class RuntimeManager {
                 delete task.request.skillSelection;
                 await this._saveTask(task);
             }
+            // A stop during any wait above ends this attempt before it runs; a
+            // paused attempt is never turned back into a running one.
+            if (task.cancelRequested || task.state !== 'starting') throw new Error('task was paused');
             if (task.request.model) args.push('--model', task.request.model);
             const requestedMcp = Array.isArray(task.request.mcpServers)
                 ? task.request.mcpServers.join(',') : String(task.request.mcpServers || '');
@@ -681,6 +738,7 @@ export class RuntimeManager {
             delete childEnv.ROBOTEAM_TASK_SKILL_SELECTION;
             // Only Browser and Desktop tasks work in the robot's Chromium, where its mailbox is signed in.
             const emailAddress = GUI_MODES.has(task.type) ? robotEmailAddress(robot) : null;
+            if (task.cancelRequested) throw new Error('task was paused');
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
                 '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
@@ -701,6 +759,11 @@ export class RuntimeManager {
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
                 if (event.type === 'task-failed' && typeof event.message === 'string') forcedFailure ||= new Error(event.message);
                 if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
+                // Only the identifiers of the first turn are kept, never the event body.
+                if (event.type === 'turn-started' && !task.transcriptRef
+                    && TRANSCRIPT_ID.test(String(event.assistantMessageId)) && TRANSCRIPT_ID.test(String(event.turnId))) {
+                    task.transcriptRef = { assistantMessageId: event.assistantMessageId, turnId: event.turnId };
+                }
                 if (event.type === 'messages-cancelled') appendProgress(`\nCancelled ${event.count} queued message(s).\n`);
                 if (event.type === 'session-ready') {
                     task.controlReady = true;
@@ -713,7 +776,7 @@ export class RuntimeManager {
                     if (waiter && waiter.taskId === task.taskId) {
                         this.messageWaiters.delete(event.id);
                         clearTimeout(waiter.timer);
-                        if (event.type === 'message-rejected') waiter.reject(new Error(event.error));
+                        if (event.type === 'message-rejected') waiter.reject(this._messageFailure('rejected', event.error));
                         else waiter.resolve({ delivery: event.delivery });
                     }
                     appendProgress(`\nMessage ${event.id}: ${event.delivery || event.error}\n`);
@@ -745,13 +808,13 @@ export class RuntimeManager {
             for (const [id, waiter] of this.messageWaiters) {
                 if (waiter.taskId !== task.taskId) continue;
                 clearTimeout(waiter.timer);
-                waiter.reject(new Error('Task ended before the message was acknowledged.'));
+                waiter.reject(this._messageFailure('run_ended', 'Task ended before the message was acknowledged.'));
                 this.messageWaiters.delete(id);
             }
             await this._saveTask(task).catch(() => {});
             if (['completed', 'failed', 'paused'].includes(task.state)) {
-                this._emitTaskEvent({
-                    kind: 'terminal', robotId: robot.id, taskId: task.taskId, state: task.state,
+                this._emitTaskTerminal(task, {
+                    state: task.state,
                     result: task.result, error: task.error || (task.resultOverflow ? 'Final response exceeds the 1 MiB limit' : null),
                     ...(forcedFailure ? { forcedFailure: true } : {}),
                 });
@@ -770,21 +833,21 @@ export class RuntimeManager {
     async sendTaskMessage(robot, taskId, prompt) {
         const task = this.tasks.get(taskId);
         if (!task || task.robotId !== robot.id || !['queued', 'starting', 'running'].includes(task.state)) {
-            throw new Error('Task is no longer running; continue it instead.');
+            throw this._messageFailure('run_ended', 'Task is no longer running; continue it instead.');
         }
         const message = String(prompt || '').trim();
-        if (!message || message.length > 32768) throw new Error('Message must contain 1 to 32768 characters.');
+        if (!message || message.length > 32768) throw this._messageFailure('rejected', 'Message must contain 1 to 32768 characters.');
         const command = { type: 'message', id: crypto.randomUUID(), message };
         if (!task.controlReady) {
-            if (task.pendingMessages.length >= 100) throw new Error('Task message queue is full.');
+            if (task.pendingMessages.length >= 100) throw this._messageFailure('rejected', 'Task message queue is full.');
             task.pendingMessages.push(command);
             return { delivery: 'queued', messageId: command.id };
         }
         const response = new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.messageWaiters.delete(command.id);
-                reject(new Error('Message acknowledgement timed out; delivery is unknown.'));
-            }, 35000);
+                reject(this._messageFailure('unknown', 'Message acknowledgement timed out; delivery is unknown.'));
+            }, this.messageTimeoutMs);
             this.messageWaiters.set(command.id, { resolve, reject, timer, taskId });
         });
         task.child.stdin.write(`${JSON.stringify(command)}\n`);
@@ -795,7 +858,7 @@ export class RuntimeManager {
         const id = taskId || this.activeTasks.get(robotId) || this.latestTask.get(robotId);
         const task = id ? this.tasks.get(id) : null;
         if (!task || task.robotId !== robotId) return null;
-        const { child, request, cancelRequested, pendingMessages, controlReady, ...status } = task;
+        const { child, request, cancelRequested, pendingMessages, controlReady, transcriptRef, terminalEmitted, ownerBinding, ...status } = task;
         return { ...status, cwd: request.cwd,
             skillPolicyRef: request.skillPolicyRef || null,
             skillExecution: task.skillExecution ? structuredClone(task.skillExecution) : null,
@@ -831,8 +894,11 @@ export class RuntimeManager {
                     && this.activeTasks.get(robot.id) === internal.taskId) {
                     this.manualControl.set(robot.id, internal.taskId);
                 }
+                const neverStarted = internal.state === 'queued';
                 internal.cancelRequested = true;
                 internal.state = 'paused'; internal.completedAt = new Date().toISOString(); internal.child?.kill('SIGTERM');
+                // A queued attempt never reaches its run's terminal report.
+                if (neverStarted) this._emitTaskTerminal(internal, { state: 'paused', result: internal.result, error: internal.error });
             }
             operation.state = 'completed'; operation.completedAt = new Date().toISOString();
         });
@@ -843,9 +909,13 @@ export class RuntimeManager {
         return this.stopTask(robot, null, taskId, { manualControl: true });
     }
 
-    async resumeTask(robot, taskId, prompt = '', { runtimeTaskId = null } = {}) {
+    // Every continuation is a new attempt with its own task id. Its owner is the
+    // original owner (never the caller); a phase association is set only by
+    // RoboFlow, which names the phase it resumes.
+    async resumeTask(robot, taskId, prompt = '', { runtimeTaskId = null, workflowInstanceId = null } = {}) {
         if (!/^[0-9a-f-]{36}$/u.test(String(taskId))) throw new Error('Invalid task id.');
         let internal = this.tasks.get(taskId);
+        let owner = internal?.request?.ownerPrincipal;
         if (!internal) {
             const file = findProjectRecord(this, 'task', taskId);
             if (!file) throw new Error('Task execution record is unavailable in registered projects.');
@@ -853,6 +923,7 @@ export class RuntimeManager {
             try { internal = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
             if (internal.taskId !== taskId) throw new Error('Task execution record identity mismatch.');
             if (['starting', 'running'].includes(internal.state)) internal.state = 'paused';
+            owner = this._boundOwner(internal);
         }
         if (internal.robotId !== robot.id || !['desktop', 'browser', 'simple'].includes(internal.type)
             || !['paused', 'completed', 'failed'].includes(internal.state)) {
@@ -878,10 +949,13 @@ export class RuntimeManager {
             delete internal.request.skillSelection;
             await this._saveTask(internal);
         }
+        const { runtimeTaskId: previousTaskId, workflowInstanceId: previousPhase, ownerPrincipal: storedOwner, ...inherited } = internal.request;
         const resumed = this._enqueueTask(robot, internal.type, {
-            ...internal.request,
+            ...inherited,
             alaSessionId: internal.alaSessionId, resumeSession: true,
+            ...(owner ? { ownerPrincipal: owner } : {}),
             ...(runtimeTaskId ? { runtimeTaskId } : {}),
+            ...(workflowInstanceId ? { workflowInstanceId } : {}),
             task: GUI_MODES.has(internal.type) ? `${message}\n\n${RESUME_REOBSERVE_INSTRUCTION}` : message,
         }, { first: this.manualControl.get(robot.id) === taskId });
         if (this.manualControl.get(robot.id) === taskId) this.manualControl.delete(robot.id);
@@ -943,10 +1017,12 @@ export class RuntimeManager {
         this.shuttingDown = true;
         for (const task of this.tasks.values()) {
             if (!['queued', 'starting', 'running'].includes(task.state)) continue;
+            const neverStarted = task.state === 'queued';
             task.cancelRequested = true;
             task.state = 'paused';
             task.completedAt = new Date().toISOString();
             task.child?.kill('SIGTERM');
+            if (neverStarted) this._emitTaskTerminal(task, { state: 'paused', result: task.result, error: task.error });
         }
         await Promise.allSettled(Array.from(this.sessions.values()).map((session) => this.stopContainer(session.robotId, session.mode)));
         await this.soulGateway.close();

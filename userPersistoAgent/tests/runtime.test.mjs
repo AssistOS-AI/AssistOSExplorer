@@ -8,7 +8,7 @@ import { startService } from '../service/index.mjs';
 import { resetStoreForTests } from '../lib/store.mjs';
 import { ensureExplorerSeedData as ensureSeedData } from './helpers/product-permissions.mjs';
 import { createProvider, resolveProviderConfig } from '../runtime/index.mjs';
-import { getUserById, getUserRoles } from '../lib/users.mjs';
+import { getUserById, getUserRoles, updateUser } from '../lib/users.mjs';
 import { issueAuthCode } from '../lib/sso.mjs';
 import { getStore, flush } from '../lib/store.mjs';
 import { signUpWithPassword, resetAuthLimitsForTests } from './helpers/setup.mjs';
@@ -73,6 +73,10 @@ test('provider account projections preserve optional fields and an email-only ac
         resetAuthLimitsForTests();
         const owner = await signUpWithPassword('owner@example.test');
         const member = await signUpWithPassword('member@example.test');
+        // Signup now derives a username from the email; the supported empty-username
+        // account (a user or admin may clear it) is reached by clearing it explicitly.
+        assert.equal((await getUserById(member.user.id)).username, 'member');
+        await updateUser(member.user.id, { username: '' }, { actorId: owner.user.id });
         server = startService({ port: 0, host: '127.0.0.1' });
         if (!server.listening) await once(server, 'listening');
         const provider = createProvider({ getConfig: async () => ({

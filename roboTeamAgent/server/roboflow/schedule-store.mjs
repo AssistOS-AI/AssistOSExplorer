@@ -19,7 +19,9 @@ export class ScheduleStore {
     assertWorkflowRemovable(id) {
         if (this.listSync().some(job => job.workflowTypeId === id)) throw conflict('Delete this workflow’s Cron jobs before deleting the workflow');
     }
-    async save(input, createdBy, id) {
+    // ownerPrincipal is the signed principal of this saver (null for an
+    // unsigned saver): whoever last defined what runs owns its launches.
+    async save(input, createdBy, id, { ownerPrincipal = null } = {}) {
         const previous = id ? this.getSync(id) : null;
         if (id && !previous) throw Object.assign(invalid('Cron job not found'), { statusCode: 404 });
         if (id && input.revision !== previous.revision) throw conflict('Cron job changed; reload before saving');
@@ -45,7 +47,8 @@ export class ScheduleStore {
             const configChanged = !current || current.enabled !== enabled || JSON.stringify(current.timing) !== JSON.stringify(timing);
             const record = { ...current, id: id || `cron_${crypto.randomBytes(12).toString('hex')}`, revision: (current?.revision || 0) + 1,
                 objective, folder, workflowTypeId: graph.id, ...(graph.kind === 'default' ? { executionType: value.executionType } : {}), timing, enabled,
-                createdBy: current?.createdBy || createdBy, updatedBy: createdBy, createdAt: current?.createdAt || now, updatedAt: now,
+                createdBy: current?.createdBy || createdBy, updatedBy: createdBy, ownerPrincipal: ownerPrincipal || null,
+                createdAt: current?.createdAt || now, updatedAt: now,
                 nextRunAt: enabled ? (configChanged ? new Date(nextRun(timing, timestamp)).toISOString() : current.nextRunAt) : null,
                 lastFlowId: current?.lastFlowId || null, lastAttemptAt: current?.lastAttemptAt || null, lastOutcome: current?.lastOutcome || null,
                 lastError: current?.lastError || null, pendingLaunch: null };

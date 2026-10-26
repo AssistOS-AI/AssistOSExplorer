@@ -739,3 +739,57 @@ test('targeted Google cancellation binds browser and parent and preserves newer 
     const current = await callback(newer);
     assert.equal((await newer.browser.fetch(current.resume)).status, 303, 'the newer Google transaction still completes');
 }));
+
+test('SSO Google cleanup after a consumed password sign-in retires only its own transaction through the browser-bound route', () => fixture(async ({ base, owner, ownerPassword, begin, callback, provider }) => {
+    const flow = await begin();
+    const newer = await begin(new CookieBrowser(), 'newer-router-state');
+    const handle = flow.start.transaction;
+    const proofCookie = `up_google_${handle}`;
+    const statusOf = async (value) => (await (await getStore()).select('googleAuthTransaction')).objects.find((row) => row.stateHash === value)?.status;
+    assert.equal(flow.browser.cookies.has(proofCookie), true);
+    // The page's own password sign-in issues the handoff and consumes its parent request.
+    const login = await flow.browser.json(`${base}/service/auth/password/login`, {
+        requestId: flow.request.providerState, state: flow.state, email: owner.email, password: ownerPassword,
+    });
+    assert.equal(login.status, 200, await login.clone().text());
+    const handoff = await login.json();
+    // The parent-bound cleanup can no longer reach the transaction.
+    const legacy = await flow.browser.json(`${base}/service/auth/attempt/cancel`, { requestId: flow.request.providerState, googleTransaction: handle });
+    assert.deepEqual([legacy.status, (await legacy.json()).error], [400, 'login_request_invalid']);
+    assert.equal(await statusOf(handle), 'pending');
+    const cancelUrl = `${base}/service/auth/google/cancel`;
+    const refusals = [
+        ['another browser', () => new CookieBrowser().json(cancelUrl, { transaction: handle }), 400],
+        ['a foreign Origin', () => flow.browser.json(cancelUrl, { transaction: handle }, 'https://foreign.example'), 403],
+        ['a form post', () => flow.browser.post(cancelUrl, { transaction: handle }), 403],
+        ['an extra field', () => flow.browser.json(cancelUrl, { transaction: handle, requestId: flow.request.providerState }), 400],
+        ['an empty handle', () => flow.browser.json(cancelUrl, { transaction: '' }), 400],
+        ['a malformed handle', () => flow.browser.json(cancelUrl, { transaction: 'not-a-handle' }), 400],
+        ['an overlong handle', () => flow.browser.json(cancelUrl, { transaction: `${handle}0` }), 400],
+        ['an unknown handle', () => flow.browser.json(cancelUrl, { transaction: 'f'.repeat(64) }), 400],
+        ['another browser\'s transaction', () => flow.browser.json(cancelUrl, { transaction: newer.start.transaction }), 400],
+    ];
+    for (const [name, send, status] of refusals) assert.equal((await send()).status, status, name);
+    const clientId = process.env.USERPERSISTO_GOOGLE_CLIENT_ID;
+    process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'another-controlled-client';
+    assert.equal((await flow.browser.json(cancelUrl, { transaction: handle })).status, 400, 'a changed Google configuration');
+    process.env.USERPERSISTO_GOOGLE_CLIENT_ID = clientId;
+    assert.deepEqual([await statusOf(handle), await statusOf(newer.start.transaction)], ['pending', 'pending'], 'refusals change nothing');
+    assert.equal(flow.browser.cookies.has(proofCookie), true);
+
+    const cancelled = await flow.browser.json(cancelUrl, { transaction: handle });
+    assert.equal(cancelled.status, 200);
+    assert.equal(flow.browser.cookies.has(proofCookie), false, 'the exact proof cookie is erased');
+    assert.equal(await statusOf(handle), 'cancelled');
+    await resetStoreForTests();
+    assert.equal(await statusOf(handle), 'cancelled', 'the cancellation is durable');
+    assert.equal((await flow.browser.json(cancelUrl, { transaction: handle })).status, 400, 'replay is refused');
+    const late = await provider.credential(flow.start, flow.browser, base);
+    assert.equal((await flow.browser.json(late.url, late.body)).status, 400, 'a late credential cannot revive the cancelled transaction');
+    // The primary handoff is untouched and still completes exactly once.
+    const consumed = await consumeAuthCode({ providerState: flow.request.providerState, code: handoff.code });
+    assert.equal(consumed.user.id, owner.id);
+    await assert.rejects(consumeAuthCode({ providerState: flow.request.providerState, code: handoff.code }), { code: 'auth_code_consumed' });
+    const current = await callback(newer);
+    assert.equal((await newer.browser.fetch(current.resume)).status, 303, 'the other browser\'s transaction still completes');
+}));

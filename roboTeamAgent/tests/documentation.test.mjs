@@ -163,3 +163,34 @@ test('conversation skill selection is documented on RoboTeam\'s page and API, ne
     const operations = await read('docs/operations.html');
     assert.match(operations, /conversations\/&lt;sessionId&gt;\/skills|conversations\/<sessionId>\/skills/u);
 });
+
+test('Live Sessions are specified in DS010, listed in the matrix and documented with their limitations', async () => {
+    const files = (await readdir(join(AGENT_ROOT, 'docs/specs'))).filter((name) => /^DS\d{3}-.+\.md$/u.test(name)).sort();
+    assert.deepEqual(files.map((name) => Number(name.slice(2, 5))), files.map((_, index) => index), 'contiguous numbering');
+    const matrix = await read('docs/specs/matrix.md');
+    for (const name of files) assert.match(matrix, new RegExp(`\\(specsLoader\\.html\\?spec=${name.replace('.', '\\.')}\\)`, 'u'), name);
+    const ds010 = await read('docs/specs/DS010-live-sessions.md');
+    const [, frontmatter, body] = ds010.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/u);
+    assert.deepEqual(frontmatter.split('\n').map((line) => line.split(':')[0]), ['title', 'summary']);
+    assert.match(frontmatter, /^title: DS010-live-sessions$/mu);
+    assert.deepEqual(body.match(/^## .+$/gmu), ['## Introduction', '## Core Content']);
+    const plain = ds010.replaceAll('`', '');
+    for (const required of [/\/dev\/shm\/roboteam-live\/registry\.sock/u, /owner-claim/u, /ROBOTEAM_LIVE_PUBLISH=copilot/u,
+        /\/base-agent-additional-server\/roboTeamAgent\/3001\/api\/live-sessions/u, /list as system/u, /no per-user viewer cap/u,
+        /residual risk/u, /ended earliest goes first/u, /runtimeScope/u, /pauses the whole workflow/iu,
+        /interactive REPL and single-shot prompts, have no WebChat claim and list as unverified/u,
+        /answer was lost in a disconnect cannot be sent again/u, /shorter than 30 seconds under publisher pressure/u,
+        /check against the production listener is still pending/u, /ROBOTEAM_COPILOT_DIAGNOSTICS=stderr/u]) {
+        assert.match(plain, required);
+    }
+    for (const file of ['docs/architecture.html', 'docs/operations.html', 'docs/security.html', 'docs/wiki.html']) {
+        assert.match(await read(file), /specsLoader\.html\?spec=DS010-live-sessions\.md/u, file);
+    }
+    for (const spec of ['DS004-robot-container-runtime', 'DS005-ploinky-security', 'DS006-ala-task-boundary', 'DS007-roboflow-team-workflow']) {
+        assert.match(await read(`docs/specs/${spec}.md`), /### Live Sessions/u, spec);
+    }
+    const ds004 = await read('docs/specs/DS004-robot-container-runtime.md');
+    assert.match(ds004, /reserved-path guard/u);
+    assert.match(ds004, /production listener is pending/u);
+    for (const spec of ['DS004-robot-container-runtime', 'DS010-live-sessions']) assert.doesNotMatch(await read(`docs/specs/${spec}.md`), /\bP3\.\d/u, spec);
+});

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { collectCopilotReleaseEvidence } from './copilot-release-evidence.mjs';
 import { sameLiveBoxGeneration, parseLocalBoxBaseUrl, assertOriginBindAddress } from './live-box.mjs';
 import { validateQaAcceptanceProfile } from './qa-acceptance-profile.mjs';
+import { foreignAccount } from './live-sessions.mjs';
 
 export const acceptanceLedger = JSON.parse(fs.readFileSync(new URL('../acceptance-ledger.json', import.meta.url), 'utf8'));
 const enabled = value => /^(1|true|yes|on)$/i.test(String(value || '').trim());
@@ -68,7 +69,7 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
     const listing = args.includes('--list');
     const box = (!listing && selection.specs.length === 0) || enabled(env.SMOKE_ACCEPTANCE)
         || env.SMOKE_DEPLOYMENT_MODE === 'box' || Boolean(env.SMOKE_PLOINKY_BOX_CONTAINER)
-        || selection.cases.some(entry => ['fresh-webtty', 'official-release', 'supporting-61'].includes(entry.cohort));
+        || selection.cases.some(entry => ['fresh-webtty', 'fresh-live-sessions', 'official-release', 'supporting-61'].includes(entry.cohort));
     const separateScreen = enabled(env.SMOKE_WEBMEET_SCREEN) && !enabled(env.SMOKE_ACCEPTANCE)
         && selection.specs.length === 1 && selection.specs[0] === 'specs/30-webmeet-room-chat.spec.mjs';
     for (const entry of selection.cases) {
@@ -93,8 +94,15 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
             if (args.some(value => value.split('=')[0] === name)) throw new Error('Box acceptance forbids test selection/worker overrides outside complete spec filenames and title grep.');
         }
     }
+    const liveSessions = selection.cases.some(entry => entry.cohort === 'fresh-live-sessions');
+    if (liveSessions && selection.cases.filter(entry => entry.cohort === 'fresh-live-sessions').length !== 2) {
+        throw new Error('Fresh Live Sessions acceptance requires both complete feature identities; a pruned cohort cannot pass.');
+    }
+    if (liveSessions && !listing && (selection.specs.length !== 1 || selection.cases.length !== 2)) {
+        throw new Error('Fresh Live Sessions acceptance requires its own separate two-test cohort.');
+    }
     const dualAccounts = selection.cases.some(entry => entry.title === 'two Explorer accounts can join one room and exchange chat'
-        || entry.cohort === 'fresh-webtty' || entry.cohort === 'supporting-61');
+        || entry.cohort === 'fresh-webtty' || entry.cohort === 'fresh-live-sessions' || entry.cohort === 'supporting-61');
     const guestOnly = selection.cases.length > 0 && selection.cases.every(entry => entry.cohort === 'supporting-15');
     const accounts = { enabled: acceptance && !guestOnly, secondary: dualAccounts, primaryAdmin: true,
         marketplaceLifecycleFixture: selection.specs.includes('specs/04-marketplace-lifecycle.spec.mjs'),
@@ -103,9 +111,17 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
         for (const entry of selection.cases) {
             for (const name of entry.privateInputNamesOrCategories.filter(value => /^SMOKE_/.test(value))) required(env, name);
         }
-        if (selection.cases.some(entry => entry.selection.spec === 'specs/50-onlyoffice-dpu.spec.mjs')) {
+        if (liveSessions || selection.cases.some(entry => entry.selection.spec === 'specs/50-onlyoffice-dpu.spec.mjs')) {
             required(env, 'SMOKE_PLOINKY_BIN');
             if (!path.isAbsolute(env.SMOKE_PLOINKY_BIN)) throw new Error('SMOKE_PLOINKY_BIN must be absolute.');
+        }
+        if (liveSessions) {
+            const foreign = foreignAccount(env);
+            const emails = [env.SMOKE_LOGIN_EMAIL, env.SMOKE_SECONDARY_LOGIN_EMAIL, foreign.loginEmail]
+                .map(value => String(value || '').trim().toLowerCase());
+            if (new Set(emails).size !== 3) throw new Error('Live Sessions requires three distinct configured accounts.');
+            required(env, 'SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE');
+            if (!path.isAbsolute(env.SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE)) throw new Error('SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE must be absolute.');
         }
         if (box) {
             for (const name of ['SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_EXPECT_BOX_IMAGE_ID', 'SMOKE_EXPECT_BOX_IMAGE_REF', 'SMOKE_BOX_BASE_URL', 'SMOKE_WORKSPACE_ROOT', 'SMOKE_BASE_URL']) required(env, name);
@@ -155,7 +171,7 @@ export async function collectAcceptancePreflight({ profile, env, manifestPath, v
     const evidence = await collect({
         manifestPath, verifierPath, baseURL, boxBaseURL,
         verificationMode: env.SMOKE_SOURCE_VERIFICATION || 'release',
-        requireActiveAchillesCLI: false,
+        requireActiveRoboTeamAgent: false,
         expectedContainerName: env.SMOKE_PLOINKY_BOX_CONTAINER,
         expectedImageRef: env.SMOKE_EXPECT_BOX_IMAGE_REF,
         generationMaxAgeMs: 30 * 60_000,

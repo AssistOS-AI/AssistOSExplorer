@@ -39,7 +39,7 @@ export class Subflows {
         coordinator.afterEdgeId = plan.afterEdgeId;
         let previousChildFlowId = null;
         coordinator.childFlowIds = plan.plans.map(({ graph, ...input }) => {
-            const child = store.createRecord(graph, { ...input, folder: flow.folder, createdBy: flow.createdBy,
+            const child = store.createRecord(graph, { ...input, folder: flow.folder, createdBy: flow.createdBy, ownerPrincipal: flow.ownerPrincipal || null,
                 parentFlowId: flow.id, parentInstanceId: coordinator.id, creatorInstanceId: creator.id });
             child.previousChildFlowId = previousChildFlowId;
             child.status = 'pending'; child.activeSince = null;

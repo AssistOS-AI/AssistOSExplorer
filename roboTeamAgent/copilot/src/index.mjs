@@ -23,6 +23,8 @@ import { executeRuntimeCommand } from './lib/cli/cliRuntimeCommands.mjs';
 import { runWebchatInteractive, attachTaskToSession } from './lib/webchat/webchatRuntime.mjs';
 import { getRobotContext } from './lib/execution/robotContext.mjs';
 import { createRobotSkillCatalog } from './lib/skills/robotSkillCatalog.mjs';
+import { createCopilotPublisher } from './lib/liveSessions/publisher.mjs';
+import { logDiagnostic } from './lib/storage/copilotDiagnostics.mjs';
 
 export { REPLSession } from './repl/REPLSession.mjs';
 export { SlashCommandHandler } from './repl/SlashCommandHandler.mjs';
@@ -35,7 +37,9 @@ export { BUILT_IN_SKILLS } from './lib/constants.mjs';
 export { builtInSkillsDir, resolveSkillCatalogRoots } from './lib/skills/cliSkillRoots.mjs';
 export { parseCliOptions } from './lib/cli/cliOptions.mjs';
 
-export async function createCliRuntime(options, { webchat = false, reattachExistingTasks = true } = {}) {
+// Only main() passes a Live Sessions publisher; robot tasks and other callers
+// of createCliRuntime never publish.
+export async function createCliRuntime(options, { webchat = false, reattachExistingTasks = true, livePublisher = null } = {}) {
     const { workingDir } = options;
     const installation = await resolveAlaInstallation();
     const robotContext = getRobotContext();
@@ -82,14 +86,15 @@ export async function createCliRuntime(options, { webchat = false, reattachExist
             emitProtocol: webchat,
             reattachExistingTasks,
             onTaskStarted: (task, origin) => attachTaskToSession(sessionStore, task, origin, { webchat }),
+            livePublisher,
         }) : null;
         const engine = createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, interactions, backgroundTasks, installation,
             execution: { ...options.execution, robotId: robotContext?.robot.id },
-            webchatLogsBase: `${PUBLIC_BASE_PATH.replace(/\/+$/, '')}/webchat-logs` });
+            webchatLogsBase: `${PUBLIC_BASE_PATH.replace(/\/+$/, '')}/webchat-logs`, livePublisher });
         const historyManager = new HistoryManager({ workingDir });
         return {
             ...options, installation, skillCatalog, sessionStore, initialSession, engine,
-            historyManager, settings, interactions, webchatController, backgroundTasks,
+            historyManager, settings, interactions, webchatController, backgroundTasks, livePublisher,
             listRobots: async () => {
                 if (!robotContext) throw new Error('Robot discovery requires the RoboTeam runtime.');
                 return (await robotContext.store.list()).map(({ name }) => ({ name }));
@@ -102,6 +107,7 @@ export async function createCliRuntime(options, { webchat = false, reattachExist
                     interactions.dispose();
                     webchatController?.dispose();
                     backgroundTasks?.close();
+                    await livePublisher?.close();
                 }
             },
         };
@@ -109,6 +115,7 @@ export async function createCliRuntime(options, { webchat = false, reattachExist
         interactions.dispose();
         webchatController?.dispose();
         backgroundTasks?.close();
+        await livePublisher?.close({ flushMs: 0 });
         throw error;
     }
 }
@@ -122,7 +129,10 @@ export async function main(args = process.argv.slice(2), execution = {}) {
     if (!getProviderNames().includes(options.uiStyle)) throw new Error(`Invalid UI style '${options.uiStyle}'. Available: ${getProviderNames().join(', ')}`);
     UIContext.setProvider(createProvider(options.uiStyle));
     const webchat = !options.singleShot && isWebchatRuntime(args);
-    const runtime = await createCliRuntime(options, { webchat });
+    // server/robot-cli.mjs enables Live Sessions publishing for the copilot.
+    const livePublisher = createCopilotPublisher(process.env, {
+        log: (event, fields) => logDiagnostic(options.workingDir, event, fields) });
+    const runtime = await createCliRuntime(options, { webchat, livePublisher });
     try {
         if (webchat) await runWebchatInteractive(runtime);
         else if (options.singleShot) {

@@ -60,6 +60,22 @@ export function normalizeWebchatOrigin(rawOrigin) {
     return {};
 }
 
+// The `__webchat_message__` arguments the Router signs for a forwarded
+// envelope (Ploinky `buildWebchatInvocationArgs`), rebuilt from the raw
+// envelope before any normalization or materialization, so an owner claim is
+// verified over exactly the signed values.
+export function webchatSignedArgs(parsed) {
+    return {
+        surface: 'webchat',
+        tabId: String(parsed?.sourceTabId || ''),
+        pageInstanceId: String(parsed?.sourcePageInstanceId || ''),
+        text: typeof parsed?.text === 'string' ? parsed.text : '',
+        attachments: Array.isArray(parsed?.attachments) ? parsed.attachments : [],
+        references: Array.isArray(parsed?.references) ? parsed.references : [],
+        presentation: { visible: parsed?.presentation?.visible !== false },
+    };
+}
+
 export function isWebchatMessageEnvelope(raw) {
     const text = String(raw || '').trim();
     if (!text.startsWith('{')) return false;
@@ -147,6 +163,7 @@ export function normalizeWebchatMessage(raw) {
             visible: parsed.presentation?.visible !== false,
             sourceTabId,
             sourcePageInstanceId,
+            signedArgs: webchatSignedArgs(parsed),
         };
     } catch {
         return {

@@ -9,16 +9,20 @@ import {
   assertPageDiagnosticsClean,
   attachPageDiagnostics,
   checkpointPageDiagnostics,
+  closePageDiagnosticsCheckpoint,
   expect,
   test,
 } from '../lib/fixtures.mjs';
-import { assertDistinctAuthenticatedPrincipals, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
-import { captureRouterRecoveryAuthentication, expectedRouterRecoveryDiagnostics, recoveryConsoleText } from '../lib/webtty-router-recovery.mjs';
+import { assertDistinctAuthenticatedPrincipals, hasAuthenticatedSession, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
+import { USERPERSISTO_LOGIN_PATH } from '../lib/auth-wizard.mjs';
+import { acknowledgeRouterRecovery, armRouterRecoveryObservation, finalizeRouterRecoveryFailure, captureRouterRecoveryAuthentication, RouterRecoveryProofError } from '../lib/webtty-router-recovery.mjs';
+import { cleanupWebttyTerminals, requireDetachedShell, registerCreatedTerminal } from '../lib/webtty-terminal-cleanup.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { diagnosticEventSignature } from '../lib/diagnostic-ledger.mjs';
 import { createReadinessDiagnostics, withFailureArtifact } from '../lib/readiness-diagnostics.mjs';
 import { assertExplorerDirectory, openExplorer } from '../lib/explorer.mjs';
 import { resolvePloinkyExecutable } from '../lib/ploinky-executable.mjs';
+import { liveSessionsPanel, LIVE_SESSIONS_PAGE_FRAME } from '../lib/live-sessions.mjs';
 import {
   captureNestedPodmanEventCursor,
   collectAgentProcessRows,
@@ -168,8 +172,11 @@ function requirePinnedRuntimeBinding() {
   });
 }
 
-async function browserMutation(page, pathname, { method = 'POST', body } = {}) {
-  return page.evaluate(async ({ requestPath, requestMethod, requestBody }) => {
+async function browserMutation(page, pathname, { method = 'POST', body, refreshProof = false } = {}) {
+  return page.evaluate(async ({ requestPath, requestMethod, requestBody, refreshFirst }) => {
+    // The proof cookie is bound to the edge generation and is re-issued only by an authenticated request.
+    // Like the WebTTY client's confirmed Kill, a caller that follows a restart refreshes it first.
+    if (refreshFirst) await fetch('/webtty/live-sessions', { credentials: 'same-origin', cache: 'no-store' });
     const csrf = document.cookie
       .split(';')
       .map((part) => part.trim())
@@ -189,7 +196,7 @@ async function browserMutation(page, pathname, { method = 'POST', body } = {}) {
     let payload = null;
     try { payload = JSON.parse(text); } catch {}
     return { status: response.status, payload, text };
-  }, { requestPath: pathname, requestMethod: method, requestBody: body });
+  }, { requestPath: pathname, requestMethod: method, requestBody: body, refreshFirst: refreshProof });
 }
 
 function expectedHttpFailureDiagnostics(pathname, { method = 'POST', status } = {}) {
@@ -264,7 +271,10 @@ function isWebttyNavigation(request) {
     && target.pathname === '/webtty/';
 }
 
-async function readTargetDiscovery(response, expectedDirectory) {
+// A plain {dir} discovery carries a launch on every row. A discovery for a chosen robot also echoes its profile, and a
+// row whose target cannot reach the robot's home has no launch and a precise `unavailable` reason instead.
+// The returned `targets` are the launchable rows; the others are returned as `unavailableTargets`.
+async function readTargetDiscovery(response, expectedDirectory, { profiled = false } = {}) {
   expect(response.status()).toBe(201);
   const payload = await response.json();
   expect(Object.keys(payload).sort()).toEqual(['discovery', 'ok']);
@@ -274,6 +284,7 @@ async function readTargetDiscovery(response, expectedDirectory) {
     'directory',
     'expiresAt',
     'id',
+    ...(profiled ? ['profile'] : []),
     'targets',
   ]);
   expect(payload.discovery).toMatchObject({
@@ -282,36 +293,50 @@ async function readTargetDiscovery(response, expectedDirectory) {
     expiresAt: expect.any(Number),
     agentTargetsAvailable: expect.any(Boolean),
   });
+  if (profiled) {
+    expect(Object.keys(payload.discovery.profile).sort()).toEqual(['id', 'label', 'provider']);
+    expect(payload.discovery.profile).toMatchObject({
+      provider: expect.any(String), id: expect.any(String), label: expect.any(String),
+    });
+  }
   expect(Number.isSafeInteger(payload.discovery.expiresAt)).toBe(true);
   expect(payload.discovery.targets.length).toBeGreaterThan(0);
   expect(payload.discovery.targets[0].kind).toBe('box');
   expect(payload.discovery.targets.filter((target) => target.kind === 'box')).toHaveLength(1);
+  const launchable = [];
+  const unavailable = [];
   for (const target of payload.discovery.targets) {
+    const isUnavailable = profiled && !Object.hasOwn(target, 'launch');
     expect(Object.keys(target).sort()).toEqual([
       'access',
       'cwdDisplay',
       'detail',
       'kind',
       'label',
-      'launch',
-    ]);
+      isUnavailable ? 'unavailable' : 'launch',
+    ].sort());
     expect(target).toMatchObject({
-      launch: expect.stringMatching(/^[A-Za-z0-9_-]{32,128}$/),
+      ...(isUnavailable
+        ? { unavailable: expect.stringMatching(/^(?:home-unreachable|home-read-only)$/) }
+        : { launch: expect.stringMatching(/^[A-Za-z0-9_-]{32,128}$/) }),
       kind: expect.stringMatching(/^(?:box|agent)$/),
       label: expect.any(String),
       detail: expect.any(String),
       access: expect.stringMatching(/^(?:rw|ro)$/),
       cwdDisplay: expect.any(String),
     });
+    (isUnavailable ? unavailable : launchable).push(target);
   }
-  return payload.discovery;
+  return { ...payload.discovery, targets: launchable, unavailableTargets: unavailable };
 }
 
-async function readSessionCreation(response) {
-  expect(response.status()).toBe(201);
-  const payload = await response.json();
-  expect(Object.keys(payload).sort()).toEqual(['ok', 'session']);
-  expect(Object.keys(payload.session).sort()).toEqual(['cols', 'cwd', 'id', 'rows', 'target']);
+function assertSessionCreation(payload) {
+  expect(Object.keys(payload).sort()).toEqual(['ok', 'session', 'view']);
+  expect(Object.keys(payload.view)).toEqual(['id']);
+  expect(payload.view.id).toMatch(/^[A-Za-z0-9_-]{32,128}$/);
+  expect(Object.keys(payload.session).sort()).toEqual([
+    'closePolicy', 'cols', 'cwd', 'id', 'pendingStopUntil', 'profileLabel', 'role', 'rows', 'state', 'target',
+  ]);
   expect(Object.keys(payload.session.target).sort()).toEqual([
     'access',
     'cwdDisplay',
@@ -323,6 +348,11 @@ async function readSessionCreation(response) {
     ok: true,
     session: {
       id: expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/),
+      role: 'owner',
+      state: 'detached',
+      closePolicy: 'keep',
+      pendingStopUntil: null,
+      profileLabel: expect.any(String),
       target: {
         kind: expect.stringMatching(/^(?:box|agent)$/),
         label: expect.any(String),
@@ -339,6 +369,60 @@ async function waitForConnectedTerminal(page) {
     timeout: smokeConfig.timeouts.navigation,
   });
   await expect(page.locator('#terminal .xterm-helper-textarea')).toBeAttached();
+}
+
+// Every row of the chooser: launchable rows keep their launch, the others show why they are disabled.
+async function assertChooserRows(chooser, discovery) {
+  const unavailableTargets = discovery.unavailableTargets || [];
+  await expect(chooser.locator('.terminal-target-button')).toHaveCount(
+    discovery.targets.length + unavailableTargets.length,
+  );
+  for (const target of discovery.targets) {
+    const targetButton = chooser.locator(`.terminal-target-button[data-launch="${target.launch}"]`);
+    await expect(targetButton).toHaveCount(1);
+    await expect(targetButton).toHaveAttribute('data-launch', target.launch);
+    await expect(targetButton.locator('.terminal-target-label')).toHaveText(target.label);
+    await expect(targetButton.locator('.terminal-target-detail')).toHaveText(target.detail);
+    await expect(targetButton.locator('.terminal-target-cwd')).toHaveText(target.cwdDisplay);
+    await expect(targetButton.locator('.terminal-target-access')).toHaveText(
+      target.access === 'ro' ? 'Read only' : 'Read and write',
+    );
+  }
+  for (const target of unavailableTargets) {
+    const row = chooser.locator('.terminal-target-button:not([data-launch])').filter({ hasText: target.detail });
+    await expect(row).toHaveCount(1);
+    await expect(row).toBeDisabled();
+    await expect(row.locator('.terminal-target-reason')).toContainText(
+      target.unavailable === 'home-read-only' ? "can only read" : "cannot see",
+    );
+  }
+}
+
+// The dialog starts with no robot: the {dir} discovery is listed but every row is disabled until a robot is chosen.
+// The chooser then replaces that discovery with the one for the chosen robot. This needs at least one robot in the
+// deployment (created in RoboTeam); the spec does not create one.
+async function chooseTerminalRobot(chooserState, expectedDirectory) {
+  const { chooser, page } = chooserState;
+  const select = chooser.locator('#terminalTargetRobot');
+  await expect(select).toBeEnabled({ timeout: smokeConfig.timeouts.navigation });
+  const robotOptions = select.locator('option:not([disabled])');
+  expect(await robotOptions.count(), 'a RoboTeam robot must exist before a terminal can be opened').toBeGreaterThan(0);
+  await expect(select.locator('option[disabled]')).toHaveText('Choose a robot');
+  await expect(chooser.locator('#terminalTargetOpen')).toBeDisabled();
+  const robotValue = await robotOptions.first().getAttribute('value');
+  const plainDiscoveryId = chooserState.discovery.id;
+  const cancelled = page.waitForResponse((response) => (
+    response.url() === new URL(`/webtty/target-discoveries/${encodeURIComponent(plainDiscoveryId)}`, smokeConfig.baseURL).toString()
+    && response.request().method() === 'DELETE'
+  ), { timeout: smokeConfig.timeouts.action });
+  const profiledResponse = page.waitForResponse(isTargetDiscovery, { timeout: smokeConfig.timeouts.navigation });
+  await select.selectOption(robotValue);
+  expect((await cancelled).status()).toBe(200);
+  chooserState.plainDiscovery = chooserState.discovery;
+  chooserState.discovery = await readTargetDiscovery(await profiledResponse, expectedDirectory.replace(/^\/+/, ''), { profiled: true });
+  chooserState.profiled = true;
+  await assertChooserRows(chooser, chooserState.discovery);
+  return chooserState.discovery;
 }
 
 async function openTerminalChooser(page, directoryPath) {
@@ -361,25 +445,19 @@ async function openTerminalChooser(page, directoryPath) {
   const chooser = page.getByRole('dialog', { name: 'Open terminal in' });
   await expect(chooser).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
   await expect(chooser.locator('#terminalTargetDirectory')).toHaveText(directoryPath);
-  await expect(chooser.locator('.terminal-target-button')).toHaveCount(discovery.targets.length);
+  await assertChooserRows(chooser, discovery);
+  for (const button of await chooser.locator('.terminal-target-button').all()) {
+    await expect(button, 'rows are disabled until a robot is chosen').toBeDisabled();
+    await expect(button.locator('.terminal-target-reason')).toHaveText('Choose a robot first');
+  }
   expect(context.pages().length, 'opening the chooser must not open or navigate a terminal tab').toBe(initialPageCount);
 
-  for (const target of discovery.targets) {
-    const targetButton = chooser.locator(`.terminal-target-button[data-launch="${target.launch}"]`);
-    await expect(targetButton).toHaveCount(1);
-    await expect(targetButton).toHaveAttribute('data-launch', target.launch);
-    await expect(targetButton.locator('.terminal-target-label')).toHaveText(target.label);
-    await expect(targetButton.locator('.terminal-target-detail')).toHaveText(target.detail);
-    await expect(targetButton.locator('.terminal-target-cwd')).toHaveText(target.cwdDisplay);
-    await expect(targetButton.locator('.terminal-target-access')).toHaveText(
-      target.access === 'ro' ? 'Read only' : 'Read and write',
-    );
-  }
-
-  return { page, chooser, discovery, context };
+  const chooserState = { page, chooser, discovery, context, profiled: false };
+  await chooseTerminalRobot(chooserState, directoryPath);
+  return chooserState;
 }
 
-async function selectTerminalTarget(chooserState, predicate) {
+async function selectTerminalTarget(chooserState, predicate, terminals) {
   const selectedTarget = chooserState.discovery.targets.find(predicate);
   expect(selectedTarget, 'the requested terminal target must be present in the current discovery').toBeTruthy();
   const selectedButton = chooserState.chooser.locator(
@@ -396,27 +474,35 @@ async function selectTerminalTarget(chooserState, predicate) {
     predicate: isSessionCreation,
     timeout: smokeConfig.timeouts.navigation,
   });
+  // A row only selects the target; Open prepares the robot, reserves the tab and starts the terminal.
   await selectedButton.click();
-  const terminalPage = await popupPromise;
-  const navigationRequest = await navigationPromise;
+  await expect(selectedButton).toHaveAttribute('aria-pressed', 'true');
+  await chooserState.chooser.getByRole('button', { name: 'Open', exact: true }).click();
   const createResponse = await createPromise;
-  await terminalPage.waitForURL((url) => url.pathname === '/webtty/' && !url.hash, {
-    timeout: smokeConfig.timeouts.navigation,
+  // Register the shell for DELETE cleanup before any later wait or assertion can fail; shells survive detach.
+  // A 201 body is registered by its raw session id first; the strict shape checks run afterwards.
+  const createStatus = createResponse.status();
+  const createPayload = createStatus === 201 ? await createResponse.json().catch(() => null) : null;
+  if (createStatus !== 201) expect(createStatus).toBe(201);
+  return registerCreatedTerminal(terminals, createPayload, async (terminal) => {
+    terminal.session = assertSessionCreation(createPayload);
+    // The server issues a view with each created session; its stream is only served for that view.
+    terminal.viewId = createPayload?.view?.id;
+    terminal.terminalPage = await popupPromise;
+    terminal.navigationRequest = await navigationPromise;
+    terminal.discovery = chooserState.discovery;
+    terminal.launch = selectedTarget.launch;
+    terminal.selectedTarget = selectedTarget;
+    await terminal.terminalPage.waitForURL((url) => url.pathname === '/webtty/' && !url.hash, {
+      timeout: smokeConfig.timeouts.navigation,
+    });
+    await terminal.terminalPage.waitForLoadState('load');
+    await expect(chooserState.chooser).toBeHidden();
   });
-  await terminalPage.waitForLoadState('load');
-  await expect(chooserState.chooser).toBeHidden();
-  return {
-    terminalPage,
-    session: await readSessionCreation(createResponse),
-    discovery: chooserState.discovery,
-    launch: selectedTarget.launch,
-    selectedTarget,
-    navigationRequest,
-  };
 }
 
-async function openTerminalFromExplorer(page, directoryPath, predicate = (target) => target.kind === 'box') {
-  return selectTerminalTarget(await openTerminalChooser(page, directoryPath), predicate);
+async function openTerminalFromExplorer(page, directoryPath, predicate = (target) => target.kind === 'box', terminals) {
+  return selectTerminalTarget(await openTerminalChooser(page, directoryPath), predicate, terminals);
 }
 
 async function refreshTerminalChooser(chooserState, expectedDirectory) {
@@ -424,10 +510,10 @@ async function refreshTerminalChooser(chooserState, expectedDirectory) {
     timeout: smokeConfig.timeouts.navigation,
   });
   await chooserState.chooser.getByRole('button', { name: 'Refresh' }).click();
-  chooserState.discovery = await readTargetDiscovery(await responsePromise, expectedDirectory.replace(/^\/+/, ''));
-  await expect(chooserState.chooser.locator('.terminal-target-button')).toHaveCount(
-    chooserState.discovery.targets.length,
-  );
+  chooserState.discovery = await readTargetDiscovery(await responsePromise, expectedDirectory.replace(/^\/+/, ''), {
+    profiled: chooserState.profiled,
+  });
+  await assertChooserRows(chooserState.chooser, chooserState.discovery);
   return chooserState.discovery;
 }
 
@@ -445,14 +531,161 @@ function sortedTargets(targets) {
   return targets.map(publicTarget).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
 }
 
-async function closeTerminal(terminal, { closePage = true } = {}) {
+async function closeTerminal(terminal, {
+  closePage = true, requestPage = terminal.terminalPage, allowMissing = false, refreshProof = false,
+} = {}) {
+  if (terminal.cleaned) return;
   const result = await browserMutation(
-    terminal.terminalPage,
+    requestPage,
     `/webtty/sessions/${encodeURIComponent(terminal.session.id)}`,
-    { method: 'DELETE' },
+    { method: 'DELETE', refreshProof },
   );
-  expect(result).toMatchObject({ status: 200, payload: { ok: true } });
-  if (closePage) await terminal.terminalPage.close();
+  if (allowMissing && result.status === 404) {
+    expect(result.payload).toEqual({ ok: false, error: 'not_found' });
+  } else {
+    expect(result).toMatchObject({ status: 200, payload: { ok: true } });
+  }
+  terminal.cleaned = true;
+  if (closePage && terminal.terminalPage && !terminal.terminalPage.isClosed()) await terminal.terminalPage.close();
+}
+
+function requireWatcherAccount() {
+  const username = String(process.env.SMOKE_WEBTTY_WATCHER_USERNAME || '').trim();
+  if (!username) throw new Error('SMOKE_WEBTTY_WATCHER_USERNAME must identify a distinct administrator for the Live Sessions gate.');
+  const signInMethod = process.env.SMOKE_WEBTTY_WATCHER_SIGN_IN_METHOD || 'emailCode';
+  if (!['password', 'emailCode', 'totp'].includes(signInMethod)) throw new Error('Invalid Live Sessions watcher sign-in method.');
+  return {
+    username,
+    loginEmail: process.env.SMOKE_WEBTTY_WATCHER_LOGIN_EMAIL || username,
+    password: process.env.SMOKE_WEBTTY_WATCHER_PASSWORD || '',
+    accountPassword: process.env.SMOKE_WEBTTY_WATCHER_ACCOUNT_PASSWORD || '',
+    signInMethod,
+    totpSecret: process.env.SMOKE_WEBTTY_WATCHER_TOTP_SECRET || '',
+  };
+}
+
+// Runs `body`, then always persists its evidence. The evidence handling never replaces the body's failure: when the
+// body failed, a failing `persist` is recorded by error name only through `record` (its message can quote values), and
+// a failing `record` is only reported, so the body's own error is the one thrown. When the body succeeded, a failing
+// `persist` is the failure. lib/webtty-core-profile.test.mjs runs this exact function text.
+async function persistEvidenceAfter(body, persist, record, report = (message) => console.error(message)) {
+  let bodyFailed = false;
+  try {
+    await body();
+  } catch (error) {
+    bodyFailed = true;
+    throw error;
+  } finally {
+    try {
+      await persist();
+    } catch (persistError) {
+      if (!bodyFailed) throw persistError;
+      const failure = { stage: 'diagnostics-flush', error: String(persistError?.name || 'Error') };
+      try {
+        await record(failure);
+      } catch (recordError) {
+        report(`Diagnostic artifact write failed: ${failure.stage} ${failure.error}; recording it failed with ${String(recordError?.name || 'Error')}`);
+      }
+    }
+  }
+}
+
+// Observes the primary page between the deliberate logout and the intentional re-login. Navigation requests count at
+// the request, so a redirect hop that never commits a document is seen too. The wizard's own Google start POST is
+// counted by itself, independent of any navigation or Google script request. Only counts are kept: no URL, query or
+// body. lib/auth-navigation-cancellation.test.mjs runs this exact function text against the actual service.
+function observePrimaryAuthLifecycle(page) {
+  const baseOrigin = new URL(smokeConfig.baseURL).origin;
+  const counts = { loginNavigations: 0, wizardDocuments: 0, googleStartRequests: 0, googleSignInRequests: 0 };
+  const onRequest = (request) => {
+    const url = new URL(request.url());
+    if (request.isNavigationRequest() && url.origin === baseOrigin) {
+      if (url.pathname === '/auth/login') counts.loginNavigations += 1;
+      if (url.pathname === USERPERSISTO_LOGIN_PATH) counts.wizardDocuments += 1;
+    }
+    if (request.method() === 'POST' && url.origin === baseOrigin && url.pathname === `${USERPERSISTO_LOGIN_PATH}google/start`) counts.googleStartRequests += 1;
+    if (url.hostname === 'accounts.google.com' && url.pathname.startsWith('/gsi/')) counts.googleSignInRequests += 1;
+  };
+  page.on('request', onRequest);
+  let active = true;
+  return {
+    counts: () => ({ ...counts }),
+    stop() {
+      if (!active) return;
+      active = false;
+      page.off('request', onRequest);
+    },
+  };
+}
+
+// The Router answers /auth/token without a session with exactly HTTP 401 and {"ok":false,"error":"not_authenticated"}
+// (authRoutes.js, sendJson). One bounded request that follows no redirect and retries nothing; a transport error, a
+// redirect, any other status or payload, and a malformed or non-JSON body all fail. It runs through the request
+// context, so its answer never enters the page's diagnostic ledger. lib/auth-navigation-cancellation.test.mjs runs this
+// exact function text against the actual fixture and against each failure answer.
+async function requireUnauthenticatedTokenRoute(request) {
+  const response = await request.get('/auth/token', {
+    headers: { connection: 'close' },
+    maxRedirects: 0,
+    maxRetries: 0,
+    timeout: smokeConfig.timeouts.action,
+  });
+  if (response.status() !== 401 || !/^application\/json(?:;|$)/i.test(response.headers()['content-type'] || '')) {
+    throw new Error(`/auth/token must answer the unauthenticated 401 JSON, not HTTP ${response.status()}.`);
+  }
+  const payload = await response.json();
+  if (!payload || typeof payload !== 'object' || Object.keys(payload).sort().join() !== 'error,ok'
+    || payload.ok !== false || payload.error !== 'not_authenticated') {
+    throw new Error('/auth/token must answer exactly {ok:false,error:not_authenticated} after logout.');
+  }
+}
+
+async function attachFromLiveSessions(page, id, role) {
+  await waitForExplorerPluginRender(page);
+  const host = page.locator('[data-app-plugin-key="explorer/live-sessions"]');
+  await host.locator('button:visible').click();
+  // `panel` is the shell's expanded-modal dialog. The list, rows and viewer belong to the Live Sessions page it frames
+  // (`content`), and a shell row's terminal is one more frame inside that page (`#liveSessionsFrame iframe`).
+  const { dialog: panel, content } = liveSessionsPanel(page);
+  await expect(panel).toBeVisible();
+  await expect(panel.locator(LIVE_SESSIONS_PAGE_FRAME)).toHaveAttribute('referrerpolicy', 'no-referrer');
+  const row = content.locator(`li[data-session-id="${id}"]`);
+  await expect(row).toBeVisible();
+  const attachment = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/webtty/attachments' && response.request().method() === 'POST'
+  ));
+  const minted = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === `/webtty/live-sessions/${id}/attach-tokens` && response.request().method() === 'POST'
+  ));
+  await row.getByRole('button', { name: 'Attach', exact: true }).click();
+  const response = await attachment;
+  expect(response.status()).toBe(200);
+  const attached = await response.json();
+  expect(attached).toMatchObject({ ok: true, session: { id, role } });
+  expect(attached.view.id).toMatch(/^[A-Za-z0-9_-]{32,128}$/);
+  const tokenResponse = await minted;
+  expect(tokenResponse.status()).toBe(201);
+  const attach = (await tokenResponse.json()).attach;
+  expect(typeof attach === 'string' && /^[A-Za-z0-9_-]{32}$/.test(attach), 'the attach response must contain an opaque token').toBe(true);
+  const frame = content.locator('#liveSessionsFrame iframe');
+  await expect(frame).toHaveAttribute('referrerpolicy', 'no-referrer');
+  await expect.poll(() => frame.evaluate((element) => ({ search: element.contentWindow.location.search, hash: element.contentWindow.location.hash })))
+    .toEqual({ search: '', hash: '' });
+  // Three same-origin documents could hold the token: the shell, the Live Sessions page frame and its terminal frame.
+  // A missing frame must throw, so none of them is skipped.
+  const shellLeak = await page.evaluate((token) => (
+    [window.sessionStorage, window.localStorage].some((storage) => Object.keys(storage).some((key) => storage.getItem(key)?.includes(token)))
+  ), attach);
+  const frameLeaks = await frame.evaluate((terminal, token) => {
+    const holds = (stores) => stores.some((storage) => Object.keys(storage).some((key) => storage.getItem(key)?.includes(token)));
+    return {
+      pageFrame: holds([window.sessionStorage, window.localStorage]),
+      terminalFrame: holds([terminal.contentWindow.sessionStorage, terminal.contentWindow.localStorage]),
+    };
+  }, attach);
+  expect({ shell: shellLeak, ...frameLeaks }, 'attach tokens must never reach shell, Live Sessions page or terminal frame browser storage')
+    .toEqual({ shell: false, pageFrame: false, terminalFrame: false });
+  return { panel, content, row, frame: content.frameLocator('#liveSessionsFrame iframe') };
 }
 
 async function restartPloinkyTarget(target, fixture) {
@@ -587,10 +820,22 @@ test.describe('Ploinky core WebTTY release gate', () => {
   test('local administrator controls the mounted workspace while an ordinary user is denied', async ({ page, browser }, testInfo) => {
     test.setTimeout(Math.max(smokeConfig.timeouts.test, 900_000));
     const runtimeBinding = requirePinnedRuntimeBinding();
+    const watcherAccount = requireWatcherAccount();
     const fixture = requireLocalWorkspaceFixture();
     const terminals = [];
     let userContext = null;
     let foreignAdminContext = null;
+    let ownerReattachContext = null;
+    let watcherContext = null;
+    let cleanupPage = page;
+    let primaryFailure = null;
+    let primaryAuthLifecycle = null;
+    let recoveryObservation = null;
+    let recoveryCheckpointOpen = false;
+    let recoveryLedger = null;
+    let recoveryProofComplete = false;
+    let recoveryMilestones = {};
+    let primaryRecoveryCheckpoint = null;
     try {
       await observeExplorerPluginReadiness(page);
       await openExplorer(page, { hash: fixture.explorerHash });
@@ -633,7 +878,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         origin: canonicalOrigin,
         includeCsrfCookie: false,
         includeCsrfHeader: false,
-        body: { launch: 'A'.repeat(32), cols: 80, rows: 24 },
+        body: { launch: 'A'.repeat(32), cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(missingCsrf).toMatchObject({
         status: 403,
@@ -641,7 +886,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       });
       const forgedOrigin = await directAuthenticatedMutation(page, '/webtty/sessions', {
         origin: 'http://webtty-cross-origin.invalid',
-        body: { launch: 'A'.repeat(32), cols: 80, rows: 24 },
+        body: { launch: 'A'.repeat(32), cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(forgedOrigin).toMatchObject({
         status: 403,
@@ -683,7 +928,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         hash: fixture.explorerHash,
       });
       const foreignLaunchAttempt = await browserMutation(foreignAdminPage, '/webtty/sessions', {
-        body: { launch: ownedAgentLaunch, cols: 80, rows: 24 },
+        body: { launch: ownedAgentLaunch, cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(foreignLaunchAttempt).toMatchObject({
         status: 404,
@@ -692,8 +937,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await foreignAdminContext.close();
       foreignAdminContext = null;
 
-      const first = await selectTerminalTarget(firstChooser, (target) => target.kind === 'box');
-      terminals.push(first);
+      const first = await selectTerminalTarget(firstChooser, (target) => target.kind === 'box', terminals);
       const firstDiagnostics = attachPageDiagnostics(first.terminalPage, testInfo, 'webtty-first-terminal');
       const firstUrl = new URL(first.terminalPage.url());
       expect(firstUrl.origin).toBe(new URL(smokeConfig.baseURL).origin);
@@ -723,7 +967,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       const replayCheckpoint = checkpointPageDiagnostics(page, 'single-use launch replay rejection');
       const replayConsole = waitForExact404Console(page, '/webtty/sessions');
       const replay = await browserMutation(page, '/webtty/sessions', {
-        body: { launch: first.launch, cols: 80, rows: 24 },
+        body: { launch: first.launch, cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(replay).toMatchObject({
         status: 404,
@@ -768,13 +1012,41 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(firstDiagnostics.actionableEvents(), 'the connected terminal page must have no browser errors').toEqual([]);
       firstDiagnostics.pause();
 
-      const firstClose = await browserMutation(
-        first.terminalPage,
-        `/webtty/sessions/${encodeURIComponent(first.session.id)}`,
-        { method: 'DELETE' },
-      );
-      expect(firstClose).toMatchObject({ status: 200, payload: { ok: true } });
+      // This close is the detach probe, not cleanup. Kill still uses the helper below.
+      let unloadDeletes = 0;
+      first.terminalPage.on('request', (request) => {
+        if (request.method() === 'DELETE' && new URL(request.url()).pathname === `/webtty/sessions/${first.session.id}`) unloadDeletes += 1;
+      });
       await first.terminalPage.close();
+      await expect.poll(async () => {
+        const detachedRows = await page.evaluate(async () => {
+          const response = await fetch('/webtty/live-sessions', { credentials: 'same-origin', cache: 'no-store' });
+          if (!response.ok) throw new Error('Live Sessions list failed after tab close.');
+          return response.json();
+        });
+        const row = detachedRows.sessions?.find((candidate) => candidate.id === first.session.id);
+        if (row?.status === 'exited') requireDetachedShell(detachedRows, first.session.id);
+        if (row?.status !== 'detached' || row.viewerCount !== 0) return false;
+        requireDetachedShell(detachedRows, first.session.id);
+        return true;
+      }, { message: 'tab close must leave the same live shell detached with zero viewers' }).toBe(true);
+      expect(unloadDeletes, 'tab close must never send a terminal DELETE').toBe(0);
+      const tabCloseView = await attachFromLiveSessions(page, first.session.id, 'owner');
+      await expect(tabCloseView.frame.locator('#status')).toHaveText('Connected');
+      const tabCloseMarker = `tab-close-${crypto.randomUUID()}`;
+      const tabCloseInput = await browserMutation(page, `/webtty/sessions/${first.session.id}/input`, {
+        body: { data: `printf '%s\\n' '${tabCloseMarker}' > tab-close-marker.txt\r` },
+      });
+      expect(tabCloseInput).toMatchObject({ status: 200, payload: { ok: true } });
+      await expect.poll(() => {
+        try { return fs.readFileSync(path.join(fixture.nestedRoot, 'tab-close-marker.txt'), 'utf8').trim(); } catch { return ''; }
+      }, { message: 'the same reattached shell must execute input after its original tab closes' }).toBe(tabCloseMarker);
+      await closeTerminal(first, { requestPage: page });
+      // The page closes the view of a shell that exited when it next reads the list. Until then it still shows an owned
+      // running shell, and Close panel would ask Keep running / Stop it / Cancel instead of closing.
+      await expect(tabCloseView.content.locator('#liveSessionsViewer')).toBeHidden({ timeout: smokeConfig.timeouts.navigation });
+      await tabCloseView.panel.getByRole('button', { name: 'Close panel', exact: true }).click();
+      await expect(tabCloseView.panel).toBeHidden();
       await firstDiagnostics.flush();
 
       const legacyUrl = new URL('/webtty/', smokeConfig.baseURL);
@@ -789,13 +1061,14 @@ test.describe('Ploinky core WebTTY release gate', () => {
       });
       const legacyNavigation = await legacyPage.goto(legacyUrl.toString(), { waitUntil: 'load' });
       expect(legacyNavigation?.status()).toBe(200);
-      await expect(legacyPage.locator('#status')).toHaveText('Invalid launch');
-      await expect(legacyPage.locator('#message')).toContainText('missing, invalid, expired, or already used');
+      // A page without a launch or attach handoff (a legacy ?dir= URL, or a reload after the fragment was
+      // consumed) only points back to Live Sessions.
+      await expect(legacyPage.locator('#status')).toHaveText('Reopen terminal');
+      await expect(legacyPage.locator('#message')).toContainText('Reopen this terminal from Live Sessions');
       expect(legacyCreationRequests, 'a legacy ?dir= URL must never create a terminal session').toBe(0);
       await legacyPage.close();
 
-      const second = await openTerminalFromExplorer(page, fixture.nestedDirectoryPath);
-      terminals.push(second);
+      const second = await openTerminalFromExplorer(page, fixture.nestedDirectoryPath, undefined, terminals);
       const secondDiagnostics = attachPageDiagnostics(second.terminalPage, testInfo, 'webtty-second-terminal');
       await waitForConnectedTerminal(second.terminalPage);
       expect(second.session.cwd).toBe(fixture.relativeDirectory);
@@ -803,13 +1076,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(second.launch).not.toBe(first.launch);
       expect(secondDiagnostics.actionableEvents(), 'WebTTY must remain available after normal terminal cleanup').toEqual([]);
       secondDiagnostics.pause();
-      const secondClose = await browserMutation(
-        second.terminalPage,
-        `/webtty/sessions/${encodeURIComponent(second.session.id)}`,
-        { method: 'DELETE' },
-      );
-      expect(secondClose).toMatchObject({ status: 200, payload: { ok: true } });
-      await second.terminalPage.close();
+      await closeTerminal(second);
       await secondDiagnostics.flush();
 
       if (readOnlyAgent) {
@@ -821,8 +1088,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
             && target.detail === `${readOnlyAgent.repoName}/${readOnlyAgent.agentName}`
             && target.access === 'ro'
             && target.cwdDisplay === readOnlyAgent.mapping.translatedCwd,
+          terminals,
         );
-        terminals.push(readOnlyTerminal);
         const readOnlyDiagnostics = attachPageDiagnostics(
           readOnlyTerminal.terminalPage,
           testInfo,
@@ -876,8 +1143,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
         (target) => target.kind === 'agent'
           && target.label === initialGitAgent.agentName
           && target.detail === `${initialGitAgent.repoName}/${initialGitAgent.agentName}`,
+        terminals,
       );
-      terminals.push(agentTerminal);
       const agentDiagnostics = attachPageDiagnostics(agentTerminal.terminalPage, testInfo, 'webtty-agent-terminal');
       expect(agentTerminal.session.cwd).toBe(fixture.relativeDirectory);
       expect(agentTerminal.session.target).toEqual(publicTarget(agentTerminal.selectedTarget));
@@ -960,7 +1227,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await waitForAgentProcess(initialRuntime, initialGitAgent, foregroundPattern, true);
       expect(agentDiagnostics.actionableEvents(), 'the live agent terminal must have no browser errors').toEqual([]);
       agentDiagnostics.pause();
-      await agentTerminal.terminalPage.close();
+      await closeTerminal(agentTerminal);
       await agentDiagnostics.flush();
       await waitForAgentExecDelta(initialRuntime, initialGitAgent, initialGitAgent.execIds, 0);
       await waitForAgentProcess(initialRuntime, initialGitAgent, foregroundPattern, false);
@@ -973,8 +1240,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
         (target) => target.kind === 'agent'
           && target.label === initialGitAgent.agentName
           && target.detail === `${initialGitAgent.repoName}/${initialGitAgent.agentName}`,
+        terminals,
       );
-      terminals.push(replacementVictim);
       const replacementVictimDiagnostics = attachPageDiagnostics(
         replacementVictim.terminalPage,
         testInfo,
@@ -1014,14 +1281,20 @@ test.describe('Ploinky core WebTTY release gate', () => {
         message: 'targeted restart must remove the exact predecessor agent container',
         timeout: smokeConfig.timeouts.relay,
       }).toBe(false);
-      await expect(replacementVictim.terminalPage.locator('#status')).not.toHaveText('Connected');
-      replacementVictimDiagnostics.setExpectedOffline(false);
-      expect(
-        replacementVictimDiagnostics.actionableEvents(),
-        'active target replacement may interrupt transport but must not produce an unhandled browser failure',
-      ).toEqual([]);
-      await replacementVictim.terminalPage.close().catch(() => {});
-      await replacementVictimDiagnostics.flush();
+      await persistEvidenceAfter(async () => {
+        // The client ends a retired terminal's stream with the server's exit notification and shows exactly Closed.
+        await expect(replacementVictim.terminalPage.locator('#status')).toHaveText('Closed');
+        replacementVictimDiagnostics.setExpectedOffline(false);
+        expect(
+          replacementVictimDiagnostics.actionableEvents(),
+          'active target replacement may interrupt transport but must not produce an unhandled browser failure',
+        ).toEqual([]);
+        // The restart changed the edge generation; refresh the browser proof before the one DELETE.
+        await closeTerminal(replacementVictim, { refreshProof: true });
+      }, () => replacementVictimDiagnostics.flush(), (failure) => testInfo.attach('webtty-replacement-victim-diagnostics-flush-failure.json', {
+        body: Buffer.from(JSON.stringify(failure)),
+        contentType: 'application/json',
+      }));
 
       const replacementRuntimeBeforeStale = collectWebttyRuntimeEvidence({
         baseURL: smokeConfig.baseURL,
@@ -1048,7 +1321,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         replacementBeforeStale.execIds,
         replacementMarkersBeforeStale,
         () => browserMutation(page, '/webtty/sessions', {
-          body: { launch: staleGitTarget.launch, cols: 80, rows: 24 },
+          body: { launch: staleGitTarget.launch, cols: 80, rows: 24, closePolicy: 'keep' },
         }),
       );
       const staleLaunchObservedAt = Date.now();
@@ -1179,8 +1452,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
       const replacementTerminal = await selectTerminalTarget(
         replacementChooser,
         (target) => target.launch === refreshedGitTarget.launch,
+        terminals,
       );
-      terminals.push(replacementTerminal);
       const replacementDiagnostics = attachPageDiagnostics(
         replacementTerminal.terminalPage,
         testInfo,
@@ -1224,47 +1497,124 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(logoutSleepInput).toMatchObject({ status: 200, payload: { ok: true } });
       const logoutSleepPattern = new RegExp(`(?:^|\\s)sleep ${logoutSleepSeconds}(?:$|\\s)`);
       await waitForAgentProcess(replacementRuntime, replacementGitAgent, logoutSleepPattern, true);
-      expect(replacementDiagnostics.actionableEvents(), 'the replacement agent terminal must remain error-free before revocation').toEqual([]);
+      expect(replacementDiagnostics.actionableEvents(), 'the replacement agent terminal must remain error-free before logout').toEqual([]);
       replacementDiagnostics.setExpectedOffline(true);
-      await page.goto('/auth/logout?returnTo=/', { waitUntil: 'load' });
+      // The deliberate logout lands on the public inert signed-out page. Landing on the protected root would send the
+      // logged-out primary page to an idle UserPersisto login wizard that starts Google sign-in while the owner and
+      // watcher work runs, and the intentional re-login below would then abandon that earlier document.
+      primaryAuthLifecycle = observePrimaryAuthLifecycle(page);
+      expect(await hasAuthenticatedSession(page.request), 'the primary session must be authenticated before the deliberate logout').toBe(true);
+      await page.goto(`/auth/logout?${new URLSearchParams({ returnTo: '/auth/logged-out' })}`, { waitUntil: 'load' });
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'load' }),
         page.locator('form[action^="/auth/logout"] button[type="submit"]').click(),
       ]);
+      const loggedOutLocation = new URL(page.url());
+      expect({ origin: loggedOutLocation.origin, pathname: loggedOutLocation.pathname }, 'the logout must land on the inert signed-out page')
+        .toEqual({ origin: new URL(smokeConfig.baseURL).origin, pathname: '/auth/logged-out' });
+      await expect(page.getByRole('heading', { name: 'Signed out', exact: true })).toBeVisible();
+      await requireUnauthenticatedTokenRoute(page.request);
       await waitForAgentExecDelta(
         replacementRuntime,
         replacementGitAgent,
         replacementGitAgent.execIds,
-        0,
+        1,
       );
-      await waitForAgentProcess(replacementRuntime, replacementGitAgent, logoutSleepPattern, false);
-      await waitForAgentMarker(replacementRuntime, replacementGitAgent, replacementTerminalMarker, false);
+      await waitForAgentProcess(replacementRuntime, replacementGitAgent, logoutSleepPattern, true);
+      await waitForAgentMarker(replacementRuntime, replacementGitAgent, replacementTerminalMarker, true);
       await expect(replacementTerminal.terminalPage.locator('#status')).not.toHaveText('Connected');
       replacementDiagnostics.setExpectedOffline(false);
       expect(
         replacementDiagnostics.actionableEvents(),
-        'auth revocation may terminate transport but must not produce an unhandled browser failure',
+        'logout may detach transport but must not produce an unhandled browser failure',
       ).toEqual([]);
-      await replacementTerminal.terminalPage.close().catch(() => {});
-      await replacementDiagnostics.flush();
 
+      ownerReattachContext = await browser.newContext({ baseURL: smokeConfig.baseURL, ignoreHTTPSErrors: true });
+      const ownerReattachPage = await ownerReattachContext.newPage();
+      const ownerViewDiagnostics = attachPageDiagnostics(ownerReattachPage, testInfo, 'webtty-owner-reattach');
+      await observeExplorerPluginReadiness(ownerReattachPage);
+      await openExplorer(ownerReattachPage, { account: smokeConfig.primaryUser, hash: fixture.explorerHash });
+      const reauthenticatedOwner = await readAuthenticatedPrincipal(ownerReattachPage, smokeConfig.primaryUser);
+      expect(reauthenticatedOwner.id).toBe(admin.id);
+      cleanupPage = ownerReattachPage;
+      const ownerView = await attachFromLiveSessions(ownerReattachPage, replacementTerminal.session.id, 'owner');
+      await expect(ownerView.frame.locator('#status')).toHaveText('Connected');
+      await expect(ownerView.frame.locator('#terminal .xterm-rows')).toContainText('__WEBTTY_REPLACEMENT_PWD__');
+      const resumeMarker = `reattach-${crypto.randomUUID()}`;
+      await ownerView.frame.locator('#terminal .xterm-helper-textarea').press('Control+C');
+      await waitForAgentProcess(replacementRuntime, replacementGitAgent, logoutSleepPattern, false);
+      await ownerView.frame.locator('#terminal .xterm-helper-textarea').pressSequentially(`printf '%s\\n' '${resumeMarker}' > reattach-marker.txt`);
+      await ownerView.frame.locator('#terminal .xterm-helper-textarea').press('Enter');
+      await expect.poll(() => {
+        try { return fs.readFileSync(path.join(fixture.nestedRoot, 'reattach-marker.txt'), 'utf8').trim(); } catch { return ''; }
+      }, { message: 'the reattached owner must type a marker that executes in the existing shell' }).toBe(resumeMarker);
+
+      watcherContext = await browser.newContext({ baseURL: smokeConfig.baseURL, ignoreHTTPSErrors: true });
+      const watcherPage = await watcherContext.newPage();
+      const watcherDiagnostics = attachPageDiagnostics(watcherPage, testInfo, 'webtty-foreign-admin-watcher');
+      await observeExplorerPluginReadiness(watcherPage);
+      await openExplorer(watcherPage, { account: watcherAccount, hash: fixture.explorerHash });
+      const watcher = await readAuthenticatedPrincipal(watcherPage, watcherAccount);
+      assertDistinctAuthenticatedPrincipals(admin, watcher);
+      expect(watcher.roles).toContain('admin');
+      const watcherView = await attachFromLiveSessions(watcherPage, replacementTerminal.session.id, 'watcher');
+      await expect(watcherView.frame.locator('#status')).toHaveText('Connected');
+      await expect(watcherView.frame.locator('#terminal .xterm-rows')).toContainText('__WEBTTY_REPLACEMENT_PWD__');
+      const ownerInputPath = `/webtty/sessions/${replacementTerminal.session.id}/input`;
+      const watcherCheckpoint = watcherDiagnostics.checkpoint();
+      const deniedOwnerInput = await browserMutation(watcherPage, ownerInputPath, { body: { data: 'forbidden\r' } });
+      expect(deniedOwnerInput).toMatchObject({ status: 403, payload: { ok: false, error: 'owner_required' } });
+      const ownerInputUrl = new URL(ownerInputPath, smokeConfig.baseURL).toString();
+      watcherDiagnostics.acknowledgeExact(watcherCheckpoint, [
+        diagnosticEventSignature({ kind: 'response', type: 'error', status: 403, url: ownerInputUrl, method: 'POST' }),
+        diagnosticEventSignature({ kind: 'console', type: 'error', text: 'Failed to load resource: the server responded with a status of 403 (Forbidden)', location: { url: ownerInputUrl } }),
+      ]);
+      await watcherView.row.getByRole('button', { name: 'Kill', exact: true }).click();
+      await watcherView.row.getByRole('button', { name: 'Confirm Kill', exact: true }).click();
+      await waitForAgentExecDelta(replacementRuntime, replacementGitAgent, replacementGitAgent.execIds, 0);
+      await waitForAgentMarker(replacementRuntime, replacementGitAgent, replacementTerminalMarker, false);
+      await closeTerminal(replacementTerminal, { requestPage: ownerReattachPage });
+      await replacementDiagnostics.flush();
+      expect(ownerViewDiagnostics.actionableEvents(), 'the reattached owner must remain browser-error-free').toEqual([]);
+      expect(watcherDiagnostics.actionableEvents(), 'the foreign administrator permits only the exact owner-required denial').toEqual([]);
+      await watcherContext.close();
+      await watcherDiagnostics.flush();
+      watcherContext = null;
+      await ownerReattachContext.close();
+      await ownerViewDiagnostics.flush();
+      ownerReattachContext = null;
+
+      const primaryLifecycleCounts = primaryAuthLifecycle.counts();
+      expect(
+        primaryLifecycleCounts,
+        'the logged-out primary page must start no login navigation, UserPersisto wizard document, Google start or Google sign-in request before the intentional re-login',
+      ).toEqual({ loginNavigations: 0, wizardDocuments: 0, googleStartRequests: 0, googleSignInRequests: 0 });
+      assertPageDiagnosticsClean(page, 'the logged-out primary page must be error-free before the intentional re-login');
+      primaryAuthLifecycle.stop();
+      await testInfo.attach('webtty-logout-lifecycle.json', {
+        body: Buffer.from(JSON.stringify({ landing: '/auth/logged-out', ...primaryLifecycleCounts }, null, 2)),
+        contentType: 'application/json',
+      });
       await openExplorer(page, {
         account: smokeConfig.primaryUser,
         hash: fixture.explorerHash,
       });
+      cleanupPage = page;
       await assertExplorerDirectory(page, fixture.parentDirectoryPath);
       const recoveryTerminalMarkerBaseline = collectAgentMarkerTokens(
         replacementRuntime,
         replacementGitAgent,
       );
+      // Independent recorders for the recovery terminal exist before it opens, so its first stream cannot be missed.
+      recoveryObservation = await armRouterRecoveryObservation(page.context(), { baseURL: smokeConfig.baseURL, timeoutMs: smokeConfig.timeouts.action });
       const restartRecoveryTerminal = await openTerminalFromExplorer(
         page,
         fixture.nestedDirectoryPath,
         (target) => target.kind === 'agent'
           && target.label === replacementGitAgent.agentName
           && target.detail === `${replacementGitAgent.repoName}/${replacementGitAgent.agentName}`,
+        terminals,
       );
-      terminals.push(restartRecoveryTerminal);
       const recoveryDiagnostics = attachPageDiagnostics(
         restartRecoveryTerminal.terminalPage,
         testInfo,
@@ -1297,6 +1647,12 @@ test.describe('Ploinky core WebTTY release gate', () => {
         principal: await readAuthenticatedPrincipal(page, smokeConfig.primaryUser),
         timeoutMs: smokeConfig.timeouts.action,
       });
+      await recoveryObservation.bind({
+        page: restartRecoveryTerminal.terminalPage,
+        sessionId: restartRecoveryTerminal.session.id,
+        viewId: restartRecoveryTerminal.viewId,
+        mode: recoveryAuthentication.mode,
+      });
       await waitForExplorerPluginRender(page);
       assertPageDiagnosticsClean(page, 'Explorer must be error-free before Router fault injection');
       // Only the recovery terminal is the outage target. Stop unrelated Explorer
@@ -1304,17 +1660,13 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await page.goto('about:blank', {waitUntil: 'load'});
       expect(page.url()).toBe('about:blank');
       assertPageDiagnosticsClean(page, 'quiescing Explorer must not hide browser failures');
-      const primaryRecoveryCheckpoint = checkpointPageDiagnostics(page, 'quiescent Explorer during Router recovery');
+      primaryRecoveryCheckpoint = checkpointPageDiagnostics(page, 'quiescent Explorer during Router recovery');
       const explorerQuiescedAt = new Date().toISOString();
       expect(recoveryDiagnostics.actionableEvents(), 'the recovery terminal must remain error-free before Router crash').toEqual([]);
       const recoveryCheckpoint = recoveryDiagnostics.checkpoint('exact prior-epoch Router stream invalidation');
-      const recoveryStreamPath = `/webtty/sessions/${encodeURIComponent(restartRecoveryTerminal.session.id)}/stream`;
-      const recoveryConsole = restartRecoveryTerminal.terminalPage.waitForEvent('console', {
-        predicate: (message) => message.type() === 'error'
-          && message.text() === recoveryConsoleText(recoveryAuthentication.mode)
-          && message.location().url === new URL(recoveryStreamPath, smokeConfig.baseURL).toString(),
-        timeout: smokeConfig.timeouts.relay,
-      });
+      recoveryCheckpointOpen = true;
+      recoveryLedger = { diagnostics: recoveryDiagnostics, checkpoint: recoveryCheckpoint };
+      const recoveryStreamPath = `/webtty/sessions/${encodeURIComponent(restartRecoveryTerminal.session.id)}/stream?view=${encodeURIComponent(restartRecoveryTerminal.viewId)}`;
       const crashedRouter = crashExactRoutingServer(replacementRuntime, replacementGitAgent);
       let recoveredRouter = null;
       let routerRecoveryFailure = '';
@@ -1343,37 +1695,77 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(routerRecoveryFailure).toBe('');
       expect(recoveredRouter).toBeTruthy();
       const routerRecoveredAt = new Date().toISOString();
-      const recoveredAuthentication = await recoveryAuthentication.recoverAfterCleanup({
-        streamPath: recoveryStreamPath,
-        verifyCleanup: async () => {
-          await waitForAgentExecDelta(
-            replacementRuntime,
-            replacementGitAgent,
-            replacementGitAgent.execIds,
-            0,
-          );
-          await waitForAgentProcess(replacementRuntime, replacementGitAgent, restartSleepPattern, false);
-          await waitForAgentMarker(replacementRuntime, replacementGitAgent, recoveryTerminalMarker, false);
-          expect(collectWebttyRecoveryDirectoryState(replacementRuntime)).toEqual({
-            recordCount: 0,
-            temporaryCount: 0,
-            otherCount: 0,
+      recoveryMilestones = { cleanupVerified: false, retiredRouteProbed: false, stopDispatched: false, stopSettled: false, diagnosticsAcknowledged: false, terminalClosed: false };
+      let recoveryStage = 'cleanup';
+      let recoveryValidation = null;
+      let recoveryFailure = null;
+      let recoveredAuthentication = null;
+      // The observation is persisted in sanitized form, on success and on failure, and its error never carries the
+      // view, session or returnTo values that the raw diagnostics and assertions would quote.
+      await persistEvidenceAfter(async () => {
+        try {
+          recoveredAuthentication = await recoveryAuthentication.recoverAfterCleanup({
+            streamPath: recoveryStreamPath,
+            verifyCleanup: async () => {
+              await waitForAgentExecDelta(
+                replacementRuntime,
+                replacementGitAgent,
+                replacementGitAgent.execIds,
+                0,
+              );
+              await waitForAgentProcess(replacementRuntime, replacementGitAgent, restartSleepPattern, false);
+              await waitForAgentMarker(replacementRuntime, replacementGitAgent, recoveryTerminalMarker, false);
+              expect(collectWebttyRecoveryDirectoryState(replacementRuntime)).toEqual({
+                recordCount: 0,
+                temporaryCount: 0,
+                otherCount: 0,
+              });
+              recoveryMilestones.cleanupVerified = true;
+              recoveryStage = 'stop';
+            },
+            // Only after the independent cleanup: the client's own pagehide handler sends its one close intent and
+            // stops the retry timer. The terminal is not navigated or closed until every owned request has settled.
+            stopProducer: async () => {
+              recoveryMilestones.retiredRouteProbed = true;
+              recoveryMilestones.stopDispatched = true;
+              await recoveryObservation.stopAfterCleanup();
+              recoveryMilestones.stopSettled = true;
+              recoveryStage = 'diagnostics';
+            },
+            closeTerminal: async () => {
+              recoveryValidation = await recoveryObservation.validate();
+              acknowledgeRouterRecovery(recoveryDiagnostics, recoveryCheckpoint, recoveryValidation.signatures);
+              recoveryCheckpointOpen = false;
+              recoveryMilestones.diagnosticsAcknowledged = true;
+              expect(recoveryDiagnostics.actionableEvents().length, 'Router recovery diagnostics must match the exact derived records').toBe(0);
+              // The final native close must not send a second close intent or produce any diagnostic.
+              const finalCloseCheckpoint = recoveryDiagnostics.checkpoint('final native close of the recovery terminal');
+              try {
+                await restartRecoveryTerminal.terminalPage.close();
+                recoveryDiagnostics.acknowledgeExact(finalCloseCheckpoint, []);
+              } catch (error) {
+                recoveryDiagnostics.closeWithoutAcknowledgement(finalCloseCheckpoint);
+                throw new RouterRecoveryProofError('final-close', String(error?.name || 'Error'));
+              }
+              recoveryMilestones.terminalClosed = true;
+              recoveryStage = 'reauthentication';
+            },
+            signIn: () => signIn(page, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true }),
+            readCookies: () => page.context().cookies(smokeConfig.baseURL),
           });
-        },
-        closeTerminal: async () => {
-          await expect(restartRecoveryTerminal.terminalPage.locator('#status')).not.toHaveText('Connected');
-          await recoveryConsole;
-          recoveryDiagnostics.acknowledgeExact(
-            recoveryCheckpoint,
-            expectedRouterRecoveryDiagnostics(smokeConfig.baseURL, restartRecoveryTerminal.session.id, recoveryAuthentication.mode),
-          );
-          expect(recoveryDiagnostics.actionableEvents(), 'Router recovery diagnostics must match the exact prior-epoch stream').toEqual([]);
-          await restartRecoveryTerminal.terminalPage.close();
-          await recoveryDiagnostics.flush();
-        },
-        signIn: () => signIn(page, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true }),
-        readCookies: () => page.context().cookies(smokeConfig.baseURL),
-      });
+        } catch (error) {
+          recoveryFailure = error instanceof RouterRecoveryProofError ? error : new RouterRecoveryProofError(recoveryStage, String(error?.name || 'Error'));
+          throw recoveryFailure;
+        }
+      }, () => testInfo.attach('webtty-router-recovery-oracle.json', {
+        body: Buffer.from(JSON.stringify(recoveryObservation.project({ validation: recoveryValidation, failure: recoveryFailure, milestones: recoveryMilestones }), null, 2)),
+        contentType: 'application/json',
+      }), (failure) => testInfo.attach('webtty-router-recovery-oracle-persist-failure.json', {
+        body: Buffer.from(JSON.stringify(failure)),
+        contentType: 'application/json',
+      }));
+      await recoveryObservation.dispose();
+      recoveryProofComplete = true;
 
       await openExplorer(page, {
         account: smokeConfig.primaryUser,
@@ -1381,7 +1773,13 @@ test.describe('Ploinky core WebTTY release gate', () => {
       });
       await assertExplorerDirectory(page, fixture.parentDirectoryPath);
       acknowledgeExactPageDiagnostics(page, primaryRecoveryCheckpoint, []);
+      primaryRecoveryCheckpoint = null;
       assertPageDiagnosticsClean(page, 'Explorer must reopen cleanly after verified Router recovery');
+      const cleanupCheckpoint = checkpointPageDiagnostics(page, 'authenticated prior Router terminal DELETE');
+      await closeTerminal(restartRecoveryTerminal, { requestPage: page, allowMissing: true });
+      acknowledgeExactPageDiagnostics(page, cleanupCheckpoint, expectedHttpFailureDiagnostics(
+        `/webtty/sessions/${restartRecoveryTerminal.session.id}`, { method: 'DELETE', status: 404 },
+      ));
       const explorerReopenedAt = new Date().toISOString();
       const isolationHostMarker = `box-isolation-host-${crypto.randomUUID()}`;
       const isolationBrowserMarker = `box-isolation-browser-${crypto.randomUUID()}`;
@@ -1390,8 +1788,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         `${isolationHostMarker}\n`,
         { mode: 0o600 },
       );
-      const isolatedBox = await openTerminalFromExplorer(page, fixture.nestedDirectoryPath);
-      terminals.push(isolatedBox);
+      const isolatedBox = await openTerminalFromExplorer(page, fixture.nestedDirectoryPath, undefined, terminals);
       const isolatedBoxDiagnostics = attachPageDiagnostics(
         isolatedBox.terminalPage,
         testInfo,
@@ -1465,7 +1862,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         payload: { ok: false, error: 'administrator_required' },
       });
       const deniedCreation = await browserMutation(userPage, '/webtty/sessions', {
-        body: { launch: 'A'.repeat(32), cols: 80, rows: 24 },
+        body: { launch: 'A'.repeat(32), cols: 80, rows: 24, closePolicy: 'keep' },
       });
       expect(deniedCreation).toMatchObject({
         status: 403,
@@ -1504,7 +1901,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
           agentCwdMatchedIndependentMountProof: true,
           agentBidirectionalIo: true,
           agentResize: true,
-          agentDisconnectRemovedExecAndForegroundProcess: true,
+          agentKillRemovedExecAndForegroundProcess: true,
           predecessorTargetRemoved: true,
           activeTargetReplacementRemovedExactMarkerContainer: true,
           staleLaunchStatus: staleLaunch.status,
@@ -1512,11 +1909,15 @@ test.describe('Ploinky core WebTTY release gate', () => {
           staleLaunchExactExecEventCount: staleObservation.exactEventCount,
           replacementTargetChangedImmutableContainer: true,
           replacementTargetPreservedCoordinatedIdentity: true,
-          authRevocationRemovedExecAndForegroundProcess: true,
+          logoutKeptExecAndForegroundProcess: true,
+          ownerReloginReplayedAndExecutedMarker: true,
+          foreignAdminWatchOnlyAndKill: true,
+          attachTokenAbsentFromQueryAndStorage: true,
           defaultRouterCrashRecoveryRemovedAgentExecAndForegroundProcess: true,
           boxAvailableAfterAgentAndRouterFailures: true,
           legacyDirectoryQueryCreatedSession: false,
           normalCloseKeptWebttyAvailable: true,
+          tabCloseKeptShellAndSentNoDelete: true,
           ordinaryUserMenuItemVisible: false,
           ordinaryUserPageStatus: directResponse.status(),
           ordinaryUserDiscoveryStatus: deniedDiscovery.status,
@@ -1524,20 +1925,53 @@ test.describe('Ploinky core WebTTY release gate', () => {
         }, null, 2)),
         contentType: 'application/json',
       });
+    } catch (error) {
+      primaryFailure = error;
+      throw error;
     } finally {
-      await userContext?.close().catch(() => {});
-      await foreignAdminContext?.close().catch(() => {});
-      for (const terminal of terminals.reverse()) {
-        if (!terminal.terminalPage.isClosed()) {
-          await browserMutation(
-            terminal.terminalPage,
-            `/webtty/sessions/${encodeURIComponent(terminal.session.id)}`,
-            { method: 'DELETE' },
-          ).catch(() => {});
-          await terminal.terminalPage.close().catch(() => {});
-        }
+      // Idempotent: the observer must be gone before the cleanup sign-in below navigates the primary page.
+      primaryAuthLifecycle?.stop();
+      // A failed recovery proof leaves every event actionable. Before the authorized teardown signs in, the owned recovery
+      // producer is ended (it would otherwise keep retrying), a sanitized snapshot is kept, the open checkpoints are
+      // closed without acknowledgement and the recorders are released. This is failure cleanup, never evidence that the
+      // independent backend cleanup passed, and it cannot replace the primary error.
+      if (recoveryObservation && !recoveryProofComplete) {
+        await finalizeRouterRecoveryFailure({
+          observation: recoveryObservation,
+          persist: (finalization) => testInfo.attach('webtty-router-recovery-oracle-failure-cleanup.json', {
+            body: Buffer.from(JSON.stringify(recoveryObservation.project({ milestones: recoveryMilestones, finalization }), null, 2)),
+            contentType: 'application/json',
+          }),
+          closeCheckpoints: () => {
+            if (recoveryCheckpointOpen) { recoveryCheckpointOpen = false; recoveryLedger.diagnostics.closeWithoutAcknowledgement(recoveryLedger.checkpoint); }
+            if (primaryRecoveryCheckpoint) { const open = primaryRecoveryCheckpoint; primaryRecoveryCheckpoint = null; closePageDiagnosticsCheckpoint(page, open); }
+          },
+        });
+      } else if (primaryRecoveryCheckpoint) {
+        const open = primaryRecoveryCheckpoint;
+        primaryRecoveryCheckpoint = null;
+        closePageDiagnosticsCheckpoint(page, open);
       }
-      fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+      await cleanupWebttyTerminals({
+        terminals,
+        priorFailure: primaryFailure,
+        authenticate: async () => {
+          const requestPage = cleanupPage.isClosed() ? page : cleanupPage;
+          // This also renews authentication when an assertion failed immediately after logout.
+          const principal = await signIn(requestPage, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true });
+          expect(principal.roles).toContain('admin');
+          return requestPage;
+        },
+        closeTerminal,
+        closeContexts: async () => {
+          const outcomes = await Promise.allSettled([
+            userContext?.close(), foreignAdminContext?.close(), watcherContext?.close(), ownerReattachContext?.close(),
+          ]);
+          const errors = outcomes.filter((outcome) => outcome.status === 'rejected').map((outcome) => outcome.reason);
+          if (errors.length) throw new AggregateError(errors, 'WebTTY browser contexts could not be closed.');
+        },
+        removeFixture: () => fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true }),
+      });
     }
   });
 });

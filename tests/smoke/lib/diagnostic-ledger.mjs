@@ -105,6 +105,15 @@ export function createDiagnosticLedger(events, { isActionable = () => true } = {
     return observed;
   }
 
+  // Consumes one open checkpoint without acknowledging anything: every event
+  // it covered stays actionable. An unknown or consumed checkpoint throws.
+  function closeWithoutAcknowledgement(token) {
+    if (!checkpoints.has(token)) {
+      throw new Error('diagnostic checkpoint is unknown or already consumed');
+    }
+    checkpoints.delete(token);
+  }
+
   function assertNoOpenCheckpoints() {
     if (checkpoints.size === 0) return;
     throw new Error(
@@ -118,5 +127,6 @@ export function createDiagnosticLedger(events, { isActionable = () => true } = {
     assertNoOpenCheckpoints,
     assertExact,
     checkpoint,
+    closeWithoutAcknowledgement,
   });
 }

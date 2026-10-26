@@ -6,6 +6,10 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
+import * as listingAccess from '../server/listing-access.mjs';
+
+const { authorizeWorkspaceRequest } = listingAccess;
+const liveSessionsAccess = (access) => listingAccess.liveSessionsAccess(access);
 
 // Robot listing is authorized only from the Router-signed request. Every
 // signed fixture is minted by the sibling Ploinky checkout's real HTTP-route
@@ -188,4 +192,55 @@ test('only the exact GET /api/robots path uses the listing gate; every other rou
     await expectStatus(await fixture.get('/api/robots/', signedHeaders(PRINCIPALS.explorerUser, { pathname: '/api/robots/' })), 404, 'signed explorer /api/robots/');
     const refused = await expectStatus(await fixture.get(sessionPath, signedHeaders(PRINCIPALS.selfRegistered, { pathname: sessionPath })), 403, 'signed selfRegistered session');
     assert.equal(refused.error, 'Explorer access permission is required to use RoboTeam');
+});
+
+// Live Sessions take the owner principal only from the verified signed payload.
+// These cases call the workspace gate directly, so they need no robot store.
+function gateRequest(headers, pathname = '/api/live-sessions') {
+    return { req: { method: 'GET', url: pathname, headers }, url: new URL(`http://127.0.0.1${pathname}`) };
+}
+
+test('workspace gate returns the signed actor id as principal and the signed admin decision', async (t) => {
+    t.after(configureAgentEnv());
+    for (const [name, principal, canAdmin] of [['explorerUser', 'user:member-1', false], ['adminNotNamedAdmin', 'user:owner-1', true]]) {
+        const { req, url } = gateRequest(signedHeaders(PRINCIPALS[name], { pathname: '/api/live-sessions' }));
+        const access = await authorizeWorkspaceRequest(req, url, { internalToken: 'listing-token' });
+        assert.deepEqual(access, { ok: true, internal: false, canAdmin, principal }, name);
+        assert.deepEqual(liveSessionsAccess(access), { ok: true, principal, canAdmin }, `${name} live sessions access`);
+    }
+});
+
+test('workspace gate principal ignores unsigned identity fields in the auth-info header', async (t) => {
+    t.after(configureAgentEnv());
+    const authInfo = JSON.parse(signedHeaders(PRINCIPALS.explorerUser, { pathname: '/api/live-sessions' })['x-ploinky-auth-info']);
+    authInfo.user = { id: 'owner-1', username: 'owner', roles: ['admin'] };
+    authInfo.principal = 'user:owner-1';
+    const { req, url } = gateRequest({ 'x-ploinky-auth-info': JSON.stringify(authInfo) });
+    const access = await authorizeWorkspaceRequest(req, url, { internalToken: 'listing-token' });
+    assert.equal(access.ok, true);
+    assert.equal(access.principal, 'user:member-1');
+    assert.equal(access.canAdmin, false);
+});
+
+test('internal-token callers carry no principal and are refused by Live Sessions even with forwarded or signed users', async (t) => {
+    t.after(configureAgentEnv());
+    const internal = { 'x-roboteam-internal-token': 'listing-token' };
+    const cases = {
+        bare: internal,
+        forwardedAdmin: { ...internal, 'x-roboteam-user-id': 'owner-1', 'x-roboteam-user-roles': '["admin"]' },
+        signedUser: { ...internal, ...signedHeaders(PRINCIPALS.adminNotNamedAdmin, { pathname: '/api/live-sessions' }) },
+    };
+    for (const [name, headers] of Object.entries(cases)) {
+        const { req, url } = gateRequest(headers);
+        const access = await authorizeWorkspaceRequest(req, url, { internalToken: 'listing-token' });
+        assert.deepEqual(access, { ok: true, internal: true, canAdmin: false, principal: null }, name);
+        assert.deepEqual(liveSessionsAccess(access), { ok: false, status: 403, error: 'Live Sessions require a signed-in user' }, name);
+    }
+    // A wrong internal token is not internal: the signed request decides.
+    const { req, url } = gateRequest({ 'x-roboteam-internal-token': 'wrong-token', ...signedHeaders(PRINCIPALS.explorerUser, { pathname: '/api/live-sessions' }) });
+    const access = await authorizeWorkspaceRequest(req, url, { internalToken: 'listing-token' });
+    assert.deepEqual(access, { ok: true, internal: false, canAdmin: false, principal: 'user:member-1' });
+    // A refused gate decision passes through unchanged.
+    assert.deepEqual(liveSessionsAccess({ ok: false, status: 401, error: 'x' }), { ok: false, status: 401, error: 'x' });
+    assert.deepEqual(liveSessionsAccess({ ok: true, internal: false, canAdmin: true, principal: 'not-a-user' }).status, 403);
 });

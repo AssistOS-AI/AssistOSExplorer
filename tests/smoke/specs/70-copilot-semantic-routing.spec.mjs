@@ -5,8 +5,9 @@ import { createCopilotDiagnostics } from '../lib/copilot-terminal-diagnostics.mj
 
 const diagnostics = new WeakMap();
 
-test.beforeEach(async ({ page }) => { diagnostics.set(page, createCopilotDiagnostics()); });
+test.beforeEach(async ({ page }) => { diagnostics.set(page, createCopilotDiagnostics({ webchatTab: true })); });
 test.afterEach(async ({ page }, testInfo) => {
+    diagnostics.get(page)?.stopWebchatTab();
     await testInfo.attach('copilot-terminal_codex.json', {
         body: Buffer.from(JSON.stringify(diagnostics.get(page)?.evidence || {}, null, 2)),
         contentType: 'application/json',
@@ -29,6 +30,8 @@ function copilotWebchatPath() {
 }
 
 async function openCopilotWebchat(page, account = smokeConfig.primaryUser) {
+    // Registered before sign-in and navigation, so the page's first stream connection cannot be missed.
+    diagnostics.get(page).observeWebchatTab(page, { baseURL: smokeConfig.baseURL, agent: smokeConfig.webchatAgent });
     await signIn(page, account, copilotWebchatPath());
     await expect(page.locator('#cmd')).toBeVisible();
     await expect(page.locator('#send')).toBeVisible();
@@ -59,10 +62,15 @@ async function sendAndWaitForReply(page, prompt, introCount, timeoutMs) {
         input.selectionEnd = input.value.length;
         input.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    // The owned session and the existing stable message ids are snapshotted first; then the bound tab identity is
+    // required and the attempt time is taken immediately before the click.
+    await diagnostics.get(page).snapshotWebchatMessages(page, { baseURL: smokeConfig.baseURL });
+    diagnostics.get(page).beforeSubmit();
     await page.locator('#send').click();
     diagnostics.get(page).submitted();
 
     const polls = Math.ceil(timeoutMs / 3_000);
+    let replySeen = false;
     for (let i = 0; i < polls; i++) {
         await page.waitForTimeout(3_000);
         await observeTerminal(page);
@@ -74,10 +82,18 @@ async function sendAndWaitForReply(page, prompt, introCount, timeoutMs) {
             for (let j = introCount; j < count; j++) {
                 texts.push(await msgs.nth(j).innerText());
             }
-            diagnostics.get(page).replied();
-            return texts.join('\n');
+            if (!replySeen) {
+                replySeen = true;
+                diagnostics.get(page).replied();
+            }
+            // A tab id that changed during the turn would make its attribution ambiguous.
+            diagnostics.get(page).requireWebchatTab();
+            // The stable message ids arrive with the history render after the live bubbles; the pair is awaited within
+            // this same poll budget, and a missing or ambiguous pair holds the case.
+            if (await diagnostics.get(page).pairResolved(page, { baseURL: smokeConfig.baseURL })) return texts.join('\n');
         }
     }
+    if (replySeen) diagnostics.get(page).requirePairResolved();
     diagnostics.get(page).timedOut();
     throw new Error(`No copilot reply within ${Math.round(timeoutMs / 1000)}s`);
 }

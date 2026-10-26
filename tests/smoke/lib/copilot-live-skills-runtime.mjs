@@ -6,7 +6,7 @@ import path from 'node:path';
 import { assertBoxWorkspacePath, inspectBoxWorkspace } from './box-workspace.mjs';
 import { collectCopilotReleaseEvidence, sameCopilotReleaseGeneration } from './copilot-release-evidence.mjs';
 import { validateWorkspaceSourceMount } from './live-box.mjs';
-import { liveSkillsHash, liveSkillsWorkspace, UUID } from './copilot-live-skills.mjs';
+import { inspectSessionSkillLinks, liveSkillsHash, liveSkillsWorkspace, UUID } from './copilot-live-skills.mjs';
 import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
 import { inside, requireMount, rejectShadows } from './local-snapshot-bindings.mjs';
 
@@ -23,7 +23,7 @@ const CONTRACT_FILES = Object.freeze([
     'server/copilot-context.mjs', 'server/constants.mjs', 'server/robot-store.mjs',
     'server/live-skill-catalog.mjs', 'server/live-skill-install.mjs', 'server/skill-catalog-api.mjs',
     'copilot/src/lib/storage/conversationSessionStore.mjs', 'copilot/src/lib/skills/robotSkillCatalog.mjs',
-    'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
+    'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/execution/alaSkillMounts.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
 ]);
 
 export { CONTRACT_FILES as LIVE_SKILLS_CONTRACT_FILES };
@@ -55,7 +55,8 @@ function command(args, input = '') {
 
 // The function source is shipped to the Box, so it may reference no module binding. Every path travels as a JSON value.
 export function program(fn, args) {
-    const helpers = fn === readLiveSkillsSnapshot ? `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\n` : '';
+    const helpers = (fn === readLiveSkillsSnapshot ? `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\n` : '')
+        + ([readLiveSkillsSnapshot, operateLiveSkillsFixture].includes(fn) ? `const inspectSessionSkillLinks = ${inspectSessionSkillLinks.toString()};\n` : '');
     return `${helpers}(${fn.toString()})(${JSON.stringify(args)}).catch(() => { console.error('Invalid read-only runtime evidence'); process.exitCode = 1; });\n`;
 }
 
@@ -64,52 +65,110 @@ export function normalizeLiveSkillsImageId(value) {
     return value.replace(/^sha256:/, '');
 }
 
-// Ploinky links /code entries into this already verified repository mount.
+// Ploinky binds /code directly from this already verified repository mount.
 // This helper is serialized with the snapshot reader; keep its imports local.
 export async function readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot = '/code', fsApi } = {}) {
     const assert = (await import('node:assert/strict')).default;
     const fs = fsApi || await import('node:fs');
     const path = await import('node:path');
     const { createHash } = await import('node:crypto');
-    assert.ok(typeof expectedRepository === 'string' && path.isAbsolute(expectedRepository)
-        && path.normalize(expectedRepository) === expectedRepository);
+    const cleanAbsolute = value => typeof value === 'string' && path.isAbsolute(value)
+        && path.normalize(value) === value && value !== '/' && !value.endsWith('/');
+    assert.ok(cleanAbsolute(expectedRepository) && cleanAbsolute(codeRoot));
     const sourceRoot = `${expectedRepository}/roboTeamAgent`;
-    assert.equal(fs.realpathSync(sourceRoot), sourceRoot, 'Verified RoboTeam source must remain canonical.');
     assert.ok(Array.isArray(contractFiles) && contractFiles.length > 0 && new Set(contractFiles).size === contractFiles.length);
-    const hashes = {};
     for (const file of contractFiles) {
         assert.ok(typeof file === 'string' && /^[a-zA-Z0-9/.-]+\.mjs$/.test(file)
             && !path.isAbsolute(file) && file.split('/').every(part => part && part !== '.' && part !== '..'));
-        const filename = `${sourceRoot}/${file}`;
-        const runtimeFile = `${codeRoot}/${file}`;
-        assert.equal(fs.realpathSync(filename), filename, 'Verified contract source contains a symlink.');
-        assert.equal(fs.realpathSync(runtimeFile), filename, 'Runtime contract file resolves outside its exact verified source.');
-        const fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-        try {
-            const before = fs.fstatSync(fd);
-            assert.ok(before.isFile() && before.nlink === 1 && before.size <= 4 * 1024 * 1024);
-            const data = fs.readFileSync(fd);
-            const after = fs.fstatSync(fd);
-            assert.ok(before.size === data.length && before.size === after.size && before.mtimeMs === after.mtimeMs
-                && before.ctimeMs === after.ctimeMs && fs.realpathSync(`/proc/self/fd/${fd}`) === filename,
-            'Verified contract file changed during its read.');
-            assert.equal(fs.realpathSync(filename), filename);
-            assert.equal(fs.realpathSync(runtimeFile), filename, 'Runtime contract link changed during its read.');
-            hashes[file] = createHash('sha256').update(data).digest('hex');
-        } finally { fs.closeSync(fd); }
     }
-    return hashes;
+    const flags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
+    const sameObject = (a, b) => a.dev === b.dev && a.ino === b.ino;
+    const sameFile = (a, b) => ['dev', 'ino', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'].every(key => a[key] === b[key]);
+    const observe = filename => {
+        assert.equal(fs.realpathSync(filename), filename, 'Contract path must remain canonical without symlinks.');
+        return fs.lstatSync(filename, { bigint: true });
+    };
+    const descriptors = [];
+    const open = (filename, extra = 0) => {
+        const fd = fs.openSync(filename, flags | extra);
+        descriptors.push(fd);
+        return fd;
+    };
+    const close = fd => {
+        descriptors.splice(descriptors.indexOf(fd), 1);
+        fs.closeSync(fd);
+    };
+    try {
+        const roots = [sourceRoot, codeRoot].map(filename => ({ filename, before: observe(filename) }));
+        for (const root of roots) {
+            assert.ok(root.before.isDirectory(), 'Contract root must be a directory.');
+            root.fd = open(root.filename, fs.constants.O_DIRECTORY);
+            const pinned = fs.fstatSync(root.fd, { bigint: true });
+            assert.ok(pinned.isDirectory() && sameObject(root.before, pinned), 'Contract root changed while opening.');
+        }
+        assert.ok(sameObject(roots[0].before, roots[1].before), 'Runtime root is not the verified source directory object.');
+        const fenceRoots = () => {
+            for (const root of roots) {
+                const current = observe(root.filename), pinned = fs.fstatSync(root.fd, { bigint: true });
+                assert.ok(current.isDirectory() && pinned.isDirectory() && sameObject(root.before, current)
+                    && sameObject(root.before, pinned), 'Contract root changed during its read.');
+                assert.equal(fs.realpathSync(`/proc/self/fd/${root.fd}`), root.filename, 'Contract root descriptor changed.');
+            }
+        };
+        const hashes = {};
+        for (const file of contractFiles) {
+            fenceRoots();
+            const entries = roots.map(root => ({ filename: `${root.filename}/${file}` }));
+            for (const entry of entries) {
+                entry.before = observe(entry.filename);
+                assert.ok(entry.before.isFile() && entry.before.nlink === 1n && entry.before.size <= 4n * 1024n * 1024n,
+                    'Contract file must be a bounded single-link regular file.');
+            }
+            try {
+                for (const entry of entries) {
+                    entry.fd = open(entry.filename);
+                    const pinned = fs.fstatSync(entry.fd, { bigint: true });
+                    assert.ok(pinned.isFile() && sameFile(entry.before, pinned), 'Contract file changed while opening.');
+                }
+                assert.ok(sameFile(entries[0].before, entries[1].before), 'Runtime file is not the verified source file object.');
+                const data = fs.readFileSync(entries[1].fd);
+                assert.equal(BigInt(data.length), entries[1].before.size, 'Contract file changed during its read.');
+                for (const entry of entries) {
+                    assert.ok(sameFile(entry.before, fs.fstatSync(entry.fd, { bigint: true }))
+                        && sameFile(entry.before, observe(entry.filename)), 'Contract file changed during its read.');
+                    assert.equal(fs.realpathSync(`/proc/self/fd/${entry.fd}`), entry.filename, 'Contract file descriptor changed during its read.');
+                    assert.ok(sameFile(entry.before, observe(entry.filename)), 'Contract pathname changed during its read.');
+                }
+                fenceRoots();
+                hashes[file] = createHash('sha256').update(data).digest('hex');
+            } finally {
+                for (const entry of entries) if (entry.fd !== undefined) close(entry.fd);
+            }
+        }
+        fenceRoots();
+        return hashes;
+    } finally {
+        let failure;
+        for (const fd of descriptors.reverse()) {
+            try { fs.closeSync(fd); } catch (error) { failure ||= error; }
+        }
+        if (failure) throw failure;
+    }
 }
 
 // Executed inside the already pinned Box. Importing this observational reader does not create a registry.
 export async function readRegistryAndRuntime({ workspaceRoot }) {
     const assert = (await import('node:assert/strict')).default;
     const path = await import('node:path');
+    const fs = await import('node:fs');
     const { execFileSync } = await import('node:child_process');
     const { readAgentRegistrySnapshot } = await import('/opt/ploinky/cli/utils/agentRegistrySnapshot.js');
+    const { admittedDependencyRecord } = await import('/opt/ploinky/cli/utils/dependencies/store/runtimeDependencies.mjs');
+    const { createCacheStore } = await import('/opt/ploinky/cli/utils/dependencies/store/objectStore.mjs');
     // The Box mounts the workspace at its own host path; the admitted root is never the retired /workspace alias.
     assert.ok(typeof workspaceRoot === 'string' && path.isAbsolute(workspaceRoot) && path.normalize(workspaceRoot) === workspaceRoot
         && workspaceRoot !== '/' && !workspaceRoot.endsWith('/'));
+    assert.equal(fs.realpathSync(workspaceRoot), workspaceRoot);
     const rows = Object.entries(readAgentRegistrySnapshot({ workspaceRoot }))
         .filter(([, row]) => row.type === 'agent' && row.repoName === 'AchillesIDE' && row.agentName === 'roboTeamAgent');
     assert.equal(rows.length, 1);
@@ -119,8 +178,25 @@ export async function readRegistryAndRuntime({ workspaceRoot }) {
     const [runtime] = JSON.parse(execFileSync('podman', ['inspect', row.containerId], { encoding: 'utf8', timeout: 8_000, stdio: ['ignore', 'pipe', 'pipe'] }));
     assert.equal(runtime.Id, row.containerId);
     assert.equal(runtime.State.Running, true);
+    const admitted = admittedDependencyRecord(row);
+    assert.equal(admitted.mode, 'store');
+    const dependencies = Object.fromEntries(['schema', 'mode', 'family', 'runtimeKey', 'imageId', 'inputKey',
+        'generationId', 'objectId', 'payloadPath', 'nodeModulesPath'].map(field => [field, admitted[field]]));
+    const store = createCacheStore({ workspaceRoot, depsDir: path.join(workspaceRoot, '.ploinky/deps') });
+    const validated = store.validateObject(dependencies.objectId, { inputKey: dependencies.inputKey });
+    assert.equal(validated.valid, true, 'Invalid admitted dependency object.');
+    assert.equal(validated.payloadPath, dependencies.payloadPath);
+    assert.equal(validated.generationId, dependencies.generationId);
+    assert.equal(path.join(validated.payloadPath, 'node_modules'), dependencies.nodeModulesPath);
+    assert.equal(validated.manifest.contract.runtime.family, dependencies.family);
+    assert.equal(validated.manifest.contract.runtime.key, dependencies.runtimeKey);
+    assert.equal(validated.manifest.contract.toolchain.imageId, dependencies.imageId);
+    // Fence a registry admission change while validating the immutable object.
+    const after = readAgentRegistrySnapshot({ workspaceRoot })[key];
+    assert.deepEqual(after, row, 'Runtime admission changed during dependency validation.');
     console.log(JSON.stringify({ key, containerId: row.containerId, instanceId: row.instanceId,
         enableGeneration: row.enableGeneration, startedAt: runtime.State.StartedAt, imageId: runtime.Image,
+        dependencies,
         mounts: runtime.Mounts.map(({ Type, Source, Destination, RW }) => ({ Type, Source, Destination, RW })) }));
 }
 
@@ -177,7 +253,7 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
     assert.equal(registered[0].source, repositoryRoot);
     assert.match(registered[0].generation, /^[0-9a-f-]{36}$/);
     const codeHashes = await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi });
-    const sessionFile = `${workspace}/.roboteam/sessions/${sessionId}.json`;
+    const sessionFile = `${workspace}/.roboteam/sessions/${sessionId}/config.json`;
     const sessionBytes = bytes(sessionFile, workspace);
     const saved = JSON.parse(sessionBytes);
     assert.equal(saved.version, 2);
@@ -230,49 +306,36 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
         turns: nativeSession.turns.map(({ turnId, user, final, status, startedAt, endedAt }) => ({ turnId, user, final, status, startedAt, endedAt })) };
     const capturedFiles = {}, liveLinks = {};
     let catalog = null;
+    const installed = await inspectSessionSkillLinks({ workspace, sessionId, execution: session.skillExecution }, { fsApi: fs });
     if (session.skillExecution) {
-        assert.equal(session.skillExecution.live, true, 'Copied catalogs are not live execution evidence.');
-        const recordFile = `${workspace}/.agents/.roboteam-links.json`;
-        const recordBytes = bytes(recordFile, workspace);
-        const links = JSON.parse(recordBytes);
-        assert.ok(Array.isArray(links));
-        assert.equal(hash(JSON.stringify(links)), session.skillExecution.revision);
-        const destinations = new Set();
-        for (const link of links) {
-            assert.equal(path.dirname(link.destination), `${workspace}/.agents/skills`);
-            assert.ok(!destinations.has(link.destination), 'Duplicate managed link destination.');
-            destinations.add(link.destination);
-            assert.ok(fs.lstatSync(link.destination).isSymbolicLink(), 'Installed skill must be an actual symlink.');
-            assert.equal(fs.readlinkSync(link.destination), link.linkTarget);
-        }
+        const { links, directory } = installed;
         catalog = { revision: session.skillExecution.revision, links, entries: session.skillExecution.entries };
         for (const name of skillNames) {
             assert.match(name, /^live-[a-f0-9]{8}-(control|probe|added)$/);
             const entries = catalog.entries.filter(entry => entry.name === name);
             if (!entries.length) {
-                assert.ok(!destinations.has(`${workspace}/.agents/skills/${name}`), 'Absent skill remains installed.');
-                assert.ok(!fs.existsSync(`${workspace}/.agents/skills/${name}`), 'Absent skill remains linked.');
+                assert.ok(!links.some(link => link.name === name), 'Absent skill remains installed.');
+                assert.equal(fs.lstatSync(`${directory}/${name}`, { throwIfNoEntry: false }), undefined, 'Absent skill remains linked.');
                 continue;
             }
             assert.equal(entries.length, 1);
             const source = `${repositoryRoot}/skills/${name}`;
-            const destination = `${workspace}/.agents/skills/${name}`;
-            const selected = links.filter(link => link.destination === destination);
+            const destination = `${directory}/${name}`;
+            const selected = links.filter(link => link.name === name);
             assert.equal(selected.length, 1, 'Selected fixture skill lacks its managed link.');
             const [link] = selected;
             assert.equal(entries[0].identity, `${repositoryName}/${name}`);
             assert.equal(entries[0].sourcePath, source);
-            assert.equal(link.repoName, repositoryName);
-            assert.equal(link.sourcePath, `skills/${name}`);
-            assert.equal(path.resolve(path.dirname(destination), link.linkTarget), source);
+            assert.equal(link.source, source);
+            assert.equal(link.target, source);
             assert.equal(fs.realpathSync(destination), source, 'Live skill link was retargeted.');
             capturedFiles[name] = { descriptorSha256: hash(bytes(`${source}/SKILL.md`, repositoryRoot)),
                 helperSha256: hash(bytes(`${source}/receipt.mjs`, repositoryRoot)) };
             assert.equal(fs.realpathSync(destination), source, 'Live link changed during source read.');
-            assert.equal(fs.readlinkSync(destination), link.linkTarget);
-            liveLinks[name] = { destination, linkTarget: link.linkTarget, resolvedSource: source };
+            assert.equal(fs.readlinkSync(destination), link.target);
+            liveLinks[name] = { destination, linkTarget: link.target, resolvedSource: source };
         }
-        assert.equal(hash(bytes(recordFile, workspace)), hash(recordBytes), 'Managed links changed during source read.');
+        installed.recheck();
     }
     const receipts = {};
     const receiptRoot = `${workspace}/.receipts`;
@@ -284,6 +347,8 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
     assert.equal(hash(bytes(robotFile, robotRoot)), hash(robotBytes), 'Owned robot registration changed during capture.');
     assert.deepEqual(await readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot, fsApi }), codeHashes, 'Copilot source changed during composition.');
     for (const file of Object.keys(expectedAla.hashes)) assert.equal(hash(bytes(`${expectedAla.root}/${file}`, expectedAla.root)), expectedAla.hashes[file], 'ALA source changed during composition.');
+    installed?.recheck();
+    assert.equal(hash(bytes(sessionFile, workspace)), hash(sessionBytes), 'Session metadata changed during capture.');
     emit({ workspaceRoot, robotRoot, robot: { id: robotId, name: robotName, repository: { name: registered[0].name, source: registered[0].source, generation: registered[0].generation } },
         session: { sessionId: session.sessionId, cwd: session.cwd, engine: session.engine,
             skillPolicyRef: session.skillPolicyRef, skillExecution: session.skillExecution, presentations,
@@ -299,11 +364,12 @@ const SUBJECT = 'Live skills runtime';
 // The RoboTeam runtime is a managed, global Podman agent. Ploinky's production mount builder
 // (cli/sandbox/docker/agentServiceManager.js) gives it these binds, and only these may overlap a path the
 // evidence reads. Everything else a runtime mounts (/shared, the probe control root, the edge topology,
-// /root, dependency trees, linked repositories) lies outside those paths and is not part of the proof.
+// /root, unrelated dependency trees, linked repositories) lies outside those paths and is not part of the proof.
 //   - the project bind: the workspace root at its own path, writable (buildPersistentAgentRunArgs, homeLayout.binds)
 //   - the persistent storage `.data/roboTeamAgent` at /data (manifest volume)
-//   - the staged agent source at its own path (buildPodmanStagedTargetMounts: setPodmanTargetMount(agentCodePath))
-//   - /code and /Agent from `<root>/.ploinky/container-runtime/<key>/` (ensurePodmanStagedCodeDir, StagedAgentLibDir)
+//   - the writable agent source at its own path and that exact source read-only at /code
+//   - the admitted dependency node_modules read-only at /code/node_modules and at its own path
+//   - /Agent from `<root>/.ploinky/container-runtime/<key>/` (StagedAgentLibDir)
 //   - the read-only AgentLib grant: Source and Destination are both /opt/ploinky-agentlib (agentLibGrant)
 //   - the read-only self pin of the controller root `<root>/.ploinky` (controllerGuardMounts.pinAncestors). Production
 //     emits it for every runtime that has the root project bind; it needs allow-listing only when the verified
@@ -336,21 +402,37 @@ export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository, { 
     };
     const sourceRoot = `${expectedRepository}/roboTeamAgent`;
     const stagingRoot = `${root}/.ploinky/container-runtime/${runtime.key}/`;
+    const dependency = runtime.dependencies;
+    assert.ok(dependency && dependency.schema === 1 && dependency.mode === 'store' && dependency.family === 'container',
+        'Runtime needs its admitted store dependency record.');
+    assert.match(dependency.runtimeKey, /^container-[a-z0-9]+-[a-z0-9_]+(?:-[a-z0-9_]+)?-node[1-9][0-9]*$/, 'Invalid dependency toolchain identity.');
+    assert.equal(normalizeLiveSkillsImageId(dependency.imageId), normalizeLiveSkillsImageId(runtime.imageId), 'Dependency image identity differs.');
+    for (const field of ['inputKey', 'generationId']) assert.match(dependency[field], /^[a-f0-9]{64}$/, 'Invalid dependency identity.');
+    assert.match(dependency.objectId, UUID, 'Invalid dependency object identity.');
+    const payload = `${root}/.ploinky/deps/store/objects/${dependency.objectId}/payload`;
+    assert.equal(dependency.payloadPath, payload, 'Dependency payload differs from its exact workspace object.');
+    assert.equal(dependency.nodeModulesPath, `${payload}/node_modules`, 'Dependency node_modules path differs.');
+    if (fsApi) {
+        assert.equal(fsApi.realpathSync(root), root, 'Dependency workspace must be canonical.');
+        assert.equal(fsApi.realpathSync(payload), payload, 'Dependency payload must be canonical.');
+    }
     const allowed = [
         writable(root, root),
         writable('/data', `${root}/.data/roboTeamAgent`),
         writable(sourceRoot, sourceRoot),
-        staged('/code', `${stagingRoot}code-`),
+        requireMount(runtime.mounts, '/code', sourceRoot, { ...options, readOnly: true }),
+        requireMount(runtime.mounts, '/code/node_modules', dependency.nodeModulesPath, { ...options, readOnly: true }),
+        requireMount(runtime.mounts, dependency.nodeModulesPath, dependency.nodeModulesPath, { ...options, readOnly: true }),
     ];
-    const protectedPaths = ['/data', '/code', '/Agent', '/opt/ploinky-agentlib', sourceRoot];
+    const protectedPaths = ['/data', '/code', '/Agent', '/opt/ploinky-agentlib', sourceRoot, dependency.nodeModulesPath];
     const agent = staged('/Agent', `${stagingRoot}Agent-`);
     assert.equal(agent.RW, false, 'Runtime /Agent must be read-only.');
     allowed.push(agent);
     // The AgentLib source lives in the Box namespace, so only its mount tuple is checked, never a host realpath.
     allowed.push(requireMount(runtime.mounts, '/opt/ploinky-agentlib', '/opt/ploinky-agentlib', { readOnly: true, lexical: true, subject: SUBJECT }));
-    // The controller root is pinned read-only by a self bind when the verified source lives below it.
+    // The controller pin overlaps the admitted dependency source even when code lives outside it.
     const pin = `${root}/.ploinky`;
-    if (inside(pin, sourceRoot) && runtime.mounts.some(item => item.Destination === pin)) {
+    if (runtime.mounts.some(item => item.Destination === pin)) {
         allowed.push(requireMount(runtime.mounts, pin, pin, { ...options, readOnly: true }));
     }
     if (fixtureWorkspace !== null) {
@@ -377,7 +459,7 @@ export function liveSkillsProtectedSources(runtime, expectedRepository, workspac
     const root = assertBoxWorkspacePath(workspaceRoot);
     const sourceRoot = `${expectedRepository}/roboTeamAgent`;
     const sources = [sourceRoot];
-    for (const destination of ['/data', '/code', '/Agent']) {
+    for (const destination of ['/data', '/code', '/Agent', '/code/node_modules']) {
         for (const mount of runtime.mounts.filter(item => item.Destination === destination)) sources.push(mount.Source);
     }
     const pin = `${root}/.ploinky`;

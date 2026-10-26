@@ -9,6 +9,14 @@
     <div class="modal-body terminal-target-body">
         <p class="terminal-target-status" id="terminalTargetStatus" role="status" aria-live="polite"></p>
         <div class="terminal-target-warning" id="terminalTargetWarning" role="alert" hidden></div>
+        <div class="terminal-target-robot">
+            <label class="terminal-target-field-label" for="terminalTargetRobot">Robot</label>
+            <select id="terminalTargetRobot" class="terminal-target-select" required aria-describedby="terminalTargetRobotNote terminalTargetDisclosure" disabled>
+                <option value="" disabled selected>Choose a robot</option>
+            </select>
+            <p class="terminal-target-robot-note" id="terminalTargetRobotNote" role="status" aria-live="polite"></p>
+            <div class="terminal-target-notice" id="terminalTargetDisclosure" hidden></div>
+        </div>
         <p class="terminal-target-notice" id="terminalTargetNotice" hidden>
             An agent terminal uses that container's normal user, tools, environment, permissions, and credential context.
             The access badge applies only to this selected folder.
@@ -18,6 +26,7 @@
             <button type="button" class="gray-button" data-local-action="closeModal" autofocus>Cancel</button>
             <button type="button" class="general-button secondary" id="terminalTargetRetry" data-local-action="retryDiscovery" hidden>Retry</button>
             <button type="button" class="general-button secondary" id="terminalTargetRefresh" data-local-action="refreshTargets" hidden disabled>Refresh</button>
+            <button type="button" class="general-button" id="terminalTargetOpen" data-local-action="openTerminal" disabled>Open</button>
         </div>
     </div>
 </div>

@@ -325,7 +325,8 @@ function stageSlotMounts(container, slot, plugins, { deferMount = false } = {}) 
 
         const expectedComponent = typeof plugin?.component === 'string' ? plugin.component.trim() : '';
         const mountedComponent = expectedComponent ? mount.querySelector(expectedComponent) : null;
-        if (deferMount && expectedComponent && !mountedComponent) {
+        // A plugin that opted in with mountOnStart is never replaced by the on-demand trigger.
+        if (deferMount && !plugin?.mountOnStart && expectedComponent && !mountedComponent) {
             const existingTrigger = mount.querySelector('[data-app-plugin-trigger]');
             if (!existingTrigger) {
                 mount.replaceChildren(createLazyPluginButton(plugin, key));
@@ -508,6 +509,19 @@ export async function mountSlot(container, slot, plugins, context, { onlyKey = '
     orderSlotMounts(container, plugins, stagedMounts);
 }
 
+// Mounts one toolbar plugin that opted in with `mountOnStart`. The other toolbar plugins keep their on-demand triggers,
+// and a plugin that is already mounted is only updated.
+async function mountToolbarPluginOnStart(container, plugins, plugin, context) {
+    const key = getPluginKey(plugin);
+    const mount = Array.from(container.querySelectorAll('[data-app-plugin-key]'))
+        .find((entry) => entry.getAttribute('data-app-plugin-key') === key);
+    const mounted = mount?.querySelector?.(plugin.component);
+    if (!mounted || mounted.hasAttribute('data-app-plugin-loading')) {
+        await ensureRuntimeComponent(plugin.component, toolbarComponentRegistrationOptions(plugin));
+    }
+    await mountSlot(container, APP_PLUGIN_SLOTS.toolbar, plugins, context, { onlyKey: key, componentsReady: true });
+}
+
 async function loadToolbarPluginOnDemand(fileExp, trigger) {
     const key = String(trigger?.getAttribute?.('data-app-plugin-trigger') || '').trim();
     if (!key || trigger.getAttribute('aria-busy') === 'true') return;
@@ -674,7 +688,11 @@ async function performRenderApplicationPluginSlots(fileExp) {
 
     updateLoadedToolbarPluginContexts(toolbarContainer, visibleToolbarPlugins, toolbarContext);
     // Slots are independent: one slot's failure must not keep another from mounting.
+    // The toolbar slot stays on demand, except for plugins that opted in with mountOnStart. On the mobile layout the
+    // toolbar plugins already mount through the dropdown slot below.
+    const mountOnStartToolbar = visibleToolbarPlugins.filter((entry) => entry?.mountOnStart === true);
     const slotResults = await Promise.allSettled([
+        ...mountOnStartToolbar.map((entry) => mountToolbarPluginOnStart(toolbarContainer, visibleToolbarPlugins, entry, toolbarContext)),
         mountSlot(toolbarPluginsDropdownContainer, APP_PLUGIN_SLOTS.toolbarPluginsDropdown, visibleToolbarDropdownPlugins, toolbarPluginsDropdownContext),
         mountSlot(rightBarContainer, APP_PLUGIN_SLOTS.rightBar, rightBarPlugins, rightBarContext),
         mountSlot(internalContainer, APP_PLUGIN_SLOTS.internal, internalPlugins, internalContext),

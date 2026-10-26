@@ -1,0 +1,13 @@
+{
+  "pluginCategory": "application",
+  "id": "roboteam-live-sessions",
+  "label": "RoboTeam",
+  "contributionType": "live-sessions-source",
+  "location": [
+    "live-sessions:source"
+  ],
+  "liveSessions": {
+    "version": 1,
+    "base": "/base-agent-additional-server/roboTeamAgent/3001/api/live-sessions"
+  }
+}

@@ -247,3 +247,41 @@ test('an in-flight manual claim blocks duplicates and is invalidated by edits, r
         assert.equal(f.started.length, 0, operation); assert.equal((await f.service.store.list()).length, 0, operation);
     }
 });
+
+test('a Cron job is owned by its last signed saver; cron launches use it, run-now uses the actor without changing it', async t => {
+    const f = await fixture(t);
+    const created = await f.service.saveSchedule({ workflowTypeId: 'scheduled', folder: f.root, objective: 'Write the report',
+        timing: { kind: 'interval', everyMinutes: 60 }, ownerPrincipal: 'user:mallory' }, 'alice', undefined, { ownerPrincipal: 'user:alice' });
+    assert.equal(f.service.schedules.getSync(created.id).ownerPrincipal, 'user:alice', 'body owner fields are ignored');
+    assert.equal(Object.hasOwn(created, 'ownerPrincipal'), false, 'schedule listings do not project the owner');
+    const edited = await f.service.saveSchedule({ revision: created.revision, objective: 'Edited by B' }, 'bob', created.id, { ownerPrincipal: 'user:bob' });
+    assert.equal(f.service.schedules.getSync(created.id).ownerPrincipal, 'user:bob');
+    assert.equal(edited.createdBy, 'alice');
+    assert.equal(edited.updatedBy, 'bob');
+    f.advance(60); await f.service.scheduler.tick();
+    assert.equal(f.started.at(-1).ownerPrincipal, 'user:bob');
+    const scheduled = await f.service.store.get(f.service.schedules.getSync(created.id).lastFlowId);
+    assert.equal(scheduled.ownerPrincipal, 'user:bob');
+    await f.service.store.update(scheduled.id, flow => { flow.status = 'completed'; });
+    const current = f.service.schedules.getSync(created.id);
+    const manual = await f.service.runScheduleNow(created.id, current.revision, 'carol', { ownerPrincipal: 'user:carol' });
+    assert.equal((await f.service.store.get(manual.flow.id)).ownerPrincipal, 'user:carol');
+    assert.equal(f.started.at(-1).ownerPrincipal, 'user:carol');
+    assert.equal(f.service.schedules.getSync(created.id).ownerPrincipal, 'user:bob', 'run-now never changes the schedule owner');
+    // An unsigned saver makes the job a system job.
+    const latest = f.service.schedules.getSync(created.id);
+    await f.service.saveSchedule({ revision: latest.revision }, 'tool', created.id);
+    assert.equal(f.service.schedules.getSync(created.id).ownerPrincipal, null);
+});
+
+test('a legacy Cron job without an owner launches as the system owner', async t => {
+    const f = await fixture(t);
+    const job = await f.create();
+    const legacy = f.service.schedules.getSync(job.id);
+    delete legacy.ownerPrincipal;
+    f.service.schedules.saveSync(legacy);
+    f.advance(60); await f.service.scheduler.tick();
+    assert.equal(f.started.length, 1);
+    assert.equal(f.started[0].ownerPrincipal, null);
+    assert.equal((await f.service.store.get(f.service.schedules.getSync(job.id).lastFlowId)).ownerPrincipal, null);
+});

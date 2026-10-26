@@ -1,3 +1,5 @@
+import { normalizeLiveSessionSource, normalizeTerminalProfileSource } from './liveSessionSource.mjs';
+
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 const WORKSPACE_FILES_PREFIX = '/workspace-files';
 
@@ -285,6 +287,28 @@ export function normalizeRuntimePlugins(runtimePlugins) {
         }
 
         const agent = isNonEmptyString(entry.agent) ? entry.agent.trim() : '';
+        if (entry.contributionType === 'live-sessions-source') {
+            const liveSessions = normalizeLiveSessionSource(entry.liveSessions, agent);
+            if (category !== APPLICATION_PLUGIN_CATEGORY || location !== 'live-sessions:source' || !liveSessions
+                || typeof entry.id !== 'string' || !/^[a-z][a-z0-9-]*$/i.test(entry.id) || !isNonEmptyString(entry.label)) return;
+            bucket.push({
+                pluginCategory: category, contributionType: 'live-sessions-source', location,
+                agent, id: entry.id, label: entry.label || agent, liveSessions, runtime: true,
+            });
+            return;
+        }
+        if (entry.contributionType === 'terminal-profile-source') {
+            const terminalProfiles = normalizeTerminalProfileSource(entry.terminalProfiles, agent);
+            if (category !== APPLICATION_PLUGIN_CATEGORY || location !== 'terminal-profiles:source' || !terminalProfiles
+                || typeof entry.id !== 'string' || !/^[a-z][a-z0-9-]*$/i.test(entry.id) || !isNonEmptyString(entry.label)) return;
+            bucket.push({
+                pluginCategory: category, contributionType: 'terminal-profile-source', location,
+                agent, id: entry.id, label: entry.label || agent, terminalProfiles, runtime: true,
+            });
+            return;
+        }
+        // mountOnStart asks the host to mount a toolbar plugin at start instead of on first use; it must be a boolean.
+        if (entry.mountOnStart !== undefined && typeof entry.mountOnStart !== 'boolean') return;
         const contributionType = entry?.contributionType === MENU_PLUGIN_CONTRIBUTION_TYPE ? MENU_PLUGIN_CONTRIBUTION_TYPE : 'mount';
         const component = isNonEmptyString(entry.component) ? entry.component.trim() : '';
         if (contributionType !== MENU_PLUGIN_CONTRIBUTION_TYPE && !component) {
@@ -336,6 +360,7 @@ export function normalizeRuntimePlugins(runtimePlugins) {
             presenter: contributionType !== MENU_PLUGIN_CONTRIBUTION_TYPE && isNonEmptyString(entry.presenter) ? entry.presenter.trim() : undefined,
             type: contributionType !== MENU_PLUGIN_CONTRIBUTION_TYPE && isNonEmptyString(entry.type) ? entry.type : 'embedded',
             autoPin: Boolean(entry.autoPin),
+            mountOnStart: entry.mountOnStart === true,
             agent,
             icon: resolveRuntimeAssetUrl(agent, component || 'plugin', entry.icon, 'icon.svg', {
                 assetBaseUrl,

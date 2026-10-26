@@ -1,5 +1,5 @@
 import { getStore } from './store.mjs';
-import { assertNewUserAvailable, stageUser } from './users.mjs';
+import { assertNewUserAvailable, deriveUsernameFromEmail, loadTakenUsernames, normalizeEmail, stageUser } from './users.mjs';
 import { assertRegistrationRoleAllowed, getAuthPolicy, REGISTRATION_ROLE } from './policy.mjs';
 import { recordAudit } from './audit.mjs';
 
@@ -56,6 +56,11 @@ export async function prepareNewAccount({
         if (!policy.selfRegistrationEnabled) throw setupError('registration_disabled', 'Self-registration is disabled.');
         await assertRegistrationRoleAllowed(REGISTRATION_ROLE, store);
         roles = [REGISTRATION_ROLE];
+    }
+    // Explicit usernames win; otherwise derive one from the email. The derived
+    // value is what both the availability check and the staged create use.
+    if (!String(username || '').trim()) {
+        username = deriveUsernameFromEmail(normalizeEmail(email), await loadTakenUsernames(store));
     }
     await assertNewUserAvailable({ email, username, roles });
     const initialAdministrator = !setup.complete;

@@ -15,6 +15,8 @@ const MIN_WIDTH = 720;
 const MIN_HEIGHT = 480;
 const DEFAULT_ALLOW = "camera; microphone; display-capture; autoplay; fullscreen; clipboard-write";
 const AGENT_REF_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+// A same-origin page in the frame may define this to be asked before the panel closes or is replaced.
+const FRAME_CLOSE_GUARD = "__beforeExpandedModalClose";
 
 function parsePropsAttribute(rawValue) {
     if (!rawValue) return {};
@@ -40,6 +42,12 @@ export class ExpandedModal {
         this.closed = false;
         this.runId = 0;
         this.loadController = new AbortController();
+        // Frame documents that offered a close guard, whether the last loaded document did, and the one close
+        // preparation that concurrent close and replacement requests share.
+        this.guardedDocuments = new WeakSet();
+        this.frameGuarded = false;
+        this.closePreparation = null;
+        this.closing = false;
         this.invalidate();
     }
 
@@ -51,6 +59,7 @@ export class ExpandedModal {
             this.dialog.dataset.expandedKey = this.attr("key");
             this.dialog.setAttribute("aria-labelledby", "expandedModalTitle");
             this.dialog.addEventListener("keydown", this.handleComponentEscape);
+            this.dialog.addEventListener("cancel", this.handleDialogCancel);
         }
         this.body = this.element.querySelector("#expandedModalBody");
         this.stateNode = this.element.querySelector("#expandedModalState");
@@ -175,13 +184,28 @@ export class ExpandedModal {
     afterUnload() {
         this.closed = true;
         this.dialog?.removeEventListener("keydown", this.handleComponentEscape);
+        this.dialog?.removeEventListener("cancel", this.handleDialogCancel);
         this.cancelLoading();
     }
 
+    // A native cancel of this dialog must not remove a guarded frame without asking it first.
+    handleDialogCancel = (event) => {
+        if (event.target !== this.dialog || !this.hasCloseGuard()) return;
+        event.preventDefault();
+        void this.closeModal();
+    };
+
+    // Escape on this dialog's own controls closes a component with a discard check, or a frame whose page guards its
+    // closing, through closeModal(). It runs before the shell's preventModalEscape, which suppresses the native cancel.
+    // Escape handled elsewhere first, and Escape in a nested dialog, are left alone.
     handleComponentEscape = (event) => {
-        if (event.key !== 'Escape' || event.defaultPrevented || this.mode !== 'component') return;
+        if (event.key !== 'Escape' || event.defaultPrevented) return;
         if (event.target?.closest?.('dialog') !== this.dialog) return;
-        if (typeof this.componentPresenter()?.confirmDiscardChanges !== 'function') return;
+        if (this.mode === 'component') {
+            if (typeof this.componentPresenter()?.confirmDiscardChanges !== 'function') return;
+        } else if (this.mode !== 'iframe' || !this.hasCloseGuard()) {
+            return;
+        }
         event.preventDefault();
         event.stopPropagation();
         void this.closeModal();
@@ -471,6 +495,7 @@ export class ExpandedModal {
         frame.setAttribute("allow", this.attr("allow") || DEFAULT_ALLOW);
         frame.addEventListener("load", () => {
             if (this.loadController.signal.aborted || frame !== this.frame) return;
+            this.observeFrameGuard();
             this.syncFrameHeader();
             if (this.isFrameReady()) {
                 this.clearRetry();
@@ -619,6 +644,73 @@ export class ExpandedModal {
         window.open(url, "_blank", "noopener,noreferrer");
     }
 
+    // Records whether the newly loaded frame document offers the close guard.
+    observeFrameGuard() {
+        try {
+            const doc = this.frame?.contentDocument;
+            this.frameGuarded = typeof this.frame?.contentWindow?.[FRAME_CLOSE_GUARD] === "function";
+            if (this.frameGuarded && doc) this.guardedDocuments.add(doc);
+        } catch (_) {
+            // A newly loaded document that cannot be read offers no guard.
+            this.frameGuarded = false;
+        }
+    }
+
+    // The frame's close guard, and whether closing must be refused without one. A document that offered the guard
+    // cannot approve its own removal by losing the hook or by becoming unreadable.
+    frameCloseGuard() {
+        if (this.mode !== "iframe" || !this.frame) return { hook: null, guarded: false };
+        try {
+            const doc = this.frame.contentDocument;
+            const hook = this.frame.contentWindow?.[FRAME_CLOSE_GUARD];
+            if (typeof hook === "function") {
+                if (doc) this.guardedDocuments.add(doc);
+                this.frameGuarded = true;
+                return { hook, guarded: true };
+            }
+            return { hook: null, guarded: Boolean(doc && this.guardedDocuments.has(doc)) };
+        } catch (_) {
+            return { hook: null, guarded: this.frameGuarded };
+        }
+    }
+
+    hasCloseGuard() {
+        return this.frameCloseGuard().guarded;
+    }
+
+    // Resolves true when the panel may be closed or replaced now. The frame's guard may ask its user and has no time
+    // limit; only a literal true approves. Removing or reloading the frame meanwhile answers false, because a document
+    // that is gone cannot settle its own answer. Concurrent requests share one preparation.
+    prepareClose(reason) {
+        if (this.closed) return Promise.resolve(true);
+        if (this.closePreparation) return this.closePreparation;
+        const frame = this.frame;
+        const { hook, guarded } = this.frameCloseGuard();
+        if (!hook) return Promise.resolve(!guarded);
+        const signal = this.loadController.signal;
+        const preparation = new Promise((resolve) => {
+            if (signal.aborted) {
+                resolve(false);
+                return;
+            }
+            const removed = () => resolve(false);
+            signal.addEventListener("abort", removed, { once: true });
+            Promise.resolve().then(() => hook(reason)).then((result) => {
+                signal.removeEventListener("abort", removed);
+                resolve(result === true && !signal.aborted && this.frame === frame);
+            }, (error) => {
+                signal.removeEventListener("abort", removed);
+                console.warn("[expanded-modal] The panel content could not prepare to close:", error);
+                resolve(false);
+            });
+        });
+        this.closePreparation = preparation;
+        void preparation.then(() => {
+            if (this.closePreparation === preparation) this.closePreparation = null;
+        });
+        return preparation;
+    }
+
     async notifyFrameUserClose() {
         try {
             const frameWindow = this.frame?.contentWindow;
@@ -633,13 +725,20 @@ export class ExpandedModal {
     }
 
     async closeModal() {
-        if (this.closed) return;
+        if (this.closed || this.closing) return;
         if (this.mode === "component" && this.componentPresenter()?.confirmDiscardChanges?.('close') === false) return;
-        // Disconnect and release embedded content (room, tracks) before the frame is removed.
-        await this.notifyFrameUserClose();
-        this.closed = true;
-        this.cancelLoading();
-        assistOS.UI.closeModal(this.element);
+        this.closing = true;
+        try {
+            // A guarded page may ask first; refusing keeps the identical frame.
+            if (!await this.prepareClose("close") || this.closed) return;
+            // Disconnect and release embedded content (room, tracks) before the frame is removed.
+            await this.notifyFrameUserClose();
+            this.closed = true;
+            this.cancelLoading();
+            assistOS.UI.closeModal(this.element);
+        } finally {
+            this.closing = false;
+        }
     }
 
     completeComponent(payload) {

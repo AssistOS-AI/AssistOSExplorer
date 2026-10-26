@@ -29,7 +29,8 @@ test('npm WebTTY core profile owns the exact Chromium release gate', () => {
   assert.match(webttySpec, /assertDistinctAuthenticatedPrincipals\(admin, ordinaryUser\)/);
   assert.match(webttySpec, /expect\(ordinaryUser\.roles\)\.not\.toContain\('admin'\)/);
   assert.match(webttySpec, /assertExplorerDirectory\(page, fixture\.parentDirectoryPath\)/);
-  assert.match(webttySpec, /openTerminalFromExplorer\(page, fixture\.nestedDirectoryPath\)/);
+  assert.match(webttySpec, /openTerminalFromExplorer\(page, fixture\.nestedDirectoryPath, undefined, terminals\)/);
+  assert.doesNotMatch(webttySpec, /terminals\.push\(/, 'sessions register inside selectTerminalTarget as soon as the create response is parsed');
   assert.match(webttySpec, /normalCloseKeptWebttyAvailable: true/);
   assert.match(webttySpec, /collectWebttyRuntimeEvidence/);
   assert.match(webttySpec, /resolveWebttyBoxEndpoint\(\{\s*baseURL: smokeConfig\.baseURL,\s*boxBaseURL: process\.env\.SMOKE_BOX_BASE_URL \|\| smokeConfig\.baseURL,/);
@@ -54,7 +55,14 @@ test('npm WebTTY core profile owns the exact Chromium release gate', () => {
   assert.match(webttySpec, /runWhileObservingNoAgentShell/);
   assert.match(webttySpec, /collectNestedContainerEvents/);
   assert.match(webttySpec, /WEBTTY_AGENT_HOSTNAME/);
-  assert.match(webttySpec, /authRevocationRemovedExecAndForegroundProcess/);
+  assert.match(webttySpec, /logoutKeptExecAndForegroundProcess: true/);
+  assert.match(webttySpec, /ownerReloginReplayedAndExecutedMarker: true/);
+  assert.match(webttySpec, /foreignAdminWatchOnlyAndKill: true/);
+  assert.match(webttySpec, /tabCloseKeptShellAndSentNoDelete: true/);
+  assert.doesNotMatch(webttySpec, /authRevocationRemovedExecAndForegroundProcess/);
+  assert.match(webttySpec, /requireDetachedShell\(detachedRows, first\.session\.id\)/);
+  assert.match(webttySpec, /attachFromLiveSessions\(page, first\.session\.id, 'owner'\)/);
+  assert.match(webttySpec, /attachFromLiveSessions\(watcherPage, replacementTerminal\.session\.id, 'watcher'\)/);
   assert.match(webttySpec, /defaultRouterCrashRecoveryRemovedAgentExecAndForegroundProcess/);
   assert.match(webttySpec, /single-use launch replay rejection/);
   assert.match(webttySpec, /stale predecessor launch rejection/);
@@ -136,4 +144,119 @@ test('WebTTY core profile collects exactly one enabled Playwright test', { timeo
   } finally {
     fs.rmSync(artifactRoot, { recursive: true, force: true });
   }
+});
+
+// The gate's own function text runs here, so these cases prove the control flow the live gate uses.
+test('replacement victim evidence is persisted after the body and never replaces the body failure', async () => {
+  const webttySpec = fs.readFileSync(new URL('../specs/01-webtty-core.spec.mjs', import.meta.url), 'utf8');
+  const match = /\n(async function persistEvidenceAfter\([\s\S]*?\n\})\n/.exec(webttySpec);
+  assert.ok(match, 'the gate defines persistEvidenceAfter');
+  const persistEvidenceAfter = new Function(`${match[1]}\nreturn persistEvidenceAfter;`)();
+  assert.match(
+    webttySpec,
+    /await persistEvidenceAfter\(async \(\) => \{[\s\S]+?toHaveText\('Closed'\)[\s\S]+?\}, \(\) => replacementVictimDiagnostics\.flush\(\), \(failure\) => testInfo\.attach\(/,
+    'the replacement victim step persists its diagnostics through the guarded function',
+  );
+  const named = (name, message) => Object.assign(new Error(message), { name });
+  const run = async ({ body, persist, record }) => {
+    const calls = { persist: 0, record: [], report: [] };
+    let thrown;
+    let threw = false;
+    try {
+      await persistEvidenceAfter(
+        body,
+        async () => { calls.persist += 1; await persist(); },
+        async (failure) => { calls.record.push(failure); await record(failure); },
+        (message) => calls.report.push(message),
+      );
+    } catch (error) {
+      threw = true;
+      thrown = error;
+    }
+    return { ...calls, threw, thrown };
+  };
+  const primary = new Error('the victim never reached Closed');
+  const failBody = async () => { throw primary; };
+  const flushFailure = async () => { throw named('FlushError', 'secret-value-in-message'); };
+  const attachFailure = async () => { throw named('AttachError', 'secret-attach-message'); };
+  const nothing = async () => {};
+
+  // Primary failure, flush failure and attachment failure: the primary error is still the one thrown.
+  let result = await run({ body: failBody, persist: flushFailure, record: attachFailure });
+  assert.equal(result.thrown, primary);
+  assert.equal(result.persist, 1);
+  assert.deepEqual(result.record, [{ stage: 'diagnostics-flush', error: 'FlushError' }]);
+  assert.equal(result.report.length, 1);
+  assert.doesNotMatch(result.report[0], /secret/, 'the report carries error names only');
+
+  // Primary failure, flush failure, attachment success: the primary error is preserved and a name-only record is made.
+  result = await run({ body: failBody, persist: flushFailure, record: nothing });
+  assert.equal(result.thrown, primary);
+  assert.deepEqual(result.record, [{ stage: 'diagnostics-flush', error: 'FlushError' }]);
+  assert.doesNotMatch(JSON.stringify(result.record), /secret/);
+  assert.deepEqual(result.report, []);
+
+  // Primary failure with a working flush: flushed once, nothing recorded, primary thrown.
+  result = await run({ body: failBody, persist: nothing, record: attachFailure });
+  assert.equal(result.thrown, primary);
+  assert.equal(result.persist, 1);
+  assert.deepEqual(result.record, []);
+
+  // A falsy thrown value is still a body failure and is not replaced by a flush failure.
+  const falsy = await persistEvidenceAfter(async () => { throw 0; }, flushFailure, nothing).then(() => 'resolved', (error) => error);
+  assert.equal(falsy, 0);
+
+  // Success with a flush failure: that failure is thrown and nothing is recorded.
+  result = await run({ body: nothing, persist: flushFailure, record: attachFailure });
+  assert.equal(result.thrown?.name, 'FlushError');
+  assert.deepEqual(result.record, []);
+
+  // Success with a working flush resolves after exactly one flush.
+  result = await run({ body: nothing, persist: nothing, record: attachFailure });
+  assert.equal(result.threw, false);
+  assert.equal(result.persist, 1);
+});
+
+test('Router recovery stops the producer only after independent cleanup and derives its diagnostics from validated records', () => {
+  const webttySpec = fs.readFileSync(new URL('../specs/01-webtty-core.spec.mjs', import.meta.url), 'utf8');
+  const at = (text, from = 0) => {
+    const index = webttySpec.indexOf(text, from);
+    assert.ok(index >= 0, `the gate contains ${text}`);
+    return index;
+  };
+  // Recorders exist before the recovery terminal opens and are bound before the Router crash.
+  const arm = at('await armRouterRecoveryObservation(page.context()');
+  const open = at('const restartRecoveryTerminal = await openTerminalFromExplorer(', arm);
+  const bind = at('await recoveryObservation.bind({', open);
+  const crash = at('const crashedRouter = crashExactRoutingServer(', bind);
+  assert.ok(arm < open && open < bind && bind < crash);
+  // The lifecycle stop comes after the existing independent cleanup assertions and before the terminal close.
+  const recover = at('recoveredAuthentication = await recoveryAuthentication.recoverAfterCleanup({', crash);
+  const cleanup = at('verifyCleanup: async () => {', recover);
+  const marker = at('waitForAgentMarker(replacementRuntime, replacementGitAgent, recoveryTerminalMarker, false)', cleanup);
+  const directory = at('collectWebttyRecoveryDirectoryState(replacementRuntime)', marker);
+  const stop = at('stopProducer: async () => {', directory);
+  const stopCall = at('await recoveryObservation.stopAfterCleanup()', stop);
+  const close = at('closeTerminal: async () => {', stopCall);
+  const validate = at('await recoveryObservation.validate()', close);
+  const acknowledge = at('acknowledgeRouterRecovery(recoveryDiagnostics, recoveryCheckpoint, recoveryValidation.signatures)', validate);
+  const nativeClose = at('await restartRecoveryTerminal.terminalPage.close()', acknowledge);
+  const signInStep = at('signIn: () => signIn(page, smokeConfig.primaryUser', nativeClose);
+  assert.ok(cleanup < marker && marker < directory && directory < stop && stop < stopCall && stopCall < close
+    && close < validate && validate < acknowledge && acknowledge < nativeClose && nativeClose < signInStep);
+  // No old four-event acknowledgement, copied counts, raw flush or console wait for the recovery terminal.
+  const section = webttySpec.slice(open, signInStep);
+  assert.doesNotMatch(section, /expectedRouterRecoveryDiagnostics|recoveryConsole|recoveryDiagnostics\.flush\(|acknowledgeExact\(\s*recoveryCheckpoint/);
+  assert.match(section, /final native close of the recovery terminal/);
+  // The proof is persisted sanitized and its failure carries only a stage and classification.
+  assert.match(webttySpec.slice(at('await persistEvidenceAfter(async () => {', crash)), /persistEvidenceAfter\(async \(\) => \{[\s\S]+?new RouterRecoveryProofError\(recoveryStage, String\(error\?\.name \|\| 'Error'\)\)[\s\S]+?webtty-router-recovery-oracle\.json/);
+  // Failure finalization runs before the authorized teardown signs in: the owned producer is ended, a sanitized snapshot is
+  // kept, the checkpoints are closed without acknowledgement and the recorders are released, in that order.
+  const teardown = at('await cleanupWebttyTerminals({');
+  const finalize = at('await finalizeRouterRecoveryFailure({', at('Idempotent: the observer must be gone'));
+  assert.ok(finalize < teardown, 'the finalization precedes the teardown authentication');
+  const finalization = webttySpec.slice(finalize, teardown);
+  assert.match(finalization, /observation: recoveryObservation,[\s\S]+persist: \(finalization\) => testInfo\.attach\('webtty-router-recovery-oracle-failure-cleanup\.json'[\s\S]+closeCheckpoints: \(\) => \{[\s\S]+closeWithoutAcknowledgement\(recoveryLedger\.checkpoint\)[\s\S]+closePageDiagnosticsCheckpoint\(page, open\)/);
+  assert.match(webttySpec.slice(at('if (recoveryObservation && !recoveryProofComplete)')), /!recoveryProofComplete/);
+  assert.doesNotMatch(finalization, /backendCleanupVerified: true|cleanupVerified: true/, 'failure cleanup is never labelled as backend cleanup evidence');
 });

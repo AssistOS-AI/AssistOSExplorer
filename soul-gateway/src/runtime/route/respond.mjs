@@ -26,12 +26,24 @@
  * buffered response, upstream runs the buffering middleware and wraps
  * the buffered completion in the chat completion envelope.
  *
+ * This middleware also owns every stream primed for the request: it
+ * installs `ctx.streamOwner` before dispatch and disposes it when it
+ * finishes, so a stream that is never read still releases its backend
+ * generation and upstream request.  A client disconnect, including one
+ * during a back-pressure wait, ends the streaming loop, so the audit row
+ * is still written with the partial response.
+ *
  * @module runtime/route/respond
  */
 
+import { once } from 'node:events';
 import { sendJson } from '../../core/responses.mjs';
 import { serializeBufferedResponse } from '../../request/format-serializers.mjs';
-import { isCanonicalStream, tapStream } from '../kernel/index.mjs';
+import {
+    createStreamOwner,
+    isCanonicalStream,
+    tapStream,
+} from '../kernel/index.mjs';
 import { canonicalStreamToSse } from './canonical-stream-to-sse.mjs';
 import { createStreamCapture } from '../../observability/response-capture.mjs';
 import { CONTENT_TYPES, HEADER_NAMES } from '../../core/constants.mjs';
@@ -42,73 +54,89 @@ import { InternalServerError } from '../../core/errors.mjs';
  */
 export function respondMiddleware() {
     return async function respond(ctx, next) {
-        await next();
+        const streamOwner = createStreamOwner();
+        ctx.streamOwner = streamOwner;
+        try {
+            await sendResponse(ctx, next);
+        } finally {
+            const stream = streamOf(ctx.response);
+            if (stream) streamOwner.adopt(stream);
+            // Not awaited: closing an upstream must never hold up the audit.
+            void streamOwner.dispose();
+        }
+    };
+}
 
-        const totalMs = Date.now() - ctx.startedAt;
-        ctx.metadata.totalMs = totalMs;
+async function sendResponse(ctx, next) {
+    await next();
 
-        ctx.log?.info?.('request complete', {
-            requestId: ctx.requestId,
-            model: ctx.request?.model,
-            agent: ctx.identity?.agentName,
-            durationMs: totalMs,
-            streaming: !!ctx.metadata.streamingResponse,
+    const totalMs = Date.now() - ctx.startedAt;
+    ctx.metadata.totalMs = totalMs;
+
+    ctx.log?.info?.('request complete', {
+        requestId: ctx.requestId,
+        model: ctx.request?.model,
+        agent: ctx.identity?.agentName,
+        durationMs: totalMs,
+        streaming: !!ctx.metadata.streamingResponse,
+    });
+
+    const res = ctx.http?.res;
+    if (!res) return;
+    if (res.writableEnded || res.headersSent) return;
+
+    const routeKind = ctx.route?.kind || 'openai_chat';
+
+    // Streaming branch — ctx.response is a CanonicalStream, or an
+    // envelope with a CanonicalStream under .stream.
+    const canonicalStream = streamOf(ctx.response);
+    if (canonicalStream) {
+        const capture = createStreamCapture({
+            maxExcerptChars:
+                ctx.appCtx?.config?.defaults?.responseExcerptChars ?? 2000,
         });
-
-        const res = ctx.http?.res;
-        if (!res) return;
-        if (res.writableEnded || res.headersSent) return;
-
-        const routeKind = ctx.route?.kind || 'openai_chat';
-
-        // Streaming branch — ctx.response is a CanonicalStream, or an
-        // envelope with a CanonicalStream under .stream.
-        const candidate = ctx.response;
-        if (
-            candidate &&
-            (isCanonicalStream(candidate) ||
-                (candidate.stream && isCanonicalStream(candidate.stream)))
-        ) {
-            const canonicalStream = isCanonicalStream(candidate)
-                ? candidate
-                : candidate.stream;
-            const capture = createStreamCapture({
-                maxExcerptChars:
-                    ctx.appCtx?.config?.defaults?.responseExcerptChars ?? 2000,
-            });
-            await streamSseResponse(
-                res,
-                tapStream(canonicalStream, (event) => {
-                    observeStreamEvent(ctx, event);
-                    capture.observe(event);
-                }),
-                routeKind,
-                ctx.requestId,
-                ctx,
-                capture
-            );
-            return;
-        }
-
-        // Buffered branch — ctx.response is a chat completion envelope.
-        if (!ctx.response) {
-            throw new InternalServerError('No response set by gateway dispatch');
-        }
-        captureBufferedResponseMetadata(ctx, totalMs);
-        const serialized = serializeBufferedResponse(
-            ctx.response,
+        await streamSseResponse(
+            res,
+            tapStream(canonicalStream, (event) => {
+                observeStreamEvent(ctx, event);
+                capture.observe(event);
+            }),
             routeKind,
             ctx.requestId,
-            { toolAdapters: ctx.request?.responses_tool_adapters }
+            ctx,
+            capture
         );
-        sendJson(res, 200, serialized);
-    };
+        return;
+    }
+
+    // Buffered branch — ctx.response is a chat completion envelope.
+    if (!ctx.response) {
+        throw new InternalServerError('No response set by gateway dispatch');
+    }
+    captureBufferedResponseMetadata(ctx, totalMs);
+    const serialized = serializeBufferedResponse(
+        ctx.response,
+        routeKind,
+        ctx.requestId,
+        { toolAdapters: ctx.request?.responses_tool_adapters }
+    );
+    sendJson(res, 200, serialized);
+}
+
+function streamOf(response) {
+    if (isCanonicalStream(response)) return response;
+    if (response?.stream && isCanonicalStream(response.stream)) {
+        return response.stream;
+    }
+    return null;
 }
 
 /**
  * Write the SSE headers and stream the converted canonical events to
- * the client.  Handles client-disconnect abort by stopping iteration
- * when `res` emits `close` before the stream finishes.
+ * the client.  Stops iterating when the client disconnects: `res`
+ * emitting `close` (or the request signal aborting) also ends a
+ * back-pressure wait, because a destroyed socket never emits `drain`.
+ * A client that left before the first write is never written to.
  */
 async function streamSseResponse(
     res,
@@ -118,38 +146,47 @@ async function streamSseResponse(
     ctx,
     capture
 ) {
-    res.writeHead(200, {
-        [HEADER_NAMES.CONTENT_TYPE]: CONTENT_TYPES.EVENT_STREAM,
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-    });
-
-    let clientAborted = false;
+    let clientAborted = isClientGone(res, ctx);
     let finishedNaturally = false;
+    const closed = new AbortController();
     const onClose = () => {
         clientAborted = true;
+        closed.abort();
     };
-    res.once('close', onClose);
     let captured = null;
     let streamFailed = false;
 
     try {
-        for await (const chunk of canonicalStreamToSse(
-            canonicalStream,
-            routeKind,
-            requestId,
-            { toolAdapters: ctx.request?.responses_tool_adapters }
-        )) {
-            if (clientAborted) break;
-            if (res.writableEnded) break;
-            if (ctx.metadata.ttfbMs == null) {
-                ctx.metadata.ttfbMs = Date.now() - ctx.startedAt;
-            }
-            const ok = res.write(chunk);
-            if (ok === false) {
-                // Back-pressure: wait for drain
-                await new Promise((resolve) => res.once('drain', resolve));
+        if (!clientAborted) {
+            res.writeHead(200, {
+                [HEADER_NAMES.CONTENT_TYPE]: CONTENT_TYPES.EVENT_STREAM,
+                'Cache-Control': 'no-cache, no-transform',
+                Connection: 'keep-alive',
+                'X-Accel-Buffering': 'no',
+            });
+            res.once('close', onClose);
+            const drainSignal = ctx.signal
+                ? AbortSignal.any([closed.signal, ctx.signal])
+                : closed.signal;
+
+            for await (const chunk of canonicalStreamToSse(
+                canonicalStream,
+                routeKind,
+                requestId,
+                { toolAdapters: ctx.request?.responses_tool_adapters }
+            )) {
+                if (clientAborted) break;
+                if (res.writableEnded) break;
+                if (ctx.metadata.ttfbMs == null) {
+                    ctx.metadata.ttfbMs = Date.now() - ctx.startedAt;
+                }
+                if (res.write(chunk) === false) {
+                    if (res.writableEnded) break;
+                    if (!(await waitForDrain(res, drainSignal))) {
+                        clientAborted = true;
+                        break;
+                    }
+                }
             }
         }
         finishedNaturally = !clientAborted;
@@ -173,6 +210,24 @@ async function streamSseResponse(
 
     if (captured?.error) {
         throw captured.error;
+    }
+}
+
+function isClientGone(res, ctx) {
+    return res.destroyed === true || ctx.signal?.aborted === true;
+}
+
+// Back-pressure: resolves true once `res` drains and false when the client
+// is gone.  A write can fail on a socket that is already destroyed before
+// its `close` event has been delivered, so `destroyed` is checked first.
+async function waitForDrain(res, signal) {
+    if (res.destroyed) return false;
+    try {
+        await once(res, 'drain', { signal });
+        return true;
+    } catch {
+        // Aborted by `close` or the request signal, or `res` emitted `error`.
+        return false;
     }
 }
 

@@ -33,6 +33,7 @@
         "git": true,
         "dpu-runtime-support": true,
         "workspace-monitor": true,
+        "live-sessions": true,
         "help": true,
         "webmeet": true,
         "soul-gateway": true

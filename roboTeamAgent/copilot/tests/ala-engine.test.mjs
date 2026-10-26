@@ -10,6 +10,10 @@ import { resolveAlaCommand } from '../../server/ala-command.mjs';
 import { createAlaEngine } from '../src/lib/execution/alaEngine.mjs';
 import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
 import { HUMAN_REPORT_INSTRUCTIONS, INITIAL_SKILL_INSTRUCTIONS } from '../src/lib/prompts.mjs';
+import { createCopilotPublisher } from '../src/lib/liveSessions/publisher.mjs';
+import { LiveSessionsIpcServer } from '../../server/live-sessions/ipc-server.mjs';
+import { LiveSessionsRegistry } from '../../server/live-sessions/registry.mjs';
+import { socketFixture } from '../../tests/helpers/live-sessions-ipc-client.mjs';
 
 const childEntry = fileURLToPath(new URL('./fixtures/ala-engine-child.mjs', import.meta.url));
 
@@ -40,7 +44,7 @@ function deferred() {
     return { promise, resolve };
 }
 
-async function harness(t, interactions = {}, { workspaceAtRoot = false, execution = {}, webchatLogsBase = '', skillSnapshot = {} } = {}) {
+async function harness(t, interactions = {}, { workspaceAtRoot = false, execution = {}, webchatLogsBase = '', skillSnapshot = {}, livePublisher = null, backgroundTasks = undefined } = {}) {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-engine-'));
     const oldRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = workspaceAtRoot ? workingDir : path.dirname(workingDir);
@@ -65,7 +69,7 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false, executio
         async discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; },
     };
     const engine = createAlaEngine({ workingDir, sessionStore: store, skillCatalog: catalog, installation,
-        execution, webchatLogsBase,
+        execution, webchatLogsBase, livePublisher, backgroundTasks,
         settings: { readAchillesSettings: () => ({}), getPermissionMode: () => 'ask-for-approval' },
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
     t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); await fs.rm(home, { recursive: true, force: true }); });
@@ -461,4 +465,172 @@ test('a session lease whose lock file inode changed mid-turn is released and the
     const records = (await fs.readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     assert.ok(records.some((record) => record.event === 'lock.remove' && record.result === 'identity-changed-token-match'));
     assert.equal(records.some((record) => record.event === 'lock.release.error'), false);
+});
+
+// Live Sessions publishing (P3.3). A recording publisher stands in for the
+// IPC client, except where the real publisher and IPC server are named.
+function recordingPublisher() {
+    const record = { starts: [], output: [], ends: [], order: [], ready: deferred() };
+    return {
+        record,
+        startRun(options) {
+            record.starts.push(options);
+            record.order.push(['start', options.kind]);
+            return {
+                output(text, style) {
+                    record.output.push([style, text]);
+                    if (text.includes('READY')) record.ready.resolve();
+                },
+                status() {},
+                end(result) { record.ends.push(result); record.order.push(['end', options.kind]); },
+            };
+        },
+    };
+}
+
+const LOGS_BASE = '/base-agent-additional-server/roboTeamAgent/3001/webchat-logs';
+
+test('publishing disabled makes no socket connection; enabled, the turn is listed and ends finished', { timeout: 15000 }, async (t) => {
+    const { socketPath, cleanup } = await socketFixture();
+    const registry = new LiveSessionsRegistry({ log: () => {} });
+    let accepted = 0;
+    const server = new LiveSessionsIpcServer({ registry, log: () => {} });
+    server.server.on('connection', () => { accepted += 1; });
+    await server.listen(socketPath);
+    t.after(async () => { await server.close(); registry.close(); await cleanup(); });
+    const disabled = createCopilotPublisher({}, { socketPath });
+    assert.equal(disabled, null);
+    const off = await harness(t, {}, { livePublisher: disabled, webchatLogsBase: LOGS_BASE });
+    await off.engine.executeTurn({ sessionId: off.sessionId, prompt: 'Not published' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(accepted, 0, 'zero socket connections and writes');
+    const publisher = createCopilotPublisher({ ROBOTEAM_LIVE_PUBLISH: 'copilot' }, { socketPath });
+    t.after(() => publisher.close({ flushMs: 0 }));
+    const on = await harness(t, {}, { livePublisher: publisher, webchatLogsBase: LOGS_BASE });
+    const result = await on.engine.executeTurn({ sessionId: on.sessionId, prompt: 'Published turn', context: { rawText: 'Published turn' } });
+    await publisher.close();
+    for (let waited = 0; registry.list({ principal: 'user:root', canAdmin: true })[0]?.status !== 'finished' && waited < 3000; waited += 10) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const [row] = registry.list({ principal: 'user:root', canAdmin: true });
+    assert.equal(accepted, 1);
+    assert.equal(row.kind, 'copilot-turn');
+    assert.equal(row.title, 'Copilot · Published turn');
+    assert.equal(row.ownerState, 'unverified', 'a turn without a WebChat claim proves no owner');
+    assert.equal(row.status, 'finished');
+    assert.deepEqual(row.exit, { reason: 'finished', code: 0 });
+    assert.equal(registry.runs.get(row.id).transcript, null, 'this IPC server has no transcript reader');
+    assert.ok(result.assistantMessageId);
+});
+
+test('run-start carries the owner claim and the transcript link known before ALA starts', { timeout: 15000 }, async (t) => {
+    const publisher = recordingPublisher();
+    const h = await harness(t, {}, { livePublisher: publisher, webchatLogsBase: LOGS_BASE });
+    const owner = Object.freeze({ claimId: 'c_owner' });
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Linked', context: { rawText: 'Linked\nsecond line', liveOwner: owner } });
+    const [start] = publisher.record.starts;
+    assert.equal(start.kind, 'copilot-turn');
+    assert.equal(start.owner, owner);
+    assert.equal(start.title, 'Copilot · Linked');
+    assert.equal(start.transcriptUrl, `${LOGS_BASE}/${h.sessionId}/${result.assistantMessageId}`);
+    assert.match(start.transcriptUrl, /^\/base-agent-additional-server\/roboTeamAgent\/3001\/webchat-logs\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/);
+    assert.deepEqual(publisher.record.ends, [{ status: 'finished', code: 0 }]);
+    assert.ok(publisher.record.output.some(([style, text]) => style === 'output' && text === 'Visible progress'));
+    assert.ok(publisher.record.output.some(([style, text]) => style === 'status' && /Coding agent: Codex/.test(text)));
+});
+
+test('a message control is written to ALA stdin with its id and resolves only on the matching receipt', { timeout: 15000 }, async (t) => {
+    const publisher = recordingPublisher();
+    const h = await harness(t, {}, { livePublisher: publisher });
+    const turn = h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'LIVE_CONTROL' });
+    await publisher.record.ready.promise;
+    const control = publisher.record.starts[0].onControl;
+    assert.equal(await control({ action: 'message', requestId: 'live-req-accept', message: 'accept' }), 'delivered');
+    assert.deepEqual(await control({ action: 'message', requestId: 'live-req-reject', message: 'reject' }),
+        { outcome: 'rejected', detail: 'Fixture rejected the message.' });
+    // The child exits without answering: the message is run_ended, not unknown.
+    assert.equal(await control({ action: 'message', requestId: 'live-req-exit', message: 'exit' }), 'run_ended');
+    const { records } = JSON.parse((await turn).outputText);
+    assert.deepEqual(records.map(({ type, id, displayText }) => ({ type, id, displayText })), [
+        { type: 'message', id: 'live-req-accept', displayText: 'accept' },
+        { type: 'message', id: 'live-req-reject', displayText: 'reject' },
+        { type: 'message', id: 'live-req-exit', displayText: 'exit' },
+    ]);
+    assert.ok(records.every((record) => typeof record.message === 'string' && record.message.includes(record.displayText)));
+    assert.equal(await control({ action: 'message', requestId: 'live-req-late', message: 'late' }), 'run_ended');
+    assert.deepEqual(publisher.record.ends, [{ status: 'finished', code: 0 }]);
+});
+
+test('a Live Sessions stop interrupts the turn and ends its run as stopped', { timeout: 15000 }, async (t) => {
+    const publisher = recordingPublisher();
+    const h = await harness(t, {}, { livePublisher: publisher });
+    const turn = h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'LIVE_CONTROL' });
+    const rejected = assert.rejects(turn, (error) => error.exitCode === 130);
+    await publisher.record.ready.promise;
+    assert.equal(await publisher.record.starts[0].onControl({ action: 'stop', requestId: 'live-stop' }), 'delivered');
+    await rejected;
+    assert.equal(h.store.loadSession(h.sessionId).messages.at(-1).status, 'interrupted');
+    assert.deepEqual(publisher.record.ends, [{ status: 'stopped', reason: 'stopped' }]);
+});
+
+test('a failed turn ends its run as failed with its exit code', { timeout: 15000 }, async (t) => {
+    const publisher = recordingPublisher();
+    const h = await harness(t, {}, { livePublisher: publisher });
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'NONZERO' }), /ALA execution failed \(7\)/);
+    assert.equal(publisher.record.ends.length, 1);
+    assert.equal(publisher.record.ends[0].status, 'failed');
+    assert.equal(publisher.record.ends[0].code, 7);
+    assert.match(publisher.record.ends[0].reason, /^ALA execution failed \(7\)/);
+});
+
+test('a same-session overlap is still rejected before a run is published', { timeout: 15000 }, async (t) => {
+    const requested = deferred();
+    const answer = deferred();
+    const publisher = recordingPublisher();
+    const h = await harness(t, { request() { requested.resolve(); return answer.promise; } }, { livePublisher: publisher });
+    const first = h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'APPROVAL' });
+    await requested.promise;
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Competing prompt', context: { liveOwner: { claimId: 'c_2' } } }), /busy|running|lease|held/i);
+    assert.equal(publisher.record.starts.length, 1, 'only the running turn was published');
+    assert.ok(publisher.record.output.some(([style, text]) => style === 'status' && text === 'permission requested — answer in WebChat\n'));
+    answer.resolve('deny');
+    await first;
+    assert.deepEqual(publisher.record.ends, [{ status: 'finished', code: 0 }]);
+});
+
+test('the copilot publishing switch never reaches ALA or anything it starts', { timeout: 15000 }, async (t) => {
+    const previous = process.env.ROBOTEAM_LIVE_PUBLISH;
+    process.env.ROBOTEAM_LIVE_PUBLISH = 'copilot';
+    t.after(() => { if (previous === undefined) delete process.env.ROBOTEAM_LIVE_PUBLISH; else process.env.ROBOTEAM_LIVE_PUBLISH = previous; });
+    const h = await harness(t, {}, { livePublisher: recordingPublisher() });
+    const output = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Environment' })).outputText);
+    assert.equal(output.livePublish, null);
+});
+
+test('LSR-12: a webchat turn without visible messages or a tools list completes, and its run ends finished', { timeout: 15000 }, async (t) => {
+    const publisher = recordingPublisher();
+    const h = await harness(t, {}, { livePublisher: publisher, webchatLogsBase: LOGS_BASE });
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'NO_VISIBLE_MESSAGES', context: { sourceTabId: 'tab-1', rawText: 'Quiet turn' } });
+    // ALA 0ef0a85 turns carry no tools array; this one recorded no messages either.
+    assert.equal(result.outputText.includes('[View Thinking]'), false);
+    assert.equal(result.session.messages.at(-1).status, 'completed');
+    assert.deepEqual(publisher.record.ends, [{ status: 'finished', code: 0 }]);
+});
+
+test('a task delegated during the turn starts its run before the turn\'s run ends', { timeout: 15000 }, async (t) => {
+    const publisher = recordingPublisher();
+    const observed = [];
+    // The task observation outlasts the ALA child; the turn waits for it before ending.
+    const backgroundTasks = { async observeScriptTask(task, origin) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        observed.push(task.taskId);
+        publisher.startRun({ kind: 'copilot-task', title: 'Delegated', owner: origin.liveOwner }).end({ status: 'finished' });
+        return { id: 'task_local' };
+    } };
+    const h = await harness(t, {}, { livePublisher: publisher, backgroundTasks });
+    const owner = Object.freeze({ claimId: 'c_turn' });
+    await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'LIVE_TASK', context: { liveOwner: owner } });
+    assert.deepEqual(observed, ['remote-live-task']);
+    assert.deepEqual(publisher.record.order, [['start', 'copilot-turn'], ['start', 'copilot-task'], ['end', 'copilot-task'], ['end', 'copilot-turn']]);
+    assert.equal(publisher.record.starts[1].owner, owner, 'the task carries the turn\'s claim');
 });

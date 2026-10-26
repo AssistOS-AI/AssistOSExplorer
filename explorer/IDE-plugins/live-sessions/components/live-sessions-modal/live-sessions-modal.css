@@ -1,0 +1,116 @@
+live-sessions-modal {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    color: var(--text, #172033);
+}
+
+live-sessions-modal .live-sessions-body {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    gap: 20px;
+    padding: 20px;
+}
+
+live-sessions-modal .live-sessions-list-panel {
+    flex: 1;
+    min-width: 280px;
+    overflow-y: auto;
+}
+
+live-sessions-modal .live-sessions-guidance,
+live-sessions-modal .live-sessions-detail {
+    color: var(--text-soft, #64748b);
+}
+
+live-sessions-modal .live-sessions-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+live-sessions-modal .live-sessions-row {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border, #dbe2ea);
+    overflow-wrap: anywhere;
+}
+
+live-sessions-modal .live-sessions-row h3 {
+    margin: 0 0 6px;
+    font-size: 15px;
+}
+
+live-sessions-modal .live-sessions-row p {
+    margin: 4px 0;
+    font-size: 13px;
+}
+
+live-sessions-modal .live-sessions-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+live-sessions-modal .live-sessions-viewer {
+    display: flex;
+    flex-direction: column;
+    flex: 3;
+    min-width: 0;
+    min-height: 0;
+}
+
+live-sessions-modal .live-sessions-viewer[hidden] {
+    display: none;
+}
+
+live-sessions-modal .live-sessions-viewer-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+live-sessions-modal .live-sessions-frame {
+    flex: 1;
+    min-height: 280px;
+}
+
+live-sessions-modal iframe {
+    width: 100%;
+    height: 100%;
+    border: 0;
+}
+
+@media (max-width: 900px) {
+    live-sessions-modal .live-sessions-body {
+        flex-direction: column;
+    }
+}
+
+live-sessions-modal .live-sessions-notice {
+    color: var(--warning, #b45309);
+    font-weight: var(--font-semibold, 600);
+}
+
+live-sessions-modal .live-sessions-banner {
+    color: var(--danger, #b91c1c);
+}
+
+live-sessions-modal .live-sessions-close-dialog h2 {
+    margin: 0 0 10px;
+    font-size: 17px;
+}
+
+live-sessions-modal .live-sessions-close-dialog p {
+    margin: 0 0 10px;
+    font-size: 14px;
+}
+
+live-sessions-modal .live-sessions-close-dialog p[hidden] {
+    display: none;
+}

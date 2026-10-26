@@ -31,8 +31,35 @@ cleanup() {
     wait "$SERVICE_PID" 2>/dev/null || true
     wait "$MCP_PID" 2>/dev/null || true
 }
+
+# Ploinky's targeted restart sends TERM and accepts only exit 0 as the
+# acknowledgement that the drain completed. Forward one TERM to each child,
+# wait for both, and exit 0 only when both shut down cleanly; otherwise exit
+# with the first non-zero status, the service's before AgentServer's. The
+# trap is installed only after both PIDs are recorded, so an earlier TERM
+# keeps the default signal status and fails the drain.
+drain() {
+    set +e
+    trap '' HUP INT TERM
+    echo "RoboTeam received TERM; stopping service and AgentServer" >&2
+    kill -TERM "$SERVICE_PID" "$MCP_PID" 2>/dev/null
+    drain_status=0
+    for child_pid in "$SERVICE_PID" "$MCP_PID"; do
+        wait "$child_pid"
+        child_status="$?"
+        if [ "$drain_status" -eq 0 ]; then
+            drain_status="$child_status"
+        fi
+    done
+    if [ "$drain_status" -ne 0 ]; then
+        echo "RoboTeam drain failed with status $drain_status" >&2
+    fi
+    # Both children are reaped; cleanup must not signal their recycled PIDs.
+    trap - EXIT
+    exit "$drain_status"
+}
 trap 'exit 130' INT
-trap 'exit 143' TERM
+trap drain TERM
 trap cleanup EXIT
 
 child_exit_status() {

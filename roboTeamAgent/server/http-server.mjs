@@ -2,6 +2,7 @@ import { RobotModels } from './robot-models.mjs';
 import { conversationSummaries, workflowSummaries } from './impact-summaries.mjs';
 import { requiredHumanReportSkill } from './required-skills.mjs';
 import { streamFlowEvents } from './roboflow/flow-events.mjs';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
@@ -9,12 +10,12 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
-import { ROBOFLOW_ENTITLEMENT_ERROR, ROBOTEAM_ENTITLEMENT_ERROR, authorizeRobotListing, authorizeWorkspaceRequest } from './listing-access.mjs';
+import { ROBOFLOW_ENTITLEMENT_ERROR, ROBOTEAM_ENTITLEMENT_ERROR, authorizeRobotListing, authorizeWorkspaceRequest, liveSessionsAccess } from './listing-access.mjs';
 import { projectRobotView } from './robot-projection.mjs';
 import { importEmailRobots } from './robot-import.mjs';
 import { createCodingAgentStatus } from './coding-agent-status.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
-import { robotTerminalDirectory } from './robot-terminal.mjs';
+import { listTerminalProfiles, resolveTerminalProfile, robotTerminalDirectory, terminalProfileAccess } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
 import { findProjectRecord, projectForSessionRecord } from './project-storage.mjs';
@@ -25,6 +26,9 @@ import { renderAlaTurnLog } from '../copilot/src/lib/webchat/webchatTurnLog.mjs'
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
 const BODY_LIMIT = 64 * 1024;
+// A Live Sessions message carries up to 32768 characters; as JSON a control
+// character escapes to six bytes, so its route accepts a larger body.
+const LIVE_MESSAGE_BODY_LIMIT = 256 * 1024;
 const RAW_BODY = Symbol('roboteam.rawBody');
 const ACCESS = Symbol('roboteam.access');
 const ROBOT_ID = '[a-z0-9][a-z0-9-]{2,63}';
@@ -60,13 +64,13 @@ function sendError(res, status, message) {
 
 // The request stream is consumed once. The exact bytes are kept on the request
 // so the signature check, the JSON parser and the session proxy all see them.
-async function readRawBody(req) {
+async function readRawBody(req, limit = BODY_LIMIT) {
     if (Buffer.isBuffer(req[RAW_BODY])) return req[RAW_BODY];
     const chunks = [];
     let size = 0;
     for await (const chunk of req) {
         size += chunk.length;
-        if (size > BODY_LIMIT) throw new Error('request body is too large');
+        if (size > limit) throw new Error('request body is too large');
         chunks.push(chunk);
     }
     req[RAW_BODY] = Buffer.concat(chunks);
@@ -132,11 +136,45 @@ function readWebchatTurnLog(robotStore, workspaceRoot, sessionId, messageId) {
     catch { return null; }
     if (!sessionFile) return null;
     const workingDir = projectForSessionRecord(sessionFile);
-    try {
-        const { turn, ala } = new ConversationSessionStore({ workingDir }).turnForMessage(sessionId, messageId);
-        if (!ala) return null;
-        return { log: renderAlaTurnLog(ala), finalResponse: turn.status === 'completed' ? ala.final || '' : '' };
-    } catch { return null; }
+    const found = lookupRecordedTurn(workingDir, sessionId, messageId);
+    if (!found) return null;
+    const { turn, ala } = found;
+    if (!ala) return null;
+    return renderRecordedTurn(() => ({ log: renderAlaTurnLog(ala), finalResponse: turn.status === 'completed' ? ala.final || '' : '' }));
+}
+
+// A missing record is an ordinary "not found". A record that exists but cannot
+// be read or rendered is a defect: it is reported once per error class and
+// code, without transcript content, paths or ids, and the caller still
+// answers "not found".
+const reportedTurnFailures = new Set();
+const MISSING_TURN_ERRORS = new Set(['invalid_session_id', 'assistant_message_not_found']);
+
+function errorKind(error) {
+    return `${error?.name || 'Error'}${error?.code !== undefined && error?.code !== null ? `:${String(error.code).slice(0, 64)}` : ''}`;
+}
+
+function reportTurnFailure(action, error) {
+    const kind = errorKind(error);
+    if (reportedTurnFailures.has(`${action}|${kind}`)) return;
+    reportedTurnFailures.add(`${action}|${kind}`);
+    console.error(`[roboTeamAgent] a recorded turn could not be ${action} (${kind})`);
+}
+
+function lookupRecordedTurn(workingDir, sessionId, messageId) {
+    try { return new ConversationSessionStore({ workingDir }).turnForMessage(sessionId, messageId); }
+    catch (error) {
+        if (error?.code !== 'ENOENT' && !MISSING_TURN_ERRORS.has(error?.message)) reportTurnFailure('read', error);
+        return null;
+    }
+}
+
+function renderRecordedTurn(render) {
+    try { return render(); }
+    catch (error) {
+        reportTurnFailure('rendered', error);
+        return null;
+    }
 }
 
 // HTML pages live under route paths such as /flow-types/new, so their relative
@@ -267,6 +305,138 @@ function sessionRobotId(pathname) {
     return pathname.match(new RegExp(`^/api/robots/(${ROBOT_ID})/session(?:/|$)`))?.[1] || null;
 }
 
+// Live Sessions owner of work started by this request: the signed principal
+// of a verified direct user. Internal-token callers start system work.
+function signedOwner(req) {
+    const access = req[ACCESS];
+    return access?.internal === false && typeof access.principal === 'string' ? access.principal : null;
+}
+
+function isLiveSessionsPath(pathname) {
+    return pathname === '/api/live-sessions' || pathname.startsWith('/api/live-sessions/') || pathname.startsWith('/live-sessions/');
+}
+
+// Readers for Live Session transcripts. They take only server-bound metadata
+// captured when the run was admitted, never a caller-supplied path.
+function turnTranscriptText({ turn, ala }) {
+    if (!ala) return null;
+    const log = renderAlaTurnLog(ala);
+    const finalResponse = turn.status === 'completed' ? ala.final || '' : '';
+    if (!finalResponse || log.includes(finalResponse)) return log;
+    return log ? `${log}\n\n${finalResponse}` : finalResponse;
+}
+
+export function readTaskTurnTranscript({ cwd, sessionId, assistantMessageId }) {
+    const found = lookupRecordedTurn(cwd, sessionId, assistantMessageId);
+    return found ? renderRecordedTurn(() => turnTranscriptText(found)) : null;
+}
+
+export function webchatTranscriptReader(robotStore, workspaceRoot) {
+    return (sessionId, messageId) => {
+        let sessionFile;
+        try { sessionFile = findProjectRecord({ dataDir: robotStore.dataDir, workspaceRoot }, 'session', sessionId); }
+        catch { return null; }
+        if (!sessionFile) return null;
+        return readTaskTurnTranscript({ cwd: projectForSessionRecord(sessionFile), sessionId, assistantMessageId: messageId });
+    };
+}
+
+const LIVE_ACTION = /^\/api\/live-sessions\/([A-Za-z0-9_-]{1,128})\/(stream|messages|stop|transcript)$/u;
+const LIVE_VIEW = /^\/live-sessions\/([A-Za-z0-9_-]{1,128})$/u;
+const LIVE_MESSAGES_PATH = /^\/api\/live-sessions\/[A-Za-z0-9_-]{1,128}\/messages$/u;
+const LIVE_STREAM_LIFETIME_MS = 25 * 60 * 1000;
+
+function sendTranscript(res, status, text) {
+    const payload = Buffer.from(String(text ?? ''));
+    res.writeHead(status, {
+        'content-type': 'text/plain; charset=utf-8',
+        'content-length': payload.length,
+        'cache-control': 'no-store',
+        'content-disposition': 'inline',
+        'x-content-type-options': 'nosniff',
+    });
+    res.end(payload);
+}
+
+// The text-only view page. Its one inline script is allowed by hash; the page
+// cannot be framed and loads nothing else.
+async function serveLiveSessionPage(res, publicDir, publicBasePath) {
+    let html;
+    try { html = await fsp.readFile(path.join(publicDir, 'live-session.html'), 'utf8'); } catch { return sendError(res, 404, 'not found'); }
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/gu)].map((match) => match[1]);
+    const hashes = scripts.map((script) => `'sha256-${crypto.createHash('sha256').update(script).digest('base64')}'`).join(' ');
+    const href = String(publicBasePath || './').replace(/"/g, '&quot;');
+    const payload = Buffer.from(html.replace(/<head(\s[^>]*)?>/iu, (match) => `${match}\n  <base href="${href}">`));
+    res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'content-length': payload.length,
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'DENY',
+        'referrer-policy': 'no-referrer',
+        'content-security-policy': `default-src 'none'; script-src ${hashes}; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'`,
+    });
+    res.end(payload);
+}
+
+// Every Live Sessions route. Authority is only the viewer's signed principal
+// and signed administrator decision; forwarded identity is never consulted.
+async function handleLiveSessions({ req, res, pathname, viewer, registry, publicDir, publicBasePath, streamLifetimeMs }) {
+    if (pathname === '/api/live-sessions' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, version: 1, sessions: registry.list(viewer) });
+    }
+    const view = pathname.match(LIVE_VIEW);
+    if (view && req.method === 'GET') {
+        if (!registry.authorize(view[1], viewer).ok) return sendError(res, 404, 'live session not found');
+        return serveLiveSessionPage(res, publicDir, publicBasePath);
+    }
+    const action = pathname.match(LIVE_ACTION);
+    if (!action) return sendError(res, 404, 'not found');
+    const [, id, name] = action;
+    if (name === 'stream' && req.method === 'GET') {
+        const attached = registry.attach(id, viewer, res, req.headers['last-event-id']);
+        if (!attached.ok) return sendError(res, attached.status, attached.error);
+        // The administrator decision is a snapshot of this request. Each stream
+        // ends within one admission lifetime, below the relay's 30-minute cut,
+        // so the client's reconnect is authorized again.
+        const timer = setTimeout(() => res.end(), streamLifetimeMs);
+        timer.unref?.();
+        res.once('close', () => clearTimeout(timer));
+        return;
+    }
+    if (name === 'transcript' && req.method === 'GET') {
+        let result;
+        try { result = await registry.transcript(id, viewer); }
+        catch (error) {
+            console.error(`[live-sessions] a transcript could not be read (${errorKind(error)})`);
+            return sendTranscript(res, 500, 'The transcript is unavailable.');
+        }
+        if (!result.ok) return sendTranscript(res, 404, 'Live session not found.');
+        if (result.text === null) return sendTranscript(res, 404, 'The transcript is not available yet.');
+        return sendTranscript(res, 200, result.text);
+    }
+    if (name === 'messages' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        if (Object.keys(body).length !== 1 || typeof body.message !== 'string' || !body.message.trim()) {
+            return sendError(res, 400, 'message must contain 1 to 32768 characters');
+        }
+        const result = await registry.message(id, viewer, body.message);
+        if (!result.ok) return sendError(res, result.status, result.error);
+        if (result.outcome === 'delivered' || result.outcome === 'queued') return sendJson(res, 200, { delivery: result.outcome });
+        if (result.outcome === 'rejected') return sendJson(res, 409, { error: 'rejected', ...(result.detail ? { detail: result.detail } : {}) });
+        if (result.outcome === 'run_ended') return sendJson(res, 409, { error: 'run_ended' });
+        return sendJson(res, 504, { error: 'delivery_unknown' });
+    }
+    if (name === 'stop' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        if (Object.keys(body).length !== 0) return sendError(res, 400, 'stop takes an empty JSON object');
+        const result = await registry.stop(id, viewer);
+        if (!result.ok) return sendError(res, result.status, result.error);
+        return sendJson(res, 200, { ok: true });
+    }
+    return sendError(res, 404, 'not found');
+}
+
 const FLOW_PATH = '/api/roboflow/flows/(flow_[0-9a-f]{24})';
 const WORKFLOW_PATH = '/api/roboflow/workflows/([a-z0-9][a-z0-9-]{2,63})';
 const GENERATION_PATH = /^\/api\/roboflow\/generations\/([0-9a-f-]{36})$/;
@@ -343,18 +513,18 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     }
     if (pathname === '/api/roboflow/schedules' && req.method === 'POST') {
         if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
-        sendJson(res, 201, { ok: true, schedule: await roboflow.saveSchedule(await readJsonBody(req), actor.id) }); return true;
+        sendJson(res, 201, { ok: true, schedule: await roboflow.saveSchedule(await readJsonBody(req), actor.id, undefined, { ownerPrincipal: signedOwner(req) }) }); return true;
     }
     const runScheduleId = pathname.match(/^\/api\/roboflow\/schedules\/(cron_[0-9a-f]{24})\/run-now$/)?.[1];
     if (runScheduleId && req.method === 'POST') {
         if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
         const input = await readJsonBody(req);
-        sendJson(res, 200, { ok: true, ...await roboflow.runScheduleNow(runScheduleId, input?.revision, actor.id) }); return true;
+        sendJson(res, 200, { ok: true, ...await roboflow.runScheduleNow(runScheduleId, input?.revision, actor.id, { ownerPrincipal: signedOwner(req) }) }); return true;
     }
     const scheduleId = pathname.match(/^\/api\/roboflow\/schedules\/(cron_[0-9a-f]{24})$/)?.[1];
     if (scheduleId && ['PUT', 'DELETE'].includes(req.method)) {
         if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
-        if (req.method === 'PUT') sendJson(res, 200, { ok: true, schedule: await roboflow.saveSchedule(await readJsonBody(req), actor.id, scheduleId) });
+        if (req.method === 'PUT') sendJson(res, 200, { ok: true, schedule: await roboflow.saveSchedule(await readJsonBody(req), actor.id, scheduleId, { ownerPrincipal: signedOwner(req) }) });
         else {
             const deleted = await roboflow.deleteSchedule(scheduleId);
             if (!deleted) sendError(res, 404, 'Cron job not found');
@@ -389,7 +559,7 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     }
     if (pathname === '/api/roboflow/flows' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id }) });
+        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id, ownerPrincipal: signedOwner(req) }) });
         return true;
     }
     const eventsId = pathname.match(new RegExp(`^${FLOW_PATH}/events$`))?.[1];
@@ -488,6 +658,59 @@ async function handleRobotProxies({ req, res, pathname, actor, proxyPool, robotS
     return true;
 }
 
+// Terminal profiles let the Explorer and the Ploinky router pick a robot for a
+// WebTTY shell. All three routes are decided on the access that the family
+// gate verified for this very request; the compatibility actor and the
+// internal token never grant anything here. Bodies were read, size-limited and
+// signature-checked by the gate and are only parsed here.
+const TERMINAL_PROFILES_PATH = /^\/api\/terminal-profiles(?:\/|$)/;
+const TERMINAL_PROFILE_PREPARE = new RegExp(`^/api/terminal-profiles/(${ROBOT_ID})/prepare$`);
+
+function emptyJsonBody(raw) {
+    if (!raw.length) return true;
+    const parsed = JSON.parse(raw.toString('utf8'));
+    return Boolean(parsed) && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
+}
+
+async function handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager }) {
+    if (!TERMINAL_PROFILES_PATH.test(pathname)) return false;
+    const decision = terminalProfileAccess(access);
+    if (!decision.ok) { sendError(res, decision.status, decision.error); return true; }
+    const workspaceRoot = runtimeManager.workspaceRoot;
+    if (pathname === '/api/terminal-profiles' && req.method === 'GET') {
+        sendJson(res, 200, { ok: true, profiles: await listTerminalProfiles(robotStore) });
+        return true;
+    }
+    if (pathname === '/api/terminal-profiles/resolve' && req.method === 'POST') {
+        let body;
+        try { body = JSON.parse((await readRawBody(req)).toString('utf8')); } catch { body = null; }
+        const keys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : [];
+        if (keys.join() !== 'id,version' || body.version !== 1 || typeof body.id !== 'string') {
+            sendError(res, 400, 'a version 1 profile id is required');
+            return true;
+        }
+        sendJson(res, 200, await resolveTerminalProfile(robotStore, body.id, workspaceRoot));
+        return true;
+    }
+    const prepareId = pathname.match(TERMINAL_PROFILE_PREPARE)?.[1];
+    if (prepareId && req.method === 'POST') {
+        if (!emptyJsonBody(await readRawBody(req))) { sendError(res, 400, 'prepare takes an empty JSON object'); return true; }
+        const robot = await robotStore.get(prepareId);
+        if (!robot) { sendError(res, 404, 'robot not found'); return true; }
+        const root = await robotTerminalDirectory(robotStore, prepareId, workspaceRoot);
+        const codingAgents = robotCodingAgents(robot);
+        const tools = await runtimeManager.toolCache.prepareShellTools();
+        await prepareRobotShell(path.join(robotStore.robotPath(prepareId), 'home'), {
+            codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
+        });
+        await runtimeManager.prepareOpenCode?.(prepareId, { prepare: codingAgents.includes('opencode') });
+        sendJson(res, 200, { ok: true, id: robot.id, label: robot.name, root });
+        return true;
+    }
+    sendError(res, 404, 'not found');
+    return true;
+}
+
 export function createRoboTeamServer(options) {
     const robotStore = options.robotStore;
     const runtimeManager = options.runtimeManager;
@@ -503,6 +726,9 @@ export function createRoboTeamServer(options) {
     const publicDir = path.resolve(options.publicDir || DEFAULT_PUBLIC_DIR);
     const mcpPort = Number(options.mcpPort) || 7000;
     const codingAgentStatus = options.codingAgentStatus || createCodingAgentStatus();
+    const liveSessions = options.liveSessions || null;
+    const liveStreamLifetimeMs = Number.isSafeInteger(options.liveSessionsStreamLifetimeMs) && options.liveSessionsStreamLifetimeMs > 0
+        ? options.liveSessionsStreamLifetimeMs : LIVE_STREAM_LIFETIME_MS;
 
     // The family gate verified this request once; its signed decision is reused.
     const robotView = (req) => ({
@@ -536,11 +762,21 @@ export function createRoboTeamServer(options) {
             // Every other route needs an internal token or a verified, Explorer-entitled user.
             const access = await authorizeWorkspaceRequest(req, url, {
                 internalToken,
-                readBody: () => readRawBody(req),
+                readBody: () => readRawBody(req, req.method === 'POST' && LIVE_MESSAGES_PATH.test(pathname) ? LIVE_MESSAGE_BODY_LIMIT : BODY_LIMIT),
                 refusal: pathname.startsWith('/api/roboflow') ? ROBOFLOW_ENTITLEMENT_ERROR : ROBOTEAM_ENTITLEMENT_ERROR,
             });
             if (!access.ok) return sendError(res, access.status, access.error);
             req[ACCESS] = access;
+            // Live Sessions decide on the signed principal and signed admin
+            // decision only, before the unsigned actor is consulted.
+            if (isLiveSessionsPath(pathname)) {
+                const live = liveSessionsAccess(access);
+                if (!live.ok) return sendError(res, live.status, live.error);
+                if (!liveSessions) return sendError(res, 404, 'not found');
+                return await handleLiveSessions({ req, res, pathname, viewer: { principal: live.principal, canAdmin: live.canAdmin },
+                    registry: liveSessions, publicDir, publicBasePath, streamLifetimeMs: liveStreamLifetimeMs });
+            }
+            if (await handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager })) return;
             const actor = requestActor(req, internalToken);
             if (!actor) return sendError(res, 401, 'authenticated Ploinky user is required');
 
@@ -622,21 +858,6 @@ export function createRoboTeamServer(options) {
                     res.setHeader('x-log-final-length', String(finalResponse.length));
                 }
                 return sendText(res, 200, log);
-            }
-
-            const terminalRobotId = matchRobotPath(pathname, '/terminal');
-            if (terminalRobotId && req.method === 'POST') {
-                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
-                const robot = await robotStore.get(terminalRobotId);
-                if (!robot) return sendError(res, 404, 'robot not found');
-                const directory = await robotTerminalDirectory(robotStore, terminalRobotId, runtimeManager.workspaceRoot);
-                const codingAgents = robotCodingAgents(robot);
-                const tools = await runtimeManager.toolCache.prepareShellTools();
-                await prepareRobotShell(path.join(robotStore.robotPath(terminalRobotId), 'home'), {
-                    codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
-                });
-                await runtimeManager.prepareOpenCode?.(terminalRobotId, { prepare: codingAgents.includes('opencode') });
-                return sendJson(res, 200, { ok: true, directory });
             }
 
             if (pathname === '/api/robots' && req.method === 'POST') {
@@ -733,7 +954,7 @@ export function createRoboTeamServer(options) {
                 if (startTypes[operation]) {
                     const task = await skillsets.start(robot, body, (current, skillSelection) => runtimeManager.startTask(current, startTypes[operation], {
                         cwd: body.cwd, task: String(body.task || ''), skillPolicyRef: skillSelection.policyId, alaSessionId: skillSelection.policyId,
-                        model: body.model || null, ca: body.ca || 'auto',
+                        model: body.model || null, ca: body.ca || 'auto', ownerPrincipal: signedOwner(req),
                     }));
                     return sendJson(res, 202, {
                         ok: true,
@@ -847,4 +1068,4 @@ export function createRoboTeamServer(options) {
     return server;
 }
 
-export const httpServerInternals = { normalizeBasePath, sessionUpstreamPath, matchRobotPath, sessionRobotId };
+export const httpServerInternals = { normalizeBasePath, sessionUpstreamPath, matchRobotPath, sessionRobotId, renderRecordedTurn, lookupRecordedTurn };

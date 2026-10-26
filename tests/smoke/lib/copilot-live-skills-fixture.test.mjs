@@ -10,6 +10,7 @@ import { createLiveSkillsFixture, liveSkillSources, liveSkillsHash, liveSkillsPr
 import { readLiveSkillsSnapshot } from './copilot-live-skills-runtime.mjs';
 import { createOwnedLiveSkillsFixture, liveSkillsPhasePlan, defaultRobotEvidence, assertLiveSkillsLivePreflight, liveSkillsOwnedLaunchURL } from './copilot-live-skills-fixture.mjs';
 import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
+import { withLiveSkillsProjection } from './copilot-live-skills-test-fixture.mjs';
 
 async function harness(t) {
     assert.ok(process.env.SET2_ACHILLES_SOURCE && process.env.SET2_PLOINKY_SOURCE && process.env.SET2_ALA_COMMAND);
@@ -30,6 +31,7 @@ async function harness(t) {
     const { RobotSkillsets, publicRepositories } = await module('server/robot-skillsets.mjs');
     const { skillCatalogRequest } = await module('server/skill-catalog-api.mjs');
     const { installLiveSkills } = await module('server/live-skill-install.mjs');
+    const { alaSkillMountArguments } = await module('copilot/src/lib/execution/alaSkillMounts.mjs');
     const { registerProject } = await module('server/project-storage.mjs');
     const { createTranscriptRecorder } = await import(pathToFileURL(`${alaSource}/src/transcript-recorder.mjs`).href);
     const { installRepositoryLinks, removeRepositoryLinks } = await import(pathToFileURL(`${process.env.SET2_PLOINKY_SOURCE}/cli/utils/repositoryInstall.mjs`).href);
@@ -88,7 +90,7 @@ async function harness(t) {
     const inventory = id => skillCatalogRequest({ skillsets: service, robot: robots.get(fixture.robotId), input: id ? { sessionId: id } : {} });
     const defaultEvidence = async () => defaultRobotEvidence(publicRobot(defaultRobot), await skillCatalogRequest({ skillsets: service, robot: defaultRobot }));
     return { root, repository, codeRoot, dataRoot, fixture, controller, service, robots, store, mutations, calls, client, inventory, defaultEvidence,
-        registerProject, installLiveSkills, createTranscriptRecorder, expectedAla, contractFiles, operate, fsApi, makeController };
+        registerProject, installLiveSkills, alaSkillMountArguments, createTranscriptRecorder, expectedAla, contractFiles, operate, fsApi, makeController };
 }
 
 test('step4 deployed spec uses owned registration before conversation setup and refuses reserved live execution', () => {
@@ -123,16 +125,22 @@ test('seven offline phases use real current policies, Ploinky links, helper rece
     const untouched = await h.service.policies.read(robot.id, untouchedId);
     const metadata = { version: 2, sessionId, cwd: h.fixture.workspace, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), turns: [],
         skillPolicyRef: sessionId, engine: { type: 'ala', version: 1, sessionId, home: `${h.dataRoot}/robots/${robot.id}/home`, cwd: h.fixture.workspace, backend: 'codex', robotId: robot.id } };
-    const sessions = `${h.fixture.workspace}/.roboteam/sessions`; fs.mkdirSync(sessions, { recursive: true });
-    fs.writeFileSync(`${sessions}/${untouchedId}.json`, JSON.stringify({ version: 2, sessionId: untouchedId, cwd: h.fixture.workspace,
+    const sessions = `${h.fixture.workspace}/.roboteam/sessions`;
+    for (const id of [untouchedId, sessionId]) fs.mkdirSync(`${sessions}/${id}`, { recursive: true });
+    fs.writeFileSync(`${sessions}/${untouchedId}/config.json`, JSON.stringify({ version: 2, sessionId: untouchedId, cwd: h.fixture.workspace,
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), turns: [], skillPolicyRef: untouchedId }));
     const untouchedEvidence = policyEvidence(await h.inventory(untouchedId), untouchedId, h.fixture.robotName);
-    const file = `${sessions}/${sessionId}.json`, transcriptFile = `${h.fixture.workspace}/.roboteam/.ala/sessions/${sessionId}.jsonl`;
+    const file = `${sessions}/${sessionId}/config.json`, transcriptFile = `${h.fixture.workspace}/.roboteam/.ala/sessions/${sessionId}.jsonl`;
     fs.mkdirSync(path.dirname(transcriptFile), { recursive: true }); let seq = 1;
     fs.writeFileSync(transcriptFile, JSON.stringify({ seq, type: 'session', id: sessionId, at: new Date().toISOString() }) + '\n');
     const append = (type, fields) => fs.appendFileSync(transcriptFile, JSON.stringify({ seq: ++seq, type, at: new Date().toISOString(), ...fields }) + '\n');
     append('continuation', { agent: 'codex', continuation: { threadId: 'one-owned-codex-thread' } });
     const phases = liveSkillsPhasePlan(h.fixture), proofs = [], priorIds = [], priorReceipts = {}; let identity, revision;
+    const installationService = Object.create(h.service);
+    installationService.live = { resolve: async (...args) => {
+        const inventory = await h.service.live.resolve(...args);
+        return { ...inventory, entries: [...inventory.entries].sort((a, b) => b.name.localeCompare(a.name)) };
+    } };
     for (const phase of phases) {
         const before = Object.fromEntries([h.fixture.control, h.fixture.probe].filter(skill => fs.existsSync(`${h.fixture.repositoryRoot}/skills/${skill.name}`))
             .map(skill => [skill.name, Object.fromEntries(['SKILL.md', 'receipt.mjs'].map(name => [name, liveSkillsHash(fs.readFileSync(`${h.fixture.repositoryRoot}/skills/${skill.name}/${name}`))]))]));
@@ -152,17 +160,21 @@ test('seven offline phases use real current policies, Ploinky links, helper rece
             for (const name of ['SKILL.md', 'receipt.mjs']) assert.equal(liveSkillsHash(fs.readFileSync(`${h.fixture.repositoryRoot}/skills/${h.fixture.control.name}/${name}`)), before[h.fixture.control.name][name]);
         }
         const startedAt = Date.now() - 1, challenge = randomUUID(), turnId = randomUUID();
-        const execution = await h.installLiveSkills({ service: h.service, robot, policyId: sessionId, cwd: h.fixture.workspace, client: h.client });
+        const execution = await h.installLiveSkills({ service: installationService, robot, policyId: sessionId, sessionId, cwd: h.fixture.workspace, client: h.client });
         const { release, ...record } = execution; await release(); metadata.skillExecution = { ...record, active: false };
         const turn = { turnId, userMessageId: randomUUID(), assistantMessageId: randomUUID(), timestamp: new Date().toISOString(), status: 'completed', tasks: [] };
         turn.thinkingUrl = `/base-agent-additional-server/roboTeamAgent/3001/webchat-logs/${sessionId}/${turn.assistantMessageId}`; metadata.turns.push(turn);
         const recorder = h.createTranscriptRecorder({ append }, turnId); recorder.user(liveSkillsPrompt({ phase: challenge, selected: phase.selected }));
-        for (const skill of phase.selected) {
+        await withLiveSkillsProjection({ fixture: h.fixture, workspaceRoot: h.root, sessionId, execution, alaSkillMountArguments: h.alaSkillMountArguments }, async () => {
+          for (const skill of phase.selected) {
             const helper = `${h.fixture.workspace}/.agents/skills/${skill.name}/receipt.mjs`;
             assert.ok(fs.lstatSync(path.dirname(helper)).isSymbolicLink());
             const child = spawnSync(process.execPath, [helper, challenge], { cwd: h.fixture.workspace, env: process.env, encoding: 'utf8', timeout: 10_000 });
             assert.equal(child.status, 0, child.stderr); assert.equal(child.stdout.trim(), skill.helperMarker);
-        }
+          }
+        });
+        assert.equal(fs.lstatSync(`${h.fixture.workspace}/.agents/skills`, { throwIfNoEntry: false }), undefined);
+        assert.equal(fs.lstatSync(`${h.fixture.workspace}/.agents/.roboteam-links.json`, { throwIfNoEntry: false }), undefined);
         recorder.observe({ type: 'agentlib-tool', tool: 'PRIVATE_TOOL_SENTINEL', reason: 'PRIVATE_REASON_SENTINEL' });
         await recorder.finish({ result: phase.selected.flatMap(skill => [skill.descriptorMarker, skill.helperMarker]).join('\n'), status: 'completed' });
         fs.writeFileSync(file, JSON.stringify(metadata));
@@ -170,6 +182,9 @@ test('seven offline phases use real current policies, Ploinky links, helper rece
             robotId: robot.id, robotName: robot.name, repositoryName: h.fixture.repositoryName, repositoryRoot: h.fixture.repositoryRoot,
             contractFiles: h.contractFiles, expectedRepository: h.repository, workspaceRoot: h.root, expectedAla: h.expectedAla },
         { codeRoot: h.codeRoot, dataRoot: h.dataRoot, fsApi: h.fsApi, emit: value => { snapshot = value; } });
+        assert.deepEqual(snapshot.catalog.links.map(link => link.name), execution.entries.filter(entry => !entry.executionOnly).map(entry => entry.name));
+        assert.equal(liveSkillsHash(snapshot.catalog.links), execution.revision);
+        assert.ok(Object.values(snapshot.liveLinks).every(link => link.destination.startsWith(execution.skillsDirectory + '/')));
         const inventory = await h.inventory(sessionId), proof = validateLiveSkillsTurn({ snapshot, inventory, fixture: h.fixture, workspaceRoot: h.root,
             sessionId, phase: challenge, ...phase, baselineIds: priorIds, priorTurnIds: proofs.map(proof => proof.turnId), nativeIdentity: identity,
             expectedPolicy: policyEvidence(inventory, sessionId, h.fixture.robotName), priorRevision: revision,
@@ -222,13 +237,48 @@ test('ambiguous fixture preparation retains ownership and fails cleanup', async 
 test('owned cleanup refuses active or pending session metadata before removing links or robot registration', async t => {
     const h = await harness(t); await h.controller.setup();
     const directory = `${h.fixture.workspace}/.roboteam/sessions`; fs.mkdirSync(directory, { recursive: true });
-    const file = `${directory}/${randomUUID()}.json`;
-    fs.writeFileSync(file, JSON.stringify({ skillExecution: { active: true }, turns: [{ status: 'pending' }] }));
+    const sessionId = randomUUID(); fs.mkdirSync(`${directory}/${sessionId}`);
+    const file = `${directory}/${sessionId}/config.json`;
+    const metadata = { version: 2, sessionId, cwd: h.fixture.workspace };
+    fs.writeFileSync(file, JSON.stringify({ ...metadata, skillExecution: { active: true }, turns: [{ status: 'pending' }] }));
     await assert.rejects(h.controller.cleanup({ quiescent: true }), /active execution/);
     assert.equal(h.controller.state.cleanup, 'failed'); assert.ok(h.robots.has(h.fixture.robotId));
     assert.equal(h.calls.filter(call => call.method === 'DELETE').length, 0);
-    fs.writeFileSync(file, JSON.stringify({ skillExecution: { active: false }, turns: [{ status: 'pending' }] }));
+    fs.writeFileSync(file, JSON.stringify({ ...metadata, turns: [{ status: 'pending' }] }));
     await assert.rejects(h.controller.cleanup({ quiescent: true }), /unfinished native turns/);
-    fs.writeFileSync(file, JSON.stringify({ skillExecution: { active: false }, turns: [{ status: 'completed' }] }));
+    fs.writeFileSync(file, JSON.stringify({ ...metadata, turns: [{ status: 'completed' }] }));
     await h.controller.cleanup({ quiescent: true });
 });
+
+for (const corruption of ['active-later-session', 'pending-later-session', 'retargeted', 'foreign-directory', 'foreign-robot']) {
+    test(`session-private cleanup rejects ${corruption} before deleting any admitted directory`, async t => {
+        const h = await harness(t); await h.controller.setup();
+        const robot = h.robots.get(h.fixture.robotId), ids = [randomUUID(), randomUUID()].sort(), records = [];
+        for (const sessionId of ids) {
+            await h.service.policies.ensure(robot, sessionId);
+            const execution = await h.installLiveSkills({ service: h.service, robot, policyId: sessionId, sessionId, cwd: h.fixture.workspace, client: h.client });
+            const { release, ...record } = execution; await release();
+            const metadata = { version: 2, sessionId, cwd: h.fixture.workspace, turns: [], engine: { robotId: robot.id }, skillExecution: { ...record, active: false } };
+            const file = `${h.fixture.workspace}/.roboteam/sessions/${sessionId}/config.json`;
+            fs.writeFileSync(file, JSON.stringify(metadata)); records.push({ file, metadata });
+        }
+        const later = records[1], original = structuredClone(later.metadata);
+        if (corruption === 'active-later-session') later.metadata.skillExecution.active = true;
+        if (corruption === 'pending-later-session') later.metadata.turns = [{ status: 'pending' }];
+        if (corruption === 'foreign-directory') later.metadata.skillExecution.skillsDirectory = `${h.root}/foreign`;
+        if (corruption === 'foreign-robot') later.metadata.engine.robotId = 'foreign-robot';
+        const link = `${original.skillExecution.skillsDirectory}/${original.skillExecution.entries.find(entry => !entry.executionOnly).name}`;
+        const target = fs.readlinkSync(link);
+        if (corruption === 'retargeted') { fs.unlinkSync(link); fs.symlinkSync(h.root, link); }
+        fs.writeFileSync(later.file, JSON.stringify(later.metadata));
+        await assert.rejects(h.operate('remove-links'));
+        for (const entry of records) assert.ok(fs.lstatSync(entry.metadata === later.metadata ? original.skillExecution.skillsDirectory : entry.metadata.skillExecution.skillsDirectory).isDirectory());
+        assert.ok(h.robots.has(robot.id));
+        if (corruption === 'retargeted') { fs.unlinkSync(link); fs.symlinkSync(target, link); }
+        fs.writeFileSync(later.file, JSON.stringify(original));
+        await h.operate('remove-links'); await h.operate('remove-links');
+        for (const entry of records) assert.equal(fs.existsSync(path.dirname(entry.file) + '/skills'), false);
+        await h.controller.cleanup({ quiescent: true });
+        await h.controller.cleanup({ quiescent: true });
+    });
+}

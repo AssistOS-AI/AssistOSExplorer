@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { execFileSync, spawnSync } from 'node:child_process';
 import test from 'node:test';
 import {
     acceptanceLedger, selectAcceptanceCases, validateAcceptanceProfile, assertLedgerResults,
@@ -10,6 +11,9 @@ import {
 } from './acceptance-profile.mjs';
 import { assertAccountRoles, assertMarketplaceLifecycleFixture } from './account-preflight.mjs';
 import AcceptanceReporter from './acceptance-reporter.mjs';
+import { collectCopilotReleaseEvidence, sameCopilotReleaseGeneration } from './copilot-release-evidence.mjs';
+import { validateNativeEvidence } from './live-sessions.mjs';
+import { siblingPath, siblingUrl } from '../../helpers/sibling-roots.mjs';
 
 const digest = `sha256:${'a'.repeat(64)}`;
 const source = '/fixture/explorer';
@@ -19,16 +23,52 @@ const baseEnv = {
     SMOKE_PLOINKY_BOX_CONTAINER: 'fixture-box', SMOKE_EXPECT_BOX_IMAGE_ID: digest,
     SMOKE_EXPECT_BOX_IMAGE_REF: 'localhost/fixture:exact', SMOKE_RELEASE_MANIFEST: '/fixture/manifest.json',
     SMOKE_LOGIN_EMAIL: 'admin@example.test', SMOKE_SIGN_IN_METHOD: 'password', SMOKE_ACCOUNT_PASSWORD: 'fabricated-password',
+    SMOKE_WEBTTY_WATCHER_USERNAME: 'watcher@example.test',
     SMOKE_SECONDARY_LOGIN_EMAIL: 'user@example.test', SMOKE_SECONDARY_SIGN_IN_METHOD: 'password', SMOKE_SECONDARY_ACCOUNT_PASSWORD: 'fabricated-secondary',
     SMOKE_WEBTTY_CORE: '1',
 };
 const args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/01-webtty-core.spec.mjs'];
 const record = entry => ({ identity: entry.identity, expectedStatus: 'passed', outcome: 'expected', results: [{ status: 'passed', retry: 0 }] });
 
-test('ledger retains all 44 identities and the 24 required cases', () => {
-    assert.equal(acceptanceLedger.identities.length, 44);
+const liveArgs = ['--project=chromium', '--workers=1', '--retries=0', 'specs/07-live-sessions.spec.mjs'];
+const liveEnv = { ...baseEnv, SMOKE_LIVE_SESSIONS: '1', SMOKE_PLOINKY_BIN: '/fixture/ploinky/bin/ploinky',
+    SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL: 'foreign@example.test', SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD: 'password',
+    SMOKE_LIVE_SESSIONS_FOREIGN_ACCOUNT_PASSWORD: 'fabricated-foreign', SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE: '/private/native-evidence.json' };
+
+test('fresh Live Sessions profile selects exactly two additive identities with strict private prerequisites', () => {
+    const profile = validateAcceptanceProfile(liveArgs, liveEnv);
+    assert.equal(profile.box, true);
+    assert.equal(profile.accounts.secondary, true);
+    assert.equal(profile.cases.length, 2);
+    assert.ok(profile.cases.every(entry => entry.cohort === 'fresh-live-sessions'));
+    for (const name of ['SMOKE_LIVE_SESSIONS', 'SMOKE_PLOINKY_BIN', 'SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE',
+        'SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL', 'SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD',
+        'SMOKE_LIVE_SESSIONS_FOREIGN_ACCOUNT_PASSWORD', 'SMOKE_SECONDARY_ACCOUNT_PASSWORD']) {
+        const env = { ...liveEnv }; delete env[name];
+        assert.throws(() => validateAcceptanceProfile(liveArgs, env), error => !error.message.includes('fabricated-foreign'));
+    }
+    for (const email of [liveEnv.SMOKE_LOGIN_EMAIL, liveEnv.SMOKE_SECONDARY_LOGIN_EMAIL.toUpperCase()]) {
+        assert.throws(() => validateAcceptanceProfile(liveArgs, { ...liveEnv, SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL: email }), /distinct/);
+    }
+    assert.throws(() => validateAcceptanceProfile(liveArgs, { ...liveEnv, SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE: 'relative' }), /absolute/);
+    assert.throws(() => validateAcceptanceProfile(liveArgs, { ...liveEnv, SMOKE_ALLOW_BROWSER_ERRORS: '1' }), /browser errors/);
+    assert.throws(() => validateAcceptanceProfile([...liveArgs, '--grep', '^RoboTeam restart'], liveEnv), /both complete feature identities/);
+    assert.throws(() => validateAcceptanceProfile([...liveArgs, 'specs/01-webtty-core.spec.mjs'], liveEnv), /own separate two-test cohort/);
+    assertLedgerResults(profile.cases, profile.cases.map(record), { terminal: true });
+    for (const status of ['skipped', 'interrupted', 'timedOut', 'failed']) {
+        const records = profile.cases.map(record); records[1].results[0].status = status;
+        assert.throws(() => assertLedgerResults(profile.cases, records, { terminal: true }));
+    }
+    assert.throws(() => assertLedgerResults(profile.cases, [], { terminal: true }));
+    assert.throws(() => assertLedgerResults(profile.cases, [record(profile.cases[0])], { terminal: true }));
+    assert.doesNotThrow(() => validateAcceptanceProfile([...liveArgs, '--list'], { SMOKE_LIVE_SESSIONS: '1' }));
+});
+
+test('ledger retains all 44 historical identities, 24 required cases and two Live Sessions identities', () => {
+    assert.equal(acceptanceLedger.identities.filter(entry => entry.cohort !== 'fresh-live-sessions').length, 44);
+    assert.equal(acceptanceLedger.identities.length, 46);
     assert.equal(acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance').length, 24);
-    assert.equal(new Set(acceptanceLedger.identities.map(entry => entry.identity)).size, 44);
+    assert.equal(new Set(acceptanceLedger.identities.map(entry => entry.identity)).size, 46);
     // The WebAssist guest case needs an explicitly installed legacy-agents repository, so it is a flag-gated separate profile.
     const webAssistGuest = acceptanceLedger.identities.find(entry => entry.file === '15-webassist-guest.spec.mjs');
     assert.equal(webAssistGuest.disposition, 'separate-profile');
@@ -41,7 +81,7 @@ test('ledger retains all 44 identities and the 24 required cases', () => {
 });
 
 test('missing image pins, profile flags and private sign-in inputs fail before collectors', () => {
-    for (const name of ['SMOKE_EXPECT_BOX_IMAGE_ID', 'SMOKE_EXPECT_BOX_IMAGE_REF', 'SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_RELEASE_MANIFEST', 'SMOKE_BOX_BASE_URL', 'SMOKE_WORKSPACE_ROOT', 'SMOKE_ACCOUNT_PASSWORD', 'SMOKE_SECONDARY_LOGIN_EMAIL', 'SMOKE_WEBTTY_CORE']) {
+    for (const name of ['SMOKE_EXPECT_BOX_IMAGE_ID', 'SMOKE_EXPECT_BOX_IMAGE_REF', 'SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_RELEASE_MANIFEST', 'SMOKE_BOX_BASE_URL', 'SMOKE_WORKSPACE_ROOT', 'SMOKE_ACCOUNT_PASSWORD', 'SMOKE_SECONDARY_LOGIN_EMAIL', 'SMOKE_WEBTTY_WATCHER_USERNAME', 'SMOKE_WEBTTY_CORE']) {
         const env = { ...baseEnv }; delete env[name];
         assert.throws(() => validateAcceptanceProfile(args, env), error => error.message.includes(name) && !error.message.includes('fabricated-password'));
     }
@@ -144,7 +184,13 @@ test('actual common preflight compares independent manifest, image, workspace an
     } };
     const fsApi = { realpathSync: value => value, readFileSync: () => assert.fail('Preflight must not read the Explorer tool descriptor.') };
     const options = { profile, env: baseEnv, baseURL: baseEnv.SMOKE_BASE_URL, boxBaseURL: baseEnv.SMOKE_BOX_BASE_URL,
-        collect: async inputs => { assert.equal(inputs.expectedContainerName, 'fixture-box'); assert.equal(inputs.generationMaxAgeMs, 1800000); return evidence; }, fsApi };
+        collect: async inputs => {
+            assert.equal(inputs.expectedContainerName, 'fixture-box');
+            assert.equal(inputs.generationMaxAgeMs, 1800000);
+            assert.equal(inputs.requireActiveRoboTeamAgent, false);
+            assert.equal('requireActiveAchillesCLI' in inputs, false);
+            return evidence;
+        }, fsApi };
     assert.equal(await collectAcceptancePreflight(options), evidence);
     for (const modified of [ { ...evidence, imageDigest: 'wrong' }, { ...evidence, liveBox: { ...evidence.liveBox, box: { imageId: 'wrong' } } }, { ...evidence, liveBox: { ...evidence.liveBox, workspaceSourceMount: { source: '/foreign' } } } ]) {
         await assert.rejects(collectAcceptancePreflight({ ...options, collect: async () => modified }));
@@ -286,7 +332,7 @@ test('canonical discovery finds exactly the 24 required identities without start
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('source inventory discovers all 44 ledger identities while keeping 20 separate/blocked dispositions intact', () => {
+test('source inventory discovers 44 historical and two additive identities while preserving historical dispositions', () => {
     const cases = acceptanceLedger.identities;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-all-discovery-'));
     try {
@@ -302,7 +348,120 @@ test('source inventory discovers all 44 ledger identities while keeping 20 separ
         const report = JSON.parse(fs.readFileSync(path.join(root, 'ledger-discovery_codex.json')));
         assertLedgerResults(cases, report.records);
         assert.ok(report.records.every(entry => entry.results.length === 0));
-        assert.equal(cases.filter(entry => entry.disposition !== 'required-local-acceptance').length, 20);
+        assert.equal(cases.filter(entry => entry.disposition !== 'required-local-acceptance' && entry.cohort !== 'fresh-live-sessions').length, 20);
         assert.ok(cases.every(entry => entry.executionAllowedByThisPlan === false));
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// The paired boundary: the real current release verifier (found beside this repository) reads a real manifest
+// over real temporary Git checkouts; the real collector and preflight consume its output. Only the live Box
+// observation is a fixture, because no Box is deployed by a source test.
+async function pairedRelease(t) {
+    const verifierUrl = siblingUrl('ploinky', 'tests/release/verifyExplorerReleaseBundle.mjs');
+    const verifier = await import(verifierUrl.href);
+    const { LOCKED_ROOT_POSTINSTALL } = await import(siblingUrl('ploinky', 'tests/release/verifyCopilot421Bundle.mjs').href);
+    const base = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'paired-release-'));
+    t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+    const git = (cwd, ...gitArgs) => execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+        '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', '-C', cwd, ...gitArgs], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const workspace = path.join(base, 'workspace');
+    const evidenceDir = path.join(base, 'evidence');
+    fs.mkdirSync(workspace); fs.mkdirSync(evidenceDir);
+    const inventory = { schemaVersion: 1, kind: 'explorer-source-inventory', roboTeam: { repository: 'explorer', path: 'roboTeamAgent' }, repositories: {} };
+    const roots = {};
+    const add = (name, files, role = 'deployed-source') => {
+        const root = path.join(workspace, name);
+        roots[name] = root;
+        fs.mkdirSync(root);
+        git(root, 'init', '-q');
+        for (const [file, content] of Object.entries(files)) {
+            fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+            fs.writeFileSync(path.join(root, file), content);
+        }
+        git(root, 'add', '-A'); git(root, 'commit', '-q', '-m', 'fixture');
+        inventory.repositories[name] = { root, commit: git(root, 'rev-parse', 'HEAD'), role };
+    };
+    add('ploinky', { 'package.json': JSON.stringify({ scripts: { postinstall: LOCKED_ROOT_POSTINSTALL } }), 'globalDeps/package.json': '{"dependencies":{}}' });
+    add('explorer', { 'roboTeamAgent/manifest.json': '{}' });
+    add('achillesAgentLib', { 'package.json': '{}' }, 'provenance-reference');
+    add('webmeet', { 'manifest.json': '{}' });
+    add('OnlyOfficeAgent', { 'manifest.json': '{}' });
+    const inventoryBytes = Buffer.from(JSON.stringify(inventory, null, 2));
+    const inventoryPath = path.join(evidenceDir, 'source-inventory.json');
+    fs.writeFileSync(inventoryPath, inventoryBytes);
+    const manifestPath = path.join(evidenceDir, 'standard-release.json');
+    const inventorySha256 = (await import('node:crypto')).createHash('sha256').update(inventoryBytes).digest('hex');
+    verifier.writeManifestFile({ inventoryPath, expectedInventorySha256: inventorySha256, imageDigest: digest, outputPath: manifestPath });
+    const agentLibCommit = inventory.repositories.achillesAgentLib.commit;
+    const liveBox = () => ({
+        box: { imageId: digest, containerId: 'c'.repeat(64), semanticLabels: { agentLibMode: 'image', agentLibSourceIdHash: '4'.repeat(64), agentLibSourceRelativePath: 'image' } },
+        ploinkySourceMount: { source: roots.ploinky }, workspaceSourceMount: { source: workspace },
+    });
+    const collect = (inputs, overrides = {}) => collectCopilotReleaseEvidence({ ...inputs, collectLiveBox: liveBox,
+        readImageAgentLib: () => ({ commit: agentLibCommit }), realpathSync: value => value, ...overrides });
+    return { verifierPath: fileURLToPath(verifierUrl), manifestPath, inventory, roots, workspace, collect, git, agentLibCommit, base };
+}
+
+test('actual standard verifier output passes the real collector and common preflight with the complete source map', async t => {
+    const paired = await pairedRelease(t);
+    const env = { ...baseEnv, SMOKE_WORKSPACE_ROOT: paired.workspace, SMOKE_RELEASE_MANIFEST: paired.manifestPath };
+    const profile = validateAcceptanceProfile(args, env);
+    let collected;
+    const evidence = await collectAcceptancePreflight({ profile, env, manifestPath: paired.manifestPath, verifierPath: paired.verifierPath,
+        baseURL: env.SMOKE_BASE_URL, boxBaseURL: env.SMOKE_BOX_BASE_URL,
+        collect: inputs => { collected = inputs; return paired.collect(inputs); } });
+    assert.equal(collected.verifierPath, paired.verifierPath, 'the exact absolute verifier path reaches the collector');
+    assert.equal(collected.manifestPath, paired.manifestPath);
+    assert.equal(evidence.releaseBundle.kind, 'explorer-release-bundle');
+    assert.equal(evidence.imageDigest, digest);
+    assert.deepEqual(Object.keys(evidence.repositories), ['OnlyOfficeAgent', 'achillesAgentLib', 'explorer', 'ploinky', 'webmeet']);
+    for (const [name, entry] of Object.entries(paired.inventory.repositories)) {
+        assert.deepEqual({ ...evidence.repositories[name] }, { name, repositoryPath: entry.root, commit: entry.commit, role: entry.role });
+    }
+    assert.equal(evidence.repositories.achillesAgentLib.role, 'provenance-reference');
+    assert.equal('achillesCLI' in evidence.repositories, false);
+    const post = await paired.collect({ manifestPath: paired.manifestPath, verifierPath: paired.verifierPath, baseURL: env.SMOKE_BASE_URL, boxBaseURL: env.SMOKE_BOX_BASE_URL });
+    assert.doesNotThrow(() => assertAcceptanceGeneration(evidence, post));
+    assert.equal(sameCopilotReleaseGeneration(evidence, post), true);
+    const drifted = structuredClone(post);
+    drifted.repositories.webmeet.commit = 'f'.repeat(40);
+    assert.throws(() => assertAcceptanceGeneration(evidence, drifted), /source identity changed/);
+    const dropped = structuredClone(post);
+    delete dropped.repositories.OnlyOfficeAgent;
+    assert.throws(() => assertAcceptanceGeneration(evidence, dropped), /source identity changed/);
+    // The legacy verifier is refused for the current manifest, so no fallback can verify it.
+    await assert.rejects(paired.collect({ manifestPath: paired.manifestPath, baseURL: env.SMOKE_BASE_URL, boxBaseURL: env.SMOKE_BOX_BASE_URL,
+        verifierPath: fileURLToPath(siblingUrl('ploinky', 'tests/release/verifyCopilot421Bundle.mjs')) }), /Copilot 421 release bundle rejected/);
+    // A dirty dependency refuses the actual verifier before any Box is observed.
+    fs.appendFileSync(path.join(paired.roots.webmeet, 'manifest.json'), '\n');
+    let observed = false;
+    await assert.rejects(paired.collect({ manifestPath: paired.manifestPath, verifierPath: paired.verifierPath, baseURL: env.SMOKE_BASE_URL, boxBaseURL: env.SMOKE_BOX_BASE_URL },
+        { collectLiveBox: () => { observed = true; return {}; } }), /webmeet repository has uncommitted or untracked content/);
+    assert.equal(observed, false);
+});
+
+test('a three-core-only native map is refused when the release evidence contains dependencies', async t => {
+    const paired = await pairedRelease(t);
+    const release = await paired.collect({ manifestPath: paired.manifestPath, verifierPath: paired.verifierPath,
+        baseURL: baseEnv.SMOKE_BASE_URL, boxBaseURL: baseEnv.SMOKE_BOX_BASE_URL });
+    const generation = 'c'.repeat(64);
+    const runtime = { containerId: 'runtime', containerName: 'robo', instanceId: 'instance', enableGeneration: 3 };
+    const record = { schemaVersion: 1, robotId: 'default-123456', workspaceRoot: paired.workspace, outerContainerId: release.liveBox.box.containerId,
+        imageDigest: release.imageDigest, repositories: JSON.parse(JSON.stringify(release.repositories)), initialRoboTeam: runtime,
+        native: { backend: 'claude', model: 'configured-model', effort: 'configured-effort', version: '1.2.3', cliVersion: '1.2.3 (Claude Code)',
+            sha256: 'd'.repeat(64), generation, cacheRoot: '/cache', executablePath: '/cache/shell/bin/claude',
+            realpath: `/cache/claude/generations/${generation}/bin/claude` } };
+    const config = { codingAgent: 'claude', models: { claude: 'configured-model' }, efforts: { claude: 'configured-effort' } };
+    const options = { release, runtime, workspaceRoot: paired.workspace, config };
+    assert.doesNotThrow(() => validateNativeEvidence(record, options), 'the complete map satisfies every other native assertion');
+    const core = Object.fromEntries(['ploinky', 'explorer', 'achillesAgentLib'].map(name => [name, record.repositories[name]]));
+    assert.equal(Object.keys(core).length, 3);
+    assert.ok(Object.keys(release.repositories).length > 3, 'the release evidence contains dependencies');
+    assert.throws(() => validateNativeEvidence({ ...record, repositories: core }, options), /complete verified source graph/);
+    for (const dependency of ['webmeet', 'OnlyOfficeAgent']) {
+        const missingOne = { ...record.repositories };
+        delete missingOne[dependency];
+        assert.throws(() => validateNativeEvidence({ ...record, repositories: missingOne }, options), /complete verified source graph/, dependency);
+    }
+    assert.throws(() => validateNativeEvidence({ ...record, repositories: { ...record.repositories, webmeet: { ...record.repositories.webmeet, commit: 'e'.repeat(40) } } }, options), /complete verified source graph/);
 });

@@ -15,6 +15,7 @@ import {
   sameCopilotReleaseGeneration,
 } from '../lib/copilot-release-evidence.mjs';
 import { validateQaAcceptanceProfile } from '../lib/qa-acceptance-profile.mjs';
+import { requiresCopilotSourceVerification } from '../lib/live-sessions.mjs';
 import { validateHeadlessWebMeetProfile } from '../lib/webmeet-headless-profile.mjs';
 import {
   validateAcceptanceProfile, collectAcceptancePreflight, assertAcceptanceGeneration, assertLedgerResults,
@@ -31,10 +32,7 @@ const forbiddenOutputOptions = new Set([
 const selectedSpecFiles = playwrightArgs.filter((argument) => (
   /(?:^|\/)specs\/[^/]+\.spec\.mjs$/i.test(String(argument).replaceAll('\\', '/'))
 ));
-const ordinaryCopilotGate = selectedSpecFiles.length === 0
-  || selectedSpecFiles.some((argument) => (
-    String(argument).replaceAll('\\', '/').endsWith('specs/05-copilot-folder-launch.spec.mjs')
-  ));
+const ordinaryCopilotGate = requiresCopilotSourceVerification(selectedSpecFiles);
 for (let index = 0; index < playwrightArgs.length; index += 1) {
   const argument = playwrightArgs[index];
   const optionName = String(argument).split('=', 1)[0];
@@ -69,7 +67,7 @@ const sourceManifestPath = String(verificationMode === 'local-snapshot'
   : process.env.SMOKE_RELEASE_MANIFEST || '').trim();
 const sourceVerifierPath = path.resolve(smokeRoot, verificationMode === 'local-snapshot'
   ? '../../../ploinky/tests/release/verifyLocalSnapshotBundle.mjs'
-  : '../../../ploinky/tests/release/verifyCopilot421Bundle.mjs');
+  : '../../../ploinky/tests/release/verifyExplorerReleaseBundle.mjs');
 
 validateHeadlessWebMeetProfile({
   enabled: headlessWebMeetGate,
@@ -147,6 +145,9 @@ childEnv.SMOKE_ARTIFACT_DIR = path.resolve(childEnv.SMOKE_ARTIFACT_DIR
   || path.join(smokeRoot, '..', '..', '.ploinky', 'test-artifacts', 'headless-smoke', childEnv.SMOKE_RUN_ID));
 childEnv.SMOKE_PREFLIGHT_ACCOUNT_REQUIREMENTS = JSON.stringify(profile.accounts);
 childEnv.SMOKE_LEDGER_COVERAGE = profile.coverage;
+// Release mode hands the exact verifier this runner uses to every child, so a
+// spec's own release collector can never fall back to or inherit another one.
+if (verificationMode === 'release') childEnv.SMOKE_COPILOT_RELEASE_VERIFIER = sourceVerifierPath;
 for (const name of Object.keys(childEnv)) {
   if (
     /^PLAYWRIGHT_[A-Z0-9]+_OUTPUT_(?:DIR|FILE|NAME)$/.test(name)
@@ -178,7 +179,7 @@ if (ordinaryCopilotGate && !profile.listing) {
     manifestPath: sourceManifestPath,
     verifierPath: sourceVerifierPath,
     verificationMode,
-    requireActiveAchillesCLI: false,
+    requireActiveRoboTeamAgent: false,
     baseURL,
     boxBaseURL,
     expectedContainerName: String(process.env.SMOKE_PLOINKY_BOX_CONTAINER || '').trim(),
@@ -301,7 +302,7 @@ if (copilotReleaseEvidence) {
       manifestPath: sourceManifestPath,
       verifierPath: sourceVerifierPath,
       verificationMode,
-      requireActiveAchillesCLI: true,
+      requireActiveRoboTeamAgent: true,
       baseURL,
       boxBaseURL,
       expectedContainerName: copilotReleaseEvidence.liveBox.box.containerName,

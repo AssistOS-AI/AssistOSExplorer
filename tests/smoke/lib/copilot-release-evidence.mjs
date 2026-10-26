@@ -11,6 +11,15 @@ import { collectLocalSnapshotSourceBindings } from './local-snapshot-bindings.mj
 
 const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const GIT_COMMIT = /^[0-9a-f]{40}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+
+// The current release verifier's versioned result. A result without this exact
+// version and kind, such as the legacy 421 verifier's, is never accepted in
+// release mode.
+export const RELEASE_BUNDLE_SCHEMA_VERSION = 1;
+export const RELEASE_BUNDLE_KIND = 'explorer-release-bundle';
+const RELEASE_CORE_REPOSITORIES = Object.freeze(['achillesAgentLib', 'explorer', 'ploinky']);
+const RELEASE_REPOSITORY_ROLES = Object.freeze(['deployed-source', 'provenance-reference']);
 
 // The build-time record of the achillesAgentLib copy a Box image packages.
 // An image-mode Box carries no AgentLib commit label, so this record is the
@@ -57,10 +66,45 @@ export function readImageAgentLibProvenance(imageId, { spawn = spawnSync } = {})
   return parseImageAgentLibProvenance(result.stdout);
 }
 
+function requireCurrentReleaseVersion(verified) {
+  if (verified?.schemaVersion !== RELEASE_BUNDLE_SCHEMA_VERSION || verified?.kind !== RELEASE_BUNDLE_KIND) {
+    throw new Error(`The release verifier did not return the current versioned ${RELEASE_BUNDLE_KIND} result (schemaVersion ${RELEASE_BUNDLE_SCHEMA_VERSION}).`);
+  }
+  if (!SHA256.test(String(verified.sourceInventorySha256 || ''))) {
+    throw new Error('The release verifier did not return the SHA-256 of the frozen source inventory.');
+  }
+  return Object.freeze({
+    schemaVersion: verified.schemaVersion,
+    kind: verified.kind,
+    sourceInventorySha256: verified.sourceInventorySha256,
+  });
+}
+
+// Every verified source entry is kept: the complete map is what the native
+// evidence and the generation comparison bind, so nothing is filtered here.
+function requireCompleteReleaseSources(repositories) {
+  if (!repositories || typeof repositories !== 'object' || Array.isArray(repositories)) {
+    throw new Error('The release verifier did not return the verified source repositories.');
+  }
+  for (const name of RELEASE_CORE_REPOSITORIES) {
+    if (!Object.hasOwn(repositories, name)) {
+      throw new Error(`The release verifier did not return the required ${name} source.`);
+    }
+  }
+  for (const [name, entry] of Object.entries(repositories)) {
+    if (entry?.name !== name
+      || !GIT_COMMIT.test(String(entry.commit || ''))
+      || !path.isAbsolute(String(entry.repositoryPath || ''))
+      || !RELEASE_REPOSITORY_ROLES.includes(entry.role)) {
+      throw new Error(`The release verifier returned an incomplete source entry for ${name}.`);
+    }
+  }
+}
+
 export async function collectCopilotReleaseEvidence({
   manifestPath,
   verificationMode = 'release',
-  requireActiveAchillesCLI = true,
+  requireActiveRoboTeamAgent = true,
   verifierPath,
   baseURL,
   boxBaseURL = baseURL,
@@ -104,6 +148,7 @@ export async function collectCopilotReleaseEvidence({
   if ((verified.verificationMode || 'release') !== verificationMode) {
     throw new Error('The source verifier does not match the explicitly selected verification mode.');
   }
+  const releaseBundle = verificationMode === 'release' ? requireCurrentReleaseVersion(verified) : null;
   if (!IMAGE_DIGEST.test(String(verified?.imageDigest || ''))) {
     throw new Error('The Copilot release verifier did not return an immutable Box image digest.');
   }
@@ -115,6 +160,7 @@ export async function collectCopilotReleaseEvidence({
   if (!verifiedAgentLib || !GIT_COMMIT.test(String(verifiedAgentLib.commit || ''))) {
     throw new Error('The Copilot release verifier did not return the verified achillesAgentLib commit.');
   }
+  if (releaseBundle) requireCompleteReleaseSources(verified.repositories);
   const verifiedPloinkySource = realpathSync(verifiedPloinky.repositoryPath);
   const liveBox = collectLiveBox({
     baseURL: boxBaseURL,
@@ -142,6 +188,17 @@ export async function collectCopilotReleaseEvidence({
   const agentLibCommit = imageMode
     ? readImageAgentLib(liveBox.box.imageId).commit
     : liveAgentLib?.agentLibCommit;
+  // The clean Git counterpart of an image-supplied AgentLib is provenance for
+  // the packaged commit, not a deployed source; a local AgentLib is the deployed source.
+  if (releaseBundle) {
+    const role = verifiedAgentLib.role;
+    if (imageMode && role !== 'provenance-reference') {
+      throw new Error('An image-mode Box requires the achillesAgentLib source to be labeled provenance-reference.');
+    }
+    if (liveAgentLib?.agentLibMode === 'local' && role !== 'deployed-source') {
+      throw new Error('A local-AgentLib Box requires the achillesAgentLib source to be labeled deployed-source.');
+    }
+  }
   if (agentLibCommit !== verifiedAgentLib.commit) {
     throw new Error(imageMode
       ? 'The running Box image records an AgentLib commit that does not match SMOKE_RELEASE_MANIFEST.'
@@ -156,7 +213,7 @@ export async function collectCopilotReleaseEvidence({
     commitEvidence: imageMode ? 'image-provenance' : 'box-label',
   });
   const sourceBindings = verificationMode === 'local-snapshot'
-    ? collectSnapshotBindings({ liveBox, repositories: verified.repositories, requireActiveAchillesCLI })
+    ? collectSnapshotBindings({ liveBox, repositories: verified.repositories, requireActiveRoboTeamAgent })
     : null;
   return Object.freeze({
     verificationMode,
@@ -164,6 +221,7 @@ export async function collectCopilotReleaseEvidence({
     applicationBaseURL: baseURL,
     boxBaseURL,
     imageDigest: verified.imageDigest,
+    ...(releaseBundle ? { releaseBundle } : {}),
     repositories: verified.repositories,
     ploinkySource: Object.freeze({
       path: verifiedPloinkySource,
@@ -175,13 +233,13 @@ export async function collectCopilotReleaseEvidence({
 }
 
 function sameSnapshotBindings(before, after) {
-  if (!before || !after || after.achillesCLI?.active !== true) return false;
-  const { achillesCLI: priorCLI, ...priorBindings } = before;
-  const { achillesCLI: currentCLI, ...currentBindings } = after;
-  if (!priorCLI || !currentCLI) return false;
-  // Folder launch may activate or replace AchillesCLI, while its source stays pinned.
+  if (!before || !after || after.roboTeamAgent?.active !== true) return false;
+  const { roboTeamAgent: priorRoboTeam, ...priorBindings } = before;
+  const { roboTeamAgent: currentRoboTeam, ...currentBindings } = after;
+  if (!priorRoboTeam || !currentRoboTeam) return false;
+  // Folder launch may activate or replace RoboTeam, while its source stays pinned.
   return ['source', 'runtimeSource', 'treeSha256'].every(key => (
-    typeof priorCLI[key] === 'string' && priorCLI[key].length > 0 && priorCLI[key] === currentCLI[key]
+    typeof priorRoboTeam[key] === 'string' && priorRoboTeam[key].length > 0 && priorRoboTeam[key] === currentRoboTeam[key]
   )) && JSON.stringify(priorBindings) === JSON.stringify(currentBindings);
 }
 
@@ -194,6 +252,8 @@ export function sameCopilotReleaseGeneration(before, after) {
     && before?.imageDigest
     && before?.verificationMode === after?.verificationMode
     && JSON.stringify(before?.repositories) === JSON.stringify(after?.repositories)
+    && JSON.stringify(before?.releaseBundle) === JSON.stringify(after?.releaseBundle)
+    && (before?.verificationMode !== 'release' || SHA256.test(String(before?.releaseBundle?.sourceInventorySha256 || '')))
     && (before?.verificationMode === 'local-snapshot'
       ? sameSnapshotBindings(before.sourceBindings, after.sourceBindings)
       : JSON.stringify(before?.sourceBindings) === JSON.stringify(after?.sourceBindings))

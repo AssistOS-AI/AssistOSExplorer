@@ -34,14 +34,22 @@ export class WorkflowRegistry {
         this.internalIndex = new Map();
         this.fileIndex = new Map();
         this.fileErrors = [];
+        this.operationQueue = Promise.resolve();
     }
-    async initialize() { await ensureDirectory(this.directory); }
+    _serialize(operation) {
+        const result = this.operationQueue.then(operation);
+        this.operationQueue = result.catch(() => {});
+        return result;
+    }
+    async initialize() { return this._serialize(() => this._initialize()); }
+    async _initialize() { await ensureDirectory(this.directory); }
     addPreset(graph) {
         this.presetIds.add(graph.id);
         this.presets.set(graph.id, present(graph, { readOnly: true }));
     }
-    async refresh() {
-        await this.initialize();
+    async refresh() { return this._serialize(() => this._refresh()); }
+    async _refresh() {
+        await this._initialize();
         const internal = (await this.files.scanFolder(this.directory)).map(entry => ({ ...entry, path: entry.file, internal: true }));
         const workspace = this.workspace ? await this.files.scan() : [];
         const counts = new Map();
@@ -78,17 +86,19 @@ export class WorkflowRegistry {
         const entry = this.entrySync(id);
         return entry ? this.presentEntry(entry) : null;
     }
-    async get(id) { await this.refresh(); return this.getSync(id); }
-    async list() {
-        await this.refresh();
+    async get(id) { return this._serialize(async () => { await this._refresh(); return this.getSync(id); }); }
+    async list() { return this._serialize(() => this._list()); }
+    async _list() {
+        await this._refresh();
         return [...this.presets.values(), ...[...this.internalIndex.values(), ...this.fileIndex.values()].map(entry => this.presentEntry(entry))]
             .sort((a, b) => a.name.localeCompare(b.name));
     }
     // Without a location the workflow is internal; with one (a workspace folder) it is created as <location>/flows/<id>.json.
-    async create(input, { location } = {}) {
+    async create(input, { location } = {}) { return this._serialize(() => this._create(input, { location })); }
+    async _create(input, { location }) {
         const graph = normalizeWorkflow(input);
         assertSavable(graph);
-        await this.refresh();
+        await this._refresh();
         if (this.presetIds.has(graph.id) || this.internalIndex.has(graph.id) || this.fileIndex.has(graph.id)) throw conflict('workflow id already exists');
         if (location !== undefined && !this.workspace) throw invalid('workflow files need a workspace');
         const created = location !== undefined ? await this.files.create(location, graph) : await this.files.createIn(this.directory, graph);
@@ -97,9 +107,10 @@ export class WorkflowRegistry {
         (entry.internal ? this.internalIndex : this.fileIndex).set(entry.id, entry);
         return this.presentEntry(entry);
     }
-    async update(id, input) {
+    async update(id, input) { return this._serialize(() => this._update(id, input)); }
+    async _update(id, input) {
         if (this.presetIds.has(id)) throw conflict('built-in workflows cannot be edited');
-        await this.refresh();
+        await this._refresh();
         const entry = this.entrySync(id);
         if (!entry) return null;
         const previous = this.presentEntry(entry);
@@ -112,14 +123,16 @@ export class WorkflowRegistry {
         (updated.internal ? this.internalIndex : this.fileIndex).set(id, updated);
         return this.presentEntry(updated);
     }
-    async remove(id, { beforeRemove = () => {} } = {}) {
+    async remove(id, { beforeRemove = () => {} } = {}) { return this._serialize(() => this._remove(id, beforeRemove)); }
+    async _remove(id, beforeRemove) {
         if (this.presetIds.has(id)) throw conflict('built-in workflows cannot be deleted');
-        await this.refresh();
+        await this._refresh();
         const entry = this.internalIndex.get(id) || this.fileIndex.get(id);
         if (!entry) return false;
         beforeRemove(id);
+        const removed = await this.files.remove(entry);
         (entry.internal ? this.internalIndex : this.fileIndex).delete(id);
-        return this.files.remove(entry);
+        return removed;
     }
 }
 export const workflowRegistryInternals = { normalizeWorkflow, slugifyWorkflow, invalid };

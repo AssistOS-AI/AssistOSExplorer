@@ -4,7 +4,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import './helpers/isolated-ala-home.mjs';
 import { RobotStore } from '../../server/robot-store.mjs';
 import { RobotSkillsets } from '../../server/robot-skillsets.mjs';
 import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
@@ -38,9 +37,14 @@ async function fixture(t) {
     });
     const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot: workingDir, scopeRoot: workingDir, discoverSkills: discoverTaskSkills });
     const repository = { name: 'fixture', source: workingDir, origin: 'workspace' };
+    const documentation = path.join(workingDir, 'DocumentationSkills');
+    const humanReport = path.join(documentation, 'skills', 'human-report', 'SKILL.md');
+    await fs.mkdir(path.dirname(humanReport), { recursive: true });
+    await fs.writeFile(humanReport, '---\nname: human-report\ndescription: Report the task result.\n---\nReport the result.\n');
     const installOptions = { workspaceRoot: workingDir, resolveRepository: () => repository };
     skillsets.repositoriesClient = {
-        listRepositories: async () => [repository],
+        listRepositories: async () => [repository,
+            { name: 'DocumentationSkills', source: documentation, origin: 'workspace' }],
         install: async (input) => installRepositoryLinks(input, installOptions),
         remove: async (paths) => removeRepositoryLinks(paths, installOptions),
     };
@@ -79,6 +83,9 @@ async function fixture(t) {
     t.mock.method(console, 'log', (...args) => output.push(args.join(' ')));
     t.mock.method(console, 'error', (...args) => errors.push(args.join(' ')));
     await repl._activateConversation(first);
+    assert.deepEqual(catalog.getSkills(first.sessionId).filter((skill) => skill.enabled).map((skill) => skill.name).sort(),
+        ['human-report', 'local']);
+    assert.deepEqual((await catalog.refresh(first.sessionId)).diagnostics, []);
     const policy = (session = first) => skillsets.policies.read(robot.id, session.sessionId);
     return { root, workingDir, privateRoot, robot, skillsets, sessionStore, first, second, catalog, descriptor,
         writeSkill, nativeCalls, history, repl, output, errors, policy };
