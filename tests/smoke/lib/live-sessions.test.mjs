@@ -82,6 +82,12 @@ const framedPage = async (t, pageOptions, shell = shellHtml) => {
     const page = await browser.newPage();
     page.setDefaultTimeout(1500);
     await page.setContent(shell(pageOptions));
+    // Prepare rendered fixtures before applying the action timeout to the helper.
+    for (const frame of page.frames()) {
+        await frame.waitForFunction(() => new Promise(resolve => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+        }), null, { timeout: 5000 });
+    }
     return page;
 };
 
