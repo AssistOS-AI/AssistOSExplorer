@@ -37,6 +37,11 @@
  * lease idle deadline counts it; the lease's content-gap deadline does not,
  * which is what bounds a committed stream that keeps reasoning.
  *
+ * Priming has already opened the backend stream, so the returned stream
+ * closes it even when it is disposed before its first event is read, and
+ * it is adopted by the request's stream owner (`ctx.streamOwner`), which
+ * disposes it when the route response is finished.
+ *
  * @module runtime/execution/prime-stream-middleware
  */
 
@@ -49,6 +54,7 @@ import {
     isCanonicalStream,
     isContentEvent,
     isLivenessEvent,
+    releaseOnEarlyReturn,
 } from '../kernel/canonical-stream.mjs';
 import { clampTimerDelay } from './timer-delay.mjs';
 
@@ -196,10 +202,16 @@ export function primeStreamMiddleware() {
             throw err;
         }
 
+        // Closing the open backend stream releases the upstream request and
+        // the backend generation lease, even when `primed` is disposed unread.
         const primed = createCanonicalStream(
-            replay(head, iterator, exhausted, onActivity),
+            releaseOnEarlyReturn(
+                replay(head, iterator, exhausted, onActivity),
+                () => iterator.return?.()
+            ),
             stream.meta || {}
         );
+        ctx.streamOwner?.adopt(primed);
         ctx.response = isCanonicalStream(ctx.response)
             ? primed
             : { ...ctx.response, stream: primed };

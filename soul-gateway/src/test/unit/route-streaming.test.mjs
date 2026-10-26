@@ -14,7 +14,9 @@
  *     `stream: true` and a stub transport returns a canonical event
  *     stream.
  *
- *   - Client disconnect during a stream aborts the iteration cleanly.
+ *   - Client disconnect during a stream aborts the iteration cleanly,
+ *     including while a write waits for `drain`, and a stream that is
+ *     never read still releases its backend generation.
  */
 
 import { describe, it } from 'node:test';
@@ -33,6 +35,8 @@ import {
     createCanonicalStream,
 } from '../../runtime/kernel/index.mjs';
 import { createBackendTerminal } from '../../runtime/backends/backend-terminal.mjs';
+import { primeStreamMiddleware } from '../../runtime/execution/prime-stream-middleware.mjs';
+import { backendDispatchMiddleware } from '../../runtime/execution/backend-dispatch-middleware.mjs';
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -44,55 +48,83 @@ function makeFakeReq(body, { headers = {} } = {}) {
 }
 
 /**
- * A fake ServerResponse that captures write() and end() calls and
- * supports the event emitter surface used by respondMiddleware
- * (`once('close')`, `off?.('close')`, `once('drain')`).
+ * A fake ServerResponse that captures write() and end() calls.  It is a
+ * real EventEmitter, because respondMiddleware waits for back-pressure with
+ * `events.once(res, 'drain')`.  `write(res, chunk)` decides what each
+ * write returns, the way a socket with a full buffer returns false.
  */
-function makeFakeRes() {
-    const emitter = new EventEmitter();
+function makeFakeRes({ write = () => true } = {}) {
+    const res = new EventEmitter();
     const captured = { status: null, headers: {}, chunks: [], ended: false };
 
-    const res = {
+    return Object.assign(res, {
         captured,
         headersSent: false,
         writableEnded: false,
+        destroyed: false,
         setHeader(k, v) {
             captured.headers[k] = v;
         },
         writeHead(status, headers) {
             captured.status = status;
             if (headers) Object.assign(captured.headers, headers);
-            this.headersSent = true;
+            res.headersSent = true;
         },
         write(chunk) {
             captured.chunks.push(
                 typeof chunk === 'string' ? chunk : chunk.toString('utf8')
             );
-            return true;
+            return write(res, chunk);
         },
         end(chunk) {
             if (chunk)
                 captured.chunks.push(
                     typeof chunk === 'string' ? chunk : chunk.toString('utf8')
                 );
-            this.writableEnded = true;
+            res.writableEnded = true;
             captured.ended = true;
-            emitter.emit('close');
-        },
-        once(event, fn) {
-            emitter.once(event, fn);
-        },
-        off(event, fn) {
-            emitter.off(event, fn);
-        },
-        emit(event, ...args) {
-            emitter.emit(event, ...args);
+            res.emit('close');
         },
         _simulateClose() {
-            emitter.emit('close');
+            res.emit('close');
         },
-    };
-    return res;
+    });
+}
+
+// The socket buffer is full and the client then goes away: a destroyed
+// socket emits `close` but never `drain`.
+function closesWhileBackedUp(res) {
+    setImmediate(() => {
+        res.destroyed = true;
+        res.emit('close');
+    });
+    return false;
+}
+
+const SETTLE_MS = 1000;
+
+// Settle `promise` or report it still pending after `ms`, so a respond step
+// that waits forever fails its test at once instead of hanging the run.
+async function settle(promise, ms = SETTLE_MS) {
+    let timer = null;
+    const pending = new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ state: 'pending' }), ms);
+    });
+    try {
+        return await Promise.race([
+            promise.then(
+                (value) => ({ state: 'fulfilled', value }),
+                (error) => ({ state: 'rejected', error })
+            ),
+            pending,
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function nextTurn() {
+    return new Promise((resolve) => setImmediate(resolve));
 }
 
 function noopLog() {
@@ -545,6 +577,165 @@ describe('respondMiddleware: branching', () => {
     });
 });
 
+// ── respondMiddleware: back-pressure and client disconnect ────────────
+
+describe('respondMiddleware: back-pressure and client disconnect', () => {
+    function makeStreamCtx(res, { signal = null } = {}) {
+        const ctx = createKernelContext({
+            requestId: 'req-bp',
+            request: { model: 'm', stream: true },
+            route: { kind: 'openai_chat', format: 'openai_chat' },
+            log: noopLog(),
+            appCtx: { config: { env: {} }, services: {} },
+            http: { req: null, res },
+            signal,
+        });
+        ctx.response = createCanonicalStream(sampleEvents('hello world'));
+        return ctx;
+    }
+
+    it('ends when the client closes while a write waits for drain', async () => {
+        const res = makeFakeRes({ write: closesWhileBackedUp });
+        const ctx = makeStreamCtx(res);
+
+        const outcome = await settle(respondMiddleware()(ctx, async () => {}));
+
+        assert.equal(outcome.state, 'fulfilled');
+        assert.equal(res.captured.chunks.length, 1);
+        assert.equal(ctx.metadata.aborted, true);
+        assert.ok(ctx.metadata.responseCapture);
+    });
+
+    it('ends when a write fails on a socket destroyed before its close event', async () => {
+        const res = makeFakeRes({
+            write(target) {
+                // The connection is already gone; its `close` event is never
+                // delivered in this test.
+                target.destroyed = true;
+                return false;
+            },
+        });
+        const ctx = makeStreamCtx(res);
+
+        const outcome = await settle(respondMiddleware()(ctx, async () => {}));
+
+        assert.equal(outcome.state, 'fulfilled');
+        assert.equal(res.captured.chunks.length, 1);
+        assert.equal(ctx.metadata.aborted, true);
+    });
+
+    it('never writes to a client that left before the response started', async () => {
+        // A destroyed socket fails every write and never drains.
+        const res = makeFakeRes({ write: () => false });
+        res.destroyed = true;
+        const ctx = makeStreamCtx(res);
+
+        const outcome = await settle(respondMiddleware()(ctx, async () => {}));
+
+        assert.equal(outcome.state, 'fulfilled');
+        assert.equal(res.captured.status, null);
+        assert.deepEqual(res.captured.chunks, []);
+        assert.equal(ctx.metadata.aborted, true);
+    });
+
+    it('treats an aborted request signal as a departed client', async () => {
+        const res = makeFakeRes();
+        const ctx = makeStreamCtx(res, { signal: AbortSignal.abort() });
+
+        const outcome = await settle(respondMiddleware()(ctx, async () => {}));
+
+        assert.equal(outcome.state, 'fulfilled');
+        assert.deepEqual(res.captured.chunks, []);
+        assert.equal(ctx.metadata.aborted, true);
+    });
+
+    it('waits for drain on a live socket and finishes the stream', async () => {
+        let waiting = false;
+        let wroteWhileWaiting = false;
+        let drains = 0;
+        const res = makeFakeRes({
+            write(target) {
+                if (waiting) wroteWhileWaiting = true;
+                waiting = true;
+                setImmediate(() => {
+                    waiting = false;
+                    drains++;
+                    target.emit('drain');
+                });
+                return false;
+            },
+        });
+        const ctx = makeStreamCtx(res);
+
+        const outcome = await settle(respondMiddleware()(ctx, async () => {}));
+
+        assert.equal(outcome.state, 'fulfilled');
+        assert.equal(wroteWhileWaiting, false);
+        assert.ok(collectChunks(res).endsWith('data: [DONE]\n\n'));
+        assert.equal(drains, res.captured.chunks.length);
+        assert.equal(ctx.metadata.aborted, false);
+        assert.equal(ctx.metadata.responseCapture.excerpt, 'hello world');
+    });
+
+    it('releases the backend generation of a primed stream that is never read', async () => {
+        const generations = { acquired: 0, released: 0 };
+        let backendClosed = false;
+        const backendCatalog = {
+            acquireGeneration() {
+                generations.acquired++;
+                return 3;
+            },
+            releaseGeneration() {
+                generations.released++;
+            },
+            getTerminalForGeneration() {
+                return async (innerCtx) => {
+                    innerCtx.response = createCanonicalStream(
+                        (async function* () {
+                            try {
+                                yield* sampleEvents('never read');
+                            } finally {
+                                backendClosed = true;
+                            }
+                        })()
+                    );
+                };
+            },
+        };
+        const res = makeFakeRes();
+        const ctx = createKernelContext({
+            requestId: 'req-unread',
+            request: { model: 'm', stream: true },
+            route: { kind: 'openai_chat', format: 'openai_chat' },
+            target: {
+                model: { modelKey: 'm', providerKey: 'p' },
+                provider: { backendKey: 'stub-backend' },
+            },
+            log: noopLog(),
+            appCtx: { config: { env: {} }, services: { backendCatalog } },
+            http: { req: null, res },
+        });
+
+        // An error between priming and the response leaves the primed
+        // stream unread.
+        await assert.rejects(
+            respondMiddleware()(ctx, async () => {
+                await compose([
+                    primeStreamMiddleware(),
+                    backendDispatchMiddleware(),
+                ])(ctx);
+                throw new Error('failed after priming');
+            }),
+            /failed after priming/
+        );
+        await nextTurn();
+
+        assert.deepEqual(generations, { acquired: 1, released: 1 });
+        assert.equal(backendClosed, true);
+        assert.deepEqual(res.captured.chunks, []);
+    });
+});
+
 // ── Full route chain: streaming end-to-end ────────────────────────────
 
 describe('route chain: end-to-end streaming', () => {
@@ -657,12 +848,15 @@ describe('route chain: end-to-end streaming', () => {
         routeKind = 'openai_chat',
         stream = true,
         text = 'hello stream',
+        res = makeFakeRes(),
+        configure = () => {},
     } = {}) {
         const backendModule = stubBackend(text);
         const snapshot = buildSnapshot(model);
         snapshot.models.set(model.modelKey, model);
         const appCtx = makeAppCtx(backendModule);
         appCtx.services.snapshot = snapshot;
+        configure(appCtx);
 
         // Route kinds accept different request body shapes.  The
         // normalizers convert each into the canonical `{ model, messages, stream }`
@@ -690,7 +884,6 @@ describe('route chain: end-to-end streaming', () => {
         }
 
         const req = makeFakeReq(body);
-        const res = makeFakeRes();
 
         const ctx = createKernelContext({
             requestId: 'test-req-1',
@@ -757,5 +950,59 @@ describe('route chain: end-to-end streaming', () => {
         const body = JSON.parse(collectChunks(res));
         assert.equal(body.choices[0].message.content, 'hello stream');
         assert.equal(body.usage.total_tokens, 3);
+    });
+
+    // Counts backend generation leases on the stub catalog.
+    function countGenerations(generations) {
+        return (appCtx) => {
+            const catalog = appCtx.services.backendCatalog;
+            appCtx.services.backendCatalog = {
+                ...catalog,
+                acquireGeneration() {
+                    generations.acquired++;
+                    return 1;
+                },
+                releaseGeneration() {
+                    generations.released++;
+                },
+                getTerminalForGeneration: (key) => catalog.getTerminal(key),
+            };
+        };
+    }
+
+    it('releases the backend generation once for a stream read to its end', async () => {
+        const generations = { acquired: 0, released: 0 };
+        const { res } = await runStreamingChain({
+            configure: countGenerations(generations),
+        });
+        await nextTurn();
+
+        assert.ok(collectChunks(res).endsWith('data: [DONE]\n\n'));
+        assert.deepEqual(generations, { acquired: 1, released: 1 });
+    });
+
+    it('writes an aborted audit row and releases the generation when the client leaves during a back-pressure wait', async () => {
+        const generations = { acquired: 0, released: 0 };
+        const rows = [];
+        const outcome = await settle(
+            runStreamingChain({
+                res: makeFakeRes({ write: closesWhileBackedUp }),
+                configure(appCtx) {
+                    countGenerations(generations)(appCtx);
+                    appCtx.services.auditLogWriter = {
+                        async write(row) {
+                            rows.push(row);
+                        },
+                    };
+                },
+            })
+        );
+        await nextTurn();
+
+        assert.equal(outcome.state, 'fulfilled');
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].status, 'aborted');
+        assert.equal(rows[0].streaming, true);
+        assert.deepEqual(generations, { acquired: 1, released: 1 });
     });
 });

@@ -27,6 +27,9 @@
  *   - helpers to detect a streaming response
  *   - a passthrough generator that lets a middleware tee the events without
  *     consuming the underlying stream
+ *   - disposal helpers: a wrapper that releases a lease even when its
+ *     stream is disposed unread, and the request-scoped owner that disposes
+ *     every primed stream
  *
  * @module runtime/kernel/canonical-stream
  */
@@ -95,6 +98,92 @@ export function isCanonicalStream(value) {
         typeof value === 'object' &&
         value[CANONICAL_STREAM] === true
     );
+}
+
+/**
+ * Make `release` run when a stream wrapper is disposed before it is read.
+ *
+ * An async generator whose body never started completes on `return()` or
+ * `throw()` without running its own `finally`.  A wrapper that holds a lease
+ * (a backend generation, an upstream request, an inner iterator it already
+ * pulled from) would then keep it forever when its consumer disposes it
+ * unread.  Before the first `next()` this iterator completes the generator
+ * and then calls `release`; afterwards it only delegates, because the
+ * generator's own `finally` owns the release.  `release` therefore runs at
+ * most once through this wrapper, and must be safe to call after that
+ * `finally` as well.
+ *
+ * @param {AsyncGenerator<object>} generator
+ * @param {() => unknown | Promise<unknown>} release
+ * @returns {AsyncIterableIterator<object>}
+ */
+export function releaseOnEarlyReturn(generator, release) {
+    let started = false;
+    const complete = async (settle) => {
+        if (started) return settle();
+        started = true;
+        try {
+            return await settle();
+        } finally {
+            await release();
+        }
+    };
+    return {
+        [Symbol.asyncIterator]() {
+            return this;
+        },
+        next(value) {
+            started = true;
+            return generator.next(value);
+        },
+        return(value) {
+            return complete(() => generator.return(value));
+        },
+        throw(error) {
+            return complete(() => generator.throw(error));
+        },
+    };
+}
+
+/**
+ * Request-scoped owner of primed streams.
+ *
+ * Stream priming adopts every stream it returns, and the route's respond
+ * step disposes the owner once the request is finished, whether or not the
+ * streams were read.  A stream that is never read (the client left before
+ * the first write, or an error was thrown between priming and the response)
+ * still releases its backend generation and upstream request, without
+ * depending on every wrapper above it passing on an early `return()`.
+ * Disposing a stream that was read to its end is a no-op.
+ *
+ * @returns {{ adopt(stream: object): void, dispose(): Promise<void> }}
+ */
+export function createStreamOwner() {
+    const streams = new Set();
+    let disposed = false;
+    return {
+        adopt(stream) {
+            if (disposed) {
+                void disposeStream(stream);
+                return;
+            }
+            streams.add(stream);
+        },
+        async dispose() {
+            disposed = true;
+            const pending = [...streams].map(disposeStream);
+            streams.clear();
+            await Promise.all(pending);
+        },
+    };
+}
+
+async function disposeStream(stream) {
+    try {
+        await stream[Symbol.asyncIterator]().return?.();
+    } catch {
+        // a failing stream must not stop the others from being disposed
+    }
 }
 
 /**

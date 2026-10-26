@@ -56,6 +56,7 @@ import {
     isCanonicalStream,
     isContentEvent,
     isLivenessEvent,
+    releaseOnEarlyReturn,
 } from '../kernel/canonical-stream.mjs';
 import { clampTimerDelay } from './timer-delay.mjs';
 
@@ -183,14 +184,26 @@ export function timeoutMiddleware() {
             await next();
             const stream = streamOf(ctx.response);
             if (stream) {
+                // A lease disposed before it is read still cancels the
+                // upstream request and closes the stream it wraps.
                 const leased = createCanonicalStream(
-                    leaseStream(stream, {
-                        idleMs,
-                        contentGapMs,
-                        controller,
-                        providerKey,
-                        activity,
-                    }),
+                    releaseOnEarlyReturn(
+                        leaseStream(stream, {
+                            idleMs,
+                            contentGapMs,
+                            controller,
+                            providerKey,
+                            activity,
+                        }),
+                        () => {
+                            if (!controller.signal.aborted) {
+                                controller.abort(
+                                    new ProviderTimeoutError(providerKey)
+                                );
+                            }
+                            return stream[Symbol.asyncIterator]().return?.();
+                        }
+                    ),
                     stream.meta || {}
                 );
                 ctx.response = isCanonicalStream(ctx.response)

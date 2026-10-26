@@ -26,6 +26,7 @@ import { ConfigurationError } from '../../core/errors.mjs';
 import {
     createCanonicalStream,
     isCanonicalStream,
+    releaseOnEarlyReturn,
 } from '../kernel/index.mjs';
 
 /**
@@ -104,24 +105,30 @@ function wrapResponseWithGenerationLease(response, releaseGeneration) {
     }
 
     if (isCanonicalStream(response)) {
-        return createCanonicalStream(
-            releaseAfterStream(response, releaseGeneration),
-            response.meta || {}
-        );
+        return leasedStream(response, releaseGeneration);
     }
 
     if (response.stream && isCanonicalStream(response.stream)) {
         return {
             ...response,
-            stream: createCanonicalStream(
-                releaseAfterStream(response.stream, releaseGeneration),
-                response.stream.meta || {}
-            ),
+            stream: leasedStream(response.stream, releaseGeneration),
         };
     }
 
     releaseGeneration();
     return response;
+}
+
+// The lease is released when the stream ends, fails, or is disposed, even
+// when it is disposed before its first event was pulled.
+function leasedStream(stream, releaseGeneration) {
+    return createCanonicalStream(
+        releaseOnEarlyReturn(
+            releaseAfterStream(stream, releaseGeneration),
+            releaseGeneration
+        ),
+        stream.meta || {}
+    );
 }
 
 async function* releaseAfterStream(stream, releaseGeneration) {
