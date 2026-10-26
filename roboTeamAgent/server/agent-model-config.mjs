@@ -5,10 +5,11 @@ import { randomUUID } from 'node:crypto';
 import { normalizeCodingAgents } from './coding-agents.mjs';
 
 const CONFIG_FIELDS = new Set(['codingAgent', 'models', 'efforts']);
-// OpenCode's built-in model. Pinning it in ALA's config keeps headless runs on
-// the same default the terminal uses instead of OpenCode's internal priority,
-// which can prefer an unrelated provider model.
-export const DEFAULT_OPENCODE_MODEL = 'opencode/big-pickle';
+// A free OpenRouter model served through Soul Gateway's openrouter-free
+// provider. Pinning it in ALA's config keeps headless runs on the same default
+// the terminal uses instead of OpenCode's internal priority, which can prefer
+// an unrelated provider model.
+export const DEFAULT_OPENCODE_MODEL = 'soul-gateway/openrouter-free/nvidia/nemotron-3-super-120b-a12b:free';
 
 function isRecord(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
