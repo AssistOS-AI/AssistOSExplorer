@@ -159,7 +159,7 @@ async function renderWizard(res, interaction, issuer, csrf, client, { status = 2
         notice: NOTICES.has(notice) ? notice : '',
         failure,
         email,
-        ...(await wizardConfiguration({ emailAvailable })),
+        ...(await wizardConfiguration({ emailAvailable, origin: issuer.origin })),
     };
     const message = failure ? `<p class="error" role="alert" data-server-failure>${esc(failure.message)}</p>` : '';
     const body = `<main id="auth_content" class="userpersisto-auth-shell" aria-live="polite">
@@ -287,7 +287,7 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
                 }
                 if (action === 'attempt') {
                     const browserProof = ensureBrowserProof(req, res, cookie);
-                    return json(res, 200, { ok: true, expiresAt: parent.expiresAt, ...(await wizardConfiguration({ emailAvailable })),
+                    return json(res, 200, { ok: true, expiresAt: parent.expiresAt, ...(await wizardConfiguration({ emailAvailable, origin: issuer.origin })),
                         attempt: await attemptStatus({ parent, browserProof }) });
                 }
                 if (action === 'attempt-cancel') {

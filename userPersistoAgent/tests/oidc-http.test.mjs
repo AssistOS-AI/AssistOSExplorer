@@ -41,7 +41,9 @@ class Browser {
     }
 }
 
-async function fixture(fn) {
+async function fixture(fn, { google = false } = {}) {
+    const googleEnvironment = { USERPERSISTO_GOOGLE_CLIENT_ID: process.env.USERPERSISTO_GOOGLE_CLIENT_ID,
+        USERPERSISTO_GOOGLE_REDIRECT_URI: process.env.USERPERSISTO_GOOGLE_REDIRECT_URI };
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-oidc-http-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'disposable-oidc-test-encryption-key';
@@ -61,6 +63,10 @@ async function fixture(fn) {
         const base = `http://127.0.0.1:${server.address().port}`;
         const issuer = `${base}/service/oidc`;
         process.env.USERPERSISTO_OIDC_ISSUER = issuer;
+        if (google) {
+            process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'oidc-http-test-google-client';
+            process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${base}/service/auth/google/callback`;
+        }
         const admin = { actorId: owner.id };
         const metadata = { client_id: 'test-client', redirect_uris: [redirect], post_logout_redirect_uris: ['https://client.example.test/logged-out'],
             token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], scope: 'openid profile email offline_access roles capabilities' };
@@ -72,6 +78,10 @@ async function fixture(fn) {
         resetOidcProviderForTests();
         await resetStoreForTests();
         delete process.env.USERPERSISTO_OIDC_ISSUER;
+        for (const [name, value] of Object.entries(googleEnvironment)) {
+            if (value === undefined) delete process.env[name];
+            else process.env[name] = value;
+        }
         await rm(folder, { recursive: true, force: true });
     }
 }
@@ -98,6 +108,35 @@ function wizardConfig(html) {
     assert.ok(match, html);
     return JSON.parse(match[1]);
 }
+
+test('OIDC wizard shell and attempt advertise Google only at the issuer origin', () => fixture(async ({ config, base }) => {
+    const previous = { clientId: process.env.USERPERSISTO_GOOGLE_CLIENT_ID, redirectUri: process.env.USERPERSISTO_GOOGLE_REDIRECT_URI };
+    try {
+        for (const matching of [false, true]) {
+            process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'origin-readiness-test-client';
+            process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${matching ? base : 'https://other.example.test'}/service/auth/google/callback`;
+            const flow = await begin(config);
+            const html = await (await flow.browser.fetch(flow.location)).text();
+            const shell = wizardConfig(html);
+            assert.equal(shell.methods.google, matching);
+            assert.equal(shell.signup.google, matching);
+            const response = await flow.browser.post(`${flow.location}/attempt`, { csrf: csrf(html) });
+            assert.equal(response.status, 200);
+            const attempt = await response.json();
+            assert.equal(attempt.methods.google, matching);
+            assert.equal(attempt.signup.google, matching);
+            if (!matching) {
+                const denied = await flow.browser.post(`${flow.location}/google`, { csrf: csrf(html) });
+                assert.equal(denied.status, 403, 'a direct Google start still rejects a different origin');
+            }
+        }
+    } finally {
+        for (const [name, value] of [['USERPERSISTO_GOOGLE_CLIENT_ID', previous.clientId], ['USERPERSISTO_GOOGLE_REDIRECT_URI', previous.redirectUri]]) {
+            if (value === undefined) delete process.env[name];
+            else process.env[name] = value;
+        }
+    }
+}));
 
 // Drives the wizard's own endpoints: the JSON attempt and code or signup
 // start, then the native form POST that ends in the engine redirect.
@@ -232,7 +271,7 @@ test('browser binding, exact origin, CSRF token, consent denial, prompt none and
     assert.equal((await complete(denied, user.email, { allow: false })).searchParams.get('error'), 'access_denied');
     const anonymous = await new Browser().fetch(client.buildAuthorizationUrl(config, { redirect_uri: redirect, scope: 'openid', prompt: 'none', code_challenge: await client.calculatePKCECodeChallenge(client.randomPKCECodeVerifier()), code_challenge_method: 'S256' }));
     assert.equal(new URL(anonymous.headers.get('location')).searchParams.get('error'), 'login_required');
-}));
+}, { google: true }));
 
 test('invalid redirect, implicit flow and missing/plain PKCE fail before login; wrong verifier cannot redeem', async () => fixture(async ({ config, issuer }) => {
     for (const params of [

@@ -8,11 +8,14 @@ import { PASSWORD_POLICY } from './userPassword.mjs';
 // needs open registration and the password method; the verification code is
 // only required while the policy asks for it and delivery is available. The
 // reset offer follows the same delivery-and-password rule.
-export async function wizardConfiguration({ emailAvailable = false } = {}) {
+export async function wizardConfiguration({ emailAvailable = false, origin } = {}) {
     const setup = await getInstallationSetup();
     const policy = await getAuthPolicy();
     const enabled = policy.enabledAuthMethods;
-    const google = (await getGoogleStatus()).available;
+    const googleStatus = await getGoogleStatus();
+    // Bound sign-in flows advertise only methods usable on their origin.
+    // Origin-free setup reads retain the workspace-wide readiness status.
+    const google = googleStatus.available && (origin === undefined || new URL(googleStatus.redirectUri).origin === origin);
     const registrationOpen = !setup.complete || policy.selfRegistrationEnabled;
     const verification = policy.signupEmailVerificationRequired ? 'required' : 'none';
     const passwordEnabled = enabled.includes('password');

@@ -86,6 +86,31 @@ test('old routers retain same-origin login behavior without negotiating the exte
     assert.equal((await requests()).length, 3);
 }));
 
+test('SSO wizard advertises Google only at its configured origin, including the default client', () => fixture(async ({ base, alias, provider }) => {
+    for (const origin of [base, alias]) {
+        const login = await provider.sso_begin_login({ redirectUri: `${origin}/auth/callback` });
+        const browser = new CookieBrowser();
+        const attempt = await browser.json(`${origin}/service/auth/attempt`, { requestId: login.providerState });
+        assert.equal(attempt.status, 200);
+        const configuration = await attempt.json();
+        assert.equal(configuration.methods.google, origin === base);
+        assert.equal(configuration.signup.google, origin === base);
+        if (origin !== base) {
+            const denied = await browser.json(`${origin}/service/auth/google/start`, { requestId: login.providerState });
+            assert.equal(denied.status, 403, 'presentation does not relax the Google origin check');
+            assert.equal(denied.headers.get('set-cookie'), null);
+        }
+    }
+    delete process.env.USERPERSISTO_GOOGLE_CLIENT_ID;
+    delete process.env.USERPERSISTO_GOOGLE_REDIRECT_URI;
+    const login = await provider.sso_begin_login({ redirectUri: `${base}/auth/callback` });
+    const response = await new CookieBrowser().json(`${base}/service/auth/attempt`, { requestId: login.providerState });
+    assert.equal(response.status, 200);
+    const configuration = await response.json();
+    assert.equal(configuration.methods.google, false, 'the default localhost:8080 client is unavailable on another port');
+    assert.equal(configuration.signup.google, false);
+}));
+
 test('origin negotiation remains private and cannot set cookies or create requests anonymously', () => fixture(async ({ base, alias, requests }) => {
     const response = await fetch(`${base}/service/runtime/sso-login-request`, { method: 'POST',
         headers: { 'content-type': 'application/json' },

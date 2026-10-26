@@ -76,6 +76,8 @@ test('unclaimed setup rejects arbitrary passwords and ignores the retired passwo
 }));
 
 test('HTTP signup claims the first administrator through the browser-bound attempt and signs in automatically', () => fixture(async ({ base, mail, post }) => {
+    process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'registration-http-test-google-client';
+    process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${base}/service/auth/google/callback`;
     await updateAuthPolicy({ signupEmailVerificationRequired: true }, { emailStatus: async () => ({ available: true }) });
     const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
     const browser = new CookieBrowser();

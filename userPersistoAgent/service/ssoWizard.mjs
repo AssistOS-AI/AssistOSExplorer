@@ -132,7 +132,7 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
             if (SIGNUP_DELIVERY.has(path) && !emailAvailable) throw fail('registration_disabled', 403);
             if (path === '/service/auth/attempt') {
                 const browserProof = ensureBrowserProof(req, res, cookie);
-                return sendJson(res, 200, { ok: true, expiresAt: parent.expiresAt, ...(await wizardConfiguration({ emailAvailable })),
+                return sendJson(res, 200, { ok: true, expiresAt: parent.expiresAt, ...(await wizardConfiguration({ emailAvailable, origin: new URL(parent.redirectUri).origin })),
                     attempt: await attemptStatus({ parent, browserProof }) });
             }
             if (path === '/service/auth/attempt/cancel') {
