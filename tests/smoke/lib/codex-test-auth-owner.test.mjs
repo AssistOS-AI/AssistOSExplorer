@@ -1424,3 +1424,87 @@ test('no test in this file touched the real account\'s .codex directory', () => 
   assert.equal(blockedAccess.length, 4);
   blockedAccess.length = 0;
 });
+
+// ---- gate c5: an inject window evaluated at inject time, and the synthetic owner login for the probes ---------------------------------
+
+test('a function inject window is evaluated at inject time: exp - now equal to the window plus 5 minutes passes, 1 ms less refuses', async () => {
+  const exp = NOW + 30 * MINUTE;
+  const clock = { now: NOW };
+  // The deadline (spec 06: the native-use deadline plus the credential settle time) is fixed; the window shrinks as the clock advances.
+  const deadline = exp - ACCESS_SKEW_MS;
+  const windowCalls = [];
+  const windowFor = (offset = 0) => () => { windowCalls.push(clock.now); return deadline - clock.now + offset; };
+  const passing = ownerSession(fakeRuntime(), ownerLogin({ expMs: exp }), { clock, deadline, injectWindowMs: windowFor() });
+  await passing.load({ ownerFile: FILE });
+  assert.equal(windowCalls.length, 0, 'the window is not evaluated at derive');
+  clock.now = NOW + 4 * MINUTE;
+  await passing.inject({ robotId: 'copilot-live-ab12', robotName: 'copilot-live-0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f' });
+  assert.deepEqual(windowCalls, [NOW + 4 * MINUTE], 'evaluated once, with the inject-time clock');
+  // exp - now is exactly the window plus the 5-minute skew.
+  assert.equal(exp - clock.now, (deadline - clock.now) + ACCESS_SKEW_MS);
+  assert.equal(passing.state.gates.atInject.result, 'pass');
+  assert.equal(passing.state.injectConfirmed, true);
+  // One millisecond more required validity refuses before anything reaches the robot.
+  clock.now = NOW;
+  const runtime = fakeRuntime();
+  const refusing = ownerSession(runtime, ownerLogin({ expMs: exp }), { clock, deadline, injectWindowMs: windowFor(1) });
+  await refusing.load({ ownerFile: FILE });
+  clock.now = NOW + 4 * MINUTE;
+  await assert.rejects(refusing.inject({ robotId: 'copilot-live-ab12', robotName: 'x' }), failure('STREAM_UNSAFE', 'access-near-expiry'));
+  assert.equal(refusing.state.gates.atInject.result, 'refused');
+  assert.equal(refusing.state.injected, false);
+  assert.deepEqual(runtime.calls.filter(([name]) => name === 'inject'), []);
+  // A number keeps the spec 07 behaviour.
+  const fixed = ownerSession(fakeRuntime(), ownerLogin({ expMs: exp }), { clock: { now: NOW }, injectWindowMs: 175_000, deadline: NOW + 10 * MINUTE });
+  await fixed.load({ ownerFile: FILE });
+  await fixed.inject({ robotId: 'codex-auth-test-r1-ab12', robotName: 'codex-auth-test-r1' });
+  assert.equal(fixed.state.gates.atInject.result, 'pass');
+});
+
+const SYNTHETIC_OWNER = fileURLToPath(new URL('../scripts/codex-test-auth-synthetic-owner.mjs', import.meta.url));
+
+test('the synthetic-owner script writes a 0600 managed login that extractOwnerCredential accepts, with no network, and refuses the real .codex', (t) => {
+  const base = sandbox(t);
+  const dir = path.join(base, 'synthetic owner', 'codex');
+  const permission = ['--permission', `--allow-fs-read=*`, `--allow-fs-write=${base}`];
+  // Under the permission model a network call would throw; it also limits writes to the sandbox.
+  const run = (args, extra = []) => spawnSync(process.execPath, [...extra, SYNTHETIC_OWNER, ...args],
+    { env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME, NODE_OPTIONS: CHILD_NODE_OPTIONS }, encoding: 'utf8', timeout: 30_000 });
+  const planted = run(['plant', dir, '--exp-minutes', '120'], permission);
+  assert.equal(planted.status, 0, planted.stderr);
+  assert.equal(planted.stderr.includes(GUARD_MARKER), false);
+  const line = JSON.parse(planted.stdout.trim());
+  assert.deepEqual(line, { command: 'plant', result: 'done', code: 'OK', file: path.join(dir, 'auth.json'), accessValidMinutes: 120 });
+  const file = path.join(dir, 'auth.json');
+  assert.equal(fs.lstatSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.lstatSync(dir).mode & 0o777, 0o700);
+  const bytes = fs.readFileSync(file);
+  const credential = extractOwnerCredential(bytes, { now: Date.now() });
+  assert.ok(credential.expMs - Date.now() > 119 * MINUTE && credential.expMs - Date.now() <= 120 * MINUTE);
+  // The stdout line never carries a token value.
+  for (const value of Object.values(JSON.parse(bytes).tokens)) assert.equal(planted.stdout.includes(value), false);
+  // The reader the worker uses accepts it (owner-only mode, single link, no symlink).
+  return readOwnerAuth(file).then(({ bytes: read }) => {
+    assert.ok(read.equals(bytes));
+    // A second plant into the same directory refuses rather than overwriting.
+    const again = run(['plant', dir, '--exp-minutes', '33']);
+    assert.equal(again.status, 2);
+    assert.equal(JSON.parse(again.stdout).reason, 'target-exists');
+    // A near-expiry login for probe C4.
+    const near = run(['plant', path.join(base, 'near'), '--exp-minutes', '33']);
+    assert.equal(near.status, 0, near.stderr);
+    assert.equal(Math.round((extractOwnerCredential(fs.readFileSync(path.join(base, 'near', 'auth.json'))).expMs - Date.now()) / MINUTE), 33);
+    // Relative paths, bad flags and the account's own Codex directory are refused before anything is written.
+    for (const args of [['plant', 'relative/dir', '--exp-minutes', '5'], ['plant', dir, '--exp', '5'], ['plant', dir, '--exp-minutes', 'x'], ['other']]) {
+      assert.equal(run(args).status, 2, args.join(' '));
+    }
+    const realCodex = path.join(os.userInfo().homedir, '.codex', 'synthetic-probe');
+    const refused = run(['plant', realCodex, '--exp-minutes', '5']);
+    assert.deepEqual([refused.status, JSON.parse(refused.stdout).reason], [2, 'owner-location']);
+    assert.equal(refused.stderr.includes(GUARD_MARKER), false, 'the refusal never touched the real account .codex');
+    // No network module is imported at all.
+    const source = fs.readFileSync(SYNTHETIC_OWNER, 'utf8');
+    assert.doesNotMatch(source, /from 'node:(?:net|http|https|dns|tls|dgram|child_process)'/);
+    assert.deepEqual([...source.matchAll(/from '(node:[a-z_]+)'/g)].map((match) => match[1]).sort(), ['node:crypto', 'node:fs', 'node:os', 'node:path', 'node:process', 'node:url']);
+  });
+});

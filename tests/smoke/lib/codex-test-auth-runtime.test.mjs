@@ -923,3 +923,74 @@ test('discardCodexAuth removes a leftover copy inside the container, reports onl
   replies.push({ exitCode: 0, stdout: Buffer.from('{"ok":true,"removed":false,"accessOnly":null,"base64":"AAAA"}\n') });
   assert.deepEqual(await runtime.discard(w.robot), { removed: false, accessOnly: null });
 });
+
+// ---- gate grammar: each in-container program names only its own gate's robots ------------------------------------------------------
+
+const C5_ROBOT = { robotId: 'copilot-live-ab12', robotName: 'copilot-live-0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f', gate: 'c5' };
+
+test('each in-container program accepts copilot-live-<uuid> only with gate c5 and codex-auth-test-x only with gate c2', async (t) => {
+  const c5 = world(t, { robot: C5_ROBOT });
+  const c2 = world(t);
+  toolCacheFixture(c5);
+  const bytes = authBytes('gate-grammar');
+  const asGate = (robot, gate) => ({ robotId: robot.robotId, robotName: robot.robotName, gate });
+  // The C5 robot is served under its own gate, end to end.
+  assert.equal((await injectCodexAuth(C5_ROBOT, { ...c5.options, input: bytes })).ok, true);
+  assert.equal((await readCodexAuthForCopyBack(C5_ROBOT, c5.options)).size, bytes.length);
+  assert.equal((await readCodexClientIdentity(C5_ROBOT, c5.options)).version, '0.160.0');
+  assert.deepEqual(await waitRobotCliExit({ robotName: C5_ROBOT.robotName, gate: 'c5' }, c5.options), { ok: true, count: 0 });
+  assert.deepEqual(await removeCodexAuth(C5_ROBOT, { ...c5.options, input: JSON.stringify({ expectedSha256: sha(bytes) }) }), { ok: true, removed: true });
+  assert.deepEqual(await discardCodexAuth(C5_ROBOT, c5.options), { ok: true, removed: false, accessOnly: null });
+  const inventory = await readRobotInventory({ gate: 'c5' }, c5.options);
+  assert.deepEqual(inventory.robots, [{ id: C5_ROBOT.robotId, name: C5_ROBOT.robotName, codingAgents: ['codex'], codexAuthPresent: false }]);
+  // Under the c2 gate the same C5 robot is not a test robot and every robot program refuses its name.
+  assert.equal((await readRobotInventory({ gate: 'c2' }, c5.options)).robots[0].codexAuthPresent, null);
+  const robotPrograms = [
+    (robot, options) => injectCodexAuth(robot, { ...options, input: bytes }),
+    (robot, options) => readCodexAuthForCopyBack(robot, options),
+    (robot, options) => readCodexClientIdentity(robot, options),
+    (robot, options) => removeCodexAuth(robot, { ...options, input: JSON.stringify({ expectedSha256: sha(bytes) }) }),
+    (robot, options) => discardCodexAuth(robot, options),
+    (robot, options) => waitRobotCliExit({ robotName: robot.robotName, gate: robot.gate }, options),
+  ];
+  for (const [index, call] of robotPrograms.entries()) {
+    await rejectsWith(call(asGate(C5_ROBOT, 'c2'), c5.options), 'INVALID_ARGUMENT');
+    await rejectsWith(call(asGate(ROBOT, 'c5'), c2.options), 'INVALID_ARGUMENT');
+    for (const gate of [undefined, '', 'c3', 'C5', null]) await rejectsWith(call(asGate(C5_ROBOT, gate), c5.options), 'INVALID_ARGUMENT');
+    // The serialized program text refuses the same way.
+    assert.deepEqual(runSerialized(index === 5 ? waitRobotCliExit : [injectCodexAuth, readCodexAuthForCopyBack, readCodexClientIdentity, removeCodexAuth, discardCodexAuth][index],
+      index === 5 ? { robotName: C5_ROBOT.robotName, gate: 'c2' } : asGate(C5_ROBOT, 'c2'), c5.options, '').json, { ok: false, code: 'INVALID_ARGUMENT' });
+  }
+  // A malformed C5 name (not a UUID v4) is refused even under its gate.
+  for (const robotName of ['copilot-live-x', 'copilot-live-0F2B6C1E-8A4D-4C3B-9E5F-7A1B2C3D4E5F', 'copilot-live-0f2b6c1e-8a4d-1c3b-9e5f-7a1b2c3d4e5f']) {
+    await rejectsWith(injectCodexAuth({ robotId: C5_ROBOT.robotId, robotName, gate: 'c5' }, { ...c5.options, input: bytes }), 'INVALID_ARGUMENT');
+  }
+});
+
+test('a missing or unknown gate gives INVALID_ARGUMENT for every program, and the host runtime requires a gate and sends its own', async (t) => {
+  const w = world(t);
+  toolCacheFixture(w);
+  const turn = turnFixture(t);
+  const digest = nativeFixture(t);
+  for (const gate of [undefined, 'c3']) {
+    const without = (args) => { const copy = { ...args }; if (gate === undefined) delete copy.gate; else copy.gate = gate; return copy; };
+    await rejectsWith(readRobotInventory(without({ gate: 'c2' }), w.options), 'INVALID_ARGUMENT');
+    await rejectsWith(readCodexClientIdentity(without({ gate: 'c2' }), w.options), 'INVALID_ARGUMENT');
+    await rejectsWith(readCodexNativeDigest(without(digest.args), digest.options), 'INVALID_ARGUMENT');
+    await rejectsWith(readCodexTurnIdentity(without(turn.args), turn.options), 'INVALID_ARGUMENT');
+    await rejectsWith(readAlaSource(without({ gate: 'c2' }), w.options), 'INVALID_ARGUMENT');
+    await rejectsWith(waitRobotCliExit(without({ robotName: ROBOT.robotName, gate: 'c2' }), w.options), 'INVALID_ARGUMENT');
+  }
+  const runCommand = async () => ({ exitCode: 0, stdout: Buffer.from('{"ok":true,"robots":[],"authFilesPresent":0}\n') });
+  for (const gate of [undefined, '', 'c3']) assert.throws(() => createCodexRuntime({ box: 'ploinky-box-fake-0123456789ab', gate, runCommand }), /USAGE bad-variable/);
+  const calls = [];
+  const runtime = createCodexRuntime({ box: 'ploinky-box-fake-0123456789ab', gate: 'c5', runCommand: async (argv, input) => { calls.push({ argv, input }); return runCommand(); } });
+  runtime.bindRoboTeam('a'.repeat(64));
+  assert.equal(runtime.gate, 'c5');
+  await runtime.robotInventory();
+  await runtime.cliCount(C5_ROBOT.robotName);
+  // A caller-supplied gate on the robot object cannot widen the runtime's own gate.
+  await runtime.inject({ ...C5_ROBOT, gate: 'c2' }, Buffer.from('x')).catch(() => {});
+  for (const { argv } of calls) assert.match(argv.at(-1), /"gate":"c5"/);
+  assert.equal(calls.some(({ argv }) => /"gate":"c2"/.test(argv.at(-1))), false);
+});
