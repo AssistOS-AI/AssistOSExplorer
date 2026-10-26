@@ -260,27 +260,29 @@
     {
       "identity": "06-copilot-live-skills.spec.mjs::one native conversation consumes local edits, additions, disable, re-enable and deletion",
       "file": "06-copilot-live-skills.spec.mjs",
-      "sourceLine": 35,
+      "sourceLine": 41,
       "title": "one native conversation consumes local edits, additions, disable, re-enable and deletion",
       "observedStatus": "skipped",
-      "cohort": "blocked-credential-integration",
-      "runner": "npm test -- --project=chromium --workers=1 --retries=0",
+      "cohort": "copilot-live-skills",
+      "runner": "npm run test:copilot-live-skills",
       "selection": {
         "spec": "specs/06-copilot-live-skills.spec.mjs",
         "title": "one native conversation consumes local edits, additions, disable, re-enable and deletion",
         "note": "Use full spec filename plus escaped title grep when selecting one identity; never file:line. Dedicated wrappers own their supported selection interface."
       },
       "requiredFlags": {
-        "SMOKE_COPILOT_LIVE_SKILLS": "1"
+        "SMOKE_COPILOT_LIVE_SKILLS": "1",
+        "CODEX_TEST_AUTH_GATE": "c5",
+        "CODEX_TEST_AUTH_SOURCE": "owner"
       },
       "privateInputNamesOrCategories": [
         "Profile-specific account/sign-in inputs where used; no values in the ledger"
       ],
-      "prerequisite": "Shared preflight unconditionally blocks until independently verified B+C credential integration; flags do not bypass it.",
-      "disposition": "blocked-B+C-preflight",
+      "prerequisite": "Route A only, launched by the route-A parent (CODEX_TEST_AUTH_GATE=c5 node ./scripts/codex-test-auth.mjs run): a fresh owned Box generation within its 30-minute window, a qualified exact Codex build (CODEX_TEST_EXPECT_CODEX_VERSION), the owner-derived access-only credential and the parent leak scan; a direct runner selection without the parent variables is refused.",
+      "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed",
       "executionAllowedByThisPlan": false,
-      "acceptanceRule": "Currently not validated. Keep blocked or separately owned until its prerequisite/profile is selected; scope exclusion is never a pass."
+      "acceptanceRule": "Passes only with the parent result line passed, code OK, leakScanCoverage proven, every result.json cleanup flag true and the C5 marker removed. Any other C5 result needs a C5 parent recovery run on a fresh generation before another cohort starts; scope exclusion is never a pass."
     },
     {
       "identity": "07-copilot-codex-native.spec.mjs::one bounded native Codex turn in a run-owned robot with an owner-derived or an owned login",

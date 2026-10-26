@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
-  CodexAuthError, EXIT_CODES, EXIT_REASONS, RUN_TIMEOUT_MS, assertArtifactDirectory, assertNoOtherRouteInflight, assertPrivateRoot, adoptQuarantine,
+  CodexAuthError, EXIT_CODES, EXIT_REASONS, RUN_TIMEOUT_MS, acquireRunLock, assertArtifactDirectory, assertNoOtherRouteInflight, assertPrivateRoot, adoptQuarantine,
   createInflight, decideRunOutcome, ensurePrivateRoot, inflightPresent, lockStatus, readInflight, removeInflight, resolveAuthPaths, resultLine,
   loadStream, retireStream, scanLeaks, seedStream, sha256Hex,
 } from './codex-test-auth.mjs';
@@ -1507,4 +1507,129 @@ test('the synthetic-owner script writes a 0600 managed login that extractOwnerCr
     assert.doesNotMatch(source, /from 'node:(?:net|http|https|dns|tls|dgram|child_process)'/);
     assert.deepEqual([...source.matchAll(/from '(node:[a-z_]+)'/g)].map((match) => match[1]).sort(), ['node:crypto', 'node:fs', 'node:os', 'node:path', 'node:process', 'node:url']);
   });
+});
+
+// ---- gate c5: the parent (G12, G13, G6, G7) --------------------------------------------------------------------------------------------
+
+// A scratch copy of tests/smoke whose Playwright runner is a stub, as in the route-A run test above, for CODEX_TEST_AUTH_GATE=c5.
+function c5Parent(t) {
+  const base = sandbox(t);
+  const scratch = path.join(base, 'smoke');
+  fs.mkdirSync(path.join(scratch, 'scripts'), { recursive: true });
+  fs.cpSync(path.join(SMOKE_DIR, 'lib'), path.join(scratch, 'lib'), { recursive: true });
+  fs.copyFileSync(CLI, path.join(scratch, 'scripts', 'codex-test-auth.mjs'));
+  const stubLog = path.join(base, 'stub-runs.jsonl');
+  fs.writeFileSync(path.join(scratch, 'scripts', 'run-playwright.mjs'), `
+import fs from 'node:fs';
+import path from 'node:path';
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(stubLog)}, JSON.stringify({ args, list: args.includes('--list'), gate: process.env.CODEX_TEST_AUTH_GATE ?? null,
+  live: process.env.SMOKE_COPILOT_LIVE_SKILLS ?? null, native: process.env.SMOKE_COPILOT_CODEX ?? null, source: process.env.CODEX_TEST_AUTH_SOURCE ?? null,
+  runId: process.env.SMOKE_RUN_ID ?? null }) + '\\n');
+if (args.includes('--list')) { console.log('Total: 1 test in 1 file'); process.exit(0); }
+const scenario = JSON.parse(process.env.STUB_SCENARIO);
+const directory = path.join(process.env.SMOKE_ARTIFACT_DIR, 'codex-auth');
+if (scenario.truncatedZip) fs.writeFileSync(path.join(process.env.SMOKE_ARTIFACT_DIR, 'trace.zip'), 'PK\\u0003\\u0004 truncated');
+if (scenario.result) fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ ...scenario.result, runId: process.env.SMOKE_RUN_ID }));
+process.exit(scenario.exit);
+`);
+  const home = path.join(base, 'home');
+  fs.mkdirSync(path.join(home, '.codex'), { recursive: true, mode: 0o700 });
+  const ownerFile = path.join(home, '.codex', 'auth.json');
+  fs.writeFileSync(ownerFile, ownerLogin({ expMs: Date.now() + 240 * HOUR, refreshed: Date.now() - HOUR }));
+  fs.chmodSync(ownerFile, 0o600);
+  let runs = 0;
+  const run = ({ scenario, extra = {}, command = 'run', root = path.join(base, 'state', 'assistos-codex-test-auth'), prepare } = {}) => {
+    runs += 1;
+    const artifacts = path.join(base, `artifacts-${runs}`);
+    fs.mkdirSync(artifacts);
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    const paths = resolveAuthPaths({ HOME: home, CODEX_TEST_AUTH_ROOT: root });
+    prepare?.(paths);
+    fs.writeFileSync(stubLog, '');
+    const env = { PATH: '/usr/bin:/bin', HOME: home, CODEX_TEST_AUTH_ROOT: root, SMOKE_ARTIFACT_DIR: artifacts, CODEX_TEST_AUTH_GATE: 'c5',
+      SMOKE_PLOINKY_BOX_CONTAINER: 'ploinky-box-fake-0123456789ab', SMOKE_WORKSPACE_ROOT: path.join(base, 'workspace'), NODE_OPTIONS: CHILD_NODE_OPTIONS,
+      STUB_SCENARIO: JSON.stringify(scenario ?? { exit: 1 }), ...extra };
+    for (const [name, value] of Object.entries(extra)) if (value === undefined) delete env[name];
+    const result = spawnSync(process.execPath, [path.join(scratch, 'scripts', 'codex-test-auth.mjs'), command], { env, encoding: 'utf8', cwd: scratch, timeout: 120_000 });
+    assert.equal(result.stderr.includes(GUARD_MARKER), false, 'a child was stopped by the guard below the real account .codex');
+    const lines = result.stdout.split('\n').filter(Boolean);
+    assert.equal(lines.length, 1, `exactly one stdout line: ${result.stderr}`);
+    const stubRuns = fs.readFileSync(stubLog, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const parentFile = path.join(artifacts, 'codex-auth', 'parent-result.json');
+    return { status: result.status, line: JSON.parse(lines[0]), runs: stubRuns, paths, artifacts, parentFile,
+      parent: fs.existsSync(parentFile) ? JSON.parse(fs.readFileSync(parentFile, 'utf8')) : null };
+  };
+  return { base, home, run };
+}
+
+const C5_FLAGS = Object.freeze({ credentialPersisted: true, credentialRemoved: true, linksRemoved: true, sourceUnregistered: true, robotDeleted: true, folderDeleted: true });
+const C5_PASS = Object.freeze({ code: 'OK', reason: null, gate: 'c5', owner: { derived: true }, cleanup: C5_FLAGS });
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+test('gate c5: the parent runs spec 06 with the C5 flags and a UUID v4 run id, and writes parent-result.json with exactly the receipt keys', (t) => {
+  const p = c5Parent(t);
+  const passed = p.run({ scenario: { result: C5_PASS, exit: 0 } });
+  assert.deepEqual([passed.status, passed.line.code, passed.line.result, passed.line.gate, passed.line.leakScanCoverage], [0, 'OK', 'passed', 'c5', 'proven']);
+  assert.match(passed.line.runId, UUID_V4_PATTERN);
+  assert.equal(passed.runs.length, 2, 'the --list check, then the run');
+  for (const run of passed.runs) {
+    assert.ok(run.args.includes('specs/06-copilot-live-skills.spec.mjs') && !run.args.some((arg) => arg.includes('07-copilot-codex-native')));
+    assert.deepEqual([run.gate, run.live, run.native, run.source, run.runId], ['c5', '1', null, 'owner', passed.line.runId]);
+  }
+  assert.deepEqual(Object.keys(passed.parent).sort(), ['cleanup', 'code', 'leakScanCoverage', 'leaks', 'reason', 'runId', 'undecodable']);
+  assert.deepEqual(passed.parent, { runId: passed.line.runId, code: 'OK', reason: null, leakScanCoverage: 'proven', leaks: 0, undecodable: 0, cleanup: C5_FLAGS });
+  assert.equal(fs.lstatSync(passed.parentFile).mode & 0o777, 0o600);
+  // An operator-supplied run id must be a UUID v4 for c5.
+  const badId = p.run({ scenario: { result: C5_PASS, exit: 0 }, extra: { SMOKE_RUN_ID: 'codex-auth-20261026T120000Z-1' } });
+  assert.deepEqual([badId.status, badId.line.code, badId.line.reason, badId.runs.length], [2, 'USAGE', 'bad-variable', 0]);
+  // An unknown gate, and c5 on route B, are usage errors before anything runs.
+  const unknown = p.run({ extra: { CODEX_TEST_AUTH_GATE: 'c3' } });
+  assert.deepEqual([unknown.status, unknown.line.reason, unknown.runs.length], [2, 'bad-variable', 0]);
+  const stream = p.run({ extra: { CODEX_TEST_AUTH_SOURCE: 'stream' } });
+  assert.deepEqual([stream.status, stream.line.reason, stream.runs.length], [2, 'route-mismatch', 0]);
+});
+
+test('gate c5: the parent result reports the worker cleanup flags and failure; a missing result.json has every flag false', (t) => {
+  const p = c5Parent(t);
+  const incomplete = p.run({ scenario: { result: { ...C5_PASS, code: 'CLEANUP_INCOMPLETE', reason: 'robot-not-deleted', cleanup: { ...C5_FLAGS, robotDeleted: false, folderDeleted: false } }, exit: 1 } });
+  assert.deepEqual([incomplete.status, incomplete.line.code, incomplete.line.reason], [26, 'CLEANUP_INCOMPLETE', 'robot-not-deleted']);
+  assert.deepEqual([incomplete.parent.code, incomplete.parent.cleanup.robotDeleted, incomplete.parent.cleanup.folderDeleted], ['CLEANUP_INCOMPLETE', false, false]);
+  const missing = p.run({ scenario: { exit: 1 } });
+  assert.deepEqual([missing.line.code, missing.line.reason], ['INTERNAL', 'no-result-file']);
+  assert.deepEqual(missing.parent.cleanup, Object.fromEntries(Object.keys(C5_FLAGS).map((flag) => [flag, false])));
+});
+
+test('G7 at the parent: an undecodable artifact fails the C5 run with LEAK_DETECTED artifact-undecodable, also in parent-result.json', (t) => {
+  const p = c5Parent(t);
+  const opaque = p.run({ scenario: { result: C5_PASS, exit: 0, truncatedZip: true } });
+  assert.deepEqual([opaque.status, opaque.line.code, opaque.line.reason, opaque.line.undecodable], [27, 'LEAK_DETECTED', 'artifact-undecodable', 1]);
+  assert.deepEqual([opaque.parent.code, opaque.parent.undecodable, opaque.parent.leaks], ['LEAK_DETECTED', 1, 0]);
+  // scan-leaks fails closed on the same directory.
+  const scan = p.run({ command: 'scan-leaks', extra: { SMOKE_ARTIFACT_DIR: opaque.artifacts } });
+  assert.deepEqual([scan.status, scan.line.code, scan.line.reason], [27, 'LEAK_DETECTED', 'artifact-undecodable']);
+});
+
+test('G12: the c5 parent recovers its own marker when the owner gate fails, and refuses the c2 marker; G13: a held lock refuses before any spawn', (t) => {
+  const p = c5Parent(t);
+  const c5Marker = (paths) => createInflight(paths, { route: 'owner', gate: 'c5', runId: '0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f',
+    robotName: 'copilot-live-0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f', folder: 'copilot-live-skills-0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f',
+    repositoryName: 'copilot-live-source-0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f' });
+  // A pending C5 marker with an unusable owner login: the worker is still spawned, for the recovery only.
+  const recovery = p.run({ prepare: c5Marker, extra: { CODEX_TEST_AUTH_OWNER_AUTH: path.join(p.base, 'missing', 'auth.json') },
+    scenario: { result: { code: 'NOT_SEEDED', reason: 'owner-login-missing', owner: { derived: false }, recovered: true, cleanup: C5_FLAGS }, exit: 1 } });
+  assert.deepEqual([recovery.line.spawnedForRecovery, recovery.line.ownerGate, recovery.line.code], [true, 'owner-login-missing', 'NOT_SEEDED']);
+  assert.equal(recovery.runs.filter((run) => !run.list).length, 1);
+  // The same without a marker does not spawn; a pending C2 marker is not this gate's and is refused.
+  const early = p.run({ root: path.join(p.base, 'state-early', 'assistos-codex-test-auth'), extra: { CODEX_TEST_AUTH_OWNER_AUTH: path.join(p.base, 'missing', 'auth.json') } });
+  assert.deepEqual([early.line.spawnedForRecovery, early.runs.length, early.parent?.code], [false, 0, 'NOT_SEEDED']);
+  const otherGate = p.run({ root: path.join(p.base, 'state-c2', 'assistos-codex-test-auth'),
+    prepare: (paths) => createInflight(paths, { ...MARKER, route: 'owner' }) });
+  assert.deepEqual([otherGate.status, otherGate.line.code, otherGate.line.reason, otherGate.runs.length], [14, 'STREAM_UNSAFE', 'inflight-other-gate', 0]);
+  // A live lock owner (this test process) refuses before any spawn, so the second run never touches the Box.
+  const lockedRoot = path.join(p.base, 'state-locked', 'assistos-codex-test-auth');
+  let lock;
+  const locked = p.run({ root: lockedRoot, prepare: (paths) => { lock = acquireRunLock(paths, { runId: 'holder' }); }, scenario: { result: C5_PASS, exit: 0 } });
+  lock.release();
+  assert.deepEqual([locked.status, locked.line.code, locked.runs.length], [13, 'LOCK_HELD', 0]);
 });

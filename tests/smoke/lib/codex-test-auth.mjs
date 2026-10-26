@@ -483,6 +483,16 @@ const INFLIGHT_ROUTES = ['stream', 'owner'];
 // c2 is spec 07 (either route); c5 is spec 06, route A only.
 export const GATES = Object.freeze(['c2', 'c5']);
 
+// CODEX_TEST_AUTH_GATE selects the gate of the parent: c2 (spec 07, the default) or c5 (spec 06). Any other value is refused,
+// case-sensitively, and c5 exists only on route A.
+export function resolveGate(env, { route } = {}) {
+  const raw = env?.CODEX_TEST_AUTH_GATE;
+  const gate = raw === undefined || raw === '' ? 'c2' : raw;
+  if (typeof gate !== 'string' || !GATES.includes(gate)) throw fail('USAGE', 'bad-variable');
+  if (gate === 'c5' && route !== undefined && route !== 'owner') throw fail('USAGE', 'route-mismatch');
+  return gate;
+}
+
 function inflightFile(paths, route, gate = 'c2') {
   if (!INFLIGHT_ROUTES.includes(route) || !GATES.includes(gate)) throw fail('USAGE', 'bad-variable');
   if (gate === 'c5') {

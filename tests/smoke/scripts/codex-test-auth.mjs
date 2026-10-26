@@ -9,6 +9,7 @@
 // This file never imports lib/config.mjs (it creates an artifact directory at import time) and never runs Codex.
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -16,19 +17,28 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import {
-  CodexAuthError, EXIT_CODES, RUN_TIMEOUT_MS, RUN_WATCHDOG_MS, adoptQuarantine, assertArtifactDirectory, assertNoOtherRouteInflight, assertNoQuarantine,
-  assertPrivateRoot, collectScanReferences, decideRunOutcome, describeFailure, inflightPresent, inspectStream, isRunId, listQuarantines, loadStream,
-  lockStatus, planRecovery, readInflight, resolveAuthPaths, resultLine, retireStream, scanLeaks, seedStream,
+  CodexAuthError, EXIT_CODES, GATE_ROBOT_PREFIX, RUN_TIMEOUT_MS, RUN_WATCHDOG_MS, UUID_V4, adoptQuarantine, assertArtifactDirectory, assertNoOtherGateInflight,
+  assertNoOtherRouteInflight, assertNoQuarantine, assertPrivateRoot, collectScanReferences, decideRunOutcome, describeFailure, inflightPresent, inspectStream,
+  isRunId, listQuarantines, loadStream, lockStatus, planRecovery, readInflight, resolveAuthPaths, resolveGate, resultLine, retireStream, scanLeaks, seedStream,
 } from '../lib/codex-test-auth.mjs';
 import {
   assertAccessValidity, assertOwnerScanCoverage, deriveAccessOnlyAuth, ownerDirectoryFor, ownerScanReferences, planOwnerRun, readOwnerAuth,
   resolveCredentialSource, resolveOwnerAuthPath, summarizeOwner,
 } from '../lib/codex-test-auth-owner.mjs';
 import { checkClientQualification } from '../lib/codex-client-qualification.mjs';
-import { RuntimeProgramError, TEST_ROBOT_PREFIX, createCodexRuntime } from '../lib/codex-test-auth-runtime.mjs';
+import { RuntimeProgramError, createCodexRuntime } from '../lib/codex-test-auth-runtime.mjs';
+import { C5_CLEANUP_FLAGS, C5_PARENT_REMAINING_MS, C5_WATCHDOG_MS } from '../lib/copilot-live-skills-credential.mjs';
 
 const smokeRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const SPEC = 'specs/07-copilot-codex-native.spec.mjs';
+// One profile per gate (CODEX_TEST_AUTH_GATE): the spec, the flags the child gets, the watchdog, and the rest of the run the parent's
+// owner gate requires before it spawns anything. c2 is spec 07; c5 is spec 06, route A only, whose window is fixed by the Box start.
+const GATE_PROFILES = Object.freeze({
+  c2: Object.freeze({ spec: 'specs/07-copilot-codex-native.spec.mjs', childEnv: { SMOKE_COPILOT_CODEX: '1' }, watchdogMs: RUN_WATCHDOG_MS,
+    remainingRunMs: RUN_TIMEOUT_MS }),
+  c5: Object.freeze({ spec: 'specs/06-copilot-live-skills.spec.mjs',
+    childEnv: { SMOKE_COPILOT_LIVE_SKILLS: '1', CODEX_TEST_AUTH_GATE: 'c5', CODEX_TEST_AUTH_SOURCE: 'owner' }, watchdogMs: C5_WATCHDOG_MS,
+    remainingRunMs: C5_PARENT_REMAINING_MS }),
+});
 
 function repositoryRoot() {
   let current = smokeRoot;
@@ -111,16 +121,18 @@ async function readRuntimeFacts(env, gate = 'c2') {
   try {
     const outer = await runtime.inspectBox();
     const registry = await runtime.registryRuntime(workspaceRoot);
-    const robots = await runtime.robotInventory();
+    const { robots, authFilesPresent } = await runtime.robotInventoryReport();
     const client = await runtime.clientIdentity().catch((error) => {
       if (error instanceof RuntimeProgramError) throw new CodexAuthError('RUNTIME_PREREQ_FAILED', 'codex-client-missing');
       throw error;
     });
     return { runtime, robots, client, facts: {
-      box: { name: box, id12: String(outer.Id).slice(0, 12), startedAt: outer.State?.StartedAt ?? null },
+      box: { name: box, id12: String(outer.Id).slice(0, 12), startedAt: outer.State?.StartedAt ?? null,
+        ageSeconds: Number.isFinite(Date.parse(outer.State?.StartedAt)) ? Math.floor((Date.now() - Date.parse(outer.State.StartedAt)) / 1000) : null },
       roboTeam: { containerId12: registry.containerId.slice(0, 12), startedAt: registry.startedAt },
-      robots: { total: robots.length, ownedLeftovers: robots.filter((robot) => robot.name?.startsWith(TEST_ROBOT_PREFIX)).length,
-        codexAuthPresentInTestRobots: robots.filter((robot) => robot.codexAuthPresent === true).length },
+      // The gate's own robot family; `authFilesPresent` counts native credential files in every robot directory (G5 stop rule).
+      robots: { total: robots.length, gate, ownedLeftovers: robots.filter((robot) => robot.name?.startsWith(GATE_ROBOT_PREFIX[gate])).length,
+        codexAuthPresentInTestRobots: robots.filter((robot) => robot.codexAuthPresent === true).length, authFilesPresent },
       codexClient: { toolCacheCurrentVersion: client.version },
     } };
   } catch (error) {
@@ -175,28 +187,32 @@ const withOwnerDirectory = (roots, ownerDirectory) => [...roots, ownerDirectory]
 // Route A. Read-only: nothing under ROOT, the artifact directory, the owner directory or the Box is created or changed. The order is
 // fixed: ROOT checks, then the facts that stay reportable when the owner gate fails (a pending marker is recovered by a run even then),
 // the lock, the other route's marker, the owner gate, and only then anything that touches Podman.
-async function preflightOwner(paths, env) {
-  const info = { command: 'preflight', stream: null };
+async function preflightOwner(paths, env, gate) {
+  const profile = GATE_PROFILES[gate];
+  const info = { command: 'preflight', stream: null, gate };
   const bytesHeld = [];
   try {
     const ownerDirectory = ownerDirectoryFor(env, paths);
     const checked = assertPrivateRoot(paths, { forbiddenRoots: withOwnerDirectory(forbiddenRoots(env), ownerDirectory) });
     const lock = lockStatus(paths);
-    Object.assign(info, { rootExists: checked.exists, lock: lock.state, inflight: inflightPresent(paths, { route: 'owner' }) ? 'present' : 'absent',
-      otherRouteInflight: inflightPresent(paths) });
+    // Both route-A markers are reported, so the G5 stop rule can see a crashed C5 run from either gate's preflight.
+    Object.assign(info, { rootExists: checked.exists, lock: lock.state, inflight: inflightPresent(paths, { route: 'owner', gate }) ? 'present' : 'absent',
+      otherRouteInflight: inflightPresent(paths), inflightC2: inflightPresent(paths, { route: 'owner', gate: 'c2' }) ? 'present' : 'absent',
+      inflightC5: inflightPresent(paths, { route: 'owner', gate: 'c5' }) ? 'present' : 'absent' });
     if (lock.state === 'held') throw new CodexAuthError('LOCK_HELD', lock.reason);
     assertNoOtherRouteInflight(paths, 'owner');
+    assertNoOtherGateInflight(paths, gate);
     const { file, source } = resolveOwnerAuthPath(env, paths, { forbiddenRoots: forbiddenRoots(env) });
     info.owner = { source, readable: false };
     const { bytes } = await readOwnerAuth(file);
     bytesHeld.push(bytes);
-    info.owner = summarizeOwner(bytes, { remainingRunMs: RUN_TIMEOUT_MS, source });
+    info.owner = summarizeOwner(bytes, { remainingRunMs: profile.remainingRunMs, source });
     const { derived, expMs } = deriveAccessOnlyAuth(bytes);
     bytesHeld.push(derived);
-    assertAccessValidity({ expMs, now: Date.now(), remainingRunMs: RUN_TIMEOUT_MS });
-    const { runtime, robots, client, facts } = await readRuntimeFacts(env);
+    assertAccessValidity({ expMs, now: Date.now(), remainingRunMs: profile.remainingRunMs });
+    const { runtime, robots, client, facts } = await readRuntimeFacts(env, gate);
     Object.assign(info, facts);
-    planRecovery({ inflight: readInflight(paths, { route: 'owner' }), robots });
+    planRecovery({ gate, inflight: readInflight(paths, { route: 'owner', gate }), robots });
     const { report, failure } = await checkClientQualification({ runtime, identity: client });
     info.codexClient = { toolCacheCurrentVersion: client.version, generation12: report.generation12, platform: report.platform, nativeSha256: report.nativeSha256,
       qualification: report.status };
@@ -243,10 +259,10 @@ async function scanLeaksOwner(paths, env, argv) {
   } finally { for (const buffer of ownerBuffers) buffer.fill(0); }
 }
 
-function runPlaywright(args, env, stdio) {
+function runPlaywright(args, env, stdio, { watchdogMs = RUN_WATCHDOG_MS } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(smokeRoot, 'scripts', 'run-playwright.mjs'), ...args], { cwd: smokeRoot, env, stdio });
-    const timer = setTimeout(() => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 10_000).unref(); }, RUN_WATCHDOG_MS);
+    const timer = setTimeout(() => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 10_000).unref(); }, watchdogMs);
     let output = '';
     child.stdout?.on('data', (chunk) => { output += chunk; });
     child.stderr?.on('data', (chunk) => { output += chunk; });
@@ -280,7 +296,7 @@ async function run(paths, env) {
   if (!inflightPresent(paths)) assertNoQuarantine(paths);
   const childEnv = { ...env, SMOKE_COPILOT_CODEX: '1', SMOKE_RUN_ID: runId, SMOKE_ARTIFACT_DIR: directory,
     CODEX_TEST_AUTH_ROOT: paths.root, CODEX_TEST_AUTH_STREAM: paths.stream };
-  const playwrightArgs = ['--project=chromium', '--workers=1', '--retries=0', SPEC];
+  const playwrightArgs = ['--project=chromium', '--workers=1', '--retries=0', GATE_PROFILES.c2.spec];
   const listed = await runPlaywright([...playwrightArgs, '--list'], childEnv, ['ignore', 'pipe', 'pipe']);
   if (listed.code !== 0 || !/Total: 1 tests? in 1 files?/.test(listed.output)) throw new CodexAuthError('RUNTIME_PREREQ_FAILED', 'selection-count');
   const quarantinesBefore = new Set(listQuarantines(paths));
@@ -301,20 +317,42 @@ async function run(paths, env) {
   return { ...base, ...decideRunOutcome({ leaks, undecodable, result, exitedCode: exited.code }), undecodable: undecodable.length };
 }
 
+// G6: <SMOKE_ARTIFACT_DIR>/codex-auth/parent-result.json, the C5 parent's verdict that receipt v2 reads. Exactly these keys: the run id,
+// the outcome code and reason, the leak-scan coverage, the leak and undecodable counts, and the six cleanup flags of the worker's
+// result.json (all false when there is none). Created once, 0600, never overwritten; it carries no token, file name or field name.
+function writeParentResult(directory, { runId, outcome, coverage, leaks, undecodable, result }) {
+  const flags = Object.fromEntries(C5_CLEANUP_FLAGS.map((flag) => [flag, result?.cleanup?.[flag] === true]));
+  const record = { runId, code: outcome.code ?? 'OK', reason: outcome.reason ?? null, leakScanCoverage: coverage,
+    leaks: Array.isArray(leaks) ? leaks.length : 0, undecodable: Array.isArray(undecodable) ? undecodable.length : 0, cleanup: flags };
+  const folder = path.join(directory, 'codex-auth');
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const fd = fs.openSync(path.join(folder, 'parent-result.json'), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+  try { fs.writeFileSync(fd, `${JSON.stringify(record, null, 2)}\n`); } finally { fs.closeSync(fd); }
+}
+
 // Route A. The parent reads the owner login before and after the worker runs and keeps both reads in memory. They are the leak-scan
 // references, and byte-identical reads prove that every credential the worker could have read is among them. With a route-A marker
 // pending, the worker is spawned even when the owner gate fails, so a crashed run's leftover copy is recovered first.
-async function runOwner(paths, env) {
-  const base = { command: 'run', stream: null };
+async function runOwner(paths, env, gate) {
+  const profile = GATE_PROFILES[gate];
+  const base = { command: 'run', stream: null, gate };
   const ownerDirectory = ownerDirectoryFor(env, paths);
   const directory = assertArtifactDirectory(env.SMOKE_ARTIFACT_DIR, { paths,
     forbiddenRoots: withOwnerDirectory(forbiddenRoots({ ...env, SMOKE_ARTIFACT_DIR: undefined }), ownerDirectory) });
   base.artifactDirectory = directory;
-  const runId = env.SMOKE_RUN_ID || `codex-auth-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${process.pid}`;
-  if (!isRunId(runId)) throw new CodexAuthError('USAGE', 'bad-variable');
+  // C5 has one identity for the lock, the marker and every owned name: a UUID v4, generated here unless the operator supplied one.
+  const runId = gate === 'c5' ? (env.SMOKE_RUN_ID || randomUUID())
+    : env.SMOKE_RUN_ID || `codex-auth-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${process.pid}`;
+  if (!isRunId(runId) || (gate === 'c5' && !UUID_V4.test(runId))) throw new CodexAuthError('USAGE', 'bad-variable');
+  base.runId = runId;
   assertPrivateRoot(paths, { forbiddenRoots: withOwnerDirectory(forbiddenRoots(env), ownerDirectory) });
+  // G13: a live run on the same ROOT is refused before anything is spawned, so the second run never touches the Box.
+  const lock = lockStatus(paths);
+  if (lock.state === 'held') throw new CodexAuthError('LOCK_HELD', lock.reason);
   assertNoOtherRouteInflight(paths, 'owner');
-  const pendingRecovery = inflightPresent(paths, { route: 'owner' });
+  assertNoOtherGateInflight(paths, gate);
+  // G12: the gate's own marker decides whether the worker is spawned for recovery.
+  const pendingRecovery = inflightPresent(paths, { route: 'owner', gate });
   let ownerFile = null;
   let ownerSource = null;
   let pre = null;
@@ -325,7 +363,7 @@ async function runOwner(paths, env) {
     pre = (await readOwnerAuth(ownerFile)).bytes;
     const { derived, expMs } = deriveAccessOnlyAuth(pre);
     derived.fill(0);
-    assertAccessValidity({ expMs, now: Date.now(), remainingRunMs: RUN_TIMEOUT_MS });
+    assertAccessValidity({ expMs, now: Date.now(), remainingRunMs: profile.remainingRunMs });
   } catch (error) {
     ownerGateFailure = describeFailure(error);
     if (!(error instanceof CodexAuthError)) say('The owner login check failed with an unexpected error.');
@@ -335,12 +373,16 @@ async function runOwner(paths, env) {
   let references = [];
   try {
     const plan = planOwnerRun({ pendingRecovery, ownerGateFailure });
-    if (!plan.spawn) return { ...base, result: 'failed', ...plan.earlyFailure, ownerGate, spawnedForRecovery: false };
-    const childEnv = { ...env, SMOKE_COPILOT_CODEX: '1', SMOKE_RUN_ID: runId, SMOKE_ARTIFACT_DIR: directory,
+    if (!plan.spawn) {
+      const early = { ...base, result: 'failed', ...plan.earlyFailure, ownerGate, spawnedForRecovery: false };
+      if (gate === 'c5') writeParentResult(directory, { runId, outcome: early, coverage: 'n/a', leaks: [], undecodable: [], result: null });
+      return early;
+    }
+    const childEnv = { ...env, ...profile.childEnv, SMOKE_RUN_ID: runId, SMOKE_ARTIFACT_DIR: directory,
       CODEX_TEST_AUTH_ROOT: paths.root, CODEX_TEST_AUTH_STREAM: paths.stream, CODEX_TEST_AUTH_SOURCE: 'owner',
       // Only an override is passed on. For the default path the worker resolves it itself, so its result says `default`.
       ...(ownerSource === 'override' ? { CODEX_TEST_AUTH_OWNER_AUTH: ownerFile } : {}) };
-    const playwrightArgs = ['--project=chromium', '--workers=1', '--retries=0', SPEC];
+    const playwrightArgs = ['--project=chromium', '--workers=1', '--retries=0', profile.spec];
     const listed = await runPlaywright([...playwrightArgs, '--list'], childEnv, ['ignore', 'pipe', 'pipe']);
     if (listed.code !== 0 || !/Total: 1 tests? in 1 files?/.test(listed.output)) throw new CodexAuthError('RUNTIME_PREREQ_FAILED', 'selection-count');
     const logDirectory = path.join(directory, 'codex-auth');
@@ -348,7 +390,7 @@ async function runOwner(paths, env) {
     const logFd = fs.openSync(path.join(logDirectory, 'playwright.log'),
       fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
     let exited;
-    try { exited = await runPlaywright(playwrightArgs, childEnv, ['ignore', logFd, logFd]); } finally { fs.closeSync(logFd); }
+    try { exited = await runPlaywright(playwrightArgs, childEnv, ['ignore', logFd, logFd], { watchdogMs: profile.watchdogMs }); } finally { fs.closeSync(logFd); }
     const result = readResultFile(directory);
     if (ownerFile) { try { post = (await readOwnerAuth(ownerFile)).bytes; } catch { post = null; } }
     let coverage = 'unproven';
@@ -360,8 +402,11 @@ async function runOwner(paths, env) {
     let leakScan = 'skipped';
     if (references.length > 0) { ({ leaks, undecodable } = scanLeaks(directory, references)); leakScan = 'scanned'; }
     const outcome = decideRunOutcome({ leaks, undecodable, coverageFailure: coverage === 'unproven', result, exitedCode: exited.code });
-    return { ...base, ...outcome, ownerGate, spawnedForRecovery: plan.spawnedForRecovery, ownerChangedDuringRun: pre && post ? !pre.equals(post) : null,
+    const line = { ...base, ...outcome, ownerGate, spawnedForRecovery: plan.spawnedForRecovery, ownerChangedDuringRun: pre && post ? !pre.equals(post) : null,
       leakScanCoverage: coverage, leakScan, undecodable: undecodable.length };
+    // G6: the parent's verdict for the receipt, written after the scan, on every outcome of a C5 run.
+    if (gate === 'c5') writeParentResult(directory, { runId, outcome: line, coverage, leaks, undecodable, result });
+    return line;
   } finally {
     pre?.fill(0);
     post?.fill(0);
@@ -371,8 +416,8 @@ async function runOwner(paths, env) {
 
 const COMMANDS = {
   seed: (paths, env) => seed(paths, env),
-  preflight: (paths, env, argv, route) => (route === 'owner' ? preflightOwner(paths, env) : preflight(paths, env)),
-  run: (paths, env, argv, route) => (route === 'owner' ? runOwner(paths, env) : run(paths, env)),
+  preflight: (paths, env, argv, route, gate) => (route === 'owner' ? preflightOwner(paths, env, gate) : preflight(paths, env)),
+  run: (paths, env, argv, route, gate) => (route === 'owner' ? runOwner(paths, env, gate) : run(paths, env)),
   'scan-leaks': (paths, env, argv, route) => (route === 'owner' ? scanLeaksOwner(paths, env, argv) : scanLeaksCommand(paths, env, argv)),
   retire: async (paths, env) => {
     assertPrivateRoot(paths, { forbiddenRoots: forbiddenRoots(env) });
@@ -395,8 +440,10 @@ async function main(argv, env) {
   let route = null;
   try {
     route = resolveCredentialSource(env, { command: name });
+    // CODEX_TEST_AUTH_GATE: c2 (default) or c5, which exists on route A only. Never a positional flag (argv[3] belongs to scan-leaks and adopt).
+    const gate = resolveGate(env, { route });
     const paths = resolveAuthPaths(env);
-    const outcome = await COMMANDS[name](paths, env, argv, route);
+    const outcome = await COMMANDS[name](paths, env, argv, route, gate);
     const code = outcome.code ?? 'OK';
     emit({ ...outcome, route, code, reason: outcome.reason ?? null });
   } catch (error) {
