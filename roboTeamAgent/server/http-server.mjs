@@ -453,13 +453,21 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
 
 // The proxy each robot holds in the shared pool, which proxyAgent administers. Administrator-only:
 // the records name the outer infrastructure. Responses never carry credentials. Listing also
-// releases leases of robots deleted while proxyAgent was unreachable.
+// releases leases of robots deleted while proxyAgent was unreachable. useProxy is the global switch;
+// while it is off, workstations start with a direct connection and keep their leases.
 async function handleRobotProxies({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager }) {
     const releaseId = pathname.match(new RegExp(`^/api/robots/(${ROBOT_ID})/proxy$`))?.[1];
-    if (pathname !== '/api/robot-proxies' && !releaseId) return false;
+    if (pathname !== '/api/robot-proxies' && pathname !== '/api/proxy-settings' && !releaseId) return false;
     if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+    const settings = runtimeManager.proxySettings || null;
+    if (pathname === '/api/proxy-settings' && req.method === 'PUT') {
+        const body = await readJsonBody(req);
+        if (!settings || typeof body.useProxy !== 'boolean') { sendError(res, 400, 'useProxy must be true or false'); return true; }
+        sendJson(res, 200, { ok: true, useProxy: await settings.setUseProxy(body.useProxy) }); return true;
+    }
     if (pathname === '/api/robot-proxies' && req.method === 'GET') {
-        if (!proxyPool) { sendJson(res, 200, { ok: true, available: false, active: false, proxies: {} }); return true; }
+        const useProxy = settings ? await settings.useProxy() : true;
+        if (!proxyPool) { sendJson(res, 200, { ok: true, available: false, active: false, useProxy, proxies: {} }); return true; }
         const robots = new Set((await robotStore.list()).map(robot => robot.id));
         const listing = await proxyPool.assignments(null);
         const proxies = {};
@@ -467,7 +475,7 @@ async function handleRobotProxies({ req, res, pathname, actor, proxyPool, robotS
             if (robots.has(assignment.subject)) proxies[assignment.subject] = assignment;
             else void proxyPool.release(assignment.subject);
         }
-        sendJson(res, 200, { ok: true, available: listing.available, active: listing.active, proxies }); return true;
+        sendJson(res, 200, { ok: true, available: listing.available, active: listing.active, useProxy, proxies }); return true;
     }
     if (releaseId && req.method === 'DELETE') {
         if (!proxyPool || !await robotStore.get(releaseId)) { sendError(res, 404, 'robot not found'); return true; }

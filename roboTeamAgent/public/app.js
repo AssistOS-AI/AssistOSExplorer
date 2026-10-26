@@ -15,6 +15,8 @@ const createForm = document.querySelector('#createForm');
 const formMessage = document.querySelector('#formMessage');
 const createFormMessage = document.querySelector('#createFormMessage');
 const createRobotButton = document.querySelector('#createRobotButton');
+const useProxyField = document.querySelector('#useProxyField');
+const useProxyToggle = document.querySelector('#useProxyToggle');
 let canCreateRobots = false;
 let allRobots = [];
 const robotFilters = readRobotFilters(location.search);
@@ -445,19 +447,40 @@ function robotProxyLabel(proxy) {
 }
 
 let robotProxies = {};
+let useProxy = true;
 
+// The global Use Proxy switch appears only to administrators while proxyAgent is reachable.
 async function loadRobotProxies() {
-    if (!canCreateRobots) return;
-    try { robotProxies = (await api('api/robot-proxies')).proxies || {}; } catch { return; }
+    if (!canCreateRobots) { useProxyField.hidden = true; return; }
+    let listing;
+    try { listing = await api('api/robot-proxies'); } catch { return; }
+    robotProxies = listing.proxies || {};
+    useProxy = listing.useProxy !== false;
+    useProxyToggle.checked = useProxy;
+    useProxyField.hidden = listing.available !== true;
     showRobotProxies();
 }
+
+useProxyToggle.addEventListener('change', async () => {
+    const requested = useProxyToggle.checked;
+    useProxyToggle.disabled = true;
+    try {
+        useProxy = (await api('api/proxy-settings', { method: 'PUT', body: { useProxy: requested } })).useProxy !== false;
+        formMessage.textContent = useProxy
+            ? 'Robots use proxies from their next workstation start.'
+            : 'Robots connect directly from their next workstation start; their proxies stay reserved.';
+        formMessage.className = 'message';
+        showRobotProxies();
+    } catch (error) { useProxyToggle.checked = !requested; showError(error); }
+    finally { useProxyToggle.disabled = false; }
+});
 
 function showRobotProxies() {
     for (const card of robotsList.querySelectorAll('[data-robot-id]')) {
         const proxy = robotProxies[card.dataset.robotId];
         const label = card.querySelector('.robot-proxy');
         label.hidden = !proxy;
-        label.textContent = proxy ? robotProxyLabel(proxy) : '';
+        label.textContent = proxy ? `${robotProxyLabel(proxy)}${useProxy ? '' : ' (not used: Use Proxy is off)'}` : '';
         if (proxy) label.title = `Account: ${proxy.account}`;
         card.querySelector('.release-proxy').hidden = !proxy;
     }

@@ -23,11 +23,15 @@ proxyAgent keys every assignment by the Router-verified caller principal and the
 
 proxyAgent is optional. RoboTeam's manifest does not enable it, and robots must work without it. When proxyAgent is not installed, is unreachable, answers anything but a lease, or its pool is inactive, the workstation starts with a direct connection, as when no account exists, and the service logs a warning. The pool is inactive while no enabled or draining account lists a proxy. Only an active pool with nothing free stops the start, with HTTP 409, before any container is created.
 
+### Use Proxy
+
+**Use Proxy** is one global setting for every robot, not a per-robot one. It is stored in `/data/proxy-pool/settings.json` as `{ "useProxy": true | false }` and is on by default; a missing or unreadable file reads as on. While it is off, RoboTeam asks proxyAgent for no lease and every Browser or Desktop workstation starts with a direct connection, the service's `UTC` timezone and no locale, exactly as without proxyAgent. Turning it off releases nothing, so each robot gets its reserved proxy back when the setting is turned on again. The change takes effect at each workstation's next start; a running workstation keeps its relay until then. `GET /api/robot-proxies` returns the setting as `useProxy`, and `PUT /api/proxy-settings { useProxy }` changes it; both require an administrator. The dashboard shows the **Use Proxy** checkbox in the Robots heading only to administrators and only while proxyAgent is reachable, and marks a held proxy as not used while the setting is off.
+
 ### Assignment
 
 The assignment rules belong to proxyAgent and are unchanged. A robot keeps its proxy while that proxy is available, has not failed its last check, and belongs to an enabled or draining account whose credentials were not rejected, so websites see a stable address across sessions. Otherwise the robot receives the free usable proxy of an enabled account with the highest priority, preferring the account with the fewest assigned subjects, then the oldest account, then address order. Draining accounts keep their robots but receive no new ones.
 
-Every Browser or Desktop workstation start asks for a lease before any container is created. A robot's lease is released when the robot is deleted, without waiting for proxyAgent. A lease left behind because proxyAgent was unreachable is released the next time the dashboard lists robot proxies. An administrator can also release it from the robot's **⋮ → Release proxy** while the workstation is stopped. Changes to accounts and assignments take effect at the robot's next workstation start; a running workstation keeps its relay.
+While Use Proxy is on, every Browser or Desktop workstation start asks for a lease before any container is created. A robot's lease is released when the robot is deleted, without waiting for proxyAgent. A lease left behind because proxyAgent was unreachable is released the next time the dashboard lists robot proxies. An administrator can also release it from the robot's **⋮ → Release proxy** while the workstation is stopped. Changes to accounts and assignments take effect at the robot's next workstation start; a running workstation keeps its relay.
 
 ### Relay and container network
 

@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
+import { ProxySettings } from '../server/proxy-pool/proxy-settings.mjs';
 
 async function startFixture(t, proxyPool) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-robot-proxies-'));
@@ -15,7 +16,8 @@ async function startFixture(t, proxyPool) {
     const robotStore = new RobotStore({ dataDir: path.join(root, 'private') });
     await robotStore.initialize();
     const runs = new Map();
-    const runtimeManager = { workspaceRoot, status: (id) => runs.get(id) || { state: 'stopped' }, activePort: () => null, hasUnfinishedTasks: () => false };
+    const proxySettings = new ProxySettings({ file: path.join(root, 'private', 'proxy-pool', 'settings.json') });
+    const runtimeManager = { workspaceRoot, proxySettings, status: (id) => runs.get(id) || { state: 'stopped' }, activePort: () => null, hasUnfinishedTasks: () => false };
     const server = createRoboTeamServer({ robotStore, runtimeManager, proxyPool, internalToken: 'test-token', publicBasePath: '/rt/', mcpPort: 65534 });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     t.after(async () => {
@@ -24,11 +26,12 @@ async function startFixture(t, proxyPool) {
         else process.env.PLOINKY_WORKSPACE_ROOT = previousWorkspaceRoot;
         await fs.rm(root, { recursive: true, force: true });
     });
-    const call = (pathname, { method = 'GET', roles = ['admin'] } = {}) => fetch(`http://127.0.0.1:${server.address().port}${pathname}`, {
+    const call = (pathname, { method = 'GET', roles = ['admin'], body } = {}) => fetch(`http://127.0.0.1:${server.address().port}${pathname}`, {
         method,
-        headers: { 'x-roboteam-internal-token': 'test-token', 'x-roboteam-user-id': 'actor', 'x-roboteam-user-roles': JSON.stringify(roles) },
+        headers: { 'x-roboteam-internal-token': 'test-token', 'x-roboteam-user-id': 'actor', 'x-roboteam-user-roles': JSON.stringify(roles), 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
     });
-    return { call, robotStore, runs };
+    return { call, robotStore, runs, proxySettings };
 }
 
 function fakePool(held) {
@@ -73,4 +76,14 @@ test('the pool administration moved to proxyAgent', async (t) => {
     const { call } = await startFixture(t, fakePool(() => []));
     assert.equal((await call('/api/proxy-pool')).status, 404);
     assert.equal((await call('/proxy-pool.js')).status, 404);
+});
+
+test('administrators switch the global Use Proxy setting, which is on by default', async (t) => {
+    const { call, proxySettings } = await startFixture(t, fakePool(() => []));
+    assert.equal((await (await call('/api/robot-proxies')).json()).useProxy, true);
+    assert.equal((await call('/api/proxy-settings', { method: 'PUT', roles: ['user'], body: { useProxy: false } })).status, 403);
+    assert.equal((await call('/api/proxy-settings', { method: 'PUT', body: { useProxy: 'no' } })).status, 400);
+    assert.deepEqual(await (await call('/api/proxy-settings', { method: 'PUT', body: { useProxy: false } })).json(), { ok: true, useProxy: false });
+    assert.equal((await (await call('/api/robot-proxies')).json()).useProxy, false);
+    assert.equal(await new ProxySettings({ file: proxySettings.file }).useProxy(), false);
 });

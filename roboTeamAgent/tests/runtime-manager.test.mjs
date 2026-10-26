@@ -1072,3 +1072,32 @@ test('without a proxy lease the workstation connects directly with the service t
     assert.equal(run.some(value => value.startsWith('LC_ALL=')), false);
     assert.equal(run.some(value => value.includes('roboteam-proxy.json')), false);
 });
+
+test('with Use Proxy off the workstation connects directly without asking for a lease', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-off-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const listener = http.createServer((_request, response) => response.end());
+    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+    t.after(() => listener.close());
+    const port = listener.address().port;
+    const calls = [];
+    const manager = new RuntimeManager({
+        dataDir: path.join(root, 'data'),
+        workspaceRoot: root,
+        proxyPool: { lease: async () => assert.fail('no lease while Use Proxy is off'), release: async () => false },
+        createRelay: () => assert.fail('no relay without a proxy'),
+        execFileImpl: async (_command, args) => {
+            calls.push(args);
+            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
+            return { stdout: '', stderr: '' };
+        },
+        toolCache: preparedToolCache,
+    });
+    t.after(() => manager.stopAll());
+    assert.equal(await manager.proxySettings.useProxy(), true);
+    await manager.proxySettings.setUseProxy(false);
+    await manager.start({ id: 'proxyoff-a1b2c3', name: 'Direct', codingAgents: ['opencode'] }, 'browser');
+    const run = calls.find(args => args[0] === 'run');
+    assert.equal(run[run.indexOf('--network') + 1], 'pasta');
+    assert.ok(run.includes('TZ=UTC'));
+});

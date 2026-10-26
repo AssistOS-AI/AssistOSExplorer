@@ -23,6 +23,7 @@ import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs'
 import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
 import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
+import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
 import { NFT_COMMAND, NSENTER_COMMAND, writeContainerFirewallRules } from './proxy-pool/container-firewall.mjs';
 
@@ -235,6 +236,7 @@ export class RuntimeManager {
         this.timezone = options.timezone || TIMEZONE;
         this.proxyPool = options.proxyPool || null;
         this.proxyPolicyDir = options.proxyPolicyDir || path.join(this.dataDir, 'proxy-pool');
+        this.proxySettings = options.proxySettings || new ProxySettings({ file: path.join(this.proxyPolicyDir, 'settings.json') });
         this.createRelay = options.createRelay || ((upstream) => new ProxyRelay(upstream, {
             log: (line) => console.warn(`[roboTeamAgent] proxy relay: ${line}`),
         }));
@@ -423,9 +425,9 @@ export class RuntimeManager {
             const existing = this.sessions.get(robot.id);
             const codingAgents = robotCodingAgents(robot);
             const codingAgentsKey = codingAgents.join(',');
-            // Null for a direct connection (no proxyAgent, or no usable proxy in its pool); throws only
-            // while the pool is active and has nothing free. The lease carries its exit-address locale.
-            const lease = this.proxyPool ? await this.proxyPool.lease(robot.id, robot.name) : null;
+            // Null for a direct connection (Use Proxy off, no proxyAgent, or no usable proxy in its pool);
+            // throws only while the pool is active and has nothing free. The lease carries its exit-address locale.
+            const lease = this.proxyPool && await this.proxySettings.useProxy() ? await this.proxyPool.lease(robot.id, robot.name) : null;
             const upstream = lease?.upstream || null;
             const proxyKey = upstream ? `${upstream.id}@${upstream.host}:${upstream.port}` : '';
             const locale = upstream ? lease.locale : null;
