@@ -37,6 +37,9 @@ export default defineConfig({
     ['json', { outputFile: playwrightOutputPaths.jsonReport }],
   ],
   outputDir: playwrightOutputPaths.outputDir,
+  // The run identity in test-results/results.json (config.metadata.runId), which receipt v2 matches against the runner's preflight and
+  // postflight (G6). The runner sets SMOKE_RUN_ID for every child.
+  metadata: { runId: process.env.SMOKE_RUN_ID },
   use: {
     ...devices['Desktop Chrome'],
     baseURL: smokeConfig.baseURL,

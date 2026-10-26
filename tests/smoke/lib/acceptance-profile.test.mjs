@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import test from 'node:test';
 import {
     acceptanceLedger, selectAcceptanceCases, validateAcceptanceProfile, assertLedgerResults,
-    collectAcceptancePreflight, assertAcceptanceGeneration,
+    collectAcceptancePreflight, assertAcceptanceGeneration, acceptancePreflightRecord, writeTerminalPostflight, POSTFLIGHT_FILE,
 } from './acceptance-profile.mjs';
 import { assertAccountRoles, assertMarketplaceLifecycleFixture } from './account-preflight.mjs';
 import AcceptanceReporter from './acceptance-reporter.mjs';
@@ -464,4 +464,109 @@ test('a three-core-only native map is refused when the release evidence contains
         assert.throws(() => validateNativeEvidence({ ...record, repositories: missingOne }, options), /complete verified source graph/, dependency);
     }
     assert.throws(() => validateNativeEvidence({ ...record, repositories: { ...record.repositories, webmeet: { ...record.repositories.webmeet, commit: 'e'.repeat(40) } } }, options), /complete verified source graph/);
+});
+
+// ---- C5 ledger entry (D12) and the runner's per-invocation evidence (G6, Δ6, Δ7) ------------------------------------------------------
+
+test('ledger 06 is the route-A C5 separate profile, and the counts stay 46, 44, 24 and 20 with one blocked identity left', () => {
+    const live = acceptanceLedger.identities.find(entry => entry.file === '06-copilot-live-skills.spec.mjs');
+    assert.equal(live.cohort, 'copilot-live-skills');
+    assert.equal(live.disposition, 'separate-profile');
+    assert.deepEqual(live.requiredFlags, { SMOKE_COPILOT_LIVE_SKILLS: '1', CODEX_TEST_AUTH_GATE: 'c5', CODEX_TEST_AUTH_SOURCE: 'owner' });
+    assert.equal(live.runner, 'npm run test:copilot-live-skills');
+    assert.equal(live.executionAllowedByThisPlan, false);
+    assert.match(live.prerequisite, /route-A parent/);
+    assert.equal(acceptanceLedger.identities.length, 46);
+    assert.equal(acceptanceLedger.identities.filter(entry => entry.cohort !== 'fresh-live-sessions').length, 44);
+    assert.equal(acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance').length, 24);
+    assert.equal(acceptanceLedger.identities.filter(entry => entry.disposition === 'blocked-B+C-preflight').length, 1);
+    assert.equal(acceptanceLedger.identities.filter(entry => entry.disposition !== 'required-local-acceptance' && entry.cohort !== 'fresh-live-sessions').length, 20);
+    // The package script launches the parent, never the runner directly.
+    const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    assert.equal(pkg.scripts['test:copilot-live-skills'], 'CODEX_TEST_AUTH_GATE=c5 node ./scripts/codex-test-auth.mjs run');
+    // The spec source line the ledger records is the test's own line.
+    const spec = fs.readFileSync(new URL('../specs/06-copilot-live-skills.spec.mjs', import.meta.url), 'utf8').split('\n');
+    assert.match(spec[live.sourceLine - 1], /test\('one native conversation consumes local edits/);
+});
+
+test('selecting spec 06 without the parent gate variables is refused before any collector, naming CODEX_TEST_AUTH_GATE=c5', () => {
+    const c5Args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/06-copilot-live-skills.spec.mjs'];
+    assert.throws(() => validateAcceptanceProfile(c5Args, { ...baseEnv, SMOKE_COPILOT_LIVE_SKILLS: '1' }), /CODEX_TEST_AUTH_GATE=c5/);
+    assert.throws(() => validateAcceptanceProfile(c5Args, { ...baseEnv, SMOKE_COPILOT_LIVE_SKILLS: '1', CODEX_TEST_AUTH_GATE: 'c5' }), /CODEX_TEST_AUTH_SOURCE=owner/);
+    assert.throws(() => validateAcceptanceProfile(c5Args, { ...baseEnv, SMOKE_COPILOT_LIVE_SKILLS: '1', CODEX_TEST_AUTH_GATE: 'c5', CODEX_TEST_AUTH_SOURCE: 'stream' }), /CODEX_TEST_AUTH_SOURCE=owner/);
+    const profile = validateAcceptanceProfile([...c5Args, '--list'], { SMOKE_COPILOT_LIVE_SKILLS: '1', CODEX_TEST_AUTH_GATE: 'c5', CODEX_TEST_AUTH_SOURCE: 'owner' });
+    assert.deepEqual(profile.cases.map(entry => entry.file), ['06-copilot-live-skills.spec.mjs']);
+});
+
+const bundle = { schemaVersion: 1, kind: 'explorer-release-bundle', sourceInventorySha256: 'b'.repeat(64) };
+const commonEvidence = () => ({ releaseBundle: { ...bundle }, repositories: { explorer: { name: 'explorer', repositoryPath: '/w/AssistOSExplorer', commit: 'c'.repeat(40), role: 'deployed-source' } },
+    liveBox: { generationMaxAgeMs: 1_800_000, imageCreatedAt: '2026-10-26T10:00:00.000Z', workspaceSourceMount: { source: '/w' },
+        box: { containerId: 'd'.repeat(64), startedAt: '2026-10-26T11:00:00.000Z', imageId: digest, semanticLabels: {}, normalizedPortBindings: {} } } });
+
+test('the preflight record carries the run id, the selection, its capture time, the release bundle and the complete source map', () => {
+    const profile = validateAcceptanceProfile(args, baseEnv);
+    const record = acceptancePreflightRecord({ profile, ledgerCoverage: profile.coverage, evidence: commonEvidence(), runId: '0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f',
+        args: [...args, '--grep', 'opens a working Copilot'], capturedAt: '2026-10-26T11:05:00.000Z' });
+    assert.equal(record.runId, '0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f');
+    assert.equal(record.capturedAt, '2026-10-26T11:05:00.000Z');
+    assert.deepEqual(record.specs, ['specs/01-webtty-core.spec.mjs']);
+    assert.equal(record.grep, 'opens a working Copilot');
+    assert.equal(record.releaseBundle.sourceInventorySha256, 'b'.repeat(64));
+    assert.equal(record.ledgerCoverage, 'selected-ledger-identities');
+    assert.equal(record.generationMaxAgeMs, 1_800_000);
+    assert.deepEqual(record.box, commonEvidence().liveBox.box);
+    assert.deepEqual(record.repositories, commonEvidence().repositories);
+    assert.equal(acceptancePreflightRecord({ profile, ledgerCoverage: profile.coverage, evidence: commonEvidence(), runId: 'r', args, capturedAt: 'x' }).grep, null);
+});
+
+test('the common postflight refuses a changed release bundle, as it refuses a changed Box or source map', () => {
+    const before = commonEvidence();
+    assert.doesNotThrow(() => assertAcceptanceGeneration(before, commonEvidence()));
+    const rehashed = commonEvidence(); rehashed.releaseBundle.sourceInventorySha256 = 'e'.repeat(64);
+    assert.throws(() => assertAcceptanceGeneration(before, rehashed), /source identity changed/);
+    const dropped = commonEvidence(); delete dropped.releaseBundle;
+    assert.throws(() => assertAcceptanceGeneration(before, dropped), /source identity changed/);
+});
+
+test('the terminal postflight is written once, 0600, only for exit code 0 and a common postflight, and never overwritten', t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'terminal-postflight-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const file = path.join(root, POSTFLIGHT_FILE);
+    // A failed run, including one whose Copilot release postflight failed (the runner then has exitCode 1), writes nothing.
+    assert.equal(writeTerminalPostflight({ artifactDir: root, exitCode: 1, runId: 'run-1', post: commonEvidence() }), 1);
+    assert.equal(fs.existsSync(file), false);
+    // No common postflight collection (no Box profile, or a failed common postflight) writes nothing either.
+    assert.equal(writeTerminalPostflight({ artifactDir: root, exitCode: 0, runId: 'run-1', post: null }), 0);
+    assert.equal(fs.existsSync(file), false);
+    const now = () => Date.parse('2026-10-26T11:20:00.000Z');
+    assert.equal(writeTerminalPostflight({ artifactDir: root, exitCode: 0, runId: 'run-1', post: commonEvidence(), now }), 0);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { runId: 'run-1', capturedAt: '2026-10-26T11:20:00.000Z', exitCode: 0,
+        box: commonEvidence().liveBox.box, releaseBundle: bundle, repositories: commonEvidence().repositories });
+    assert.equal(fs.lstatSync(file).mode & 0o777, 0o600);
+    // A second write is refused and turns the pass into a failure, rather than replacing the first verdict.
+    const before = fs.readFileSync(file);
+    assert.equal(writeTerminalPostflight({ artifactDir: root, exitCode: 0, runId: 'run-2', post: commonEvidence(), now }), 1);
+    assert.ok(fs.readFileSync(file).equals(before));
+});
+
+test('the runner writes the preflight before Playwright and the terminal postflight as its last statement, after every post-run check', () => {
+    const source = fs.readFileSync(new URL('../scripts/run-playwright.mjs', import.meta.url), 'utf8');
+    const lines = source.trimEnd().split('\n');
+    assert.equal(lines.at(-1), 'process.exitCode = exitCode;');
+    assert.match(lines.at(-2), /^exitCode = writeTerminalPostflight\(\{ artifactDir: childEnv\.SMOKE_ARTIFACT_DIR, exitCode, runId: childEnv\.SMOKE_RUN_ID, post: commonPostflight \}\);$/);
+    assert.equal(source.split('writeTerminalPostflight(').length, 2, 'one call only');
+    const writer = source.indexOf('exitCode = writeTerminalPostflight(');
+    for (const check of ["readFileSync(path.join(childEnv.SMOKE_ARTIFACT_DIR, 'ledger-outcomes_codex.json')", 'assertAcceptanceGeneration(commonEvidence, post)',
+        'sameScreenRuntimeGeneration(screenRuntimeEvidence, postRunEvidence)', 'sameCopilotReleaseGeneration(copilotReleaseEvidence, postRunEvidence)']) {
+        const at = source.indexOf(check);
+        assert.ok(at > 0 && at < writer, check);
+    }
+    // A failing Copilot release postflight sets exitCode = 1 before the writer, which then writes nothing.
+    const copilot = source.indexOf('Post-Copilot release evidence failed');
+    assert.ok(copilot > 0 && source.indexOf('exitCode = 1;', copilot) < writer);
+    // The common postflight collection is the one the file describes, and it is only kept when it matched the preflight.
+    assert.ok(source.indexOf('commonPostflight = post;') > source.indexOf('assertAcceptanceGeneration(commonEvidence, post)'));
+    const preflight = source.indexOf('acceptancePreflightRecord({');
+    assert.ok(preflight > 0 && preflight < source.indexOf("spawn(process.execPath, [cliPath, 'test', ...playwrightArgs]"));
+    assert.match(source, /runId: childEnv\.SMOKE_RUN_ID, args: playwrightArgs,\s+capturedAt: new Date\(\)\.toISOString\(\)/);
 });

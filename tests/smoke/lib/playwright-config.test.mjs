@@ -96,3 +96,24 @@ test('the canonical runner clears inherited Playwright reporter output escapes',
     fs.rmSync(escapeRoot, { recursive: true, force: true });
   }
 });
+
+test('results.json carries the runner run id as config.metadata.runId, and traces and videos stay off outside the screen profile', async () => {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'explorer-playwright-metadata-'));
+  const previous = { SMOKE_ARTIFACT_DIR: process.env.SMOKE_ARTIFACT_DIR, SMOKE_RUN_ID: process.env.SMOKE_RUN_ID, SMOKE_WEBMEET_SCREEN: process.env.SMOKE_WEBMEET_SCREEN };
+  Object.assign(process.env, { SMOKE_ARTIFACT_DIR: artifactRoot, SMOKE_RUN_ID: '0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f' });
+  delete process.env.SMOKE_WEBMEET_SCREEN;
+  try {
+    const { default: config } = await import(new URL(`../playwright.config.mjs?metadata-test=${Date.now()}`, import.meta.url).href);
+    assert.deepEqual(config.metadata, { runId: '0f2b6c1e-8a4d-4c3b-9e5f-7a1b2c3d4e5f' });
+    // G21: a trace or a video could carry a credential-bearing page; both are pinned off for every gate except the screen profile's video.
+    assert.equal(config.use.trace, 'off');
+    assert.equal(config.use.video, 'off');
+  } finally {
+    for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    fs.rmSync(artifactRoot, { recursive: true, force: true });
+  }
+  const source = fs.readFileSync(new URL('../playwright.config.mjs', import.meta.url), 'utf8');
+  assert.match(source, /trace: 'off',/);
+  assert.match(source, /video: smokeConfig\.flags\.webmeetScreen \? 'retain-on-failure' : 'off',/);
+  assert.match(source, /metadata: \{ runId: process\.env\.SMOKE_RUN_ID \}/);
+});

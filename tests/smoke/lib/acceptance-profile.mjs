@@ -189,8 +189,49 @@ export async function collectAcceptancePreflight({ profile, env, manifestPath, v
 
 export function assertAcceptanceGeneration(before, after) {
     if (!sameLiveBoxGeneration(before?.liveBox, after?.liveBox)
-        || JSON.stringify(before?.repositories) !== JSON.stringify(after?.repositories)) {
+        || JSON.stringify(before?.repositories) !== JSON.stringify(after?.repositories)
+        // The frozen source inventory the verifier proved (Δ7): a re-hashed or swapped inventory is another source identity.
+        || JSON.stringify(before?.releaseBundle ?? null) !== JSON.stringify(after?.releaseBundle ?? null)) {
         throw new Error('Common smoke preflight Box generation or source identity changed during the cohort.');
+    }
+}
+
+// profile-preflight_codex.json (Δ6, G6): written once, before Playwright starts, by scripts/run-playwright.mjs. Receipt v2 reads runId,
+// capturedAt, ledgerCoverage, generationMaxAgeMs, box, releaseBundle and repositories; `specs` and `grep` record the selection.
+export function acceptancePreflightRecord({ profile, ledgerCoverage, evidence, runId, args, capturedAt }) {
+    const grep = optionValue(args, '--grep') ?? optionValue(args, '-g') ?? null;
+    return {
+        runId,
+        capturedAt,
+        specs: [...profile.specs],
+        grep,
+        imageAgePolicy: profile.imageAgePolicy,
+        ledgerCoverage,
+        generationMaxAgeMs: evidence.liveBox.generationMaxAgeMs,
+        imageCreatedAt: evidence.liveBox.imageCreatedAt,
+        box: evidence.liveBox.box,
+        workspaceSourceMount: evidence.liveBox.workspaceSourceMount,
+        releaseBundle: evidence.releaseBundle ?? null,
+        repositories: evidence.repositories,
+    };
+}
+
+export const POSTFLIGHT_FILE = 'profile-postflight_codex.json';
+
+// profile-postflight_codex.json (Δ6, G6): the runner's terminal verdict and its very last action. It is written only when the final exit
+// code is 0 after every post-run check (ledger, common, screen and Copilot), and only with the common postflight collection it
+// describes; otherwise nothing is written, so a receipt can never be built from a failed or unchecked invocation. The file is created
+// exclusively with mode 0600 and never overwritten. Returns the exit code to use: a failed write turns a pass into 1.
+export function writeTerminalPostflight({ artifactDir, exitCode, runId, post, now = Date.now, fsApi = fs }) {
+    if (exitCode !== 0 || !post) return exitCode;
+    try {
+        const record = { runId, capturedAt: new Date(now()).toISOString(), exitCode: 0, box: post.liveBox.box,
+            releaseBundle: post.releaseBundle ?? null, repositories: post.repositories };
+        fsApi.writeFileSync(path.join(artifactDir, POSTFLIGHT_FILE), `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+        return 0;
+    } catch {
+        console.error('The terminal postflight could not be written; the invocation is not receipt-eligible.');
+        return 1;
     }
 }
 

@@ -18,7 +18,7 @@ import { validateQaAcceptanceProfile } from '../lib/qa-acceptance-profile.mjs';
 import { requiresCopilotSourceVerification } from '../lib/live-sessions.mjs';
 import { validateHeadlessWebMeetProfile } from '../lib/webmeet-headless-profile.mjs';
 import {
-  validateAcceptanceProfile, collectAcceptancePreflight, assertAcceptanceGeneration, assertLedgerResults,
+  validateAcceptanceProfile, collectAcceptancePreflight, assertAcceptanceGeneration, assertLedgerResults, acceptancePreflightRecord, writeTerminalPostflight,
 } from '../lib/acceptance-profile.mjs';
 
 const smokeRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -164,15 +164,11 @@ const commonEvidence = await collectAcceptancePreflight({
 });
 if (commonEvidence) {
   fs.mkdirSync(childEnv.SMOKE_ARTIFACT_DIR, { recursive: true });
-  fs.writeFileSync(path.join(childEnv.SMOKE_ARTIFACT_DIR, 'profile-preflight_codex.json'), JSON.stringify({
-    imageAgePolicy: profile.imageAgePolicy,
-    ledgerCoverage: childEnv.SMOKE_LEDGER_COVERAGE,
-    generationMaxAgeMs: commonEvidence.liveBox.generationMaxAgeMs,
-    imageCreatedAt: commonEvidence.liveBox.imageCreatedAt,
-    box: commonEvidence.liveBox.box,
-    workspaceSourceMount: commonEvidence.liveBox.workspaceSourceMount,
-    repositories: commonEvidence.repositories,
-  }, null, 2), { flag: 'wx' });
+  // Captured before Playwright starts, so receipt v2 can require capturedAt <= the report's stats.startTime.
+  fs.writeFileSync(path.join(childEnv.SMOKE_ARTIFACT_DIR, 'profile-preflight_codex.json'), JSON.stringify(acceptancePreflightRecord({
+    profile, ledgerCoverage: childEnv.SMOKE_LEDGER_COVERAGE, evidence: commonEvidence, runId: childEnv.SMOKE_RUN_ID, args: playwrightArgs,
+    capturedAt: new Date().toISOString(),
+  }), null, 2), { flag: 'wx' });
 }
 if (ordinaryCopilotGate && !profile.listing) {
   copilotReleaseEvidence = await collectCopilotReleaseEvidence({
@@ -262,12 +258,15 @@ if (profile.ledgerCoverage && profile.cases.length && !profile.listing) {
     exitCode = 1;
   }
 }
+// The common postflight collection, kept for the terminal postflight file written last.
+let commonPostflight = null;
 if (commonEvidence) {
   try {
     const post = await collectAcceptancePreflight({
       profile, env: process.env, manifestPath: sourceManifestPath, verifierPath: sourceVerifierPath, baseURL, boxBaseURL,
     });
     assertAcceptanceGeneration(commonEvidence, post);
+    commonPostflight = post;
   } catch {
     console.error('Common smoke postflight failed; Box/source generation acceptance is refused.');
     exitCode = 1;
@@ -318,4 +317,6 @@ if (copilotReleaseEvidence) {
     exitCode = 1;
   }
 }
+// The very last action: the terminal postflight, only for a final exit code of 0 after every check above (G6, Δ6).
+exitCode = writeTerminalPostflight({ artifactDir: childEnv.SMOKE_ARTIFACT_DIR, exitCode, runId: childEnv.SMOKE_RUN_ID, post: commonPostflight });
 process.exitCode = exitCode;
