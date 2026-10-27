@@ -42,17 +42,22 @@ export async function resolveAlaInstallation({ env = process.env } = {}) {
             packageRoot = parent;
         }
         const load = (relative) => import(pathToFileURL(path.join(packageRoot, 'src', relative)).href);
-        const [discovery, service, config] = await Promise.all([
+        const [discovery, service, config, logins] = await Promise.all([
             load('coding-agents/discovery.mjs'), load('coding-agents/service.mjs'), load('config.mjs'),
+            // Login detection only serves the robot listing; an ALA without it still runs tasks.
+            load('coding-agents/logins.mjs').catch(() => ({})),
         ]);
         const api = {
             entryPath, packageRoot,
             loadConfig: config.loadConfig, saveConfig: config.saveConfig,
             discoverCodingAgents: discovery.discoverCodingAgents,
             createCodingAgentService: service.createCodingAgentService,
+            detectCodingAgentLogin: logins.detectCodingAgentLogin,
+            codingAgentLoginFiles: logins.codingAgentLoginFiles,
         };
         for (const [name, value] of Object.entries(api)) {
-            if (!['entryPath', 'packageRoot'].includes(name) && typeof value !== 'function') {
+            if (!['entryPath', 'packageRoot', 'detectCodingAgentLogin', 'codingAgentLoginFiles'].includes(name)
+                && typeof value !== 'function') {
                 throw new Error(`ALA installation is missing ${name}.`);
             }
         }

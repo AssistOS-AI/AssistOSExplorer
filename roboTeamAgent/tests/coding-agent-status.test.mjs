@@ -3,7 +3,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { DatabaseSync } from 'node:sqlite';
 import { createCodingAgentStatus } from '../server/coding-agent-status.mjs';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
@@ -25,34 +24,13 @@ test('an empty home has no coding-agent login', async (t) => {
     assert.deepEqual(await createCodingAgentStatus().logins(await tempHome(t)), NONE);
 });
 
-test('each agent counts as logged in only when its own credential store holds something', async (t) => {
+test('each agent counts as logged in through ALA when its own credential store holds something', async (t) => {
     const home = await tempHome(t);
     await write(home, '.codex/auth.json', { OPENAI_API_KEY: null, tokens: { access_token: 'a', refresh_token: 'r' }, last_refresh: 'x' });
     await write(home, '.local/share/opencode/auth.json', { deepseek: { type: 'api', key: 'k' } });
     await write(home, '.pi/agent/auth.json', { anthropic: { type: 'oauth', access: 'a', refresh: 'r', expires: 1 } });
     await write(home, '.claude/.credentials.json', { claudeAiOauth: { accessToken: 'a', refreshToken: 'r' } });
     assert.deepEqual(await createCodingAgentStatus().logins(home), { codex: true, opencode: true, pi: true, claude: true });
-});
-
-test('bookkeeping without credentials is not a login', async (t) => {
-    const home = await tempHome(t);
-    await write(home, '.codex/auth.json', { OPENAI_API_KEY: null, tokens: null, last_refresh: '2026-01-01' });
-    await write(home, '.local/share/opencode/auth.json', {});
-    await write(home, '.pi/agent/auth.json', { openai: { type: 'api_key' } });
-    await write(home, '.claude/.claude.json', { oauthAccount: null, numStartups: 3 });
-    await write(home, '.claude/.credentials.json', 'not json');
-    assert.deepEqual(await createCodingAgentStatus().logins(home), NONE);
-});
-
-test('a Claude API key and an OpenCode Console account count as logins', async (t) => {
-    const home = await tempHome(t);
-    await write(home, '.claude/.claude.json', { primaryApiKey: 'sk-ant' });
-    await fs.mkdir(path.join(home, '.local/share/opencode'), { recursive: true });
-    const database = new DatabaseSync(path.join(home, '.local/share/opencode/opencode.db'));
-    database.exec('CREATE TABLE account_state (id INTEGER, active_account_id TEXT, active_org_id TEXT); CREATE TABLE credential (id TEXT);');
-    database.prepare('INSERT INTO account_state VALUES (1, ?, NULL)').run('acc_1');
-    database.close();
-    assert.deepEqual(await createCodingAgentStatus().logins(home), { ...NONE, opencode: true, claude: true });
 });
 
 test('a changed file is read again and an unchanged one is served from the cache', async (t) => {
@@ -65,13 +43,27 @@ test('a changed file is read again and an unchanged one is served from the cache
     assert.equal((await status.logins(home)).pi, false);
 });
 
-test('a FIFO or oversized file at a credential path is never read', async (t) => {
+test('a credential variable of the server is never a robot login', async (t) => {
     const home = await tempHome(t);
-    await fs.mkdir(path.join(home, '.codex'), { recursive: true });
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('mkfifo', [path.join(home, '.codex/auth.json')]);
-    await write(home, '.pi/agent/auth.json', 'x'.repeat(5 * 1024 * 1024));
+    const previous = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-server';
+    t.after(() => { if (previous === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previous; });
     assert.deepEqual(await createCodingAgentStatus().logins(home), NONE);
+});
+
+test('without a loadable ALA the logins are reported absent and the failure is logged once', async (t) => {
+    const home = await tempHome(t);
+    await write(home, '.claude/.credentials.json', { claudeAiOauth: { accessToken: 'a' } });
+    const lines = [];
+    let attempts = 0;
+    const status = createCodingAgentStatus({ installation: async () => { attempts += 1; throw new Error('ALA is missing'); }, log: line => lines.push(line) });
+    assert.deepEqual(await status.logins(home), NONE);
+    assert.deepEqual(await status.logins(home), NONE);
+    assert.equal(attempts, 2, 'a failed load is retried');
+    assert.deepEqual(lines, ['[roboTeam] coding-agent logins are unavailable: ALA is missing']);
+    const older = createCodingAgentStatus({ installation: async () => ({ loadConfig() {} }), log: line => lines.push(line) });
+    assert.deepEqual(await older.logins(home), NONE);
+    assert.match(lines.at(-1), /this ALA has no coding-agent login detection/);
 });
 
 test('the agent in use is the configured one when the robot has it enabled', async (t) => {

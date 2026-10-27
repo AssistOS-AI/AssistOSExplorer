@@ -14,6 +14,7 @@ import { ROBOFLOW_ENTITLEMENT_ERROR, ROBOTEAM_ENTITLEMENT_ERROR, authorizeRobotL
 import { projectRobotView } from './robot-projection.mjs';
 import { importEmailRobots } from './robot-import.mjs';
 import { createCodingAgentStatus } from './coding-agent-status.mjs';
+import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
 import { listTerminalProfiles, resolveTerminalProfile, robotTerminalDirectory, terminalProfileAccess } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
@@ -725,7 +726,9 @@ export function createRoboTeamServer(options) {
     const routeKey = String(options.routeKey || 'roboTeamAgent');
     const publicDir = path.resolve(options.publicDir || DEFAULT_PUBLIC_DIR);
     const mcpPort = Number(options.mcpPort) || 7000;
-    const codingAgentStatus = options.codingAgentStatus || createCodingAgentStatus();
+    const codingAgentStatus = options.codingAgentStatus || createCodingAgentStatus({
+        installation: () => resolveAlaInstallation({ env: { ...process.env, ACHILLES_ALA_COMMAND: runtimeManager.alaCommand || '' } }),
+    });
     const liveSessions = options.liveSessions || null;
     const liveStreamLifetimeMs = Number.isSafeInteger(options.liveSessionsStreamLifetimeMs) && options.liveSessionsStreamLifetimeMs > 0
         ? options.liveSessionsStreamLifetimeMs : LIVE_STREAM_LIFETIME_MS;
