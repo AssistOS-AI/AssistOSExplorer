@@ -19,6 +19,7 @@ const readConfig = (directory) => fs.readFile(configFile(directory), 'utf8').the
 test('a new OpenCode robot gets OpenCode as its agent and the default OpenCode model', async (t) => {
     const directory = await home(t);
     const created = await ensureAgentConfig(directory, { codingAgents: ['opencode'] });
+    assert.equal(created.models.opencode, 'opencode/glm-5.3-flash-free');
     assert.deepEqual(created, { codingAgent: 'opencode', models: { opencode: DEFAULT_OPENCODE_MODEL }, efforts: {} });
     assert.deepEqual(await readConfig(directory), created);
     // A second call is idempotent and does not rewrite the file.
