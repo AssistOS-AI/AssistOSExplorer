@@ -62,7 +62,8 @@ export function createEnvironmentPicker(choices, value, ownerDocument = document
         if (choice.title) item.title = choice.title;
         if (choice.disabled) item.setAttribute('aria-disabled', 'true');
         item.onmousedown = event => event.preventDefault();
-        item.onclick = () => { if (!choice.disabled) choose(index); };
+        // Inside a <label>, a click on an option would also activate the trigger and reopen the list.
+        item.onclick = event => { event.preventDefault(); event.stopPropagation(); if (!choice.disabled) choose(index); };
         list.append(item);
         return item;
     });
@@ -620,7 +621,8 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         const basics = node('div', null, 'task-editor-row');
         basics.append(field('Name', name), field('Execution type', mode),
             field('Reasoning effort', createTaskEffortSelect(task, changed)));
-        if (!task.supportedExecutionTypes) basics.append(field('Environment', environment));
+        // A div, not a label: a label would forward clicks on the list options to the trigger.
+        if (!task.supportedExecutionTypes) basics.append(fieldBlock('Environment', environment));
         const isEntry = graph.entryTaskId === task.id;
         const checkbox = (text, checked) => {
             const input = node('input'); input.type = 'checkbox'; input.checked = checked;

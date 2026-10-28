@@ -183,4 +183,7 @@ test('the Environment field lists global agents in a page-drawn list that always
     assert.doesNotMatch(js, /const environment = node\('select'\)/);
     assert.match(js, /list\.style\.top = `\$\{rect\.bottom \+ 4\}px`/);
     assert.match(css, /\.environment-picker-options \{ position: fixed;/);
+    // Choosing an option closes the list: it is not inside a label, which would reopen it.
+    assert.match(js, /basics\.append\(fieldBlock\('Environment', environment\)\)/);
+    assert.match(js, /item\.onclick = event => \{ event\.preventDefault\(\); event\.stopPropagation\(\);/);
 });
