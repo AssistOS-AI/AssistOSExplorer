@@ -1,5 +1,6 @@
 import { nativeEnvironment } from './alaEnvironment.mjs';
 import { createTaskFailureChannel } from '../../../../server/task-failure-channel.mjs';
+import { spawnAlaInAgent } from './alaRemote.mjs';
 import { buildNativePrompt, buildTaskPrompt } from '../prompts.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -239,7 +240,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 resources: structuredClone(context.resources || context.webchatResources || []),
                 paths: structuredClone(context.paths || context.webchatPaths || []),
                 origin: structuredClone(context.origin || context.webchatOrigin || {}) };
-            scriptContext = await createPloinkyTaskContext({ context: captured,
+            // A turn that runs in another agent's container keeps its callback sockets under /data, which that
+            // container sees through the workspace.
+            const channelDir = execution.environment ? env.ROBOTEAM_CHANNEL_DIR : '';
+            if (execution.environment && !channelDir) throw new Error('Agent environment execution requires ROBOTEAM_CHANNEL_DIR.');
+            scriptContext = await createPloinkyTaskContext({ context: captured, ...(channelDir ? { baseDir: channelDir } : {}),
                 env, onTask: (task) => backgroundTasks?.observeScriptTask(task, captured) });
             let nativePrompt = buildNativePrompt({ prompt, resume: config.resume,
                 selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
@@ -274,7 +279,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (execution.workflowExecution && failureSkill) {
                 args.push('--folder', failureSkill.skillDir, 'as', 'report-task-blocked');
                 nativePrompt += '\n\nRead /workspace/report-task-blocked/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan.';
-                failureChannel = await createTaskFailureChannel({ request: async ({ message }) => {
+                failureChannel = await createTaskFailureChannel({ ...(channelDir ? { baseDir: channelDir } : {}), request: async ({ message }) => {
                     if (!forcedFailure) {
                         forcedFailure = new Error(sanitize(message));
                         try { await emit({ type: 'task-failed', message: forcedFailure.message }); }
@@ -290,10 +295,15 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
 
             const isNode = /\.(?:mjs|cjs|js)$/i.test(api.entryPath);
             await emit({ type: 'progress', reason: 'Starting ALA' });
-            child = spawn(isNode ? process.execPath : api.entryPath, isNode ? [api.entryPath, ...args] : args, {
-                cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: alaSessionsRoot(cwd) },
-                shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
-            });
+            const alaEnv = { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: alaSessionsRoot(cwd) };
+            child = execution.environment
+                // A terminal workflow phase with an agent environment: ALA runs in that agent's container.
+                ? await spawnAlaInAgent({ environment: execution.environment, args, cwd, env: { ...alaEnv,
+                    ROBOTEAM_RUNTIME_BWRAP: env.ROBOTEAM_RUNTIME_BWRAP,
+                    ROBOTEAM_RUNTIME_ALA: env.ROBOTEAM_RUNTIME_ALA } })
+                : spawn(isNode ? process.execPath : api.entryPath, isNode ? [api.entryPath, ...args] : args, {
+                    cwd, env: alaEnv, shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
+                });
             phase('child.spawned', { childPid: child.pid ?? null });
             // The turn prompt is the first control record: ALA starts the coding
             // agent with `prompt` and records `displayText` as the user's message.
@@ -390,6 +400,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const decoder = new StringDecoder('utf8');
         const outputDecoder = new StringDecoder('utf8');
         const sendSignal = (name) => {
+            // A process in another agent's container is stopped by the Router (SIGTERM, then SIGKILL).
+            if (child.remote) { child.kill(name); return; }
             if (!child.pid) return;
             try { process.kill(-child.pid, name); } catch (error) { if (error.code !== 'ESRCH') throw error; }
         };

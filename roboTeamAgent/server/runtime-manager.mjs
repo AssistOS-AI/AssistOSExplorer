@@ -12,6 +12,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { ToolCache } from './tool-cache.mjs';
+import { AgentEnvironments } from './agent-environments.mjs';
+import { RuntimeBundle } from './runtime-bundle.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE } from './constants.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
@@ -253,6 +255,10 @@ export class RuntimeManager {
             desktopImage: this.images.desktop,
             browserImage: this.images.browser,
         });
+        // Terminal workflow phases may run in another global-mode Ploinky agent's container.
+        this.agentEnvironments = options.agentEnvironments || new AgentEnvironments();
+        this.runtimeBundle = options.runtimeBundle || new RuntimeBundle({ toolCache: this.toolCache,
+            workspaceRoot: this.workspaceRoot, alaEntry: this.alaCommand });
         this.sessions = new Map();
         this.tasks = new Map();
         this.latestTask = new Map();
@@ -697,6 +703,15 @@ export class RuntimeManager {
             await this._saveTask(task);
             if (task.cancelRequested) throw new Error('task was paused');
             const args = ['--home', robotHome, '--cwd', cwd];
+            // A terminal task with an agent environment runs ALA in that agent's container on its own
+            // Node.js; the static bwrap and ALA come from the tool cache, visible there at the same path.
+            const environment = task.type === 'simple' && task.request.environment ? task.request.environment : null;
+            let runtimeTools = null;
+            if (environment) {
+                await this.agentEnvironments.require(environment);
+                runtimeTools = await this.runtimeBundle.prepare();
+                args.push('--environment', environment);
+            }
             if (codingAgent !== 'auto') args.push('--ca', codingAgent);
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
@@ -726,11 +741,20 @@ export class RuntimeManager {
                 ALA_EVENT_STREAM: '1',
             };
             delete childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
+            for (const name of ['ROBOTEAM_RUNTIME_BWRAP', 'ROBOTEAM_RUNTIME_ALA', 'ROBOTEAM_CHANNEL_DIR']) delete childEnv[name];
+            if (runtimeTools) {
+                // Callback channels live under /data so the other container reaches their sockets.
+                const channelDir = path.join(this.dataDir, 'rt');
+                await fs.mkdir(channelDir, { recursive: true, mode: 0o700 });
+                Object.assign(childEnv, { ROBOTEAM_RUNTIME_BWRAP: runtimeTools.bwrap.bin,
+                    ROBOTEAM_RUNTIME_ALA: runtimeTools.ala.entry, ROBOTEAM_CHANNEL_DIR: channelDir });
+            }
             if (task.request.allowsHumanInput) {
                 if (!this.requestHumanInput) throw new Error('Workflow human-input handler is unavailable');
                 humanInputChannel = await createHumanInputChannel({
                     request: input => this.requestHumanInput(task.taskId, input),
                     stop: () => this.stopTask(robot, task.type, task.taskId),
+                    ...(runtimeTools ? { baseDir: childEnv.ROBOTEAM_CHANNEL_DIR } : {}),
                 });
                 childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY = humanInputChannel.directory;
             }

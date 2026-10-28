@@ -473,6 +473,13 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         const content = await fs.promises.readFile(new URL('../copilot/src/skills/workflow-creator/SKILL.md', import.meta.url), 'utf8');
         sendJson(res, 200, { name: 'workflow-creator', content, readOnly: true }); return true;
     }
+    // Global-mode Ploinky agents a terminal task may run in (empty selection: RoboTeam itself).
+    if (pathname === '/api/roboflow/environments' && req.method === 'GET') {
+        const catalog = roboflow.runtimeManager?.agentEnvironments;
+        const environments = catalog ? await catalog.list().catch(error => ({ error: error.message })) : [];
+        if (environments.error) { sendJson(res, 200, { ok: true, environments: [], error: environments.error }); return true; }
+        sendJson(res, 200, { ok: true, environments }); return true;
+    }
     if (pathname === '/api/roboflow/skillsets' && req.method === 'GET') {
         sendJson(res, 200, { ok: true, ...await roboflow.catalog() }); return true;
     }

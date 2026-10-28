@@ -37,7 +37,8 @@
         "path": "/base-agent-additional-server/roboTeamAgent/3001/*",
         "access": "authenticated"
       }
-    ]
+    ],
+    "agentExec": true
   },
   "volumes": {
     ".data/roboTeamAgent": "/data"

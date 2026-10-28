@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, BROWSER_IMAGE, DESKTOP_IMAGE } from './constants.mjs';
 import { OPENCODE_PLUGIN_PACKAGE, openCodePluginState } from './opencode-plugin-seed.mjs';
+import { RUNTIME_BUNDLE_FILES } from './runtime-bundle.mjs';
 
 const execFileAsync = promisify(execFile);
 const CACHE_SCHEMA = 'roboteam-tool-cache-v1';
@@ -527,7 +528,9 @@ export class ToolCache {
             }
             const required = codingAgent
                 ? [path.join(directory, 'bin', codingAgent.executable)]
-                : name === 'browser'
+                : RUNTIME_BUNDLE_FILES[name]
+                    ? RUNTIME_BUNDLE_FILES[name].filter(file => file.startsWith('bin/')).map(file => path.join(directory, file))
+                    : name === 'browser'
                     ? [executablePath(directory, 'playwright-mcp')]
                     : [path.join(directory, 'computer-use-linux'), executablePath(directory, 'supergateway')];
             for (const executable of required) {

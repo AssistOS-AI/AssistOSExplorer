@@ -195,3 +195,8 @@ textarea.workflow-description:is(:disabled, [readonly]) { border-color: transpar
 .graph-node.graph-creator:focus-visible { box-shadow: 0 0 0 7px var(--accent); }
 .graph-node.graph-coordinator { border-style: dashed; }
 .creator-toggle.is-active { background: #7e22ce; border-color: #7e22ce; }
+/* Recommended skills of the agent chosen as a terminal task's environment. */
+.skillset-recommendation-row { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 2px; }
+.skillset-recommendation { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 12px; border: 1px dashed var(--accent); border-radius: 999px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); color: var(--text); font-size: var(--font-sm); cursor: pointer; text-align: left; }
+.skillset-recommendation:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.skillset-recommendation.added { border-style: solid; border-color: var(--border-strong); cursor: default; color: var(--text-soft); }

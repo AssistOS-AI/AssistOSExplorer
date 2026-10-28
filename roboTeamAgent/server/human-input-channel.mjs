@@ -6,8 +6,9 @@ import crypto from 'node:crypto';
 
 // Private HTTP callback from one native execution into its owning RoboTeam process.
 // It grants no access to the public HTTP API or to other workflow executions.
-export async function createHumanInputChannel({ request, stop, graceMs = 10000 }) {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'rt-human-'));
+// `baseDir` places the socket where another container can reach it (a robot phase in another agent).
+export async function createHumanInputChannel({ request, stop, graceMs = 10000, baseDir = os.tmpdir() }) {
+    const directory = await fs.mkdtemp(path.join(baseDir, 'rt-human-'));
     await fs.chmod(directory, 0o700);
     const token = crypto.randomBytes(32).toString('hex');
     let timer;

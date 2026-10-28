@@ -74,7 +74,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const fileLocation = document.querySelector('#flowLocation');
     const folderPicker = saveAsButton && initScheduleFolderPicker({ api, input: fileLocation, prefix: 'flow', relative: true,
         returnFocus: saveAsButton, onSelect: location => save(location) });
-    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, version = 0, coverageRequest = 0, nameBeforeEditing = '';
+    let graph, catalog = [], environments = [], canAdmin = false, selected = null, selectedEdgeId = null, version = 0, coverageRequest = 0, nameBeforeEditing = '';
     let warningTaskIds = new Set();
     let draggedTaskId = null;
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
@@ -427,13 +427,73 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         const mode = node('select');
         for (const value of task.supportedExecutionTypes ? ['terminal / desktop / browser'] : ['terminal', 'desktop', 'browser']) mode.add(new Option(value, value));
         mode.value = task.executionType || 'terminal / desktop / browser';
+        // Terminal tasks may run in another global-mode Ploinky agent's container; empty is RoboTeam itself.
+        const environment = node('select');
+        environment.add(new Option('RoboTeam (default)', ''));
+        for (const entry of environments) {
+            const option = new Option(entry.available ? entry.ref : `${entry.ref} (${entry.reason})`, entry.ref);
+            option.disabled = !entry.available && entry.ref !== task.environment;
+            option.title = entry.about || entry.ref;
+            environment.add(option);
+        }
+        if (task.environment && !environments.some(entry => entry.ref === task.environment)) {
+            environment.add(new Option(`${task.environment} (missing)`, task.environment));
+        }
+        environment.value = task.environment || '';
+        environment.title = 'The Ploinky agent whose container runs this terminal task: its system files, tools and environment. RoboTeam provides Node.js, Bubblewrap, ALA and the coding agents.';
+        const syncEnvironment = () => { environment.disabled = readonly() || (task.executionType || 'terminal') !== 'terminal'; };
+        // Skills of the mixed repository the chosen agent comes from are recommended for this environment;
+        // any other skill can still be selected, without a guarantee that it works in that agent.
+        const recommendation = node('div', null, 'skillset-recommendation-row');
+        const renderRecommendation = () => {
+            recommendation.replaceChildren();
+            const repository = task.environment ? task.environment.split('/')[0] : '';
+            const recommended = repository
+                ? catalog.filter(entry => entry.repositoryKind === 'mixed' && entry.repositoryName === repository) : [];
+            if (!recommended.length) { recommendation.hidden = true; return; }
+            recommendation.hidden = false;
+            if (!Array.isArray(task.skillsets)) task.skillsets = [];
+            const missing = recommended.filter(entry => !task.skillsets.includes(entry.id));
+            const names = recommended.map(entry => entry.name);
+            const shown = names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
+            const pill = node('button', null, 'skillset-recommendation');
+            pill.type = 'button';
+            pill.title = names.join('\n');
+            if (missing.length) {
+                pill.append(node('span', '+', 'skillset-trigger-icon'), node('span', `Recommended skills for this environment: ${shown}`));
+                pill.onclick = () => {
+                    task.skillsets.push(...missing.map(entry => entry.id));
+                    changed(); void checkCoverage(); renderTaskEditor();
+                };
+            } else {
+                pill.disabled = true;
+                pill.classList.add('added');
+                pill.append(node('span', `✓ All recommended skills added: ${shown}`));
+            }
+            pill.disabled ||= readonly();
+            recommendation.append(pill);
+        };
+        environment.onchange = () => {
+            if (environment.value) task.environment = environment.value; else delete task.environment;
+            changed();
+            renderRecommendation();
+        };
+        // Only terminal tasks run in another agent; desktop and browser keep RoboTeam's workstations.
+        const keepTerminalEnvironment = () => {
+            if (task.executionType !== 'terminal' && task.environment) delete task.environment;
+            environment.value = task.environment || '';
+            syncEnvironment();
+            renderRecommendation();
+        };
         mode.onchange = () => {
             task.executionType = mode.value; changed();
             renderList();
             renderBoard();
+            keepTerminalEnvironment();
         };
         const basics = node('div', null, 'task-editor-row');
         basics.append(field('Name', name), field('Execution type', mode));
+        if (!task.supportedExecutionTypes) basics.append(field('Environment', environment));
         const isEntry = graph.entryTaskId === task.id;
         const checkbox = (text, checked) => {
             const input = node('input'); input.type = 'checkbox'; input.checked = checked;
@@ -468,7 +528,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         humanInput.label.title = 'Pause for a business decision missing from the prompt and context.';
         const options = node('div', null, 'task-options');
         options.append(entry.label, creator.label, humanInput.label);
-        card.append(basics, options, field('Prompt', prompt));
+        card.append(basics, recommendation, options, field('Prompt', prompt));
         if (task.creator) {
             const skill = node('details');
             skill.append(node('summary', 'workflow-creator · Required · View only'));
@@ -496,6 +556,8 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         deleteTask.classList.add('task-delete');
         card.append(fieldBlock('Skills', skillsetPicker(task.skillsets)), deleteTask);
         for (const control of card.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
+        syncEnvironment();
+        renderRecommendation();
         taskPanel.append(card);
     }
     function addTask() {
@@ -546,6 +608,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         }
         showTaskEditor(false); render();
         try { const result = await api('api/roboflow/skillsets'); catalog = result.skillsets; render(); if (result.diagnostics.length) message.textContent = result.diagnostics.map(item => item.message).join('\n'); } catch (error) { showError(error); }
+        try { environments = (await api('api/roboflow/environments')).environments || []; renderTaskEditor(); } catch { environments = []; }
     }
     document.querySelector('#workflowCancelButton').onclick = () => onClose();
     nameControl.addEventListener('focusin', () => { nameBeforeEditing = graph.name; });

@@ -6,6 +6,8 @@ export const RUN_WORKFLOWS_ID = 'run-workflows';
 export const isCoordinator = task => task?.kind === 'run-workflows';
 export const hasCreators = graph => graph.tasks.some(task => task.creator === true);
 const identifier = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
+// An agent environment names a global-mode Ploinky agent as repo/agent.
+const AGENT_ENVIRONMENT_PATTERN = /^[A-Za-z0-9._-]{1,128}\/[A-Za-z0-9._-]{1,128}$/u;
 export function textField(value, name, max, required = false) {
     if (typeof value !== 'string' && value !== undefined) throw invalid(`${name} must be text`);
     const text = (value || '').trim();
@@ -50,9 +52,15 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         if (task.robotName || task.robotId) throw invalid('tasks cannot select robots');
         if (!builtin && !EXECUTION_TYPES.includes(task.executionType)) throw invalid('invalid execution type');
         if (!Array.isArray(task.skillsets) || task.skillsets.length > 100 || task.skillsets.some(s => typeof s !== 'string' || !s || s.length > 512)) throw invalid('invalid task skillsets');
+        // A terminal task may run in another global-mode Ploinky agent's container (repo/agent); empty is RoboTeam.
+        if (task.environment !== undefined && task.environment !== null && task.environment !== '') {
+            if (builtin || task.executionType !== 'terminal') throw invalid('only terminal tasks can select an agent environment');
+            if (!AGENT_ENVIRONMENT_PATTERN.test(String(task.environment))) throw invalid('agent environment must be repo/agent');
+        }
         return { id: task.id, name: textField(task.name, 'task name', 120),
             ...(task.creator ? { creator: true } : {}), ...(task.allowsHumanInput ? { allowsHumanInput: true } : {}), prompt: textField(task.prompt, 'task prompt', 16000), skillsets: [...new Set(task.skillsets)],
-            ...(builtin ? { supportedExecutionTypes: [...EXECUTION_TYPES] } : { executionType: task.executionType }) };
+            ...(builtin ? { supportedExecutionTypes: [...EXECUTION_TYPES] } : { executionType: task.executionType }),
+            ...(task.environment ? { environment: String(task.environment) } : {}) };
     });
     const creators = tasks.filter(task => task.creator);
     if (creators.length && !ids.has(RUN_WORKFLOWS_ID)) {

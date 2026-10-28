@@ -15,7 +15,7 @@ const generationSchema = {
     groups: [
         { heading: 'task', collection: 'tasks', identity: 'id', fields: {
             id: 'scalar', name: 'scalar', prompt: 'text', executionType: 'scalar', skillsets: 'list',
-            creator: 'boolean', allowsHumanInput: 'boolean', kind: 'scalar',
+            creator: 'boolean', allowsHumanInput: 'boolean', kind: 'scalar', environment: 'scalar',
         } },
         { heading: 'edge', collection: 'edges', identity: 'id', fields: {
             id: 'scalar', sourceTaskId: 'scalar', targetTaskId: 'scalar', sourcePort: 'scalar', targetPort: 'scalar',

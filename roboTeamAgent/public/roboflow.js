@@ -396,6 +396,8 @@ function renderPhaseDetail(container, instance) {
     const skillsets = [...(Array.isArray(task?.skillsets) ? task.skillsets : []), ...(task?.creator ? ['workflow-creator (required)'] : [])];
     const rows = [
         { label: 'Execution type', value: instance.executionType || task?.executionType || '—' },
+        ...((instance.executionType || task?.executionType) === 'terminal'
+            ? [{ label: 'Environment', value: task?.environment || 'RoboTeam', title: 'The Ploinky agent whose container runs this phase' }] : []),
         { label: 'Skills', value: skillsets.length ? skillsets.map(skillsetLabel).join(', ') : 'None', title: skillsets.join(', ') },
     ];
     if (instance.robotName) rows.push({ label: 'Robot', value: instance.robotName });

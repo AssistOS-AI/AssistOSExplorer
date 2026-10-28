@@ -5,9 +5,10 @@ import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { createTaskEventSocket } from '../tasks/taskEventSocket.mjs';
 import { preparePloinkyRuntimeFiles } from './ploinkyRuntimeFiles.mjs';
 
-export async function createPloinkyTaskContext({ context, env, onTask, agentRoot }) {
+export async function createPloinkyTaskContext({ context, env, onTask, agentRoot, baseDir = '' }) {
     // Keep the Unix socket address below Linux's 108-byte limit, independent of robot home paths.
-    const directory = await fs.realpath(await fs.mkdtemp('/tmp/ploinky-runtime-'));
+    // `baseDir` places it where another container can reach it (a robot phase in another agent).
+    const directory = await fs.realpath(await fs.mkdtemp(baseDir ? path.join(baseDir, 'ploinky-runtime-') : '/tmp/ploinky-runtime-'));
     await fs.chmod(directory, 0o700);
     const sanitize = createSanitizer(context, env);
     const token = randomBytes(32).toString('hex');

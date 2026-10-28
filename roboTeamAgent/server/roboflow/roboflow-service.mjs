@@ -282,6 +282,7 @@ export class RoboFlowService {
             const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, workflowRunId: id,
                 workflowInstanceId: instance.id, ownerPrincipal: ownerPrincipalOf(flow.ownerPrincipal), skillSets, skills,
                 requiredWorkflowSkillsets: node.skillsets, workflowCreator: node.creator === true, allowsHumanInput: node.allowsHumanInput === true,
+                ...(mode === 'terminal' && node.environment ? { environment: node.environment } : {}),
                 systemPrompt: [node.creator ? creatorPrompt(flow.graph, node.id, await this.subflows.catalog()) : outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '',
                     node.allowsHumanInput ? 'For a blocking business decision not answered by the prompt or context, use the required require-human-input skill. After its script succeeds, end this execution immediately without a route or creator plan; RoboFlow will wait for the user answer.' : ''].filter(Boolean).join('\n\n') });
             if (started?.sessionUrl) await this.store.update(id, current => {

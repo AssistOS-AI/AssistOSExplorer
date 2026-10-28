@@ -164,3 +164,14 @@ test('sidebar uses graph-role icons instead of mode icons and places the colored
     assert.deepEqual(taskSidebarPresentation({ id: 'only' }, { entryTaskId: 'only', edges: [] }).roleIcons.map(icon => icon.role), ['start', 'end']);
     assert.equal(taskSidebarPresentation(tasks[0], graph).roleIcons[0].path, 'M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5 M3 12h12 M10 7l5 5-5 5');
 });
+
+test('a terminal task environment recommends the skills of its mixed repository and adds them all at once', async () => {
+    const [js, css] = await Promise.all([read('workflow-editor.js'), read('workflow-editor.css')]);
+    assert.match(js, /entry\.repositoryKind === 'mixed' && entry\.repositoryName === repository/);
+    assert.match(js, /Recommended skills for this environment: \$\{shown\}/);
+    assert.match(js, /task\.skillsets\.push\(\.\.\.missing\.map\(entry => entry\.id\)\)/);
+    // The pill stays once everything is added, and changing the environment keeps earlier skills.
+    assert.match(js, /All recommended skills added: \$\{shown\}/);
+    assert.doesNotMatch(js, /task\.skillsets = task\.skillsets\.filter\(id => !recommended/);
+    assert.match(css, /\.skillset-recommendation\.added \{/);
+});
