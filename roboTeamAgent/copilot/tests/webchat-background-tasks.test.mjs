@@ -660,3 +660,17 @@ test('ambiguous remote continuation remains visible and cannot be automatically 
         fs.rmSync(workspace, { recursive: true, force: true });
     }
 });
+
+test('workflow task cards name the robot of the phase in progress', async () => {
+    const { workflowRobotName } = await import('../src/lib/webchat/webchatWorkflowStatus.mjs');
+    const instances = [
+        { id: 'inv_a', robotName: 'Planner' },
+        { id: 'inv_b', robotName: 'Coder' },
+        { id: 'inv_c' },
+    ];
+    assert.equal(workflowRobotName({ currentInstanceId: 'inv_a', instances }), 'Planner');
+    assert.equal(workflowRobotName({ currentInstanceId: 'inv_c', instances }), 'Coder');
+    assert.equal(workflowRobotName({ currentInstanceId: null, instances }), 'Coder');
+    assert.equal(workflowRobotName({ currentInstanceId: null, instances: [] }), '');
+    assert.equal(workflowRobotName(null), '');
+});

@@ -9,6 +9,15 @@ export function workflowIdForTask(task) {
     } catch { return null; }
 }
 
+// The robot running the workflow now: the robot of its current phase, otherwise of the latest phase
+// that had one. A workflow can move between robots, so this follows the phase in progress.
+export function workflowRobotName(flow) {
+    const instances = Array.isArray(flow?.instances) ? flow.instances : [];
+    const current = instances.find(instance => instance?.id === flow?.currentInstanceId);
+    const named = current?.robotName ? current : [...instances].reverse().find(instance => instance?.robotName);
+    return typeof named?.robotName === 'string' ? named.robotName.trim().slice(0, 160) : '';
+}
+
 export async function readWorkflowTask(task, agentClientModule, { pause = false } = {}) {
     const flowId = workflowIdForTask(task);
     if (!flowId) throw new Error('workflow_task_reference_missing');

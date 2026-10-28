@@ -1,5 +1,5 @@
 import { emitTaskDiagnostic } from './webchatDiagnostics.mjs';
-import { workflowIdForTask, readWorkflowTask } from './webchatWorkflowStatus.mjs';
+import { workflowIdForTask, readWorkflowTask, workflowRobotName } from './webchatWorkflowStatus.mjs';
 import crypto from 'node:crypto';
 import { normalizeTaskLiveSession } from '../tasks/taskLiveSession.mjs';
 import { normalizeTaskDetails } from '../tasks/taskDetails.mjs';
@@ -267,16 +267,23 @@ export async function createWebchatBackgroundTaskManager({
     const syncWorkflow = async (record, options = {}) => {
         const { flow, timing } = await readWorkflowTask(record, agentClientModule, options);
         if (closed) return;
-        const revision = JSON.stringify([flow.updatedAt, flow.status, timing]);
+        // The card names the robot running the current phase instead of the RoboTeam agent.
+        const robotName = workflowRobotName(flow) || record.robotName || '';
+        // ...and the started workflow by name instead of the generic "roboTeamAgent.roboflow_start_flow".
+        const workflowName = trim(flow.workflowName).replace(/\s+/g, ' ').slice(0, DESCRIPTION_LIMIT);
+        const revision = JSON.stringify([flow.updatedAt, flow.status, timing, robotName, workflowName]);
         if (record.workflowRevision === revision) return;
         const saved = getTask(workingDir, record.id);
         if (!saved) return;
         const outgoing = await publish({ event: 'update', task: {
             ...saved, ...timing, status: normalizeStatus(flow.status), remoteStatus: flow.status,
+            ...(robotName ? { robotName } : {}),
+            ...(workflowName ? { description: workflowName } : {}),
             updatedAt: new Date().toISOString(), workflowUpdatedAt: flow.updatedAt, error: flow.error || '',
         }, ...(flow.status === 'completed' && flow.result ? { finalOutput: flow.result } : {}) }, { workflowSnapshot: true });
         if (!outgoing.rejected) {
             record.workflowRevision = revision;
+            if (robotName) record.robotName = robotName;
             record.status = outgoing.task.status;
             record.remoteStatus = outgoing.task.remoteStatus;
         }
