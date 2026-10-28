@@ -24,18 +24,17 @@ const marketplace = {
     ],
 };
 
-test('agent environments list every installed agent except RoboTeam and accept only running global podman agents', async () => {
+test('agent environments list only agents enabled in global mode, except RoboTeam, and accept the running podman ones', async () => {
     const environments = new AgentEnvironments({ loadMarketplace: async () => marketplace, selfId: 'agent:AchillesIDE/roboTeamAgent' });
     const list = await environments.list();
     assert.deepEqual(list.map(entry => [entry.ref, entry.available, entry.reason]), [
         ['AchillesIDE/gitAgent', true, ''],
         ['AchillesIDE/dpuAgent', false, 'not running'],
-        ['AchillesIDE/emailAgent', false, 'not in global mode'],
-        ['Other/offline', false, 'not enabled'],
     ]);
     assert.equal((await environments.require('AchillesIDE/gitAgent')).ref, 'AchillesIDE/gitAgent');
-    await assert.rejects(environments.require('AchillesIDE/emailAgent'), /not in global mode/);
-    await assert.rejects(environments.require('AchillesIDE/missing'), /not installed/);
+    await assert.rejects(environments.require('AchillesIDE/emailAgent'), /not enabled in global mode/);
+    await assert.rejects(environments.require('AchillesIDE/dpuAgent'), /not running/);
+    await assert.rejects(environments.require('AchillesIDE/missing'), /not enabled in global mode/);
     await assert.rejects(environments.require('bad'), /Invalid agent environment/);
 });
 

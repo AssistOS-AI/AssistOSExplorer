@@ -30,6 +30,108 @@ export function createTaskEffortSelect(task, onChange, ownerDocument = document)
     return select;
 }
 
+// A select drawn by the page that always opens its list below the field: a native select opens upward
+// near the bottom of the viewport. choices: [{ value, label, disabled, title }]. The element exposes
+// value, disabled and onchange like a select.
+export function createEnvironmentPicker(choices, value, ownerDocument = document) {
+    const root = ownerDocument.createElement('div');
+    root.className = 'environment-picker';
+    const trigger = ownerDocument.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'environment-picker-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const label = ownerDocument.createElement('span');
+    label.className = 'environment-picker-label';
+    const caret = ownerDocument.createElement('span');
+    caret.className = 'environment-picker-caret';
+    caret.textContent = '▾';
+    trigger.append(label, caret);
+    const list = ownerDocument.createElement('ul');
+    list.className = 'environment-picker-options';
+    list.setAttribute('role', 'listbox');
+    list.hidden = true;
+    root.append(trigger, list);
+    let current = value;
+    let active = -1;
+    const items = choices.map((choice, index) => {
+        const item = ownerDocument.createElement('li');
+        item.className = 'environment-picker-option';
+        item.setAttribute('role', 'option');
+        item.textContent = choice.label;
+        if (choice.title) item.title = choice.title;
+        if (choice.disabled) item.setAttribute('aria-disabled', 'true');
+        item.onmousedown = event => event.preventDefault();
+        item.onclick = () => { if (!choice.disabled) choose(index); };
+        list.append(item);
+        return item;
+    });
+    const render = () => {
+        const selected = choices.find(choice => choice.value === current) || choices[0];
+        label.textContent = selected?.label || '';
+        trigger.title = selected?.title || '';
+        items.forEach((item, index) => {
+            item.setAttribute('aria-selected', String(choices[index].value === current));
+            item.classList.toggle('active', index === active);
+        });
+    };
+    const place = () => {
+        // Fixed below the trigger, so no scrolling container clips it.
+        const rect = trigger.getBoundingClientRect();
+        list.style.top = `${rect.bottom + 4}px`;
+        list.style.left = `${rect.left}px`;
+        list.style.minWidth = `${rect.width}px`;
+        list.style.maxHeight = `${Math.max(120, ownerDocument.defaultView.innerHeight - rect.bottom - 16)}px`;
+    };
+    const onOutside = event => { if (!root.contains(event.target)) close(); };
+    const open = () => {
+        if (trigger.disabled || !list.hidden) return;
+        active = Math.max(0, choices.findIndex(choice => choice.value === current));
+        list.hidden = false;
+        trigger.setAttribute('aria-expanded', 'true');
+        place(); render();
+        ownerDocument.addEventListener('mousedown', onOutside, true);
+        ownerDocument.defaultView.addEventListener('resize', close);
+        ownerDocument.addEventListener('scroll', close, true);
+    };
+    function close() {
+        if (list.hidden) return;
+        list.hidden = true;
+        trigger.setAttribute('aria-expanded', 'false');
+        ownerDocument.removeEventListener('mousedown', onOutside, true);
+        ownerDocument.defaultView.removeEventListener('resize', close);
+        ownerDocument.removeEventListener('scroll', close, true);
+    }
+    function choose(index) {
+        close();
+        if (choices[index].value === current) return;
+        current = choices[index].value;
+        render();
+        root.onchange?.();
+        trigger.focus();
+    }
+    const move = step => {
+        for (let next = active + step; next >= 0 && next < choices.length; next += step) {
+            if (!choices[next].disabled) { active = next; render(); items[next].scrollIntoView({ block: 'nearest' }); return; }
+        }
+    };
+    trigger.onclick = () => (list.hidden ? open() : close());
+    trigger.onkeydown = event => {
+        if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
+            event.preventDefault();
+            if (list.hidden) open(); else move(event.key === 'ArrowDown' ? 1 : -1);
+        } else if (['Enter', ' '].includes(event.key) && !list.hidden) {
+            event.preventDefault();
+            if (active >= 0 && !choices[active].disabled) choose(active);
+        } else if (event.key === 'Escape' && !list.hidden) { event.preventDefault(); close(); }
+        else if (event.key === 'Tab') close();
+    };
+    Object.defineProperty(root, 'value', { get: () => current, set: next => { current = next; render(); } });
+    Object.defineProperty(root, 'disabled', { get: () => trigger.disabled, set: next => { trigger.disabled = Boolean(next); if (next) close(); } });
+    render();
+    return root;
+}
+
 const taskIcons = {
     browser: { label: 'Browser', path: 'M3 4h18v16H3z M3 8h18 M6 6h.01 M9 6h.01' },
     terminal: { label: 'Terminal', path: 'M3 4h18v16H3z M7 9l3 3-3 3 M13 15h4' },
@@ -454,19 +556,17 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         for (const value of task.supportedExecutionTypes ? ['terminal / desktop / browser'] : ['terminal', 'desktop', 'browser']) mode.add(new Option(value, value));
         mode.value = task.executionType || 'terminal / desktop / browser';
         // Terminal tasks may run in another global-mode Ploinky agent's container; empty is RoboTeam itself.
-        const environment = node('select');
-        environment.add(new Option('RoboTeam (default)', ''));
+        // Only agents enabled in global mode are offered; one that is not running is shown but cannot be chosen.
+        const environmentChoices = [{ value: '', label: 'RoboTeam (default)',
+            title: 'The Ploinky agent whose container runs this terminal task: its system files, tools and Node.js. RoboTeam provides Bubblewrap, ALA and the coding agents.' }];
         for (const entry of environments) {
-            const option = new Option(entry.available ? entry.ref : `${entry.ref} (${entry.reason})`, entry.ref);
-            option.disabled = !entry.available && entry.ref !== task.environment;
-            option.title = entry.about || entry.ref;
-            environment.add(option);
+            environmentChoices.push({ value: entry.ref, label: entry.available ? entry.ref : `${entry.ref} (${entry.reason})`,
+                disabled: !entry.available && entry.ref !== task.environment, title: entry.about || entry.ref });
         }
         if (task.environment && !environments.some(entry => entry.ref === task.environment)) {
-            environment.add(new Option(`${task.environment} (missing)`, task.environment));
+            environmentChoices.push({ value: task.environment, label: `${task.environment} (missing)`, title: 'Not enabled in global mode any more' });
         }
-        environment.value = task.environment || '';
-        environment.title = 'The Ploinky agent whose container runs this terminal task: its system files, tools and environment. RoboTeam provides Node.js, Bubblewrap, ALA and the coding agents.';
+        const environment = createEnvironmentPicker(environmentChoices, task.environment || '');
         const syncEnvironment = () => { environment.disabled = readonly() || (task.executionType || 'terminal') !== 'terminal'; };
         // Skills of the mixed repository the chosen agent comes from are recommended for this environment;
         // any other skill can still be selected, without a guarantee that it works in that agent.

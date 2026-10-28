@@ -203,3 +203,15 @@ textarea.workflow-description:is(:disabled, [readonly]) { border-color: transpar
 .skillset-recommendation { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 12px; border: 1px dashed var(--accent); border-radius: 999px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); color: var(--text); font-size: var(--font-sm); cursor: pointer; text-align: left; }
 .skillset-recommendation:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
 .skillset-recommendation.added { border-style: solid; border-color: var(--border-strong); cursor: default; color: var(--text-soft); }
+/* Environment field: a page-drawn select whose list always opens below the field. */
+.environment-picker { position: relative; width: 100%; min-width: 0; }
+.environment-picker-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; padding: 10px 12px; color: var(--text); background: var(--input-bg); border: 1px solid var(--border-strong); border-radius: var(--radius-md); box-shadow: var(--input-shadow); font: inherit; text-align: left; cursor: pointer; }
+.environment-picker-trigger:focus-visible, .environment-picker-trigger[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .14); outline: none; }
+.environment-picker-trigger:disabled { opacity: .6; cursor: not-allowed; }
+.environment-picker-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.environment-picker-caret { flex-shrink: 0; color: var(--text-soft); }
+.environment-picker-options { position: fixed; z-index: 1000; margin: 0; padding: 4px; list-style: none; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-md); box-shadow: 0 10px 30px rgba(0, 0, 0, .18); }
+.environment-picker-option { padding: 8px 10px; border-radius: var(--radius-sm, 6px); cursor: pointer; white-space: nowrap; }
+.environment-picker-option:hover:not([aria-disabled="true"]), .environment-picker-option.active { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.environment-picker-option[aria-selected="true"] { font-weight: var(--font-semibold, 600); }
+.environment-picker-option[aria-disabled="true"] { color: var(--text-soft); cursor: not-allowed; }

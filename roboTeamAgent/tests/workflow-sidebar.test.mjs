@@ -176,3 +176,11 @@ test('a terminal task environment recommends the skills of its mixed repository 
     assert.doesNotMatch(js, /task\.skillsets = task\.skillsets\.filter\(id => !recommended/);
     assert.match(css, /\.skillset-recommendation\.added \{/);
 });
+
+test('the Environment field lists global agents in a page-drawn list that always opens below the field', async () => {
+    const [js, css] = await Promise.all([read('workflow-editor.js'), read('workflow-editor.css')]);
+    assert.match(js, /const environment = createEnvironmentPicker\(environmentChoices, task\.environment \|\| ''\)/);
+    assert.doesNotMatch(js, /const environment = node\('select'\)/);
+    assert.match(js, /list\.style\.top = `\$\{rect\.bottom \+ 4\}px`/);
+    assert.match(css, /\.environment-picker-options \{ position: fixed;/);
+});
