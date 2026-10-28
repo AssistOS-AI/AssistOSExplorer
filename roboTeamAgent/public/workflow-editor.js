@@ -4,6 +4,32 @@ const warningText = 'No robot has these matching skillsets, add or edit a robot 
 const node = (tag, text, className) => { const element = document.createElement(tag); if (text) element.textContent = text; if (className) element.className = className; return element; };
 const button = (text, action) => { const element = node('button', text, 'button'); element.type = 'button'; element.onclick = action; return element; };
 
+export function skillSelectionLabel(id, selection) {
+    if (selection) return selection.repositoryName ? `${selection.repositoryName}/${selection.name}` : selection.name;
+    return id.split('/').filter(Boolean).slice(-2).join('/');
+}
+
+export function createTaskEffortSelect(task, onChange, ownerDocument = document) {
+    const select = ownerDocument.createElement('select');
+    select.name = 'effort';
+    select.setAttribute('aria-label', 'Reasoning effort');
+    select.title = 'Applies only to this step. If the model does not support the selected level, the robot settings are used.';
+    const choices = [['', 'Use robot settings'], ['none', 'None'], ['minimal', 'Minimal'],
+        ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Maximum']];
+    if (task.effort && !choices.some(([value]) => value === task.effort)) choices.push([task.effort, task.effort]);
+    for (const [value, label] of choices) {
+        const option = ownerDocument.createElement('option');
+        option.value = value; option.textContent = label; select.append(option);
+    }
+    select.value = task.effort || '';
+    select.onchange = () => {
+        if (select.value) task.effort = select.value;
+        else delete task.effort;
+        onChange();
+    };
+    return select;
+}
+
 const taskIcons = {
     browser: { label: 'Browser', path: 'M3 4h18v16H3z M3 8h18 M6 6h.01 M9 6h.01' },
     terminal: { label: 'Terminal', path: 'M3 4h18v16H3z M7 9l3 3-3 3 M13 15h4' },
@@ -74,7 +100,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const fileLocation = document.querySelector('#flowLocation');
     const folderPicker = saveAsButton && initScheduleFolderPicker({ api, input: fileLocation, prefix: 'flow', relative: true,
         returnFocus: saveAsButton, onSelect: location => save(location) });
-    let graph, catalog = [], environments = [], canAdmin = false, selected = null, selectedEdgeId = null, version = 0, coverageRequest = 0, nameBeforeEditing = '';
+    let graph, catalog = [], catalogLoaded = false, environments = [], canAdmin = false, selected = null, selectedEdgeId = null, version = 0, coverageRequest = 0, nameBeforeEditing = '';
     let warningTaskIds = new Set();
     let draggedTaskId = null;
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
@@ -205,9 +231,9 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             repositories.get(key).entries.push(set);
         }
         const known = new Set(catalog.map(set => set.id));
-        const unavailable = selectedIds.filter(id => !known.has(id));
+        const unavailable = catalogLoaded ? selectedIds.filter(id => !known.has(id)) : [];
         if (unavailable.length) repositories.set('unavailable', { key: 'unavailable', name: 'Unavailable', unavailable: true,
-            source: 'Selected earlier but no longer offered by any repository. Uncheck to remove.', entries: unavailable.map(id => ({ id, kind: 'skill', name: id })) });
+            source: 'Selected earlier but no longer offered by any repository. Uncheck to remove.', entries: unavailable.map(id => ({ id, kind: 'skill', name: skillSelectionLabel(id) })) });
         let currentRepository = [...repositories.values()].find(repo => repo.entries.some(set => selectedIds.includes(set.id)))?.key
             || repositories.keys().next().value;
         function apply() { changed(); void checkCoverage(); }
@@ -227,7 +253,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             if (!selectedIds.length) { pills.append(node('span', 'No skills selected.', 'skillset-empty')); return; }
             for (const id of selectedIds) {
                 const set = catalog.find(item => item.id === id);
-                const label = set ? set.name : `${id} (unavailable)`;
+                const label = `${skillSelectionLabel(id, set)}${!set && catalogLoaded ? ' (unavailable)' : ''}`;
                 const pill = node('span', null, 'skillset-pill');
                 pill.append(node('span', label, 'skillset-pill-label'));
                 const remove = node('button', '×', 'skillset-pill-remove');
@@ -492,7 +518,8 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             keepTerminalEnvironment();
         };
         const basics = node('div', null, 'task-editor-row');
-        basics.append(field('Name', name), field('Execution type', mode));
+        basics.append(field('Name', name), field('Execution type', mode),
+            field('Reasoning effort', createTaskEffortSelect(task, changed)));
         if (!task.supportedExecutionTypes) basics.append(field('Environment', environment));
         const isEntry = graph.entryTaskId === task.id;
         const checkbox = (text, checked) => {
@@ -528,7 +555,9 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         humanInput.label.title = 'Pause for a business decision missing from the prompt and context.';
         const options = node('div', null, 'task-options');
         options.append(entry.label, creator.label, humanInput.label);
-        card.append(basics, recommendation, options, field('Prompt', prompt));
+        const promptField = field('Prompt', prompt);
+        promptField.classList.add('task-prompt-field');
+        card.append(basics, recommendation, options, promptField);
         if (task.creator) {
             const skill = node('details');
             skill.append(node('summary', 'workflow-creator · Required · View only'));
@@ -554,7 +583,10 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             changed(); showTaskEditor(false); render();
         });
         deleteTask.classList.add('task-delete');
-        card.append(fieldBlock('Skills', skillsetPicker(task.skillsets)), deleteTask);
+        card.append(fieldBlock('Skills', skillsetPicker(task.skillsets)));
+        const editorContent = node('div', null, 'task-editor-content');
+        editorContent.append(...card.childNodes);
+        card.append(editorContent, deleteTask);
         for (const control of card.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
         syncEnvironment();
         renderRecommendation();
@@ -582,6 +614,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         void checkCoverage();
     }
     async function open(value = null, { admin = false } = {}) {
+        catalog = []; catalogLoaded = false;
         canAdmin = admin;
         warningTaskIds = new Set((value?.coverage?.tasks || []).filter(task => !task.matchingRobotIds.length).map(task => task.taskId));
         graph = value ? structuredClone(value) : blank(); delete graph.coverage; delete graph.diagnostics;
@@ -607,7 +640,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             source.textContent = graph.source?.path ? `Source: ${graph.source.path}` : '';
         }
         showTaskEditor(false); render();
-        try { const result = await api('api/roboflow/skillsets'); catalog = result.skillsets; render(); if (result.diagnostics.length) message.textContent = result.diagnostics.map(item => item.message).join('\n'); } catch (error) { showError(error); }
+        try { const result = await api('api/roboflow/skillsets'); catalog = result.skillsets; catalogLoaded = true; render(); if (result.diagnostics.length) message.textContent = result.diagnostics.map(item => item.message).join('\n'); } catch (error) { showError(error); }
         try { environments = (await api('api/roboflow/environments')).environments || []; renderTaskEditor(); } catch { environments = []; }
     }
     document.querySelector('#workflowCancelButton').onclick = () => onClose();

@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const runtimeHelperUrl = new URL('../../../../ploinky/tests/helpers/generatedRouterRuntime.mjs', import.meta.url).href;
+const workspaceInitializerUrl = new URL('../../../../ploinky/ploinky-box/entrypoint/initialize-workspace.mjs', import.meta.url).href;
 
 export async function withGitAgentRuntime(env, operation) {
     const previous = new Map();
@@ -32,7 +33,9 @@ export async function withGitAgentRuntime(env, operation) {
             // controller-owned key in this fixture, not the test checkout.
             const { stdout } = await execFileAsync(process.execPath, [
                 '--input-type=module', '--eval',
-                `import { installGeneratedRouterRuntime } from ${JSON.stringify(runtimeHelperUrl)};
+                `import { initializeWorkspaceMasterKey } from ${JSON.stringify(workspaceInitializerUrl)};
+import { installGeneratedRouterRuntime } from ${JSON.stringify(runtimeHelperUrl)};
+initializeWorkspaceMasterKey({workspaceRoot: JSON.parse(process.argv[1]).tempDir});
 process.stdout.write(JSON.stringify(installGeneratedRouterRuntime(JSON.parse(process.argv[1])).env));`,
                 JSON.stringify(runtimeOptions),
             ], {

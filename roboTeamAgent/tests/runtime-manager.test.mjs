@@ -225,7 +225,7 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
         return child;
     };
     const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, execFileImpl: async () => ({ stdout: '[]', stderr: '' }), toolCache: preparedToolCache });
-    const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', model: 'gpt-test', systemPrompt: 'Route it' });
+    const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', model: 'gpt-test', effort: 'low', systemPrompt: 'Route it' });
     const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second', ca: 'codex', mcpServers: 'roboTeamAgent=http://127.0.0.1:7000/mcp' });
     assert.match(first.taskId, /^[0-9a-f-]{36}$/);
     assert.equal(first.sessionUrl, undefined);
@@ -260,7 +260,8 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
     assert.deepEqual(JSON.parse(children[firstIndex].written.split('\n')[0]), { type: 'prompt', prompt: 'Do work', systemPrompt: 'Route it' });
     assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--ca') + 1], 'codex');
     assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--session-id') + 1], first.taskId);
-    assert.deepEqual(firstInvocation.args.slice(-2), ['--model', 'gpt-test']);
+    assert.deepEqual(firstInvocation.args.slice(-4), ['--model', 'gpt-test', '--effort', 'low']);
+    assert.equal(secondInvocation.args.includes('--effort'), false);
     assert.ok(firstInvocation.options.env.PATH.startsWith('/cache/codex/bin:'));
     assert.equal(firstInvocation.options.env.ALA_EVENT_STREAM, '1');
     assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.codex'))).isDirectory(), true);

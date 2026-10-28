@@ -115,9 +115,10 @@ test('task details fill the same row as the narrow graph without changing the us
     }
     const card = rule(css, '.task-editor-panel > .task-editor');
     assert.match(card, /flex: 1 1 auto;/);
-    assert.match(card, /overflow: auto;/);
+    assert.match(card, /overflow: hidden;/);
+    assert.match(rule(css, '.task-editor-content'), /overflow: auto;/);
     assert.match(card, /box-sizing: border-box;/);
-    assert.match(css, /\.workflow-content.has-task-details \.workflow-task-details \{ height: 340px; flex: 0 0 auto; \}/);
+    assert.match(css, /\.workflow-content.has-task-details \.workflow-task-details \{ height: max\(340px, calc\(100dvh - 160px\)\); flex: 0 0 auto; \}/);
 });
 
 test('sidebar roles follow entry and outgoing edges independently of list order', () => {

@@ -47,7 +47,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         runtime = await createCliRuntime({ workingDir: options['--cwd'], skillRoots: [],
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
             execution: { workflowExecution: options['--workflow-execution'] === true, captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
-                model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access',
+                model: options['--model'], effort: options['--effort'], mcpServers: options['--MCPServers'], permissions: 'full-access',
                 ...(options['--environment'] ? { environment: options['--environment'] } : {}),
                 ...(task.systemPrompt ? { systemPrompt: task.systemPrompt } : {}) } }, { reattachExistingTasks: false });
         const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt: task.prompt,

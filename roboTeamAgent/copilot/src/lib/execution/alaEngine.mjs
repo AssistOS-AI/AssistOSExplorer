@@ -146,11 +146,32 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (execution.model !== models[backend]) delete efforts[backend];
             models[backend] = execution.model;
         }
+        if (execution.effort !== undefined) {
+            if (typeof execution.effort !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(execution.effort)) throw new Error('Invalid task effort');
+            // Capability selection happens only when executing the turn. An
+            // unsupported optional task override must leave robot defaults intact.
+        }
         if (!backend || !isInstalled(backend)) {
             throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN, PI_BIN or CLAUDE_BIN and authenticate it in the dedicated ALA home.`);
         }
         return { cwd, home, workspaceRoot, session, resume: Boolean(resumeBackend), backend,
             requestedBackend: resumeBackend ? null : requestedBackend, models, efforts, permissionMode, api, agents, env: envSnapshot };
+    }
+
+    async function selectTaskEffort(config, signal) {
+        if (execution.effort === undefined || !config.models[config.backend]) return;
+        const service = config.api.createCodingAgentService({ agents: config.agents, workspace: config.cwd,
+            cwd: config.cwd, home: config.home, env: config.env, models: config.models });
+        try {
+            const models = await service.listModels(config.backend, {
+                signal: AbortSignal.any([signal, AbortSignal.timeout(90000)]), details: true,
+            });
+            const model = models.find(entry => typeof entry !== 'string' && entry.id === config.models[config.backend]);
+            if (model?.efforts?.includes(execution.effort)) {
+                config.efforts[config.backend] = execution.effort;
+                config.taskEffortApplied = true;
+            }
+        } finally { await service.close(); }
     }
 
     async function executeTurn({ sessionId, turnId = randomUUID(), prompt, skillName, context = {}, signal, onEvent, onControl } = {}) {
@@ -210,6 +231,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             }
             phase('lease.acquired');
             const config = await configuration(sessionId, env);
+            await selectTaskEffort(config, controller.signal);
             const { cwd, home, backend, api, permissionMode } = config;
             // Pi has no native ask mode. Reject before transcript or native state creation.
             if (backend === 'pi' && permissionMode === 'ask-for-approval') {
@@ -255,7 +277,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const args = ['--home', home, '--cwd', cwd, '--session-id', sessionId,
                 '--turn-id', turnId, '--control-stdin', '--permissions', permissionMode,
                 '--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
-            if (config.session.modelOverride || execution.model) {
+            if (config.session.modelOverride || execution.model || config.taskEffortApplied) {
                 args.push('--model', config.models[backend], '--effort', config.efforts[backend] || 'default');
             }
             if (config.requestedBackend) args.push('--ca', config.requestedBackend);
