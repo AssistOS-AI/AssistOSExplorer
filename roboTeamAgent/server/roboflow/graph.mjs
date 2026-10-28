@@ -40,9 +40,10 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         ids.add(task.id);
         if (task.kind !== undefined && task.kind !== 'run-workflows') throw invalid('invalid task kind');
         if (task.allowsHumanInput !== undefined && typeof task.allowsHumanInput !== 'boolean') throw invalid('allowsHumanInput must be boolean');
+        if (task.effort !== undefined && (typeof task.effort !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(task.effort))) throw invalid('task effort must be a native effort name');
         if (task.creator !== undefined && typeof task.creator !== 'boolean') throw invalid('creator must be boolean');
         if (isCoordinator(task)) {
-            if (task.allowsHumanInput || builtin || task.id !== RUN_WORKFLOWS_ID || task.creator || task.robotId || task.robotName || task.executionType || task.prompt || task.skillsets?.length) throw invalid('Run workflows is a managed node without a robot, prompt or skills');
+            if (task.allowsHumanInput || builtin || task.id !== RUN_WORKFLOWS_ID || task.creator || task.robotId || task.robotName || task.executionType || task.effort || task.prompt || task.skillsets?.length) throw invalid('Run workflows is a managed node without a robot, prompt or skills');
             return { id: RUN_WORKFLOWS_ID, name: 'Run workflows', kind: 'run-workflows', skillsets: [] };
         }
         if (task.id === RUN_WORKFLOWS_ID) throw invalid('reserved coordinator task id');
@@ -51,6 +52,7 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         if (!builtin && !EXECUTION_TYPES.includes(task.executionType)) throw invalid('invalid execution type');
         if (!Array.isArray(task.skillsets) || task.skillsets.length > 100 || task.skillsets.some(s => typeof s !== 'string' || !s || s.length > 512)) throw invalid('invalid task skillsets');
         return { id: task.id, name: textField(task.name, 'task name', 120),
+            ...(task.effort ? { effort: task.effort } : {}),
             ...(task.creator ? { creator: true } : {}), ...(task.allowsHumanInput ? { allowsHumanInput: true } : {}), prompt: textField(task.prompt, 'task prompt', 16000), skillsets: [...new Set(task.skillsets)],
             ...(builtin ? { supportedExecutionTypes: [...EXECUTION_TYPES] } : { executionType: task.executionType }) };
     });

@@ -714,6 +714,7 @@ export class RuntimeManager {
             // paused attempt is never turned back into a running one.
             if (task.cancelRequested || task.state !== 'starting') throw new Error('task was paused');
             if (task.request.model) args.push('--model', task.request.model);
+            if (task.request.effort) args.push('--effort', task.request.effort);
             const requestedMcp = Array.isArray(task.request.mcpServers)
                 ? task.request.mcpServers.join(',') : String(task.request.mcpServers || '');
             const mcpServers = [requestedMcp, mcpAddress].filter(Boolean).join(',');
