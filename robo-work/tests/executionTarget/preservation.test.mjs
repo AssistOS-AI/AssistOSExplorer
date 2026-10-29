@@ -20,6 +20,14 @@ const TEST_DIR = here;
 const TEMP_DIR = fs.realpathSync(os.tmpdir());
 // The one operator tool (P6a) that may import the module from outside tests/executionTarget; nothing may import the tool.
 const OPERATOR_TOOL = path.join(ROBO_WORK, 'tests', 'g7', 'tools', 'install-fixture-record.mjs');
+// The native target helper's journal differential (P2): the generator imports journalModel.mjs read-only to produce the
+// vector, and the vector records the oracle module paths and digests. Exactly these two files; nothing may import them
+// except the drift test in tests/executionTarget.
+const NATIVE_DIFFERENTIAL_VECTORS = path.join(ROBO_WORK, 'native', 'crates', 'target-helper', 'tests', 'vectors');
+const NATIVE_DIFFERENTIAL = [
+    path.join(NATIVE_DIFFERENTIAL_VECTORS, 'gen-journal-differential.mjs'),
+    path.join(NATIVE_DIFFERENTIAL_VECTORS, 'journal-differential.json')
+];
 
 test('T1-10 the default runtime adapter is unchanged and refuses everything', () => {
     assert.ok(Object.isFrozen(runtimeUnavailable));
@@ -77,16 +85,19 @@ test('T1-10 no file outside tests/executionTarget imports the executionTarget mo
     let scanned = 0;
     for (const file of sourceFiles(REPOSITORY)) {
         if (file.startsWith(`${MODULE_DIR}${path.sep}`) || file.startsWith(`${TEST_DIR}${path.sep}`) || file === OPERATOR_TOOL) continue;
+        if (NATIVE_DIFFERENTIAL.includes(file)) continue;
         if (fs.statSync(file).size > 4 * 1024 * 1024) continue;
         scanned += 1;
         const text = fs.readFileSync(file, 'utf8');
         if (/executionTarget\//.test(text) && /(import|require)\s*\(?[^;]*executionTarget\//.test(text)) offenders.push(path.relative(REPOSITORY, file));
         if (/server\/executionTarget/.test(text)) offenders.push(path.relative(REPOSITORY, file));
         if (/install-fixture-record/.test(text)) offenders.push(path.relative(REPOSITORY, file));
+        if (/gen-journal-differential/.test(text)) offenders.push(path.relative(REPOSITORY, file));
     }
     assert.ok(scanned > 100, 'the scan covered the repository');
     assert.deepEqual([...new Set(offenders)], []);
     assert.ok(fs.statSync(OPERATOR_TOOL).isFile(), 'the single exempt operator tool exists');
+    for (const file of NATIVE_DIFFERENTIAL) assert.ok(fs.statSync(file).isFile(), `the exempt native differential file ${path.relative(REPOSITORY, file)} exists`);
 });
 
 test('T1-10 the new modules import only each other and Node built-ins', () => {

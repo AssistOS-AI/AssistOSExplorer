@@ -6,6 +6,7 @@ members = [
     "crates/confine",
     "crates/keeper",
     "crates/file-server",
+    "crates/target-helper",
     "tools/elfcheck",
 ]
 

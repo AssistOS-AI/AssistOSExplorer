@@ -1,0 +1,19 @@
+[package]
+name = "rw-target-helper"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "The RoboWork target helper (plan section 5.6): the target transport frame codec and helper-ticket verification (T0 section 8), the management-private durable operation journal (T0 section 9) and the private AF_UNIX mailbox endpoint with SCM_RIGHTS receive. Keeper launch is a refusing stub until G1."
+
+[[bin]]
+name = "rw-target-helper"
+path = "src/main.rs"
+
+[dependencies]
+# Same vendored, locked version as the other crates; no new crate. Used for flock, fsync and the Linux mailbox.
+libc = { workspace = true }
+
+[dev-dependencies]
+# Lenient (JSON.parse-compatible) reading of the pretty-printed vector files only.
+rw-proto = { path = "../proto" }

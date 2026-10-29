@@ -1,0 +1,17 @@
+{
+ "version": 1,
+ "classification": "PUBLIC SYNTHETIC TEST MATERIAL: header descriptors values the frame validators must refuse identically in Node and Rust",
+ "base": "transport-v1.json frames[0] (worker-to-target), header fields kept, messageKind and descriptors replaced, body and MAC recomputed",
+ "cases": [
+  { "name": "data frame, descriptors null", "messageKind": "data", "descriptors": null, "expected": "invalid_request" },
+  { "name": "data frame, descriptors object with length 0", "messageKind": "data", "descriptors": { "length": 0 }, "expected": "invalid_request" },
+  { "name": "data frame, descriptors empty string", "messageKind": "data", "descriptors": "", "expected": "invalid_request" },
+  { "name": "data frame, descriptors number", "messageKind": "data", "descriptors": 5, "expected": "descriptor_count" },
+  { "name": "data frame, descriptors boolean", "messageKind": "data", "descriptors": false, "expected": "descriptor_count" },
+  { "name": "data frame, descriptors empty object", "messageKind": "data", "descriptors": {}, "expected": "descriptor_count" },
+  { "name": "data frame, descriptors empty array", "messageKind": "data", "descriptors": [], "expected": "ok" },
+  { "name": "prepare frame, descriptors null", "messageKind": "prepare", "descriptors": null, "expected": "invalid_request" },
+  { "name": "prepare frame, descriptors object with length 0", "messageKind": "prepare", "descriptors": { "length": 0 }, "expected": "invalid_request" },
+  { "name": "prepare frame, descriptors empty array", "messageKind": "prepare", "descriptors": [], "expected": "ok" }
+ ]
+}
