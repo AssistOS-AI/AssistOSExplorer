@@ -545,6 +545,9 @@ async function proxyHarness(t, ack) {
     t.after(() => server.close());
     const accepted = once(server, 'connection');
     const target = net.connect(socketPath);
+    // Linux resets a peer whose unread bytes are discarded by destroy(); the
+    // target side here only models early bytes, so its reset is not a result.
+    target.on('error', () => {});
     const [proxy] = await accepted;
     // The target side sends early bytes and half-closes before anything is delivered to ALA.
     target.end(Buffer.from('early-bytes'));

@@ -6,8 +6,9 @@ import { TARGET_LIMITS_V1 } from './limits.mjs';
 
 // Pure execution-target availability and admission decisions (T0 base §3, refusal precedence replaced by A1.7).
 //
-// Generic T1 has no activated target backend: every nonempty selection that passes all other checks still refuses
-// `backend_not_activated`, and the projection lists every production target unavailable. Nothing here reads files,
+// Production has no activated target backend: every nonempty production selection that passes all other checks still
+// refuses `backend_not_activated`. Only proof-fixture mode with an installed proof-fixture record can admit (erratum A10,
+// P6a), see `proofFixtureActivation`. Nothing here reads files,
 // launches anything or trusts cached UI availability; `requireExecutionTarget` repeats every check itself.
 //
 // Trusted facts (supplied by management, never by the caller):
@@ -21,6 +22,8 @@ import { TARGET_LIMITS_V1 } from './limits.mjs';
 //                 previouslyRobotWritable, writableBacking, linkInstallAlias, repositorySourceMode}
 //   qualifications {records: {[ref]: QualificationRecord}, trustedAcceptances, executionsUsed: {[ref]: count}}
 //   request      {coordinatorPrincipal, operationId, nowMs} (proof-fixture scope checks)
+//   current      for a proof-fixture admission: {worker: {principal, runtimeInstanceId, enableGeneration, generation}}, compared
+//                with the worker half of the record scope
 //   home         {homeIdentity, backendId, workerInventoryDigest, targetInventoryDigest}
 //   admittedBinding  null, or the admitted TargetBinding when revalidating at queued dispatch or final release
 //   current      with an admitted binding: {worker: {principal, runtimeInstanceId, enableGeneration, generation},
@@ -35,7 +38,8 @@ export const AVAILABILITY_ERROR_CODES = Object.freeze([
     'home_incompatible', 'capacity_exceeded', 'backend_not_activated'
 ]);
 
-// The activation switch of generic T1. It is not configurable: activation is a later reviewed focused delta.
+// The production activation switch. It is not configurable (no environment variable, option or fact): production
+// activation is a later reviewed focused delta. The only other admission path is the proof-fixture one below.
 const BACKEND_ACTIVATED = false;
 const INVENTORY_MAX_TARGETS = 256;
 const INVENTORY_MAX_BYTES = 65536;
@@ -199,6 +203,10 @@ function checkQualification(entry, facts) {
     };
     for (const [key, value] of Object.entries(expected)) need(scope[key] === value, 'qualification_scope');
     if (record.qualificationClass === 'proof-fixture') {
+        // The worker half of the scope is the current worker exactly (a record of an older worker generation never admits).
+        const worker = isPlainObject(facts.current) ? facts.current.worker : null;
+        need(isPlainObject(worker) && scope.workerPrincipal === worker.principal && scope.workerRuntimeInstanceId === worker.runtimeInstanceId
+            && scope.workerEnableGeneration === worker.enableGeneration && scope.workerGeneration === worker.generation, 'qualification_scope');
         const request = facts.request;
         need(isPlainObject(request) && isPrincipal(request.coordinatorPrincipal) && isOperationId(request.operationId)
             && Number.isSafeInteger(request.nowMs), 'qualification_scope');
@@ -211,6 +219,13 @@ function checkQualification(entry, facts) {
         need(used < fixture.maxExecutions, 'capacity_exceeded');
     }
     return record;
+}
+
+// Proof-fixture activation (erratum A10). Admits only in proof-fixture mode with a proof-fixture record whose scope
+// (checked by `checkQualification`, including its worker half) matches. A production-mode request never reaches this
+// path with a fixture record (qualification_class refuses earlier) and a production record never activates here.
+function proofFixtureActivation(record, facts) {
+    return facts.mode === 'proof-fixture' && record.qualificationClass === 'proof-fixture';
 }
 
 function checkAttestation(entry, record, facts, binding) {
@@ -265,9 +280,9 @@ function evaluate(selectedPrincipal, facts) {
     if (binding) checkBindingQualification(binding, record, facts);
     // 12. Capacity.
     need(entry.activeExecutions < TARGET_LIMITS_V1.executionsPerTarget, 'capacity_exceeded');
-    // 13. No activated backend in generic T1.
-    need(BACKEND_ACTIVATED, 'backend_not_activated');
-    return entry;
+    // 13. No activated production backend; only the proof-fixture path above can admit.
+    need(BACKEND_ACTIVATED || proofFixtureActivation(record, facts), 'backend_not_activated');
+    return { entry, record };
 }
 
 function decide(check) {
@@ -279,7 +294,8 @@ function decide(check) {
 }
 
 // Admission-time decision. Blank or omitted selection: {backend: 'ordinary'}. A nonempty selection is terminal-only and
-// is never satisfied in generic T1.
+// is satisfied only by a proof-fixture admission, {backend: 'target', ...}; never by the ordinary backend, never in
+// production mode.
 export function requireExecutionTarget(selection, facts) {
     return decide(() => {
         checkFacts(facts);
@@ -287,8 +303,11 @@ export function requireExecutionTarget(selection, facts) {
         const selectedPrincipal = normalizeSelection(selection);
         if (selectedPrincipal === null) return { backend: 'ordinary' };
         need(facts.surface === 'terminal', 'environment_not_terminal');
-        evaluate(selectedPrincipal, facts);
-        return refuse('backend_not_activated');
+        const { entry, record } = evaluate(selectedPrincipal, facts);
+        return {
+            backend: 'target', ref: entry.ref, principal: entry.principal, qualificationClass: record.qualificationClass,
+            qualificationRecordDigest: digestOf(record, 1 << 20)
+        };
     });
 }
 
@@ -300,7 +319,8 @@ function safeLabel(entry) {
 }
 
 // Inventory projection for a terminal target picker. Excluded identities (RoboTeam, the owning worker, by principal,
-// alias or runtime identity) are omitted; every listed target is unavailable with the first refusal reason. Overflow of
+// alias or runtime identity) are omitted; a listed target is unavailable with the first refusal reason, or available with
+// reason null only on the proof-fixture path. Overflow of
 // 256 targets or 64 KiB refuses the whole inventory (capacity_exceeded); nothing is truncated.
 export function projectExecutionTargets({ entries, trustedIdentities, qualificationStore, sourceState, mode } = {}) {
     return decide(() => {
@@ -308,7 +328,7 @@ export function projectExecutionTargets({ entries, trustedIdentities, qualificat
         const facts = {
             surface: 'terminal', mode, live: trustedIdentities.live, excluded: trustedIdentities.excluded, entries,
             sourceState, qualifications: qualificationStore, request: trustedIdentities.request ?? null,
-            home: trustedIdentities.home ?? null, admittedBinding: null, current: null
+            home: trustedIdentities.home ?? null, admittedBinding: null, current: trustedIdentities.current ?? null
         };
         checkFacts(facts);
         const targets = [];
@@ -317,12 +337,12 @@ export function projectExecutionTargets({ entries, trustedIdentities, qualificat
             let reason;
             try {
                 evaluate(`agent:${entry.ref}`, facts);
-                reason = 'backend_not_activated';
+                reason = null;
             } catch (error) {
                 if (!(error instanceof Decision)) throw error;
                 reason = error.code;
             }
-            targets.push({ ref: entry.ref, label: safeLabel(entry), available: false, reason });
+            targets.push({ ref: entry.ref, label: safeLabel(entry), available: reason === null, reason });
         }
         targets.sort((left, right) => (left.ref < right.ref ? -1 : left.ref > right.ref ? 1 : 0));
         need(targets.length <= INVENTORY_MAX_TARGETS, 'capacity_exceeded');

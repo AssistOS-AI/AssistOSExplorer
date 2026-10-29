@@ -1,5 +1,5 @@
 // SYNTHETIC availability and admission decisions (availability.mjs). All principals, runtime identities and records are
-// synthetic test doubles; generic T1 has no activated target backend.
+// synthetic test doubles; production has no activated target backend, only proof-fixture mode can admit (erratum A10).
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
@@ -137,7 +137,7 @@ function expectCode(selection, value, code, label) {
     assert.deepEqual(value, before, `${label}: facts unchanged`);
 }
 
-test('blank or omitted selection selects the ordinary backend; a fully eligible target is backend_not_activated in T1', () => {
+test('blank or omitted selection selects the ordinary backend; a fully eligible production target is backend_not_activated', () => {
     for (const selection of [undefined, null, '']) {
         assert.deepEqual(requireExecutionTarget(selection, facts()), { ok: true, value: { backend: 'ordinary' } });
         assert.deepEqual(requireExecutionTarget(selection, facts({ surface: 'browser' })), { ok: true, value: { backend: 'ordinary' } });
@@ -146,7 +146,11 @@ test('blank or omitted selection selects the ordinary backend; a fully eligible 
     expectCode(`agent:${TARGET}`, facts(), 'backend_not_activated', 'eligible by principal');
     expectCode(TARGET, facts({ admittedBinding: admittedBinding() }), 'backend_not_activated', 'admitted binding revalidated');
     const fixtureFacts = facts({ mode: 'proof-fixture', qualifications: { records: { [TARGET]: qualification('proof-fixture') }, trustedAcceptances: ['acceptance-record-synthetic-1'], executionsUsed: { [TARGET]: 1 } } });
-    expectCode(TARGET, fixtureFacts, 'backend_not_activated', 'proof-fixture mode');
+    const admitted = requireExecutionTarget(TARGET, fixtureFacts);
+    assert.deepEqual(admitted, { ok: true, value: {
+        backend: 'target', ref: TARGET, principal: `agent:${TARGET}`, qualificationClass: 'proof-fixture',
+        qualificationRecordDigest: targetDigest(qualification('proof-fixture')).value
+    } }, 'proof-fixture mode with a matching fixture record admits (A10)');
     assert.ok(Object.isFrozen(AVAILABILITY_ERROR_CODES));
 });
 
@@ -400,7 +404,20 @@ test('QUA-01..QUA-05 qualification class, scope, trust and fixture limits', () =
     expectCode(TARGET, fixtureFacts((v) => { v.request.nowMs = 1000 + 3600000; }), 'qualification_scope', 'QUA-03 expired at boundary');
     expectCode(TARGET, fixtureFacts((v) => { v.request.nowMs = 999; }), 'qualification_scope', 'QUA-03 not yet valid');
     expectCode(TARGET, fixtureFacts(() => {}, 2), 'capacity_exceeded', 'QUA-03 exhausted count');
-    expectCode(TARGET, fixtureFacts(() => {}, 1), 'backend_not_activated', 'fixture count below the maximum');
+    assert.equal(requireExecutionTarget(TARGET, fixtureFacts(() => {}, 1)).ok, true, 'fixture count below the maximum admits');
+    // A10 activation guards: a stale worker half of the scope, missing current worker facts and a production record never admit.
+    expectCode(TARGET, fixtureFacts((v) => { v.current.worker.generation = sid('worker-gen-old'); }), 'qualification_scope', 'A10 stale worker generation');
+    expectCode(TARGET, fixtureFacts((v) => { v.current.worker.runtimeInstanceId = 'worker-runtime-0'; }), 'qualification_scope', 'A10 other worker runtime');
+    expectCode(TARGET, fixtureFacts((v) => { v.current = null; }), 'qualification_scope', 'A10 no current worker facts');
+    const productionRecordInFixtureMode = facts({ mode: 'proof-fixture' });
+    expectCode(TARGET, productionRecordInFixtureMode, 'qualification_class', 'A10 production record in proof-fixture mode');
+    const fixtureRecordInProduction = facts({ mode: 'production' });
+    fixtureRecordInProduction.qualifications.records[TARGET] = qualification('proof-fixture');
+    fixtureRecordInProduction.qualifications.executionsUsed[TARGET] = 0;
+    expectCode(TARGET, fixtureRecordInProduction, 'qualification_class', 'QUA-01 fully matching fixture record in production mode still refuses');
+    const fixtureInOtherSurface = fixtureFacts(() => {});
+    fixtureInOtherSurface.surface = 'browser';
+    expectCode(TARGET, fixtureInOtherSurface, 'environment_not_terminal', 'A10 admission is terminal-only');
     const relabel = facts();
     relabel.qualifications.records[TARGET].peerTrustInventory[0].trustClass = 'existing-management';
     expectCode(TARGET, relabel, 'peer_trust_unaccepted', 'QUA-04 relabel without prior evidence');
@@ -477,7 +494,12 @@ test('T1-07 projection: every target unavailable, excluded identities omitted, f
     assert.deepEqual(projectExecutionTargets(fixtureRecord).value.targets, [{ ref: TARGET, label: 'Synthetic target', available: false, reason: 'qualification_class' }]);
     const fixtureMode = projection({ mode: 'proof-fixture' });
     fixtureMode.qualificationStore = { ...fixtureMode.qualificationStore, records: { [TARGET]: qualification('proof-fixture') } };
-    assert.equal(projectExecutionTargets(fixtureMode).value.targets[0].available, false, 'proof-fixture mode is not activated either');
+    // Without the trusted request/current facts the projection of a fixture record stays unavailable (never a silent pass).
+    assert.deepEqual(projectExecutionTargets(fixtureMode).value.targets, [{ ref: TARGET, label: 'Synthetic target', available: false, reason: 'qualification_scope' }]);
+    const fixtureAdmitted = projection({ mode: 'proof-fixture' });
+    fixtureAdmitted.qualificationStore = { ...fixtureAdmitted.qualificationStore, records: { [TARGET]: qualification('proof-fixture') } };
+    fixtureAdmitted.trustedIdentities = { ...fixtureAdmitted.trustedIdentities, request: facts().request, current: facts().current };
+    assert.deepEqual(projectExecutionTargets(fixtureAdmitted).value.targets, [{ ref: TARGET, label: 'Synthetic target', available: true, reason: null }]);
 });
 
 test('CAP-01 projection bounds: 256 targets listed, 257 or more than 64 KiB refuse the whole inventory', () => {

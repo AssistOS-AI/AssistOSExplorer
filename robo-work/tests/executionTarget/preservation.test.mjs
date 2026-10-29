@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +17,9 @@ const ROBO_WORK = path.resolve(here, '..', '..');
 const REPOSITORY = path.resolve(ROBO_WORK, '..');
 const MODULE_DIR = path.join(ROBO_WORK, 'server', 'executionTarget');
 const TEST_DIR = here;
+const TEMP_DIR = fs.realpathSync(os.tmpdir());
+// The one operator tool (P6a) that may import the module from outside tests/executionTarget; nothing may import the tool.
+const OPERATOR_TOOL = path.join(ROBO_WORK, 'tests', 'g7', 'tools', 'install-fixture-record.mjs');
 
 test('T1-10 the default runtime adapter is unchanged and refuses everything', () => {
     assert.ok(Object.isFrozen(runtimeUnavailable));
@@ -57,6 +61,8 @@ function sourceFiles(root) {
             // Never traverse managed checkouts, dependency trees or VCS metadata; never follow links.
             if (entry.name === '.ploinky' || entry.name === 'node_modules' || entry.name === '.git') continue;
             const full = path.join(dir, entry.name);
+            // Concurrent test files create and delete temporary stores under TMPDIR (which may lie inside the checkout).
+            if (full === TEMP_DIR) continue;
             if (entry.isSymbolicLink()) continue;
             if (entry.isDirectory()) walk(full);
             else if (entry.isFile() && /\.(mjs|cjs|js|ts|mts|json)$/.test(entry.name)) files.push(full);
@@ -70,20 +76,22 @@ test('T1-10 no file outside tests/executionTarget imports the executionTarget mo
     const offenders = [];
     let scanned = 0;
     for (const file of sourceFiles(REPOSITORY)) {
-        if (file.startsWith(`${MODULE_DIR}${path.sep}`) || file.startsWith(`${TEST_DIR}${path.sep}`)) continue;
+        if (file.startsWith(`${MODULE_DIR}${path.sep}`) || file.startsWith(`${TEST_DIR}${path.sep}`) || file === OPERATOR_TOOL) continue;
         if (fs.statSync(file).size > 4 * 1024 * 1024) continue;
         scanned += 1;
         const text = fs.readFileSync(file, 'utf8');
         if (/executionTarget\//.test(text) && /(import|require)\s*\(?[^;]*executionTarget\//.test(text)) offenders.push(path.relative(REPOSITORY, file));
         if (/server\/executionTarget/.test(text)) offenders.push(path.relative(REPOSITORY, file));
+        if (/install-fixture-record/.test(text)) offenders.push(path.relative(REPOSITORY, file));
     }
     assert.ok(scanned > 100, 'the scan covered the repository');
     assert.deepEqual([...new Set(offenders)], []);
+    assert.ok(fs.statSync(OPERATOR_TOOL).isFile(), 'the single exempt operator tool exists');
 });
 
 test('T1-10 the new modules import only each other and Node built-ins', () => {
     const files = fs.readdirSync(MODULE_DIR).filter((name) => name.endsWith('.mjs'));
-    assert.deepEqual(files.sort(), ['availability.mjs', 'contract.mjs', 'journalModel.mjs', 'limits.mjs', 'receipts.mjs', 'sourceReservations.mjs', 'transportContract.mjs']);
+    assert.deepEqual(files.sort(), ['availability.mjs', 'contract.mjs', 'journalModel.mjs', 'limits.mjs', 'qualificationStore.mjs', 'receipts.mjs', 'sourceReservations.mjs', 'transportContract.mjs']);
     for (const file of files) {
         const text = fs.readFileSync(path.join(MODULE_DIR, file), 'utf8');
         const specifiers = [...text.matchAll(/^import\s[^;]*?from\s+'([^']+)'/gms)].map((match) => match[1]);
