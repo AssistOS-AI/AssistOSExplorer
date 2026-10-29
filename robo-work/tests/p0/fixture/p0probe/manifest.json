@@ -1,0 +1,13 @@
+{
+  "container": "docker.io/assistos/roboteam-agent@sha256:bc7c8956426d8173cae0df1c7c61a7f9390d6043c97af2d6f70b12dba156665c",
+  "containerSecurity": {
+    "nestedPodman": true
+  },
+  "agent": "node /code/server.mjs",
+  "readiness": {
+    "protocol": "tcp"
+  },
+  "volumes": {
+    ".data/p0probe": "/data"
+  }
+}

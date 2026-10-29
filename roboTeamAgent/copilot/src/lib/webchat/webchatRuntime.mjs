@@ -13,6 +13,7 @@ import { executeRuntimeCommand } from '../cli/cliRuntimeCommands.mjs';
 import { handleWebchatControlChunk, isWebchatEscapeControlChunk } from './webchatControl.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
+import { WEBCHAT_RUNTIME_OPEN_EVENT, createRuntimeWebchatCoordinator } from './webchatCoordinator.mjs';
 
 function target(context) {
     return {
@@ -48,7 +49,7 @@ function captureContext(message, workingDir) {
 }
 
 /** Connections select by tab, while each in-flight request captures its delivery page. */
-export function createWebchatDispatcher(runtime, { write = (value) => process.stdout.write(value), afterAnswer = async () => {} } = {}) {
+export function createWebchatDispatcher(runtime, { write = (value) => process.stdout.write(value), afterAnswer = async () => {}, coordinator = null } = {}) {
     const connections = new Map();
     const running = new Set();
     const active = new Map();
@@ -206,6 +207,15 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 return;
             }
             const message = normalizeWebchatMessage(raw);
+            // A Router-signed envelope reaches the worker coordinator first: it is verified
+            // once, and a verified envelope with a grant reattaches that user's in-flight
+            // admissions. The verified `runtime-open` announcement starts no turn, writes no
+            // output and makes no owner claim.
+            if (coordinator && message.invocationToken) {
+                const seen = coordinator.onEnvelope(message);
+                track(seen.done);
+                if (seen.event === WEBCHAT_RUNTIME_OPEN_EVENT) return;
+            }
             if (!message.rawText.trim()) return;
             // Only selection/control commands serialize. Turns acquire their own session lease
             // and must not block another conversation or conceal duplicate-turn contention.
@@ -248,8 +258,11 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
 export async function runWebchatInteractive(runtime) {
     const workspaceFileIndex = createWebchatWorkspaceFileIndex({ workingDir: runtime.workingDir });
     await workspaceFileIndex.start();
+    const coordinator = await createRuntimeWebchatCoordinator({ env: process.env,
+        log: (event, fields) => logDiagnostic(runtime.workingDir, event, fields) });
     const dispatcher = createWebchatDispatcher(runtime, {
         afterAnswer: () => workspaceFileIndex.refresh({ afterCurrent: true }),
+        coordinator,
     });
     emitSessionUpdate(runtime.initialSession, {}, { event: 'current' });
     // Each tab connection reports a failing conversation; startup must not exit on it.
@@ -303,5 +316,6 @@ export async function runWebchatInteractive(runtime) {
         process.removeListener('SIGTERM', stop);
         if (process.stdin.isTTY) process.stdin.setRawMode?.(Boolean(wasRaw));
         workspaceFileIndex.stop();
+        coordinator.close();
     }
 }

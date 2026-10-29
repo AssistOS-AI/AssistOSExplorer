@@ -47,7 +47,7 @@ export const AGENT_ENV = Object.freeze({ PLOINKY_AGENT_RUNTIME_ROOT: path.join(P
 
 // The envelope the Router forwards to the copilot for one WebChat message.
 export function mintWebchatEnvelope({ user = { id: 'owner-1', roles: ['user'] }, tabId = 'ls-tab', pageInstanceId = 'ls-page',
-    envelope = {}, effectiveConfig = { agentName: 'roboTeamAgent' } } = {}) {
+    envelope = {}, effectiveConfig = { agentName: 'roboTeamAgent', runtimeScope: 'principal' } } = {}) {
     const req = { headers: { host: 'localhost' }, socket: {}, user, authMode: 'sso' };
     return serializeWebchatEnvelopeForAgent({ req, effectiveConfig, tabId, pageInstanceId,
         envelope: { text: 'Live session owner claim', attachments: [], references: [], presentation: { visible: true }, ...envelope } });

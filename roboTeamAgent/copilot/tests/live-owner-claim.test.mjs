@@ -52,9 +52,9 @@ test('signed arguments are rebuilt from the raw envelope, not from the normalize
     assert.equal(normalized.sourceTabId, '', 'the normalized tab id is filtered');
     assert.equal(normalized.references[0].type, 'doc', 'normalization trims');
     assert.deepEqual(normalized.signedArgs, { surface: 'webchat', tabId: 'tab with spaces', pageInstanceId: '', text: 'x',
-        attachments: raw.attachments, references: raw.references, presentation: { visible: false } });
+        attachments: raw.attachments, references: raw.references, presentation: { visible: false }, runtimeScope: 'principal' });
     assert.deepEqual(webchatSignedArgs({ __webchatMessage: 1 }), { surface: 'webchat', tabId: '', pageInstanceId: '', text: '',
-        attachments: [], references: [], presentation: { visible: true } });
+        attachments: [], references: [], presentation: { visible: true }, runtimeScope: 'principal' });
 });
 
 test('the claim is sent on arrival, before materialization and preparation, and the turn carries it', async (t) => {
@@ -64,7 +64,7 @@ test('the claim is sent on arrival, before materialization and preparation, and 
     // The claim is the first thing receive() does: before the referenced path
     // is materialized, before the session lookup and long before the turn.
     assert.deepEqual(events[0], ['claim', 'signed.router.token', { surface: 'webchat', tabId: 'tab_1', pageInstanceId: 'page_1',
-        text: 'Build the release notes', attachments: [], references, presentation: { visible: true } }]);
+        text: 'Build the release notes', attachments: [], references, presentation: { visible: true }, runtimeScope: 'principal' }]);
     assert.ok(events.some(([kind]) => kind === 'materialize'), 'the reference was materialized after the claim');
     assert.equal(events.some(([kind]) => kind === 'turn'), false);
     await dispatcher.drain();

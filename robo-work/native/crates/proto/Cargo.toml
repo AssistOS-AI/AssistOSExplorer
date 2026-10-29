@@ -1,0 +1,9 @@
+[package]
+name = "rw-proto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Shared, pure protocol code for the RoboWork keeper: strict bounded JSON, the length-prefixed frame codec, the start-gate protocol, limits, the filtered-view mount and root-lease frames and the keeper's lease model."
+
+[dependencies]

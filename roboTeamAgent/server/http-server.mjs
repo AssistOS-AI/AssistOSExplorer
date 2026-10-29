@@ -23,6 +23,7 @@ import { findProjectRecord, projectForSessionRecord } from './project-storage.mj
 import { matchConversationSkillsPath, readConversationSkills, setConversationSkill } from './conversation-skills-api.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 import { renderAlaTurnLog } from '../copilot/src/lib/webchat/webchatTurnLog.mjs';
+import { ADMISSIONS_PATH, handleWorkerRoutes, isWorkerRoute } from './worker-coordinator/browser-routes.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
@@ -732,6 +733,12 @@ export function createRoboTeamServer(options) {
     const liveSessions = options.liveSessions || null;
     const liveStreamLifetimeMs = Number.isSafeInteger(options.liveSessionsStreamLifetimeMs) && options.liveSessionsStreamLifetimeMs > 0
         ? options.liveSessionsStreamLifetimeMs : LIVE_STREAM_LIFETIME_MS;
+    // Worker coordinator callers ({hop}); without it the /api/worker/* routes answer 503.
+    const workerHop = options.workerCoordinator?.hop || null;
+    const workerRecords = roboflow ? {
+        getSchedule: (id) => { roboflow.schedules.database.initialize(); return roboflow.schedules.getSync(id); },
+        getFlow: (id) => roboflow.store.get(id),
+    } : null;
 
     // The family gate verified this request once; its signed decision is reused.
     const robotView = (req) => ({
@@ -765,11 +772,18 @@ export function createRoboTeamServer(options) {
             // Every other route needs an internal token or a verified, Explorer-entitled user.
             const access = await authorizeWorkspaceRequest(req, url, {
                 internalToken,
-                readBody: () => readRawBody(req, req.method === 'POST' && LIVE_MESSAGES_PATH.test(pathname) ? LIVE_MESSAGE_BODY_LIMIT : BODY_LIMIT),
+                readBody: () => readRawBody(req, req.method === 'POST' && (LIVE_MESSAGES_PATH.test(pathname) || pathname === ADMISSIONS_PATH)
+                    ? LIVE_MESSAGE_BODY_LIMIT : BODY_LIMIT),
                 refusal: pathname.startsWith('/api/roboflow') ? ROBOFLOW_ENTITLEMENT_ERROR : ROBOTEAM_ENTITLEMENT_ERROR,
             });
             if (!access.ok) return sendError(res, access.status, access.error);
             req[ACCESS] = access;
+            // Worker coordinator routes decide on the signed principal and the Router-minted
+            // grant only, and write their own responses.
+            if (isWorkerRoute(pathname)) {
+                return await handleWorkerRoutes({ req, res, pathname, access, rawBody: req[RAW_BODY], hop: workerHop,
+                    records: workerRecords, sendJson });
+            }
             // Live Sessions decide on the signed principal and signed admin
             // decision only, before the unsigned actor is consulted.
             if (isLiveSessionsPath(pathname)) {

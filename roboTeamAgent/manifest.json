@@ -11,7 +11,21 @@
   ],
   "webchat": {
     "auth": "static",
-    "forwardEnvelope": true
+    "forwardEnvelope": true,
+    "runtimeScope": "principal",
+    "delegations": [
+      {
+        "key": "providerAdmission",
+        "targetAgentId": "agent:./robo-work",
+        "tools": [
+          "__coordinator_admission__"
+        ],
+        "scopes": [
+          "execution:owner"
+        ],
+        "ttlSeconds": 30
+      }
+    ]
   },
   "readiness": {
     "protocol": "mcp",
@@ -34,6 +48,23 @@
   "routerAccess": {
     "httpRoutes": [
       {
+        "path": "/base-agent-additional-server/roboTeamAgent/3001/api/worker/*",
+        "access": "authenticated",
+        "delegations": [
+          {
+            "key": "providerAdmission",
+            "targetAgentId": "agent:./robo-work",
+            "tools": [
+              "__coordinator_admission__"
+            ],
+            "scopes": [
+              "execution:owner"
+            ],
+            "ttlSeconds": 30
+          }
+        ]
+      },
+      {
         "path": "/base-agent-additional-server/roboTeamAgent/3001/*",
         "access": "authenticated"
       }
@@ -53,7 +84,8 @@
         "ROBOTEAM_CODEX_VERSION",
         "ROBOTEAM_OPENCODE_VERSION",
         "ROBOTEAM_PI_VERSION",
-        "ROBOTEAM_CLAUDE_VERSION"
+        "ROBOTEAM_CLAUDE_VERSION",
+        "ROBOTEAM_WORKER_COORDINATOR_BASE"
       ]
     }
   },

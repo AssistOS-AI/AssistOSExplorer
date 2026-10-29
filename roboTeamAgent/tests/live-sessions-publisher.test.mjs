@@ -67,7 +67,7 @@ test('the copilot rebuilds exactly the arguments the Router signed, and their cl
     for (const [name, options] of Object.entries(variants)) {
         const serialized = mintWebchatEnvelope(options);
         const payload = JSON.parse(serialized);
-        assert.deepEqual(signedArgsOf(serialized), buildWebchatInvocationArgs({ effectiveConfig: { agentName: 'roboTeamAgent' },
+        assert.deepEqual(signedArgsOf(serialized), buildWebchatInvocationArgs({ effectiveConfig: { agentName: 'roboTeamAgent', runtimeScope: 'principal' },
             tabId: options.tabId ?? 'ls-tab', pageInstanceId: options.pageInstanceId ?? 'ls-page', envelope: payload }), name);
         const owner = publisher.claimOwner(payload.invocation.token, signedArgsOf(serialized));
         const run = publisher.startRun({ kind: 'copilot-turn', title: name, owner });
@@ -77,15 +77,23 @@ test('the copilot rebuilds exactly the arguments the Router signed, and their cl
     }
 });
 
-test('a guest runtime signs runtimeScope, which the envelope does not carry: its runs stay owner unverified', async (t) => {
+// RoboTeam declares principal runtime scope, so the Router signs runtimeScope into every
+// envelope and RoboTeam rebuilds it from its manifest: a principal-minted claim verifies, and an
+// envelope minted as a shared-scope Router would mint it stays owner unverified.
+test('a shared-minted envelope stays owner unverified, and a principal-minted one verifies', async (t) => {
     const { socketPath, registry } = await startService(t);
     const publisher = new LivePublisher({ socketPath });
     t.after(() => publisher.close({ flushMs: 0 }));
-    const serialized = mintWebchatEnvelope({ effectiveConfig: { agentName: 'roboTeamAgent', runtimeScope: 'principal' } });
-    const run = publisher.startRun({ kind: 'copilot-turn', title: 'guest', owner: publisher.claimOwner(JSON.parse(serialized).invocation.token, signedArgsOf(serialized)) });
-    await until(() => registry.list({ principal: 'user:x', canAdmin: true }).length === 1, 'the row');
-    assert.equal(registry.list({ principal: 'user:x', canAdmin: true })[0].ownerState, 'unverified');
-    run.end({ status: 'finished' });
+    const shared = mintWebchatEnvelope({ effectiveConfig: { agentName: 'roboTeamAgent' } });
+    const sharedRun = publisher.startRun({ kind: 'copilot-turn', title: 'shared', owner: publisher.claimOwner(JSON.parse(shared).invocation.token, signedArgsOf(shared)) });
+    const principal = mintWebchatEnvelope({ effectiveConfig: { agentName: 'roboTeamAgent', runtimeScope: 'principal' } });
+    const principalRun = publisher.startRun({ kind: 'copilot-turn', title: 'principal', owner: publisher.claimOwner(JSON.parse(principal).invocation.token, signedArgsOf(principal)) });
+    await until(() => registry.list({ principal: 'user:x', canAdmin: true }).length === 2, 'the rows');
+    const state = (title) => registry.list({ principal: 'user:x', canAdmin: true }).find((row) => row.title === title).ownerState;
+    assert.equal(state('shared'), 'unverified');
+    assert.equal(state('principal'), 'verified');
+    sharedRun.end({ status: 'finished' });
+    principalRun.end({ status: 'finished' });
 });
 
 test('a publisher in another process lists a verified turn and a delegated task, takes owner messages and stops', async (t) => {

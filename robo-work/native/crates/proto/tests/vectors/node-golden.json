@@ -1,0 +1,2738 @@
+{
+ "schema": "robo-work.native-golden/1",
+ "generatedBy": "native/scripts/gen-node-vectors.mjs (read-only import of the frozen Node modules)",
+ "node": "v25.8.0",
+ "commitByte": 67,
+ "viewLimitDefaults": {
+  "descriptorCap": 1024,
+  "maxBindingChainDepth": 128,
+  "maxDescendantScanEntries": 65536,
+  "maxComponentBytes": 255,
+  "maxGrantPathBytes": 1024,
+  "maxGrantPathDepth": 32,
+  "firstGrantRootSlot": 8,
+  "maxViewsPerKeeper": 8,
+  "maxMountFrameBytes": 2048,
+  "maxMountInFlight": 4,
+  "maxGrantIdBytes": 32,
+  "maxMountpointBytes": 512,
+  "fileServerInheritedDescriptors": 5,
+  "rlimitHeadroom": 64,
+  "rootLeaseRenewMs": 1000,
+  "rootLeaseTtlMs": 3000,
+  "rootRevokeGraceMs": 2000,
+  "rootRevokeVerifyMs": 2000
+ },
+ "encodeCases": [
+  {
+   "value": {
+    "id": 1,
+    "op": "unmount_view",
+    "resource": "abcdef0123456789"
+   },
+   "frameHex": "0000003a7b226964223a312c226f70223a22756e6d6f756e745f76696577222c227265736f75726365223a2261626364656630313233343536373839227d"
+  },
+  {
+   "value": {
+    "id": 2,
+    "ok": true,
+    "value": {
+     "state": "live"
+    }
+   },
+   "frameHex": "0000002b7b226964223a322c226f6b223a747275652c2276616c7565223a7b227374617465223a226c697665227d7d"
+  },
+  {
+   "value": {
+    "id": 3,
+    "ok": false,
+    "kind": "refused",
+    "error": "bad_frame"
+   },
+   "frameHex": "000000387b226964223a332c226f6b223a66616c73652c226b696e64223a2272656675736564222c226572726f72223a226261645f6672616d65227d"
+  },
+  {
+   "value": {
+    "text": "quote \" backslash \\ controls \b\f\n\r\t \u0001 \u001f slash / del  e-acute é line-sep   astral 😀"
+   },
+   "frameHex": "000000747b2274657874223a2271756f7465205c22206261636b736c617368205c5c20636f6e74726f6c73205c625c665c6e5c725c74205c7530303031205c753030316620736c617368202f2064656c207f20652d616375746520c3a9206c696e652d73657020e280a82061737472616c20f09f9880227d"
+  },
+  {
+   "value": {
+    "nested": {
+     "a": [
+      1,
+      2,
+      {
+       "b": null
+      }
+     ],
+     "c": true,
+     "d": false
+    },
+    "big": 9007199254740991,
+    "neg": -5
+   },
+   "frameHex": "000000547b226e6573746564223a7b2261223a5b312c322c7b2262223a6e756c6c7d5d2c2263223a747275652c2264223a66616c73657d2c22626967223a393030373139393235343734303939312c226e6567223a2d357d"
+  }
+ ],
+ "decoderCases": [
+  {
+   "name": "two_frames_coalesced",
+   "maxFrameBytes": 64,
+   "deadlineMs": 100,
+   "steps": [
+    {
+     "hex": "000000087b226964223a317d000000087b226964223a327d",
+     "at": 0
+    }
+   ],
+   "events": [
+    {
+     "frame": {
+      "id": 1
+     }
+    },
+    {
+     "frame": {
+      "id": 2
+     }
+    }
+   ]
+  },
+  {
+   "name": "byte_split",
+   "maxFrameBytes": 64,
+   "deadlineMs": 100,
+   "steps": [
+    {
+     "hex": "00",
+     "at": 0
+    },
+    {
+     "hex": "00",
+     "at": 1
+    },
+    {
+     "hex": "00",
+     "at": 2
+    },
+    {
+     "hex": "11",
+     "at": 3
+    },
+    {
+     "hex": "7b",
+     "at": 4
+    },
+    {
+     "hex": "22",
+     "at": 5
+    },
+    {
+     "hex": "69",
+     "at": 6
+    },
+    {
+     "hex": "64",
+     "at": 7
+    },
+    {
+     "hex": "22",
+     "at": 8
+    },
+    {
+     "hex": "3a",
+     "at": 9
+    },
+    {
+     "hex": "31",
+     "at": 10
+    },
+    {
+     "hex": "2c",
+     "at": 11
+    },
+    {
+     "hex": "22",
+     "at": 12
+    },
+    {
+     "hex": "6f",
+     "at": 13
+    },
+    {
+     "hex": "70",
+     "at": 14
+    },
+    {
+     "hex": "22",
+     "at": 15
+    },
+    {
+     "hex": "3a",
+     "at": 16
+    },
+    {
+     "hex": "22",
+     "at": 17
+    },
+    {
+     "hex": "78",
+     "at": 18
+    },
+    {
+     "hex": "22",
+     "at": 19
+    },
+    {
+     "hex": "7d",
+     "at": 20
+    }
+   ],
+   "events": [
+    {
+     "frame": {
+      "id": 1,
+      "op": "x"
+     }
+    }
+   ]
+  },
+  {
+   "name": "oversize",
+   "maxFrameBytes": 8,
+   "deadlineMs": 100,
+   "steps": [
+    {
+     "hex": "00000009",
+     "at": 0
+    },
+    {
+     "hex": "000000087b226964223a317d",
+     "at": 1
+    }
+   ],
+   "events": [
+    {
+     "violation": "oversize_frame"
+    }
+   ]
+  },
+  {
+   "name": "exact_bound",
+   "maxFrameBytes": 8,
+   "deadlineMs": 100,
+   "steps": [
+    {
+     "hex": "000000087b226964223a317d",
+     "at": 0
+    }
+   ],
+   "events": [
+    {
+     "frame": {
+      "id": 1
+     }
+    }
+   ]
+  },
+  {
+   "name": "empty",
+   "maxFrameBytes": 64,
+   "deadlineMs": 100,
+   "steps": [
+    {
+     "hex": "00000000",
+     "at": 0
+    }
+   ],
+   "events": [
+    {
+     "violation": "empty_frame"
+    }
+   ]
+  },
+  {
+   "name": "array_payload",
+   "maxFrameBytes": 64,
+   "deadlineMs": 100,
+   "steps": [
+    {
+     "hex": "000000035b315d",
+     "at": 0
+    }
+   ],
+   "events": [
+    {
+     "violation": "malformed_frame"
+    }
+   ]
+  },
+  {
+   "name": "not_json",
+   "maxFrameBytes": 64,
+   "deadlineMs": 100,
+   "steps": [
+    {
+     "hex": "000000017b",
+     "at": 0
+    }
+   ],
+   "events": [
+    {
+     "violation": "malformed_frame"
+    }
+   ]
+  },
+  {
+   "name": "deadline_from_first_byte",
+   "maxFrameBytes": 64,
+   "deadlineMs": 100,
+   "steps": [
+    {
+     "hex": "00",
+     "at": 10
+    },
+    {
+     "hex": "00",
+     "at": 60
+    },
+    {
+     "hex": "0009",
+     "at": 109
+    },
+    {
+     "poll": 110
+    },
+    {
+     "hex": "7b226964223a317d00",
+     "at": 111
+    }
+   ],
+   "events": [
+    {
+     "violation": "partial_frame_deadline"
+    }
+   ]
+  },
+  {
+   "name": "deadline_reset_after_complete",
+   "maxFrameBytes": 64,
+   "deadlineMs": 100,
+   "steps": [
+    {
+     "hex": "000000087b226964223a317d",
+     "at": 0
+    },
+    {
+     "hex": "00",
+     "at": 500
+    },
+    {
+     "poll": 599
+    },
+    {
+     "hex": "0000087b226964223a327d",
+     "at": 599
+    }
+   ],
+   "events": [
+    {
+     "frame": {
+      "id": 1
+     }
+    },
+    {
+     "frame": {
+      "id": 2
+     }
+    }
+   ]
+  }
+ ],
+ "mountContext": {
+  "scope": "execution",
+  "runtimeRoot": "/run/robo-work",
+  "reservationId": "abcdef0123456789abcdef0123456789",
+  "grantCount": 2
+ },
+ "mountCases": [
+  {
+   "name": "good",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "read_access",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "read",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "slot_9",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 9,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "slot_10",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 10,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "root_slot_out_of_range"
+   }
+  },
+  {
+   "name": "slot_7",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 7,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "root_slot_out_of_range"
+   }
+  },
+  {
+   "name": "source_path",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    },
+    "sourcePath": "/x"
+   },
+   "verdict": {
+    "ok": false,
+    "code": "source_path_not_allowed"
+   }
+  },
+  {
+   "name": "extra_key",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    },
+    "extra": 1
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "missing_key",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "wrong_op",
+   "frame": {
+    "id": 5,
+    "op": "mount",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "id_zero",
+   "frame": {
+    "id": 0,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "id_float",
+   "frame": {
+    "id": 1.5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "id_huge",
+   "frame": {
+    "id": 1000000001,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "grant_upper",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "App",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_grant_id"
+   }
+  },
+  {
+   "name": "grant_dash_first",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "-app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_grant_id"
+   }
+  },
+  {
+   "name": "grant_long",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_grant_id"
+   }
+  },
+  {
+   "name": "identity_number",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": 2049,
+     "ino": "1"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_root_identity"
+   }
+  },
+  {
+   "name": "identity_extra",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "1",
+     "ino": "1",
+     "gen": "1"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_root_identity"
+   }
+  },
+  {
+   "name": "identity_21_digits",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "1",
+     "ino": "111111111111111111111"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_root_identity"
+   }
+  },
+  {
+   "name": "access_rw",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "rw",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_access"
+   }
+  },
+  {
+   "name": "shared",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "shared",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "propagation_not_private"
+   }
+  },
+  {
+   "name": "allow_other_false",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": false,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "allow_other_required"
+   }
+  },
+  {
+   "name": "allow_other_string",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": "true",
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "allow_other_required"
+   }
+  },
+  {
+   "name": "other_mountpoint",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/other",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "mountpoint_not_locator"
+   }
+  },
+  {
+   "name": "mountpoint_number",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": 7,
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "mountpoint_not_locator"
+   }
+  },
+  {
+   "name": "cap_zero",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 0,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "descriptor_cap_invalid"
+   }
+  },
+  {
+   "name": "cap_too_close",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1092,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "descriptor_cap_invalid"
+   }
+  },
+  {
+   "name": "cap_just_fits",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1093,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "lease_epoch_2",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 2,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_root_lease"
+   }
+  },
+  {
+   "name": "lease_ttl_0",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 0
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_root_lease"
+   }
+  },
+  {
+   "name": "lease_ttl_over",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3001
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_root_lease"
+   }
+  },
+  {
+   "name": "lease_extra",
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000,
+     "x": 1
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_root_lease"
+   }
+  },
+  {
+   "name": "not_object",
+   "frame": [
+    1,
+    2
+   ],
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  }
+ ],
+ "badContexts": [
+  {
+   "name": "gui_scope",
+   "context": {
+    "scope": "gui",
+    "runtimeRoot": "/run/robo-work",
+    "reservationId": "abcdef0123456789abcdef0123456789",
+    "grantCount": 2
+   },
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/gui/abcdef0123456789abcdef0123456789/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "zero_grants",
+   "context": {
+    "scope": "execution",
+    "runtimeRoot": "/run/robo-work",
+    "reservationId": "abcdef0123456789abcdef0123456789",
+    "grantCount": 0
+   },
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "root_slot_out_of_range"
+   }
+  },
+  {
+   "name": "runtime_root_trailing_slash",
+   "context": {
+    "scope": "execution",
+    "runtimeRoot": "/run/robo-work/",
+    "reservationId": "abcdef0123456789abcdef0123456789",
+    "grantCount": 2
+   },
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_context"
+   }
+  },
+  {
+   "name": "reservation_short",
+   "context": {
+    "scope": "execution",
+    "runtimeRoot": "/run/robo-work",
+    "reservationId": "abc",
+    "grantCount": 2
+   },
+   "frame": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_context"
+   }
+  }
+ ],
+ "unmountCases": [
+  {
+   "frame": {
+    "id": 1,
+    "op": "unmount_view",
+    "resource": "abcdef0123456789"
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "frame": {
+    "id": 1,
+    "op": "unmount_view",
+    "resource": "ABCDEF0123456789"
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "frame": {
+    "id": 1,
+    "op": "unmount_view",
+    "resource": "short"
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "frame": {
+    "id": 1,
+    "op": "unmount_view",
+    "resource": "abcdef0123456789",
+    "x": 1
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "frame": {
+    "id": 0,
+    "op": "unmount_view",
+    "resource": "abcdef0123456789"
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  }
+ ],
+ "mountSetCases": [
+  {
+   "name": "distinct",
+   "requests": [
+    {
+     "id": 100,
+     "op": "mount_view",
+     "grantId": "g0",
+     "rootSlot": 8,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g0",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 101,
+     "op": "mount_view",
+     "grantId": "g1",
+     "rootSlot": 9,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g1",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    }
+   ],
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "duplicate_id",
+   "requests": [
+    {
+     "id": 100,
+     "op": "mount_view",
+     "grantId": "g0",
+     "rootSlot": 8,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g0",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 100,
+     "op": "mount_view",
+     "grantId": "g1",
+     "rootSlot": 9,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g1",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    }
+   ],
+   "verdict": {
+    "ok": false,
+    "code": "duplicate_id"
+   }
+  },
+  {
+   "name": "duplicate_grant",
+   "requests": [
+    {
+     "id": 100,
+     "op": "mount_view",
+     "grantId": "g0",
+     "rootSlot": 8,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g0",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 101,
+     "op": "mount_view",
+     "grantId": "g0",
+     "rootSlot": 9,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g5",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    }
+   ],
+   "verdict": {
+    "ok": false,
+    "code": "duplicate_grant_id"
+   }
+  },
+  {
+   "name": "duplicate_slot",
+   "requests": [
+    {
+     "id": 100,
+     "op": "mount_view",
+     "grantId": "g0",
+     "rootSlot": 8,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g0",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 101,
+     "op": "mount_view",
+     "grantId": "g1",
+     "rootSlot": 8,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g1",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    }
+   ],
+   "verdict": {
+    "ok": false,
+    "code": "duplicate_root_slot"
+   }
+  },
+  {
+   "name": "duplicate_mountpoint",
+   "requests": [
+    {
+     "id": 100,
+     "op": "mount_view",
+     "grantId": "g0",
+     "rootSlot": 8,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g0",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 101,
+     "op": "mount_view",
+     "grantId": "g1",
+     "rootSlot": 9,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g0",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    }
+   ],
+   "verdict": {
+    "ok": false,
+    "code": "duplicate_mountpoint"
+   }
+  },
+  {
+   "name": "too_many",
+   "requests": [
+    {
+     "id": 100,
+     "op": "mount_view",
+     "grantId": "g0",
+     "rootSlot": 8,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g0",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 101,
+     "op": "mount_view",
+     "grantId": "g1",
+     "rootSlot": 9,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g1",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 102,
+     "op": "mount_view",
+     "grantId": "g2",
+     "rootSlot": 10,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g2",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 103,
+     "op": "mount_view",
+     "grantId": "g3",
+     "rootSlot": 11,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g3",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 104,
+     "op": "mount_view",
+     "grantId": "g4",
+     "rootSlot": 12,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g4",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 105,
+     "op": "mount_view",
+     "grantId": "g5",
+     "rootSlot": 13,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g5",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 106,
+     "op": "mount_view",
+     "grantId": "g6",
+     "rootSlot": 14,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g6",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 107,
+     "op": "mount_view",
+     "grantId": "g7",
+     "rootSlot": 15,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g7",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    },
+    {
+     "id": 108,
+     "op": "mount_view",
+     "grantId": "g8",
+     "rootSlot": 16,
+     "expectedRootIdentity": {
+      "dev": "2049",
+      "ino": "1234567"
+     },
+     "access": "write",
+     "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/g8",
+     "propagation": "private",
+     "allowOther": true,
+     "descriptorCap": 1024,
+     "rlimitNofile": 1100,
+     "rootLease": {
+      "epoch": 1,
+      "ttlMs": 3000
+     }
+    }
+   ],
+   "verdict": {
+    "ok": false,
+    "code": "bad_mount_set"
+   }
+  }
+ ],
+ "leaseCases": [
+  {
+   "name": "renew",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "renew",
+    "ttlMs": 3000
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "renew_ttl_max",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "renew",
+    "ttlMs": 3000
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "renew_ttl_over",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "renew",
+    "ttlMs": 3001
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_ttl"
+   }
+  },
+  {
+   "name": "renew_ttl_zero",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "renew",
+    "ttlMs": 0
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_ttl"
+   }
+  },
+  {
+   "name": "renew_ttl_float",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "renew",
+    "ttlMs": 1.5
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "renew_epoch_1",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 1,
+    "verdict": "renew",
+    "ttlMs": 3000
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "renew_epoch_unsafe",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 9007199254740992,
+    "verdict": "renew",
+    "ttlMs": 3000
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "renew_extra",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "renew",
+    "ttlMs": 3000,
+    "reason": "x"
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "renew_source",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "renew",
+    "ttlMs": 3000,
+    "path": "/x"
+   },
+   "verdict": {
+    "ok": false,
+    "code": "source_path_not_allowed"
+   }
+  },
+  {
+   "name": "renew_bad_grant",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "A",
+    "epoch": 2,
+    "verdict": "renew",
+    "ttlMs": 3000
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "revoke",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "revoke",
+    "reason": "root_unbound"
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "revoke_numeric_reason",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "revoke",
+    "reason": 7
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "revoke_bad_reason",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "revoke",
+    "reason": "Root"
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "revoke_with_ttl",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "revoke",
+    "reason": "root_unbound",
+    "ttlMs": 3
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "bad_verdict",
+   "frame": {
+    "id": 3,
+    "op": "view_root_lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "extend",
+    "ttlMs": 3000
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  },
+  {
+   "name": "bad_op",
+   "frame": {
+    "id": 3,
+    "op": "lease",
+    "grantId": "app",
+    "epoch": 2,
+    "verdict": "renew",
+    "ttlMs": 3000
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_frame"
+   }
+  }
+ ],
+ "sampleReplies": [
+  {
+   "name": "mount_ok",
+   "request": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "reply": {
+    "id": 5,
+    "ok": true,
+    "value": {
+     "resource": "r0123456789abcdef",
+     "mount": {
+      "mountId": 812,
+      "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+      "mountNamespaceInode": "4026532001"
+     },
+     "fileServer": {
+      "pid": 4242,
+      "startTime": "123456",
+      "pidNamespaceInode": "4026531836"
+     }
+    }
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "mount_refused",
+   "request": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "reply": {
+    "id": 5,
+    "ok": false,
+    "kind": "refused",
+    "error": "root_identity_mismatch"
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "name": "mount_bad_mountpoint",
+   "request": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "reply": {
+    "id": 5,
+    "ok": true,
+    "value": {
+     "resource": "r0123456789abcdef",
+     "mount": {
+      "mountId": 812,
+      "mountpoint": "/x",
+      "mountNamespaceInode": "1"
+     },
+     "fileServer": {
+      "pid": 1,
+      "startTime": "1",
+      "pidNamespaceInode": "1"
+     }
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_mount_tuple"
+   }
+  },
+  {
+   "name": "mount_error_object",
+   "request": {
+    "id": 5,
+    "op": "mount_view",
+    "grantId": "app",
+    "rootSlot": 8,
+    "expectedRootIdentity": {
+     "dev": "2049",
+     "ino": "1234567"
+    },
+    "access": "write",
+    "mountpoint": "/run/robo-work/x/abcdef0123456789abcdef0123456789/views/app",
+    "propagation": "private",
+    "allowOther": true,
+    "descriptorCap": 1024,
+    "rlimitNofile": 1100,
+    "rootLease": {
+     "epoch": 1,
+     "ttlMs": 3000
+    }
+   },
+   "reply": {
+    "id": 5,
+    "ok": false,
+    "kind": "refused",
+    "error": {
+     "code": "x",
+     "message": "y"
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_reply"
+   }
+  }
+ ],
+ "leaseReplies": [
+  {
+   "reply": {
+    "id": 3,
+    "ok": true,
+    "value": {
+     "state": "live"
+    }
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "reply": {
+    "id": 3,
+    "ok": true,
+    "value": {
+     "state": "dead"
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_reply"
+   }
+  },
+  {
+   "reply": {
+    "id": 3,
+    "ok": false,
+    "kind": "refused",
+    "error": "stale_epoch"
+   },
+   "verdict": {
+    "ok": true
+   }
+  },
+  {
+   "reply": {
+    "id": 4,
+    "ok": true,
+    "value": {
+     "state": "live"
+    }
+   },
+   "verdict": {
+    "ok": false,
+    "code": "bad_reply"
+   }
+  }
+ ],
+ "leaseTimelines": {
+  "expiry": [
+   {
+    "at": 2999,
+    "poll": true,
+    "result": {
+     "state": "live",
+     "actions": []
+    },
+    "inspect": {
+     "state": "live",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": null
+    }
+   },
+   {
+    "at": 3000,
+    "poll": true,
+    "result": {
+     "state": "revoking",
+     "actions": [
+      "signal_revoke"
+     ]
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": "lease_expired"
+    }
+   },
+   {
+    "at": 4999,
+    "poll": true,
+    "result": {
+     "state": "revoking",
+     "actions": []
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": "lease_expired"
+    }
+   },
+   {
+    "at": 5000,
+    "poll": true,
+    "result": {
+     "state": "killed",
+     "actions": [
+      "kill"
+     ]
+    },
+    "inspect": {
+     "state": "killed",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": "lease_expired"
+    }
+   },
+   {
+    "at": 6000,
+    "poll": true,
+    "result": {
+     "state": "killed",
+     "actions": []
+    },
+    "inspect": {
+     "state": "killed",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": "lease_expired"
+    }
+   }
+  ],
+  "renewals": [
+   {
+    "at": 1000,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "app",
+     "epoch": 2,
+     "verdict": "renew",
+     "ttlMs": 3000
+    },
+    "result": {
+     "accepted": true,
+     "code": "ok"
+    },
+    "inspect": {
+     "state": "live",
+     "epoch": 2,
+     "validUntil": 4000,
+     "reason": null
+    }
+   },
+   {
+    "at": 1500,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "app",
+     "epoch": 2,
+     "verdict": "renew",
+     "ttlMs": 3000
+    },
+    "result": {
+     "accepted": false,
+     "code": "stale_epoch"
+    },
+    "inspect": {
+     "state": "live",
+     "epoch": 2,
+     "validUntil": 4000,
+     "reason": null
+    }
+   },
+   {
+    "at": 3999,
+    "poll": true,
+    "result": {
+     "state": "live",
+     "actions": []
+    },
+    "inspect": {
+     "state": "live",
+     "epoch": 2,
+     "validUntil": 4000,
+     "reason": null
+    }
+   },
+   {
+    "at": 4000,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "app",
+     "epoch": 3,
+     "verdict": "renew",
+     "ttlMs": 3000
+    },
+    "result": {
+     "accepted": false,
+     "code": "revoked"
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 2,
+     "validUntil": 4000,
+     "reason": "lease_expired"
+    }
+   },
+   {
+    "at": 4001,
+    "poll": true,
+    "result": {
+     "state": "revoking",
+     "actions": [
+      "signal_revoke"
+     ]
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 2,
+     "validUntil": 4000,
+     "reason": "lease_expired"
+    }
+   }
+  ],
+  "revoke_any_epoch": [
+   {
+    "at": 10,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "app",
+     "epoch": 7,
+     "verdict": "renew",
+     "ttlMs": 3000
+    },
+    "result": {
+     "accepted": true,
+     "code": "ok"
+    },
+    "inspect": {
+     "state": "live",
+     "epoch": 7,
+     "validUntil": 3010,
+     "reason": null
+    }
+   },
+   {
+    "at": 20,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "app",
+     "epoch": 2,
+     "verdict": "revoke",
+     "reason": "root_unbound"
+    },
+    "result": {
+     "accepted": true,
+     "code": "ok"
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 7,
+     "validUntil": 3010,
+     "reason": "root_unbound"
+    }
+   },
+   {
+    "at": 30,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "app",
+     "epoch": 8,
+     "verdict": "renew",
+     "ttlMs": 3000
+    },
+    "result": {
+     "accepted": false,
+     "code": "revoked"
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 7,
+     "validUntil": 3010,
+     "reason": "root_unbound"
+    }
+   },
+   {
+    "at": 30,
+    "poll": true,
+    "result": {
+     "state": "revoking",
+     "actions": [
+      "signal_revoke"
+     ]
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 7,
+     "validUntil": 3010,
+     "reason": "root_unbound"
+    }
+   },
+   {
+    "at": 2029,
+    "poll": true,
+    "result": {
+     "state": "revoking",
+     "actions": []
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 7,
+     "validUntil": 3010,
+     "reason": "root_unbound"
+    }
+   },
+   {
+    "at": 2030,
+    "poll": true,
+    "result": {
+     "state": "killed",
+     "actions": [
+      "kill"
+     ]
+    },
+    "inspect": {
+     "state": "killed",
+     "epoch": 7,
+     "validUntil": 3010,
+     "reason": "root_unbound"
+    }
+   }
+  ],
+  "exit_first": [
+   {
+    "at": 0,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "app",
+     "epoch": 2,
+     "verdict": "revoke",
+     "reason": "root_unbound"
+    },
+    "result": {
+     "accepted": true,
+     "code": "ok"
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 2,
+     "validUntil": 3000,
+     "reason": "root_unbound"
+    }
+   },
+   {
+    "at": 0,
+    "poll": true,
+    "result": {
+     "state": "revoking",
+     "actions": [
+      "signal_revoke"
+     ]
+    },
+    "inspect": {
+     "state": "revoking",
+     "epoch": 2,
+     "validUntil": 3000,
+     "reason": "root_unbound"
+    }
+   },
+   {
+    "at": 1,
+    "serverExited": true,
+    "inspect": {
+     "state": "killed",
+     "epoch": 2,
+     "validUntil": 3000,
+     "reason": "root_unbound"
+    }
+   },
+   {
+    "at": 9000,
+    "poll": true,
+    "result": {
+     "state": "killed",
+     "actions": []
+    },
+    "inspect": {
+     "state": "killed",
+     "epoch": 2,
+     "validUntil": 3000,
+     "reason": "root_unbound"
+    }
+   }
+  ],
+  "bad_frames": [
+   {
+    "at": 1,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "app",
+     "epoch": 2,
+     "verdict": "renew",
+     "ttlMs": 3001
+    },
+    "result": {
+     "accepted": false,
+     "code": "bad_ttl"
+    },
+    "inspect": {
+     "state": "live",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": null
+    }
+   },
+   {
+    "at": 2,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "other",
+     "epoch": 2,
+     "verdict": "renew",
+     "ttlMs": 3000
+    },
+    "result": {
+     "accepted": false,
+     "code": "wrong_grant"
+    },
+    "inspect": {
+     "state": "live",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": null
+    }
+   },
+   {
+    "at": 3,
+    "apply": {
+     "id": 3,
+     "op": "view_root_lease",
+     "grantId": "app",
+     "epoch": 1,
+     "verdict": "renew",
+     "ttlMs": 3000
+    },
+    "result": {
+     "accepted": false,
+     "code": "bad_frame"
+    },
+    "inspect": {
+     "state": "live",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": null
+    }
+   },
+   {
+    "at": 4,
+    "apply": {
+     "op": "view_root_lease"
+    },
+    "result": {
+     "accepted": false,
+     "code": "bad_frame"
+    },
+    "inspect": {
+     "state": "live",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": null
+    }
+   }
+  ],
+  "exited_live": [
+   {
+    "at": 5,
+    "serverExited": true,
+    "inspect": {
+     "state": "killed",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": "server_exited"
+    }
+   },
+   {
+    "at": 6,
+    "poll": true,
+    "result": {
+     "state": "killed",
+     "actions": []
+    },
+    "inspect": {
+     "state": "killed",
+     "epoch": 1,
+     "validUntil": 3000,
+     "reason": "server_exited"
+    }
+   }
+  ]
+ }
+}

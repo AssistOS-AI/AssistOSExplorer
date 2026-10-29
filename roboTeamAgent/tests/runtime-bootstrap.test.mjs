@@ -209,9 +209,11 @@ test('manifest declares the required report repository alongside ALA', async () 
 test('manifest selects runtime-only GUI images and the persistent tool cache', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
     const constants = await import('../server/constants.mjs');
-    // The manifest declares only the optional exact coding-agent version pins; proxy secrets live in proxyAgent.
+    // The manifest declares only the optional exact coding-agent version pins and the worker
+    // coordinator selector base; proxy secrets live in proxyAgent.
     assert.deepEqual(manifest.profiles.default.env, [
         'ROBOTEAM_CODEX_VERSION', 'ROBOTEAM_OPENCODE_VERSION', 'ROBOTEAM_PI_VERSION', 'ROBOTEAM_CLAUDE_VERSION',
+        'ROBOTEAM_WORKER_COORDINATOR_BASE',
     ]);
 
     assert.equal(constants.DESKTOP_IMAGE, 'docker.io/assistos/roboteam-desktop:runtime');

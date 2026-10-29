@@ -1,0 +1,13 @@
+{
+  "container": "@IMAGE@",
+  "containerSecurity": {
+    "nestedPodman": true
+  },
+  "agent": "node /code/server.mjs",
+  "readiness": {
+    "protocol": "tcp"
+  },
+  "volumes": {
+    ".data/g1probe": "/data"
+  }
+}

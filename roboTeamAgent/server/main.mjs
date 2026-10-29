@@ -10,6 +10,7 @@ import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
 import { LiveSessionsRegistry } from './live-sessions/registry.mjs';
 import { startLiveSessionsIpc } from './live-sessions/ipc-server.mjs';
 import { RuntimeLiveSource, composeTaskObservers } from './live-sessions/runtime-source.mjs';
+import { createWorkerCoordinatorHop } from './worker-coordinator/hop.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
@@ -71,6 +72,8 @@ const server = createRoboTeamServer({
     publicBasePath,
     routeKey: process.env.ROBOTEAM_ROUTE_KEY || 'roboTeamAgent',
     liveSessions,
+    // Fails closed per call until the coordinator base and private identity are configured.
+    workerCoordinator: { hop: createWorkerCoordinatorHop({ env: process.env }) },
 });
 
 // Same-container publishers reach the registry over the private IPC socket.

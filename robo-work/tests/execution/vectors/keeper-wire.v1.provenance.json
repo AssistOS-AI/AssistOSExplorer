@@ -1,0 +1,6 @@
+{
+  "generatedBy": "robo-work/tests/execution/vectors/generate-keeper-wire-vectors.mjs",
+  "node": "v25.8.0",
+  "platform": "darwin-arm64",
+  "note": "Not compared: keeper-wire.v1.json alone is byte-checked."
+}

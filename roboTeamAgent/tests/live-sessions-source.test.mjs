@@ -23,7 +23,11 @@ test('the source declaration is exactly the Explorer contract under the RoboTeam
     assert.deepEqual(config, DECLARATION);
     // The base is the RoboTeam service's public route and its Live Sessions API.
     const manifest = JSON.parse(await fs.readFile(path.join(AGENT_ROOT, 'manifest.json'), 'utf8'));
-    assert.deepEqual(manifest.routerAccess.httpRoutes, [{ path: '/base-agent-additional-server/roboTeamAgent/3001/*', access: 'authenticated' }]);
+    // The narrower worker-coordinator route precedes it and is the only one that mints a grant.
+    assert.deepEqual(manifest.routerAccess.httpRoutes.map(({ path: route, access }) => ({ path: route, access })), [
+        { path: '/base-agent-additional-server/roboTeamAgent/3001/api/worker/*', access: 'authenticated' },
+        { path: '/base-agent-additional-server/roboTeamAgent/3001/*', access: 'authenticated' }]);
+    assert.equal(Object.hasOwn(manifest.routerAccess.httpRoutes[1], 'delegations'), false);
     assert.equal(config.liveSessions.base, `${PUBLIC_BASE_PATH}api/live-sessions`);
     assert.equal(config.liveSessions.base, SOURCE_BASE, 'the conformance tests replay this exact base');
 });

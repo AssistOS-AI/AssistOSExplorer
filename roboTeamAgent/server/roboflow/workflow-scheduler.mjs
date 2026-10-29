@@ -80,7 +80,7 @@ export class WorkflowScheduler {
             if (this.closed) throw new Error('Cron job scheduler stopped before launch');
             return await this.startFlow({ workflowTypeId: job.workflowTypeId, objective: job.objective, folder: job.folder, executionType: job.executionType,
                 createdBy, ownerPrincipal }, {
-                scheduleId: job.id, scheduledAt: job.pendingLaunch.scheduledAt,
+                scheduleId: job.id, scheduledAt: job.pendingLaunch.scheduledAt, manual, scheduleBindingRevision: job.bindingRevision,
                 onCreated: flow => {
                     const current = this.schedules.getSync(job.id);
                     if (this.closed || !current || (!manual && !current.enabled) || current.pendingLaunch?.token !== job.pendingLaunch.token) throw new Error('Cron job changed before launch');

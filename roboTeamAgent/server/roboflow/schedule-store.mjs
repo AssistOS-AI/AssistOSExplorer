@@ -45,7 +45,10 @@ export class ScheduleStore {
             if (graph.kind === 'default' ? !['terminal', 'browser', 'desktop'].includes(value.executionType) : input.executionType !== undefined) throw invalid('Execution mode is required only for Standard development');
             const timestamp = this.now(), now = new Date(timestamp).toISOString(), enabled = value.enabled ?? true;
             const configChanged = !current || current.enabled !== enabled || JSON.stringify(current.timing) !== JSON.stringify(timing);
-            const record = { ...current, id: id || `cron_${crypto.randomBytes(12).toString('hex')}`, revision: (current?.revision || 0) + 1,
+            const revision = (current?.revision || 0) + 1;
+            // bindingRevision names the worker binding of what runs (cron_<id>.r<n>): every save
+            // sets it to the new revision; run-now bumps only `revision` and never changes it.
+            const record = { ...current, id: id || `cron_${crypto.randomBytes(12).toString('hex')}`, revision, bindingRevision: revision,
                 objective, folder, workflowTypeId: graph.id, ...(graph.kind === 'default' ? { executionType: value.executionType } : {}), timing, enabled,
                 createdBy: current?.createdBy || createdBy, updatedBy: createdBy, ownerPrincipal: ownerPrincipal || null,
                 createdAt: current?.createdAt || now, updatedAt: now,

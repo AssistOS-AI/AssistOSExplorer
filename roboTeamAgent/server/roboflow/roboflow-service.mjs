@@ -197,7 +197,9 @@ export class RoboFlowService {
         const flow = await this.scheduler.runNow(id, revision, createdBy, { ownerPrincipal: ownerPrincipalOf(ownerPrincipal) });
         return { flow, schedule: (await this.listSchedules()).find(job => job.id === id) || null };
     }
-    async startFlow(input, { onCreated, scheduleId, scheduledAt } = {}) {
+    // Scheduled flows record how they were launched and the schedule's binding revision
+    // (launch metadata only; the local launch itself is unchanged).
+    async startFlow(input, { onCreated, scheduleId, scheduledAt, manual = false, scheduleBindingRevision } = {}) {
         const graph = await this.registry.get(input.workflowTypeId);
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
         assertRunnable(graph);
@@ -211,7 +213,8 @@ export class RoboFlowService {
         try {
             flow = await this.store.createFromWorkflow(this.registry, graph.id, { folder, objective, createdBy: input.createdBy || '',
                 ownerPrincipal: ownerPrincipalOf(input.ownerPrincipal),
-                ...(scheduleId ? { scheduleId, scheduledAt } : {}),
+                ...(scheduleId ? { scheduleId, scheduledAt, scheduledLaunch: manual ? 'manual' : 'cron',
+                    ...(Number.isSafeInteger(scheduleBindingRevision) ? { scheduleBindingRevision } : {}) } : {}),
                 ...(graph.kind === 'default' ? { executionType: input.executionType } : {}) }, onCreated);
         } catch (error) {
             if (allocated) await this.runFolders.discard(folder);
