@@ -1,7 +1,8 @@
-//! `KeeperOs` on Linux: the filtered-view mount and the confined file-server spawn (plan section 5.4).
+//! `KeeperOs` on Linux: the filtered-view mount and the confined file-server spawn (plan section 5.4), and the
+//! process-bearing endpoint/process-tree construction delegated to `linux::launcher` (first-G1 plan, amendments A1/A2).
 //!
-//! Compiled and type-checked for x86_64-unknown-linux-musl; NOT executed in this pass. Every property below is a G1/G6
-//! runtime obligation.
+//! Compiled for x86_64-unknown-linux-musl. Every runtime property below is a G1/G6 obligation; the evidence of record
+//! for this candidate names exactly which ones were exercised on Linux.
 //!
 //! mount_view, in order:
 //!   1. The inherited grant-root slot must be a directory whose (st_dev, st_ino) equals `expectedRootIdentity`
@@ -33,6 +34,9 @@ use crate::args::FILE_SERVER_PATH;
 use crate::args::CgroupSubtree;
 use crate::cgroup_subtree::{self, ControlFile, Facts};
 use crate::core::{Created, EndStep, KeeperOs, OsError, Signal};
+use crate::launch::{CommitLatch, CommitState, Completion, OperationId, Progress};
+use crate::linux::launcher::{ChannelCustody, CreateContext, Launcher};
+use crate::linux::policy::HeldPolicy;
 use crate::procfs::{find_fuse_mount, mounts_at_or_below, parse_mountinfo, start_time_from_stat};
 use crate::root_identity::{held_path, path_identity, verify_root};
 
@@ -48,8 +52,9 @@ pub struct LinuxOs {
     /// Held network namespaces by handle (the keeper is their holder until release_egress, R3-5).
     netns: HashMap<String, OwnedFd>,
     cgroup_subtree: Option<HeldCgroupSubtree>,
-    /// Future construction consumes this once. main does not supply it until image-policy integration is approved.
-    _startup_custody: Option<crate::domain_policy::StartupCustody>,
+    /// Endpoint, orchestration and workload construction: pidfds, private stage channels, observation and custody.
+    launcher: Launcher,
+    orchestration_root: Option<String>,
 }
 
 /// Startup custody, retained until exit. R3 has no consumer beyond re-verification; it creates no cgroups.
@@ -191,7 +196,8 @@ impl LinuxOs {
             runtime_root: runtime_root.to_string(), file_server: cstr(FILE_SERVER_PATH)?,
             // SAFETY: getpid has no preconditions.
             keeper_pid: unsafe { libc::getpid() },
-            root, root_identity: (stat.st_dev as u64, stat.st_ino as u64), runtime_dir: None, netns: HashMap::new(), cgroup_subtree: None, _startup_custody: None,
+            root, root_identity: (stat.st_dev as u64, stat.st_ino as u64), runtime_dir: None, netns: HashMap::new(), cgroup_subtree: None,
+            launcher: Launcher::new(rw_proto::keeper_limits::KeeperLimits::default()), orchestration_root: None,
         })
     }
 
@@ -200,8 +206,26 @@ impl LinuxOs {
         self
     }
 
-    pub fn with_startup_custody(mut self, custody: crate::domain_policy::StartupCustody) -> Self {
-        self._startup_custody = Some(custody);
+    /// Startup custody is consumed once (first-G1 plan "Startup custody"): HOME and the ALA channels move into the
+    /// launcher, which hands each to exactly one domain and closes its own copy. The embedded image policy (if this
+    /// build has one) arrives already checked. `limits` are the keeper's resolved channel limits (launch deadlines).
+    pub fn with_startup_custody(mut self, custody: crate::domain_policy::StartupCustody, policy: Option<HeldPolicy>) -> Self {
+        let crate::domain_policy::StartupCustody { runtime: _, home, orchestration, endpoint, control, provider, limits } = custody;
+        let mut launcher = Launcher::new(limits);
+        launcher.policy = policy;
+        launcher.home = home;
+        let (provider_endpoint, provider_orchestration) = match provider {
+            Some([endpoint_end, orchestration_end]) => (Some(endpoint_end), Some(orchestration_end)),
+            None => (None, None),
+        };
+        launcher.channels = ChannelCustody { endpoint, control, provider_endpoint, provider_orchestration };
+        drop(orchestration);
+        self.launcher = launcher;
+        self
+    }
+
+    pub fn with_orchestration_root(mut self, root: Option<String>) -> Self {
+        self.orchestration_root = root;
         self
     }
 
@@ -662,9 +686,9 @@ fn remove_entry(parent: RawFd, name: &CString, root_dev: u64, depth: usize) -> i
 }
 
 impl LinuxOs {
-    /// A new network namespace held by descriptor: a helper child unshares CLONE_NEWNET and waits; the keeper opens
-    /// `/proc/<child>/ns/net`, then releases and reaps the helper. The namespace then has the keeper as its only holder.
-    /// Loopback is left down here; bringing `lo` up is a G1 item.
+    /// A new network namespace held by descriptor: a helper child unshares CLONE_NEWNET, brings `lo` up and waits; the
+    /// keeper opens `/proc/<child>/ns/net`, then releases and reaps the helper. The namespace then has the keeper as its
+    /// only holder.
     fn create_netns(&mut self) -> Result<(OwnedFd, u64), OsError> {
         let failure = (ErrorKind::Failure, "setup_failed");
         let mut ready = [0 as RawFd; 2];
@@ -681,7 +705,13 @@ impl LinuxOs {
         if pid == 0 {
             // SAFETY: child: syscalls only.
             unsafe {
-                let ok: u8 = if rw_confine::linux::kill_on_parent_death(self.keeper_pid).is_ok() && libc::unshare(libc::CLONE_NEWNET) == 0 { 1 } else { 0 };
+                // The helper must not keep the parent's pipe ends: with its own copy of the release writer the parent's
+                // close never delivers EOF, and the keeper deadlocks in waitpid (observed on Linux with the r3 code).
+                libc::close(ready[0]);
+                libc::close(release[1]);
+                // first-G1 plan "Loopback": lo comes up while the namespace is constructed; no veth, route or forwarding.
+                let ok: u8 = if rw_confine::linux::kill_on_parent_death(self.keeper_pid).is_ok() && libc::unshare(libc::CLONE_NEWNET) == 0
+                    && crate::linux::sys::loopback_up() { 1 } else { 0 };
                 libc::write(ready[1], &ok as *const u8 as *const libc::c_void, 1);
                 let mut byte = 0u8;
                 libc::read(release[0], &mut byte as *mut u8 as *mut libc::c_void, 1);
@@ -716,10 +746,40 @@ impl LinuxOs {
 }
 
 impl KeeperOs for LinuxOs {
-    // No Linux asynchronous operation is scheduled in this foundation. The synchronous refusal adapter produces
-    // neither completions nor operation-owned late objects. Actual launch integration must implement these contracts.
-    fn cancel_launch(&mut self, _operation: &crate::launch::OperationId, _committed: bool) {}
-    fn discard_created(&mut self, _operation: crate::launch::OperationId, _created: Created) {}
+    fn begin_create(&mut self, operation: &OperationId, kind: CreateKind, marker: Option<&str>, locator: &Value, spec: &Spec, _deadline: u64) -> Progress<Result<Created, OsError>> {
+        if !kind.process_bearing() {
+            return Progress::Ready(self.create(&operation.handle, kind, marker, locator, spec));
+        }
+        let netns = match spec {
+            Spec::Endpoint { netns, .. } | Spec::Workload { netns, .. } => self.netns.get(netns),
+            _ => None,
+        };
+        let context = CreateContext {
+            netns, runtime_dir: self.runtime_dir.as_ref().map(|dir| dir.dir.as_raw_fd()), orchestration_root: self.orchestration_root.clone(),
+        };
+        self.launcher.begin_create(operation, kind, marker, spec, context)
+    }
+    fn begin_commit(&mut self, operation: &OperationId, kind: CreateKind, _deadline: u64) -> Progress<Result<CommitState, OsError>> {
+        if kind.process_bearing() {
+            return self.launcher.begin_commit(operation);
+        }
+        Progress::Ready(self.commit(&operation.handle, kind).map(|_| CommitState::Committed))
+    }
+    fn poll_completion(&mut self, now_ms: u64) -> Option<Completion> {
+        self.launcher.poll_completion(now_ms)
+    }
+    fn take_commit_latch(&mut self, operation: &OperationId) -> Option<CommitLatch> {
+        self.launcher.take_commit_latch(operation)
+    }
+    fn cancel_launch(&mut self, operation: &OperationId, committed: bool) {
+        self.launcher.cancel_launch(operation, committed);
+    }
+    fn discard_created(&mut self, operation: OperationId, _created: Created) {
+        self.launcher.discard_created(&operation);
+    }
+    fn commit_failure_code(&self, operation: &OperationId) -> &'static str {
+        self.launcher.commit_failure_code(operation)
+    }
     fn create(&mut self, handle: &str, kind: CreateKind, _marker: Option<&str>, locator: &Value, _spec: &Spec) -> Result<Created, OsError> {
         let failure = (ErrorKind::Failure, "setup_failed");
         match kind {
@@ -750,9 +810,8 @@ impl KeeperOs for LinuxOs {
                 // Even a valid delegated subtree cannot create until the separately approved creation delta.
                 Err(refusal)
             }
-            // NOT IMPLEMENTED in r3 (no Linux execution was available to prove the construction): the endpoint and
-            // process-tree domains (outer namespaces + the single bwrap stage + gated stage, linux::domain) and PTY
-            // allocation in a private devpts instance. They fail closed with `setup_failed`.
+            // Endpoint and process-tree domains are constructed asynchronously through `begin_create` (launcher). PTY
+            // allocation in a private devpts instance is the later S2 sub-checkpoint and still fails closed.
             CreateKind::Endpoint | CreateKind::ProcessTree | CreateKind::Pty => Err(failure),
         }
     }
@@ -762,6 +821,7 @@ impl KeeperOs for LinuxOs {
     }
 
     fn abort(&mut self, handles: &[String]) {
+        self.launcher.abort(handles);
         for handle in handles {
             // Dropping the descriptor releases an uncommitted namespace.
             self.netns.remove(handle);
@@ -775,12 +835,14 @@ impl KeeperOs for LinuxOs {
         }
     }
 
-    fn stop(&mut self, _handle: &str, _grace_ms: i64) {}
+    fn stop(&mut self, handle: &str, grace_ms: i64) {
+        self.launcher.stop(handle, grace_ms);
+    }
 
-    /// PROVISIONAL (G1): process-bearing `create` fails closed with `setup_failed`, so no stage and no stage pidfd exist
-    /// and there is nothing to kill. When process-bearing kinds land, this must `pidfd_send_signal(SIGKILL)` on the
-    /// pidfd recorded for `handle` at create, never `kill(pid)`.
-    fn kill_stage(&mut self, _handle: &str) {}
+    /// SIGKILL of that resource's namespace anchor through the pidfd held since create, never `kill(pid)`.
+    fn kill_stage(&mut self, handle: &str) {
+        self.launcher.kill_stage(handle);
+    }
 
     fn tempdir(&mut self) -> Result<String, OsError> {
         let failure = (ErrorKind::Failure, "setup_failed");
@@ -801,7 +863,9 @@ impl KeeperOs for LinuxOs {
                     remove_runtime_dir(dir, root);
                 }
             }
-            EndStep::ProcessTrees | EndStep::Endpoint | EndStep::Views => {}
+            EndStep::ProcessTrees => self.launcher.kill_kind(false),
+            EndStep::Endpoint => self.launcher.kill_kind(true),
+            EndStep::Views => {}
         }
     }
 
@@ -832,4 +896,32 @@ impl KeeperOs for LinuxOs {
     fn new_mount_handle(&mut self) -> String {
         format!("m{}", self.random_hex())
     }
+}
+
+impl crate::linux::runloop::LaunchHost for LinuxOs {
+    fn launch_fds(&self) -> Vec<RawFd> {
+        self.launcher.poll_fds()
+    }
+    fn launch_wakeup(&self, now: u64) -> Option<u64> {
+        self.launcher.next_wakeup(now)
+    }
+    fn owns_child(&self, pid: libc::pid_t) -> bool {
+        self.launcher.owns_child(pid)
+    }
+    fn reap_owned(&mut self) {
+        self.launcher.reap_owned();
+    }
+    fn live_anchors(&self) -> usize {
+        self.launcher.live_anchors()
+    }
+}
+
+/// Creates `name` below `dir` (mode 0700; EEXIST is an error) and holds it with `O_PATH`, never following a link.
+pub fn create_dir(dir: RawFd, name: &str) -> Result<OwnedFd, OsError> {
+    create_private_dir(dir, name)
+}
+
+/// Opens (creating if absent) one directory component below `dir`, never following a link.
+pub fn open_or_create_dir(dir: RawFd, name: &str) -> Result<OwnedFd, &'static str> {
+    open_or_create_component(dir, name, 0o700)
 }

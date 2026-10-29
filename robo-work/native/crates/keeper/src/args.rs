@@ -6,7 +6,8 @@
 //!              [--home-identity <dev>:<ino>] [--orchestration-root <abs>]
 //!              [--cgroup-subtree <dev>:<ino>:<abs>]
 //!              --channel-limit <name>=<value> ... --view-limit <name>=<value> ...
-//! keeper stage --reservation <marker> --gate-fd <n> [--env-fd <n>] [--domain orchestration|workload] -- <final argv...>
+//! keeper stage --reservation <marker> --gate-fd <n> [--env-fd <n>] [--channel-fd <n>]
+//!              [--domain orchestration|workload|endpoint] [--install <from>:<to> ...] [--nofile <n>] -- <final argv...>
 //! ```
 //!
 //! Every value is its own argv element and a value token is never interpreted as a flag, so a marker that starts with
@@ -93,14 +94,38 @@ impl ServeArgs {
 pub enum StageDomain {
     Orchestration,
     Workload,
+    /// The provider endpoint: orchestration seccomp profile, inherited channels on 3 and 4 (first-G1 plan, roles table).
+    Endpoint,
 }
+
+impl StageDomain {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StageDomain::Orchestration => "orchestration",
+            StageDomain::Workload => "workload",
+            StageDomain::Endpoint => "endpoint",
+        }
+    }
+}
+
+/// At most this many inherited descriptors are relocated by the stage (orchestration: three control channels and the
+/// provider socket).
+pub const MAX_STAGE_INSTALLS: usize = 4;
+/// Relocation targets are final slots 0-4; sources are the transient slots the keeper chose above them.
+pub const MAX_INSTALL_TARGET: i32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StageArgs {
     pub marker: String,
     pub gate_fd: i32,
     pub env_fd: Option<i32>,
+    /// The private SOCK_SEQPACKET stage channel (A1.2). Required by the Linux stage; optional only in this parser.
+    pub channel_fd: Option<i32>,
     pub domain: StageDomain,
+    /// `(from, to)`: inherited descriptors the stage moves to their final slot before READY.
+    pub installs: Vec<(i32, i32)>,
+    /// RLIMIT_NOFILE soft and hard value applied before READY (the endpoint's fixed descriptor budget).
+    pub nofile: Option<u64>,
     pub argv: Vec<String>,
 }
 
@@ -246,6 +271,8 @@ fn parse_stage(rest: &[String]) -> Result<StageArgs, String> {
     // The final argv follows the first "--" that is in flag position (a value token is never a separator).
     let mut index = 0;
     let (mut marker, mut gate_fd, mut env_fd, mut domain) = (None, None, None, None);
+    let (mut channel_fd, mut nofile) = (None, None);
+    let mut installs: Vec<(i32, i32)> = Vec::new();
     let final_argv = loop {
         let flag = rest.get(index).ok_or("stage needs -- before the final argv")?.as_str();
         if flag == "--" {
@@ -256,8 +283,27 @@ fn parse_stage(rest: &[String]) -> Result<StageArgs, String> {
             "--reservation" if marker.is_none() => marker = Some(value.to_string()),
             "--gate-fd" if gate_fd.is_none() => gate_fd = Some(fd(value)?),
             "--env-fd" if env_fd.is_none() => env_fd = Some(fd(value)?),
+            "--channel-fd" if channel_fd.is_none() => channel_fd = Some(fd(value)?),
             "--domain" if domain.is_none() => {
-                domain = Some(match value { "orchestration" => StageDomain::Orchestration, "workload" => StageDomain::Workload, _ => return Err("bad --domain".into()) });
+                domain = Some(match value {
+                    "orchestration" => StageDomain::Orchestration,
+                    "workload" => StageDomain::Workload,
+                    "endpoint" => StageDomain::Endpoint,
+                    _ => return Err("bad --domain".into()),
+                });
+            }
+            "--install" => {
+                let (from, to) = value.split_once(':').ok_or("bad --install")?;
+                let (from, to) = (fd(from)?, fd(to)?);
+                if to > MAX_INSTALL_TARGET || from <= MAX_INSTALL_TARGET || installs.len() >= MAX_STAGE_INSTALLS
+                    || installs.iter().any(|(known_from, known_to)| *known_from == from || *known_to == to)
+                {
+                    return Err("bad --install".into());
+                }
+                installs.push((from, to));
+            }
+            "--nofile" if nofile.is_none() => {
+                nofile = Some(decimal_u64(value).filter(|limit| (1..=1_048_576).contains(limit)).ok_or("bad --nofile")?);
             }
             other => return Err(format!("unknown or repeated flag: {other}")),
         }
@@ -270,7 +316,15 @@ fn parse_stage(rest: &[String]) -> Result<StageArgs, String> {
     if final_argv.is_empty() || !final_argv[0].starts_with('/') {
         return Err("the final argv must start with an absolute program path (no PATH lookup)".into());
     }
-    Ok(StageArgs { marker, gate_fd: gate_fd.ok_or("--gate-fd is required")?, env_fd, domain: domain.unwrap_or(StageDomain::Workload), argv: final_argv })
+    let gate_fd = gate_fd.ok_or("--gate-fd is required")?;
+    let private = [Some(gate_fd), env_fd, channel_fd];
+    let private: Vec<i32> = private.into_iter().flatten().collect();
+    if private.iter().enumerate().any(|(index, fd)| *fd <= MAX_INSTALL_TARGET || private[..index].contains(fd))
+        || installs.iter().any(|(from, _)| private.contains(from))
+    {
+        return Err("stage descriptors must be distinct and above the final slots".into());
+    }
+    Ok(StageArgs { marker, gate_fd, env_fd, channel_fd, domain: domain.unwrap_or(StageDomain::Workload), installs, nofile, argv: final_argv })
 }
 
 #[cfg(test)]
@@ -336,6 +390,31 @@ mod tests {
         assert_eq!(stage.argv, args(&["/usr/bin/node", "--", "fixture.mjs"]));
         assert!(parse(&args(&["stage", "--reservation", MARKER_DASH, "--gate-fd", "5", "--", "node"])).is_err());
         assert!(parse(&args(&["stage", "--reservation", "--", "--gate-fd", "5", "--", "/bin/true"])).is_err());
+    }
+
+    #[test]
+    fn stage_private_channel_installs_and_descriptor_budget() {
+        let base = ["stage", "--reservation", MARKER_DASH, "--channel-fd", "10", "--gate-fd", "11", "--env-fd", "12", "--domain", "endpoint"];
+        let with = |extra: &[&str]| {
+            let mut items: Vec<&str> = base.to_vec();
+            items.extend_from_slice(extra);
+            items.extend_from_slice(&["--", "/usr/local/bin/node", "main.mjs"]);
+            parse(&args(&items))
+        };
+        let Command::Stage(stage) = with(&["--install", "13:3", "--install", "14:4", "--nofile", "256"]).unwrap() else { panic!() };
+        assert_eq!((stage.channel_fd, stage.gate_fd, stage.env_fd), (Some(10), 11, Some(12)));
+        assert_eq!(stage.domain, StageDomain::Endpoint);
+        assert_eq!(stage.installs, vec![(13, 3), (14, 4)]);
+        assert_eq!(stage.nofile, Some(256));
+        for bad in [&["--install", "13:5"][..], &["--install", "3:4"], &["--install", "13:3", "--install", "13:4"], &["--install", "13:3", "--install", "14:3"],
+            &["--install", "10:3"], &["--install", "13"], &["--nofile", "0"], &["--nofile", "1048577"], &["--nofile", "-1"],
+            &["--install", "13:0", "--install", "14:1", "--install", "15:2", "--install", "16:3", "--install", "17:4"]] {
+            assert!(with(bad).is_err(), "{bad:?}");
+        }
+        // Private descriptors must sit above the final slots and be distinct.
+        assert!(parse(&args(&["stage", "--reservation", MARKER_DASH, "--channel-fd", "4", "--gate-fd", "11", "--", "/x"])).is_err());
+        assert!(parse(&args(&["stage", "--reservation", MARKER_DASH, "--channel-fd", "11", "--gate-fd", "11", "--", "/x"])).is_err());
+        assert!(parse(&args(&["stage", "--reservation", MARKER_DASH, "--channel-fd", "10", "--channel-fd", "12", "--gate-fd", "11", "--", "/x"])).is_err());
     }
 
     #[test]

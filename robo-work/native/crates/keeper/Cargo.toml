@@ -10,6 +10,11 @@ description = "The RoboWork execution keeper (plan section 5.5): framed supervis
 name = "keeper"
 path = "src/main.rs"
 
+[features]
+# APPARATUS ONLY (first-G1 amendment A1.6): embed the image policy file named by the build-time environment variable
+# RW_KEEPER_APPARATUS_POLICY_FILE. Off by default; a default build has no policy and refuses every process-bearing create.
+apparatus-policy = []
+
 [dependencies]
 rw-proto = { path = "../proto" }
 rw-confine = { path = "../confine" }

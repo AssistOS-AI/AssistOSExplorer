@@ -4,9 +4,10 @@
 //! | Module | Status |
 //! |---|---|
 //! | `args`, `procfs`, `core`, `channel`, `root_identity` | Implemented, host-tested. `core` dispatches every v1 op; `channel` is the fd-3 writer/reader (no ancillary data, tested on the host) |
-//! | `bwrap`, `stage` | Pure builders/parsers, host-tested; the construction mechanics are the native owner's (contract "Out of scope") and are PROVISIONAL until G1 |
-//! | `linux::os`, `linux::runloop` | Implemented, type-checked only (runtime proof: G1/G6). Process-bearing creation and PTY allocation in `linux::os` refuse `setup_failed` in r3 (see the module) |
-//! | `linux::domain`, `linux::stage_exec` | PROVISIONAL, type-checked only |
+//! | `bwrap`, `stage` | Pure builders/parsers, host-tested; the single-Bubblewrap invocation (A1.1 topology) and the stage's environment block |
+//! | `image_policy`, `sha256` | The apparatus image-policy document and its digest, host-tested; embedded only with the `apparatus-policy` feature |
+//! | `linux::os`, `linux::runloop` | Implemented. Process-bearing creation delegates to `linux::launcher`; PTY allocation still refuses `setup_failed` (S2) |
+//! | `linux::launcher`, `linux::domain`, `linux::stage_exec`, `linux::policy`, `linux::sys` | First-G1 construction (pidfd anchor, private stage channel, positive exec observation); runtime evidence is per candidate |
 
 pub mod args;
 pub mod bwrap;
@@ -14,9 +15,11 @@ pub mod channel;
 pub mod cgroup_subtree;
 pub mod core;
 pub mod domain_policy;
+pub mod image_policy;
 pub mod launch;
 pub mod procfs;
 pub mod root_identity;
+pub mod sha256;
 pub mod stage;
 
 #[cfg(target_os = "linux")]

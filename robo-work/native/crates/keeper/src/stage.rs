@@ -1,10 +1,11 @@
-//! The gated pre-exec stage (plan section 5.5, "Create gated"): the keeper binary in `stage` mode, started by the one
-//! bwrap invocation. It reads exactly one byte from the gate pipe: only the commit byte proceeds; end-of-file or any
-//! other byte aborts (exit 125) before the final exec. On commit it reads the workload environment from its env
-//! descriptor (never from its own environment: bwrap ran it with `--clearenv`), sets no_new_privs, verifies that all
-//! five capability sets are empty, installs the domain seccomp filter and execs the final program by absolute path.
+//! The gated pre-exec stage (plan section 5.5, "Create gated"; first-G1 amendment A1.2): the keeper binary in `stage`
+//! mode, started by the one bwrap invocation (`linux::stage_exec`). Before READY it sets no_new_privs, verifies that all
+//! five capability sets are empty and installs the domain seccomp filter. It then reads exactly one byte from the gate
+//! pipe: only the commit byte proceeds; end-of-file or any other byte aborts (exit 125) before the final exec. On commit
+//! it reads the workload environment from its sealed env descriptor (never from its own environment: bwrap ran it with
+//! `--clearenv`) and execs the final program by absolute path.
 //!
-//! PROVISIONAL / UNWIRED (pending keeper wire contract). The env-block format below is an internal interface.
+//! The env-block format below is an internal interface between the launcher and the stage.
 
 /// Bound on the environment block.
 pub const MAX_ENV_BYTES: usize = 64 * 1024;
