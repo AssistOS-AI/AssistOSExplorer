@@ -1,0 +1,25 @@
+# rwtarget: the worker-owned proof-fixture execution target (proof slice P3; target-selection option (a)).
+# A minimal digest-pinned base, the fixed target helper, keeper and file server built statically from the reviewed
+# robo-work/native sources, Bubblewrap at /usr/bin/bwrap, setpriv for the peer's privilege drop, the management
+# launcher and the distinct non-management peer. No setuid/setgid file; no network or service of its own.
+#
+# Build context (assembled by the operator): this directory plus bin/rw-target-helper, bin/keeper, bin/rw-file-server
+# (x86_64-unknown-linux-musl static release builds). The image declares nothing else; its manifest
+# (manifest.template.json, rendered by render-manifest.mjs) declares containerSecurity.nestedPodman and executionTarget.
+FROM docker.io/library/alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
+
+RUN apk add --no-cache bubblewrap=0.12.0-r0 setpriv=2.41.6-r1
+
+COPY --chmod=0555 bin/rw-target-helper /usr/libexec/ploinky-target/rw-target-helper
+COPY --chmod=0555 bin/keeper /usr/libexec/ploinky-target/keeper
+COPY --chmod=0555 bin/rw-file-server /usr/libexec/ploinky-target/rw-file-server
+COPY --chmod=0555 launch.sh /usr/libexec/ploinky-target/launch
+COPY --chmod=0555 peer.sh /usr/libexec/ploinky-target/peer
+
+# The image must carry no setuid or setgid file (bwrap included); the build fails otherwise.
+RUN test -x /usr/bin/bwrap && test -x /bin/setpriv \
+    && found="$(find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -print)" \
+    && if [ -n "$found" ]; then echo "setuid/setgid files: $found" >&2; exit 1; fi
+
+ENTRYPOINT []
+CMD ["/usr/libexec/ploinky-target/launch"]
