@@ -13,7 +13,10 @@ export function stopReasonFromRecord(message) {
     return stopReason({ owner: grant ? { evidence: { ok: true, grant } } : null });
 }
 
+// Any requested stop whose outcome is `may_still_run` is not confirmed, whatever failed (the control was refused, the
+// transport broke, the reference was not found, the evidence expired, or the worker accepted the stop but never reached
+// a terminal state): exit 75. A stop that ended in a terminal state is an interruption (130); anything else is a failure.
 export function taskExitCode(error, aborted) {
-    if (error?.execution === 'may_still_run' && String(error.code || '').startsWith('worker_stop')) return STOP_NOT_CONFIRMED_EXIT;
+    if (aborted && error?.execution === 'may_still_run') return STOP_NOT_CONFIRMED_EXIT;
     return aborted ? 130 : 1;
 }

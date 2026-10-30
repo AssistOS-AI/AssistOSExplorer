@@ -428,6 +428,8 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
         const enqueue = (work) => { queued = queued.then(work); return queued; };
         const streamAbort = new AbortController();
         const handled = new WeakSet();
+        // The worker accepted the stop but no terminal state arrived within the bound: the execution may still run.
+        const stopUnconfirmed = () => new WorkerError('worker_stop_unconfirmed', 504, { execution: 'may_still_run' });
         const detached = () => controller.signal.aborted && isDetach(controller.signal.reason);
 
         // The stop control: the stopping request's own grant (user stop), or the coordinator identity
@@ -518,7 +520,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             while (!terminal) {
                 if (detached()) throw controller.signal.reason;
                 if (stopError) throw stopError;
-                if (stopTimedOut) throw interrupted();
+                if (stopTimedOut) throw stopUnconfirmed();
                 if (getFailure()) await fatal(getFailure());
                 if (!auth || (auth.grant && !usable({ ok: true, grant: auth.grant }))) {
                     try { auth = await grantFor(authority, { signal: streamAbort.signal }); }
@@ -593,7 +595,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             for (;;) {
                 if (detached()) throw controller.signal.reason;
                 if (stopError) throw stopError;
-                if (stopTimedOut && !terminal) throw interrupted();
+                if (stopTimedOut && !terminal) throw stopUnconfirmed();
                 if (getFailure()) await fatal(getFailure());
 
                 const page = await reading(async () => client.events(referenceId, { after, limit: EVENTS_PAGE }, auth));
