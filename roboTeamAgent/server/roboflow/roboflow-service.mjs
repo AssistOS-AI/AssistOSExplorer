@@ -24,6 +24,7 @@ import { phaseOriginId } from '../worker-coordinator/flow-origins.mjs';
 import { isReferenceId } from '../worker-coordinator/identities.mjs';
 import { parentBindingFor, registerDerivedBinding } from '../worker-coordinator/background.mjs';
 import { classifyPhase } from './worker-reconciliation.mjs';
+import { STOP_NOT_AUTHORIZED_MESSAGE } from '../../copilot/src/lib/execution/abortReasons.mjs';
 
 const terminal = state => ['completed', 'failed', 'paused', 'terminated'].includes(state);
 // Live Sessions owner: the signed principal (user:<id>) of the user who started
@@ -466,7 +467,8 @@ export class RoboFlowService {
                 const runtime = this.runtimeManager.taskStatus?.(robot.id, instance.runtimeTaskId);
                 if (runtime?.startedAt) started.set(instance.id, runtime.startedAt);
                 try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId, this._userStop(user)); } catch { /* Runtime may already be terminal. */ } }
-            await this._stopWorkerPhase(flow, instance, user);
+            // A user's stop reached the worker before anything changed (`_confirmUserStops`); only a system stop is sent here.
+            if (!user) await this._stopWorkerPhase(flow, instance);
         }
         await this.store.update(id, current => {
             current.error = message; current.finishedAt = new Date().toISOString();
@@ -476,6 +478,45 @@ export class RoboFlowService {
             }
             current.status = deriveFlowStatus(current.instances);
         });
+    }
+    // A user's pause or terminate (decisions M-12 (b), M-34, M-40). With the worker configured, nothing in RoboTeam changes until the
+    // worker has the stop: a phase whose worker stop was refused, failed or could not be found is still running there, and marking it
+    // paused or terminated would end the reconciliation that follows it and let a second attempt start in the same project. So, once
+    // per request and before any state changes: the requester must be the flow's owner or an administrator (403 otherwise); every
+    // started phase of the flow and of its child flows gets the stop (found by the binding, sent with the requester's grant); and if any
+    // of them was not accepted, the request ends 409 with the notice and the flow is left exactly as it was, still followed.
+    async _confirmUserStops(flow, user) {
+        if (!this.worker || !user || user.confirmed) return;
+        this._assertMayControl(flow, user);
+        const undelivered = [];
+        const seen = new Set();
+        const visit = async (current) => {
+            if (!current || seen.has(current.id)) return;
+            seen.add(current.id);
+            for (const instance of current.instances) {
+                if (terminal(instance.state) || !instance.runtimeTaskId) continue;
+                const mine = { ...user, undelivered: [] };
+                await this._stopWorkerPhase(current, instance, mine);
+                undelivered.push(...mine.undelivered);
+            }
+            for (const childId of new Set(current.instances.flatMap(item => item.childFlowIds || []))) await visit(await this.store.get(childId));
+        };
+        await visit(flow);
+        if (undelivered.length) {
+            if (Array.isArray(user.undelivered)) user.undelivered.push(...undelivered);
+            const authorization = undelivered.some(entry => ['forbidden', 'owner_evidence_unavailable', 'worker_stop_not_authorized'].includes(entry.code));
+            throw Object.assign(new Error(authorization ? STOP_NOT_AUTHORIZED_MESSAGE
+                : `Stop not delivered (${undelivered[0].code}). The task may still be running; press stop again.`),
+                { statusCode: 409, code: 'worker_stop_not_delivered', undelivered });
+        }
+        user.confirmed = true;
+    }
+    // Only a flow's owner, or an administrator, changes its local state through a user control (`message` is the owner's alone, as at the worker).
+    _assertMayControl(flow, user, { ownerOnly = false } = {}) {
+        if (!this.worker || !user) return;
+        const owner = typeof flow.ownerPrincipal === 'string' && flow.ownerPrincipal && flow.ownerPrincipal === user.principal;
+        if (owner || (!ownerOnly && user.admin === true)) return;
+        throw Object.assign(new Error(ownerOnly ? 'Only the flow owner may message it' : 'Only the flow owner or an administrator may do this'), { statusCode: 403 });
     }
     // The stop options of a user-initiated stop: the request's own grant and the mark that a person asked for it, so the phase's
     // task child uses that grant and never the flow binding. Empty for a system stop.
@@ -487,6 +528,7 @@ export class RoboFlowService {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
             if (['pending', 'completed', 'failed', 'terminated'].includes(flow.status)) return this.getFlow(id);
+            await this._confirmUserStops(flow, user);
             await this.store.update(id, current => { current.pauseRequested = true; });
             await this.subflows.pauseChildren(flow, user);
             await this._fail(id, 'Paused by user', 'paused', user);
@@ -497,6 +539,7 @@ export class RoboFlowService {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
+            await this._confirmUserStops(flow, user);
             // Persist the irreversible gate before stopping processes or visiting children.
             await this.store.update(id, current => {
                 current.status = 'terminated'; current.pauseRequested = true;
@@ -515,7 +558,6 @@ export class RoboFlowService {
                 if (robot) results.push(await Promise.resolve().then(() => this.runtimeManager.stopTask(
                     robot, EXECUTION_TASK_TYPES[visit.executionType], visit.runtimeTaskId, this._userStop(user)))
                     .then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason })));
-                if (user) await this._stopWorkerPhase(flow, visit, user);
             }
             const failures = results.filter(result => result.status === 'rejected');
             if (failures.length) throw new Error(`Workflow terminated, but stopping execution failed: ${failures.map(item => item.reason.message).join('; ')}`);
@@ -559,6 +601,7 @@ export class RoboFlowService {
             throw Object.assign(invalid('only a running phase accepts a live prompt; continue it instead'), { liveOutcome: 'run_ended' });
         }
         const message = textField(prompt, 'prompt', 32768, true);
+        this._assertMayControl(flow, user, { ownerOnly: true });
         const robot = await this.robotStore.getByName(instance.robotName);
         if (!robot) throw new Error('Robot is unavailable');
         const delivery = await this.runtimeManager.sendTaskMessage(robot, instance.runtimeTaskId, message, user?.grant ? { ownerGrant: user.grant } : undefined);
@@ -571,6 +614,18 @@ export class RoboFlowService {
         if (instance && isCoordinator(flow.graph.tasks.find(task => task.id === instance.taskId))) return this.resumeFlow(id);
         return this._serialize(id, () => this._resumeInstance(id, instanceId, prompt));
     }
+    // A second attempt must never start in the project while the previous one may still run on the worker (decision M-34): with the
+    // worker configured, the phase's previous attempt is looked up by its binding and must be absent or terminal. A worker that cannot
+    // answer is not a yes. This covers a stop that was not delivered or not confirmed, whatever marked the phase paused or failed.
+    async _assertPreviousAttemptEnded(flow, instance) {
+        if (!this.worker || !instance.runtimeTaskId) return;
+        const decision = await classifyPhase({ client: this.worker.client, flow, instance });
+        if (decision.action === 'running' || decision.action === 'unknown') {
+            throw Object.assign(new Error(decision.action === 'running'
+                ? 'The previous attempt of this phase is still running on the worker; stop it and wait for it to end before continuing.'
+                : 'The worker cannot confirm that the previous attempt of this phase has ended; try again shortly.'), { statusCode: 409, code: 'worker_previous_attempt_running' });
+        }
+    }
     async _resumeInstance(id, instanceId, prompt, humanInputId = null, answeredBy = '') {
         const flow = await this.store.get(id);
         if (!flow) throw missing();
@@ -579,6 +634,7 @@ export class RoboFlowService {
         const instance = flow.instances.find(item => item.id === instanceId);
         if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
         if (!['paused', 'completed', 'failed'].includes(instance.state)) throw invalid('only a paused, completed or failed phase can continue');
+        await this._assertPreviousAttemptEnded(flow, instance);
         const message = textField(prompt, 'prompt', 32768, false);
         if (['paused', 'failed'].includes(instance.state) && !instance.startedAt
             && !isCoordinator(flow.graph.tasks.find(task => task.id === instance.taskId))) {

@@ -267,11 +267,13 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                     return;
                 }
             }
-            // An envelope that claims to be a stop but did not verify (no usable signature or grant) stops nothing, and the user is told:
-            // never a silent drop. Without a worker coordinator there is nothing to verify, and the stop is the local one.
+            // An envelope that claims to be a stop but did not verify (no usable signature or grant). With the worker engine it stops nothing
+            // and the user is told, never a silent drop. A local engine holds its work in this process, so the stop is the local abort as
+            // it always was, and no worker is mentioned.
             if (message.event === WEBCHAT_STOP_EVENT) {
+                const worker = typeof runtime.engine?.stopTurn === 'function';
                 for (const [operationId, operation] of matchingOperations(message)) {
-                    if (coordinator) stopNotAuthorized(operationId, operation);
+                    if (worker) stopNotAuthorized(operationId, operation);
                     else stopOperation(operationId, operation);
                 }
                 return;

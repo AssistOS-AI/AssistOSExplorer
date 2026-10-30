@@ -85,7 +85,7 @@ async function flowFixture(t, r) {
     await service.presetReady;
     t.after(async () => { parked.splice(0).forEach((resolve) => resolve()); await service.close(); });
     await service.createWorkflow({ id: 'stopping', name: 'Stopping', description: 'one phase', entryTaskId: 'a', tasks: [task('a')], edges: [] });
-    const flow = await service.startFlow({ workflowTypeId: 'stopping', folder: root, objective: 'Work' });
+    const flow = await service.startFlow({ workflowTypeId: 'stopping', folder: root, objective: 'Work', ownerPrincipal: 'user:alice' });
     const instance = (await service.getFlow(flow.id)).instances[0];
     // The worker side: alice's root binding for this flow, and the phase admitted under it with the phase's deterministic origin.
     r.adapter.bind(hop(r.secret, { operationId: newId(), bindingId: flow.id }, `${BASE}/bindings`, ownerClaims('alice')));
@@ -105,7 +105,7 @@ test('the owner\'s pause finds the binding-recorded phase by its binding and the
     // Why the lookup must use the binding: the owner row never finds a binding-keyed origin.
     assert.equal(await r.client.lookup(f.origin, { grant: 'alice' }), null);
     r.calls.lookup.length = 0;
-    const user = { grant: 'alice', undelivered: [] };
+    const user = { grant: 'alice', principal: 'user:alice', admin: false, undelivered: [] };
     const paused = await f.service.pauseFlow(f.flow.id, user);
     assert.deepEqual(user.undelivered, []);
     assert.deepEqual(r.calls.lookup, [{ bindingId: f.flow.id }]);
@@ -115,17 +115,22 @@ test('the owner\'s pause finds the binding-recorded phase by its binding and the
     try { assert.equal(db.prepare('SELECT count(*) AS n FROM reference_control').get().n, 1, 'the worker recorded the stop'); } finally { db.close(); }
 });
 
-test('an administrator\'s pause is accepted by the worker; another user\'s is refused and told to that user', async (t) => {
+test('an administrator\'s pause is accepted by the worker; a stranger is refused by RoboTeam and a foreign grant by the worker', async (t) => {
     const admin = await rig(t);
     const a = await flowFixture(t, admin);
-    const adminUser = { grant: 'root', undelivered: [] };
+    const adminUser = { grant: 'root', principal: 'user:root', admin: true, undelivered: [] };
     await a.service.pauseFlow(a.flow.id, adminUser);
     assert.deepEqual(adminUser.undelivered, []);
     assert.equal(admin.calls.control.length, 1);
 
     const other = await rig(t);
     const b = await flowFixture(t, other);
-    const stranger = { grant: 'victor', undelivered: [] };
-    await b.service.pauseFlow(b.flow.id, stranger);
-    assert.deepEqual(stranger.undelivered.map((entry) => entry.code), ['forbidden'], 'the worker refused a user who is neither the owner nor an administrator');
+    // RoboTeam refuses a stranger before the worker is asked; and a grant that is not the owner's, whoever claims it, is refused by the
+    // worker itself and leaves the flow untouched.
+    await assert.rejects(b.service.pauseFlow(b.flow.id, { grant: 'victor', principal: 'user:victor', admin: false, undelivered: [] }), (error) => error.statusCode === 403);
+    assert.equal(other.calls.control.length, 0);
+    const mismatched = { grant: 'victor', principal: 'user:alice', admin: false, undelivered: [] };
+    await assert.rejects(b.service.pauseFlow(b.flow.id, mismatched), (error) => error.statusCode === 409);
+    assert.deepEqual(mismatched.undelivered.map((entry) => entry.code), ['forbidden'], 'the worker refused a grant that is neither the owner\'s nor an administrator\'s');
+    assert.notEqual((await b.service.getFlow(b.flow.id)).status, 'paused');
 });

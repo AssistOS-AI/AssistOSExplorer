@@ -167,3 +167,14 @@ test('a stop envelope that does not verify stops nothing and the user is told, n
     assert.ok(logged.some((line) => /webchat stop not delivered \(stop_unverified\)/.test(line)));
     assert.equal(f.seen[0].reason, null, 'the turn keeps running');
 });
+
+test('with a local engine an unverified stop envelope keeps the local abort and never mentions the worker', async (t) => {
+    const f = await fixture(t);
+    f.dispatcher.receive(message('first', 'tok-1'));
+    await settle();
+    f.dispatcher.receive(JSON.stringify({ __webchatMessage: 1, version: 1, text: '', event: 'stop', sourceTabId: 'tabA', sourcePageInstanceId: 'page1',
+        presentation: { visible: false }, invocation: { token: 'forged' } }));
+    await settle();
+    assert.equal(f.seen[0].reason?.code, 'ROBOTEAM_STOP', 'the turn was aborted as a local stop');
+    assert.deepEqual(f.written.filter((envelope) => /worker/i.test(JSON.stringify(envelope))), []);
+});

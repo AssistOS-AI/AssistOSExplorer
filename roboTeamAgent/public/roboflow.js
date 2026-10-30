@@ -633,10 +633,9 @@ async function changeFlowControl(path, body = null) {
     flowControlPending = true;
     renderFlowControls();
     try {
-        const result = body ? await postJson(path, body) : await post(path);
+        // A stop the worker did not accept answers 409 with the notice and changes nothing: it is shown by the catch below.
+        if (body) await postJson(path, body); else await post(path);
         await refresh();
-        // A stop the worker did not receive is told, never silent.
-        if (result?.workerNotice) setMessage(result.workerNotice, true);
     }
     catch (error) { setMessage(error.message, true); }
     finally { flowControlPending = false; renderFlowControls(); }
@@ -755,9 +754,8 @@ confirmTerminateButton.onclick = async () => {
     confirmTerminateButton.textContent = 'Terminating…';
     terminateDialogError.hidden = true;
     try {
-        const result = await postJson('api/roboflow/control', { flowId: selected, action: 'terminate' });
+        await postJson('api/roboflow/control', { flowId: selected, action: 'terminate' });
         terminateDialog.close();
-        if (result?.workerNotice) setMessage(result.workerNotice, true);
         await refresh().catch(error => setMessage(error.message, true));
     } catch (error) {
         terminateDialogError.textContent = error.message;

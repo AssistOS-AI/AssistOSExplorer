@@ -25,7 +25,7 @@ async function server(t, { workerMode = true } = {}) {
     await robotStore.initialize();
     const robot = await robotStore.ensureDefaultRobot();
     const seen = [];
-    const record = (name, notice = false) => async (...args) => { seen.push({ name, args }); if (notice && args.at(-1)?.undelivered) args.at(-1).undelivered.push({ instanceId: INSTANCE, code: 'forbidden' }); return name === 'messageInstance' ? { delivery: 'delivered' } : { id: FLOW, status: 'paused' }; };
+    const record = (name, refuse = false) => async (...args) => { seen.push({ name, args }); if (refuse) throw Object.assign(new Error('Stop not delivered: the worker needs your fresh authorization. The task may still be running; press stop again.'), { statusCode: 409 }); return name === 'messageInstance' ? { delivery: 'delivered' } : { id: FLOW, status: 'paused' }; };
     const roboflow = { pauseFlow: record('pauseFlow'), terminateFlow: record('terminateFlow'), pauseInstance: record('pauseInstance', true), messageInstance: record('messageInstance'),
         refreshCoverage: async () => {} };
     const runtimeManager = {
@@ -37,7 +37,7 @@ async function server(t, { workerMode = true } = {}) {
     const live = { stop: [], message: [] };
     const liveSessions = {
         authorize: () => ({ ok: true }),
-        async stop(id, viewer, options) { live.stop.push({ id, options }); if (options?.user) options.user.undelivered.push({ code: 'forbidden' }); return { ok: true }; },
+        async stop(id, viewer, options) { live.stop.push({ id, options }); return { ok: true }; },
         async message(id, viewer, text, options) { live.message.push({ id, text, options }); return { ok: true, outcome: 'delivered' }; },
     };
     const http = createRoboTeamServer({ robotStore, runtimeManager, roboflow, liveSessions, internalToken: 'test-token', publicBasePath: '/rt/', mcpPort: 65534,
@@ -72,11 +72,12 @@ test('the exact RoboFlow control path passes the request\'s own grant to a pause
         assert.equal(call.args[0], FLOW);
         assert.equal(typeof call.args[1].grant, 'string', 'the user\'s own grant');
         assert.equal(subjectOf(call.args[1].grant), 'user:admin-v');
-        assert.equal(Object.hasOwn(result.body, 'workerNotice'), false);
+        assert.equal(call.args[1].principal, 'user:admin-v', 'who asks is passed down for the owner-or-administrator check');
+        assert.equal(call.args[1].admin, true);
     }
     const phase = await f.post('/api/roboflow/control', { flowId: FLOW, action: 'pause-instance', instanceId: INSTANCE });
-    assert.equal(phase.status, 200);
-    assert.match(phase.body.workerNotice, /^Stop not delivered: the worker needs your fresh authorization\. The task may still be running; press stop again\.$/, 'an undelivered worker stop is told to the user');
+    assert.equal(phase.status, 409, 'a stop the worker did not accept answers 409 with the notice');
+    assert.match(phase.body.error, /^Stop not delivered: the worker needs your fresh authorization\. The task may still be running; press stop again\.$/);
     const pauseInstance = f.seen.find((entry) => entry.name === 'pauseInstance');
     assert.deepEqual(pauseInstance.args.slice(0, 2), [FLOW, INSTANCE]);
     assert.equal(typeof pauseInstance.args[2].grant, 'string');
@@ -124,12 +125,12 @@ test('a stop, take-control or message through /api/control is marked user-initia
     assert.equal(subjectOf(f.seen.find((entry) => entry.name === 'sendTaskMessage').args[3].ownerGrant), 'user:admin-v');
 });
 
-test('a Live Sessions stop and message carry the request\'s grant; an unrouted request is refused; the notice reaches the user', async (t) => {
+test('a Live Sessions stop and message carry the request\'s grant and who asks; an unrouted request is refused', async (t) => {
     const f = await server(t);
     const id = 'run_abcdef012345';
     const stop = await f.post(`/api/live-sessions/${id}/stop`, {});
     assert.equal(stop.status, 200);
-    assert.match(stop.body.workerNotice, /^Stop not delivered/);
+    assert.equal(f.live.stop[0].options.user.principal, 'user:admin-v');
     assert.equal(subjectOf(f.live.stop[0].options.user.grant), 'user:admin-v');
     const message = await f.post(`/api/live-sessions/${id}/messages`, { message: 'hello' });
     assert.equal(message.status, 200);

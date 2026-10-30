@@ -427,7 +427,8 @@ async function handleLiveSessions({ req, res, pathname, viewer, registry, public
     const control = () => {
         if (!worker?.enabled) return { options: undefined };
         const grant = worker.grant(req);
-        return grant ? { options: { user: { grant, undelivered: [] } } } : { refusal: true };
+        // The flow's owner, or an administrator, may stop a run's work; the service checks it (decision M-40).
+        return grant ? { options: { user: { grant, principal: viewer.principal, admin: viewer.canAdmin === true, undelivered: [] } } } : { refusal: true };
     };
     if (name === 'messages' && req.method === 'POST') {
         const { options, refusal } = control();
@@ -450,8 +451,7 @@ async function handleLiveSessions({ req, res, pathname, viewer, registry, public
         if (Object.keys(body).length !== 0) return sendError(res, 400, 'stop takes an empty JSON object');
         const result = await registry.stop(id, viewer, options);
         if (!result.ok) return sendError(res, result.status, result.error);
-        return sendJson(res, 200, { ok: true, ...(options?.user?.undelivered.length
-            ? { workerNotice: 'Stop not delivered: the worker needs your fresh authorization. The task may still be running; press stop again.' } : {}) });
+        return sendJson(res, 200, { ok: true });
     }
     return sendError(res, 404, 'not found');
 }
@@ -619,10 +619,10 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     const userControl = () => {
         if (!worker?.enabled) return { user: null };
         const grant = worker.grant(req);
-        return grant ? { user: { grant, undelivered: [] } } : { refusal: true };
+        // Who asks, so that only the flow's owner or an administrator changes its state. A stop the worker did not accept is a 409
+        // with the notice and leaves the flow as it was.
+        return grant ? { user: { grant, principal: signedOwner(req), admin: req[ACCESS]?.canAdmin === true, undelivered: [] } } : { refusal: true };
     };
-    const undeliveredNotice = (user) => user?.undelivered?.length
-        ? { workerNotice: 'Stop not delivered: the worker needs your fresh authorization. The task may still be running; press stop again.' } : {};
     if (pathname === '/api/roboflow/control' && req.method === 'POST') {
         const { flowId, action, instanceId, prompt } = await readJsonBody(req);
         if (typeof flowId !== 'string' || !/^flow_[0-9a-f]{24}$/u.test(flowId)) { sendError(res, 400, 'a valid flowId is required'); return true; }
@@ -636,7 +636,7 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
             const flow = action === 'pause' ? await roboflow.pauseFlow(flowId, user)
                 : action === 'terminate' ? await roboflow.terminateFlow(flowId, user)
                     : await roboflow.pauseInstance(flowId, instanceId, user);
-            sendJson(res, 200, { ok: true, flow, ...undeliveredNotice(user) });
+            sendJson(res, 200, { ok: true, flow });
         }
         return true;
     }
@@ -644,14 +644,14 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     if (pauseId && req.method === 'POST') {
         const control = userControl();
         if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
-        sendJson(res, 200, { ok: true, flow: await roboflow.pauseFlow(pauseId, control.user), ...undeliveredNotice(control.user) });
+        sendJson(res, 200, { ok: true, flow: await roboflow.pauseFlow(pauseId, control.user) });
         return true;
     }
     const terminateId = pathname.match(new RegExp(`^${FLOW_PATH}/terminate$`))?.[1];
     if (terminateId && req.method === 'POST') {
         const control = userControl();
         if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
-        sendJson(res, 200, { ok: true, flow: await roboflow.terminateFlow(terminateId, control.user), ...undeliveredNotice(control.user) });
+        sendJson(res, 200, { ok: true, flow: await roboflow.terminateFlow(terminateId, control.user) });
         return true;
     }
     const resumeId = pathname.match(new RegExp(`^${FLOW_PATH}/resume$`))?.[1];
@@ -663,7 +663,7 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     if (instancePause && req.method === 'POST') {
         const control = userControl();
         if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
-        sendJson(res, 200, { ok: true, flow: await roboflow.pauseInstance(instancePause[1], instancePause[2], control.user), ...undeliveredNotice(control.user) });
+        sendJson(res, 200, { ok: true, flow: await roboflow.pauseInstance(instancePause[1], instancePause[2], control.user) });
         return true;
     }
     const instanceMessage = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/message$`));
