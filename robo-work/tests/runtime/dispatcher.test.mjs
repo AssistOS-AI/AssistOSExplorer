@@ -61,7 +61,7 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
             };
             runs.push(run);
             return {
-                exited: run.exited, lost: run.lost,
+                exited: run.exited, lost: run.lost, lastModelError: () => run.lastModelError ?? null,
                 async start() { if (startFails) throw startFails; return { stdin: run.stdin, stdout: run.stdout, stderr: run.stderr }; },
                 async end(outcome) {
                     run.ended.push(outcome);
@@ -447,6 +447,26 @@ test('inactivity: no activity for the bound ends the attempt failed / inactive_t
     assert.deepEqual([entry.executionId, entry.attemptId, entry.reason], [admitted.executionId, admitted.attemptId, 'inactive_timeout']);
     await pause(300);
     assert.equal(runs.length, 1, 'no automatic retry or replacement');
+});
+
+test('M-43 (a): an attempt that ends inactive_timeout carries the last upstream error of the model channel; a deadline does not, and none is absent', async (t) => {
+    const world = rig(t, { timeouts: { inactivityTimeoutMs: 120 } });
+    const admitted = world.admit();
+    world.dispatcher.start();
+    await wait(() => world.runs.length === 1 && world.runs[0].prompt !== null, 'running');
+    world.runs[0].lastModelError = { status: 429, message: 'daily quota exceeded' };
+    await wait(() => world.view(admitted).state === 'failed', 'failed by inactivity');
+    assert.deepEqual(world.view(admitted).result.data, { reason: 'inactive_timeout', lastModelError: { status: 429, message: 'daily quota exceeded' } });
+
+    const bounded = rig(t, { timeouts: { inactivityTimeoutMs: 150, maxAttemptMs: 300 } });
+    const second = bounded.admit();
+    bounded.dispatcher.start();
+    await wait(() => bounded.runs.length === 1 && bounded.runs[0].prompt !== null, 'running');
+    bounded.runs[0].lastModelError = { status: 500, message: 'x' };
+    const started = Date.now();
+    while (bounded.view(second).state === 'running' && Date.now() - started < 1500) { bounded.runs[0].activity(); await pause(40); }
+    await wait(() => bounded.view(second).state === 'failed', 'failed by the deadline');
+    assert.deepEqual(bounded.view(second).result.data, { reason: 'deadline_exceeded' });
 });
 
 test('activity resets the inactivity bound: ALA records, a delivered message and a provider request keep the attempt alive', async (t) => {

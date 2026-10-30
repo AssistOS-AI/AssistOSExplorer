@@ -226,6 +226,36 @@ test('connect refusals: the unix-socket form, the endpoint\'s own relay port, an
     assert.deepEqual(rig.endEvents, [], 'refusals do not end the execution');
 });
 
+test('M-26: a relay with a fixed port is an own port from construction on, so ALA can never connect to the model channel relay', async (context) => {
+    const home = await createEndpointRig();
+    context.after(() => home.dispose());
+    const echo = net.createServer((socket) => socket.pipe(socket));
+    const target = path.join(home.directory, 'model.sock');
+    await new Promise((resolve) => echo.listen(target, resolve));
+    context.after(() => echo.close());
+    const probe = net.createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const fixedPort = probe.address().port;
+    await new Promise((resolve) => probe.close(resolve));
+    const rig = await createEndpointRig({ relays: [{ port: fixedPort, target: { path: target } }], keeper: createFakeKeeper({ script: () => {} }) });
+    context.after(() => rig.dispose());
+    // Synchronously after construction, before the relay listener has been bound: the port is already refused.
+    assert.deepEqual(rig.endpoint.ownPorts(), [fixedPort]);
+    await startedService(rig);
+    rig.channel.fromAla({ type: 'start', process: 2, request: VALID_START });
+    await rig.channel.find((m) => m.type === 'started' && m.process === 2);
+    rig.channel.fromAla({ type: 'connect', id: 7, process: 2, endpoint: { kind: 'loopback-port', host: '127.0.0.1', port: fixedPort } });
+    const refused = await rig.channel.find((m) => m.type === 'result' && m.id === 7);
+    assert.deepEqual([refused.message.ok, refused.message.error.code, refused.handle], [false, 'own_port', undefined]);
+    // The relay itself copies bytes to the unix target (the path form the model channel uses).
+    const client = net.connect({ host: '127.0.0.1', port: fixedPort });
+    await once(client, 'connect');
+    client.write('ping');
+    const [echoed] = await once(client, 'data');
+    assert.equal(echoed.toString(), 'ping');
+    client.destroy();
+});
+
 test('a service that refuses the connection is a failed connect, not a failed endpoint', async (context) => {
     const closed = net.createServer();
     await new Promise((resolve) => closed.listen(0, '127.0.0.1', resolve));

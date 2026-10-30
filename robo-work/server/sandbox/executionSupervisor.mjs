@@ -23,6 +23,9 @@
 //                   their own names; recovery removes everything through the netns locator, see createRecoveryView).
 //   'mount'         accepted as a no-op record (see create()).
 //   'endpoint'      the provider endpoint sandbox (role endpoint). Gated. spec { config } is its one JSON argument.
+//                   With `modelChannel` ({ directory, configPath }, M-26) the execution's `model/` directory is bound read-only at
+//                   `modelChannel.directory` into THIS sandbox ONLY (never into ALA or a workload): the endpoint's relay reaches the model
+//                   socket there, and nothing else can.
 //   'process-tree'  spec.role 'orchestration' (ALA) or 'workload' (one provider request). Gated.
 //
 // Directories (HOME, grants, session storage) are given as { path, fd }: the real path and the caller's open descriptor of it
@@ -55,7 +58,7 @@ const decimal = (value) => String(value);
 
 export function createExecutionSupervisor({
     launcher, view, createNetwork = createExecutionNetwork, spawnImpl = spawn, fsImpl = fs, netImpl = net, clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
-    admission, roles, home = null, grants = [], workloadPath = WORKLOAD_PATH, onInfrastructureLoss = () => {},
+    admission, roles, home = null, grants = [], workloadPath = WORKLOAD_PATH, onInfrastructureLoss = () => {}, modelChannel = null,
     limits = {}, supervisorPid = process.pid, pairSocketPathLimit = 100, activityWalk = null, now = Date.now
 } = {}) {
     if (!launcher || typeof launcher.launch !== 'function') throw new TypeError('A launcher is required');
@@ -140,7 +143,7 @@ export function createExecutionSupervisor({
         if (typeof dir !== 'string' || !dir.startsWith('/') || dir === '/') throw sandboxError('invalid_request', 'runtime locator');
         fsImpl.mkdirSync(dir.slice(0, dir.lastIndexOf('/')), { recursive: true, mode: 0o700 });
         fsImpl.mkdirSync(dir, { mode: 0o700 });
-        for (const name of ['channels', 'stream', 'tmp', 'ctl', 'stage', 'etc']) fsImpl.mkdirSync(`${dir}/${name}`, { mode: 0o700 });
+        for (const name of ['channels', 'model', 'stream', 'tmp', 'ctl', 'stage', 'etc']) fsImpl.mkdirSync(`${dir}/${name}`, { mode: 0o700 });
         const stat = fsImpl.lstatSync(dir, { bigint: true });
         if (!stat.isDirectory()) throw sandboxError('setup_failed', 'runtime directory');
         runtime = { path: dir, locator };
@@ -234,7 +237,8 @@ export function createExecutionSupervisor({
                 role: 'endpoint', marker, runtimeDir: runtime.path, netns: network.nsPath, netnsInode: network.nsInode(),
                 roBinds: roles.endpoint.roBinds, symlinks: roles.endpoint.symlinks, env: roles.endpoint.env ?? {}, cwd: roles.endpoint.cwd ?? '/',
                 argv: [...roles.endpoint.argv, JSON.stringify(spec?.config ?? {})], anchored: roles.endpoint.anchored ?? [],
-                binds: [{ source: rt('stream'), dest: '/stream', mode: 'rw' }, { source: rt('channels'), dest: '/run/robo-work/channels', mode: 'ro' }],
+                binds: [{ source: rt('stream'), dest: '/stream', mode: 'rw' }, { source: rt('channels'), dest: '/run/robo-work/channels', mode: 'ro' },
+                    ...(modelChannel ? [{ source: rt('model'), dest: modelChannel.directory, mode: 'ro' }] : [])],
                 stdio: ['ignore', 'ignore', 'ignore'], roleFds: { 3: pair.client, 4: 'pipe' }
             });
             endpointSandbox = sandbox;
@@ -317,7 +321,9 @@ export function createExecutionSupervisor({
                 role: 'workload', marker, runtimeDir: runtime.path, netMode, ...(netMode === 'join' ? { netns: network.nsPath, netnsInode: network.nsInode() } : {}),
                 roBinds: roles.workload.roBinds, symlinks: roles.workload.symlinks,
                 roFiles: [{ source: netMode === 'join' ? etc.resolvJoin : etc.resolvNone, dest: '/etc/resolv.conf' }, { source: etc.hosts, dest: '/etc/hosts' }],
-                env: { HOME: request.home, PATH: workloadPath, TMPDIR: '/tmp', ...request.env },
+                // OPENCODE_CONFIG is provider-owned (the validator refuses it from ALA): it comes after request.env and only for an execution
+                // admitted for the model channel (M-26). The file holds no secret.
+                env: { HOME: request.home, PATH: workloadPath, TMPDIR: '/tmp', ...request.env, ...(modelChannel ? { OPENCODE_CONFIG: modelChannel.configPath } : {}) },
                 cwd: request.cwd, argv: [request.executable, ...request.args], home: { path: home.path, fd: home.fd }, grants: chosenGrants,
                 channelsDir: rt('channels'), tmpDir: rt('tmp'), stdio, scanLimits: roles.workload.scanLimits
             });

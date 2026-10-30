@@ -44,7 +44,9 @@ export function createProviderEndpoint({
         throw new TypeError('maxInboundQueue must not exceed maxInFlightRequests');
     }
     const processes = new Map();
-    const ownPorts = new Set();
+    // A relay with a fixed port (the model channel's) is refused as a `connect` target from the moment the endpoint exists, not only once
+    // its listener is bound: ALA can send a `connect` before `startRelays` has finished, and must never reach a relay port.
+    const ownPorts = new Set(relays.filter((relay) => Number.isInteger(relay.port) && relay.port > 0).map((relay) => relay.port));
     const relayServers = [];
     const relaySockets = new Set();
     const pendingCalls = new Map();

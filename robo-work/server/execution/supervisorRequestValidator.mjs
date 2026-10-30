@@ -9,7 +9,7 @@ export const ROBOT_HOME = '/home/robot';
 
 // Variables the provider owns: HOME, the XDG directories and the native state paths. ALA cannot add them.
 const PROVIDER_OWNED = new Set(['HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'TMPDIR', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
-    'PI_CODING_AGENT_DIR']);
+    'PI_CODING_AGENT_DIR', 'OPENCODE_CONFIG']);
 // The explicit environment additions that ALA's adapters generate at cf2996dc (audited in coding-agents/provider-request.mjs,
 // opencode-server.mjs): Claude Code IS_SANDBOX and DISABLE_AUTOUPDATER, Pi PI_OFFLINE and PI_SKIP_VERSION_CHECK, and OpenCode
 // OPENCODE_ENABLE_EXA (0 or 1), OPENCODE_CONFIG_CONTENT (a JSON overlay) and OPENCODE_SERVER_PASSWORD (the random password of the

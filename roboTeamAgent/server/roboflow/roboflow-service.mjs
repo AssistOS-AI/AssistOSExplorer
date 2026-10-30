@@ -43,6 +43,36 @@ function deriveFlowStatus(instances) {
     return 'completed';
 }
 
+const AUTHORIZATION_CODES = ['forbidden', 'owner_evidence_unavailable', 'worker_stop_not_authorized'];
+export const PHASE_STARTING_MESSAGE = 'This phase is still starting; try again in a few seconds';
+
+// The phase's name as the person sees it in the workflow: the task's name, else its id.
+function phaseLabel(flow, instance) {
+    const task = flow.graph?.tasks?.find(item => item.id === instance.taskId);
+    return String(task?.name || instance.taskId || instance.id);
+}
+const phaseList = (entries) => {
+    const names = [...new Set(entries.map(entry => entry.phase))];
+    return names.length > 5 ? `${names.slice(0, 5).join(', ')} and ${names.length - 5} more` : names.join(', ');
+};
+
+// What a user is told when a stop did not reach the worker for every started phase (decision M-40, M-42). With nothing delivered: the
+// authorization notice, the plain "still starting" notice (the worker has no record of the phase yet but RoboTeam still holds its live task,
+// M-42 (i)), or the code (a phase the worker lost keeps `worker_phase_not_found`). With a
+// partial delivery (M-42 (ii)): which phases stopped and which did not, so that a retry is meaningful; the flow is left as it is.
+export function notDeliveredMessage({ undelivered, delivered = [] }) {
+    const authorization = undelivered.some(entry => AUTHORIZATION_CODES.includes(entry.code));
+    const starting = !authorization && undelivered.every(entry => entry.code === 'worker_phase_starting');
+    const other = undelivered.find(entry => entry.code !== 'worker_phase_starting') ?? undelivered[0];
+    if (delivered.length === 0) {
+        if (authorization) return STOP_NOT_AUTHORIZED_MESSAGE;
+        if (starting) return undelivered.length > 1 ? 'These phases are still starting; try again in a few seconds' : PHASE_STARTING_MESSAGE;
+        return `Stop not delivered (${other.code}). The task may still be running; press stop again.`;
+    }
+    const why = authorization ? 'the worker needs your fresh authorization' : starting ? 'still starting, try again in a few seconds' : `not delivered (${other.code})`;
+    return `Stop delivered to ${phaseList(delivered)} but not to ${phaseList(undelivered)}: ${why}. The phases it did not reach may still be running; press stop again.`;
+}
+
 export class RoboFlowService {
     constructor(options = {}) {
         this.robotStore = options.robotStore;
@@ -439,10 +469,18 @@ export class RoboFlowService {
             const binding = { bindingId: flow.id };
             const accepted = await this.worker.client.lookup(origin, binding);
             if (!accepted) {
-                if (user && instance.startedAt) throw Object.assign(new Error('worker_phase_not_found'), { code: 'worker_phase_not_found' });
+                if (user && instance.startedAt) {
+                    // M-42 (i): while RoboTeam still holds the phase's live task (it has not admitted the turn at the worker yet) the phase is
+                    // starting and a retry will work; with no such task (a RoboTeam restart, a task that ended) the worker has lost it.
+                    const task = this.runtimeManager?.taskStatus?.(instance.robotId, instance.runtimeTaskId);
+                    const code = task && ['queued', 'starting', 'running'].includes(task.state) ? 'worker_phase_starting' : 'worker_phase_not_found';
+                    throw Object.assign(new Error(code), { code });
+                }
                 return;
             }
             await this.worker.client.control(accepted.referenceId, { operationId: stopOperationId(accepted.referenceId), op: 'stop' }, user ? { grant: user.grant } : binding);
+            // The worker accepted a user's stop of this phase (M-42 (ii): a partial delivery names the phases it did reach).
+            if (user && Array.isArray(user.delivered)) user.delivered.push({ instanceId: instance.id });
         } catch (error) {
             console.error(`[roboflow] worker stop of a phase was not delivered (${error?.code || error?.message}); the phase may still run on the worker`);
             // A user's stop that did not reach the worker is told to that user, never silent.
@@ -489,25 +527,25 @@ export class RoboFlowService {
         if (!this.worker || !user || user.confirmed) return;
         this._assertMayControl(flow, user);
         const undelivered = [];
+        const delivered = [];
         const seen = new Set();
         const visit = async (current) => {
             if (!current || seen.has(current.id)) return;
             seen.add(current.id);
             for (const instance of current.instances) {
                 if (terminal(instance.state) || !instance.runtimeTaskId) continue;
-                const mine = { ...user, undelivered: [] };
+                const mine = { ...user, undelivered: [], delivered: [] };
                 await this._stopWorkerPhase(current, instance, mine);
-                undelivered.push(...mine.undelivered);
+                const phase = phaseLabel(current, instance);
+                undelivered.push(...mine.undelivered.map(entry => ({ ...entry, phase })));
+                delivered.push(...mine.delivered.map(entry => ({ ...entry, phase })));
             }
             for (const childId of new Set(current.instances.flatMap(item => item.childFlowIds || []))) await visit(await this.store.get(childId));
         };
         await visit(flow);
         if (undelivered.length) {
             if (Array.isArray(user.undelivered)) user.undelivered.push(...undelivered);
-            const authorization = undelivered.some(entry => ['forbidden', 'owner_evidence_unavailable', 'worker_stop_not_authorized'].includes(entry.code));
-            throw Object.assign(new Error(authorization ? STOP_NOT_AUTHORIZED_MESSAGE
-                : `Stop not delivered (${undelivered[0].code}). The task may still be running; press stop again.`),
-                { statusCode: 409, code: 'worker_stop_not_delivered', undelivered });
+            throw Object.assign(new Error(notDeliveredMessage({ undelivered, delivered })), { statusCode: 409, code: 'worker_stop_not_delivered', undelivered, delivered });
         }
         user.confirmed = true;
     }

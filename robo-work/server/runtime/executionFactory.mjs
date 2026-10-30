@@ -11,6 +11,10 @@ import { foldPathName } from '../views/protectedNames.mjs';
 import { resolveGrant } from '../views/grantResolver.mjs';
 import { VIRTUAL_CONFIG, VIRTUAL_SESSIONS } from './alaPlan.mjs';
 import { createExecutionChannels } from './channels.mjs';
+import {
+    MODEL_DIRECTORY_VIEW, MODEL_RELAY_PORT, MODEL_SOCKET_VIEW, OPENCODE_CONFIG_VIEW, createModelChannel, selectGatewayModel
+} from './modelChannel.mjs';
+import { ExecutionSetupError } from './setupError.mjs';
 
 // The production execution factory: for one admitted attempt it assembles the per-execution Node supervisor
 // (sandbox/executionSupervisor.mjs), the resource ledger (execution/resourceLedger.mjs) and the supervisor side of the
@@ -44,11 +48,18 @@ export function observed(sandbox, activity) {
     return wrapped;
 }
 
-export class ExecutionSetupError extends Error {
-    constructor(reason) {
-        super(reason);
-        this.name = 'ExecutionSetupError';
-        this.reason = reason;
+export { ExecutionSetupError };
+
+// The robot's managed ALA configuration (config/ala.json, written by the worker itself and bound read-only into ALA): the coding agent
+// and the models ALA will run when the specification names none. Unreadable or malformed means {} (the specification then decides).
+export function readManagedConfig(file, { read = (target) => fs.readFileSync(target, 'utf8') } = {}) {
+    try {
+        const text = read(file);
+        if (typeof text !== 'string' || text.length > 64 * 1024) return {};
+        const value = JSON.parse(text);
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    } catch {
+        return {};
     }
 }
 
@@ -91,7 +102,7 @@ export function codeBinds({ serverDir, alaRoot, nodePath = process.execPath }) {
 
 export function createExecutionFactory({
     store, robots, launcher, view, walker, clock, workspaceRoot, runtimeDir, serverDir, alaRoot, nodePath = process.execPath,
-    log = () => {}, activityTickMs = WATCHDOG_TICK_MS, deps = {}
+    log = () => {}, activityTickMs = WATCHDOG_TICK_MS, modelUpstream = null, deps = {}
 }) {
     const make = {
         supervisor: deps.createExecutionSupervisor ?? createExecutionSupervisor,
@@ -102,6 +113,8 @@ export function createExecutionFactory({
         closeFd: deps.closeFd ?? ((fd) => fs.closeSync(fd)),
         image: deps.imageBinds ?? imageBinds,
         channels: deps.createExecutionChannels ?? createExecutionChannels,
+        modelChannel: deps.createModelChannel ?? createModelChannel,
+        managedConfig: deps.readManagedConfig ?? readManagedConfig,
         activityWalk: deps.createWorkloadActivityWalk ?? createWorkloadActivityWalk,
         timers: deps.timers ?? { setInterval, clearInterval }
     };
@@ -132,6 +145,8 @@ export function createExecutionFactory({
                 } catch {
                     throw new ExecutionSetupError('robot_storage_unavailable');
                 }
+                // M-26: the one Soul Gateway model this execution may use, or null (no model channel, no OPENCODE_CONFIG).
+                const gatewayModel = selectGatewayModel({ specification: item.specification, managed: make.managedConfig(where.config) });
                 // Anchored, no-follow resolution: the resolver refuses protected names and anything outside the workspace.
                 const resolved = [];
                 for (const entry of plan.grants) {
@@ -164,6 +179,7 @@ export function createExecutionFactory({
                 };
                 const supervisor = make.supervisor({
                     launcher, view, admission, roles, home: { path: where.home, fd: homeFd }, grants: resolved, activityWalk: sharedActivityWalk,
+                    modelChannel: gatewayModel === null ? null : { directory: MODEL_DIRECTORY_VIEW, configPath: OPENCODE_CONFIG_VIEW },
                     onInfrastructureLoss: (reason) => lost.resolve(`infrastructure_lost:${reason}`)
                 });
                 // referenceId stays null: the ledger would read the reference back with the adapter context, which the store (rightly) does
@@ -173,7 +189,7 @@ export function createExecutionFactory({
                     state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
                     referenceId: null, layout, sandbox: supervisor, walker, clock
                 });
-                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels, activity });
+                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels, activity, gatewayModel, executionId: item.executionId });
             } catch (error) {
                 await closeAll();
                 throw error;
@@ -181,9 +197,10 @@ export function createExecutionFactory({
         }
     });
 
-    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels, activity }) {
+    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels, activity, gatewayModel, executionId }) {
         let endpointServer = null;
         let hosted = null;
+        let model = null;
         let tree = null;
         let ended = null;
         let activityTicker = null;
@@ -192,6 +209,8 @@ export function createExecutionFactory({
         return {
             exited,
             lost: lostRef.promise,
+            // M-43 (a): the last upstream error the model channel saw ({ status, message }), or null.
+            lastModelError: () => model?.lastError() ?? null,
             async start() {
                 await ledger.startKeeper();
                 await ledger.publish({ kind: 'runtime-dir' });
@@ -199,8 +218,20 @@ export function createExecutionFactory({
                 if (channels.taskFailure || channels.humanInput) {
                     hosted = await make.channels({ directory: `${supervisor.runtimeDir}/channels`, taskFailure: channels.taskFailure ?? null, humanInput: channels.humanInput ?? null });
                 }
+                // M-26: the Soul Gateway model channel of an OpenCode robot with a gateway model. Its socket is in the `model/` directory,
+                // which only the endpoint sandbox sees; the endpoint relays 127.0.0.1:MODEL_RELAY_PORT of the execution network to it.
+                if (gatewayModel !== null) {
+                    if (modelUpstream === null) throw new ExecutionSetupError('model_channel_unavailable');
+                    model = await make.modelChannel({
+                        socketDirectory: `${supervisor.runtimeDir}/model`, configDirectory: `${supervisor.runtimeDir}/channels`,
+                        allowed: gatewayModel, upstream: modelUpstream, activity, log, executionId
+                    });
+                }
                 await ledger.publish({ kind: 'netns' });
-                await ledger.publish({ kind: 'endpoint', spec: { config: { streamDirectory: STREAM_DIRECTORY, relays: [] } } });
+                await ledger.publish({
+                    kind: 'endpoint',
+                    spec: { config: { streamDirectory: STREAM_DIRECTORY, relays: model === null ? [] : [{ port: MODEL_RELAY_PORT, target: { path: MODEL_SOCKET_VIEW } }] } }
+                });
                 endpointServer = make.endpointServer({
                     socket: supervisor.endpointSocket, admission, sandbox: observed(supervisor.providerSandbox(ledger), activity), limits: endpointLimits, log,
                     onEnd: (reason) => { if (ended === null) lostRef.resolve(`endpoint_ended:${reason}`); }
@@ -222,6 +253,8 @@ export function createExecutionFactory({
                     if (activityTicker !== null) { make.timers.clearInterval(activityTicker); activityTicker = null; }
                     try {
                         endpointServer?.end('execution_ended');
+                        // In-flight model requests are aborted, then the channel is closed, before the process trees are ended.
+                        await model?.close().catch(() => {});
                         await hosted?.close().catch(() => {});
                         return await ledger.endExecution(outcome);
                     } finally {

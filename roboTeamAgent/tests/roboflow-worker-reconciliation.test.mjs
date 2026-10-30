@@ -245,6 +245,9 @@ test('a phase the worker stopped for inactivity or its maximum duration while Ro
         // The worker's real shape: the end reason lives in result.data (only termination_unverified is top-level).
         [{ data: { reason: 'inactive_timeout', minutes: 20 } }, 'Stopped: no activity from the model for 20 minutes'],
         [{ data: { reason: 'deadline_exceeded' } }, 'Stopped: the task exceeded its maximum duration'],
+        [{ data: { reason: 'inactive_timeout', lastModelError: { status: 429, message: 'quota exceeded' } } }, 'Stopped: no activity from the model for the allowed time. Last model error: HTTP 429: quota exceeded'],
+        [{ data: { reason: 'model_unavailable' } }, 'Stopped: the selected Soul Gateway model is not available'],
+        [{ data: { reason: 'model_channel_unavailable' } }, 'Stopped: Soul Gateway could not be reached for the model. Try again in a moment'],
     ];
     for (const [fields, message] of cases) {
         const setup = await interrupted(t);

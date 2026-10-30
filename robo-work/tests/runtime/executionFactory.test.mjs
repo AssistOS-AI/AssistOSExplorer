@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
-import { ExecutionSetupError, createExecutionFactory, codeBinds, imageBinds } from '../../server/runtime/executionFactory.mjs';
+import { ExecutionSetupError, createExecutionFactory, codeBinds, imageBinds, readManagedConfig } from '../../server/runtime/executionFactory.mjs';
+import { MODEL_RELAY_PORT } from '../../server/runtime/modelChannel.mjs';
 import { planAlaExecution } from '../../server/runtime/alaPlan.mjs';
 
 // The production execution factory over FAKE supervisor, ledger, endpoint server and grant resolver: the publication order,
@@ -15,7 +16,7 @@ const spec = (overrides = {}) => ({
     folders: [{ path: '/ws/skills', access: 'read' }], ...overrides
 });
 
-function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadActivity = undefined, timers = undefined, activityTickMs = undefined } = {}) {
+function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadActivity = undefined, timers = undefined, activityTickMs = undefined, managed = {}, modelUpstream = null, modelChannel = undefined } = {}) {
     const calls = [];
     const closedFds = [];
     const closedGrants = [];
@@ -56,13 +57,18 @@ function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadAc
             return { end: (reason) => calls.push(['endpointServer.end', reason]), onEnd: options.onEnd };
         },
         imageBinds: () => ({ roBinds: [{ source: '/usr', dest: '/usr' }], symlinks: [{ target: 'usr/bin', dest: '/bin' }] }),
+        readManagedConfig: () => managed,
+        createModelChannel: modelChannel ?? (async (options) => {
+            calls.push(['modelChannel', options]);
+            return { close: async () => { calls.push(['modelChannel.close']); }, lastError: () => ({ status: 429, message: 'slow down' }) };
+        }),
         ...(timers ? { timers } : {})
     };
     const factory = createExecutionFactory({
         store: {}, robots: { root: '/store', paths: (id) => ({ home: `/store/robots/${id}/home`, sessions: `/store/robots/${id}/sessions`, configDir: `/store/robots/${id}/config` }) },
         launcher: { fake: 'launcher' }, view: { fake: 'view' }, walker: { fake: 'walker' }, clock: { fake: 'clock' }, workspaceRoot: '/ws', runtimeDir: '/store/runtime',
         serverDir: '/code/server', alaRoot: '/Agent/linked/AdvancedLanguageAgent', nodePath: '/usr/local/bin/node', deps,
-        ...(activityTickMs ? { activityTickMs } : {})
+        ...(activityTickMs ? { activityTickMs } : {}), ...(modelUpstream ? { modelUpstream } : {})
     });
     const item = { robotId: 'ROBOT', executionId: 'EXEC', attemptId: 'ATT', referenceId: 'REF', specification: spec() };
     const plan = planAlaExecution({ specification: item.specification, workspaceRoot: '/ws' });
@@ -221,4 +227,83 @@ test('M-35: a sampler that throws, or a supervisor without one, never breaks the
     const plain = await without.factory.open({ item: without.item, plan: without.plan, context: without.context });
     await plain.start();
     assert.equal(timers.last, null, 'no sampler on the supervisor, no tick');
+});
+
+// ---- M-26: the Soul Gateway model channel ------------------------------------------------------------------------------------------
+
+const gatewayRig = (specification, options = {}) => {
+    const world = rig({ supervisorRuntimeDir: '/store/runtime/x/RID', modelUpstream: { fake: 'upstream' }, ...options });
+    world.item.specification = spec(specification);
+    world.plan = planAlaExecution({ specification: world.item.specification, workspaceRoot: '/ws' });
+    return world;
+};
+const publishedEndpoint = (calls) => calls.find(([what, kind]) => what === 'publish' && kind === 'endpoint')[2];
+
+test('M-26: an OpenCode robot with a gateway model gets the channel between the runtime directory and the network, a relay to model.sock and OPENCODE_CONFIG for workloads', async () => {
+    const touched = [];
+    const { factory, calls, item, plan, context, options } = gatewayRig({ codingAgent: 'opencode', model: 'Soul-Gateway/a', effort: 'default' });
+    const execution = await factory.open({ item, plan, context, activity: () => touched.push(1) });
+    assert.deepEqual(options().supervisorOptions.modelChannel, { directory: '/run/robo-work/model', configPath: '/run/robo-work/channels/opencode.json' });
+    await execution.start();
+    assert.deepEqual(calls.filter(([what, kind]) => what === 'modelChannel' || (what === 'publish' && ['runtime-dir', 'netns', 'endpoint'].includes(kind))).map(([what, kind]) => (what === 'modelChannel' ? what : kind)),
+        ['runtime-dir', 'modelChannel', 'netns', 'endpoint']);
+    const [, opened] = calls.find(([what]) => what === 'modelChannel');
+    assert.equal(opened.socketDirectory, '/store/runtime/x/RID/model');
+    assert.equal(opened.configDirectory, '/store/runtime/x/RID/channels');
+    assert.equal(opened.allowed, 'a', 'the id without the prefix, whatever the prefix\'s case');
+    assert.equal(opened.executionId, 'EXEC');
+    assert.deepEqual(opened.upstream, { fake: 'upstream' });
+    opened.activity();
+    assert.equal(touched.length, 1, 'the channel reports M-33 activity through the attempt\'s own callback');
+    assert.deepEqual(publishedEndpoint(calls), { config: { streamDirectory: '/stream', relays: [{ port: MODEL_RELAY_PORT, target: { path: '/run/robo-work/model/model.sock' } }] } });
+    assert.deepEqual(execution.lastModelError(), { status: 429, message: 'slow down' });
+    await execution.end({ classification: 'completed', outputText: '', data: null });
+    const order = calls.map(([what]) => what);
+    assert.ok(order.indexOf('modelChannel.close') < order.indexOf('endExecution'), 'in-flight model requests are aborted before the process trees are ended');
+});
+
+test('M-26: the channel allows the effective model: a managed gateway model, an override to another gateway model, and no channel for an override to a non-gateway model', async () => {
+    const managed = { codingAgent: 'opencode', models: { opencode: 'soul-gateway/managed-a' } };
+    const cases = [
+        [{}, managed, 'managed-a'],
+        [{ model: 'soul-gateway/override-b', effort: 'default' }, managed, 'override-b'],
+        [{ model: 'opencode/glm-5.3-flash-free', effort: 'default' }, managed, null],
+        [{ codingAgent: 'codex' }, managed, null],
+        [{}, { codingAgent: 'codex', models: { opencode: 'soul-gateway/managed-a' } }, null],
+        [{}, { codingAgent: 'opencode', models: { opencode: 'opencode/glm-5.3-flash-free' } }, null],
+        [{}, {}, null]
+    ];
+    for (const [specification, config, expected] of cases) {
+        const { factory, calls, item, plan, context, options } = gatewayRig(specification, { managed: config });
+        const execution = await factory.open({ item, plan, context });
+        await execution.start();
+        assert.equal(calls.some(([what]) => what === 'modelChannel') ? calls.find(([what]) => what === 'modelChannel')[1].allowed : null, expected, JSON.stringify([specification, config]));
+        assert.equal(options().supervisorOptions.modelChannel !== null, expected !== null);
+        assert.deepEqual(publishedEndpoint(calls).config.relays.length, expected === null ? 0 : 1);
+        if (expected === null) assert.equal(execution.lastModelError(), null);
+        await execution.end({ classification: 'completed', outputText: '', data: null });
+    }
+});
+
+test('M-26: a gateway robot on a worker without the upstream, and a channel that cannot be set up, fail start() with the bounded reason and still end cleanly', async () => {
+    const without = gatewayRig({ codingAgent: 'opencode', model: 'soul-gateway/a', effort: 'default' }, { modelUpstream: null });
+    const first = await without.factory.open({ item: without.item, plan: without.plan, context: without.context });
+    await assert.rejects(first.start(), (error) => error instanceof ExecutionSetupError && error.reason === 'model_channel_unavailable');
+    await first.end({ classification: 'failed', outputText: '', data: { reason: 'model_channel_unavailable' } });
+    assert.ok(!without.calls.some(([what, kind]) => what === 'publish' && kind === 'endpoint'), 'nothing past the runtime directory was published');
+
+    for (const reason of ['model_unavailable', 'model_channel_unavailable']) {
+        const failing = gatewayRig({ codingAgent: 'opencode', model: 'soul-gateway/a', effort: 'default' }, { modelChannel: async () => { throw new ExecutionSetupError(reason); } });
+        const execution = await failing.factory.open({ item: failing.item, plan: failing.plan, context: failing.context });
+        await assert.rejects(execution.start(), (error) => error.reason === reason);
+        await execution.end({ classification: 'failed', outputText: '', data: { reason } });
+        assert.equal(failing.calls.filter(([what]) => what === 'endExecution').length, 1);
+        assert.equal(failing.closedFds.length, 3, 'the descriptors are closed');
+    }
+});
+
+test('readManagedConfig: the managed ALA configuration, or {} when it is missing, malformed or not an object', () => {
+    assert.deepEqual(readManagedConfig('/x', { read: () => '{"codingAgent":"opencode","models":{"opencode":"soul-gateway/a"}}' }), { codingAgent: 'opencode', models: { opencode: 'soul-gateway/a' } });
+    for (const text of ['', '{', '[]', '"x"', 'null', 'x'.repeat(70000)]) assert.deepEqual(readManagedConfig('/x', { read: () => text }), {}, text.slice(0, 10));
+    assert.deepEqual(readManagedConfig('/x', { read: () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); } }), {});
 });

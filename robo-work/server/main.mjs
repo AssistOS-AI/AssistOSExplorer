@@ -16,6 +16,7 @@ import { createSandboxLauncher } from './sandbox/sandboxLauncher.mjs';
 import { createRecoveryView, sandboxRecordFor } from './sandbox/executionSupervisor.mjs';
 import { createDispatcher } from './runtime/dispatcher.mjs';
 import { createExecutionFactory } from './runtime/executionFactory.mjs';
+import { createSoulGatewayUpstream } from './runtime/modelChannel.mjs';
 import { createLifecycleDriver } from './runtime/lifecycleDriver.mjs';
 import { runSandboxPreflight } from './runtime/preflight.mjs';
 import { createProductionRuntime } from './runtime/productionRuntime.mjs';
@@ -45,6 +46,10 @@ import { createRobotStore } from './runtime/robotStore.mjs';
 //   PORT, ROBO_WORK_COORDINATOR_HOST, ROBO_WORK_PROVIDER_PORT, ROBO_WORK_PROVIDER_HOST
 //   ROBO_WORK_ALA_ROOT                the AdvancedLanguageAgent checkout, default /Agent/linked/AdvancedLanguageAgent
 //   ROBO_WORK_MAX_CONCURRENT          concurrent executions, default 4
+//   PLOINKY_AGENT_API_KEY, PLOINKY_ROUTER_DESCRIPTOR_FILE, PLOINKY_AGENTLIB_DIR
+//                                     the worker's own Soul Gateway identity for the model channel (M-26): an OpenCode robot whose model is
+//                                     `soul-gateway/<id>` is served through a per-execution channel (runtime/modelChannel.mjs). Read only here, by
+//                                     the upstream; never passed to a sandbox, a file or a log.
 //   ROBO_WORK_INACTIVITY_TIMEOUT_MS   a task attempt with no activity for this long is ended `failed` / `inactive_timeout`
 //                                     (activity: an ALA record or output, a request from ALA to the provider, a prompt or message
 //                                     delivered, or workload CPU: every 60 s the workloads of the attempt are sampled read-only from
@@ -230,7 +235,10 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     if (factory === null && launcher && alaRoot) {
         factory = createExecutionFactory({
             store, robots, launcher, view, walker, clock, workspaceRoot: config.workspaceRoot, runtimeDir: path.join(config.dataDir, 'runtime'),
-            serverDir: SERVER_DIRECTORY, alaRoot, log
+            serverDir: SERVER_DIRECTORY, alaRoot, log,
+            // M-26: the worker's own Soul Gateway identity (PLOINKY_AGENT_API_KEY, PLOINKY_ROUTER_DESCRIPTOR_FILE, PLOINKY_AGENTLIB_DIR), loaded
+            // lazily by the first execution that needs the model channel. It never leaves this process: sandboxes get a clean environment.
+            modelUpstream: createSoulGatewayUpstream({ env })
         });
     }
     const dispatcher = factory

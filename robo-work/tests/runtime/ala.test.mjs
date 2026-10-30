@@ -168,3 +168,11 @@ test('relay: never blocks; backlog, oversize records and store refusals become e
     failing.push({ type: 'a' }, 5);
     assert.equal((await failing.close()).dropped, 1);
 });
+
+test('M-26: a gateway model is given to ALA with the prefix in its one canonical spelling, other models untouched', () => {
+    const argvOf = (model) => planAlaExecution({ workspaceRoot: ROOT, specification: spec({ model, codingAgent: 'opencode' }) }).argv;
+    for (const [given, expected] of [['Soul-Gateway/Model-X', 'soul-gateway/Model-X'], ['SOUL-GATEWAY/a/b', 'soul-gateway/a/b'], ['soul-gateway/x', 'soul-gateway/x'], ['opencode/glm-5.3-flash-free', 'opencode/glm-5.3-flash-free']]) {
+        const argv = argvOf(given);
+        assert.equal(argv[argv.indexOf('--model') + 1], expected, given);
+    }
+});

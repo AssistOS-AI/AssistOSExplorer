@@ -16,6 +16,7 @@ import { createAttemptWatchdog } from './attemptWatchdog.mjs';
 //   execution.start()  -> Promise<{ stdin, stdout, stderr }>   everything is published and the ALA process runs, gated
 //   execution.exited   -> Promise<{ exitCode, signal }>        of the orchestration process
 //   execution.lost     -> Promise<string>  (optional)           resolves when the endpoint or the anchor is lost before the end
+//   execution.lastModelError() -> { status, message } | null  (optional)  the last upstream error of the Soul Gateway model channel (M-43 (a))
 //   execution.end({ classification, outputText, data }) -> Promise   the section 5.5 end path; step 1 is beginAttemptEnd
 //
 // A failure before an execution exists ends the attempt directly through beginAttemptEnd.
@@ -105,8 +106,12 @@ export function createDispatcher({
                     // An attempt still being published is ended once that is over, as at a shutdown.
                     if (starting !== null) await starting.catch(() => {});
                     if (finishing !== null) return;
+                    // M-43 (a): an inactive attempt tells the user the last error the model channel saw (status and a sanitized message of
+                    // at most 300 characters), so a quota or provider failure is visible instead of a bare timeout.
+                    let lastModelError = null;
+                    if (reason === 'inactive_timeout') { try { lastModelError = execution?.lastModelError?.() ?? null; } catch { lastModelError = null; } }
                     // The normal end path; if its stop cannot be verified S1 publishes `termination_unverified`, which wins.
-                    await finish({ classification: 'failed', outputText: partialText(), data: { reason } });
+                    await finish({ classification: 'failed', outputText: partialText(), data: { reason, ...(lastModelError ? { lastModelError } : {}) } });
                 })().catch((error) => log('end_failed', { error: describe(error) }));
             }
         });

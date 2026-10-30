@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 
+import { canonicalModel } from './modelChannel.mjs';
+
 // Maps an admitted version-2 execution specification (wiring contract) to everything the dispatcher needs to run ALA in
 // the orchestration domain: the grants to resolve, the virtual (in-sandbox) paths, ALA's argv and environment and the
 // first control record. Pure and synchronous. The grant resolver, not this module, refuses protected and out-of-workspace
@@ -106,7 +108,7 @@ export function planAlaExecution({ specification, workspaceRoot }) {
 
     const argv = ['--execution-provider', 'protocol', '--home', VIRTUAL_HOME, '--config', VIRTUAL_CONFIG, '--cwd', cwd === null ? VIRTUAL_HOME : cwd.path,
         '--session-id', alaSessionId(specification.sessionId), '--turn-id', alaTurnId(specification.turnId), '--control-stdin', '--permissions', specification.permissions];
-    if (specification.model !== undefined) argv.push('--model', specification.model, '--effort', specification.effort ?? 'default');
+    if (specification.model !== undefined) argv.push('--model', canonicalModel(specification.model), '--effort', specification.effort ?? 'default');
     else if (specification.effort !== undefined) argv.push('--effort', specification.effort);
     if (specification.codingAgent !== undefined) argv.push('--ca', specification.codingAgent);
     const emitted = new Set(cwd === null ? [] : [cwd]);

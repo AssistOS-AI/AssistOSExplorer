@@ -54,13 +54,14 @@ const WORKER_SESSION_HOME = '/';
 // Where every workload sees the worker-hosted channels of its execution (read-only).
 const CHANNELS_ROOT = '/run/robo-work/channels';
 
-// OpenCode serves Soul Gateway models under the `soul-gateway` provider, through a Unix socket in the robot home
-// (the legacy path's plugin); the worker has no such socket.
-const needsLocalProxy = (model) => typeof model === 'string' && /^soul-gateway\//iu.test(model.trim());
+// Soul Gateway models (`soul-gateway/<id>`, matched case-insensitively) run in the worker only on OpenCode: the worker hosts a model channel
+// for them (decision M-26; robo-work/server/runtime/modelChannel.mjs) with its own Soul Gateway identity, and nothing is written to the robot
+// HOME. Codex, Claude and Pi have no such channel, so for them the turn is refused here, before admission, and never replaced by the free default.
+const isGatewayModel = (model) => typeof model === 'string' && /^soul-gateway\//iu.test(model.trim());
 
-function modelRefusal(model) {
+function modelRefusal(model, backend) {
     const error = new WorkerError('model_unavailable_in_worker', 400);
-    error.message = `model_unavailable_in_worker: the model "${model}" is served through Soul Gateway on a local socket, which the worker cannot reach. Choose another model with /model, or /model default for the free default model.`;
+    error.message = `model_unavailable_in_worker: the model "${model}" is served through Soul Gateway, which the worker offers to OpenCode only, not to ${backend}. Choose another model with /model, or /model default for the default model.`;
     return error;
 }
 
@@ -297,10 +298,10 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 if (execution.model !== models[backend]) delete efforts[backend];
                 models[backend] = execution.model;
             }
-            // A model served through Soul Gateway needs a local proxy socket the worker cannot reach. It is refused here,
-            // before admission, and never replaced by the free default.
+            // A Soul Gateway model is served by the worker's model channel to OpenCode only (decision M-26). For any other coding agent it is
+            // refused here, before admission, and never replaced by the free default.
             const chosenModel = backend ? models[backend] : null;
-            if (needsLocalProxy(chosenModel)) throw modelRefusal(chosenModel);
+            if (backend !== 'opencode' && isGatewayModel(chosenModel)) throw modelRefusal(chosenModel, backend);
             if (backend === 'pi' && permissionMode === 'ask-for-approval') {
                 throw new Error('Pi does not support ask-for-approval; select full-access or use Codex, OpenCode or Claude Code.');
             }

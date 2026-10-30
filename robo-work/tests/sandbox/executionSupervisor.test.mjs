@@ -44,7 +44,7 @@ function fakeNetwork() {
     return net_;
 }
 
-async function rig({ grants = true, spawnImpl = null, view = createFakeView(), createNetwork = null, hook = null, activityWalk = null } = {}) {
+async function rig({ grants = true, spawnImpl = null, view = createFakeView(), createNetwork = null, hook = null, activityWalk = null, modelChannel = null } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-sup-'));
     const homeFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
     const launched = [];
@@ -66,7 +66,8 @@ async function rig({ grants = true, spawnImpl = null, view = createFakeView(), c
             { name: 'a', path: '/projects/a', hostPath: `${dir}/ga`, access: 'write', fd: homeFd }, { name: 'b', path: '/projects/b', hostPath: `${dir}/gb`, access: 'read', fd: homeFd },
             { name: 'c', path: '/projects/c', hostPath: `${dir}/gc`, access: 'write', fd: homeFd }
         ] : [],
-        supervisorPid: SUPERVISOR_PID, onInfrastructureLoss: (reason) => losses.push(reason), limits: { stopGraceMs: 123, killWaitMs: 50 }, ...(activityWalk ? { activityWalk } : {})
+        supervisorPid: SUPERVISOR_PID, onInfrastructureLoss: (reason) => losses.push(reason), limits: { stopGraceMs: 123, killWaitMs: 50 }, ...(activityWalk ? { activityWalk } : {}),
+        ...(modelChannel ? { modelChannel } : {})
     });
     const runtimePath = `${dir}/x/${LOCATOR_ID}`;
     await supervisor.create({ kind: 'runtime-dir', resourceId: 'r1', marker: null, locator: { path: runtimePath } });
@@ -145,7 +146,7 @@ test('anchor: an uncommitted anchor is aborted by SIGKILL; a committed anchor th
 test('runtime dir: private layout and identity; removed through the view (which refuses while a mount lies beneath it)', async () => {
     const world = await rig();
     try {
-        for (const name of ['channels', 'stream', 'tmp', 'ctl', 'stage']) assert.equal(fs.statSync(`${world.runtimePath}/${name}`).mode & 0o777, 0o700, name);
+        for (const name of ['channels', 'model', 'stream', 'tmp', 'ctl', 'stage']) assert.equal(fs.statSync(`${world.runtimePath}/${name}`).mode & 0o777, 0o700, name);
         assert.equal(world.supervisor.runtimeDir, world.runtimePath);
         await world.supervisor.removeRuntime();
         assert.deepEqual(world.removed, [['runtime-dir', { path: world.runtimePath }]]);
@@ -523,4 +524,52 @@ test('M-35: workloadActivity() samples only the live workload trees of this exec
         world.supervisor.workloadActivity();
         servers.close();
     } finally { world.done(); }
+});
+
+const MODEL_CHANNEL = Object.freeze({ directory: '/run/robo-work/model', configPath: '/run/robo-work/channels/opencode.json' });
+
+test('M-26: the model directory is bound read-only into the ENDPOINT only; ALA and the workloads never get it; OPENCODE_CONFIG reaches workloads only with the channel', async () => {
+    const world = await rig({ modelChannel: MODEL_CHANNEL });
+    try {
+        await world.supervisor.create({ kind: 'netns', resourceId: 'n1', locator: { netns: LOCATOR_ID } });
+        await world.supervisor.create({ kind: 'endpoint', resourceId: 'e1', marker: MARKER, spec: { config: { streamDirectory: '/stream', relays: [] } } });
+        await world.supervisor.create({ kind: 'process-tree', resourceId: 'o1', marker: 'rwOrchMarker012345678901', spec: { role: 'orchestration' } });
+        const servers = await streamServers(world, ['stdinaaaa', 'stdoutbbbb', 'stderrcccc']);
+        const sandbox = world.supervisor.providerSandbox(fakeLedger(world.supervisor));
+        await sandbox.start({ process: 1, request: request(), streams: { stdin: '/stream/stdinaaaa', stdout: '/stream/stdoutbbbb', stderr: '/stream/stderrcccc' } });
+        const [endpoint, ala, workload] = world.launched;
+        assert.deepEqual([endpoint.role, ala.role, workload.role], ['endpoint', 'orchestration', 'workload']);
+        assert.deepEqual(endpoint.binds.map((bind) => [bind.source, bind.dest, bind.mode]), [
+            [`${world.runtimePath}/stream`, '/stream', 'rw'], [`${world.runtimePath}/channels`, '/run/robo-work/channels', 'ro'],
+            [`${world.runtimePath}/model`, '/run/robo-work/model', 'ro']]);
+        // Neither the orchestration domain nor a workload has any path to the model directory: not in a bind, not as the channels directory.
+        for (const spec of [ala, workload]) {
+            assert.ok(!JSON.stringify({ binds: spec.binds ?? [], roBinds: spec.roBinds ?? [], channelsDir: spec.channelsDir ?? null, tmpDir: spec.tmpDir ?? null }).includes('/model'), spec.role);
+        }
+        assert.deepEqual((ala.binds ?? []).map((bind) => bind.dest), ['/run/robo-work/channels']);
+        assert.equal(workload.channelsDir, `${world.runtimePath}/channels`);
+        assert.equal(workload.env.OPENCODE_CONFIG, '/run/robo-work/channels/opencode.json');
+        assert.equal(Object.hasOwn(ala.env, 'OPENCODE_CONFIG'), false);
+        assert.equal(Object.hasOwn(endpoint.env, 'OPENCODE_CONFIG'), false);
+        servers.close();
+    } finally { world.done(); }
+});
+
+test('M-26: without the channel there is no model bind and no OPENCODE_CONFIG; ALA\'s own OPENCODE_CONFIG is refused as provider-owned', async () => {
+    const world = await rig();
+    try {
+        await world.supervisor.create({ kind: 'netns', resourceId: 'n1', locator: { netns: LOCATOR_ID } });
+        await world.supervisor.create({ kind: 'endpoint', resourceId: 'e1', marker: MARKER, spec: { config: { streamDirectory: '/stream', relays: [] } } });
+        assert.ok(!world.launched[0].binds.some((bind) => bind.dest.includes('model')));
+        const servers = await streamServers(world, ['stdinaaaa', 'stdoutbbbb', 'stderrcccc']);
+        const sandbox = world.supervisor.providerSandbox(fakeLedger(world.supervisor));
+        await sandbox.start({ process: 1, request: request(), streams: { stdin: '/stream/stdinaaaa', stdout: '/stream/stdoutbbbb', stderr: '/stream/stderrcccc' } });
+        assert.equal(Object.hasOwn(world.launched.at(-1).env, 'OPENCODE_CONFIG'), false);
+        servers.close();
+    } finally { await world.supervisor.exit(); world.done(); }
+    const admission = createAdmission({ grants: [{ path: '/projects/a', access: 'write' }], inventory: [{ name: 'opencode' }], streamDirectory: '/stream' });
+    const refusal = admitStartRequest(request({ executable: 'opencode', env: { OPENCODE_CONFIG: '/projects/a/evil.json' }, folders: [{ path: '/projects/a', access: 'write' }] }), admission);
+    assert.equal(refusal?.code, 'environment_owned_by_provider');
+    // The allowed OpenCode additions of ALA stay admitted.
+    assert.equal(admitStartRequest(request({ executable: 'opencode', env: { OPENCODE_CONFIG_CONTENT: '{}' }, folders: [{ path: '/projects/a', access: 'write' }] }), admission), null);
 });

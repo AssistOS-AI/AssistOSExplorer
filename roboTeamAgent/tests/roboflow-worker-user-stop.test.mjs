@@ -18,7 +18,7 @@ const graph = { id: 'stopping', name: 'Stopping', description: 'one phase', entr
 // owner-context lookup (a grant) searches the user's own row and never finds it; a control needs the user's grant.
 const bindingOnly = (admitted) => async (origin, auth) => (auth?.bindingId && admitted.has(`${auth.bindingId}\n${origin}`) ? { referenceId: REFERENCE } : null);
 
-async function fixture(t, { lookup = null, root: given = null, admittedOrigins = new Set(), control = null, workerState = { value: 'running' } } = {}) {
+async function fixture(t, { lookup = null, root: given = null, admittedOrigins = new Set(), control = null, workerState = { value: 'running' }, taskStatus = null } = {}) {
     const root = given || await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-user-stop-')));
     if (!given) t.after(() => fs.rm(root, { recursive: true, force: true }));
     const admitted = admittedOrigins;
@@ -28,7 +28,7 @@ async function fixture(t, { lookup = null, root: given = null, admittedOrigins =
     const started = [];
     const calls = { lookup: [], control: [] };
     const robots = [{ id: 'default-id', name: 'default', codingAgents: ['codex'] }];
-    const runtimeManager = { resolveCwd: async (value) => value, guiBusy: () => false,
+    const runtimeManager = { resolveCwd: async (value) => value, guiBusy: () => false, ...(taskStatus ? { taskStatus } : {}),
         stopTask(robot, type, taskId, options) { stops.push({ taskId, options }); return { state: 'completed' }; },
         sendTaskMessage(robot, taskId, prompt, options) { messages.push({ taskId, prompt, options }); return { delivery: 'delivered' }; },
         startTask(robot, type, request) { started.push(request.runtimeTaskId); return { taskId: request.runtimeTaskId, state: 'queued' }; },
@@ -109,7 +109,8 @@ test('a stop the worker did not accept changes nothing: 409 with the notice, the
     const lost = await fixture(t, { lookup: async () => null });
     const started = await lost.start();
     await lost.service.store.update(started.flow.id, (current) => { current.instances[0].startedAt = new Date().toISOString(); });
-    await assert.rejects(lost.service.pauseFlow(started.flow.id, asUser('h.e30.LOST')), (error) => error.statusCode === 409 && /worker_phase_not_found/.test(error.message));
+    await assert.rejects(lost.service.pauseFlow(started.flow.id, asUser('h.e30.LOST')), (error) => error.statusCode === 409 && error.code === 'worker_stop_not_delivered'
+        && /worker_phase_not_found/.test(error.message) && error.undelivered[0].code === 'worker_phase_not_found');
     assert.notEqual((await lost.service.getFlow(started.flow.id)).status, 'paused');
     // The worker later reports the phase terminal: reconciliation/the runtime event settles it as before.
     f.service.onRuntimeTaskEvent({ kind: 'terminal', taskId: instance.runtimeTaskId ?? (await f.service.store.get(flow.id)).instances[0].runtimeTaskId, state: 'paused', error: 'Task cancelled on the worker.' });
@@ -199,4 +200,85 @@ test('a lookup that finds nothing for a phase that had started is reported as no
     await f.service._stopWorkerPhase(current, current.instances[0], started);
     assert.deepEqual(started.undelivered, [{ instanceId: instance.id, code: 'worker_phase_not_found' }]);
     assert.equal(f.calls.control.length, 0);
+});
+
+// ---- M-42: what the 409 says ----
+const LIVE_TASK = () => ({ state: 'running' });
+
+test('M-42 (i): a pause of a phase the worker has not admitted yet, while RoboTeam still holds its task, says it is still starting, and changes nothing', async (t) => {
+    const f = await fixture(t, { lookup: async () => null, taskStatus: LIVE_TASK });
+    const { flow } = await f.start();
+    await f.service.store.update(flow.id, (current) => { current.instances[0].startedAt = new Date().toISOString(); });
+    for (const call of [(user) => f.service.pauseFlow(flow.id, user), (user) => f.service.terminateFlow(flow.id, user)]) {
+        const user = asUser('h.e30.STARTING');
+        await assert.rejects(call(user), (error) => error.statusCode === 409 && error.code === 'worker_stop_not_delivered' && error.message === 'This phase is still starting; try again in a few seconds');
+        assert.deepEqual(user.undelivered.map((entry) => entry.code), ['worker_phase_starting']);
+    }
+    assert.notEqual((await f.service.getFlow(flow.id)).status, 'paused');
+    assert.notEqual((await f.service.getFlow(flow.id)).status, 'terminated');
+    assert.equal(f.calls.control.length, 0);
+    // A phase the worker has lost is not "starting": RoboTeam holds no live task for it (or the task ended), so a retry would not help.
+    for (const taskStatus of [null, () => null, () => ({ state: 'failed' })]) {
+        const lost = await fixture(t, { lookup: async () => null, ...(taskStatus ? { taskStatus } : {}) });
+        const { flow: lostFlow } = await lost.start();
+        await lost.service.store.update(lostFlow.id, (current) => { current.instances[0].startedAt = new Date().toISOString(); });
+        await assert.rejects(lost.service.pauseFlow(lostFlow.id, asUser('h.e30.LOSTPHASE')), (error) => error.statusCode === 409
+            && error.message === 'Stop not delivered (worker_phase_not_found). The task may still be running; press stop again.');
+    }
+});
+
+// A flow with two started phases, as a parent flow with a running child has: the second instance is added to the stored flow.
+async function twoPhases(f, flow) {
+    const now = new Date().toISOString();
+    await f.service.store.update(flow.id, (current) => {
+        current.instances[0].startedAt = now;
+        current.instances.push({ ...current.instances[0], id: 'inv_second', sequence: 1, taskId: 'b', runtimeTaskId: 'second-runtime-task', startedAt: now, state: 'running' });
+    });
+}
+
+test('M-42 (ii): a partial delivery names the phases that stopped and the ones that did not, and leaves the flow as it is', async (t) => {
+    // The second phase is still starting at the worker.
+    const f = await fixture(t, { taskStatus: (robotId, taskId) => (taskId === 'second-runtime-task' ? { state: 'starting' } : null) });
+    const { flow } = await f.start();
+    await twoPhases(f, flow);
+    const user = asUser('h.e30.PARTIAL');
+    await assert.rejects(f.service.pauseFlow(flow.id, user), (error) => error.statusCode === 409 && error.code === 'worker_stop_not_delivered'
+        && error.message === 'Stop delivered to a but not to b: still starting, try again in a few seconds. The phases it did not reach may still be running; press stop again.'
+        && error.delivered.map((entry) => entry.phase).join() === 'a' && error.undelivered.map((entry) => entry.phase).join() === 'b');
+    assert.equal(f.calls.control.length, 1, 'the accepted phase was stopped on the worker');
+    assert.deepEqual(user.undelivered.map((entry) => [entry.instanceId, entry.code]), [['inv_second', 'worker_phase_starting']]);
+    assert.notEqual((await f.service.getFlow(flow.id)).status, 'paused', 'the flow keeps the worker-true state and is still followed');
+
+    // The second phase is lost at the worker: its code is named instead.
+    const lost = await fixture(t);
+    const { flow: lostFlow } = await lost.start();
+    await twoPhases(lost, lostFlow);
+    await assert.rejects(lost.service.pauseFlow(lostFlow.id, asUser('h.e30.PARTIALLOST')), (error) => error.statusCode === 409
+        && error.message === 'Stop delivered to a but not to b: not delivered (worker_phase_not_found). The phases it did not reach may still be running; press stop again.');
+
+    // The worker finds both phases, accepts the first stop and refuses the second: the authorization is named.
+    let controls = 0;
+    const refused = await fixture(t, { lookup: async () => ({ referenceId: REFERENCE }), control: async () => { controls += 1; if (controls === 2) throw Object.assign(new Error('forbidden'), { code: 'forbidden' }); } });
+    const { flow: refusedFlow } = await refused.start();
+    await twoPhases(refused, refusedFlow);
+    const refusedUser = asUser('h.e30.PARTIALAUTH');
+    await assert.rejects(refused.service.pauseFlow(refusedFlow.id, refusedUser), (error) => error.statusCode === 409
+        && error.message === 'Stop delivered to a but not to b: the worker needs your fresh authorization. The phases it did not reach may still be running; press stop again.');
+    assert.equal(controls, 2);
+    assert.deepEqual(refusedUser.undelivered.map((entry) => [entry.instanceId, entry.code]), [['inv_second', 'forbidden']]);
+});
+
+test('M-42: notDeliveredMessage composes the notices', async () => {
+    const { notDeliveredMessage, PHASE_STARTING_MESSAGE } = await import('../server/roboflow/roboflow-service.mjs');
+    assert.equal(PHASE_STARTING_MESSAGE, 'This phase is still starting; try again in a few seconds');
+    assert.equal(notDeliveredMessage({ undelivered: [{ code: 'worker_phase_starting', phase: 'a' }], delivered: [] }), PHASE_STARTING_MESSAGE);
+    assert.equal(notDeliveredMessage({ undelivered: [{ code: 'worker_phase_starting', phase: 'a' }, { code: 'worker_phase_starting', phase: 'b' }], delivered: [] }), 'These phases are still starting; try again in a few seconds');
+    assert.equal(notDeliveredMessage({ undelivered: [{ code: 'worker_phase_not_found', phase: 'a' }], delivered: [] }), 'Stop not delivered (worker_phase_not_found). The task may still be running; press stop again.');
+    assert.equal(notDeliveredMessage({ undelivered: [{ code: 'worker_phase_starting', phase: 'a' }, { code: 'worker_unreachable', phase: 'b' }], delivered: [] }), 'Stop not delivered (worker_unreachable). The task may still be running; press stop again.');
+    assert.match(notDeliveredMessage({ undelivered: [{ code: 'forbidden', phase: 'a' }], delivered: [] }), /^Stop not delivered: the worker needs your fresh authorization/u);
+    assert.equal(notDeliveredMessage({ undelivered: [{ code: 'worker_unreachable', phase: 'a' }], delivered: [] }), 'Stop not delivered (worker_unreachable). The task may still be running; press stop again.');
+    assert.equal(notDeliveredMessage({ undelivered: [{ code: 'forbidden', phase: 'review' }, { code: 'forbidden', phase: 'build' }], delivered: [{ phase: 'plan' }] }),
+        'Stop delivered to plan but not to review, build: the worker needs your fresh authorization. The phases it did not reach may still be running; press stop again.');
+    const many = Array.from({ length: 8 }, (_, index) => ({ code: 'worker_unreachable', phase: `p${index}` }));
+    assert.match(notDeliveredMessage({ undelivered: many, delivered: [{ phase: 'ok' }] }), /but not to p0, p1, p2, p3, p4 and 3 more: not delivered \(worker_unreachable\)/u);
 });

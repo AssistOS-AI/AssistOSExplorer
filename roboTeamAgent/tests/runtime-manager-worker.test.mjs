@@ -266,7 +266,9 @@ test('a task whose stop is pending ends on every path as paused, failed or compl
 });
 
 test('a child that the worker stopped for inactivity or duration leaves that plain line as the task error', async (t) => {
-    for (const line of ['Stopped: no activity from the model for 20 minutes', 'Stopped: the task exceeded its maximum duration']) {
+    for (const line of ['Stopped: no activity from the model for 20 minutes', 'Stopped: the task exceeded its maximum duration',
+        'Stopped: no activity from the model for the allowed time. Last model error: HTTP 429: daily quota exceeded',
+        'Stopped: the selected Soul Gateway model is not available', 'Stopped: Soul Gateway could not be reached for the model. Try again in a moment']) {
         const f = await runningTask(t);
         f.child.child.stderr.write(`${line}\n`);
         await new Promise((resolve) => setTimeout(resolve, 10));

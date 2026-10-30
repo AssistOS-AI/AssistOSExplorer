@@ -563,25 +563,43 @@ const opencodeConfiguration = (settings) => ({ backend: 'opencode', settings: { 
 const opencodeRobot = { id: 'robo', name: 'default', codingAgents: ['opencode'], worker: { robotId: ROBOT } };
 const opencodeRows = () => [state('running', 1), ala({ ...SELECTED, agent: 'opencode' }, 2), ala({ ...FINAL('Final answer'), agent: 'opencode' }, 3), state('completed', 4)];
 
-test('a model served through Soul Gateway is refused before admission and never replaced by the free default', async (t) => {
-    // The robot's chosen model, a conversation override and an explicit task model are all checked.
+test('M-26: an OpenCode robot whose model is served through Soul Gateway is admitted once, in every way the model can be chosen; any other coding agent is still refused before admission', async (t) => {
+    // The robot's chosen model, a conversation override and an explicit task model are all checked; the prefix is matched case-insensitively.
     const gateway = await harness(t, { rows: opencodeRows(), robot: opencodeRobot,
         configuration: opencodeConfiguration({ model: 'soul-gateway/gpt-x', modelSource: 'selected' }) });
-    await assert.rejects(gateway.engine.executeTurn({ sessionId: gateway.sessionId, prompt: 'p', owner: gateway.owner }),
-        (error) => error.code === 'model_unavailable_in_worker' && error.status === 400
-            && /soul-gateway\/gpt-x/.test(error.message) && /Soul Gateway/.test(error.message) && /\/model default/.test(error.message));
-    assert.equal(gateway.admitted.length, 0);
-    assert.equal(gateway.client.calls.subscribe.length, 0);
+    const gatewayResult = await gateway.engine.executeTurn({ sessionId: gateway.sessionId, prompt: 'p', owner: gateway.owner });
+    assert.equal(gatewayResult.outputText, 'Final answer');
+    assert.equal(gateway.admitted.length, 1, 'admitted once');
+    assert.equal(gateway.client.calls.subscribe.length, 1);
+    assert.equal(Object.hasOwn(gateway.admitted[0].request.specification, 'model'), false, 'the robot\'s own model is the managed configuration\'s, not a per-turn override');
 
     const override = await harness(t, { rows: opencodeRows(), robot: opencodeRobot, configuration: opencodeConfiguration({ model: OPENCODE_DEFAULT, modelSource: 'default' }) });
     await override.store.updateSession(override.sessionId, (session) => { session.modelOverride = { backend: 'opencode', model: 'Soul-Gateway/claude', effort: null }; });
-    await assert.rejects(override.engine.executeTurn({ sessionId: override.sessionId, prompt: 'p', owner: override.owner }), (error) => error.code === 'model_unavailable_in_worker');
-    assert.equal(override.admitted.length, 0);
+    await override.engine.executeTurn({ sessionId: override.sessionId, prompt: 'p', owner: override.owner });
+    assert.equal(override.admitted.length, 1);
+    assert.equal(override.admitted[0].request.specification.model, 'Soul-Gateway/claude', 'the override reaches the worker, which canonicalises the prefix');
+    assert.equal(override.admitted[0].request.specification.codingAgent, 'opencode');
 
     const task = await harness(t, { rows: opencodeRows(), robot: opencodeRobot, configuration: opencodeConfiguration({ model: OPENCODE_DEFAULT, modelSource: 'default' }),
         execution: { model: 'soul-gateway/x', worker: { originRequestId: ORIGIN } } });
-    await assert.rejects(task.engine.executeTurn({ sessionId: task.sessionId, prompt: 'p', owner: { evidence: { ok: true, grant: task.grant } } }), (error) => error.code === 'model_unavailable_in_worker');
-    assert.equal(task.client.calls.admit.length, 0);
+    await task.engine.executeTurn({ sessionId: task.sessionId, prompt: 'p', owner: { evidence: { ok: true, grant: task.grant } } });
+    assert.equal(task.client.calls.admit.length, 1);
+    assert.equal(task.client.calls.admit[0].body.specification.model, 'soul-gateway/x');
+
+    // Codex, Claude and Pi have no model channel: still refused before admission, with a message that names the coding agent.
+    for (const backend of ['codex', 'claude', 'pi']) {
+        const refused = await harness(t, { rows: opencodeRows(), robot: { ...opencodeRobot, codingAgents: [backend] },
+            configuration: { backend, settings: { codingAgents: [backend], model: 'soul-gateway/gpt-x', modelSource: 'selected' } } });
+        await assert.rejects(refused.engine.executeTurn({ sessionId: refused.sessionId, prompt: 'p', owner: refused.owner }),
+            (error) => error.code === 'model_unavailable_in_worker' && error.status === 400 && /soul-gateway\/gpt-x/.test(error.message)
+                && /OpenCode only/.test(error.message) && error.message.includes(backend) && /\/model default/.test(error.message), backend);
+        assert.equal(refused.admitted.length, 0, backend);
+        assert.equal(refused.client.calls.subscribe.length, 0, backend);
+    }
+    const refusedOverride = await harness(t, { rows: opencodeRows(), robot: { ...opencodeRobot, codingAgents: ['codex'] }, configuration: { backend: 'codex', settings: { codingAgents: ['codex'], model: 'gpt-5' } } });
+    await refusedOverride.store.updateSession(refusedOverride.sessionId, (session) => { session.modelOverride = { backend: 'codex', model: 'Soul-Gateway/claude', effort: null }; });
+    await assert.rejects(refusedOverride.engine.executeTurn({ sessionId: refusedOverride.sessionId, prompt: 'p', owner: refusedOverride.owner }), (error) => error.code === 'model_unavailable_in_worker');
+    assert.equal(refusedOverride.admitted.length, 0);
 });
 
 test('the free default model runs and is shown as the default, not as the user\'s choice', async (t) => {
@@ -686,6 +704,13 @@ test('an attempt the worker stopped for inactivity or for its maximum duration f
         [{ reason: 'inactive_timeout' }, 'Stopped: no activity from the model for the allowed time'],
         [{ reason: 'deadline_exceeded', data: { minutes: 240 } }, 'Stopped: the task exceeded its maximum duration'],
         [{ reason: 'deadline_exceeded' }, 'Stopped: the task exceeded its maximum duration'],
+        // M-43 (a): the inactivity stop tells the user the last error the worker's model channel saw, on one line.
+        [{ reason: 'inactive_timeout', data: { lastModelError: { status: 429, message: 'daily quota exceeded' } } }, 'Stopped: no activity from the model for the allowed time. Last model error: HTTP 429: daily quota exceeded'],
+        [{ reason: 'inactive_timeout', data: { minutes: 20, lastModelError: { status: 502, message: 'line one\nline two\u0007 \u2028 x' } } }, 'Stopped: no activity from the model for 20 minutes. Last model error: HTTP 502: line one line two x'],
+        [{ reason: 'inactive_timeout', data: { lastModelError: { status: 'x', message: '' } } }, 'Stopped: no activity from the model for the allowed time'],
+        // M-26: a Soul Gateway model the worker could not serve.
+        [{ reason: 'model_unavailable' }, 'Stopped: the selected Soul Gateway model is not available'],
+        [{ reason: 'model_channel_unavailable' }, 'Stopped: Soul Gateway could not be reached for the model. Try again in a moment'],
     ];
     for (const [fields, message] of cases) {
         const snapshot = { state: 'failed', result: { status: 'failed', outputText: 'partial', ...fields } };
