@@ -61,7 +61,7 @@ test('the worker store is Ploinky persistent storage mounted at /var/lib/robo-wo
 });
 
 test('image, security and start command', () => {
-    assert.equal(manifest.container, 'localhost/robo-work-worker:r10-dev');
+    assert.match(manifest.container, /^docker\.io\/assistos\/robo-work-worker@sha256:[0-9a-f]{64}$/, 'pinned by digest');
     assert.deepEqual(manifest.containerSecurity, { nestedPodman: true });
     assert.equal(manifest.agent, 'node /code/server/main.mjs');
     // An on-demand enable sends no run mode, and the grants need the workspace at its canonical path (global mode, not isolated).
