@@ -52,7 +52,7 @@ import { isMainThread } from 'node:worker_threads';
 import { isValidComponentName } from '../views/protectedNames.mjs';
 import { buildBwrapArgs, bwrapCommand } from './bwrapArgs.mjs';
 import { checkRelativeExclusion } from './exclusions.mjs';
-import { isMarker } from './marker.mjs';
+import { isMarker, markerSlot } from './marker.mjs';
 import { compileSeccomp } from './seccompBpf.mjs';
 import { SandboxError, codeForPrepExit, sandboxError } from './sandboxErrors.mjs';
 
@@ -226,7 +226,7 @@ export function createSandboxLauncher({
 
     // A file in the runtime directory holding `buffer`, opened read-write, written with pwrite (the offset stays 0), and unlinked.
     function bufferFd(dir, marker, label, buffer) {
-        const file = `${dir}/${marker}.${label}`;
+        const file = `${dir}/${markerSlot(marker)}.${label}`;
         const fd = fsImpl.openSync(file, fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
         try {
             fsImpl.unlinkSync(file);
@@ -239,9 +239,9 @@ export function createSandboxLauncher({
         return fd;
     }
 
-    // <runtimeDir>/stage/<marker>/{projects/<grant>, binds/<name>, mask-dir (0555 empty), mask-file (0444 empty)}
+    // <runtimeDir>/stage/<markerSlot(marker)>/{projects/<grant>, binds/<name>, mask-dir (0555 empty), mask-file (0444 empty)}
     function prepareStage(spec, mounts) {
-        const dir = `${spec.runtimeDir}/stage/${spec.marker}`;
+        const dir = `${spec.runtimeDir}/stage/${markerSlot(spec.marker)}`;
         fsImpl.mkdirSync(`${dir}/projects`, { recursive: true, mode: 0o700 });
         fsImpl.mkdirSync(`${dir}/binds`, { mode: 0o700 });
         for (const grant of mounts.grants) fsImpl.mkdirSync(`${dir}/projects/${grant.name}`, { mode: 0o700 });

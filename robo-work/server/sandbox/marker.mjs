@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 // The reservation marker: the S1 reservation id (base64url, 22 characters) carried verbatim as a literal argv element of every
 // pre-commit stage and as bwrap's `--hostname`, so that recovery can match it with `cmdline.includes(locator.marker)`.
 //
@@ -7,3 +9,7 @@
 // character set in shell, and stageScript.test.mjs / marker.test.mjs pin the two together.
 export const MARKER_PATTERN = /^[A-Za-z0-9_-]{8,64}$/u;
 export const isMarker = (value) => typeof value === 'string' && MARKER_PATTERN.test(value);
+
+// The marker is never a filename, path component, or netns/veth/nft name: files and directories derived per reservation use this
+// opaque `rw<16hex>` slot instead (a leading '-' or a marker-dependent length never reaches the filesystem).
+export const markerSlot = (marker) => `rw${createHash('sha256').update(marker).digest('hex').slice(0, 16)}`;

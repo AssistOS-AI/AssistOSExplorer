@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createSandboxLauncher, slotLayout } from '../../server/sandbox/sandboxLauncher.mjs';
+import { markerSlot } from '../../server/sandbox/marker.mjs';
 import { readProcMasks } from '../../server/sandbox/procMasks.mjs';
 import { SUPERVISOR_PID, createFakeSpawn, createFakeView, fakeClock, mntNsOf, pidNsOf } from './helpers/fakes.mjs';
 
@@ -70,7 +71,7 @@ test('workload: the chain, the marker on argv, the descriptor map, and a gated i
         const identity0 = { path: world.dir, dev: String(here.dev), ino: String(here.ino) };
         assert.deepEqual(prepSpec.grants, [{ name: 'a', ...identity0 }]);
         assert.deepEqual(prepSpec.binds, [{ name: 'home', ...identity0 }]);
-        assert.equal(prepSpec.stageDir, `${world.dir}/stage/${MARKER}`);
+        assert.equal(prepSpec.stageDir, `${world.dir}/stage/${markerSlot(MARKER)}`);
         assert.equal(record.options.env.PATH.includes('/usr/bin'), true);
         assert.deepEqual(Object.keys(record.options.env), ['PATH']);
         // slots: 3 seccomp | 4 block | 5 info | 6 status | 7 args; nothing else
@@ -82,9 +83,9 @@ test('workload: the chain, the marker on argv, the descriptor map, and a gated i
         const args = nulSplit(record.fdContents.args);
         assert.ok(args.join(' ').includes('--block-fd 4 --info-fd 5 --json-status-fd 6'));
         assert.ok(args.join(' ').includes('--seccomp 3'));
-        assert.ok(args.join(' ').includes(`--bind ${world.dir}/stage/${MARKER}/binds/home /home/robot`));
+        assert.ok(args.join(' ').includes(`--bind ${world.dir}/stage/${markerSlot(MARKER)}/binds/home /home/robot`));
         assert.ok(args.join(' ').includes('--ro-bind /dev/null /proc/kcore'), 'the worker /proc masks are re-applied');
-        assert.ok(args.join(' ').includes(`--bind ${world.dir}/stage/${MARKER}/projects/a /projects/a`));
+        assert.ok(args.join(' ').includes(`--bind ${world.dir}/stage/${markerSlot(MARKER)}/projects/a /projects/a`));
         assert.ok(!args.join(' ').includes('--bind-fd'), 'no --bind-fd: a descriptor of another mount namespace cannot be bound');
         assert.equal(record.fdContents.seccomp.length % 8, 0);
         // identity: the monitor is ChildProcess.pid, the namespaces are the INIT's
@@ -122,7 +123,7 @@ test('orchestration: no nsenter, pair socket at slot 3, RW_FD_ALLOW in the buffe
         const args = nulSplit(record.fdContents.args).join(' ');
         assert.ok(args.includes('--setenv RW_FD_ALLOW 0,1,2,3'));
         assert.ok(args.includes('--seccomp 4 --block-fd 5 --info-fd 6 --json-status-fd 7'));
-        assert.ok(args.includes(`--bind ${world.dir}/stage/${MARKER}/binds/session /session`));
+        assert.ok(args.includes(`--bind ${world.dir}/stage/${markerSlot(MARKER)}/binds/session /session`));
         assert.ok(args.includes(`--bind ${world.dir}/channels /run/robo-work/channels`));
         assert.ok(args.includes('--unshare-net'));
         const workload = rig();
@@ -154,7 +155,7 @@ test('a chain that ends before bwrap reports maps prep exit codes to launcher er
         const world = rig({ exitBefore: status });
         try {
             await assert.rejects(world.launcher.launch(workloadSpec(world)), { code }, `exit ${status}`);
-            assert.ok(!fs.existsSync(`${world.dir}/stage/${MARKER}`), 'the staging directory is removed after a failed start');
+            assert.ok(!fs.existsSync(`${world.dir}/stage/${markerSlot(MARKER)}`), 'the staging directory is removed after a failed start');
         } finally { world.done(); }
     }
     const spawnFails = rig({ spawnError: Object.assign(new Error('x'), { code: 'ENOENT' }) });
@@ -292,7 +293,7 @@ test('release removes the staging directory without recursion: a leaked file kee
     const world = rig();
     try {
         const sandbox = await world.launcher.launch(workloadSpec(world));
-        const stage = `${world.dir}/stage/${MARKER}`;
+        const stage = `${world.dir}/stage/${markerSlot(MARKER)}`;
         assert.ok(fs.statSync(`${stage}/mask-dir`).mode & 0o555);
         assert.equal(fs.statSync(`${stage}/mask-file`).mode & 0o777, 0o444);
         assert.ok(fs.existsSync(`${stage}/projects/a`));
@@ -303,7 +304,7 @@ test('release removes the staging directory without recursion: a leaked file kee
         const second = await world.launcher.launch(workloadSpec(world, { marker: 'rwOtherMarker0123456789' }));
         await second.release();
         await second.release();
-        assert.ok(!fs.existsSync(`${world.dir}/stage/rwOtherMarker0123456789`));
+        assert.ok(!fs.existsSync(`${world.dir}/stage/${markerSlot('rwOtherMarker0123456789')}`));
         assert.deepEqual(fs.readdirSync(`${world.dir}/ctl`), [], 'descriptor files are unlinked at once');
     } finally { world.done(); }
 });
@@ -419,7 +420,7 @@ test('M-15: a workload environment with LD_PRELOAD or BASH_ENV (or any shell-hon
         try {
             await assert.rejects(world.launcher.launch(workloadSpec(world, { env: { HOME: '/home/robot', [name]: 'x' } })), { code: 'invalid_request' }, name);
             assert.equal(world.spawned.length, 0, `spawns for ${name}`);
-            assert.ok(!fs.existsSync(`${world.dir}/stage/${MARKER}`), 'the staging directory made for it is removed');
+            assert.ok(!fs.existsSync(`${world.dir}/stage/${markerSlot(MARKER)}`), 'the staging directory made for it is removed');
         } finally { world.done(); }
     }
 });
