@@ -7,8 +7,9 @@
 //   availability.mjs         admission (`requireExecutionTarget`) and the admitted-binding revalidation before commit
 //   contract.mjs             TargetBinding, canonical encoding and digests, receipt validation
 //   receipts.mjs             receipt reconciliation and the three-way start classification
-//   transportContract.mjs    every reply frame is re-validated (`validateTargetFrame`) and every minted ticket is
-//                            checked (`validateHelperTicketClaims`) before it is presented
+//   transportContract.mjs    every reply frame is re-validated (`validateTargetFrame`); a proof-fixture ticket is also
+//                            checked here (`validateHelperTicketClaims`) before it is presented, while a Router ticket
+//                            is checked by the helper-ticket client's claim-equality check (`server/helperTicketClient.mjs`)
 // The mailbox seam is the native worker-side peer (`rw-target-helper worker-peer --session`, decision B4); this host
 // drives it over stdin/stdout and gives it the session key only on stdin.
 //
@@ -63,10 +64,17 @@ export const TICKET_TTL_SECONDS = 30;
 const RETRYABLE_MINT_CODES = new Set(['caller_mismatch', 'target_not_eligible', 'secret_unavailable', 'capacity_exceeded']);
 const RETRYABLE_MINT_THROWS = new Map([['helper_ticket_http_503', 'router_unavailable'], ['helper_ticket_http_429', 'capacity_exceeded']]);
 const MINT_CODES = new Set([...HELPER_TICKET_MINT_CODES, 'forbidden', 'invalid_request', 'ticket_binding', 'refused', 'router_unavailable', 'mint_unavailable']);
-// Retries within one helper challenge reuse its nonce and epoch (nothing was minted); the whole budget stays well inside
-// the helper's challenge timeout (5 s) and the Router's 60 requests per minute. A session whose budget ran out is closed
-// and one more is opened after `sessionDelayMs` (a new nonce and a newly recorded attempt epoch, A11.2).
-export const MINT_RETRY = Object.freeze({ delaysMs: Object.freeze([150, 400, 900]), challengeBudgetMs: 3000, sessions: 2, sessionDelayMs: 1000 });
+// Retries within one helper challenge reuse its nonce and epoch (nothing was minted). The budget is the latest moment a
+// Router request may END, measured from the first request of the challenge: a retry is made only when the time already
+// used, its delay and a full per-request Router timeout (`routerTimeoutMs`, the bound `main.mjs` gives the transport) still
+// fit in `challengeBudgetMs`. 4500 ms stays below the helper's challenge window (5000 ms, target-helper `ticket.rs`
+// CHALLENGE_TIMEOUT_MS), leaving the rest for the peer round trips; the Router's limit is 60 requests per minute. A
+// session whose budget ran out is closed and one more is opened after `sessionDelayMs` (a new nonce and a newly recorded
+// attempt epoch, A11.2).
+export const ROUTER_TIMEOUT_MS = 2500;
+export const MINT_RETRY = Object.freeze({
+    delaysMs: Object.freeze([150, 400, 900]), challengeBudgetMs: 4500, routerTimeoutMs: ROUTER_TIMEOUT_MS, sessions: 2, sessionDelayMs: 1000
+});
 
 export function mintCode(code) {
     return typeof code === 'string' && MINT_CODES.has(code) ? code : 'refused';
@@ -97,6 +105,26 @@ function countIn(bytes, needles) {
         for (let at = bytes.indexOf(needle); at !== -1; at = bytes.indexOf(needle, at + 1)) total += 1;
     }
     return total;
+}
+
+// The R3 probe report for one live session. `count` (default `countIn`) is also what computes the positive control: a
+// counting function that found nothing would otherwise make every zero below meaningless. A state file that cannot be
+// read is counted in `stateUnreadable`, never as a clean file.
+export function scanReport({ needles, control, peerPid, stateFiles, count = countIn, readFile = readOrNull }) {
+    let stateMatches = 0;
+    let stateUnreadable = 0;
+    for (const file of stateFiles) {
+        const bytes = readFile(file);
+        const found = bytes === null ? null : count(bytes, needles);
+        if (found === null) stateUnreadable += 1;
+        else stateMatches += found;
+    }
+    return {
+        needles: needles.length, positiveControl: needles.filter((needle) => (count(control, [needle]) ?? 0) > 0).length,
+        selfArgv: count(readFile('/proc/self/cmdline'), needles), selfEnviron: count(readFile('/proc/self/environ'), needles),
+        peerArgv: count(readFile(`/proc/${peerPid}/cmdline`), needles), peerEnviron: count(readFile(`/proc/${peerPid}/environ`), needles),
+        stateFiles: stateFiles.length, stateMatches, stateUnreadable
+    };
 }
 
 function readOrNull(file) {
@@ -208,9 +236,11 @@ class PeerProcess {
 //   sourceProtection  ROUTER: the source-protection client (`advanceWorkerGeneration`) for `advanceGeneration`
 //   qualification   {root, uid, forbiddenRoots}: the worker-owned qualification store
 //   now, random     injectable clock and randomness; monoNow, sleep, retry: the mint retry clock, wait and budget
+//   onSession       test seam: called with each live session right after its bootstrap was accepted (a throw there is a
+//                   throw inside the session lifetime)
 export function createWorkerHost({
     stateDir, mailbox, peerCommand, ticketKey = null, mintTicket = null, self = null, sourceProtection = null, qualification, now = Date.now, random = crypto.randomBytes,
-    monoNow = () => performance.now(), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), retry = MINT_RETRY
+    monoNow = () => performance.now(), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), retry = MINT_RETRY, onSession = null
 } = {}) {
     if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir) || typeof mailbox !== 'string' || typeof peerCommand !== 'string'
         || (ticketKey === null) === (mintTicket === null) || (mintTicket !== null && typeof mintTicket !== 'function')) {
@@ -442,7 +472,8 @@ export function createWorkerHost({
             if (verdict.kind === 'ok') return { ok: true, material: routerMaterial(outcome.result.value), attempts };
             if (verdict.kind === 'terminal') return { ok: false, code: verdict.code, retryable: false, attempts };
             const delay = retry.delaysMs[index];
-            if (delay === undefined || monoNow() - started + delay > retry.challengeBudgetMs) return { ok: false, code: verdict.code, retryable: true, attempts };
+            // The next request may run for a full Router timeout: it must still end inside the challenge budget.
+            if (delay === undefined || monoNow() - started + delay + (retry.routerTimeoutMs ?? ROUTER_TIMEOUT_MS) > retry.challengeBudgetMs) return { ok: false, code: verdict.code, retryable: true, attempts };
             await sleep(delay);
         }
     }
@@ -465,8 +496,21 @@ export function createWorkerHost({
         }
     }
 
-    async function openSessionOnce(state, op, { loseAccepted = false, permissions = ['commit', 'lookup', 'prepare'] } = {}) {
+    // A throw while a session is being opened (a durable write, an unusable Router answer) must not leave the peer running
+    // or a minted session key in memory.
+    async function openSessionOnce(state, op, options = {}) {
         const peer = new PeerProcess(peerCommand, ['worker-peer', '--mailbox', mailbox, '--session']);
+        const held = { minted: null };
+        try {
+            return await openSessionWith(peer, held, state, op, options);
+        } catch (error) {
+            held.minted?.sessionKey.fill(0);
+            await peer.close();
+            throw error;
+        }
+    }
+
+    async function openSessionWith(peer, held, state, op, { loseAccepted = false, permissions = ['commit', 'lookup', 'prepare'] }) {
         const first = await peer.next();
         if (first === null || first.ok === false) {
             await peer.close();
@@ -515,6 +559,7 @@ export function createWorkerHost({
                 return { refusal: fail('mint', selfCheck.error.code) };
             }
         }
+        held.minted = minted;
         // The ticket and session key reach the native peer only on its stdin, never in argv or the environment.
         const wipe = () => minted.sessionKey.fill(0);
         if (loseAccepted) {
@@ -551,17 +596,32 @@ export function createWorkerHost({
     function scanSession(session, scan) {
         const { ticket, sessionKey } = session.minted;
         const needles = [ticket, ticket.split('.')[2], sessionKey.toString('base64url'), sessionKey.toString('hex')].map((text) => Buffer.from(text, 'utf8'));
-        const peerPid = session.peer.child.pid;
         const control = Buffer.concat([crypto.randomBytes(64), ...needles.flatMap((needle) => [needle, Buffer.from('\n')]), crypto.randomBytes(64)]);
-        const stateFiles = filesUnder(stateDir);
-        const report = {
-            needles: needles.length, positiveControl: needles.filter((needle) => control.includes(needle)).length,
-            selfArgv: countIn(readOrNull('/proc/self/cmdline'), needles), selfEnviron: countIn(readOrNull('/proc/self/environ'), needles),
-            peerArgv: countIn(readOrNull(`/proc/${peerPid}/cmdline`), needles), peerEnviron: countIn(readOrNull(`/proc/${peerPid}/environ`), needles),
-            stateFiles: stateFiles.length, stateMatches: stateFiles.reduce((sum, file) => sum + (countIn(readOrNull(file), needles) ?? 0), 0)
-        };
-        if (typeof scan.sink === 'function') scan.sink(needles.map((needle) => needle.toString('utf8')));
+        const report = scanReport({ needles, control, peerPid: session.peer.child.pid, stateFiles: filesUnder(stateDir) });
+        if (typeof scan.sink === 'function') {
+            // A sink that fails (the scanner closed its pipe) is a result of the probe, not an error of the lookup; the
+            // error itself (its message) is never propagated.
+            try {
+                scan.sink(needles.map((needle) => needle.toString('utf8')));
+            } catch {
+                report.sink = 'failed';
+            }
+        }
         return report;
+    }
+
+    // The session lifetime: from the accepted bootstrap to `close`, which runs whatever `use` does (a throw included), so
+    // the peer is always closed and the session key zeroed. Returns the session (a refusal or fault carries no live peer)
+    // and, for a live one, what `use` returned.
+    async function withSession(state, op, options, use) {
+        const session = await openSession(state, op, options);
+        if (session.refusal || session.fault) return { session };
+        try {
+            if (onSession !== null) onSession(session);
+            return { session, result: await use(session) };
+        } finally {
+            await session.close();
+        }
     }
 
     async function request(state, op, session, messageKind, body) {
@@ -594,18 +654,21 @@ export function createWorkerHost({
         const state = load();
         const op = state.operations[label];
         const expected = expectedFor(state, op);
-        const session = await openSession(state, op);
+        const { session, result: sent } = await withSession(state, op, {}, async (live) => {
+            if (drop) {
+                live.peer.send({ op: 'drop', messageKind: 'prepare', body: op.body });
+                return { dropped: await live.peer.next() };
+            }
+            return { reply: await request(state, op, live, 'prepare', op.body) };
+        });
         if (session.refusal) return record(state, { step: 'prepare', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
         if (drop) {
-            session.peer.send({ op: 'drop', messageKind: 'prepare', body: op.body });
-            const dropped = await session.peer.next();
-            await session.close();
+            const dropped = sent.dropped;
             const outcome = classifyTargetStartOutcome({ expected, reply: { kind: 'transport', detail: 'reply-lost' } });
             op.outcome = outcome.ok ? outcome.value.outcome : `invalid:${outcome.error.code}`;
             return record(state, { ok: true, step: 'prepare', label, fault: 'lost-reply', peer: dropped?.event ?? null, classification: op.outcome });
         }
-        const reply = await request(state, op, session, 'prepare', op.body);
-        await session.close();
+        const reply = sent.reply;
         if (reply.kind === 'prepared') {
             const outcome = classifyTargetStartOutcome({ expected, reply: { kind: 'receipt', receipt: reply.value } });
             if (!outcome.ok) return record(state, { ...fail('prepare', outcome.error.code), step: 'prepare', label });
@@ -627,19 +690,22 @@ export function createWorkerHost({
         const op = state.operations[label];
         const expected = expectedFor(state, op);
         if (scan !== null && !routerMode) throw new Error('scan applies to Router tickets only');
-        const session = await openSession(state, op, { loseAccepted });
+        const { session, result: used } = await withSession(state, op, { loseAccepted }, async (live) => {
+            const answer = await request(state, op, live, 'lookup', canonical({ version: 1 }));
+            return { reply: answer, scanned: scan === null ? null : scanSession(live, scan) };
+        });
         if (session.fault) return record(state, { ok: true, step: 'lookup', label, ...session.fault });
         if (session.refusal) return record(state, { step: 'lookup', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
-        const reply = await request(state, op, session, 'lookup', canonical({ version: 1 }));
-        const scanned = scan === null ? null : scanSession(session, scan);
-        await session.close();
+        const { reply, scanned } = used;
         if (reply.kind !== 'lookup-result') return record(state, { ...fail('lookup', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'lookup', label });
         const reconciled = reconcileTargetReceipt(expected, reply.value);
         const outcome = classifyTargetStartOutcome({ expected, reply: { kind: 'lookup', result: reply.value } });
         if (reconciled.ok && reconciled.value.kind === 'receipt') adopt(op, reply.value.receipt);
         if (outcome.ok) op.outcome = outcome.value.outcome;
+        // A scan whose sink failed did not complete the probe: the lookup then reads as a refusal, never as a pass.
+        const sinkFailed = scanned !== null && scanned.sink === 'failed';
         return record(state, {
-            ok: reconciled.ok, step: 'lookup', label, state: reply.value.state, reconciled: reconciled.ok ? reconciled.value.kind : reconciled.error.code,
+            ok: reconciled.ok && !sinkFailed, ...(sinkFailed ? { stage: 'scan', code: 'scan_sink_failed' } : {}), step: 'lookup', label, state: reply.value.state, reconciled: reconciled.ok ? reconciled.value.kind : reconciled.error.code,
             classification: outcome.ok ? outcome.value.outcome : `invalid:${outcome.error.code}`,
             receipt: reply.value.receipt ? summary(reply.value.receipt) : null, nodeValidated: reply.nodeValidated, ticket: session.ticketInfo,
             ...(scanned ? { scan: scanned } : {})
@@ -656,14 +722,12 @@ export function createWorkerHost({
         }
         if (!op.receipt || op.receipt.state !== 'prepared') return record(state, { ...fail('commit', 'not_prepared'), step: 'commit', label });
         const expected = expectedFor(state, op);
-        const session = await openSession(state, op);
-        if (session.refusal) return record(state, { step: 'commit', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
         const body = canonical({
             version: 1, workerCommitDigest: digestOf({ version: 1, key: expected.key, requestDigest: op.requestDigest, preparedReceiptSequence: op.receipt.receiptSequence }),
             preparedReceiptSequence: op.receipt.receiptSequence, preparedResourcesDigest: digestOf(op.receipt.resources, RESOURCES_DIGEST_BYTES)
         });
-        const reply = await request(state, op, session, 'commit', body);
-        await session.close();
+        const { session, result: reply } = await withSession(state, op, {}, (live) => request(state, op, live, 'commit', body));
+        if (session.refusal) return record(state, { step: 'commit', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
         if (reply.kind !== 'receipt') return record(state, { ...fail('commit', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'commit', label });
         const reconciled = reconcileTargetReceipt(expected, { state: reply.value.state, receipt: reply.value });
         if (!reconciled.ok) return record(state, { ...fail('commit', reconciled.error.code), step: 'commit', label });
@@ -677,10 +741,8 @@ export function createWorkerHost({
         const state = load();
         const op = state.operations[label];
         const expected = expectedFor(state, op);
-        const session = await openSession(state, op, { permissions: ['lookup', 'stop'] });
+        const { session, result: reply } = await withSession(state, op, { permissions: ['lookup', 'stop'] }, (live) => request(state, op, live, 'stop', canonical({ version: 1 })));
         if (session.refusal) return record(state, { step: 'stop', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
-        const reply = await request(state, op, session, 'stop', canonical({ version: 1 }));
-        await session.close();
         if (reply.kind !== 'receipt') return record(state, { ...fail('stop', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'stop', label });
         const reconciled = reconcileTargetReceipt(expected, { state: reply.value.state, receipt: reply.value });
         if (!reconciled.ok) return record(state, { ...fail('stop', reconciled.error.code), step: 'stop', label });
@@ -695,16 +757,14 @@ export function createWorkerHost({
         const op = state.operations[label];
         if (!op.receipt || !['exited', 'stopping', 'quarantined'].includes(op.receipt.state)) return record(state, { ...fail('release', 'not_ended'), step: 'release', label });
         const expected = expectedFor(state, op);
-        const session = await openSession(state, op, { permissions: ['lookup', 'release'] });
-        if (session.refusal) return record(state, { step: 'release', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
         const evidence = {
             resources: op.receipt.resources.map((entry) => ({
                 resourceId: entry.resourceId, kind: 'verified-absent',
                 evidenceDigest: digestOf({ version: 1, key: expected.key, resourceId: entry.resourceId, endedReceiptSequence: op.receipt.receiptSequence })
             }))
         };
-        const reply = await request(state, op, session, 'release', canonical({ version: 1, evidence }));
-        await session.close();
+        const { session, result: reply } = await withSession(state, op, { permissions: ['lookup', 'release'] }, (live) => request(state, op, live, 'release', canonical({ version: 1, evidence })));
+        if (session.refusal) return record(state, { step: 'release', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
         if (reply.kind !== 'receipt') return record(state, { ...fail('release', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'release', label });
         const reconciled = reconcileTargetReceipt(expected, { state: reply.value.state, receipt: reply.value });
         if (!reconciled.ok) return record(state, { ...fail('release', reconciled.error.code), step: 'release', label });

@@ -7,7 +7,7 @@
 //
 //   node front.mjs serve --port <n> --store-root <dir> --facts <file> --state <dir> --coordinator <agent:...>
 //        [--coordinator <agent:...>]... --worker-generation <Id> [--mode proof-fixture|production] [--agent-lib <dir>]
-//   node front.mjs observe --store-root <dir> --state <dir> --ref <Repo/agent>
+//   node front.mjs observe --store-root <dir> --state <dir> --ref <Repo/agent>   (count, admissions, leftover intents)
 //
 // Base facts file (operator, re-read for every request): {live, entries, sourceState, home, current: {limitsDigest,
 // journalStoreIdentity}, excluded: {principals, aliases, runtimeInstanceIds}}. `sourceState` is either the FIXTURE
@@ -97,7 +97,8 @@ async function serve(options) {
     process.on('SIGINT', stop);
 }
 
-// Read-only observation for the driver: the execution count of one record and the recorded admissions.
+// Read-only observation for the driver: the execution count of one record, the recorded admissions and any leftover
+// intents (a refused request must leave none that it did not find).
 function observe(options) {
     for (const required of ['--store-root', '--state', '--ref']) if (typeof options[required] !== 'string') throw new Error(`missing ${required}`);
     const opened = createQualificationStore({ fs, root: path.resolve(options['--store-root']), uid: process.getuid(), forbiddenRoots: [] });
@@ -105,10 +106,12 @@ function observe(options) {
     const found = opened.ok ? opened.value.get(options['--ref']) : null;
     const admissionsDir = path.join(path.resolve(options['--state']), 'admissions');
     const admissions = fs.existsSync(admissionsDir) ? fs.readdirSync(admissionsDir).filter((name) => /^[A-Za-z0-9_-]{22}\.json$/.test(name)).map((name) => name.slice(0, 22)).sort() : [];
+    const intentsDir = path.join(path.resolve(options['--state']), 'intents');
+    const intents = fs.existsSync(intentsDir) ? fs.readdirSync(intentsDir).filter((name) => /^[A-Za-z0-9_-]{22}\.json$/.test(name)).map((name) => name.slice(0, 22)).sort() : [];
     const result = {
         ref: options['--ref'], storeOpen: opened.ok, recordDigest: found && found.ok ? found.value.recordDigest : null,
         executionsUsed: facts && facts.ok && Object.hasOwn(facts.value.executionsUsed, options['--ref']) ? facts.value.executionsUsed[options['--ref']] : null,
-        admissions, admissionsDigest: crypto.createHash('sha256').update(admissions.join(',')).digest('hex')
+        admissions, intents, admissionsDigest: crypto.createHash('sha256').update(admissions.join(',')).digest('hex')
     };
     process.stdout.write(`${JSON.stringify(result)}\n`);
 }

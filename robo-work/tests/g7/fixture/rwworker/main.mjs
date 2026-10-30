@@ -26,12 +26,12 @@ import { canonicalTargetJson } from '../../../../server/executionTarget/contract
 import { createHelperTicketClient } from '../../../../server/helperTicketClient.mjs';
 import { createSourceProtectionClient } from '../../../../server/sourceProtectionClient.mjs';
 import { loadFixtureTicketKey } from './fixtureMinter.mjs';
-import { createWorkerHost } from './workerHost.mjs';
+import { ROUTER_TIMEOUT_MS, createWorkerHost } from './workerHost.mjs';
 
 const VALUED = new Set(['--state', '--mailbox', '--peer', '--store-root', '--facts', '--selection', '--operation-id', '--resources', '--seed', '--same-operation-as', '--kinds', '--workload', '--agent-lib', '--needle-fd', '--prior-generation']);
 const FLAGS = new Set(['--drop', '--revalidate', '--lose-accepted', '--router-tickets']);
-// The Router answers within its own bounds; a slower answer is an unknown outcome (terminal for this attempt).
-const ROUTER_TIMEOUT_MS = 2500;
+// The Router answers within its own bounds (`ROUTER_TIMEOUT_MS`, which the mint retry budget of workerHost.mjs reserves for
+// every request); a slower answer is an unknown outcome (terminal for this attempt).
 
 function parse(argv) {
     const options = {};

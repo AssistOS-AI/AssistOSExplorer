@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { canonicalTargetJson } from '../../../server/executionTarget/contract.mjs';
@@ -173,4 +173,18 @@ test('P7 driver, live configuration: an answer that did not travel through the P
     assert.equal(result.code, 1);
     assert.equal(report.failed, 17);
     for (const entry of report.results) assert.ok(entry.reasons.includes('transport local-stand-in'), `${entry.id}: ${entry.reasons.join('; ')}`);
+});
+
+test('P7 driver observation lists leftover intents, so the no-side-effect check sees them', (t) => {
+    const base = tempBase(t);
+    const state = path.join(base, 'front');
+    const observe = () => JSON.parse(spawnSync(NODE, [path.join(RWCOORD, 'front.mjs'), 'observe', '--store-root', path.join(base, 'q'), '--state', state, '--ref', 'rwrepo/rwtarget'], { encoding: 'utf8' }).stdout);
+    fs.mkdirSync(path.join(state, 'intents'), { recursive: true });
+    const before = observe();
+    assert.deepEqual(before.intents, []);
+    fs.writeFileSync(path.join(state, 'intents', `${'A'.repeat(22)}.json`), '{}');
+    fs.writeFileSync(path.join(state, 'intents', '.not-an-intent.tmp'), '{}');
+    const after = observe();
+    assert.deepEqual(after.intents, ['A'.repeat(22)]);
+    assert.notEqual(JSON.stringify(after), JSON.stringify(before), 'the driver compares whole observations');
 });

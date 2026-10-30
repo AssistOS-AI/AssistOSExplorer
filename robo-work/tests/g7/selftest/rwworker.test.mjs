@@ -23,6 +23,7 @@ import { validateHelperTicketClaims } from '../../../server/executionTarget/tran
 import { installFixtureRecord } from '../tools/install-fixture-record.mjs';
 import { loadFixtureTicketKey, mintFixtureTicket, possessionProof, sessionKey } from '../fixture/rwworker/fixtureMinter.mjs';
 import { MINT_RETRY, TICKET_TTL_SECONDS, classifyMint, createWorkerHost, knownCode, mintCode } from '../fixture/rwworker/workerHost.mjs';
+import * as workerHostModule from '../fixture/rwworker/workerHost.mjs';
 import { HELPER_TICKET_REQUEST_KEYS, createHelperTicketClient } from '../../../server/helperTicketClient.mjs';
 import { renderManifest } from '../fixture/rwtarget/render-manifest.mjs';
 
@@ -483,7 +484,7 @@ test('router tickets: advance, admit, then the helper accepts Router tickets ver
     results.push(looked);
     assert.deepEqual([looked.ok, looked.state, looked.reconciled, looked.classification, looked.nodeValidated], [true, 'absent-with-proof', 'absent', 'refused-before-create', true], JSON.stringify(looked));
     assert.deepEqual([looked.ticket.source, looked.ticket.mintAttempts, looked.ticket.kid], ['router', 1, `hti1.${w.incarnation}`]);
-    assert.deepEqual(looked.scan, { needles: 4, positiveControl: 4, selfArgv: 0, selfEnviron: 0, peerArgv: 0, peerEnviron: 0, stateFiles: looked.scan.stateFiles, stateMatches: 0 });
+    assert.deepEqual(looked.scan, { needles: 4, positiveControl: 4, selfArgv: 0, selfEnviron: 0, peerArgv: 0, peerEnviron: 0, stateFiles: looked.scan.stateFiles, stateMatches: 0, stateUnreadable: 0 });
     assert.ok(looked.scan.stateFiles >= 1);
     assert.deepEqual(sunk, needlesOf(w.router.issued.slice(-1)), 'the sink received exactly the live session\'s needles');
     // A11.2 with the Router: a lost `accepted` costs one epoch; the next request is max(attempt, accepted) + 1.
@@ -576,6 +577,116 @@ test('router tickets: transient refusals retry with bounded backoff inside one c
         assert.equal(JSON.stringify(refused).includes('ECONNREFUSED'), false);
     }
     assert.equal(occurrences(filesText(w.stateDir), needlesOf(w.router.issued)), 0);
+});
+
+// Child processes of this test process that are still `worker-peer` sessions (a leaked session leaves its peer running).
+function livePeerPids() {
+    const out = [];
+    for (const name of fs.readdirSync('/proc')) {
+        if (!/^\d+$/.test(name)) continue;
+        try {
+            const stat = fs.readFileSync(`/proc/${name}/stat`, 'utf8');
+            const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+            if (Number(fields[1]) === process.pid && fields[0] !== 'Z' && fs.readFileSync(`/proc/${name}/cmdline`, 'utf8').includes('worker-peer')) out.push(Number(name));
+        } catch {
+            // the process went away
+        }
+    }
+    return out;
+}
+
+const sessionEnded = (session) => session.minted.sessionKey.every((byte) => byte === 0) && (session.peer.child.exitCode !== null || session.peer.child.signalCode !== null);
+
+test('router tickets: a failing scan sink is recorded as a result, and any throw inside a session still closes the peer and zeroes the session key', { skip: SKIP }, async (t) => {
+    const w = await routerWorld(t);
+    assert.equal((await w.host.advanceGeneration()).ok, true);
+    assert.equal(admitRouter(w).admitted.ok, true);
+    w.host.defineOperation('main', { resources: resources('main') });
+    const seen = [];
+    const host = w.hostFor({ onSession: (session) => { seen.push(session); } });
+    // The scan sink fails (EPIPE on the --needle-fd pipe, main.mjs): recorded, not thrown; no error text is propagated (A11.6).
+    const epipe = Object.assign(new Error('write EPIPE secret-ish detail'), { code: 'EPIPE' });
+    const looked = await host.lookup('main', { scan: { sink: () => { throw epipe; } } });
+    // The probe did not complete: the lookup must not read as a pass (main.mjs exits 3 on a non-ok result).
+    assert.deepEqual([looked.ok, looked.stage, looked.code, looked.state], [false, 'scan', 'scan_sink_failed', 'absent-with-proof'], JSON.stringify(looked));
+    assert.equal(looked.scan.sink, 'failed');
+    assert.equal(looked.scan.positiveControl, looked.scan.needles);
+    assert.equal(JSON.stringify(looked).includes('EPIPE'), false);
+    assert.equal(JSON.stringify(host.state()).includes('EPIPE'), false);
+    assert.equal(seen.length, 1);
+    assert.equal(sessionEnded(seen[0]), true, 'the session was closed and its key zeroed');
+    assert.deepEqual(livePeerPids(), []);
+    // A throw at any point of the session lifetime, for each operation that opens one.
+    const marker = new Error('boom inside the session');
+    seen.length = 0;
+    const throwing = w.hostFor({ onSession: (session) => { seen.push(session); throw marker; } });
+    const patchState = (patch) => {
+        const file = path.join(w.stateDir, 'worker-state.json');
+        const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+        patch(state.operations.main);
+        fs.writeFileSync(file, JSON.stringify(state));
+    };
+    for (const [name, receiptState] of [['lookup', null], ['prepare', null], ['commit', 'prepared'], ['stop', null], ['release', 'exited']]) {
+        patchState((op) => { op.receipt = receiptState === null ? null : { state: receiptState, receiptSequence: 1, resources: [] }; });
+        await assert.rejects(throwing[name]('main'), marker, name);
+        assert.equal(seen.length, 1, `${name}: the session was opened`);
+        assert.equal(sessionEnded(seen[0]), true, `${name}: closed and zeroed`);
+        assert.deepEqual(livePeerPids(), [], `${name}: no peer left`);
+        seen.length = 0;
+    }
+    // A throw while the session is still being opened (a Router answer the host cannot use) leaves no peer either.
+    const unusable = w.hostFor({ mintTicket: async () => ({ ok: true, value: { ticket: 'nodots', sessionKey: 'AAAA', kid: 'k', jti: 'j', exp: 1 } }) });
+    await assert.rejects(unusable.lookup('main'));
+    assert.deepEqual(livePeerPids(), [], 'open-time throw: no peer left');
+});
+
+test('router tickets: the scan positive control is computed with the counting function itself, and unreadable state files are reported apart', (t) => {
+    const { scanReport } = workerHostModule;
+    const needles = ['ticket.part.signature', 'signature', 'c2Vzc2lvbi1rZXk', '73657373'].map((text) => Buffer.from(text));
+    const control = Buffer.concat([Buffer.from('x\n'), ...needles.flatMap((needle) => [needle, Buffer.from('\n')])]);
+    const base = tempBase(t);
+    const files = ['a', 'b', 'c'].map((name) => path.join(base, name));
+    files.forEach((file) => fs.writeFileSync(file, 'nothing here'));
+    const run = (options = {}) => scanReport({ needles, control, peerPid: process.pid, stateFiles: files, ...options });
+    const clean = run();
+    assert.deepEqual([clean.needles, clean.positiveControl, clean.stateFiles, clean.stateMatches, clean.stateUnreadable], [4, 4, 3, 0, 0]);
+    // A broken counting function is detected: the control then finds nothing.
+    assert.equal(run({ count: () => 0 }).positiveControl, 0);
+    assert.equal(run({ count: (bytes, list) => (list[0].equals(needles[3]) ? 0 : 1) }).positiveControl, 3);
+    // An unreadable file is not a clean file: counted apart, and the matches of the readable ones are kept.
+    fs.writeFileSync(files[2], 'has signature in it');
+    const mixed = run({ readFile: (file) => (file === files[1] ? null : fs.readFileSync(file)) });
+    assert.deepEqual([mixed.stateFiles, mixed.stateMatches, mixed.stateUnreadable], [3, 1, 1]);
+});
+
+test('router tickets: the mint retry budget reserves the per-request Router timeout inside the helper challenge window', { skip: SKIP }, async (t) => {
+    const ticketRs = fs.readFileSync(path.join(ROBO_WORK, 'native', 'crates', 'target-helper', 'src', 'ticket.rs'), 'utf8');
+    const helperWindowMs = Number(/pub const CHALLENGE_TIMEOUT_MS: i64 = (\d+);/.exec(ticketRs)[1]);
+    assert.equal(helperWindowMs, 5000);
+    const mainText = fs.readFileSync(MAIN, 'utf8');
+    assert.match(mainText, /timeoutMs: ROUTER_TIMEOUT_MS/);
+    assert.doesNotMatch(mainText, /const ROUTER_TIMEOUT_MS =/, 'one definition of the Router timeout');
+    assert.equal(MINT_RETRY.routerTimeoutMs, 2500);
+    assert.ok(MINT_RETRY.challengeBudgetMs <= 4500 && MINT_RETRY.challengeBudgetMs < helperWindowMs);
+    // Whatever each Router request costs (up to its timeout), the last request ends inside the budget, hence inside the window.
+    const w = await routerWorld(t);
+    assert.equal((await w.host.advanceGeneration()).ok, true);
+    assert.equal(admitRouter(w).admitted.ok, true);
+    w.host.defineOperation('main', { resources: resources('main') });
+    for (const cost of [0, 400, 1000, 1800, 2500]) {
+        let clock = 0;
+        const starts = [];
+        const ends = [];
+        const host = w.hostFor({
+            monoNow: () => clock, sleep: async (ms) => { clock += ms; }, retry: { ...MINT_RETRY, sessions: 1 },
+            mintTicket: async () => { starts.push(clock); clock += cost; ends.push(clock); return { ok: false, error: { code: 'caller_mismatch' } }; }
+        });
+        const refused = await host.lookup('main');
+        assert.deepEqual([refused.ok, refused.code], [false, 'caller_mismatch'], `cost ${cost}`);
+        const span = ends.at(-1) - starts[0];
+        assert.ok(span <= MINT_RETRY.challengeBudgetMs, `cost ${cost}: the last Router request ended ${span} ms into the challenge (${starts.length} attempts)`);
+        assert.ok(span < helperWindowMs);
+    }
 });
 
 test('router tickets: a ticket under another secret is refused by the helper; the host takes exactly one ticket source', { skip: SKIP }, async (t) => {

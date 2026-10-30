@@ -113,7 +113,11 @@ function world(t, options = {}) {
         const store = createQualificationStore({ fs, root: storeRoot, uid: UID }).value;
         const facts = store.facts().value;
         const dir = path.join(stateDir, 'admissions');
-        return { used: facts.executionsUsed[TARGET] ?? null, admissions: fs.existsSync(dir) ? fs.readdirSync(dir).sort() : [] };
+        const intents = path.join(stateDir, 'intents');
+        return {
+            used: facts.executionsUsed[TARGET] ?? null, admissions: fs.existsSync(dir) ? fs.readdirSync(dir).sort() : [],
+            intents: fs.existsSync(intents) ? fs.readdirSync(intents).sort() : []
+        };
     }
     return { base, secret, front, call, observe, events, fixture, factsFile, writeFacts, factsReads: () => factsReads, setNow: (value) => { nowMs = value; }, storeRoot, verifier };
 }
@@ -146,13 +150,13 @@ test('P7 authenticated admission: the verified coordinator admits the qualified 
         operationId: expectedOperation, coordinator: COORDINATOR, executionsUsed: 1
     });
     assert.match(first.body.value.qualificationRecordDigest, /^[0-9a-f]{64}$/);
-    assert.deepEqual(w.observe(), { used: 1, admissions: [`${expectedOperation}.json`] });
+    assert.deepEqual(w.observe(), { used: 1, admissions: [`${expectedOperation}.json`], intents: [] });
     // A retry of the same origin (fresh token) returns the recorded admission and counts nothing.
     const retry = await w.call();
     assert.equal(retry.body.ok, true);
     assert.equal(retry.body.replayed, true);
     assert.deepEqual(retry.body.value, first.body.value);
-    assert.deepEqual(w.observe(), { used: 1, admissions: [`${expectedOperation}.json`] });
+    assert.deepEqual(w.observe(), { used: 1, admissions: [`${expectedOperation}.json`], intents: [] });
     // Another body under the same origin conflicts, without a count.
     await expectRefusal(w, { selection: 'rwrepo/nosuch' }, { code: 'operation_conflict' }, 'changed body, same origin');
     await expectRefusal(w, { surface: 'browser' }, { code: 'operation_conflict' }, 'changed surface, same origin');
@@ -360,8 +364,9 @@ test('P7 a retry after the admission record was lost at the last budget slot is 
     fs.chmodSync(admissions, 0o500);
     const lost = await w.call();
     fs.chmodSync(admissions, 0o700);
+    const lostOperation = deriveTargetOperationId({ coordinator: COORDINATOR, originRequestId: originIdFor('success') });
     assert.deepEqual([lost.status, lost.body.stage, lost.body.code], [503, 'state', 'state_unavailable']);
-    assert.deepEqual(w.observe(), { used: 1, admissions: [] }, 'counted, not recorded');
+    assert.deepEqual(w.observe(), { used: 1, admissions: [], intents: [`${lostOperation}.json`] }, 'counted, not recorded: the intent stays for the idempotent retry');
     // Another body under the same origin conflicts with the intent, without a count.
     await expectRefusal(w, { selection: 'rwrepo/nosuch' }, { code: 'operation_conflict' }, 'changed body after a lost record');
     // The same request again: admitted, the count stays at the budget of 1.
@@ -369,7 +374,7 @@ test('P7 a retry after the admission record was lost at the last budget slot is 
     assert.equal(retry.status, 200, JSON.stringify(retry.body));
     assert.deepEqual([retry.body.ok, retry.body.replayed, retry.body.value.executionsUsed], [true, false, 1]);
     const operationId = deriveTargetOperationId({ coordinator: COORDINATOR, originRequestId: originIdFor('success') });
-    assert.deepEqual(w.observe(), { used: 1, admissions: [`${operationId}.json`] });
+    assert.deepEqual(w.observe(), { used: 1, admissions: [`${operationId}.json`], intents: [] });
     assert.deepEqual(fs.readdirSync(path.join(w.base, 'front', 'intents')), [], 'the intent is removed once recorded');
     // The given-back slot is never a new execution: a second origin is still beyond the budget.
     await expectRefusal(w, { seed: 'second' }, { code: 'capacity_exceeded' }, 'second origin after the retry');
@@ -383,8 +388,72 @@ test('P7 a retry after the admission record was lost at the last budget slot is 
     const intentFile = path.join(w2.base, 'front', 'intents', `${secondOperation}.json`);
     fs.writeFileSync(intentFile, JSON.stringify({ version: 1, requestDigest: requestDigest(TARGET), ref: TARGET }), { mode: 0o600 });
     await expectRefusal(w2, { seed: 'second' }, { code: 'capacity_exceeded' }, 'intent of an operation that was never counted');
+    assert.deepEqual(w2.observe().intents, [`${secondOperation}.json`], 'a pre-existing intent is kept: this request cannot tell whether an earlier attempt counted');
     fs.writeFileSync(intentFile, JSON.stringify({ version: 1, requestDigest: requestDigest('rwrepo/other'), ref: TARGET }), { mode: 0o600 });
     await expectRefusal(w2, { seed: 'second' }, { code: 'operation_conflict' }, 'intent recorded for another body');
+});
+
+test('P7 a refusal by the execution count leaves no intent behind; an ambiguous store failure keeps it for the idempotent retry', async (t) => {
+    const fixture = buildFixture(liveInput(), NOW_MS);
+    const record = clone(fixture.record);
+    record.fixture.maxExecutions = 1;
+    // Another admission takes the last slot between the facts snapshot and this request's count (the injectable source
+    // lookup runs in between), so the decision passes and `consumeExecution` refuses: nothing was counted.
+    let storeRoot = null;
+    let taken = false;
+    const w = world(t, {
+        record,
+        sourceState: async (value) => {
+            if (!taken) {
+                taken = true;
+                const other = deriveTargetOperationId({ coordinator: COORDINATOR, originRequestId: originIdFor('second') });
+                assert.equal(createQualificationStore({ fs, root: storeRoot, uid: UID }).value.consumeExecution(TARGET, other).ok, true);
+            }
+            return value;
+        }
+    });
+    storeRoot = w.storeRoot;
+    const refused = await w.call();
+    assert.deepEqual([refused.status, refused.body.stage, refused.body.code], [200, 'admission', 'capacity_exceeded'], JSON.stringify(refused.body));
+    assert.deepEqual(w.observe(), { used: 1, admissions: [], intents: [] }, 'not counted: no intent left');
+    // A store that cannot say whether the operation was counted (io_error) keeps the intent.
+    const w2 = world(t, { record });
+    const counters = path.join(w2.storeRoot, 'counters');
+    fs.chmodSync(counters, 0o500);
+    const unknown = await w2.call();
+    fs.chmodSync(counters, 0o700);
+    assert.deepEqual([unknown.status, unknown.body.stage, unknown.body.code], [200, 'admission', 'store_unavailable'], JSON.stringify(unknown.body));
+    const operationId = deriveTargetOperationId({ coordinator: COORDINATOR, originRequestId: originIdFor('success') });
+    assert.deepEqual(w2.observe().intents, [`${operationId}.json`]);
+    const retry = await w2.call();
+    assert.deepEqual([retry.body.ok, retry.body.value.executionsUsed], [true, 1], JSON.stringify(retry.body));
+    assert.deepEqual(w2.observe(), { used: 1, admissions: [`${operationId}.json`], intents: [] });
+});
+
+test('P7 an intent of an earlier counted attempt survives a refusal caused by an unreadable counter, so the later retry is admitted', async (t) => {
+    const fixture = buildFixture(liveInput(), NOW_MS);
+    const record = clone(fixture.record);
+    record.fixture.maxExecutions = 1;
+    const w = world(t, { record });
+    const admissions = path.join(w.base, 'front', 'admissions');
+    const operationId = deriveTargetOperationId({ coordinator: COORDINATOR, originRequestId: originIdFor('success') });
+    // Attempt A: counted, admission record lost; the intent stays.
+    fs.chmodSync(admissions, 0o500);
+    const lost = await w.call();
+    fs.chmodSync(admissions, 0o700);
+    assert.equal(lost.body.code, 'state_unavailable');
+    assert.deepEqual(w.observe(), { used: 1, admissions: [], intents: [`${operationId}.json`] });
+    // Attempt B: the counter is temporarily unreadable (reads as exhausted): refused, and the intent is still there.
+    const counter = path.join(w.storeRoot, 'counters', fs.readdirSync(path.join(w.storeRoot, 'counters')).find((name) => name.endsWith('.json')));
+    fs.chmodSync(counter, 0o644);
+    const refused = await w.call();
+    fs.chmodSync(counter, 0o600);
+    assert.deepEqual([refused.status, refused.body.stage, refused.body.code], [200, 'admission', 'capacity_exceeded'], JSON.stringify(refused.body));
+    assert.deepEqual(w.observe().intents, [`${operationId}.json`], 'the earlier attempt\'s intent is kept');
+    // Attempt C: the counter is readable again: admitted without a second charge.
+    const retry = await w.call();
+    assert.deepEqual([retry.body.ok, retry.body.value.executionsUsed], [true, 1], JSON.stringify(retry.body));
+    assert.deepEqual(w.observe(), { used: 1, admissions: [`${operationId}.json`], intents: [] });
 });
 
 test('P7 the record binds the verified coordinator: another declared coordinator is refused even when its operation is listed', async (t) => {

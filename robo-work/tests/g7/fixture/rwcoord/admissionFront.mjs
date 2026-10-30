@@ -191,6 +191,14 @@ export function createAdmissionFront({
         try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
     }
 
+    function removeIntent(operationId) {
+        try {
+            fs.unlinkSync(path.join(intentsDir, `${operationId}.json`));
+        } catch {
+            // A leftover intent is harmless: the record is consulted first.
+        }
+    }
+
     async function handleNow(request) {
         // 1. The coordinator hop, verified against what this front actually received.
         let hop;
@@ -267,7 +275,14 @@ export function createAdmissionFront({
             return refusal(503, 'state', 'state_unavailable', { operationId });
         }
         const counted = qualificationStore.consumeExecution(decision.value.ref, operationId);
-        if (!counted.ok) return refusal(200, 'admission', STORE_CODE[counted.error.code] ?? 'store_unavailable', { operationId });
+        if (!counted.ok) {
+            // Only the intent this request wrote is removed, and only on a definite store refusal (nothing was counted by
+            // this request). An intent that was already there may belong to an earlier attempt that did count: an
+            // unreadable counter reads as exhausted (`capacity_exceeded`), so a refusal proves nothing about that attempt.
+            // `io_error` cannot tell whether the count landed either: the intent stays, as it enables the idempotent retry.
+            if (intent === null && counted.error.code !== 'io_error') removeIntent(operationId);
+            return refusal(200, 'admission', STORE_CODE[counted.error.code] ?? 'store_unavailable', { operationId });
+        }
         const value = {
             backend: 'target', ref: decision.value.ref, principal: decision.value.principal, qualificationClass: decision.value.qualificationClass,
             qualificationRecordDigest: decision.value.qualificationRecordDigest, operationId, coordinator: hop.coordinator,
@@ -278,11 +293,8 @@ export function createAdmissionFront({
         } catch {
             return refusal(503, 'state', 'state_unavailable', { operationId });
         }
-        try {
-            fs.unlinkSync(path.join(intentsDir, `${operationId}.json`));
-        } catch {
-            // A leftover intent is harmless: the record is consulted first.
-        }
+        // The operation is counted and recorded; a failed record write above keeps the intent (counted, so a retry needs it).
+        removeIntent(operationId);
         return answer(200, { ok: true, replayed: false, value });
     }
 

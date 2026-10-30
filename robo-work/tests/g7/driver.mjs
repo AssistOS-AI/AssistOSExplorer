@@ -15,7 +15,7 @@
 //   provider           {route, port}: the worker's route key and declared coordinator-route port
 //   coordinator        {command: [argv...], args: [argv...]}: runs the rwcoord coordinator CLI as the declared coordinator
 //   rogue              {command, args}: the same CLI as an agent that is not a declared coordinator
-//   observe            [argv...]: prints one JSON line (count, admissions, and in live runs containers and journal)
+//   observe            [argv...]: prints one JSON line (count, admissions, leftover intents, and in live runs containers and journal)
 //   facts              {base, unprepared, noSourceUnprepared, ploinkySource}: [argv...] installing each base-facts variant
 //   selections         {target, worker, roboteam, staleWorkerAlias, coordinator, shadow, unknown}
 //   admissibleOrigins  [Id, Id]: origins whose derived operation IDs the installed record lists (operator plan)
