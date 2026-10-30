@@ -15,6 +15,6 @@ export const sandboxError = (code, detail = null) => new SandboxError(code, deta
 
 // Exit codes of sandboxPrep.mjs, propagated by stage.sh (which itself uses 64, 70, 71 and 72).
 export const PREP_EXIT = Object.freeze({
-    ok: 0, mask_scan_limit: 20, mask_unverified: 21, setup_failed: 22, sandbox_unavailable: 23
+    ok: 0, mask_scan_limit: 20, mask_unverified: 21, setup_failed: 22, sandbox_unavailable: 23, invalid_request: 24
 });
 export const codeForPrepExit = (status) => Object.entries(PREP_EXIT).find(([, value]) => value === status && value !== 0)?.[0] ?? null;

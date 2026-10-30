@@ -5,7 +5,8 @@
 //
 //   node sandboxPrep.mjs <marker> <spec-json>
 //   spec  { supervisorMntNs: "<inode>", stageDir, maskDir, maskFile, limits?,
-//           grants: [{ name, path, dev, ino }],   bound at <stageDir>/projects/<name>, scanned and masked
+//           grants: [{ name, path, dev, ino, exclusions? }],  bound at <stageDir>/projects/<name>, scanned and masked;
+//                   exclusions are grant-relative paths masked like protected names (exclusions.mjs)
 //           binds:  [{ name, path, dev, ino }] }  bound at <stageDir>/binds/<name> (HOME, session storage, config)
 //
 //   1. refuse unless /proc/self/ns/mnt differs from the supervisor's mount namespace (nothing below may touch the
@@ -30,12 +31,12 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 import { isValidComponentName } from '../views/protectedNames.mjs';
+import { isMarker } from './marker.mjs';
+import { checkRelativeExclusion, dropCovered, resolveExclusions, verifyExclusionMasks } from './exclusions.mjs';
 import { classifyProcMasks } from './procMasks.mjs';
-import { scanProtected, verifyMasks } from './protectedScan.mjs';
+import { DEFAULT_SCAN_LIMITS, scanProtected, verifyMasks } from './protectedScan.mjs';
 import { PREP_EXIT, sandboxError } from './sandboxErrors.mjs';
 
-// The marker is the S1 reservation id (base64url), carried verbatim in argv.
-const MARKER = /^[A-Za-z0-9_][A-Za-z0-9_-]{7,63}$/u;
 const DIGITS = /^[0-9]{1,20}$/u;
 const TOOL_ENV = Object.freeze({ PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', LC_ALL: 'C' });
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
@@ -62,11 +63,12 @@ function checkMounts(list, what, nameOk) {
             throw sandboxError('setup_failed', `invalid ${what}`);
         }
         seen.add(entry.name);
+        for (const rel of entry.exclusions ?? []) checkRelativeExclusion(rel);
     }
 }
 
 function checkSpec(marker, spec) {
-    if (typeof marker !== 'string' || !MARKER.test(marker)) throw sandboxError('setup_failed', 'invalid marker');
+    if (!isMarker(marker)) throw sandboxError('setup_failed', 'invalid marker');
     if (spec === null || typeof spec !== 'object' || !DIGITS.test(String(spec.supervisorMntNs ?? ''))) throw sandboxError('setup_failed', 'invalid spec');
     spec.binds ??= [];
     checkMounts(spec.grants, 'grants', isValidComponentName);
@@ -97,7 +99,7 @@ export function runPrep(marker, spec, deps = {}) {
     const {
         runTool = defaultRunTool, readlink = (file) => fs.readlinkSync(file), readFile = (file) => fs.readFileSync(file, 'utf8'),
         pid = process.pid, scan = scanProtected, verify = verifyMasks, lstat = (file) => fs.lstatSync(file, { bigint: true }),
-        openDir = (file) => fs.openSync(file, DIRECTORY_FLAGS), closeFd = (fd) => fs.closeSync(fd), openPath = openAnchored,
+        openDir = (file) => fs.openSync(file, DIRECTORY_FLAGS), closeFd = (fd) => fs.closeSync(fd), openPath = openAnchored, verifyExclusions = verifyExclusionMasks,
         fstat = (fd) => fs.fstatSync(fd, { bigint: true })
     } = deps;
     checkSpec(marker, spec);
@@ -143,7 +145,11 @@ export function runPrep(marker, spec, deps = {}) {
             const staged = `${spec.stageDir}/projects/${grant.name}`;
             const grantFd = open(grant, staged);
             const { entries } = scan(grantFd, spec.limits);
-            for (const entry of entries) {
+            // Exclusions: resolved from the same anchored descriptor, a missing one skipped, a link refused (invalid_request).
+            const extra = dropCovered(resolveExclusions(grantFd, grant.exclusions ?? []), entries);
+            const maxMasks = { ...DEFAULT_SCAN_LIMITS, ...(spec.limits ?? {}) }.maxMasks;
+            if (entries.length + extra.length > maxMasks) throw sandboxError('mask_scan_limit', 'Too many protected entries and exclusions');
+            for (const entry of [...entries, ...extra]) {
                 const source = entry.kind === 'dir' ? spec.maskDir : spec.maskFile;
                 const masked = runTool('mount', ['--no-canonicalize', '--bind', '-o', 'ro', source, `${staged}/${entry.rel}`]);
                 if (masked.status !== 0) throw sandboxError('mask_unverified', `a mask mount failed: ${firstLine(masked.stderr)}`);
@@ -156,6 +162,7 @@ export function runPrep(marker, spec, deps = {}) {
             }
             try {
                 verify(fresh, entries, maskIds, spec.limits);
+                verifyExclusions(fresh, extra, maskIds);
             } finally {
                 closeFd(fresh);
             }

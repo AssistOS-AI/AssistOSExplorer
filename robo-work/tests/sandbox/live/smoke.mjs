@@ -60,7 +60,7 @@ const finish = () => process.stdout.write('PROBE ' + JSON.stringify(out) + '\n')
 if (out.role === 'endpoint') { fs.writeFileSync('/stream/probe.json', JSON.stringify(out)); setInterval(() => {}, 1000000); return; }
 if (out.role !== 'workload') { finish(); return; }
 const root = '/projects/p'; out.protected = {};
-for (const rel of ['.env', '.data', 'x.secrets', 'sub/.env', 'sub/.data', '.roboteam', 'README.md']) {
+for (const rel of ['.env', '.data', 'x.secrets', 'sub/.env', 'sub/.data', '.roboteam', 'private-notes.txt', 'docs/hidden', 'README.md']) {
     const file = root + '/' + rel; const r = {};
     try { const s = fs.lstatSync(file); r.dir = s.isDirectory(); r.size = s.size; } catch (e) { r.stat = e.code; out.protected[rel] = r; continue; }
     if (r.dir) { try { r.entries = fs.readdirSync(file).length; } catch (e) { r.list = e.code; } try { fs.writeFileSync(file + '/new', 'x'); r.write = 'WROTE'; } catch (e) { r.write = e.code; } try { fs.rmdirSync(file); r.rmdir = 'REMOVED'; } catch (e) { r.rmdir = e.code; } }
@@ -90,7 +90,7 @@ const project = path.join(root, 'project');
 const home = path.join(root, 'home');
 const runtimeRoot = path.join(root, 'runtime');
 for (const dir of [project, home, runtimeRoot, path.join(project, 'sub', '.data'), path.join(project, '.data'), path.join(project, '.roboteam'), path.join(project, 'late')]) fs.mkdirSync(dir, { recursive: true });
-for (const [file, text] of [['.env', 'SECRET=1'], ['x.secrets', 's'], ['sub/.env', 'SECRET=2'], ['README.md', 'hello'], ['.data/k', 'k'], ['sub/.data/k', 'k']]) fs.writeFileSync(path.join(project, file), text);
+for (const [file, text] of [['.env', 'SECRET=1'], ['x.secrets', 's'], ['sub/.env', 'SECRET=2'], ['README.md', 'hello'], ['.data/k', 'k'], ['sub/.data/k', 'k'], ['private-notes.txt', 'private'], ['docs/hidden/a.txt', 'h']]) { fs.mkdirSync(path.dirname(path.join(project, file)), { recursive: true }); fs.writeFileSync(path.join(project, file), text); }
 
 let supervisor;
 let view;
@@ -209,7 +209,9 @@ await step('workload (probe)', async () => {
     const request = {
         processClass: 'run', executable: '/usr/local/bin/node', args: ['-e', PROBE, 'role-workload'],
         env: { PROBE_ROLE: 'workload', PROBE_TARGETS: JSON.stringify([['workerLoopbackViaGateway', supervisor.network.hostAddress, servicePort], ['publicDns', '1.1.1.1', 443]]) },
-        home: '/home/robot', cwd: '/projects/p', folders: [{ path: '/projects/p', access: 'write' }], exclusions: [], network: 'robot-egress',
+        home: '/home/robot', cwd: '/projects/p', folders: [{ path: '/projects/p', access: 'write' }], network: 'robot-egress',
+        // M-17: provider exclusions are masked like protected names; one that does not exist is skipped and must not be created
+        exclusions: ['/projects/p/private-notes.txt', '/projects/p/docs/hidden', '/projects/p/missing/ghost'],
         requirements: { privateProc: true }, communication: { kind: 'stdio', stdin: 'ignore' }
     };
     let created;
@@ -229,7 +231,7 @@ await step('workload (probe)', async () => {
     const line = text.split('\n').find((candidate) => candidate.startsWith('PROBE '));
     evidence.roles.workload = line ? JSON.parse(line.slice(6)) : { noProbeOutput: text.slice(0, 300), stderr: outputs.filter(([name]) => name === 'stderrbbbb').map(([, c]) => c).join('').slice(0, 600) };
     evidence.roles.workloadExit = exit;
-    evidence.hostAfter = { env: fs.readFileSync(path.join(project, '.env'), 'utf8').length, readme: fs.readFileSync(path.join(project, 'README.md'), 'utf8'), hasCreated: fs.existsSync(path.join(project, 'created-by-workload.txt')) };
+    evidence.hostAfter = { env: fs.readFileSync(path.join(project, '.env'), 'utf8').length, readme: fs.readFileSync(path.join(project, 'README.md'), 'utf8'), hasCreated: fs.existsSync(path.join(project, 'created-by-workload.txt')), ghostCreated: fs.existsSync(path.join(project, 'missing')), privateNotes: fs.readFileSync(path.join(project, 'private-notes.txt'), 'utf8').length, hiddenFile: fs.existsSync(path.join(project, 'docs', 'hidden', 'a.txt')) };
     for (const server of servers) server.close();
 });
 service.close();

@@ -139,3 +139,17 @@ test('a creation that fails before commit (the launch is refused) leaves nothing
     await world.ledger.endExecution({ classification: 'failed' });
     assert.deepEqual(world.store.listUnsettledResources(), []);
 });
+
+test('B2: every id S1 can generate is a valid marker for the whole chain, including the ones that begin with a dash', async () => {
+    const { randomId } = await import('../../server/stateProtocol.mjs');
+    const { isMarker } = await import('../../server/sandbox/marker.mjs');
+    const { bwrapRealArgv } = await import('../../server/sandbox/bwrapArgs.mjs');
+    let dashed = 0;
+    for (let index = 0; index < 20000; index += 1) {
+        const id = randomId();
+        if (id.startsWith('-')) dashed += 1;
+        assert.ok(isMarker(id), id);
+        assert.equal(bwrapRealArgv({ argsFd: 7, marker: id })[3], id);
+    }
+    assert.ok(dashed > 100, `the sample contained ${dashed} dash-leading ids`);
+});

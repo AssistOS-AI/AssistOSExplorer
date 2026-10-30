@@ -17,7 +17,7 @@
 //
 // spec
 //   role            'orchestration' | 'endpoint' | 'workload' | 'terminal'
-//   marker          the S1 reservation id, [A-Za-z0-9_-]{8,64} not starting with '-' (validated; used by bwrapRealArgv and the workload/terminal stage argument)
+//   marker          the S1 reservation id, [A-Za-z0-9_-]{8,64}, see marker.mjs (validated; used by bwrapRealArgv and the workload/terminal stage argument)
 //   seccompFd, blockFd, infoFd, jsonStatusFd   control fd numbers, as seen by bwrap
 //   roBinds         [{ source, dest }]  image paths, read-only   (dest within FIXED_DESTINATIONS)
 //   binds           [{ source, dest, mode: 'ro' | 'rw' }]  directories of the execution runtime directory (path binds)
@@ -46,6 +46,7 @@
 // grant (or under /projects), or malformed fields.
 
 import { isValidComponentName } from '../views/protectedNames.mjs';
+import { isMarker } from './marker.mjs';
 import { procMaskArgs } from './procMasks.mjs';
 
 export const BWRAP_PATH = '/usr/bin/bwrap';
@@ -56,8 +57,6 @@ export const FIXED_DESTINATIONS = Object.freeze([
     '/opt/robo-work', '/run/robo-work', '/home/robot', '/session', '/config', '/stream'
 ]);
 
-// The marker is the S1 reservation id (base64url, 22 characters): the walker matches `cmdline.includes(marker)`.
-const MARKER = /^[A-Za-z0-9_][A-Za-z0-9_-]{7,63}$/;
 export const STAGE_BIND_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const WORKLOAD_ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const SHELL_HONOURED = /^(IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|CDPATH|GLOBIGNORE|LD_[A-Z0-9_]*|BASH_FUNC_[A-Z0-9_]*|_)$/;
@@ -125,7 +124,7 @@ function checkArgv(argv) {
 
 export function bwrapRealArgv({ argsFd, marker, command = [] }) {
     if (!isFd(argsFd)) throw invalid('argsFd must be a file descriptor number');
-    if (typeof marker !== 'string' || !MARKER.test(marker)) throw invalid('Invalid marker');
+    if (!isMarker(marker)) throw invalid('Invalid marker');
     if (!Array.isArray(command) || command.some((item) => typeof item !== 'string' || item.includes('\0'))) throw invalid('Invalid command');
     return [BWRAP_PATH, '--unshare-uts', '--hostname', marker, '--args', String(argsFd), ...(command.length > 0 ? ['--', ...command] : [])];
 }
@@ -143,7 +142,7 @@ export function bwrapCommand(spec) {
 export function buildBwrapArgs(spec) {
     if (spec === null || typeof spec !== 'object') throw invalid('spec must be an object');
     if (!ROLES.includes(spec.role)) throw invalid(`Unknown role: ${String(spec.role)}`);
-    if (typeof spec.marker !== 'string' || !MARKER.test(spec.marker)) throw invalid('Invalid marker');
+    if (!isMarker(spec.marker)) throw invalid('Invalid marker');
     for (const key of ['seccompFd', 'blockFd', 'infoFd', 'jsonStatusFd']) requireFd(spec, key);
     cleanPath(spec.cwd, 'cwd');
     checkArgv(spec.argv);

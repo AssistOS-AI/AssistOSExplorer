@@ -14,8 +14,11 @@ export function createFakeView() {
     const procs = new Map();
     const registered = [];
     const self = { pidNs: '1000', mntNs: '2000', netNs: '3000' };
+    const pinned = new Map();
     const view = {
-        procs, registered, self,
+        procs, registered, self, pinned,
+        pinNamespace: (type, inode) => { const key = `${type}:${inode}`; pinned.set(key, (pinned.get(key) ?? 0) + 1); return () => { const left = (pinned.get(key) ?? 1) - 1; if (left <= 0) pinned.delete(key); else pinned.set(key, left); }; },
+        isPinned: (type, inode) => pinned.has(`${type}:${inode}`),
         process: (pid) => procs.get(pid) ?? null,
         listProcesses: () => [...procs.values()].map((entry) => ({ ...entry })),
         selfNamespaces: () => ({ ...self }),

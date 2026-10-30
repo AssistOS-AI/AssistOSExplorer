@@ -46,6 +46,22 @@ test('final: only the named variables survive; values with spaces, quotes and ne
     assert.ok(!ps.stdout.includes('sekrit-value'));
 });
 
+test('final: every env name is checked on its own: empty, digit-first and metacharacter names are refused before anything runs', () => {
+    for (const names of ['A,,B', ',A', '1A', 'A,2B', 'A-B', 'A B', 'A;id', 'A$B', 'A=B', 'A.B', 'A*']) {
+        assert.equal(run(['final', '0,1,2', names, '/usr/bin/env'], { env: { PATH: process.env.PATH, A: 'x', B: 'y' } }).status, 64, names);
+    }
+    assert.equal(run(['final', '0,1,2', 'A,B_2,_C', '/usr/bin/true']).status, 0);
+});
+
+test('prep: a marker that begins with a dash (an S1 id does so about once in 64) is passed verbatim to prep and to bwrap', () => tmp((dir) => {
+    const dashed = '-abc_DEF-0123456789xyz';
+    const stage = prepFixture(dir, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(path.join(dir, 'prep.arg'))}, process.argv[2]);`, '#!/bin/sh\necho "$@"\n');
+    const r = spawnSync('/bin/sh', [stage, 'prep', dashed, String(process.pid), '', '4', SPEC, '--', '/bin/cmd'], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.readFileSync(path.join(dir, 'prep.arg'), 'utf8'), dashed);
+    assert.equal(r.stdout, `--unshare-uts --hostname ${dashed} --args 4 -- /bin/cmd\n`);
+}));
+
 test('final: bad arguments are refused', () => {
     assert.equal(run(['final', 'x', 'A', '/bin/true']).status, 64);
     assert.equal(run(['final', '0,1,2', 'A;id', '/bin/true']).status, 64);
@@ -98,9 +114,10 @@ test('prep: a changed parent (PPID mismatch) refuses before bwrap', () => tmp((d
 }));
 
 test('prep: malformed arguments are refused', () => {
-    assert.equal(run(['prep', 'bad', '1', '3', '4', SPEC, '--', '/bin/true']).status, 64);
+    assert.equal(run(['prep', 'bad', '1', '3', '4', SPEC, '--', '/bin/true']).status, 64, 'too short');
+    assert.equal(run(['prep', 'rw bad marker1', '1', '3', '4', SPEC, '--', '/bin/true']).status, 64, 'characters outside the marker set');
     assert.equal(run(['prep', MARKER, 'x', '3', '4', SPEC, '--', '/bin/true']).status, 64);
     assert.equal(run(['prep', MARKER, '1', '3', '4', SPEC, 'nodashes', '/bin/true']).status, 64);
     assert.equal(run(['prep', MARKER, '1', '3', '4', SPEC, '--']).status, 64, 'a command is required');
-    assert.equal(run(['prep', '-x123456789', '1', '3', '4', SPEC, '--', '/bin/true']).status, 64);
+    assert.equal(run(['prep', 'a'.repeat(65), '1', '3', '4', SPEC, '--', '/bin/true']).status, 64, 'too long');
 });

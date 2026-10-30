@@ -39,6 +39,7 @@ import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 
 import { createExecutionNetwork, namesFor } from './executionNetwork.mjs';
+import { mapVirtualExclusions } from './exclusions.mjs';
 import { SandboxError, sandboxError } from './sandboxErrors.mjs';
 
 const ANCHOR_KINDS = new Set(['keeper', 'supervisor', 'sandbox']);
@@ -259,12 +260,15 @@ export function createExecutionSupervisor({
     // The folders of the request select the grants, with write access only where both the grant and the folder ask for it.
     function selectGrants(request) {
         const chosen = [];
+        // The request's exclusions are virtual paths; each becomes a grant-relative path of the admitted grant that holds it (or the
+        // request is refused). An exclusion in a grant this request does not mount hides nothing and is dropped.
+        const exclusionsByGrant = mapVirtualExclusions(request.exclusions, grants);
         for (const grant of grants) {
             const touching = request.folders.filter((folder) => folder.path === grant.path || folder.path.startsWith(`${grant.path}/`));
             const cwdInside = request.cwd === grant.path || request.cwd.startsWith(`${grant.path}/`);
             if (touching.length === 0 && !cwdInside) continue;
             const wantsWrite = touching.some((folder) => folder.access === 'write');
-            chosen.push({ name: grant.name, path: grant.hostPath, fd: grant.fd, mode: wantsWrite && grant.access === 'write' ? 'rw' : 'ro' });
+            chosen.push({ name: grant.name, path: grant.hostPath, fd: grant.fd, mode: wantsWrite && grant.access === 'write' ? 'rw' : 'ro', exclusions: exclusionsByGrant.get(grant.name) ?? [] });
         }
         return chosen;
     }
@@ -275,6 +279,7 @@ export function createExecutionSupervisor({
         const { request, streams } = spec;
         const netMode = request.network === 'none' ? 'none' : 'join';
         if (netMode === 'join' && !network) throw sandboxError('setup_failed', 'the execution network does not exist yet');
+        const chosenGrants = selectGrants(request); // refuses a bad exclusion before any socket or process exists
         const sockets = [];
         try {
             const stdio = [];
@@ -288,7 +293,7 @@ export function createExecutionSupervisor({
                 role: 'workload', marker, runtimeDir: runtime.path, netMode, ...(netMode === 'join' ? { netns: network.nsPath, netnsInode: network.nsInode() } : {}),
                 roBinds: roles.workload.roBinds, symlinks: roles.workload.symlinks,
                 env: { HOME: request.home, PATH: workloadPath, TMPDIR: '/tmp', ...request.env },
-                cwd: request.cwd, argv: [request.executable, ...request.args], home: { path: home.path, fd: home.fd }, grants: selectGrants(request),
+                cwd: request.cwd, argv: [request.executable, ...request.args], home: { path: home.path, fd: home.fd }, grants: chosenGrants,
                 channelsDir: rt('channels'), tmpDir: rt('tmp'), stdio, scanLimits: roles.workload.scanLimits
             });
             return asCreation(resourceId, sandbox, { tree: true });
@@ -354,8 +359,11 @@ export function createExecutionSupervisor({
     }
 
     async function releaseViews() {
-        // The masks live in each sandbox's private mount namespace and went with its monitor; what remains is the staging directory.
-        await Promise.allSettled([...trees, ...(endpointSandbox ? [endpointSandbox] : [])].map((sandbox) => sandbox.release()));
+        // The masks live in each sandbox's private mount namespace and went with its monitor; what remains is the staging directory
+        // and the namespace pins. A sandbox that cannot be proven gone, or whose staging directory cannot be removed, fails the step.
+        const results = await Promise.allSettled([...trees, ...(endpointSandbox ? [endpointSandbox] : [])].map((sandbox) => sandbox.release()));
+        const failed = results.find((result) => result.status === 'rejected' || result.value?.absent !== true || result.value?.stageRemoved === false);
+        if (failed) throw failed.status === 'rejected' ? failed.reason : sandboxError('setup_failed', `a sandbox view could not be released: ${(failed.value.problems ?? []).join(',') || 'staging directory remains'}`);
     }
 
     // The last step of the end path (step 6). Like the keeper before it, the anchor ends with this step: the ledger proves the
@@ -463,7 +471,11 @@ export function createRecoveryView(view, { runSync = defaultRunSync, exists = (f
         exists(kind, locator) {
             if (kind === 'veth') return linkPresent(locator.host) || linkPresent(locator.peer);
             if (kind === 'nft-table') return tablePresent(locator.table);
-            if (kind === 'netns') { const names = netnsNames(locator); return names === null ? true : exists(`/run/netns/${names.netns}`); }
+            // An execution network is present while any of its parts is: the netns file, either veth end, or the nft table.
+            if (kind === 'netns') {
+                const names = netnsNames(locator);
+                return names === null ? true : exists(`/run/netns/${names.netns}`) || linkPresent(names.host) || linkPresent(names.peer) || tablePresent(names.table);
+            }
             return view.exists(kind, locator);
         },
         remove(kind, locator) {

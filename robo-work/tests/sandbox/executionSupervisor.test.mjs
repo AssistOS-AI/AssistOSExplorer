@@ -12,9 +12,10 @@ import {
 } from '../../server/sandbox/executionSupervisor.mjs';
 import { namesFor } from '../../server/sandbox/executionNetwork.mjs';
 import { createWalker } from '../../server/execution/recoveryWalk.mjs';
+import { admitStartRequest, createAdmission } from '../../server/execution/supervisorRequestValidator.mjs';
 import { SUPERVISOR_PID, createFakeView } from './helpers/fakes.mjs';
 
-const MARKER = 'rwTestMarker0123456789_a';
+const MARKER = 'rw-TestMarker0123456789_a';
 const LOCATOR_ID = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
 
 function fakeSandbox(role, extra = {}) {
@@ -346,9 +347,17 @@ test('end path: uncommitted creations are aborted, trees stopped with the grace,
         assert.deepEqual(endpoint.stops, [123]);
         ala.verdict = { absent: false, problems: ['init_present'] };
         await assert.rejects(world.supervisor.endProcessTrees(), { code: 'setup_failed' });
+        ala.verdict = { absent: true, problems: [] };
         await world.supervisor.releaseViews();
         assert.equal(ala.releases, 1);
         assert.equal(endpoint.releases, 1);
+        // a view that cannot be released fails the step instead of being ignored
+        ala.verdict = { absent: false, problems: ['namespace_held'] };
+        await assert.rejects(world.supervisor.releaseViews(), { code: 'setup_failed' });
+        ala.verdict = { absent: true, problems: [], stageRemoved: false };
+        await assert.rejects(world.supervisor.releaseViews(), { code: 'setup_failed' });
+        ala.release = async () => { throw new Error('release crashed'); };
+        await assert.rejects(world.supervisor.releaseViews(), /release crashed/);
     } finally { world.done(); }
 });
 
@@ -407,4 +416,33 @@ test('recovery view: veth and nft are asked of ip and nft, never assumed present
         view: { ...view, listProcesses: () => [], listMounts: () => [] }, clock: { now: () => 0, sleep: async () => {} }, releaseDeadlineMs: 10, pollMs: 1, sandboxRecord: () => null
     });
     return walker.attempt({ kind: 'netns', identity: { netNs: '1' }, locator: { netns: LOCATOR_ID } }).then((outcome) => assert.equal(outcome, 'released'));
+});
+
+test('E: provider exclusions become grant-relative masks of the grant that holds them; an exclusion outside every admitted grant refuses the request before any socket or launch', async () => {
+    const world = await rig();
+    try {
+        await world.supervisor.create({ kind: 'netns', resourceId: 'n1', locator: { netns: LOCATOR_ID } });
+        const servers = await streamServers(world, ['stdoutbbbb', 'stderrcccc']);
+        const sandbox = world.supervisor.providerSandbox(fakeLedger(world.supervisor));
+        const streams = { stdout: '/stream/stdoutbbbb', stderr: '/stream/stderrcccc' };
+        const base = { network: 'none', communication: { kind: 'stdio', stdin: 'ignore' }, folders: [{ path: '/projects/a', access: 'write' }, { path: '/projects/b', access: 'read' }] };
+        await sandbox.start({ process: 1, streams, request: request({ ...base, exclusions: ['/projects/a/docs/private', '/projects/b/x.txt', '/projects/c/not-mounted'] }) });
+        const spec = world.launched.at(-1);
+        assert.deepEqual(spec.grants.map((grant) => [grant.name, grant.exclusions]), [['a', ['docs/private']], ['b', ['x.txt']]], 'c is admitted but not mounted for this request');
+        const launches = world.launched.length;
+        for (const exclusion of ['/etc/passwd', '/home/robot/.ssh', '/projects/a', '/projects/a/../b/x', '/tmp/x', '/projects/zzz/x', 'projects/a/x']) {
+            await assert.rejects(sandbox.start({ process: 9, streams, request: request({ ...base, exclusions: [exclusion] }) }), { code: 'invalid_request' }, exclusion);
+        }
+        assert.equal(world.launched.length, launches, 'no launch for a refused request');
+        servers.close();
+    } finally { world.done(); }
+});
+
+test('M-15: LD_PRELOAD, BASH_ENV and every other name off the allowlist are refused by admission, before the supervisor sees the request', () => {
+    const admission = createAdmission({ grants: [{ path: '/projects/a', access: 'write' }], inventory: [{ name: 'codex' }], streamDirectory: '/stream' });
+    for (const name of ['LD_PRELOAD', 'BASH_ENV', 'LD_LIBRARY_PATH', 'IFS', 'NODE_OPTIONS', 'PATH', 'HOME']) {
+        const refusal = admitStartRequest(request({ env: { [name]: 'x' }, folders: [{ path: '/projects/a', access: 'write' }] }), admission);
+        assert.ok(refusal && /^environment_/.test(refusal.code), `${name}: ${refusal?.code}`);
+    }
+    assert.equal(admitStartRequest(request({ env: { IS_SANDBOX: '1' }, folders: [{ path: '/projects/a', access: 'write' }] }), admission), null);
 });

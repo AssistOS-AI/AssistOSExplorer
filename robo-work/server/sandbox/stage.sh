@@ -26,7 +26,7 @@ prep)
     marker=$2; supervisor=$3; grants=$4; argsfd=$5; prepspec=$6
     [ "$7" = "--" ] || exit 64
     shift 5
-    case $marker in ''|-*|*[!A-Za-z0-9_-]*) exit 64;; esac
+    case $marker in ''|*[!A-Za-z0-9_-]*) exit 64;; esac
     [ "${#marker}" -ge 8 ] && [ "${#marker}" -le 64 ] || exit 64
     numeric "$supervisor" || exit 64
     numeric "$argsfd" || exit 64
@@ -70,7 +70,7 @@ final)
     set -f
     oldifs=$IFS; IFS=,
     for name in $names; do
-        case $name in ''|[0-9]*) exit 64;; esac
+        case $name in ''|[0-9]*|*[!A-Za-z0-9_]*) exit 64;; esac
         eval "isset=\${$name+x}"
         [ -n "$isset" ] || continue
         eval "value=\${$name}"

@@ -30,7 +30,7 @@
 //   binds        [{ source, dest, mode }]  plain path binds of directories in the execution runtime directory (stream, channels)
 //   stdio        [s0, s1, s2]  each a descriptor number, a socket, 'pipe' or 'ignore' (a terminal's PTY slave goes here)
 //   roleFds      { 3: socket|fd, 4: 'pipe'|socket|fd }  endpoint pair socket at 3 and frame channel at 4; orchestration at 3
-//   home { path, fd }, grants [{ name, path, fd, mode }], channelsDir, tmpDir     workload and terminal (same path/fd rule)
+//   home { path, fd }, grants [{ name, path, fd, mode, exclusions? }]  (exclusions: grant-relative paths masked like protected names), channelsDir, tmpDir     workload and terminal (same path/fd rule)
 //   onIdentity   optional async (identity) => void: commit hook; when given, the gate byte is written after it returns
 //   timeouts     prepTimeoutMs (default 120000), gateTimeoutMs (10000), verifyTimeoutMs (5000)
 //
@@ -51,6 +51,8 @@ import { isMainThread } from 'node:worker_threads';
 
 import { isValidComponentName } from '../views/protectedNames.mjs';
 import { buildBwrapArgs, bwrapCommand } from './bwrapArgs.mjs';
+import { checkRelativeExclusion } from './exclusions.mjs';
+import { isMarker } from './marker.mjs';
 import { compileSeccomp } from './seccompBpf.mjs';
 import { SandboxError, codeForPrepExit, sandboxError } from './sandboxErrors.mjs';
 
@@ -60,7 +62,6 @@ const REQUIRED_TOOLS = ['setpriv', 'unshare', 'mount', 'umount', 'node'];
 const ARCH = { x64: 'x86_64', arm64: 'aarch64' };
 const ROLE_FD_ALLOW = { orchestration: [0, 1, 2, 3], endpoint: [0, 1, 2, 3, 4], workload: [0, 1, 2], terminal: [0, 1, 2] };
 const SECCOMP_PROFILE = { orchestration: 'orchestration', endpoint: 'orchestration', workload: 'workload', terminal: 'workload' };
-const MARKER = /^[A-Za-z0-9_][A-Za-z0-9_-]{7,63}$/u;
 const DIGITS = /^[0-9]{1,20}$/u;
 
 const defer = () => { const d = {}; d.promise = new Promise((resolve, reject) => { d.resolve = resolve; d.reject = reject; }); return d; };
@@ -71,6 +72,18 @@ function findTool(name, searchPath = TOOL_PATH) {
         try { fs.accessSync(path.join(dir, name), fs.constants.X_OK); return path.join(dir, name); } catch { /* next */ }
     }
     return null;
+}
+
+// Opens /proc/<pid>/ns/<type> and returns { inode, close }. An open namespace file keeps the namespace alive, so its inode cannot
+// be reused by another namespace while the descriptor is held.
+function defaultOpenNamespace(pid, type) {
+    const fd = fs.openSync(`/proc/${pid}/ns/${type}`, fs.constants.O_RDONLY);
+    try {
+        return { inode: String(fs.fstatSync(fd, { bigint: true }).ino), close: () => fs.closeSync(fd) };
+    } catch (error) {
+        fs.closeSync(fd);
+        throw error;
+    }
 }
 
 // Slot layout for a role.
@@ -87,9 +100,12 @@ export function slotLayout(role) {
 
 export function createSandboxLauncher({
     view, spawnImpl = spawn, signal = (pid, name) => process.kill(pid, name), clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
-    procMasks = [], stageScript = STAGE_SCRIPT, arch = ARCH[process.arch], tools = null, toolPath = TOOL_PATH,
-    mainThread = isMainThread, supervisorPid = process.pid, fsImpl = fs
+    procMasks, stageScript = STAGE_SCRIPT, arch = ARCH[process.arch], tools = null, toolPath = TOOL_PATH,
+    mainThread = isMainThread, supervisorPid = process.pid, fsImpl = fs, openNamespace = defaultOpenNamespace
 } = {}) {
+    // The worker container's /proc masks are re-applied inside every sandbox. No default: a launcher that does not know them
+    // would start sandboxes with a wider /proc, so it refuses to exist.
+    if (!Array.isArray(procMasks)) throw sandboxError('sandbox_unavailable', 'the /proc masks of the worker container are required');
     if (!view || typeof view.process !== 'function' || typeof view.listProcesses !== 'function' || typeof view.selfNamespaces !== 'function') {
         throw new TypeError('A procView is required');
     }
@@ -129,7 +145,7 @@ export function createSandboxLauncher({
 
             // The directories prep must open for itself: HOME as binds/home, the anchored ones as binds/<name>, grants as projects/<name>.
             const mounts = {
-                grants: (spec.grants ?? []).map((grant) => ({ name: grant.name, ...identityOf(grant) })),
+                grants: (spec.grants ?? []).map((grant) => ({ name: grant.name, ...identityOf(grant), ...((grant.exclusions ?? []).length > 0 ? { exclusions: grant.exclusions } : {}) })),
                 binds: workloadLike ? [{ name: 'home', ...identityOf(spec.home) }] : (spec.anchored ?? []).map((bind) => ({ name: bind.name, ...identityOf(bind) }))
             };
             const env = { ...(spec.env ?? {}) };
@@ -188,7 +204,7 @@ export function createSandboxLauncher({
     function validate(spec) {
         if (!spec || typeof spec !== 'object') throw invalid('spec');
         if (!Object.hasOwn(ROLE_FD_ALLOW, spec.role)) throw invalid('role');
-        if (typeof spec.marker !== 'string' || !MARKER.test(spec.marker)) throw invalid('marker');
+        if (!isMarker(spec.marker)) throw invalid('marker');
         if (typeof spec.runtimeDir !== 'string' || !spec.runtimeDir.startsWith('/') || spec.runtimeDir === '/') throw invalid('runtimeDir');
         if (spec.netMode !== undefined && !['join', 'none'].includes(spec.netMode)) throw invalid('netMode');
         if (spec.role !== 'orchestration' && spec.netMode !== 'none' && !/^\/run\/netns\/rw[0-9a-f]{16}$/u.test(spec.netns ?? '')) throw invalid('netns');
@@ -196,6 +212,8 @@ export function createSandboxLauncher({
         if (spec.role === 'workload' || spec.role === 'terminal') {
             if (!held(spec.home) || !Array.isArray(spec.grants)) throw invalid('workload directories');
             if (spec.grants.some((grant) => !held(grant) || !isValidComponentName(grant.name))) throw invalid('grant');
+            // Exclusions (extra masks, grant-relative): refused here, before anything is created, when they are not plain relative paths.
+            for (const grant of spec.grants) for (const rel of grant.exclusions ?? []) checkRelativeExclusion(rel);
         } else if ((spec.anchored ?? []).some((bind) => !held(bind) || !/^[a-z][a-z0-9-]{0,31}$/u.test(bind.name ?? ''))) throw invalid('anchored');
     }
 
@@ -288,6 +306,27 @@ export function createSandboxLauncher({
         const identity = readIdentity(child.pid, initPid, spec);
         const unregister = view.registerSandboxChild?.({ pid: identity.pid, startTime: identity.startTime, kill: killMonitor }) ?? (() => {});
 
+        // Pin the recorded namespaces (B1): the sandbox's pid and mount namespaces and the private stage mount namespace stay
+        // alive, with their inodes, until release(), so no other sandbox can show the same numbers while this one is recorded.
+        // Each pin is checked against the inode just read; a mismatch means the process was not what was read.
+        const pins = [];
+        let pinned = false;
+        const unpinAll = () => { pinned = false; for (const close of pins.splice(0).reverse()) { try { close(); } catch { /* closed */ } } };
+        try {
+            for (const [pid, type, inode] of [[identity.init.pid, 'pid', identity.pidNs], [identity.init.pid, 'mnt', identity.mntNs], [identity.pid, 'mnt', identity.stageMntNs]]) {
+                const opened = openNamespace(pid, type);
+                const unpinView = view.pinNamespace?.(type, inode) ?? (() => {});
+                pins.push(() => { unpinView(); opened.close(); });
+                if (String(opened.inode) !== String(inode)) throw sandboxError('identity_mismatch', `${type} namespace changed while being pinned`);
+            }
+            pinned = true;
+        } catch (error) {
+            unpinAll();
+            unregister();
+            killMonitor();
+            throw error instanceof SandboxError ? error : sandboxError('identity_mismatch', `cannot pin a namespace: ${error?.code ?? 'error'}`);
+        }
+
         let gateState = 'blocked'; // blocked -> open | aborted
         const gate = {
             async commit() {
@@ -329,10 +368,14 @@ export function createSandboxLauncher({
             const problems = [];
             if (!exited) problems.push('monitor_running');
             const processes = view.listProcesses();
-            const holders = processes.filter((entry) => entry.pidNs === identity.pidNs || entry.mntNs === identity.mntNs
-                || entry.mntNs === identity.stageMntNs || entry.fdNs?.includes(identity.pidNs) || entry.fdNs?.includes(identity.mntNs)
-                || entry.fdNs?.includes(identity.stageMntNs));
-            if (holders.length > 0) problems.push('namespace_held');
+            // A namespace inode names this sandbox's namespace only while it is pinned. Once unpinned the kernel may hand the
+            // number to another sandbox, so an unpinned inode proves nothing and is not looked for. Our own pins are not holders.
+            if (pinned) {
+                const holders = processes.filter((entry) => entry.pidNs === identity.pidNs || entry.mntNs === identity.mntNs
+                    || entry.mntNs === identity.stageMntNs
+                    || (entry.pid !== supervisorPid && [identity.pidNs, identity.mntNs, identity.stageMntNs].some((inode) => entry.fdNs?.includes(inode))));
+                if (holders.length > 0) problems.push('namespace_held');
+            }
             if (processes.some((entry) => entry.cmdline.includes(spec.marker))) problems.push('marker_present');
             if (processes.some((entry) => entry.pid === identity.init.pid && entry.startTime === identity.init.startTime)) problems.push('init_present');
             if (processes.some((entry) => entry.pid === identity.pid && entry.startTime === identity.startTime)) problems.push('monitor_present');
@@ -343,6 +386,7 @@ export function createSandboxLauncher({
 
         // SIGTERM to every member of the sandbox PID namespace, after its identity is read again immediately before kill(2).
         function termMembers() {
+            if (!pinned) return; // an unpinned inode may belong to another sandbox
             for (const member of view.listProcesses()) {
                 if (member.pidNs !== identity.pidNs || member.pid === identity.pid) continue;
                 const fresh = view.process(member.pid);
@@ -371,13 +415,17 @@ export function createSandboxLauncher({
             return stopping;
         };
 
+        // Ends the sandbox and removes its staging directory. The verdict says whether absence was proven AND the staging
+        // directory is gone (it is not when a bind leaked into this namespace: removal is never recursive). The pins are
+        // released last, only after absence is proven.
         let released = null;
         const release = async () => {
             if (released) return released;
             released = (async () => {
                 const verdict = await stop({ graceMs: 0 });
-                if (verdict.absent && stageDir) removeStage(stageDir, stageNames);
-                return verdict;
+                const stageRemoved = verdict.absent && stageDir ? removeStage(stageDir, stageNames) : verdict.absent;
+                if (verdict.absent) unpinAll();
+                return { ...verdict, stageRemoved };
             })();
             return released;
         };
@@ -390,8 +438,8 @@ export function createSandboxLauncher({
             get exited() { return exited; }
         };
         if (typeof spec.onIdentity === 'function') {
-            try { await spec.onIdentity(identity); } catch (error) { await gate.abort(); throw error; }
-            if (!(await gate.commit())) throw sandboxError('commit_timeout');
+            try { await spec.onIdentity(identity); } catch (error) { await gate.abort(); await release(); throw error; }
+            if (!(await gate.commit())) { await release(); throw sandboxError('commit_timeout'); }
         }
         return sandbox;
     }

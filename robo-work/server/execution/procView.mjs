@@ -9,7 +9,8 @@
 //   exists(kind, locator), kill({ pid, startTime }), remove(kind, locator), unmount() (always false)
 //   processIdentity(pid) -> { pid, startTime, pidNamespaceInode } | null   (pid, start time and pid namespace inode)
 //   heldNamespaces(pid)  -> { pidNs, netNs, mntNs, fdNs } | null
-//   process(pid), fdDevices(pid), pathIdentity(path), selfNamespaces(), containerDevptsDev(), registerSandboxChild()
+//   process(pid), fdDevices(pid), pathIdentity(path), selfNamespaces(), containerDevptsDev(), registerSandboxChild(),
+//   pinNamespace(type, inode) -> unpin, isPinned(type, inode)
 //
 // Read errors: a per-pid ENOENT or ESRCH means the process vanished and it is skipped; an ENOENT on one fd/N means that
 // descriptor closed and only it is skipped. Any other errno makes listProcesses or listMounts throw `proc_unreadable`,
@@ -92,6 +93,7 @@ export function createProcView({
     const readStatfs = statfs ?? fs.statfsSync;
     const send = typeof signal === 'function' ? signal : (pid, name) => process.kill(pid, name);
     const sandboxChildren = new Map();
+    const namespacePins = new Map();
     const at = (...parts) => path.join(procRoot, ...parts.map(String));
 
     // A read that distinguishes "vanished" (ENOENT/ESRCH) from "unreadable" (anything else).
@@ -364,6 +366,21 @@ export function createProcView({
         containerDevptsDev,
         // The sandbox supervisor registers its live bwrap child, so that a kill of that pid and start time goes to
         // ChildProcess.kill('SIGKILL') and never to kill(2). Returns an unregister function.
+        // Namespace pins (B1). The supervisor holds an open descriptor on /proc/<pid>/ns/<type> of every committed sandbox until its
+        // blocker settles, so the kernel cannot reuse that inode for another sandbox meanwhile. The registry lets the recovery walker
+        // trust an inode only while it is pinned. Returns an unpin function (counted, so the same inode may be pinned twice).
+        pinNamespace(type, inode) {
+            const key = `${type}:${inode}`;
+            namespacePins.set(key, (namespacePins.get(key) ?? 0) + 1);
+            let released = false;
+            return () => {
+                if (released) return;
+                released = true;
+                const left = (namespacePins.get(key) ?? 1) - 1;
+                if (left <= 0) namespacePins.delete(key); else namespacePins.set(key, left);
+            };
+        },
+        isPinned: (type, inode) => namespacePins.has(`${type}:${inode}`),
         registerSandboxChild({ pid, startTime, kill: killChild }) {
             const entry = { startTime, kill: killChild };
             sandboxChildren.set(pid, entry);

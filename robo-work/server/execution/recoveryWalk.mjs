@@ -81,15 +81,26 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
 
     // `descend` also takes the descendants (needed to force, since a double-forked child must die too). The sandbox supervisor's own
     // absence does not wait for them: each of them has its own blocker.
+    // A namespace INODE is reused by the kernel once the namespace is gone (observed: successive bwrap sandboxes get the same
+    // pid, ipc and user inode numbers). An inode therefore identifies a namespace only while something proves it is still the
+    // recorded one: the supervisor pins it with an open descriptor (view.isPinned) or the recorded init (pid + start time) is
+    // alive and in that namespace. A process that merely shows the same number is not a member and is never killed.
+    function pidNamespaceProven(identity, processes) {
+        if (view.isPinned?.('pid', identity.pidNs) === true) return true;
+        const anchor = identity.init ?? identity;
+        return processes.some((entry) => entry.pid === anchor.pid && entry.startTime === anchor.startTime && entry.pidNs === identity.pidNs);
+    }
+
     function processMembers(blocker, processes, { descend = true } = {}) {
         let seed;
         if (blocker.identity === null) {
             // Uncommitted: found by the marker in argv alone.
             seed = processes.filter((entry) => entry.cmdline.includes(blocker.locator.marker));
         } else {
-            seed = processes.filter((entry) => identityMatches(entry, blocker.identity));
-            if (blocker.identity.pidNs !== undefined) {
-                seed.push(...processes.filter((entry) => entry.pidNs === blocker.identity.pidNs && !seed.includes(entry)));
+            const { identity } = blocker;
+            seed = processes.filter((entry) => identityMatches(entry, identity) || (identity.init !== undefined && identityMatches(entry, identity.init)));
+            if (identity.pidNs !== undefined && pidNamespaceProven(identity, processes)) {
+                seed.push(...processes.filter((entry) => entry.pidNs === identity.pidNs && !seed.includes(entry)));
             }
         }
         return descend ? withDescendants(seed, processes) : seed;
@@ -119,13 +130,16 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
         }
         if (kind === 'netns' || kind === 'mount') {
             const field = NAMESPACE_KINDS[kind];
+            // An execution network is more than its namespace: the netns file, both veth ends and the nft table, all named from
+            // the locator, must be gone too. The view answers for them (a view that knows nothing of them answers false).
+            const objectsLeft = kind === 'netns' && view.exists?.('netns', blocker.locator) === true ? [{ via: 'locator' }] : [];
             if (blocker.identity === null) {
                 // A namespace that was created and not yet committed has no recorded inode. It is held only by the sandbox supervisor
                 // and its descendants, so it is absent when the sandbox supervisor's tree is, and not otherwise.
                 const sandbox = sandboxProcesses(blocker, processes);
                 if (sandbox === null) return { absent: false, holders: [{ via: 'sandbox-record-unavailable' }] };
                 const sandboxTree = withDescendants(sandbox, processes);
-                return { absent: sandboxTree.length === 0, holders: sandboxTree.map((entry) => ({ pid: entry.pid })) };
+                return { absent: sandboxTree.length === 0 && objectsLeft.length === 0, holders: [...sandboxTree.map((entry) => ({ pid: entry.pid })), ...objectsLeft] };
             }
             const inode = blocker.identity[field];
             const holders = namespaceHolders(inode, field, processes, mounts);
@@ -133,6 +147,7 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
                 const mountsLeft = mounts.filter((mount) => mount.mountId === blocker.identity.mountId && mount.mountpoint === blocker.identity.mountpoint);
                 for (const mount of mountsLeft) holders.push({ via: 'mountinfo', mountId: mount.mountId });
             }
+            holders.push(...objectsLeft);
             return { absent: holders.length === 0, holders };
         }
         if (kind === 'gui-view') {
@@ -165,8 +180,9 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
             return;
         }
         // An execution network (netns, veth, nft table) is named from the netns locator alone, so a leftover is removed by
-        // that locator whether or not the identity was committed (the namespace inode is held by the /run/netns mount).
-        if (kind === 'netns') { view.remove?.('netns', blocker.locator); return; }
+        // that locator whether or not the identity was committed (the namespace inode is held by the /run/netns mount). A
+        // removal that leaves something behind is not ignored: prove() asks the view again, finds it, and the walk ends quarantined.
+        if (kind === 'netns') { if (view.exists?.('netns', blocker.locator) === true) view.remove?.('netns', blocker.locator); return; }
         if (LOCATOR_KINDS.has(kind) && view.exists(kind, blocker.locator)) view.remove(kind, blocker.locator);
     }
 

@@ -8,7 +8,7 @@ import { createSandboxLauncher, slotLayout } from '../../server/sandbox/sandboxL
 import { readProcMasks } from '../../server/sandbox/procMasks.mjs';
 import { SUPERVISOR_PID, createFakeSpawn, createFakeView, fakeClock, mntNsOf, pidNsOf } from './helpers/fakes.mjs';
 
-const MARKER = 'rwTestMarker0123456789_a';
+const MARKER = 'rw-TestMarker0123456789_a';
 const NETNS = '/run/netns/rw0123456789abcdef';
 const TOOLS = { setpriv: '/usr/bin/setpriv', unshare: '/usr/bin/unshare', mount: '/usr/bin/mount', umount: '/usr/bin/umount', node: '/usr/bin/node', nsenter: '/usr/bin/nsenter' };
 const MASKS = readProcMasks({ readFile: () => fs.readFileSync(new URL('./fixtures/podman-nested-mountinfo.txt', import.meta.url), 'utf8') });
@@ -20,12 +20,22 @@ function rig(script = {}, options = {}) {
     const { spawnImpl, spawned } = createFakeSpawn(view, script);
     const signals = [];
     const clock = fakeClock();
+    // Namespace pins: opening /proc/<pid>/ns/<type> is modelled by reading the fake process; `pins.open` lists what is held.
+    const pins = { open: [], opened: [], inodeOf: (pid, type) => { const entry = view.process(pid); return entry ? (type === 'pid' ? entry.pidNs : entry.mntNs) : null; } };
+    const openNamespace = (pid, type) => {
+        const inode = pins.inodeOf(pid, type);
+        if (inode === null) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+        const handle = { pid, type, inode };
+        pins.open.push(handle);
+        pins.opened.push(handle);
+        return { inode, close: () => { pins.open.splice(pins.open.indexOf(handle), 1); } };
+    };
     const launcher = createSandboxLauncher({
-        view, spawnImpl, signal: (pid, name) => signals.push([pid, name]), clock, procMasks: MASKS, tools: TOOLS, supervisorPid: SUPERVISOR_PID,
+        view, spawnImpl, signal: (pid, name) => signals.push([pid, name]), clock, procMasks: MASKS, tools: TOOLS, supervisorPid: SUPERVISOR_PID, openNamespace,
         stageScript: '/opt/robo-work/server/sandbox/stage.sh', arch: 'x86_64', fsImpl: fsWithBwrap, ...options
     });
     const dirFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
-    return { dir, view, spawned, signals, launcher, dirFd, clock, done: () => { fs.closeSync(dirFd); fs.rmSync(dir, { recursive: true, force: true }); } };
+    return { dir, view, spawned, signals, launcher, dirFd, clock, pins, done: () => { fs.closeSync(dirFd); fs.rmSync(dir, { recursive: true, force: true }); } };
 }
 
 const workloadSpec = (world, extra = {}) => ({
@@ -311,4 +321,128 @@ test('invalid specs are refused before anything is spawned', async () => {
         assert.equal(slotLayout('workload').size, 8);
         assert.equal(slotLayout('endpoint').size, 10);
     } finally { world.done(); }
+});
+
+test('namespaces are pinned from commit until release: pid and mount namespaces of the init and the stage mount namespace, each checked against the inode read', async () => {
+    const world = rig();
+    try {
+        const sandbox = await world.launcher.launch(workloadSpec(world));
+        const { identity } = sandbox;
+        assert.deepEqual(world.pins.open.map((pin) => [pin.pid, pin.type, pin.inode]), [
+            [identity.init.pid, 'pid', identity.pidNs], [identity.init.pid, 'mnt', identity.mntNs], [identity.pid, 'mnt', identity.stageMntNs]]);
+        assert.ok(world.view.isPinned('pid', identity.pidNs) && world.view.isPinned('mnt', identity.stageMntNs), 'the walker can see the pins');
+        await sandbox.gate.commit();
+        world.spawned[0].finish(0, null);
+        const stopped = await sandbox.stop({ graceMs: 1 });
+        assert.equal(stopped.absent, true);
+        assert.equal(world.pins.open.length, 3, 'stop alone keeps the pins: the blocker is not settled yet');
+        const released = await sandbox.release();
+        assert.equal(released.absent, true);
+        assert.equal(released.stageRemoved, true);
+        assert.equal(world.pins.open.length, 0);
+        assert.equal(world.view.isPinned('pid', identity.pidNs), false);
+    } finally { world.done(); }
+});
+
+test('a pin that does not show the inode just read fails the start with identity_mismatch and leaves no pin behind', async () => {
+    const world = rig();
+    const original = world.pins.inodeOf;
+    world.pins.inodeOf = (pid, type) => (type === 'pid' ? '424242' : original(pid, type));
+    try {
+        // the rig's launcher reads its pins through pins.inodeOf, so this models the init being replaced between read and pin
+        await assert.rejects(world.launcher.launch(workloadSpec(world)), { code: 'identity_mismatch' });
+        assert.equal(world.pins.open.length, 0);
+        assert.equal(world.view.pinned.size, 0);
+        assert.ok(world.spawned[0].kills.length >= 1 && world.spawned[0].kills.every((name) => name === 'SIGKILL'));
+    } finally { world.done(); }
+});
+
+test('B1: inode numbers prove nothing once unpinned: a second sandbox reusing the first one\'s inodes is not counted as holding, and our own pins are not holders', async () => {
+    const world = rig();
+    try {
+        const first = await world.launcher.launch(workloadSpec(world));
+        await first.gate.commit();
+        const { identity } = first;
+        // our own pins appear as fd links of this very process
+        world.view.add({ pid: SUPERVISOR_PID, pidNs: '1000', mntNs: '2000', netNs: '3000', fdNs: [identity.pidNs, identity.mntNs, identity.stageMntNs] });
+        world.spawned[0].finish(0, null);
+        assert.equal((await first.stop({ graceMs: 1 })).absent, true, 'the supervisor holding the pins is not a holder');
+        await first.release();
+        // another sandbox now shows the recorded numbers (the kernel reuses them once the namespace is gone)
+        world.view.add({ pid: 9100, pidNs: identity.pidNs, mntNs: identity.mntNs, netNs: '3001', cmdline: ['other-sandbox'] });
+        world.view.add({ pid: 9101, pidNs: '1000', mntNs: identity.stageMntNs, netNs: '3000', cmdline: ['another'] });
+        assert.deepEqual(await first.verifyAbsent(), { absent: true, problems: [] }, 'an unpinned inode is not a membership proof');
+        assert.deepEqual(world.signals, [], 'nothing was signalled');
+    } finally { world.done(); }
+});
+
+test('B1: while pinned, a foreign process showing the inode is a holder and SIGTERM goes only to verified members', async () => {
+    const world = rig();
+    try {
+        const sandbox = await world.launcher.launch(workloadSpec(world));
+        await sandbox.gate.commit();
+        world.view.add({ pid: 9200, pidNs: sandbox.identity.pidNs, mntNs: sandbox.identity.mntNs, netNs: '3001', startTime: '5' });
+        const stopping = sandbox.stop({ graceMs: 5 });
+        world.view.drop(9200);
+        assert.equal((await stopping).absent, true);
+        assert.deepEqual(world.signals.filter(([pid]) => pid === 9200), [[9200, 'SIGTERM']]);
+    } finally { world.done(); }
+});
+
+test('B2: a marker that begins with a dash (an S1 id does so about once in 64) is accepted by the launcher and carried verbatim', async () => {
+    const dashed = '-Qs_9x-ZLk3mPaRt0wYh1A';
+    const world = rig();
+    try {
+        const sandbox = await world.launcher.launch(workloadSpec(world, { marker: dashed }));
+        const [record] = world.spawned;
+        assert.equal(record.args[record.args.indexOf('prep') + 1], dashed);
+        assert.equal(sandbox.identity.pid, record.child.pid);
+        assert.ok(world.view.process(record.child.pid).cmdline.includes(dashed), 'the monitor carries it on its real argv');
+        await sandbox.release();
+    } finally { world.done(); }
+    for (const bad of ['', 'short', 'has space 0123456789', 'semi;colon0123456789', 'x'.repeat(65), 'a/b/c/d/e/f/g/h']) {
+        const w = rig();
+        try { await assert.rejects(w.launcher.launch(workloadSpec(w, { marker: bad })), { code: 'invalid_request' }, bad); } finally { w.done(); }
+    }
+});
+
+test('a launcher without the worker\'s /proc masks refuses to exist (no [] default)', () => {
+    const base = { view: createFakeView(), tools: TOOLS, arch: 'x86_64' };
+    assert.throws(() => createSandboxLauncher(base), { code: 'sandbox_unavailable' });
+    assert.throws(() => createSandboxLauncher({ ...base, procMasks: null }), { code: 'sandbox_unavailable' });
+    assert.doesNotThrow(() => createSandboxLauncher({ ...base, procMasks: [] }));
+});
+
+test('M-15: a workload environment with LD_PRELOAD or BASH_ENV (or any shell-honoured name) is refused before any spawn, and nothing is left behind', async () => {
+    for (const name of ['LD_PRELOAD', 'BASH_ENV', 'LD_LIBRARY_PATH', 'IFS', 'ENV', 'BASH_FUNC_x%%']) {
+        const world = rig();
+        try {
+            await assert.rejects(world.launcher.launch(workloadSpec(world, { env: { HOME: '/home/robot', [name]: 'x' } })), { code: 'invalid_request' }, name);
+            assert.equal(world.spawned.length, 0, `spawns for ${name}`);
+            assert.ok(!fs.existsSync(`${world.dir}/stage/${MARKER}`), 'the staging directory made for it is removed');
+        } finally { world.done(); }
+    }
+});
+
+test('E: exclusions that are not plain grant-relative paths are refused before anything is spawned; a good one reaches prep', async () => {
+    for (const bad of ['/etc/passwd', '../x', 'a/../b', './a', 'a//b', '', 'a\0b', 'x'.repeat(2000)]) {
+        const world = rig();
+        try {
+            const spec = workloadSpec(world);
+            spec.grants[0].exclusions = [bad];
+            await assert.rejects(world.launcher.launch(spec), { code: 'invalid_request' }, JSON.stringify(bad).slice(0, 30));
+            assert.equal(world.spawned.length, 0);
+            assert.ok(!fs.existsSync(`${world.dir}/stage`), 'refused before the staging directory exists');
+        } finally { world.done(); }
+    }
+    const world = rig();
+    try {
+        const spec = workloadSpec(world);
+        spec.grants[0].exclusions = ['docs/private', 'notes.txt'];
+        await world.launcher.launch(spec);
+        const prep = world.spawned[0].args.indexOf('prep');
+        assert.deepEqual(JSON.parse(world.spawned[0].args[prep + 5]).grants[0].exclusions, ['docs/private', 'notes.txt']);
+    } finally { world.done(); }
+    const refused = rig({ exitBefore: 24 });
+    try { await assert.rejects(refused.launcher.launch(workloadSpec(refused)), { code: 'invalid_request' }, 'prep exit 24 (an exclusion through a symlink)'); } finally { refused.done(); }
 });

@@ -11,7 +11,7 @@ import { PREP_EXIT } from '../../server/sandbox/sandboxErrors.mjs';
 
 const FIXTURE = fs.readFileSync(fileURLToPath(new URL('./fixtures/podman-nested-mountinfo.txt', import.meta.url)), 'utf8');
 const PREP = fileURLToPath(new URL('../../server/sandbox/sandboxPrep.mjs', import.meta.url));
-const MARKER = 'rwTestMarker0123456789_a';
+const MARKER = 'rw-TestMarker0123456789_a';
 
 function tree(fn) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-prep-'));
@@ -179,3 +179,46 @@ test('as a program: bad arguments exit 22 with one JSON line on stderr and never
     assert.equal(result.stderr.trim().split('\n').length, 1);
     assert.equal(JSON.parse(result.stderr).error, 'setup_failed');
 });
+
+test('E: exclusions are masked like protected names, only when they exist, verified, and counted toward the mask limit', () => tree((root) => {
+    const { grant, stage } = layout(root);
+    fs.mkdirSync(path.join(grant, 'docs'));
+    fs.writeFileSync(path.join(grant, 'docs', 'plan.md'), 'p');
+    fs.writeFileSync(path.join(grant, 'notes.txt'), 'n');
+    fs.mkdirSync(path.join(grant, '.data'));
+    fs.writeFileSync(path.join(grant, '.data', 'inside'), 'i');
+    const world = rig();
+    let extraChecked = null;
+    const reopen = () => fs.openSync(grant, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+    const withExclusions = (exclusions, limits) => spec(null, stage, { grants: [{ name: 'a', ...idOf(grant), exclusions }], ...(limits ? { limits } : {}) });
+    runPrep(MARKER, withExclusions(['docs/plan.md', 'notes.txt', 'absent/file', 'sub/.env', '.data/inside']), {
+        ...world, openDir: reopen, verify: () => ({ ok: true }), verifyExclusions: (fd, entries) => { extraChecked = entries; return { ok: true }; }
+    });
+    const masks = world.calls.filter((call) => call[0] === 'mount' && call.includes('-o')).map((call) => call.at(-1).replace(`${stage}/projects/a/`, ''));
+    assert.deepEqual(masks.sort(), ['.data', '.env', 'docs/plan.md', 'notes.txt', 'sub/.data', 'sub/x.secrets']);
+    assert.deepEqual(extraChecked.map((entry) => entry.rel).sort(), ['docs/plan.md', 'notes.txt'], 'the absent one is skipped, the ones under protected names are covered already');
+    assert.ok(!fs.existsSync(path.join(grant, 'absent')), 'nothing created');
+
+    // protected entries (.env, .data, sub/.data, sub/x.secrets = 4) plus two exclusions: the sixth mask is one too many at limit 5
+    assert.throws(() => runPrep(MARKER, withExclusions(['docs/plan.md', 'notes.txt'], { maxMasks: 5 }), { ...rig(), openDir: reopen, verify: () => ({ ok: true }), verifyExclusions: () => ({ ok: true }) }), { code: 'mask_scan_limit' });
+    runPrep(MARKER, withExclusions(['docs/plan.md', 'notes.txt'], { maxMasks: 6 }), { ...rig(), openDir: reopen, verify: () => ({ ok: true }), verifyExclusions: () => ({ ok: true }) });
+}));
+
+test('E: an exclusion through a symlink is refused with invalid_request (exit 24) before any mask is mounted; real verification catches an unmasked exclusion', () => tree((root) => {
+    const { grant, stage } = layout(root);
+    fs.symlinkSync(root, path.join(grant, 'escape'));
+    fs.writeFileSync(path.join(grant, 'notes.txt'), 'n');
+    const reopen = () => fs.openSync(grant, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+    const world = rig();
+    const lines = [];
+    const code = main([MARKER, JSON.stringify(spec(null, stage, { grants: [{ name: 'a', ...idOf(grant), exclusions: ['escape/x'] }] }))], { ...world, openDir: reopen }, { write: (text) => lines.push(text) });
+    assert.equal(code, PREP_EXIT.invalid_request);
+    assert.equal(JSON.parse(lines[0]).error, 'invalid_request');
+    assert.equal(world.calls.filter((call) => call[0] === 'mount' && call.includes('-o')).length, 0, 'refused before mounting any mask');
+    for (const bad of ['/abs', '../up', 'a/../b']) {
+        const rejected = [];
+        assert.equal(main([MARKER, JSON.stringify(spec(null, stage, { grants: [{ name: 'a', ...idOf(grant), exclusions: [bad] }] }))], rig(), { write: (t) => rejected.push(t) }), PREP_EXIT.invalid_request, bad);
+    }
+    // the mounts "succeed" in the fake but nothing is really masked: the read-back fails
+    assert.throws(() => runPrep(MARKER, spec(null, stage, { grants: [{ name: 'a', ...idOf(grant), exclusions: ['notes.txt'] }] }), { ...rig(), openDir: reopen, verify: () => ({ ok: true }) }), { code: 'mask_unverified' });
+}));
