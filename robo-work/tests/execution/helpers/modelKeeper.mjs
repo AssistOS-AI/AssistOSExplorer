@@ -28,7 +28,7 @@ export function createModelKeeper(world, options = {}) {
     function gatedProcess({ kind, resourceId, marker, ppid, newPidNs, netNs = null, mntNs = null, role }) {
         const { gate, writeEnd } = world.createGatePipe();
         const entry = world.spawn({
-            ppid, cmdline: ['/usr/bin/bwrap', '--hostname', marker, '--args', '3'], newPidNs, netNs, mntNs, gate, role, marker
+            ppid, cmdline: ['/usr/bin/bwrap', '--unshare-uts', '--unsetenv', marker, '--args', '3'], newPidNs, netNs, mntNs, gate, role, marker
         });
         world.attachGate(entry);
         const identity = kind === 'keeper' ? { pid: entry.pid, startTime: entry.startTime }

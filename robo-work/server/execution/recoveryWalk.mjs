@@ -3,7 +3,7 @@
 // merely sent.
 //
 //   - A reserved but uncommitted process-bearing resource is walked by its marker alone: the reservation ID that the
-//     sandbox supervisor and each gated pre-exec stage carry in argv (the bwrap `--hostname rw-<id>` element), visible in /proc/<pid>/cmdline until the final exec. Proven
+//     sandbox supervisor and each gated pre-exec stage carry in argv (the value of bwrap's `--unsetenv <id>` element), visible in /proc/<pid>/cmdline until the final exec. Proven
 //     absence needs no /proc entry carrying the marker AND the sandbox supervisor's identity absent, so a crash before commit
 //     leaves no permanent quarantine when nothing survives (R3-1). The same holds for an uncommitted namespace or
 //     mount, which has no recorded inode and is held only by the sandbox supervisor and its tree: it is absent only when the sandbox supervisor

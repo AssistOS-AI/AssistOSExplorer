@@ -1,4 +1,4 @@
-// Decision M-18: the reservation marker (an S1 id, which may start with '-') is only ever the value of bwrap's `--hostname` or a
+// Decision M-18: the reservation marker (an S1 id, which may start with '-') is only ever the value of bwrap's `--unsetenv` (formerly `--hostname`, M-24) or a
 // positional argument after a script/command name; no option parser reads it, and it is never a filename or a resource name.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';

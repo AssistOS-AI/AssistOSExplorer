@@ -58,7 +58,7 @@ out.proc = { keys: sizeOrCode('/proc/keys'), kcore: sizeOrCode('/proc/kcore'), s
     asound: (() => { try { return fs.readdirSync('/proc/asound').length; } catch (e) { return e.code; } })() };
 try { fs.writeFileSync('/proc/sys/kernel/hostname', 'x'); out.procSysWrite = 'WROTE'; } catch (e) { out.procSysWrite = e.code; }
 out.procMounts = fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\n').map((l) => l.split(' ')).filter((p) => (p[4] || '').startsWith('/proc/')).map((p) => p[4]);
-out.keyctl = (() => { const r = cp.spawnSync('python3', ['-c', 'import ctypes;print(ctypes.CDLL(None,use_errno=True).syscall(250,0,0,0,0,0), ctypes.get_errno())'], { encoding: 'utf8', env: { PATH: '/usr/bin' } }); return r.error ? 'no-python3' : (r.stdout || '').trim(); })();
+out.keyctl = (() => { const nr = process.arch === 'arm64' ? 219 : 250; const r = cp.spawnSync('perl', ['-e', 'my $r = syscall(' + nr + ', 0, 0, 0, 0, 0); print "$r ", $!+0'], { encoding: 'utf8', env: { PATH: '/usr/bin:/usr/sbin' } }); return r.error ? 'no-perl' : (r.stdout || '').trim(); })(); // keyctl(2): expect "-1 1" (EPERM)
 const finish = () => process.stdout.write('PROBE ' + JSON.stringify(out) + '\n');
 if (out.role === 'endpoint') { fs.writeFileSync('/stream/probe.json', JSON.stringify(out)); setInterval(() => {}, 1000000); return; }
 if (out.role !== 'workload') { finish(); return; }
