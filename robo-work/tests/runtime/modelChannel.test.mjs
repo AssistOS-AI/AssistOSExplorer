@@ -424,3 +424,39 @@ test('M-44: a robot whose stored model is Soul-Gateway/x stays verified byte for
         assert.deepEqual(answer.json, COMPLETION);
     } finally { await world.close(); }
 });
+
+test('a 2xx completion with a malformed choice is a 502 before any byte is written, streaming or not, and is not activity; a valid tool call still streams', async () => {
+    const message = (extra) => ({ role: 'assistant', content: null, ...extra });
+    const bad = [
+        { choices: [null] }, { choices: ['x'] }, { choices: [[]] }, { choices: [{ message: null }] }, { choices: [{ message: 'text' }] },
+        { choices: [{ message: message({ tool_calls: 'nope' }) }] }, { choices: [{ message: message({ tool_calls: {} }) }] }, { choices: [{ message: message({ tool_calls: [null] }) }] },
+        { choices: [{ message: message({ tool_calls: [1] }) }] }, { choices: 'x' }, null
+    ];
+    let next = null;
+    let activity = 0;
+    const world = await open({ upstream: fakeUpstream({ chat: () => ({ ok: true, status: 200, json: next }) }), activity: () => { activity += 1; } });
+    try {
+        for (const completion of bad) {
+            next = completion;
+            for (const stream of [true, false]) {
+                const answer = await send(world.socketPath, { body: chatBody({ stream }) });
+                assert.equal(answer.status, 502, JSON.stringify([completion, stream]));
+                assert.match(answer.headers['content-type'], /application\/json/u, 'an error, not a started event stream');
+                assert.equal(answer.json.error.message, 'Soul Gateway returned an invalid completion');
+            }
+        }
+        assert.equal(activity, 0);
+        assert.deepEqual(world.channel.lastError(), { status: 502, message: 'Soul Gateway returned an invalid completion' });
+        next = { id: 'c', created: 1, model: 'a', usage: { total_tokens: 2 }, choices: [{ index: 0, finish_reason: 'tool_calls', message: message({ tool_calls: [{ id: 't1', type: 'function', function: { name: 'f', arguments: '{}' } }] }) }] };
+        const ok = await send(world.socketPath, { body: chatBody({ stream: true }) });
+        assert.equal(ok.status, 200);
+        assert.ok(ok.text.endsWith('data: [DONE]\n\n'), 'the stream ends');
+        const frames = ok.text.split('\n\n').filter((frame) => frame.startsWith('data: {')).map((frame) => JSON.parse(frame.slice(6)));
+        assert.equal(frames[0].choices[0].delta.tool_calls[0].index, 0);
+        assert.equal(frames[1].choices[0].finish_reason, 'tool_calls');
+        assert.equal(activity, 1, 'activity only after the successful write');
+        const plain = await send(world.socketPath, { body: chatBody() });
+        assert.equal(plain.status, 200);
+        assert.equal(activity, 2);
+    } finally { await world.close(); }
+});

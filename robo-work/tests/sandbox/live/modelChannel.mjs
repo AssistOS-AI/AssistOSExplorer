@@ -13,6 +13,7 @@
 // `tr '\000' '\n' < /proc/<worker pid>/environ | sed -n 's/^PLOINKY_AGENT_API_KEY=//p' | node ... --key-stdin`). It is never an argv element and never printed.
 //
 // Optional environment: MODEL_PROBE_ID (the gateway model id to use; default the first id of the live catalog),
+// MODEL_PROBE_PREFIX (the prefix of the stored model of A, default soul-gateway; for example Soul-Gateway),
 // MODEL_PROBE_CHAT=0 (no real completion request; the default sends two tiny chat requests through the channel),
 // MODEL_PROBE_OPENCODE=1 (also run `opencode run` in A's workload sandbox; on by default in --self-test, off live where AC-M5 is the e2e),
 // MODEL_PROBE_SCAN (colon-separated extra files or directories to scan for the key: the worker's state directory, a saved copy of
@@ -46,8 +47,8 @@ import { spawn } from 'node:child_process';
 
 import { createProcView } from '../../../server/execution/procView.mjs';
 import { deriveLocator, newLocatorId } from '../../../server/execution/resourceLocators.mjs';
-import { createExecutionFactory } from '../../../server/runtime/executionFactory.mjs';
-import { MODEL_RELAY_PORT, createSoulGatewayUpstream } from '../../../server/runtime/modelChannel.mjs';
+import { createExecutionFactory, readManagedConfig } from '../../../server/runtime/executionFactory.mjs';
+import { MODEL_RELAY_PORT, createSoulGatewayUpstream, selectGatewayProvider } from '../../../server/runtime/modelChannel.mjs';
 import { planAlaExecution } from '../../../server/runtime/alaPlan.mjs';
 import { createRobotStore } from '../../../server/runtime/robotStore.mjs';
 import { createExecutionSupervisor } from '../../../server/sandbox/executionSupervisor.mjs';
@@ -123,7 +124,7 @@ const direct = (target) => new Promise((resolve) => { const socket = net.connect
     if (config.role === 'A') {
         try {
             const file = JSON.parse(fs.readFileSync(process.env.OPENCODE_CONFIG, 'utf8'));
-            const provider = file.provider['soul-gateway'];
+            const provider = file.provider[config.providerId];
             out.config = { providers: Object.keys(file.provider), npm: provider.npm, baseURL: provider.options.baseURL, apiKeyIsPlaceholder: provider.options.apiKey === 'robo-work', timeout: provider.options.timeout, models: Object.keys(provider.models) };
         } catch (error) { out.config = { error: error.code ?? 'ERR' }; }
         const chat = (model, headers, extra = {}) => request('POST', '/v1/chat/completions', headers, { model, messages: [{ role: 'user', content: 'Reply with the single word ok.' }], max_tokens: 8, ...extra });
@@ -301,7 +302,10 @@ const otherId = `${modelId}-not-allowed-${crypto.randomBytes(3).toString('hex')}
 const newRobotId = () => crypto.randomBytes(16).toString('base64url');
 const robotA = newRobotId();
 const robotB = newRobotId();
-robots.prepare(robotA, { backend: 'opencode', settings: { model: `soul-gateway/${modelId}` } });
+// MODEL_PROBE_PREFIX (default soul-gateway) is the prefix of the stored model: a case variant checks that the channel's provider follows it.
+const storedPrefix = process.env.MODEL_PROBE_PREFIX || 'soul-gateway';
+robots.prepare(robotA, { backend: 'opencode', settings: { model: `${storedPrefix}/${modelId}` } });
+const expectedProvider = selectGatewayProvider({ specification: {}, managed: readManagedConfig(robots.paths(robotA).config) });
 robots.prepare(robotB, { backend: 'opencode', settings: { model: 'opencode/glm-5.3-flash-free' } });
 
 const captured = new Map(); // executionId -> ledger
@@ -366,7 +370,7 @@ async function runWorkload(entry, role, config) {
 // Only the exit code and the size of what it printed are reported (and, in the self-test, whether the fake answer arrived).
 async function runOpenCode(entry, id) {
     const ledger = captured.get(entry.item.executionId);
-    const script = `opencode run -m soul-gateway/${id} 'Reply with the single word ok.' > /home/robot/opencode.out 2>&1; echo $? > /home/robot/opencode.exit`;
+    const script = `opencode run -m ${expectedProvider}/${id} 'Reply with the single word ok.' > /home/robot/opencode.out 2>&1; echo $? > /home/robot/opencode.exit`;
     const request = {
         processClass: 'run', executable: '/bin/sh', args: ['-c', script], env: {}, home: '/home/robot', cwd: '/home/robot', folders: [], exclusions: [],
         network: 'robot-egress', requirements: { privateProc: true }, communication: { kind: 'streams', stdin: 'ignore' }
@@ -397,7 +401,7 @@ try {
     await Promise.all([a.execution.start(), b.execution.start()]);
     progress('both executions are running');
     const [runA, runB] = await Promise.all([
-        runWorkload(a, 'A', { id: modelId, other: otherId, chat: WANT_CHAT }),
+        runWorkload(a, 'A', { id: modelId, other: otherId, chat: WANT_CHAT, providerId: expectedProvider }),
         runWorkload(b, 'B', { id: modelId, other: otherId, chat: false })
     ]);
     evidence.workloadExit = { A: runA.exit, B: runB.exit };
@@ -412,7 +416,7 @@ try {
     evidence.A = A;
     check('M8 workload A ran', runA.result !== null && runA.exit === 0, { exit: runA.exit });
     check('M8 OPENCODE_CONFIG points at the generated file', A.opencodeConfigEnv === '/run/robo-work/channels/opencode.json');
-    check('M8 the generated config has one provider, one model and a placeholder key', JSON.stringify(A.config?.providers) === '["soul-gateway"]' && A.config?.models?.length === 1
+    check('M8 the generated config has one provider, one model and a placeholder key', JSON.stringify(A.config?.providers) === JSON.stringify([expectedProvider]) && A.config?.models?.length === 1
         && A.config?.apiKeyIsPlaceholder === true && A.config?.timeout >= 510000 && A.config?.baseURL === `http://127.0.0.1:${MODEL_RELAY_PORT}/v1`);
     check('M8 GET /v1/models lists exactly the allowed model', A.models?.status === 200 && A.models?.ids?.length === 1);
     check('M8 a POST with another model is 403', A.otherModel === 403 && A.otherModelPrefixed === 403, { plain: A.otherModel, prefixed: A.otherModelPrefixed });

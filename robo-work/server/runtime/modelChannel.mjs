@@ -286,10 +286,23 @@ function sendJson(res, status, value) {
 
 const sendError = (res, status, message, type = 'invalid_request_error') => sendJson(res, status, { error: { message, type } });
 
+// A completion is served only when every choice is an object whose message, when present, is an object and whose tool_calls, when present,
+// is an array of objects. Anything else is a bad gateway answer, decided BEFORE any response byte is written.
+function validCompletion(response) {
+    if (!response || typeof response !== 'object' || !Array.isArray(response.choices)) return false;
+    return response.choices.every((choice) => {
+        if (!choice || typeof choice !== 'object' || Array.isArray(choice)) return false;
+        const { message } = choice;
+        if (message === undefined) return true;
+        if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+        const calls = message.tool_calls;
+        return calls === undefined || (Array.isArray(calls) && calls.every((call) => call && typeof call === 'object' && !Array.isArray(call)));
+    });
+}
+
 // The completed message as SSE for OpenCode (legacy emulation, roboTeamAgent/server/soul-gateway-opencode.mjs sendCompletion): tool calls,
-// usage and the upstream finish reason are preserved.
+// usage and the upstream finish reason are preserved. Both chunks are built from a validated completion before the first write.
 function sendCompletion(res, response) {
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'close' });
     const chunk = {
         id: response.id, object: 'chat.completion.chunk', created: response.created, model: response.model,
         choices: response.choices.map((choice, index) => ({
@@ -297,12 +310,13 @@ function sendCompletion(res, response) {
             delta: { ...choice.message, ...(choice.message?.tool_calls ? { tool_calls: choice.message.tool_calls.map((call, i) => ({ ...call, index: i })) } : {}) }
         }))
     };
-    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-    res.write(`data: ${JSON.stringify({
+    const last = {
         ...chunk, usage: response.usage,
         choices: response.choices.map((choice, index) => ({ index: choice.index ?? index, delta: {}, finish_reason: choice.finish_reason || 'stop' }))
-    })}\n\n`);
-    res.end('data: [DONE]\n\n');
+    };
+    const frames = [`data: ${JSON.stringify(chunk)}\n\n`, `data: ${JSON.stringify(last)}\n\n`, 'data: [DONE]\n\n'];
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'close' });
+    res.end(frames.join(''));
 }
 
 // Opens the channel of one execution. `allowed` is the single gateway model id (prefix stripped). `socketDirectory` is the execution's
@@ -374,16 +388,16 @@ export async function createModelChannel({
                     refuse(code, message, 'upstream_error');
                     return;
                 }
-                if (!Array.isArray(answer.json?.choices)) {
+                if (!validCompletion(answer.json)) {
                     fail(502, 'Soul Gateway returned an invalid completion');
                     refuse(502, 'Soul Gateway returned an invalid completion', 'upstream_error');
                     return;
                 }
-                lastError = null;
-                // M-33: only a successful model response is activity of the attempt.
-                try { activity(); } catch { /* the caller's counter must not break the reply */ }
-                status = 200;
                 if (streaming) sendCompletion(res, answer.json); else sendJson(res, 200, answer.json);
+                lastError = null;
+                status = 200;
+                // M-33: only a successful model response is activity of the attempt, counted after the response was written.
+                try { activity(); } catch { /* the caller's counter must not break the reply */ }
             } catch (error) {
                 if (controller.signal.aborted || res.destroyed) { status = 499; return; }
                 fail(502, 'Soul Gateway could not be reached');
