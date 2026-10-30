@@ -195,7 +195,7 @@ test('endpoint and orchestration share one pair socket pair; the endpoint needs 
         assert.equal(spec.netnsInode, '4026539999');
         assert.equal(spec.argv.at(-1), JSON.stringify({ streamDirectory: '/stream', relays: [] }));
         assert.deepEqual(spec.binds.map((bind) => [bind.source, bind.dest, bind.mode]), [
-            [`${world.runtimePath}/stream`, '/stream', 'rw'], [`${world.runtimePath}/channels`, '/run/robo-work/channels', 'rw']]);
+            [`${world.runtimePath}/stream`, '/stream', 'rw'], [`${world.runtimePath}/channels`, '/run/robo-work/channels', 'ro']]);
         assert.ok(!('fdBinds' in spec), 'no inherited directory descriptors');
         assert.equal(spec.roleFds[4], 'pipe');
         assert.ok(spec.roleFds[3] instanceof net.Socket);

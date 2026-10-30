@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-    EVENTS_PAGE_MAX_BYTES, OUTPUT_EVENTS_PER_REFERENCE, OUTPUT_EVENT_MAX_BYTES, RESERVED_MARKER_SLOTS, TRUNCATED_EVENTS_PER_REFERENCE
+    CHANNEL_EVENT_RESERVE, EVENTS_PAGE_MAX_BYTES, OUTPUT_EVENTS_PER_REFERENCE, OUTPUT_EVENT_MAX_BYTES, RESERVED_MARKER_SLOTS, TRUNCATED_EVENTS_PER_REFERENCE
 } from '../server/stateObservation.mjs';
 import { ANSWER_MAX_CHARS, CHANNEL_EVENT_MAX_BYTES } from '../server/stateObservation.mjs';
 import { SPECIFICATION_VERSION_2, validateSpecificationV2 } from '../server/stateProtocol.mjs';
@@ -122,9 +122,9 @@ test('per-reference caps: ala events stop at the cap, but every drop stays visib
         stored += result.stored;
         dropped += result.dropped;
     }
-    // 8192 ala events and the store's own marker at the first refusal; the rest are counted in `dropped` for the relay's total.
-    assert.equal(stored, OUTPUT_EVENTS_PER_REFERENCE + 1);
-    assert.equal(dropped, 9000 - OUTPUT_EVENTS_PER_REFERENCE);
+    // The total less the places kept for channel events, and the store's own marker at the first refusal; the rest are counted in `dropped` for the relay's total.
+    assert.equal(stored, OUTPUT_EVENTS_PER_REFERENCE - CHANNEL_EVENT_RESERVE + 1);
+    assert.equal(dropped, 9000 - (OUTPUT_EVENTS_PER_REFERENCE - CHANNEL_EVENT_RESERVE));
     const markers = () => {
         const found = [];
         for (let after = 0; ;) {
@@ -282,4 +282,48 @@ test('answer: owner-only, only after the attempt ended human-input, recorded onc
     const rows = store.listReferenceEvents(alice, { referenceId, after: 0, limit: 100 }).events;
     assert.deepEqual(rows.filter((row) => row.type === 'human-input-answered').map((row) => row.data), [{ requestId: REQUEST_ID, answer: 'y'.repeat(ANSWER_MAX_CHARS) }], 'a single answered event');
     assert.deepEqual(store.takePendingControls({ ...ids }), [], 'an answer is applied, not pending delivery');
+});
+
+test('the per-reference total counts channel events: a 32,000-character multibyte answer after a full ala stream still ends with the truncation marker and nothing is dropped silently', (t) => {
+    const { store, robotId } = setup(t);
+    const alice = user('alice');
+    const { admitted, ids } = running(store, robotId, alice);
+    const referenceId = admitted.reference.id;
+    // A full stream: more ala records than the total allows.
+    const SENT = OUTPUT_EVENTS_PER_REFERENCE + 700;
+    let stored = 0;
+    let dropped = 0;
+    for (let sent = 0; sent < SENT; sent += 1000) {
+        const count = Math.min(1000, SENT - sent);
+        const result = store.recordReferenceEvents({ ...ids, events: Array.from({ length: count }, (_, i) => ({ type: 'ala', data: { record: { type: 'n', i: sent + i } } })) });
+        stored += result.stored;
+        dropped += result.dropped;
+    }
+    // The question and the failure still fit, in the places kept for channel events.
+    store.recordChannelEvent({ ...ids, type: 'human-input-request', data: { requestId: REQUEST_ID, question: 'Ship it?', options: ['yes', 'no', 'later'] } });
+    store.recordChannelEvent({ ...ids, type: 'task-failed', data: { message: 'blocked' } });
+    // The relay's final marker carries the total of what was refused.
+    assert.deepEqual(store.recordReferenceEvents({ ...ids, events: [{ type: 'truncated', data: { dropped, reason: 'event_limit' } }] }), { stored: 1, dropped: 0 });
+    store.beginAttemptEnd(adapter(), { ...ids, expectedState: 'running', outcome: { classification: 'human-input', outputText: '', data: { requestId: REQUEST_ID } } });
+    // A 32,000-character answer of four-byte characters (16,000 emoji), recorded after the stream was full.
+    const answer = '😀'.repeat(ANSWER_MAX_CHARS / 2);
+    assert.equal(answer.length, ANSWER_MAX_CHARS);
+    store.controlReference(alice, answerRequest(referenceId, { payload: { requestId: REQUEST_ID, answer } }));
+    const all = [];
+    for (let after = 0; ;) {
+        const page = store.listReferenceEvents(alice, { referenceId, after, limit: 1000 });
+        if (page.events.length === 0) break;
+        all.push(...page.events);
+        after = page.nextAfter;
+    }
+    const ala = all.filter((event) => event.type === 'ala');
+    const channel = all.filter((event) => ['human-input-request', 'task-failed', 'human-input-answered'].includes(event.type));
+    const markers = all.filter((event) => event.type === 'truncated');
+    assert.equal(channel.length, 3);
+    assert.ok(ala.length + channel.length <= OUTPUT_EVENTS_PER_REFERENCE, 'ala and channel events share the total');
+    assert.equal(ala.length, OUTPUT_EVENTS_PER_REFERENCE - CHANNEL_EVENT_RESERVE);
+    assert.equal(channel.find((event) => event.type === 'human-input-answered').data.answer, answer);
+    assert.deepEqual(markers.map((event) => event.data.reason), ['event_limit', 'event_limit'], 'the marker at the first refusal and the final total');
+    assert.equal(ala.length + dropped, SENT, 'every record sent is stored or counted in the final marker: nothing is dropped silently');
+    assert.equal(markers.at(-1).data.dropped, dropped);
 });

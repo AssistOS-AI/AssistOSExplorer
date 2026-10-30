@@ -111,9 +111,29 @@ export function createDispatcher({
         let failureMessage = null;
         let humanRequest = null;
         let channelTimer = null;
-        const endLater = (ms, outcome) => {
+        const endLater = (ms, outcome, { replace = false } = {}) => {
+            if (replace && channelTimer !== null) { timers.clearTimeout(channelTimer); channelTimer = null; }
             channelTimer ??= timers.setTimeout(() => { finish(outcome()).catch((error) => log('end_failed', { error: describe(error) })); }, ms);
             channelTimer.unref?.();
+        };
+        // Once a question is recorded the attempt can be answered: any end other than a stop (`cancelled`) or a recorded task
+        // failure is the `human-input` end, keeping the original reason, exit code and signal for diagnosis. A recorded task
+        // failure wins over a question (task_blocked), whatever timer or exit comes first; a stop is always `cancelled`.
+        const normalize = (outcome) => {
+            if (outcome.classification === 'cancelled') return outcome;
+            if (failureMessage !== null) {
+                return outcome.classification === 'failed' && outcome.data?.reason === 'task_blocked' ? outcome
+                    : { classification: 'failed', outputText: outcome.outputText ?? '', data: { reason: 'task_blocked', message: failureMessage } };
+            }
+            if (humanRequest !== null && outcome.classification !== 'human-input') {
+                const { reason, exitCode, signal, detail } = outcome.data ?? {};
+                return {
+                    classification: 'human-input', outputText: outcome.outputText ?? '',
+                    data: { reason: 'human_input', requestId: humanRequest.requestId, ...(reason ? { endedBy: reason } : {}),
+                        ...(exitCode !== undefined ? { exitCode } : {}), ...(signal ? { signal } : {}), ...(detail ? { detail } : {}) }
+                };
+            }
+            return outcome;
         };
         const refused = (status, message) => Object.assign(new Error(message), { statusCode: status });
         // The worker-hosted channels (M-14). Each handler records its event durably BEFORE it returns, which is before the channel
@@ -124,7 +144,7 @@ export function createDispatcher({
                 if (finishing !== null) throw refused(409, 'The execution is ending');
                 store.recordChannelEvent({ executionId: item.executionId, attemptId: item.attemptId, type: 'task-failed', data: { message } });
                 failureMessage ??= message;
-                endLater(settings.failureAbortMs, () => ({ classification: 'failed', outputText: partialText(), data: { reason: 'task_blocked', message: failureMessage } }));
+                endLater(settings.failureAbortMs, () => ({ classification: 'failed', outputText: partialText(), data: { reason: 'task_blocked', message: failureMessage } }), { replace: true });
                 return {};
             } : null,
             humanInput: plan.channels.humanInput ? async ({ question, options }) => {
@@ -148,7 +168,7 @@ export function createDispatcher({
                 if (channelTimer !== null) { timers.clearTimeout(channelTimer); channelTimer = null; }
                 streams?.reader.end('ended_by_dispatcher');
                 if (relay) await relay.close().catch(() => {});
-                const fitted = fitOutcome(outcome, settings.resultBytes);
+                const fitted = fitOutcome(normalize(outcome), settings.resultBytes);
                 if (streams && fitted.classification !== 'completed' && fitted.classification !== 'cancelled') {
                     const text = alaDiagnostics(streams.reader.stderrTail());
                     if (text) log('ala_stderr_tail', { executionId: item.executionId, attemptId: item.attemptId, text });

@@ -354,3 +354,71 @@ test('human-input channel: a model that does not end by itself is ended after th
     assert.equal(view(admitted).result.data.requestId, id);
     assert.equal(runs[0].ended.length, 1);
 });
+
+// ---- a recorded question keeps the attempt answerable -------------------------------------------------------------------------
+
+const QUESTION = { question: 'Ship it?', options: ['yes', 'no', 'later'] };
+async function asked(t, specOverrides = {}) {
+    const world = rig(t);
+    const admitted = world.admit(spec({ humanInput: true, workflowExecution: true, ...specOverrides }));
+    world.dispatcher.start();
+    await wait(() => world.runs.length === 1 && world.runs[0].prompt !== null, 'running');
+    const { id } = await world.runs[0].channels.humanInput(QUESTION);
+    return { ...world, admitted, requestId: id, run: world.runs[0] };
+}
+const answerOf = (world, answer = 'yes') => world.store.controlReference(world.alice, {
+    referenceId: world.admitted.reference.id, operationId: newId(), op: 'answer', payload: { requestId: world.requestId, answer }
+});
+
+test('a question recorded, then ALA exits 1 or 130: the attempt ends human-input, keeps the exit code, and the answer is accepted', async (t) => {
+    for (const exitCode of [1, 130]) {
+        const world = await asked(t, { sessionId: `ask-${exitCode}` });
+        world.run.finishWith(null, exitCode);
+        await wait(() => world.view(world.admitted).state === 'human-input', `human-input after exit ${exitCode}`);
+        const expected = exitCode === 130
+            ? { reason: 'human_input', requestId: world.requestId, endedBy: 'ala_interrupted' }
+            : { reason: 'human_input', requestId: world.requestId, endedBy: 'ala_failed', exitCode: 1, detail: 'ala_exit:1' };
+        assert.deepEqual(world.view(world.admitted).result.data, expected);
+        assert.equal(answerOf(world).outcome, 'accepted', `answerable after exit ${exitCode}`);
+    }
+});
+
+test('a question recorded, then a stream violation: the attempt ends human-input and stays answerable', async (t) => {
+    const world = await asked(t);
+    world.run.stderr.write('@@ALA_EVENT@@{broken\n');
+    await wait(() => world.view(world.admitted).state === 'human-input', 'human-input');
+    assert.equal(world.view(world.admitted).result.data.endedBy, 'control_stream_violation');
+    assert.equal(answerOf(world).outcome, 'accepted');
+});
+
+test('a question recorded, then a stop by the owner: the attempt ends cancelled and cannot be answered', async (t) => {
+    const world = await asked(t);
+    world.store.controlReference(world.alice, { referenceId: world.admitted.reference.id, operationId: newId(), op: 'stop' });
+    await wait(() => world.view(world.admitted).state === 'cancelled', 'cancelled');
+    assert.throws(() => answerOf(world), (error) => error.code === 'operation_conflict');
+});
+
+test('a question recorded, then a task failure: the attempt ends failed with task_blocked, not human-input, whichever timer fires', async (t) => {
+    const world = await asked(t);
+    await world.run.channels.taskFailure({ message: 'Cannot continue' });
+    await wait(() => world.view(world.admitted).state === 'failed', 'failed');
+    // The question's grace period (150 ms in this rig) would have ended it human-input if it were not replaced.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(world.view(world.admitted).state, 'failed');
+    assert.deepEqual(world.view(world.admitted).result.data, { reason: 'task_blocked', message: 'Cannot continue' });
+    assert.equal(world.runs[0].ended.length, 1);
+    assert.throws(() => answerOf(world), (error) => error.code === 'operation_conflict');
+});
+
+test('a task failure first and a question after it: the attempt still ends failed with task_blocked', async (t) => {
+    const world = rig(t);
+    const admitted = world.admit(spec({ humanInput: true, workflowExecution: true }));
+    world.dispatcher.start();
+    await wait(() => world.runs.length === 1 && world.runs[0].prompt !== null, 'running');
+    const { id } = await world.runs[0].channels.humanInput(QUESTION);
+    await world.runs[0].channels.taskFailure({ message: 'No access' });
+    world.runs[0].finishWith(null, 0);
+    await wait(() => world.view(admitted).state === 'failed', 'failed');
+    assert.equal(world.view(admitted).result.data.reason, 'task_blocked');
+    void id;
+});

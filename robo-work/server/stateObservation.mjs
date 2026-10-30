@@ -44,6 +44,11 @@ export const OUTPUT_EVENT_TYPES = Object.freeze(['ala', 'truncated']);
 // options} (the human-input channel) and `human-input-answered` {requestId, answer} (the `answer` control). Each is recorded durably
 // before the channel replies or the answer is acknowledged; they are bounded by CHANNEL_EVENT_MAX_BYTES, one request per attempt.
 export const CHANNEL_EVENT_TYPES = Object.freeze(['task-failed', 'human-input-request']);
+// The per-reference total (OUTPUT_EVENTS_PER_REFERENCE) counts channel events too. They are few (at most one of each kind per attempt,
+// three in all) and must always be recorded, so the last CHANNEL_EVENT_RESERVE places of the total are kept for them: `ala` events stop
+// that much earlier, the first refused one is marked (M-7), and a question, an answer or a failure never meets a full stream.
+export const CHANNEL_EVENT_RESERVE = 3;
+const COUNTED_CHANNEL_TYPES = Object.freeze(['task-failed', 'human-input-request', 'human-input-answered']);
 // 200 KiB holds the worst case of the largest answer: 32,000 characters that JSON escapes to six bytes each (192,000) plus the envelope.
 export const ANSWER_MAX_CHARS = 32000;
 export const CHANNEL_EVENT_MAX_BYTES = 200 * 1024;
@@ -141,9 +146,10 @@ export function appendOutputEvents(db, referenceId, events, now) {
         db.prepare('INSERT INTO reference_cursor (reference_id, last_sequence, first_retained) VALUES (?, 0, 1)').run(referenceId);
         cursor = { last_sequence: 0, first_retained: 1 };
     }
-    const counts = Object.fromEntries(db.prepare("SELECT type, COUNT(*) AS count FROM reference_event WHERE reference_id = ? AND type IN ('ala', 'truncated') GROUP BY type").all(referenceId)
+    const counts = Object.fromEntries(db.prepare("SELECT type, COUNT(*) AS count FROM reference_event WHERE reference_id = ? AND type IN ('ala', 'truncated', 'task-failed', 'human-input-request', 'human-input-answered') GROUP BY type").all(referenceId)
         .map((row) => [row.type, row.count]));
-    let ala = counts.ala ?? 0;
+    // `ala` counts the stream events of the total: the relayed records plus the channel events already recorded.
+    let ala = (counts.ala ?? 0) + COUNTED_CHANNEL_TYPES.reduce((sum, type) => sum + (counts[type] ?? 0), 0);
     let truncated = counts.truncated ?? 0;
     let limitMarked = db.prepare("SELECT COUNT(*) AS count FROM reference_event WHERE reference_id = ? AND type = 'truncated' AND data LIKE ?")
         .get(referenceId, `%"reason":"${EVENT_LIMIT_REASON}"%`).count > 0;
@@ -162,7 +168,7 @@ export function appendOutputEvents(db, referenceId, events, now) {
         let data;
         try { data = canonicalJson(event.data); } catch { dropped += 1; continue; } // too deep or not JSON: never stored
         if (event.type === 'ala') {
-            if (ala >= OUTPUT_EVENTS_PER_REFERENCE) {
+            if (ala >= OUTPUT_EVENTS_PER_REFERENCE - CHANNEL_EVENT_RESERVE) {
                 dropped += 1;
                 // The first refusal is marked where it happens, in the reserved room.
                 if (!limitMarked && truncated < TRUNCATED_EVENTS_PER_REFERENCE) {

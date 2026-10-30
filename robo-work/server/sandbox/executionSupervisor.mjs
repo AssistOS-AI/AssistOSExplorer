@@ -231,7 +231,7 @@ export function createExecutionSupervisor({
                 role: 'endpoint', marker, runtimeDir: runtime.path, netns: network.nsPath, netnsInode: network.nsInode(),
                 roBinds: roles.endpoint.roBinds, symlinks: roles.endpoint.symlinks, env: roles.endpoint.env ?? {}, cwd: roles.endpoint.cwd ?? '/',
                 argv: [...roles.endpoint.argv, JSON.stringify(spec?.config ?? {})], anchored: roles.endpoint.anchored ?? [],
-                binds: [{ source: rt('stream'), dest: '/stream', mode: 'rw' }, { source: rt('channels'), dest: '/run/robo-work/channels', mode: 'rw' }],
+                binds: [{ source: rt('stream'), dest: '/stream', mode: 'rw' }, { source: rt('channels'), dest: '/run/robo-work/channels', mode: 'ro' }],
                 stdio: ['ignore', 'ignore', 'ignore'], roleFds: { 3: pair.client, 4: 'pipe' }
             });
             endpointSandbox = sandbox;
@@ -249,7 +249,7 @@ export function createExecutionSupervisor({
                 role: 'orchestration', marker, runtimeDir: runtime.path,
                 roBinds: roles.orchestration.roBinds, symlinks: roles.orchestration.symlinks, env: roles.orchestration.env ?? {}, cwd: roles.orchestration.cwd ?? '/',
                 argv: roles.orchestration.argv, anchored: roles.orchestration.anchored ?? [],
-                binds: [{ source: rt('channels'), dest: '/run/robo-work/channels', mode: 'rw' }],
+                binds: [{ source: rt('channels'), dest: '/run/robo-work/channels', mode: 'ro' }],
                 stdio: ['pipe', 'pipe', 'pipe'], roleFds: { 3: pair.accepted }
             });
             orchestration = sandbox;
