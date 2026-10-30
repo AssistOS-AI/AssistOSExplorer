@@ -82,7 +82,7 @@ async function rig(t, { launchHook = null } = {}) {
         state: store, context, robotId, executionId: admitted.executionId, attemptId: admitted.attemptId, referenceId: admitted.reference.id,
         layout, sandbox: supervisor, walker, clock: clock()
     });
-    return { store, ledger, supervisor, view, sandboxes, spawns, network, networks: () => networks, layout, admitted, context };
+    return { store, ledger, supervisor, view, recoveryView, sandboxes, spawns, network, networks: () => networks, layout, admitted, context };
 }
 
 async function publishAll(world, { workload = false } = {}) {
@@ -152,4 +152,16 @@ test('B2: every id S1 can generate is a valid marker for the whole chain, includ
         assert.equal(bwrapRealArgv({ argsFd: 7, marker: id })[3], id);
     }
     assert.ok(dashed > 100, `the sample contained ${dashed} dash-leading ids`);
+});
+
+test('F13: with /proc unreadable the real end path still finishes: every blocker is quarantined, the attempt does not stay `stopping`, nothing is thrown', async (t) => {
+    const world = await rig(t);
+    await publishAll(world);
+    const unreadable = () => { throw Object.assign(new Error('proc_unreadable: 887/fd'), { name: 'ProcUnreadable', code: 'proc_unreadable', errno: 'EACCES' }); };
+    world.recoveryView.listProcesses = unreadable; // the walker's view
+    const result = await world.ledger.endExecution({ classification: 'cancelled' });
+    assert.ok(result.releaseLog.length >= 8);
+    assert.ok(result.releaseLog.every((entry) => entry.outcome === 'quarantined'), JSON.stringify(result.releaseLog.map((entry) => entry.outcome)));
+    assert.deepEqual(world.store.listUnsettledResources(), [], 'every blocker is settled (quarantined), none is left committed');
+    assert.notEqual(world.store.getReference(world.context, { referenceId: world.admitted.reference.id }).state, 'stopping');
 });

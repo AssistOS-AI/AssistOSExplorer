@@ -462,3 +462,48 @@ test('F6: roFiles reach the bwrap arguments (workload) and are refused for orche
         } finally { bad.done(); }
     } finally { world.done(); }
 });
+
+test('F13: stop() reads /proc again when a dying process cannot be read; it proves absence once it can, and never throws', async () => {
+    const world = rig();
+    try {
+        const sandbox = await world.launcher.launch(workloadSpec(world));
+        await sandbox.gate.commit();
+        const real = world.view.listProcesses;
+        let failures = 4;
+        world.view.listProcesses = () => { if (failures > 0) { failures -= 1; throw Object.assign(new Error('proc_unreadable: 887/fd'), { code: 'proc_unreadable', errno: 'EACCES' }); } return real(); };
+        const verdict = await sandbox.stop({ graceMs: 1 });
+        assert.deepEqual(verdict, { absent: true, problems: [] });
+        assert.equal(failures, 0, 'it did read through the failures');
+    } finally { world.done(); }
+    const stuck = rig();
+    try {
+        const sandbox = await stuck.launcher.launch(workloadSpec(stuck));
+        await sandbox.gate.commit();
+        stuck.view.listProcesses = () => { throw Object.assign(new Error('proc_unreadable'), { code: 'proc_unreadable' }); };
+        const verdict = await sandbox.stop({ graceMs: 1 });
+        assert.equal(verdict.absent, false);
+        assert.ok(verdict.problems.includes('proc_unreadable'));
+        assert.equal((await sandbox.release()).absent, false, 'release also reports instead of throwing, and keeps the pins');
+        assert.equal(stuck.pins.open.length, 3);
+    } finally { stuck.done(); }
+});
+
+test('F13: an opaque (unreadable, dying) process counts as holding the sandbox only when it descends from its monitor or init', async () => {
+    const world = rig();
+    try {
+        const sandbox = await world.launcher.launch(workloadSpec(world));
+        await sandbox.gate.commit();
+        world.spawned[0].finish(0, null);
+        // an unrelated opaque leader elsewhere in the container: not ours
+        world.view.add({ pid: 9301, ppid: 1, pidNs: null, mntNs: null, netNs: null, opaque: true });
+        assert.equal((await sandbox.verifyAbsent()).absent, true);
+        // an opaque leader below the (recorded) init, with an intermediate parent: ours
+        world.view.add({ pid: 9302, ppid: sandbox.identity.init.pid, pidNs: null, mntNs: null, netNs: null, opaque: true });
+        world.view.add({ pid: 9303, ppid: 9302, pidNs: null, mntNs: null, netNs: null, opaque: true });
+        const held = await sandbox.verifyAbsent();
+        assert.deepEqual(held.problems, ['namespace_held']);
+        world.view.drop(9302);
+        world.view.drop(9303);
+        assert.equal((await sandbox.verifyAbsent()).absent, true);
+    } finally { world.done(); }
+});

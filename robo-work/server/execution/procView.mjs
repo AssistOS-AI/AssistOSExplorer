@@ -3,7 +3,7 @@
 // to verify a sandbox claim before anything is committed. Nothing here believes a sandbox: every answer is read from
 // /proc or the file system, and anything that cannot be read is answered "present" or throws.
 //
-//   listProcesses() -> [{ pid, ppid, startTime, cmdline, pidNs, netNs, mntNs, fdNs }]   start times and inodes are
+//   listProcesses() -> [{ pid, ppid, startTime, cmdline, pidNs, netNs, mntNs, fdNs, opaque? }]   start times and inodes are
 //                      canonical decimal strings, pids integers (the types toLedgerIdentity commits)
 //   listMounts()    -> [{ mountId, mountpoint, mntNs, fstype, nsInode, majorMinor }]
 //   exists(kind, locator), kill({ pid, startTime }), remove(kind, locator), unmount() (always false)
@@ -31,6 +31,7 @@ const NS_LINK = /^([a-z_]+):\[([0-9]{1,20})\]$/u;
 const NAMESPACE_TYPES = new Set(['net', 'mnt', 'pid', 'uts', 'ipc', 'user', 'cgroup', 'time', 'pid_for_children', 'time_for_children']);
 const LOCATOR_ID = '[0-9a-f]{32}';
 const VANISHED = new Set(['ENOENT', 'ESRCH']);
+const OPAQUE_ERRNOS = new Set(['EACCES', 'EPERM', 'ELOOP']);
 
 export class ProcUnreadable extends Error {
     constructor(where, cause) { super(`proc_unreadable: ${where}`); this.name = 'ProcUnreadable'; this.code = 'proc_unreadable'; this.errno = cause?.code ?? null; }
@@ -135,6 +136,16 @@ export function createProcView({
         return devices ? { fdNs, devs } : { fdNs };
     }
 
+    // The process state letter now (third stat field, after the LAST ')'), or null when it cannot be read; 'X' and 'x' are dead.
+    function stateNow(pid) {
+        try {
+            const text = fs.readFileSync(at(pid, 'stat'), 'utf8');
+            return text[text.lastIndexOf(')') + 2] ?? null;
+        } catch (error) {
+            return VANISHED.has(error?.code) ? 'gone' : null;
+        }
+    }
+
     // State Z with a single thread (read from status; both fields are world-readable).
     function isDeadZombie(pid) {
         try {
@@ -148,17 +159,26 @@ export function createProcView({
         if (!stat || stat.pid !== pid) throw new ProcUnreadable(`${pid}/stat`);
         const raw = guarded(`${pid}/cmdline`, () => fs.readFileSync(at(pid, 'cmdline')));
         const cmdline = raw.length === 0 ? [] : raw.toString('utf8').replace(/\0$/u, '').split('\0');
-        let fdNs;
         try {
-            ({ fdNs } = readFds(pid));
+            const { fdNs } = readFds(pid);
+            return { pid, ppid: stat.ppid, startTime: stat.startTime, cmdline, pidNs: nsLink(pid, 'pid'), netNs: nsLink(pid, 'net'), mntNs: nsLink(pid, 'mnt'), fdNs };
         } catch (error) {
-            // A zombie's descriptors are unreadable (EACCES on Linux). A zombie group leader with no other thread holds nothing and
-            // runs nothing, and a container whose pid 1 does not reap leaves such zombies behind: it counts as gone. A
-            // leader with live threads still runs, so its unreadable state stays an error.
-            if (error instanceof ProcUnreadable && isDeadZombie(pid)) throw new Vanished(`${pid}/fd`);
-            throw error;
+            // Only a refusal by the system (permission denied, or a refused path) can be a process that is ending; a link of the wrong
+            // shape (EINVAL), an I/O error or any other errno is malformed or damaged input and stays an error.
+            if (!(error instanceof ProcUnreadable) || !OPAQUE_ERRNOS.has(error.errno)) throw error;
+            // A process that is ending has unreadable descriptors and namespace links (EACCES on fd, ENOENT on ns, on Linux), and its
+            // state moves while it is read, so the state is read again here. Observed live in the Box (F13): after a multi-threaded
+            // process is killed with SIGKILL its leader is `Z` with other threads still exiting (13198 samples: fd EACCES, ns ENOENT)
+            // and, briefly, still `R` (9 samples: the same errors). Throwing there aborted the whole listing out of the end path.
+            //  - gone, dead, or a zombie with one thread: it holds nothing and runs nothing (a container whose pid 1 does not reap
+            //    leaves such zombies behind): it counts as gone.
+            //  - anything else that cannot be read is PRESENT but opaque: listed with no namespace and no descriptors and flagged
+            //    `opaque`, so the walker waits for it and never rules it out as a holder. It is never counted as absent; a process that
+            //    stays unreadable ends the walk quarantined at the deadline.
+            const state = stateNow(pid);
+            if (state === 'gone' || state === 'X' || state === 'x' || isDeadZombie(pid)) throw new Vanished(`${pid}`);
+            return { pid, ppid: stat.ppid, startTime: stat.startTime, cmdline, pidNs: null, netNs: null, mntNs: null, fdNs: [], opaque: true };
         }
-        return { pid, ppid: stat.ppid, startTime: stat.startTime, cmdline, pidNs: nsLink(pid, 'pid'), netNs: nsLink(pid, 'net'), mntNs: nsLink(pid, 'mnt'), fdNs };
     }
 
     function pids() {

@@ -372,11 +372,26 @@ export function createSandboxLauncher({
         function absence() {
             const problems = [];
             if (!exited) problems.push('monitor_running');
-            const processes = view.listProcesses();
+            let processes;
+            try {
+                processes = view.listProcesses();
+            } catch {
+                // a process that is ending cannot be read right now: that is not absence, and the poll reads again until the deadline
+                return { absent: false, problems: [...problems, 'proc_unreadable'] };
+            }
             // A namespace inode names this sandbox's namespace only while it is pinned. Once unpinned the kernel may hand the
             // number to another sandbox, so an unpinned inode proves nothing and is not looked for. Our own pins are not holders.
             if (pinned) {
-                const holders = processes.filter((entry) => entry.pidNs === identity.pidNs || entry.mntNs === identity.mntNs
+                // An unreadable (opaque) process counts only when it descends from this sandbox's monitor or init: orphans reparent
+                // to the init of the namespace, so its ancestry is how it is attributed.
+                const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
+                const descends = (entry) => {
+                    for (let depth = 0, at = entry; at && depth < 64; depth += 1, at = byPid.get(at.ppid)) {
+                        if (at.ppid === identity.pid || at.ppid === identity.init.pid) return true;
+                    }
+                    return false;
+                };
+                const holders = processes.filter((entry) => (entry.opaque === true && descends(entry)) || entry.pidNs === identity.pidNs || entry.mntNs === identity.mntNs
                     || entry.mntNs === identity.stageMntNs
                     || (entry.pid !== supervisorPid && [identity.pidNs, identity.mntNs, identity.stageMntNs].some((inode) => entry.fdNs?.includes(inode))));
                 if (holders.length > 0) problems.push('namespace_held');

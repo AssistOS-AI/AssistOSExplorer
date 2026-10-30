@@ -111,13 +111,24 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
         for (const entry of processes) {
             if (entry[field] === inode) holders.push({ via: 'ns-link', pid: entry.pid });
             if (entry.fdNs.includes(inode)) holders.push({ via: 'fd-link', pid: entry.pid });
+            // A process that is ending and cannot be read (a zombie leader whose threads still run) may hold anything: wait for it.
+            if (entry.opaque === true) holders.push({ via: 'opaque', pid: entry.pid });
         }
         for (const mount of mounts) if (mount.fstype === 'nsfs' && mount.nsInode === inode) holders.push({ via: 'nsfs-mount', mountId: mount.mountId });
         return holders;
     }
 
-    // Absence as the supervisor can see it right now.
+    // Absence as the supervisor can see it right now. A /proc read that fails (a process mid-exit that cannot be read) is not an
+    // answer: absence is NOT proven, and the walk reads again until the deadline, then quarantines. It never throws out of the walk.
     function prove(blocker) {
+        try {
+            return proveOnce(blocker);
+        } catch (error) {
+            return { absent: false, holders: [{ via: 'proc-unreadable', code: error?.code ?? null }] };
+        }
+    }
+
+    function proveOnce(blocker) {
         const processes = view.listProcesses();
         const mounts = view.listMounts();
         const { kind } = blocker;
@@ -164,6 +175,12 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
 
     // Kills and removes what is found after re-checking identity (the view acts only on a matching pid and start time).
     async function force(blocker) {
+        try {
+            await forceOnce(blocker);
+        } catch { /* a view that cannot be read right now forces nothing this time; prove() decides, and the walk tries again */ }
+    }
+
+    async function forceOnce(blocker) {
         const { kind } = blocker;
         if (PROCESS_KINDS.has(kind)) {
             for (const entry of processMembers(blocker, view.listProcesses())) view.kill({ pid: entry.pid, startTime: entry.startTime });
@@ -203,7 +220,7 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
     // quarantined). Used where the caller can leave the blocker unsettled for the end path.
     async function attempt(blocker) {
         await force(blocker);
-        return prove(blocker).absent ? RELEASED : null;
+        return prove(blocker).absent ? RELEASED : null; // prove() never throws: an unreadable /proc is "undecided"
     }
 
     return { prove, force, walk, attempt };

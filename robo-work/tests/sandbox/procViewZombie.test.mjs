@@ -31,10 +31,29 @@ test('a dead zombie (State Z, one thread) with unreadable descriptors is gone, n
     assert.equal(view(root).process(11), null);
 });
 
-test('a zombie leader with live threads, and a live process with unreadable descriptors, still fail closed with proc_unreadable', (t) => {
-    const leader = procRoot(t, [{ pid: 12, state: 'Z', threads: 2, unreadableFd: true }]);
-    assert.throws(() => view(leader).listProcesses(), { code: 'proc_unreadable' });
-    const live = procRoot(t, [{ pid: 13, unreadableFd: true }]);
-    assert.throws(() => view(live).listProcesses(), { code: 'proc_unreadable' });
-    assert.throws(() => view(live).process(13), { code: 'proc_unreadable' });
+test('F13: a LIVE (R or S) process whose descriptors cannot be read, as a killed multi-threaded leader is for a moment, is listed as opaque, not an error', (t) => {
+    const live = procRoot(t, [{ pid: 13, unreadableFd: true }, { pid: 14, state: 'R', threads: 6, unreadableFd: true }]);
+    assert.deepEqual(view(live).listProcesses().map((entry) => [entry.pid, entry.opaque === true]), [[13, true], [14, true]]);
+    assert.equal(view(live).process(13).opaque, true);
+});
+
+test('a process whose stat or cmdline cannot be read at all still fails closed', (t) => {
+    const root = procRoot(t, [{ pid: 17 }]);
+    fs.rmSync(path.join(root, '17', 'cmdline'));
+    fs.mkdirSync(path.join(root, '17', 'cmdline'));
+    assert.throws(() => view(root).listProcesses(), { code: 'proc_unreadable' });
+});
+
+test('F13: a zombie group leader whose other threads are still exiting is listed as present but opaque, never as an error', (t) => {
+    const root = procRoot(t, [{ pid: 12, state: 'Z', threads: 2, unreadableFd: true }, { pid: 14 }]);
+    const listed = view(root).listProcesses();
+    assert.deepEqual(listed.map((entry) => entry.pid), [12, 14]);
+    assert.deepEqual(listed[0], { pid: 12, ppid: 1, startTime: '1012', cmdline: ['x'], pidNs: null, netNs: null, mntNs: null, fdNs: [], opaque: true });
+    assert.equal(listed[1].opaque, undefined);
+    assert.equal(view(root).process(12).opaque, true);
+});
+
+test('a dead (X) process with unreadable descriptors is gone', (t) => {
+    const root = procRoot(t, [{ pid: 15, state: 'X', unreadableFd: true }, { pid: 16 }]);
+    assert.deepEqual(view(root).listProcesses().map((entry) => entry.pid), [16]);
 });
