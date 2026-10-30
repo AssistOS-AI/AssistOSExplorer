@@ -124,7 +124,7 @@ export function judge({ before, after, log, restartedBy }) {
 
 // ---- driving podman ----------------------------------------------------------------------------------------------------------------------
 function args(argv) {
-    const options = { ...DEFAULTS, kill: false, verify: false, waitAttemptS: 300, graceS: 60, restartWaitS: 180, state: '/tmp/robo-work-restart-state.json', then: null };
+    const options = { ...DEFAULTS, kill: false, verify: false, waitAttemptS: 300, graceS: 180, restartWaitS: 180, state: '/tmp/robo-work-restart-state.json', then: null };
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index];
         const next = () => argv[(index += 1)];
@@ -173,6 +173,7 @@ async function main(argv) {
     let saved;
     if (options.verify) {
         saved = JSON.parse(fs.readFileSync(options.state, 'utf8'));
+        if (saved.worker) options.worker = saved.worker;
         report.resumedFrom = options.state;
     } else {
         // 1. wait for a running attempt, record the "before" picture
@@ -200,7 +201,17 @@ async function main(argv) {
 
         // 3. does Ploinky restart the agent by itself?
         let restartedBy = 'none';
+        // Ploinky may replace the worker container under a new name (`<worker>__candidate_<hash>`, observed ~71 s after the kill);
+        // follow the replacement instead of reporting no restart.
+        const baseName = options.worker.replace(/__candidate_[0-9a-f]+$/u, '');
+        const replacement = () => {
+            const listed = inBox('podman', 'ps', '--format', '{{.Names}}');
+            const names = (listed.stdout ?? '').split('\n').map((line) => line.trim()).filter((name) => name === baseName || name.startsWith(`${baseName}__candidate_`));
+            return names.find((name) => name !== options.worker) ?? null;
+        };
         const restarted = () => {
+            const replaced = containerBefore ? replacement() : null;
+            if (replaced && containerState() === null) { options.worker = replaced; report.replacedBy = replaced; saved.worker = replaced; return 'container-replaced'; }
             const state = containerState();
             if (state && containerBefore && (state.startedAt !== containerBefore.startedAt || state.restartCount !== containerBefore.restartCount) && state.status === 'running') return 'container-restart';
             const now = state?.status === 'running' ? inspect() : null;
