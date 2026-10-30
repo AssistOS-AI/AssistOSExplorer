@@ -87,7 +87,8 @@ export function createExecutionFactory({
         grant: deps.resolveGrant ?? resolveGrant,
         openDirectory: deps.openDirectory ?? ((target) => fs.openSync(target, DIRECTORY_FLAGS)),
         closeFd: deps.closeFd ?? ((fd) => fs.closeSync(fd)),
-        image: deps.imageBinds ?? imageBinds
+        image: deps.imageBinds ?? imageBinds,
+        channels: deps.createExecutionChannels ?? createExecutionChannels
     };
     const code = codeBinds({ serverDir, alaRoot, nodePath });
     const endpointLimits = resolveEndpointLimits();

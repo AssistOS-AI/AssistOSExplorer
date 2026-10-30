@@ -15,7 +15,7 @@ const spec = (overrides = {}) => ({
     folders: [{ path: '/ws/skills', access: 'read' }], ...overrides
 });
 
-function rig({ grantRefusal = null } = {}) {
+function rig({ grantRefusal = null, supervisorRuntimeDir = undefined } = {}) {
     const calls = [];
     const closedFds = [];
     const closedGrants = [];
@@ -35,7 +35,7 @@ function rig({ grantRefusal = null } = {}) {
         createExecutionSupervisor: (options) => {
             supervisorOptions = options;
             return {
-                endpointSocket: { fake: 'endpoint' }, controlStreams: streams, providerSandbox: () => ({ fake: 'sandbox' }),
+                endpointSocket: { fake: 'endpoint' }, controlStreams: streams, providerSandbox: () => ({ fake: 'sandbox' }), runtimeDir: supervisorRuntimeDir,
                 exit: async () => { calls.push(['supervisor.exit']); }
             };
         },
@@ -152,4 +152,28 @@ test('imageBinds keeps the coding-agent tool tree apart: workloads only (F5: /us
     const binds = imageBinds({ exists: (target) => ['/usr', '/opt/robo-work-tools'].includes(target), readlink: () => null });
     assert.deepEqual(binds.toolBinds, [{ source: '/opt/robo-work-tools', dest: '/opt/robo-work-tools' }]);
     assert.equal(binds.roBinds.some((bind) => bind.dest === '/opt/robo-work-tools'), false, 'not in the binds orchestration and endpoint get');
+});
+
+// F11 (e2e): the production factory must host the task-failure and human-input channels with its OWN default
+// createExecutionChannels; only injected fakes were tested before, and every workflow phase failed with a TypeError.
+test('a workflow execution hosts its channels with the default channel factory (no injected fake)', async (t) => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-factory-channels-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(dir, 'channels'));
+    const { factory, item, context } = rig({ supervisorRuntimeDir: dir });
+    item.specification = spec({ workflowExecution: true, humanInput: true });
+    const plan = planAlaExecution({ specification: item.specification, workspaceRoot: '/ws' });
+    const handler = async () => ({ ok: true });
+    const execution = await factory.open({ item, plan, context, channels: { taskFailure: handler, humanInput: handler } });
+    // start() hosts the channels right after the runtime directory is published; the rest of start() waits on fakes.
+    let startError = null;
+    execution.start().catch((error) => { startError = error; });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const entries = fs.readdirSync(path.join(dir, 'channels')).sort();
+    if (startError) throw startError;
+    assert.ok(entries.includes('task-failure') || entries.includes('task-failure.sock'), entries.join(','));
+    assert.ok(entries.includes('human-input') || entries.includes('human-input.sock'), entries.join(','));
 });
