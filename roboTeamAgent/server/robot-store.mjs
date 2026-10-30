@@ -283,25 +283,38 @@ export class RobotStore {
         });
     }
 
+    // The local precondition of a deletion: no live robot chat helper (robot-cli) or CLI task holds the robot. A refusal is a
+    // conflict (409), never a server error, and it is checked BEFORE anything else is deleted for the robot.
+    async assertDeletable(robotId) {
+        await this.initialize();
+        const robot = await this.get(robotId);
+        if (!robot) return;
+        await this._assertNoLiveCliUsage(robotId);
+    }
+
+    async _assertNoLiveCliUsage(robotId) {
+        const root = this.robotPath(robotId);
+        const boot = (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+        for (const name of await fs.readdir(root)) {
+            if (!/^\.cli-[a-f0-9-]+\.json$/.test(name)) continue;
+            const { owner } = await readRegistryOwner(path.join(root, name));
+            if (owner.boot !== boot) continue;
+            try {
+                if (await processStart(owner.pid) === owner.start) {
+                    throw Object.assign(new Error('close the robot chat and stop its CLI tasks before deleting it'), { statusCode: 409, code: 'robot_in_use' });
+                }
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+            }
+        }
+    }
+
     async delete(robotId) {
         await this.initialize();
         return withRegistryMutation(this.robotsDir, async () => {
             const robot = await this.get(robotId);
             if (!robot) return false;
-            const root = this.robotPath(robotId);
-            const boot = (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
-            for (const name of await fs.readdir(root)) {
-                if (!/^\.cli-[a-f0-9-]+\.json$/.test(name)) continue;
-                const { owner } = await readRegistryOwner(path.join(root, name));
-                if (owner.boot !== boot) continue;
-                try {
-                    if (await processStart(owner.pid) === owner.start) {
-                        throw new Error('close the robot chat and stop its CLI tasks before deleting it');
-                    }
-                } catch (error) {
-                    if (error.code !== 'ENOENT') throw error;
-                }
-            }
+            await this._assertNoLiveCliUsage(robotId);
             await fs.rm(this.robotPath(robotId), { recursive: true, force: true });
             return true;
         });

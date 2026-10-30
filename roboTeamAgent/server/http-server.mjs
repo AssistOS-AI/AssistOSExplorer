@@ -25,6 +25,7 @@ import { ConversationSessionStore } from '../copilot/src/lib/storage/conversatio
 import { renderAlaTurnLog } from '../copilot/src/lib/webchat/webchatTurnLog.mjs';
 import { ADMISSIONS_PATH, handleWorkerRoutes, isWorkerRoute } from './worker-coordinator/browser-routes.mjs';
 import { createWorkerClient } from './worker-coordinator/worker-client.mjs';
+import { deleteRobotEverywhere } from './robot-delete.mjs';
 import { createRobotProvisioner } from './worker-coordinator/robot-provisioning.mjs';
 import { ensureRobotWithGrant, prepareFlowStart, removeRobotOnWorker, workerGrantFor } from './worker-coordinator/grant-actions.mjs';
 import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
@@ -1007,17 +1008,13 @@ export function createRoboTeamServer(options) {
                 const operation = String(body.operation || '');
                 if (operation === 'robot-delete') {
                     if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
-                    const status = runtimeManager.status(robot.id);
-                    if (status.state !== 'stopped' || runtimeManager.hasUnfinishedTasks?.(robot.id)
-                        || ['queued', 'starting', 'running', 'pausing'].includes(status.task?.state)) {
-                        return sendError(res, 409, 'stop the robot before deleting it');
+                    // Local preconditions first, then the worker, then RoboTeam's record; a precondition is a 409, never a 500.
+                    try {
+                        await deleteRobotEverywhere({ robot, runtimeManager, robotStore, removeOnWorker: worker.enabled ? (target) => worker.remove(req, target) : null });
+                    } catch (error) {
+                        if (Number.isInteger(error?.statusCode) && error.statusCode >= 400 && error.statusCode < 600) return sendError(res, error.statusCode, error.message);
+                        throw error;
                     }
-                    // The worker decides first: busy work refuses the delete, and only an accepted deletion removes RoboTeam's record.
-                    try { await worker.remove(req, robot); } catch (error) {
-                        return sendError(res, error.statusCode || 503, error.code === 'robot_busy' ? 'the robot has running or unsettled work; stop it first' : error.message);
-                    }
-                    if (runtimeManager.deleteRobot) await runtimeManager.deleteRobot(robot.id, () => robotStore.delete(robot.id));
-                    else await robotStore.delete(robot.id);
                     await roboflow?.refreshCoverage();
                     return sendJson(res, 200, { ok: true, deleted: robot.name });
                 }

@@ -1073,9 +1073,16 @@ export class RuntimeManager {
         return `${result.stdout || ''}${result.stderr || ''}`.slice(-256 * 1024);
     }
 
-    async deleteRobot(robotId, remove) {
+    // The local precondition of a deletion, a conflict (409) rather than a server error.
+    assertDeletable(robotId) {
         if (this.pending.has(robotId) || this.sessions.has(robotId) || this.activeTasks.has(robotId)
-            || this.hasUnfinishedTasks(robotId)) throw new Error('stop the robot and its queued tasks before deleting it');
+            || this.hasUnfinishedTasks(robotId)) {
+            throw Object.assign(new Error('stop the robot and its queued tasks before deleting it'), { statusCode: 409, code: 'robot_in_use' });
+        }
+    }
+
+    async deleteRobot(robotId, remove) {
+        this.assertDeletable(robotId);
         this.deletedRobots.add(robotId);
         // A seed or shell preparation in flight finishes (or aborts) before the folder is removed;
         // anything queued afterwards sees deletedRobots and does nothing.

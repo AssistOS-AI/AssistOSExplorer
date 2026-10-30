@@ -230,6 +230,25 @@ test('robot deletion requires an administrator role', async () => {
 });
 
 
+test('deleting a robot whose chat helper is alive is a 409 and deletes nothing; after the chat ends it deletes', async () => {
+    const fixture = await startFixture();
+    try {
+        const admin = { 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('admin-a', ['admin']) };
+        const created = await (await fetch(`${fixture.baseUrl}/api/robots`, { method: 'POST', headers: admin, body: JSON.stringify({ name: 'Chatty' }) })).json();
+        const release = await fixture.robotStore.acquireCliUsage(created.robot.id);
+        const refused = await fetch(`${fixture.baseUrl}/api/control`, { method: 'POST', headers: admin, body: JSON.stringify({ operation: 'robot-delete', robotName: 'Chatty' }) });
+        assert.equal(refused.status, 409);
+        assert.match((await refused.json()).error, /close the robot chat and stop its CLI tasks before deleting it/);
+        assert.ok(await fixture.robotStore.get(created.robot.id), 'the robot is still there');
+        await release();
+        const deleted = await fetch(`${fixture.baseUrl}/api/control`, { method: 'POST', headers: admin, body: JSON.stringify({ operation: 'robot-delete', robotName: 'Chatty' }) });
+        assert.equal(deleted.status, 200);
+        assert.equal(await fixture.robotStore.get(created.robot.id), null);
+    } finally {
+        await fixture.close();
+    }
+});
+
 test('serves the skills dialog, shared theme and local font through the authenticated application', async t => {
     const fixture = await startFixture();
     t.after(fixture.close);
