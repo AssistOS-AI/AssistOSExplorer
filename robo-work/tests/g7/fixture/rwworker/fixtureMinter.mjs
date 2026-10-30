@@ -1,7 +1,7 @@
-// PROOF-FIXTURE ONLY (slice P6b). Stand-in for the two management functions the live round trip needs and Ploinky does
-// not provide yet: the Router helper-ticket mint route (the P4 minter is a library with no route) and the delivery of the
-// per-helper-incarnation ticket secret (Ploinky's launch record carries only the journal store identity and the helper
-// incarnation). It signs with the PUBLIC SYNTHETIC proof-fixture key that the fixture helper build compiles in
+// PROOF-FIXTURE ONLY (slice P6b), now used only by the rwworker default mode in selftests: the live fixture uses the
+// Router mint route (rwworker `--router-tickets`; the rwtarget helper verifies with its per-incarnation secret). Stand-in
+// for the Router helper-ticket mint route and the session-key hand-over against a helper started with
+// `--proof-fixture-session`. It signs with the PUBLIC SYNTHETIC proof-fixture key that the fixture helper build compiles in
 // (`native/crates/target-helper/tests/vectors/session-fixture-v1.json`). A worker holding the signing key departs from
 // the authority model (it could mint its own tickets): everything produced with it is proof-fixture evidence only.
 //

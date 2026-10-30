@@ -12,10 +12,14 @@
 // The mailbox seam is the native worker-side peer (`rw-target-helper worker-peer --session`, decision B4); this host
 // drives it over stdin/stdout and gives it the session key only on stdin.
 //
-// PROOF-FIXTURE departures (each recorded in the evidence): tickets come from `fixtureMinter.mjs` (no Router mint route
-// and no per-incarnation secret delivery exist yet); the worker's own durable state is this file-backed record, not the
-// S1 worker store; facts that Ploinky does not yet produce (source protection, attestation digests, HOME compatibility)
-// are fixture-supplied by the operator. Since slice P8 the helper launches one real keeper per execution: a prepare body
+// Tickets come from one of two sources, exactly one per host:
+//   ticketKey   PROOF-FIXTURE: `fixtureMinter.mjs` signs with the public fixture key (helper `--proof-fixture-session`)
+//   mintTicket  ROUTER (`--router-tickets`): Ploinky's private helper-ticket operation through `server/helperTicketClient.mjs`
+//               returns `{ticket, kid, jti, iat, exp, sessionKey}`; the session key is the Router's (A11.5), never derived
+//               here, and both are held in memory only: never in argv, environment, output or the state directory (R3)
+// PROOF-FIXTURE departures (each recorded in the evidence): the worker's own durable state is this file-backed record,
+// not the S1 worker store; facts that Ploinky does not yet produce (source protection, attestation digests, HOME
+// compatibility) are fixture-supplied by the operator. Since slice P8 the helper launches one real keeper per execution: a prepare body
 // may name the workload (`{executable, args}`, an image inventory name), and `stop`, `release` and a recovery `rebind`
 // (a replaced target: the same execution under the new target identity and a new recovery lease) are served.
 import crypto from 'node:crypto';
@@ -32,6 +36,7 @@ import { CONTRACT_ERROR_CODES } from '../../../../server/executionTarget/contrac
 import { JOURNAL_ERROR_CODES } from '../../../../server/executionTarget/journalModel.mjs';
 import { RECEIPT_ERROR_CODES, classifyTargetStartOutcome, reconcileTargetReceipt } from '../../../../server/executionTarget/receipts.mjs';
 import { TRANSPORT_ERROR_CODES, validateHelperTicketClaims, validateTargetFrame } from '../../../../server/executionTarget/transportContract.mjs';
+import { HELPER_TICKET_MINT_CODES } from '../../../../server/helperTicketClient.mjs';
 import { mintFixtureTicket } from './fixtureMinter.mjs';
 
 const STATE_FILE = 'worker-state.json';
@@ -46,6 +51,73 @@ const FIXTURE_DIGEST_KEYS = Object.freeze(['grantPolicyDigest', 'inputManifestDi
 const KNOWN_CODES = new Set([...TRANSPORT_ERROR_CODES, ...JOURNAL_ERROR_CODES, ...CONTRACT_ERROR_CODES, ...RECEIPT_ERROR_CODES, 'keeper_unavailable', 'not_found']);
 export function knownCode(code) {
     return typeof code === 'string' && KNOWN_CODES.has(code) ? code : 'refused';
+}
+
+// Router mint outcomes (`--router-tickets`). The transient Router refusals are retried with bounded backoff: the minter
+// refuses them before minting anything (store lock wait -> `caller_mismatch`, target inspection timeout ->
+// `target_not_eligible`, secret not readable yet -> `secret_unavailable`, the per-caller limiter or the nonce set ->
+// `capacity_exceeded`; the client surfaces a 429 the same way), and an edge generation change answers 503 with nothing
+// minted. Every other refusal and every other failure is terminal. A11.6: a code is printed or persisted only as one of
+// these spellings, else `refused`; an error message is never propagated.
+export const TICKET_TTL_SECONDS = 30;
+const RETRYABLE_MINT_CODES = new Set(['caller_mismatch', 'target_not_eligible', 'secret_unavailable', 'capacity_exceeded']);
+const RETRYABLE_MINT_THROWS = new Map([['helper_ticket_http_503', 'router_unavailable'], ['helper_ticket_http_429', 'capacity_exceeded']]);
+const MINT_CODES = new Set([...HELPER_TICKET_MINT_CODES, 'forbidden', 'invalid_request', 'ticket_binding', 'refused', 'router_unavailable', 'mint_unavailable']);
+// Retries within one helper challenge reuse its nonce and epoch (nothing was minted); the whole budget stays well inside
+// the helper's challenge timeout (5 s) and the Router's 60 requests per minute. A session whose budget ran out is closed
+// and one more is opened after `sessionDelayMs` (a new nonce and a newly recorded attempt epoch, A11.2).
+export const MINT_RETRY = Object.freeze({ delaysMs: Object.freeze([150, 400, 900]), challengeBudgetMs: 3000, sessions: 2, sessionDelayMs: 1000 });
+
+export function mintCode(code) {
+    return typeof code === 'string' && MINT_CODES.has(code) ? code : 'refused';
+}
+
+// {kind: 'ok'} | {kind: 'retry', code} | {kind: 'terminal', code} for one mintTicket outcome ({result} or {error}).
+export function classifyMint(outcome) {
+    if (outcome && Object.hasOwn(outcome, 'error')) {
+        const message = outcome.error instanceof Error ? outcome.error.message : null;
+        return RETRYABLE_MINT_THROWS.has(message) ? { kind: 'retry', code: RETRYABLE_MINT_THROWS.get(message) } : { kind: 'terminal', code: 'mint_unavailable' };
+    }
+    const result = outcome?.result;
+    if (result?.ok === true && result.value && typeof result.value.ticket === 'string' && typeof result.value.sessionKey === 'string') return { kind: 'ok' };
+    const code = mintCode(result?.ok === false ? result.error?.code : null);
+    return RETRYABLE_MINT_CODES.has(code) ? { kind: 'retry', code } : { kind: 'terminal', code };
+}
+
+// The exact claim bytes the ticket carries (the client has checked that they are canonical) and the Router's session key.
+function routerMaterial(value) {
+    const claimsCanonical = Buffer.from(value.ticket.split('.')[1], 'base64url').toString('utf8');
+    return { ticket: value.ticket, claimsCanonical, sessionKey: Buffer.from(value.sessionKey, 'base64url'), kid: value.kid, jti: value.jti, exp: value.exp };
+}
+
+function countIn(bytes, needles) {
+    if (!Buffer.isBuffer(bytes)) return null;
+    let total = 0;
+    for (const needle of needles) {
+        for (let at = bytes.indexOf(needle); at !== -1; at = bytes.indexOf(needle, at + 1)) total += 1;
+    }
+    return total;
+}
+
+function readOrNull(file) {
+    try {
+        return fs.readFileSync(file);
+    } catch {
+        return null;
+    }
+}
+
+function filesUnder(root) {
+    const out = [];
+    const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) walk(full);
+            else if (entry.isFile()) out.push(full);
+        }
+    };
+    walk(root);
+    return out;
 }
 
 // Local codes (the worker peer's own transport errors) are kept only when they are plain identifiers.
@@ -129,18 +201,27 @@ class PeerProcess {
 //   stateDir        private directory for the worker's durable fixture state (created 0700)
 //   mailbox         the target helper's mailbox socket path as seen by this worker
 //   peerCommand     the rw-target-helper executable (fixture build not required on the worker side)
-//   ticketKey       {kid, secret} from fixtureMinter.loadFixtureTicketKey()
+//   ticketKey       PROOF-FIXTURE {kid, secret} from fixtureMinter.loadFixtureTicketKey(), or
+//   mintTicket      ROUTER: async (request) => helperTicketClient result (exactly one of the two)
+//   self            ROUTER: the worker's own {principal, runtimeInstanceId, enableGeneration} (Ploinky identity); admission
+//                   and rebind refuse facts whose worker half differs from it or from the advanced generation
+//   sourceProtection  ROUTER: the source-protection client (`advanceWorkerGeneration`) for `advanceGeneration`
 //   qualification   {root, uid, forbiddenRoots}: the worker-owned qualification store
-//   now, random     injectable clock and randomness
-export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qualification, now = Date.now, random = crypto.randomBytes } = {}) {
-    if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir) || typeof mailbox !== 'string' || typeof peerCommand !== 'string' || !ticketKey) {
-        throw new TypeError('createWorkerHost: stateDir, mailbox, peerCommand and ticketKey are required');
+//   now, random     injectable clock and randomness; monoNow, sleep, retry: the mint retry clock, wait and budget
+export function createWorkerHost({
+    stateDir, mailbox, peerCommand, ticketKey = null, mintTicket = null, self = null, sourceProtection = null, qualification, now = Date.now, random = crypto.randomBytes,
+    monoNow = () => performance.now(), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), retry = MINT_RETRY
+} = {}) {
+    if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir) || typeof mailbox !== 'string' || typeof peerCommand !== 'string'
+        || (ticketKey === null) === (mintTicket === null) || (mintTicket !== null && typeof mintTicket !== 'function')) {
+        throw new TypeError('createWorkerHost: stateDir, mailbox, peerCommand and exactly one of ticketKey or mintTicket are required');
     }
+    const routerMode = mintTicket !== null;
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     const stateFile = path.join(stateDir, STATE_FILE);
 
     function load() {
-        if (!fs.existsSync(stateFile)) return { version: 1, admission: null, binding: null, leaseId: null, leaseEpoch: null, leaseAttempt: null, operations: {}, history: [] };
+        if (!fs.existsSync(stateFile)) return { version: 1, admission: null, binding: null, leaseId: null, leaseEpoch: null, leaseAttempt: null, workerGeneration: null, generationAdvance: null, operations: {}, history: [] };
         const stat = fs.lstatSync(stateFile);
         if (!stat.isFile() || stat.size > STATE_BYTES) throw new Error('worker state file is unsafe');
         return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
@@ -198,11 +279,21 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         };
     }
 
+    // ROUTER mode: the binding's worker half must be this worker as the Router will see it (its Ploinky identity and the
+    // generation it advanced in the source-protection store), else every mint would be `caller_mismatch`.
+    function workerMismatch(state, facts) {
+        if (!routerMode) return false;
+        const worker = facts?.current?.worker;
+        return !self || !worker || worker.principal !== self.principal || worker.runtimeInstanceId !== self.runtimeInstanceId
+            || worker.enableGeneration !== self.enableGeneration || typeof state.workerGeneration !== 'string' || worker.generation !== state.workerGeneration;
+    }
+
     // Admission from trusted facts (live and fixture-supplied, see the module header) and the qualification store; on
     // success the execution is counted and the TargetBinding recorded.
     function admit({ selection, facts, operationId, fixtureDigests }) {
         const state = load();
         if (state.binding !== null) return record(state, fail('admit', 'already_admitted'));
+        if (workerMismatch(state, facts)) return record(state, { ...fail('admit', 'worker_identity_mismatch'), step: 'admit' });
         const decision = requireExecutionTarget(selection, factsWith(facts, null));
         if (!decision.ok) return record(state, { ...fail('admit', decision.error.code), step: 'admit' });
         const store = openStore();
@@ -258,6 +349,7 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
     function rebind({ facts, fixtureDigests }) {
         const state = load();
         if (state.binding === null) return fail('rebind', 'not_admitted');
+        if (workerMismatch(state, facts)) return record(state, { ...fail('rebind', 'worker_identity_mismatch'), step: 'rebind' });
         const decision = requireExecutionTarget(state.admission.selection, factsWith(facts, null));
         if (!decision.ok) return record(state, { ...fail('rebind', decision.error.code), step: 'rebind' });
         const store = openStore();
@@ -284,6 +376,36 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         return record(state, decision.ok ? { ok: true, step: 'revalidate' } : { ...fail('revalidate', decision.error.code), step: 'revalidate' });
     }
 
+    // ROUTER mode, Q3: register this worker's generation in Ploinky's source-protection store (T0 A2.3), the pointer the
+    // Router binds into every ticket. The body is recorded before it is sent and resent unchanged after an unknown
+    // outcome, so a retry replays the store's receipt instead of advancing twice. `priorGeneration` names the registered
+    // generation for a state directory that has none yet (the fixture keeps one state directory per execution); the store
+    // compares it with its pointer, so a wrong value is refused there (`stale_generation`).
+    async function advanceGeneration({ priorGeneration = null } = {}) {
+        if (!sourceProtection || typeof sourceProtection.advanceWorkerGeneration !== 'function') throw new Error('advanceGeneration needs the source-protection client');
+        const state = load();
+        if (state.binding !== null) return record(state, { ...fail('advance', 'already_admitted'), step: 'advance' });
+        if (priorGeneration !== null && (typeof priorGeneration !== 'string' || (state.workerGeneration ?? priorGeneration) !== priorGeneration)) {
+            return record(state, { ...fail('advance', 'prior_generation_mismatch'), step: 'advance' });
+        }
+        const body = state.generationAdvance?.pending
+            ?? { version: 1, operationId: randomId(random), priorGeneration: state.workerGeneration ?? priorGeneration, nextGeneration: randomId(random) };
+        state.generationAdvance = { pending: body };
+        save(state);
+        let result;
+        try {
+            result = await sourceProtection.advanceWorkerGeneration(null, body);
+        } catch {
+            return record(state, { ...fail('advance', 'outcome_unknown'), step: 'advance' });
+        }
+        state.generationAdvance = null;
+        if (result?.ok !== true || result.value?.currentGeneration !== body.nextGeneration || result.value?.priorGeneration !== body.priorGeneration) {
+            return record(state, { ...fail('advance', localCode(result?.ok === false ? result.error?.code : 'advance_result_mismatch')), step: 'advance' });
+        }
+        state.workerGeneration = body.nextGeneration;
+        return record(state, { ok: true, step: 'advance', workerPrincipal: result.value.workerPrincipal, priorGeneration: body.priorGeneration, workerGeneration: body.nextGeneration });
+    }
+
     // A worker operation: one exact request body, so one request digest. A second label may reuse the operation ID of
     // another (`sameOperationAs`) only to exercise the conflicting-payload refusal.
     // `workload` (slice P8): `{executable, args}` for the target keeper, part of the ticketed request body.
@@ -304,8 +426,46 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         return { label, operationId, requestDigest: state.operations[label].requestDigest };
     }
 
+    // ROUTER: one mint for this helper challenge, retrying the transient refusals within the challenge budget.
+    async function routerTicket(request) {
+        const started = monoNow();
+        let attempts = 0;
+        for (let index = 0; ; index += 1) {
+            attempts += 1;
+            let outcome;
+            try {
+                outcome = { result: await mintTicket(request) };
+            } catch (error) {
+                outcome = { error };
+            }
+            const verdict = classifyMint(outcome);
+            if (verdict.kind === 'ok') return { ok: true, material: routerMaterial(outcome.result.value), attempts };
+            if (verdict.kind === 'terminal') return { ok: false, code: verdict.code, retryable: false, attempts };
+            const delay = retry.delaysMs[index];
+            if (delay === undefined || monoNow() - started + delay > retry.challengeBudgetMs) return { ok: false, code: verdict.code, retryable: true, attempts };
+            await sleep(delay);
+        }
+    }
+
     // `loseAccepted`: the PROOF-FIXTURE lost-`accepted` fault (the peer sends the bootstrap and closes without reading).
-    async function openSession(state, op, { loseAccepted = false, permissions = ['commit', 'lookup', 'prepare'] } = {}) {
+    // `scan` (ROUTER, U7/R3): {sink(needles)}; see scanSession.
+    async function openSession(state, op, options = {}) {
+        let attempts = 0;
+        for (let round = 1; ; round += 1) {
+            const session = await openSessionOnce(state, op, options);
+            attempts += session.mintAttempts ?? 0;
+            if (!session.retryMint || round >= retry.sessions) {
+                if (session.refusal && routerMode) session.refusal.mintAttempts = attempts;
+                if (session.minted) session.ticketInfo = { source: routerMode ? 'router' : 'proof-fixture', mintAttempts: routerMode ? attempts : null, kid: session.minted.kid ?? null, jti: session.minted.jti ?? null, exp: session.minted.exp ?? null };
+                delete session.retryMint;
+                delete session.mintAttempts;
+                return session;
+            }
+            await sleep(retry.sessionDelayMs);
+        }
+    }
+
+    async function openSessionOnce(state, op, { loseAccepted = false, permissions = ['commit', 'lookup', 'prepare'] } = {}) {
         const peer = new PeerProcess(peerCommand, ['worker-peer', '--mailbox', mailbox, '--session']);
         const first = await peer.next();
         if (first === null || first.ok === false) {
@@ -324,39 +484,84 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         const epoch = highest === null ? '1' : String(BigInt(highest) + 1n);
         state.leaseAttempt = epoch;
         save(state);
-        const minted = mintFixtureTicket({
-            key: ticketKey, binding: state.binding, reservationId: op.reservationId, leaseId: state.leaseId, operationId: op.operationId,
-            requestDigest: op.requestDigest, helperNonce: challenge.helperNonce, channelEpoch: epoch, previousChannelEpoch: previous, nowMs: now(),
-            randomBytes: random, permissions
-        });
-        // The production validator must accept every ticket this stand-in mints (fresh replay map: nothing is consumed).
-        const selfCheck = validateHelperTicketClaims(minted.ticket, {
-            secret: ticketKey.secret, kid: ticketKey.kid, binding: state.binding,
-            expected: { reservationId: op.reservationId, leaseId: state.leaseId, operationId: op.operationId, requestDigest: op.requestDigest, helperNonce: challenge.helperNonce },
-            channel: { currentEpoch: previous, leaseState: 'active' }, challenge: { id: challenge.challengeId, issuedMonoMs: 0 }, nowMonoMs: 0,
-            nowMs: now(), replay: new Map()
-        });
-        if (!selfCheck.ok) {
-            await peer.close();
-            return { refusal: fail('mint', selfCheck.error.code) };
+        let minted;
+        let mintAttempts = 0;
+        if (routerMode) {
+            const got = await routerTicket({
+                binding: state.binding, leaseId: state.leaseId, reservationId: op.reservationId, operationId: op.operationId, requestDigest: op.requestDigest,
+                helperNonce: challenge.helperNonce, channelEpoch: epoch, previousChannelEpoch: previous, permissions: [...permissions].sort(), ttlSeconds: TICKET_TTL_SECONDS
+            });
+            mintAttempts = got.attempts;
+            if (!got.ok) {
+                await peer.close();
+                return { refusal: fail('mint', got.code), retryMint: got.retryable, mintAttempts };
+            }
+            minted = got.material;
+        } else {
+            minted = mintFixtureTicket({
+                key: ticketKey, binding: state.binding, reservationId: op.reservationId, leaseId: state.leaseId, operationId: op.operationId,
+                requestDigest: op.requestDigest, helperNonce: challenge.helperNonce, channelEpoch: epoch, previousChannelEpoch: previous, nowMs: now(),
+                randomBytes: random, permissions
+            });
+            // The production validator must accept every ticket this stand-in mints (fresh replay map: nothing is consumed).
+            const selfCheck = validateHelperTicketClaims(minted.ticket, {
+                secret: ticketKey.secret, kid: ticketKey.kid, binding: state.binding,
+                expected: { reservationId: op.reservationId, leaseId: state.leaseId, operationId: op.operationId, requestDigest: op.requestDigest, helperNonce: challenge.helperNonce },
+                channel: { currentEpoch: previous, leaseState: 'active' }, challenge: { id: challenge.challengeId, issuedMonoMs: 0 }, nowMonoMs: 0,
+                nowMs: now(), replay: new Map()
+            });
+            if (!selfCheck.ok) {
+                await peer.close();
+                return { refusal: fail('mint', selfCheck.error.code) };
+            }
         }
+        // The ticket and session key reach the native peer only on its stdin, never in argv or the environment.
+        const wipe = () => minted.sessionKey.fill(0);
         if (loseAccepted) {
             peer.send({ op: 'bootstrap-drop', ticket: minted.ticket, sessionKey: minted.sessionKey.toString('base64url') });
             const sent = await peer.next();
             await peer.close();
-            return { fault: { fault: 'accepted-lost', attemptedEpoch: epoch, peer: sent?.event === 'bootstrap-dropped' ? 'bootstrap-dropped' : 'unexpected' } };
+            wipe();
+            return { fault: { fault: 'accepted-lost', attemptedEpoch: epoch, peer: sent?.event === 'bootstrap-dropped' ? 'bootstrap-dropped' : 'unexpected' }, mintAttempts };
         }
         peer.send({ op: 'bootstrap', ticket: minted.ticket, sessionKey: minted.sessionKey.toString('base64url') });
         const answer = await peer.next();
         if (answer === null || answer.event !== 'accepted') {
             await peer.close();
+            wipe();
             // A helper refusal is reduced to a known spelling; a local peer error keeps its plain identifier.
             const code = answer?.event === 'refused' ? knownCode(answer.code) : localCode(answer?.code ?? 'no_answer');
-            return { refusal: fail('bootstrap', code), challengeIncarnation: challenge.helperIncarnation };
+            return { refusal: fail('bootstrap', code), challengeIncarnation: challenge.helperIncarnation, mintAttempts };
         }
         state.leaseEpoch = epoch;
         save(state);
-        return { peer, minted, epoch, receiveSequence: 1n, challengeIncarnation: challenge.helperIncarnation };
+        const close = async () => {
+            const code = await peer.close();
+            wipe();
+            return code;
+        };
+        return { peer, minted, epoch, receiveSequence: 1n, challengeIncarnation: challenge.helperIncarnation, mintAttempts, close };
+    }
+
+    // ROUTER U7/R3 probe, while the session is live: match counts (never values; the signature needle also matches inside
+    // a full ticket, so any count > 0 is a leak) of the session key and the full ticket in this
+    // process's argv and environment, the native peer's argv and environment, and every file of the state directory, with
+    // a positive control (how many of the needles are found) on an in-memory buffer that holds them. `scan.sink(needles)` hands the needles to an external
+    // scanner over a pipe only (main.mjs `--needle-fd`); they are never printed or persisted here.
+    function scanSession(session, scan) {
+        const { ticket, sessionKey } = session.minted;
+        const needles = [ticket, ticket.split('.')[2], sessionKey.toString('base64url'), sessionKey.toString('hex')].map((text) => Buffer.from(text, 'utf8'));
+        const peerPid = session.peer.child.pid;
+        const control = Buffer.concat([crypto.randomBytes(64), ...needles.flatMap((needle) => [needle, Buffer.from('\n')]), crypto.randomBytes(64)]);
+        const stateFiles = filesUnder(stateDir);
+        const report = {
+            needles: needles.length, positiveControl: needles.filter((needle) => control.includes(needle)).length,
+            selfArgv: countIn(readOrNull('/proc/self/cmdline'), needles), selfEnviron: countIn(readOrNull('/proc/self/environ'), needles),
+            peerArgv: countIn(readOrNull(`/proc/${peerPid}/cmdline`), needles), peerEnviron: countIn(readOrNull(`/proc/${peerPid}/environ`), needles),
+            stateFiles: stateFiles.length, stateMatches: stateFiles.reduce((sum, file) => sum + (countIn(readOrNull(file), needles) ?? 0), 0)
+        };
+        if (typeof scan.sink === 'function') scan.sink(needles.map((needle) => needle.toString('utf8')));
+        return report;
     }
 
     async function request(state, op, session, messageKind, body) {
@@ -394,19 +599,19 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         if (drop) {
             session.peer.send({ op: 'drop', messageKind: 'prepare', body: op.body });
             const dropped = await session.peer.next();
-            await session.peer.close();
+            await session.close();
             const outcome = classifyTargetStartOutcome({ expected, reply: { kind: 'transport', detail: 'reply-lost' } });
             op.outcome = outcome.ok ? outcome.value.outcome : `invalid:${outcome.error.code}`;
             return record(state, { ok: true, step: 'prepare', label, fault: 'lost-reply', peer: dropped?.event ?? null, classification: op.outcome });
         }
         const reply = await request(state, op, session, 'prepare', op.body);
-        await session.peer.close();
+        await session.close();
         if (reply.kind === 'prepared') {
             const outcome = classifyTargetStartOutcome({ expected, reply: { kind: 'receipt', receipt: reply.value } });
             if (!outcome.ok) return record(state, { ...fail('prepare', outcome.error.code), step: 'prepare', label });
             adopt(op, reply.value);
             op.outcome = outcome.value.outcome;
-            return record(state, { ok: true, step: 'prepare', label, classification: op.outcome, receipt: summary(reply.value), nodeValidated: reply.nodeValidated });
+            return record(state, { ok: true, step: 'prepare', label, classification: op.outcome, receipt: summary(reply.value), nodeValidated: reply.nodeValidated, ticket: session.ticketInfo });
         }
         if (reply.kind === 'failure') {
             // An authenticated refusal without journal absence evidence is not proof that nothing was created.
@@ -417,15 +622,17 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         return record(state, { ...fail('prepare', localCode(reply.transport ?? reply.frameRefused)), step: 'prepare', label });
     }
 
-    async function lookup(label, { loseAccepted = false } = {}) {
+    async function lookup(label, { loseAccepted = false, scan = null } = {}) {
         const state = load();
         const op = state.operations[label];
         const expected = expectedFor(state, op);
+        if (scan !== null && !routerMode) throw new Error('scan applies to Router tickets only');
         const session = await openSession(state, op, { loseAccepted });
         if (session.fault) return record(state, { ok: true, step: 'lookup', label, ...session.fault });
         if (session.refusal) return record(state, { step: 'lookup', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
         const reply = await request(state, op, session, 'lookup', canonical({ version: 1 }));
-        await session.peer.close();
+        const scanned = scan === null ? null : scanSession(session, scan);
+        await session.close();
         if (reply.kind !== 'lookup-result') return record(state, { ...fail('lookup', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'lookup', label });
         const reconciled = reconcileTargetReceipt(expected, reply.value);
         const outcome = classifyTargetStartOutcome({ expected, reply: { kind: 'lookup', result: reply.value } });
@@ -434,7 +641,8 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         return record(state, {
             ok: reconciled.ok, step: 'lookup', label, state: reply.value.state, reconciled: reconciled.ok ? reconciled.value.kind : reconciled.error.code,
             classification: outcome.ok ? outcome.value.outcome : `invalid:${outcome.error.code}`,
-            receipt: reply.value.receipt ? summary(reply.value.receipt) : null, nodeValidated: reply.nodeValidated
+            receipt: reply.value.receipt ? summary(reply.value.receipt) : null, nodeValidated: reply.nodeValidated, ticket: session.ticketInfo,
+            ...(scanned ? { scan: scanned } : {})
         });
     }
 
@@ -455,12 +663,12 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
             preparedReceiptSequence: op.receipt.receiptSequence, preparedResourcesDigest: digestOf(op.receipt.resources, RESOURCES_DIGEST_BYTES)
         });
         const reply = await request(state, op, session, 'commit', body);
-        await session.peer.close();
+        await session.close();
         if (reply.kind !== 'receipt') return record(state, { ...fail('commit', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'commit', label });
         const reconciled = reconcileTargetReceipt(expected, { state: reply.value.state, receipt: reply.value });
         if (!reconciled.ok) return record(state, { ...fail('commit', reconciled.error.code), step: 'commit', label });
         adopt(op, reply.value);
-        return record(state, { ok: true, step: 'commit', label, receipt: summary(reply.value), nodeValidated: reply.nodeValidated });
+        return record(state, { ok: true, step: 'commit', label, receipt: summary(reply.value), nodeValidated: reply.nodeValidated, ticket: session.ticketInfo });
     }
 
     // stop (slice P8): exact-tree cancellation of this operation; the helper answers the `exited` receipt once the tree is
@@ -472,12 +680,12 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         const session = await openSession(state, op, { permissions: ['lookup', 'stop'] });
         if (session.refusal) return record(state, { step: 'stop', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
         const reply = await request(state, op, session, 'stop', canonical({ version: 1 }));
-        await session.peer.close();
+        await session.close();
         if (reply.kind !== 'receipt') return record(state, { ...fail('stop', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'stop', label });
         const reconciled = reconcileTargetReceipt(expected, { state: reply.value.state, receipt: reply.value });
         if (!reconciled.ok) return record(state, { ...fail('stop', reconciled.error.code), step: 'stop', label });
         adopt(op, reply.value);
-        return record(state, { ok: true, step: 'stop', label, receipt: summary(reply.value), nodeValidated: reply.nodeValidated });
+        return record(state, { ok: true, step: 'stop', label, receipt: summary(reply.value), nodeValidated: reply.nodeValidated, ticket: session.ticketInfo });
     }
 
     // release (slice P8): every recorded resource with PROOF-FIXTURE worker evidence (a digest naming the exited receipt);
@@ -496,12 +704,12 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
             }))
         };
         const reply = await request(state, op, session, 'release', canonical({ version: 1, evidence }));
-        await session.peer.close();
+        await session.close();
         if (reply.kind !== 'receipt') return record(state, { ...fail('release', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'release', label });
         const reconciled = reconcileTargetReceipt(expected, { state: reply.value.state, receipt: reply.value });
         if (!reconciled.ok) return record(state, { ...fail('release', reconciled.error.code), step: 'release', label });
         adopt(op, reply.value);
-        return record(state, { ok: true, step: 'release', label, receipt: summary(reply.value), nodeValidated: reply.nodeValidated });
+        return record(state, { ok: true, step: 'release', label, receipt: summary(reply.value), nodeValidated: reply.nodeValidated, ticket: session.ticketInfo });
     }
 
     function summary(receipt) {
@@ -513,5 +721,5 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         };
     }
 
-    return Object.freeze({ admit, revalidate, rebind, defineOperation, prepare, lookup, commit, stop, release, state: load });
+    return Object.freeze({ admit, revalidate, rebind, advanceGeneration, defineOperation, prepare, lookup, commit, stop, release, state: load });
 }
