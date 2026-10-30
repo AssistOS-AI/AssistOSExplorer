@@ -42,13 +42,41 @@ const PRIVATE_RANGES = '{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0
 
 const IPV4 = /^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$/u;
 
-export function readResolvers(file = '/etc/resolv.conf') {
-    try {
-        return fs.readFileSync(file, 'utf8').split('\n')
-            .map((line) => /^\s*nameserver\s+(\S+)\s*$/u.exec(line)?.[1])
-            .filter((address) => address !== undefined && IPV4.test(address) && !address.startsWith('127.'));
-    } catch { return []; }
+const SAFE_OPTION = { ndots: [0, 15], timeout: [1, 30], attempts: [1, 5] };
+
+// The IPv4 nameservers and the harmless options of a resolv.conf (read through any symlink). Loopback nameservers are skipped (they
+// are the worker's own and unreachable from an execution). Only ndots, timeout and attempts with in-range numbers are kept: no search
+// domain, no rotate, no edns0 and nothing else is copied into an execution.
+export function readResolverConfig(file = '/etc/resolv.conf') {
+    let text;
+    try { text = fs.readFileSync(file, 'utf8'); } catch { return { nameservers: [], options: [] }; }
+    const nameservers = [];
+    const options = [];
+    for (const line of text.split('\n')) {
+        const server = /^\s*nameserver\s+(\S+)\s*$/u.exec(line)?.[1];
+        if (server !== undefined && IPV4.test(server) && !server.startsWith('127.') && !nameservers.includes(server)) nameservers.push(server);
+        const list = /^\s*options\s+(.*)$/u.exec(line)?.[1];
+        for (const token of list?.split(/\s+/u) ?? []) {
+            const match = /^(ndots|timeout|attempts):([0-9]{1,2})$/u.exec(token);
+            if (!match) continue;
+            const [low, high] = SAFE_OPTION[match[1]];
+            const value = Number(match[2]);
+            if (value >= low && value <= high && !options.some((option) => option.startsWith(`${match[1]}:`))) options.push(`${match[1]}:${value}`);
+        }
+    }
+    return { nameservers, options };
 }
+
+export const readResolvers = (file = '/etc/resolv.conf') => readResolverConfig(file).nameservers;
+
+// The /etc/resolv.conf and /etc/hosts of a workload (bound read-only). The nameservers are exactly the ones the execution firewall
+// accepts port 53 for, so the file never names a server the firewall would drop.
+export function renderResolvConf({ nameservers = [], options = [] } = {}) {
+    if (nameservers.some((address) => !IPV4.test(address))) throw sandboxError('network_setup_failed', 'invalid resolver address');
+    return `# generated for this execution; only the nameservers its firewall allows\n${nameservers.map((address) => `nameserver ${address}\n`).join('')}${options.length > 0 ? `options ${options.join(' ')}\n` : ''}`;
+}
+
+export const renderHosts = () => '127.0.0.1 localhost\n::1 localhost\n';
 
 export const namesFor = (reservationId) => {
     if (typeof reservationId !== 'string' || !/^[0-9a-f]{16,64}$/u.test(reservationId)) throw sandboxError('network_setup_failed', 'invalid reservation id');
@@ -126,9 +154,11 @@ async function defaultEnableForwarding(run) {
 
 export function createExecutionNetwork({
     reservationId, names = null, run = defaultRun, exists = (file) => fs.existsSync(file), listUsed = null, enableForwarding = null,
-    statNs = (file) => fs.statSync(file, { bigint: true }), dnsServers = null
+    statNs = (file) => fs.statSync(file, { bigint: true }), dnsServers = null, dnsOptions = null
 } = {}) {
-    const resolvers = [...new Set(dnsServers ?? readResolvers())];
+    const config = dnsServers === null || dnsOptions === null ? readResolverConfig() : null;
+    const resolvers = [...new Set(dnsServers ?? config.nameservers)];
+    const resolverOptions = dnsOptions ?? (dnsServers === null ? config.options : []);
     if (resolvers.some((address) => !IPV4.test(address))) throw sandboxError('network_setup_failed', 'invalid resolver address');
     let resolved;
     if (names !== null) {
@@ -143,7 +173,7 @@ export function createExecutionNetwork({
     const state = { netns: false, veth: false, firewall: false, slot: null };
     const nsPath = `${NETNS_DIR}/${resolved.netns}`;
     const self = {
-        name: resolved.netns, nsPath, hostVeth: resolved.host, peerVeth: resolved.peer, table: resolved.table,
+        resolvers, resolverOptions, name: resolved.netns, nsPath, hostVeth: resolved.host, peerVeth: resolved.peer, table: resolved.table,
         subnet: null, hostAddress: null, peerAddress: null
     };
 

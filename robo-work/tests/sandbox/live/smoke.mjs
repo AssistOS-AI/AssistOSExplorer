@@ -75,15 +75,27 @@ try { fs.writeFileSync(root + '/created-by-workload.txt', 'ok'); out.projectWrit
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500);
 out.lateEnv = sizeOrCode(root + '/late/.env');
 out.tmpShared = (() => { try { return fs.readdirSync('/tmp').length; } catch (e) { return e.code; } })();
-const targets = JSON.parse(process.env.PROBE_TARGETS || '[]'); out.net = {}; let pending = targets.length;
-const done = () => { pending -= 1; if (pending <= 0) finish(); };
-if (pending === 0) finish();
-for (const [name, host, port] of targets) {
-    const socket = net.connect({ host, port, timeout: 2500 });
-    socket.on('connect', () => { out.net[name] = 'connected'; socket.destroy(); done(); });
-    socket.on('timeout', () => { out.net[name] = 'timeout'; socket.destroy(); done(); });
-    socket.on('error', (e) => { out.net[name] = e.code; done(); });
-}
+const targets = JSON.parse(process.env.PROBE_TARGETS || '[]'); out.net = {};
+const readText = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { return e.code; } };
+out.etc = { resolv: readText('/etc/resolv.conf'), hosts: readText('/etc/hosts') };
+const dnsHost = process.env.PROBE_DNS_HOST || 'opencode.ai';
+const gt = cp.spawnSync('/usr/bin/getent', ['ahostsv4', dnsHost], { encoding: 'utf8' });
+out.getent = gt.error ? 'no-getent' : ((gt.stdout || gt.stderr || '').trim().split('\n')[0] || 'empty').slice(0, 80);
+const runTargets = () => {
+    let pending = targets.length;
+    const done = () => { pending -= 1; if (pending <= 0) finish(); };
+    if (pending === 0) finish();
+    for (const [name, host, port] of targets) {
+        const socket = net.connect({ host: host === '$DNS' ? dnsHost : host, port, timeout: 2500 });
+        socket.on('connect', () => { out.net[name] = 'connected'; socket.destroy(); done(); });
+        socket.on('timeout', () => { out.net[name] = 'timeout'; socket.destroy(); done(); });
+        socket.on('error', (e) => { out.net[name] = e.code; done(); });
+    }
+};
+require('dns').lookup(dnsHost, { all: true }, (error, addresses) => {
+    out.dns = error ? { host: dnsHost, error: error.code } : { host: dnsHost, addresses: addresses.map((a) => a.address + '/v' + a.family) };
+    runTargets();
+});
 })();
 `;
 
@@ -199,6 +211,49 @@ await step('endpoint facts', async () => {
 const service = net.createServer((socket) => socket.destroy());
 await new Promise((resolve) => service.listen(0, '0.0.0.0', resolve));
 const servicePort = service.address().port;
+
+// AC13 / M-13 negatives need things to fail to reach: the worker's own address, the Router, and a service of ANOTHER execution.
+const tcp = (host, port, timeoutMs = 2000) => new Promise((resolve) => {
+    const socket = net.connect({ host, port, timeout: timeoutMs });
+    socket.on('connect', () => { socket.destroy(); resolve('connected'); });
+    socket.on('timeout', () => { socket.destroy(); resolve('timeout'); });
+    socket.on('error', (error) => resolve(error.code));
+});
+const workerAddress = Object.entries(os.networkInterfaces()).filter(([name]) => !/^(lo|rw)/.test(name)).flatMap(([, list]) => list).find((entry) => entry.family === 'IPv4' && !entry.internal)?.address ?? null;
+const defaultGateway = /default via (\S+)/.exec(spawnSync('ip', ['-4', 'route', 'show', 'default'], { encoding: 'utf8' }).stdout)?.[1] ?? null;
+const routerHost = process.env.PLOINKY_ROUTER_HOST || 'host.containers.internal';
+const routerAddress = await new Promise((resolve) => import('node:dns').then((dns) => dns.lookup(routerHost, { family: 4 }, (error, address) => resolve(error ? null : address))));
+const otherExecution = { port: 41000 + Math.floor(Math.random() * 2000), network: null, listener: null, peer: null };
+await step('other execution (listener)', async () => {
+    const { createExecutionNetwork } = await import('../../../server/sandbox/executionNetwork.mjs');
+    otherExecution.network = createExecutionNetwork({ reservationId: crypto.randomBytes(16).toString('hex') });
+    await otherExecution.network.setup();
+    otherExecution.peer = otherExecution.network.peerAddress;
+    // a service on all addresses of the OTHER execution's namespace (reachable by address if the firewall let it through)
+    otherExecution.listener = spawn('nsenter', [`--net=${otherExecution.network.nsPath}`, '--', process.execPath, '-e',
+        "require('net').createServer((s) => s.destroy()).listen(Number(process.argv[1]), '0.0.0.0')", String(otherExecution.port)], { stdio: 'ignore' });
+    await sleep(700);
+});
+const controls = {
+    ownListenerViaWorkerAddress: workerAddress ? await tcp(workerAddress, servicePort) : 'no-address',
+    // from inside the other execution's own namespace (the worker itself cannot connect to an execution: the input chain drops the replies)
+    otherExecutionServiceInsideItsNamespace: otherExecution.network ? spawnSync('nsenter', [`--net=${otherExecution.network.nsPath}`, '--', process.execPath, '-e',
+        "const s = require('net').connect({ host: process.argv[1], port: Number(process.argv[2]), timeout: 1500 }); s.on('connect', () => { console.log('connected'); process.exit(0); }); s.on('error', (e) => { console.log(e.code); process.exit(0); }); s.on('timeout', () => { console.log('timeout'); process.exit(0); });",
+        otherExecution.peer, String(otherExecution.port)], { encoding: 'utf8' }).stdout.trim() : 'no-listener',
+    coordinator7000FromWorker: workerAddress ? await tcp(workerAddress, 7000) : 'no-address',
+    provider7300FromWorkerLoopback: await tcp('127.0.0.1', 7300),
+    routerFromWorker8080: routerAddress ? await tcp(routerAddress, 8080) : 'unresolved',
+    routerFromWorker8081: routerAddress ? await tcp(routerAddress, 8081) : 'unresolved'
+};
+evidence.ac13 = { workerAddress, defaultGateway, routerAddress, otherExecution: { port: otherExecution.port, peer: otherExecution.peer }, controls };
+const probeTargets = [
+    ['publicHttps', '$DNS', 443], ['publicIp', '1.1.1.1', 443],
+    ['workerOwnListenerViaGateway', supervisor.network.hostAddress, servicePort], ['workerOwnListenerViaWorkerAddress', workerAddress, servicePort],
+    ['coordinator7000ViaWorkerAddress', workerAddress, 7000], ['provider7300ViaWorkerAddress', workerAddress, 7300],
+    ['coordinator7000ViaGateway', supervisor.network.hostAddress, 7000], ['provider7300ViaGateway', supervisor.network.hostAddress, 7300],
+    ['router8080', routerAddress, 8080], ['router8081', routerAddress, 8081], ['defaultGateway8081', defaultGateway, 8081],
+    ['otherExecutionLoopback', '127.0.0.1', otherExecution.port], ['otherExecutionPeer', otherExecution.peer, otherExecution.port]
+].filter(([, host]) => host !== null && host !== undefined);
 await step('workload (probe)', async () => {
     const streamDir = `${resource['runtime-dir'].locator.path}/stream`;
     const outputs = [];
@@ -211,7 +266,7 @@ await step('workload (probe)', async () => {
     }
     const request = {
         processClass: 'run', executable: '/usr/local/bin/node', args: ['-e', PROBE, 'role-workload'],
-        env: { PROBE_ROLE: 'workload', PROBE_TARGETS: JSON.stringify([['workerLoopbackViaGateway', supervisor.network.hostAddress, servicePort], ['publicDns', '1.1.1.1', 443]]) },
+        env: { PROBE_ROLE: 'workload', PROBE_TARGETS: JSON.stringify(probeTargets) },
         home: '/home/robot', cwd: '/projects/p', folders: [{ path: '/projects/p', access: 'write' }], network: 'robot-egress',
         // M-17: provider exclusions are masked like protected names; one that does not exist is skipped and must not be created
         exclusions: ['/projects/p/private-notes.txt', '/projects/p/docs/hidden', '/projects/p/missing/ghost'],
@@ -238,6 +293,34 @@ await step('workload (probe)', async () => {
     for (const server of servers) server.close();
 });
 service.close();
+await step('ac13 verdict', async () => {
+    const w = evidence.roles.workload ?? {};
+    const reached = w.net ?? {};
+    const negatives = ['workerOwnListenerViaGateway', 'workerOwnListenerViaWorkerAddress', 'coordinator7000ViaWorkerAddress', 'provider7300ViaWorkerAddress', 'coordinator7000ViaGateway',
+        'provider7300ViaGateway', 'router8080', 'router8081', 'defaultGateway8081', 'otherExecutionLoopback', 'otherExecutionPeer'];
+    const violated = negatives.filter((name) => reached[name] === 'connected');
+    // a negative proves nothing when the same target was not reachable from the worker itself: say which controls held
+    const meaningful = { otherExecutionPeer: controls.otherExecutionServiceInsideItsNamespace === 'connected', otherExecutionLoopback: controls.otherExecutionServiceInsideItsNamespace === 'connected', workerOwnListenerViaWorkerAddress: controls.ownListenerViaWorkerAddress === 'connected',
+        coordinator7000ViaWorkerAddress: controls.coordinator7000FromWorker === 'connected', provider7300ViaWorkerAddress: controls.provider7300FromWorkerLoopback === 'connected',
+        router8080: controls.routerFromWorker8080 === 'connected', router8081: controls.routerFromWorker8081 === 'connected' };
+    const offline = process.env.SMOKE_OFFLINE === '1';
+    const dnsOk = Array.isArray(w.dns?.addresses) && w.dns.addresses.length > 0;
+    const httpsOk = reached.publicHttps === 'connected';
+    evidence.ac13.result = { negativesReached: violated, negativesMeaningful: meaningful, dns: w.dns ?? null, getent: w.getent ?? null, publicHttps: reached.publicHttps ?? null, publicIp: reached.publicIp ?? null, etc: w.etc ?? null, all: reached };
+    if (violated.length > 0) throw new Error(`reachable from the workload: ${violated.join(', ')}`);
+    if (!offline && (!dnsOk || !httpsOk)) throw new Error(`no DNS or public HTTPS from the workload: dns=${JSON.stringify(w.dns)} https=${reached.publicHttps}`);
+    // keyctl(2) must be EPERM in every role
+    evidence.keyctl = { orchestration: evidence.roles.orchestration?.keyctl, endpoint: evidence.roles.endpoint?.keyctl, workload: w.keyctl };
+    const bad = Object.entries(evidence.keyctl).filter(([, value]) => value !== '-1 1' && value !== 'no-perl');
+    if (bad.length > 0) throw new Error(`keyctl not EPERM: ${JSON.stringify(bad)}`);
+});
+otherExecution.listener?.kill('SIGKILL');
+await step('other execution (release)', async () => {
+    if (!otherExecution.network) return;
+    await otherExecution.network.release();
+    const verdict = await otherExecution.network.verifyAbsent();
+    if (!verdict.absent) throw new Error(`other execution network remains: ${verdict.problems.join(',')}`);
+});
 
 // ---- end in ledger order -----------------------------------------------------------------------------------------------
 const endEvidence = {};

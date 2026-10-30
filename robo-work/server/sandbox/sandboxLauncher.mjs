@@ -161,7 +161,7 @@ export function createSandboxLauncher({
                 role: spec.role, marker: spec.marker, netMode,
                 seccompFd: layout.seccomp, blockFd: layout.block, infoFd: layout.info, jsonStatusFd: layout.status,
                 roBinds: workloadLike ? [...(spec.roBinds ?? []), { source: stageScript, dest: SANDBOX_STAGE_SCRIPT }] : spec.roBinds,
-                symlinks: spec.symlinks, binds: spec.binds,
+                symlinks: spec.symlinks, binds: spec.binds, roFiles: spec.roFiles,
                 stageBinds: workloadLike ? undefined : (spec.anchored ?? []).map((bind) => ({ name: bind.name, dest: bind.dest, mode: bind.mode })),
                 env, cwd: spec.cwd, argv: spec.argv, procMasks,
                 stagingDir: stageDir ?? undefined, channelsDir: spec.channelsDir, stageScript: SANDBOX_STAGE_SCRIPT,

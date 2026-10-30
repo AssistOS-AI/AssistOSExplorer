@@ -79,3 +79,16 @@ test('the real argv carries the marker after --unsetenv and never --hostname; --
     assert.equal(argv.includes('--hostname'), false);
     assert.equal(argv.includes('--clearenv'), false);
 });
+
+test('F6: roFiles bind the generated resolv.conf and hosts read-only for workload, terminal and endpoint; never for orchestration; no other destination', () => {
+    const roFiles = [{ source: '/run/rw/x/r1/etc/resolv.conf', dest: '/etc/resolv.conf' }, { source: '/run/rw/x/r1/etc/hosts', dest: '/etc/hosts' }];
+    for (const spec of [{ ...workload, roFiles }, { ...workload, role: 'terminal', roFiles }, { ...base, role: 'endpoint', netMode: 'join', roFiles }]) {
+        const line = parse(buildBwrapArgs(spec)).join(' ');
+        assert.ok(line.includes('--ro-bind /run/rw/x/r1/etc/resolv.conf /etc/resolv.conf --ro-bind /run/rw/x/r1/etc/hosts /etc/hosts'), spec.role);
+    }
+    code({ ...base, role: 'orchestration', netMode: 'none', roFiles });
+    code({ ...workload, roFiles: [{ source: '/run/rw/x/r1/etc/passwd', dest: '/etc/passwd' }] });
+    code({ ...workload, roFiles: [{ source: '/run/rw/x/r1/etc/x', dest: '/etc/resolv.conf/../shadow' }] });
+    code({ ...workload, roFiles: [{ source: '/run/rw/stage/projects/a/resolv.conf', dest: '/etc/resolv.conf' }] });
+    assert.ok(!parse(buildBwrapArgs(workload)).join(' ').includes('/etc/resolv.conf'), 'absent unless given');
+});

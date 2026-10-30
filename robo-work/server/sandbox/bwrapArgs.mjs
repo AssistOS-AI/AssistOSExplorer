@@ -20,6 +20,8 @@
 //   marker          the S1 reservation id, [A-Za-z0-9_-]{8,64}, see marker.mjs (validated; used by bwrapRealArgv and the workload/terminal stage argument)
 //   seccompFd, blockFd, infoFd, jsonStatusFd   control fd numbers, as seen by bwrap
 //   roBinds         [{ source, dest }]  image paths, read-only   (dest within FIXED_DESTINATIONS)
+//   roFiles         [{ source, dest }]  generated single files bound read-only; dest only /etc/resolv.conf or /etc/hosts. Not for
+//                   orchestration (no network). The workload gets the nameservers its firewall allows and a minimal hosts file.
 //   binds           [{ source, dest, mode: 'ro' | 'rw' }]  directories of the execution runtime directory (path binds)
 //   stageBinds      [{ name, dest, mode }]  anchored directories bound by prep at <stagingDir>/binds/<name> (orchestration,
 //                   endpoint; workload and terminal always get <stagingDir>/binds/home at /home/robot)
@@ -168,6 +170,12 @@ export function buildBwrapArgs(spec) {
     for (const link of spec.symlinks || []) {
         if (typeof link.target !== 'string' || link.target.includes('\0')) throw invalid('Invalid symlink');
         args.push('--symlink', link.target, checkDestination(link.dest));
+    }
+    const roFiles = spec.roFiles || [];
+    if (!Array.isArray(roFiles) || (roFiles.length > 0 && spec.role === 'orchestration')) throw invalid('roFiles are not allowed here');
+    for (const file of roFiles) {
+        if (!file || !['/etc/resolv.conf', '/etc/hosts'].includes(file.dest)) throw invalid('roFiles destination');
+        args.push('--ro-bind', checkSource(file.source, spec), file.dest);
     }
     // Directories of the execution's own runtime directory (stream, channels, tmp): plain path binds.
     for (const bind of spec.binds || []) {

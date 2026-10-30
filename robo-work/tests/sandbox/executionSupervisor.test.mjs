@@ -456,3 +456,27 @@ test('M-15: LD_PRELOAD, BASH_ENV and every other name off the allowlist are refu
     }
     assert.equal(admitStartRequest(request({ env: { IS_SANDBOX: '1' }, folders: [{ path: '/projects/a', access: 'write' }] }), admission), null);
 });
+
+test('F6: every workload binds a generated resolv.conf with the firewall\'s nameservers and a minimal hosts; network none gets a resolv.conf with no nameserver', async () => {
+    const world = await rig();
+    try {
+        world.network.resolvers = ['10.89.5.1'];
+        world.network.resolverOptions = ['ndots:2'];
+        await world.supervisor.create({ kind: 'netns', resourceId: 'n1', locator: { netns: LOCATOR_ID } });
+        const sandbox = world.supervisor.providerSandbox(fakeLedger(world.supervisor));
+        const servers = await streamServers(world, ['stdoutbbbb', 'stderrcccc']);
+        const streams = { stdout: '/stream/stdoutbbbb', stderr: '/stream/stderrcccc' };
+        const base = { communication: { kind: 'stdio', stdin: 'ignore' }, folders: [{ path: '/projects/a', access: 'write' }] };
+        await sandbox.start({ process: 1, streams, request: request({ ...base, network: 'robot-egress' }) });
+        const join = world.launched.at(-1);
+        assert.deepEqual(join.roFiles.map((file) => file.dest), ['/etc/resolv.conf', '/etc/hosts']);
+        assert.equal(fs.readFileSync(join.roFiles[0].source, 'utf8'), '# generated for this execution; only the nameservers its firewall allows\nnameserver 10.89.5.1\noptions ndots:2\n');
+        assert.equal(fs.readFileSync(join.roFiles[1].source, 'utf8'), '127.0.0.1 localhost\n::1 localhost\n');
+        assert.ok(join.roFiles.every((file) => file.source.startsWith(`${world.runtimePath}/etc/`)), 'generated in the execution runtime directory');
+        await sandbox.start({ process: 2, streams, request: request({ ...base, network: 'none' }) });
+        const none = world.launched.at(-1);
+        assert.notEqual(none.roFiles[0].source, join.roFiles[0].source);
+        assert.ok(!/^nameserver /mu.test(fs.readFileSync(none.roFiles[0].source, 'utf8')), 'no nameserver line');
+        servers.close();
+    } finally { world.done(); }
+});

@@ -38,7 +38,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 
-import { createExecutionNetwork, namesFor } from './executionNetwork.mjs';
+import { createExecutionNetwork, namesFor, renderHosts, renderResolvConf } from './executionNetwork.mjs';
 import { mapVirtualExclusions } from './exclusions.mjs';
 import { SandboxError, sandboxError } from './sandboxErrors.mjs';
 
@@ -75,6 +75,7 @@ export function createExecutionSupervisor({
     const workloads = new Map(); // process number -> sandbox
     const finished = new Set(); // process numbers whose sandbox exited and was released
     let endpointSandbox = null;
+    let etcWritten = null; // null | 'bare' (no network yet) | 'network'
     let orchestration = null;
 
     const rt = (name) => `${runtime.path}/${name}`;
@@ -136,7 +137,7 @@ export function createExecutionSupervisor({
         if (typeof dir !== 'string' || !dir.startsWith('/') || dir === '/') throw sandboxError('invalid_request', 'runtime locator');
         fsImpl.mkdirSync(dir.slice(0, dir.lastIndexOf('/')), { recursive: true, mode: 0o700 });
         fsImpl.mkdirSync(dir, { mode: 0o700 });
-        for (const name of ['channels', 'stream', 'tmp', 'ctl', 'stage']) fsImpl.mkdirSync(`${dir}/${name}`, { mode: 0o700 });
+        for (const name of ['channels', 'stream', 'tmp', 'ctl', 'stage', 'etc']) fsImpl.mkdirSync(`${dir}/${name}`, { mode: 0o700 });
         const stat = fsImpl.lstatSync(dir, { bigint: true });
         if (!stat.isDirectory()) throw sandboxError('setup_failed', 'runtime directory');
         runtime = { path: dir, locator };
@@ -258,6 +259,22 @@ export function createExecutionSupervisor({
         }
     }
 
+    // The workload's /etc/resolv.conf and /etc/hosts, generated once per execution in <runtime>/etc and bound read-only. The nameservers
+    // are exactly the ones the execution firewall accepts port 53 for (network.resolvers); a workload without network gets a resolv.conf
+    // with no nameserver, so a lookup fails at once instead of waiting for a server that cannot be reached.
+    function ensureEtcFiles() {
+        const files = { hosts: rt('etc/hosts'), resolvJoin: rt('etc/resolv.conf'), resolvNone: rt('etc/resolv.none.conf') };
+        const withNetwork = network !== null;
+        if (etcWritten === 'network' || (etcWritten === 'bare' && !withNetwork)) return files;
+        // Written to a new inode and renamed over: a sandbox that already has the old file bound keeps reading the old one whole.
+        const put = (file, text) => { fsImpl.writeFileSync(`${file}.new`, text, { mode: 0o644 }); fsImpl.renameSync(`${file}.new`, file); };
+        put(files.hosts, renderHosts());
+        put(files.resolvJoin, renderResolvConf({ nameservers: network?.resolvers ?? [], options: network?.resolverOptions ?? [] }));
+        put(files.resolvNone, renderResolvConf({}));
+        etcWritten = withNetwork ? 'network' : 'bare';
+        return files;
+    }
+
     // The folders of the request select the grants, with write access only where both the grant and the folder ask for it.
     function selectGrants(request) {
         const chosen = [];
@@ -280,7 +297,8 @@ export function createExecutionSupervisor({
         const { request, streams } = spec;
         const netMode = request.network === 'none' ? 'none' : 'join';
         if (netMode === 'join' && !network) throw sandboxError('setup_failed', 'the execution network does not exist yet');
-        const chosenGrants = selectGrants(request); // refuses a bad exclusion before any socket or process exists
+        const chosenGrants = selectGrants(request);
+        const etc = ensureEtcFiles(); // refuses a bad exclusion before any socket or process exists
         const sockets = [];
         try {
             const stdio = [];
@@ -293,6 +311,7 @@ export function createExecutionSupervisor({
             const sandbox = await launcher.launch({
                 role: 'workload', marker, runtimeDir: runtime.path, netMode, ...(netMode === 'join' ? { netns: network.nsPath, netnsInode: network.nsInode() } : {}),
                 roBinds: roles.workload.roBinds, symlinks: roles.workload.symlinks,
+                roFiles: [{ source: netMode === 'join' ? etc.resolvJoin : etc.resolvNone, dest: '/etc/resolv.conf' }, { source: etc.hosts, dest: '/etc/hosts' }],
                 env: { HOME: request.home, PATH: workloadPath, TMPDIR: '/tmp', ...request.env },
                 cwd: request.cwd, argv: [request.executable, ...request.args], home: { path: home.path, fd: home.fd }, grants: chosenGrants,
                 channelsDir: rt('channels'), tmpDir: rt('tmp'), stdio, scanLimits: roles.workload.scanLimits

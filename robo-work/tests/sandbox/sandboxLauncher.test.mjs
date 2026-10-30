@@ -447,3 +447,18 @@ test('E: exclusions that are not plain grant-relative paths are refused before a
     const refused = rig({ exitBefore: 24 });
     try { await assert.rejects(refused.launcher.launch(workloadSpec(refused)), { code: 'invalid_request' }, 'prep exit 24 (an exclusion through a symlink)'); } finally { refused.done(); }
 });
+
+test('F6: roFiles reach the bwrap arguments (workload) and are refused for orchestration before a spawn', async () => {
+    const world = rig();
+    try {
+        const roFiles = [{ source: `${world.dir}/etc/resolv.conf`, dest: '/etc/resolv.conf' }, { source: `${world.dir}/etc/hosts`, dest: '/etc/hosts' }];
+        await world.launcher.launch(workloadSpec(world, { roFiles }));
+        const args = nulSplit(world.spawned[0].fdContents.args).join(' ');
+        assert.ok(args.includes(`--ro-bind ${world.dir}/etc/resolv.conf /etc/resolv.conf --ro-bind ${world.dir}/etc/hosts /etc/hosts`));
+        const bad = rig();
+        try {
+            await assert.rejects(bad.launcher.launch({ role: 'orchestration', marker: MARKER, runtimeDir: bad.dir, roBinds: [], env: {}, cwd: '/', argv: ['/usr/bin/node'], roFiles, stdio: ['pipe', 'pipe', 'pipe'], roleFds: { 3: 'pipe' } }), { code: 'invalid_request' });
+            assert.equal(bad.spawned.length, 0);
+        } finally { bad.done(); }
+    } finally { world.done(); }
+});
