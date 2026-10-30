@@ -54,7 +54,7 @@ export const ROLES = Object.freeze(['orchestration', 'endpoint', 'workload', 'te
 // A destination must equal one of these or be below it. /projects/<name> is produced only from `grants`.
 export const FIXED_DESTINATIONS = Object.freeze([
     '/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc/ssl', '/etc/ca-certificates', '/etc/alternatives',
-    '/opt/robo-work', '/run/robo-work', '/home/robot', '/session', '/config', '/stream', '/rw-stage'
+    '/opt/robo-work', '/opt/robo-work-tools', '/run/robo-work', '/home/robot', '/session', '/config', '/stream', '/rw-stage'
 ]);
 
 export const STAGE_BIND_NAME = /^[a-z][a-z0-9-]{0,31}$/;

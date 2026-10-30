@@ -49,7 +49,8 @@ const OPT = '/opt/robo-work';
 export function imageBinds({ exists = (target) => fs.existsSync(target), readlink = (target) => { try { return fs.readlinkSync(target); } catch { return null; } } } = {}) {
     const roBinds = [];
     const symlinks = [];
-    for (const dir of ['/usr', '/etc/ssl', '/etc/ca-certificates', '/etc/alternatives']) if (exists(dir)) roBinds.push({ source: dir, dest: dir });
+    // /opt/robo-work-tools holds the image's locked coding-agent tree; /usr/local/sbin/<agent> are symlinks into it.
+    for (const dir of ['/usr', '/etc/ssl', '/etc/ca-certificates', '/etc/alternatives', '/opt/robo-work-tools']) if (exists(dir)) roBinds.push({ source: dir, dest: dir });
     for (const dir of ['/bin', '/sbin', '/lib', '/lib64']) {
         const link = readlink(dir);
         if (link !== null) symlinks.push({ target: link.startsWith('/') ? link.slice(1) : link, dest: dir });

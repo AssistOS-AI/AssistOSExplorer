@@ -147,3 +147,8 @@ test('image and code binds: merged-usr symlinks, a Node outside /usr is bound, A
     assert.deepEqual(local.alaBinds, [{ source: '/ala', dest: '/opt/robo-work/ala' }]);
     assert.equal(codeBinds({ serverDir: '/code/server', alaRoot: '/ala', nodePath: '/usr/bin/node' }).node, '/usr/bin/node');
 });
+
+test('imageBinds binds the coding-agent tool tree read-only when the image has it (F5: /usr/local/sbin/<agent> link into it)', () => {
+    const binds = imageBinds({ exists: (target) => ['/usr', '/opt/robo-work-tools'].includes(target), readlink: () => null });
+    assert.deepEqual(binds.roBinds.find((bind) => bind.dest === '/opt/robo-work-tools'), { source: '/opt/robo-work-tools', dest: '/opt/robo-work-tools' });
+});
