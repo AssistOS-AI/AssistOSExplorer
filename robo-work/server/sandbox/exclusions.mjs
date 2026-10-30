@@ -7,7 +7,8 @@
 //   resolveExclusions(grantFd, rels, io?)       -> [{ rel, kind: 'dir' | 'file' }]   (prep: anchored O_NOFOLLOW walk from the grant fd;
 //                                                  a path that does not exist is skipped, never created; a symlink anywhere on the
 //                                                  path, final component included, is refused with invalid_request)
-//   verifyExclusionMasks(dirFd, entries, maskIds)   every entry must carry the mask's device and inode, else mask_unverified
+//   verifyExclusionMasks(dirFd, entries, maskIds, io?)   every entry, reached by a per-component O_NOFOLLOW walk, must carry the
+//                                                  mask's device and inode, else mask_unverified
 //
 // Nothing here follows a link or creates a file.
 
@@ -105,12 +106,31 @@ export function dropCovered(extra, masked) {
     return kept;
 }
 
-export function verifyExclusionMasks(dirFd, entries, maskIds, lstat = defaultIo.lstat) {
+// Read-back of every exclusion mask through the staging view. Every component is opened with O_NOFOLLOW (the same per-component
+// walk as resolveExclusions): a multi-component `/proc/self/fd/<fd>/a/b` path would follow a symlink swapped in at `a`, and a mask
+// on `b/x` would then be "verified" for `a/x`. Any component that is missing, a link or not a directory is mask_unverified.
+export function verifyExclusionMasks(dirFd, entries, maskIds, io = {}) {
+    const { open, close, lstat } = { ...defaultIo, ...io };
+    const unverified = (detail) => sandboxError('mask_unverified', detail);
     for (const entry of entries) {
         const id = maskIds[entry.kind];
-        let stat;
-        try { stat = lstat(`/proc/self/fd/${dirFd}/${entry.rel}`); } catch { throw sandboxError('mask_unverified', 'an exclusion cannot be read back'); }
-        if (String(stat.dev) !== String(id.dev) || String(stat.ino) !== String(id.ino)) throw sandboxError('mask_unverified', 'an exclusion is not masked');
+        const parts = entry.rel.split('/');
+        let dir = dirFd;
+        let owned = false;
+        try {
+            for (const part of parts.slice(0, -1)) {
+                let next;
+                try { next = open(`/proc/self/fd/${dir}/${part}`); } catch { throw unverified('an exclusion path changed while it was verified'); }
+                if (owned) close(dir);
+                dir = next;
+                owned = true;
+            }
+            let stat;
+            try { stat = lstat(`/proc/self/fd/${dir}/${parts.at(-1)}`); } catch { throw unverified('an exclusion cannot be read back'); }
+            if (stat.isSymbolicLink() || String(stat.dev) !== String(id.dev) || String(stat.ino) !== String(id.ino)) throw unverified('an exclusion is not masked');
+        } finally {
+            if (owned) { try { close(dir); } catch { /* closed */ } }
+        }
     }
     return { ok: true, checked: entries.length };
 }

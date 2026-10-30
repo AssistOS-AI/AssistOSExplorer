@@ -313,11 +313,21 @@ test('exit handler gets the exit code; stop is delegated with the grace and fail
         tree.emitExit();
         await new Promise((resolve) => setImmediate(resolve));
         assert.deepEqual(exits, [[4, 7, null]]);
+        assert.equal(tree.releases, 1, 'the finished workload is ended on its observed exit: absence proven, pins closed');
         await sandbox.stop({ process: 4, graceMs: 900 });
-        assert.deepEqual(tree.stops, [900]);
-        tree.verdict = { absent: false, problems: ['namespace_held'] };
-        await assert.rejects(sandbox.stop({ process: 4, graceMs: 1 }), { code: 'setup_failed' });
+        assert.deepEqual(tree.stops, [], 'a stop after the exit is a no-op for a released tree');
+        // a second workload whose release cannot prove absence keeps its pins and stays stoppable
+        const sandbox2Servers = await streamServers(world, ['stdoutdddd', 'stderreeee']);
+        await sandbox.start({ process: 5, request: request({ network: 'none', communication: { kind: 'stdio', stdin: 'ignore' } }), streams: { stdout: '/stream/stdoutdddd', stderr: '/stream/stderreeee' } });
+        const stuck = world.sandboxes.at(-1);
+        stuck.verdict = { absent: false, problems: ['namespace_held'] };
+        stuck.emitExit();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(stuck.releases, 1);
+        await assert.rejects(sandbox.stop({ process: 5, graceMs: 1 }), { code: 'setup_failed' });
+        assert.equal(stuck.stops.length, 1, 'not finished: stop still reaches the sandbox');
         await assert.rejects(sandbox.stop({ process: 99, graceMs: 1 }), { code: 'invalid_request' });
+        sandbox2Servers.close();
         assert.deepEqual(await sandbox.inventory(), [{ name: 'codex' }]);
         const path1 = await sandbox.tempdir();
         const path2 = await sandbox.tempdir();

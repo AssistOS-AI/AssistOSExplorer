@@ -73,6 +73,7 @@ export function createExecutionSupervisor({
     const uncommitted = new Map(); // resourceId -> abort()
     const trees = new Set(); // process-tree sandboxes (orchestration and workloads)
     const workloads = new Map(); // process number -> sandbox
+    const finished = new Set(); // process numbers whose sandbox exited and was released
     let endpointSandbox = null;
     let orchestration = null;
 
@@ -404,9 +405,16 @@ export function createExecutionSupervisor({
                 workloads.set(number, sandbox);
                 sandbox.onExit(() => {
                     sandbox.wait().then(({ exitCode, signal }) => exitHandler(number, signal ? null : exitCode, signal ?? null), () => {});
+                    // A finished workload is ended on its observed exit: absence is proven, the staging directory removed and the
+                    // namespace pins closed, so that repeated workloads in one execution do not accumulate descriptors and
+                    // namespaces. If absence cannot be proven the pins stay and the end path deals with it.
+                    sandbox.release().then((verdict) => {
+                        if (verdict.absent === true && verdict.stageRemoved !== false) { trees.delete(sandbox); workloads.delete(number); finished.add(number); }
+                    }, () => {});
                 });
             },
             async stop({ process: number, graceMs }) {
+                if (finished.has(number)) return; // it exited and was ended already
                 const sandbox = workloads.get(number);
                 if (!sandbox) throw sandboxError('invalid_request', 'unknown process');
                 const verdict = await sandbox.stop({ graceMs });
