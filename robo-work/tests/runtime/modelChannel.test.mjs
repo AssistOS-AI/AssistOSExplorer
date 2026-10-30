@@ -8,8 +8,11 @@ import test from 'node:test';
 
 import {
     MODEL_RELAY_PORT, UpstreamError, canonicalModel, createModelChannel, gatewayModelId, isGatewayModel, openCodeGatewayModels, sanitizeUpstreamMessage,
-    selectGatewayModel
+    selectGatewayModel, selectGatewayProvider
 } from '../../server/runtime/modelChannel.mjs';
+import { createRobotStore } from '../../server/runtime/robotStore.mjs';
+import { readManagedConfig } from '../../server/runtime/executionFactory.mjs';
+import { planAlaExecution } from '../../server/runtime/alaPlan.mjs';
 import { ExecutionSetupError } from '../../server/runtime/setupError.mjs';
 
 // The Soul Gateway model channel (M-26) over a FAKE upstream: model selection, the exact-route and body-allowlist rules, the single
@@ -40,14 +43,14 @@ function fakeUpstream({ catalog = CATALOG, chat = () => ({ ok: true, status: 200
 const directories = [];
 test.after(() => { for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true }); });
 
-async function open({ allowed = 'a', upstream = fakeUpstream(), activity = () => {}, log = () => {}, executionId = 'EXEC' } = {}) {
+async function open({ allowed = 'a', upstream = fakeUpstream(), activity = () => {}, log = () => {}, executionId = 'EXEC', providerId = undefined } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-mc-'));
     directories.push(root);
     const socketDirectory = path.join(root, 'model');
     const configDirectory = path.join(root, 'channels');
     fs.mkdirSync(socketDirectory, { mode: 0o700 });
     fs.mkdirSync(configDirectory, { mode: 0o700 });
-    const channel = await createModelChannel({ socketDirectory, configDirectory, allowed, upstream, activity, log, executionId });
+    const channel = await createModelChannel({ socketDirectory, configDirectory, allowed, upstream, activity, log, executionId, ...(providerId ? { providerId } : {}) });
     return { channel, upstream, socketDirectory, configDirectory, socketPath: channel.socketPath, close: () => channel.close() };
 }
 
@@ -384,4 +387,40 @@ test('the socket server has its own connection limit: connection 17 is dropped w
         for (const socket of held) socket.destroy();
         await world.close();
     }
+});
+
+test('M-44: the provider id is the canonical one for an override and the stored prefix verbatim otherwise', () => {
+    const stored = (model) => ({ codingAgent: 'opencode', models: { opencode: model } });
+    assert.equal(selectGatewayProvider({ specification: {}, managed: stored('Soul-Gateway/x') }), 'Soul-Gateway', 'ALA reads the stored string, OpenCode looks that provider up case-sensitively');
+    assert.equal(selectGatewayProvider({ specification: {}, managed: stored(' SOUL-GATEWAY/x') }), 'SOUL-GATEWAY');
+    assert.equal(selectGatewayProvider({ specification: {}, managed: stored('soul-gateway/x') }), 'soul-gateway');
+    assert.equal(selectGatewayProvider({ specification: { model: 'Soul-Gateway/y' }, managed: stored('SOUL-GATEWAY/x') }), 'soul-gateway', 'an override is canonicalised by alaPlan');
+    assert.equal(selectGatewayProvider({ specification: {}, managed: {} }), 'soul-gateway');
+});
+
+test('M-44: a robot whose stored model is Soul-Gateway/x stays verified byte for byte and completes a turn through the channel', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-m44-'));
+    directories.push(root);
+    const robots = createRobotStore({ root });
+    const robotId = 'AAAAAAAAAAAAAAAAAAAAAA';
+    const configuration = { backend: 'opencode', settings: { model: 'Soul-Gateway/a' } };
+    robots.prepare(robotId, configuration);
+    // The stored configuration is what the robot configuration says, unchanged: a robot prepared before this change is not stale.
+    assert.equal(fs.readFileSync(robots.paths(robotId).config, 'utf8'), '{"codingAgent":"opencode","efforts":{},"models":{"opencode":"Soul-Gateway/a"}}\n');
+    assert.equal(robots.verify(robotId, configuration), true);
+    const managed = readManagedConfig(robots.paths(robotId).config);
+    const specification = { version: 2, prompt: 'p', displayText: 'd', sessionId: '0f8c2f1e-3b53-4a56-9b0f-6b1f0d5e9a11', turnId: 't', permissions: 'full-access' };
+    const allowed = selectGatewayModel({ specification, managed });
+    assert.equal(allowed, 'a');
+    // ALA reads the stored model itself (no --model); the generated provider matches what OpenCode will look up.
+    assert.ok(!planAlaExecution({ specification, workspaceRoot: '/ws' }).argv.includes('--model'));
+    const world = await open({ allowed, upstream: fakeUpstream(), providerId: selectGatewayProvider({ specification, managed }) });
+    try {
+        const config = JSON.parse(fs.readFileSync(path.join(world.configDirectory, 'opencode.json'), 'utf8'));
+        assert.deepEqual(Object.keys(config.provider), ['Soul-Gateway'], 'OpenCode splits Soul-Gateway/a at the first slash and finds this provider');
+        assert.deepEqual(Object.keys(config.provider['Soul-Gateway'].models), ['a']);
+        const answer = await send(world.socketPath, { body: chatBody() });
+        assert.equal(answer.status, 200);
+        assert.deepEqual(answer.json, COMPLETION);
+    } finally { await world.close(); }
 });

@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { canonicalJson, isInternalId } from '../stateProtocol.mjs';
-import { canonicalModel } from './modelChannel.mjs';
 
 // The worker's own robot storage (decision M-10). Everything a robot owns lives under one private root,
 // `<root>/robots/<robotId>/`, inside the worker's persistent store (Ploinky `persistentStorage`, mounted at
@@ -39,12 +38,12 @@ export function managedAlaConfig(configuration) {
     const settings = configuration?.settings ?? {};
     const models = {};
     for (const [name, model] of Object.entries(settings.models ?? {})) {
-        if (ALA_AGENTS.includes(name) && typeof model === 'string' && model.trim()) models[name] = canonicalModel(model.trim());
+        if (ALA_AGENTS.includes(name) && typeof model === 'string' && model.trim()) models[name] = model.trim();
     }
     // RoboTeam's one-agent robot sends `settings.model` and `settings.effort` for its `backend`; a plural map wins when both exist.
     if (ALA_AGENTS.includes(configuration?.backend) && models[configuration.backend] === undefined
         && typeof settings.model === 'string' && settings.model.trim()) {
-        models[configuration.backend] = canonicalModel(settings.model.trim());
+        models[configuration.backend] = settings.model.trim();
     }
     const efforts = {};
     const singleEffort = ALA_AGENTS.includes(configuration?.backend) && typeof settings.effort === 'string' ? { [configuration.backend]: settings.effort } : {};

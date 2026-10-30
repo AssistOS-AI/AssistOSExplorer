@@ -36,10 +36,9 @@ test('the managed ALA configuration keeps only what ALA accepts', () => {
     assert.deepEqual(managedAlaConfig({ backend: 'codex', settings: { models: { codex: 'gpt-x', bogus: 'y', claude: ' ' }, efforts: { codex: 'high', claude: 'low' }, extra: 1 } }),
         { codingAgent: 'codex', models: { codex: 'gpt-x' }, efforts: { codex: 'high' } });
     assert.deepEqual(managedAlaConfig({ backend: 'synthetic', settings: {} }), { models: {}, efforts: {} });
-    // M-26: a gateway model is stored with the prefix in its one canonical spelling, whichever way the robot configuration gives it.
-    assert.deepEqual(managedAlaConfig({ backend: 'opencode', settings: { model: 'Soul-Gateway/Model-X' } }).models, { opencode: 'soul-gateway/Model-X' });
-    assert.deepEqual(managedAlaConfig({ backend: 'opencode', settings: { models: { opencode: 'SOUL-GATEWAY/y' } } }).models, { opencode: 'soul-gateway/y' });
-    assert.deepEqual(managedAlaConfig({ backend: 'opencode', settings: { model: 'opencode/glm-5.3-flash-free' } }).models, { opencode: 'opencode/glm-5.3-flash-free' });
+    // M-44: a gateway model is stored exactly as the robot configuration gives it (no canonicalisation), so no existing robot goes stale.
+    assert.deepEqual(managedAlaConfig({ backend: 'opencode', settings: { model: 'Soul-Gateway/Model-X' } }).models, { opencode: 'Soul-Gateway/Model-X' });
+    assert.deepEqual(managedAlaConfig({ backend: 'opencode', settings: { models: { opencode: 'SOUL-GATEWAY/y' } } }).models, { opencode: 'SOUL-GATEWAY/y' });
     // RoboTeam's one-agent robot: `settings.model` and `settings.effort` apply to its `backend`; a plural map wins; an effort needs a model.
     assert.deepEqual(managedAlaConfig({ backend: 'claude', settings: { codingAgents: ['claude'], model: 'opus', effort: 'high' } }),
         { codingAgent: 'claude', models: { claude: 'opus' }, efforts: { claude: 'high' } });

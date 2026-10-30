@@ -77,8 +77,8 @@ const CHAT_FIELDS = Object.freeze(['messages', 'tools', 'tool_choice', 'parallel
 export const isGatewayModel = (value) => typeof value === 'string' && GATEWAY_PREFIX.test(value.trim());
 
 // The model string with a gateway prefix in its one canonical spelling. OpenCode looks providers up case-sensitively (probed on 1.19.5:
-// `Soul-Gateway/x` fails with an unknown error), while the channel accepts the prefix in any case, so the strings given to ALA and the
-// managed configuration are canonicalised.
+// `Soul-Gateway/x` fails with an unknown error), while the channel accepts the prefix in any case, so the model string ALA is given as
+// `--model` is canonicalised at execution time (alaPlan). The stored managed configuration is NOT touched (M-44), see selectGatewayProvider.
 export function canonicalModel(value) {
     return isGatewayModel(value) ? `${PROVIDER_ID}/${value.trim().replace(GATEWAY_PREFIX, '')}` : value;
 }
@@ -99,6 +99,16 @@ export function selectGatewayModel({ specification, managed }) {
     const agent = specification?.codingAgent ?? managed?.codingAgent;
     if (agent !== 'opencode') return null;
     return gatewayModelId(specification?.model ?? managed?.models?.opencode);
+}
+
+// The OpenCode provider id the channel's configuration must define for this execution. ALA runs `--model spec.model` for an override, and
+// alaPlan canonicalises that string, so the provider is `soul-gateway`. Without an override ALA reads the managed model itself from the
+// robot's stored ala.json, which is never rewritten (M-44: a stored case variant must not make a robot stale), so OpenCode splits that stored
+// string at the first `/` and looks the provider up case-sensitively: the provider id is then the stored prefix verbatim.
+export function selectGatewayProvider({ specification, managed }) {
+    if (specification?.model !== undefined) return PROVIDER_ID;
+    const stored = managed?.models?.opencode;
+    return isGatewayModel(stored) ? stored.trim().slice(0, stored.trim().indexOf('/')) : PROVIDER_ID;
 }
 
 // The model metadata OpenCode can use from a Soul Gateway catalog (a port of roboTeamAgent/server/soul-gateway-models.mjs
@@ -126,11 +136,11 @@ export function openCodeGatewayModels(catalog) {
 // The generated OpenCode configuration: one openai-compatible provider whose baseURL is the relay and whose apiKey is a constant
 // placeholder that the channel ignores. It carries no secret. OpenCode merges it with the user's own configuration (probed on 1.19.5:
 // `options` of the file named by OPENCODE_CONFIG win over the HOME file, the user's other providers keep working).
-export function openCodeConfig({ id, model, port = MODEL_RELAY_PORT }) {
+export function openCodeConfig({ id, model, port = MODEL_RELAY_PORT, providerId = PROVIDER_ID }) {
     return {
         $schema: 'https://opencode.ai/config.json',
         provider: {
-            [PROVIDER_ID]: {
+            [providerId]: {
                 npm: '@ai-sdk/openai-compatible',
                 name: 'Soul Gateway',
                 options: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'robo-work', timeout: OPENCODE_PROVIDER_TIMEOUT_MS },
@@ -301,7 +311,7 @@ function sendCompletion(res, response) {
 // the catalog request badly, and ExecutionSetupError('model_unavailable') when the allowed id is not in its catalog.
 export async function createModelChannel({
     socketDirectory, configDirectory, allowed, upstream, activity = () => {}, log = () => {}, executionId = null,
-    now = Date.now, port = MODEL_RELAY_PORT
+    now = Date.now, port = MODEL_RELAY_PORT, providerId = PROVIDER_ID
 }) {
     const socketPath = path.join(socketDirectory, MODEL_SOCKET_NAME);
     if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX) throw new ExecutionSetupError('model_channel_unavailable');
@@ -420,7 +430,7 @@ export async function createModelChannel({
 
     // The configuration is written after the socket listens, so a workload never sees a config without a channel.
     try {
-        const config = `${JSON.stringify(openCodeConfig({ id: allowed, model: metadata.get(allowed), port }), null, 2)}\n`;
+        const config = `${JSON.stringify(openCodeConfig({ id: allowed, model: metadata.get(allowed), port, providerId }), null, 2)}\n`;
         await fs.writeFile(path.join(configDirectory, OPENCODE_CONFIG_NAME), config, { flag: 'wx', mode: 0o644 });
     } catch {
         await close();

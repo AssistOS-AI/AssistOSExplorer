@@ -252,6 +252,7 @@ test('M-26: an OpenCode robot with a gateway model gets the channel between the 
     assert.equal(opened.configDirectory, '/store/runtime/x/RID/channels');
     assert.equal(opened.allowed, 'a', 'the id without the prefix, whatever the prefix\'s case');
     assert.equal(opened.executionId, 'EXEC');
+    assert.equal(opened.providerId, 'soul-gateway', 'an override is canonicalised by alaPlan');
     assert.deepEqual(opened.upstream, { fake: 'upstream' });
     opened.activity();
     assert.equal(touched.length, 1, 'the channel reports M-33 activity through the attempt\'s own callback');
@@ -260,6 +261,15 @@ test('M-26: an OpenCode robot with a gateway model gets the channel between the 
     await execution.end({ classification: 'completed', outputText: '', data: null });
     const order = calls.map(([what]) => what);
     assert.ok(order.indexOf('modelChannel.close') < order.indexOf('endExecution'), 'in-flight model requests are aborted before the process trees are ended');
+});
+
+test('M-44: without an override the channel\'s provider id is the stored prefix verbatim, so OpenCode resolves the unchanged managed model', async () => {
+    const { factory, calls, item, plan, context } = gatewayRig({}, { managed: { codingAgent: 'opencode', models: { opencode: 'Soul-Gateway/stored-x' } } });
+    const execution = await factory.open({ item, plan, context });
+    await execution.start();
+    const [, opened] = calls.find(([what]) => what === 'modelChannel');
+    assert.deepEqual([opened.allowed, opened.providerId], ['stored-x', 'Soul-Gateway']);
+    await execution.end({ classification: 'completed', outputText: '', data: null });
 });
 
 test('M-26: the channel allows the effective model: a managed gateway model, an override to another gateway model, and no channel for an override to a non-gateway model', async () => {

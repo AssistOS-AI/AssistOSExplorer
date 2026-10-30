@@ -12,7 +12,7 @@ import { resolveGrant } from '../views/grantResolver.mjs';
 import { VIRTUAL_CONFIG, VIRTUAL_SESSIONS } from './alaPlan.mjs';
 import { createExecutionChannels } from './channels.mjs';
 import {
-    MODEL_DIRECTORY_VIEW, MODEL_RELAY_PORT, MODEL_SOCKET_VIEW, OPENCODE_CONFIG_VIEW, createModelChannel, selectGatewayModel
+    MODEL_DIRECTORY_VIEW, MODEL_RELAY_PORT, MODEL_SOCKET_VIEW, OPENCODE_CONFIG_VIEW, createModelChannel, selectGatewayModel, selectGatewayProvider
 } from './modelChannel.mjs';
 import { ExecutionSetupError } from './setupError.mjs';
 
@@ -146,7 +146,9 @@ export function createExecutionFactory({
                     throw new ExecutionSetupError('robot_storage_unavailable');
                 }
                 // M-26: the one Soul Gateway model this execution may use, or null (no model channel, no OPENCODE_CONFIG).
-                const gatewayModel = selectGatewayModel({ specification: item.specification, managed: make.managedConfig(where.config) });
+                const managedConfig = make.managedConfig(where.config);
+                const gatewayModel = selectGatewayModel({ specification: item.specification, managed: managedConfig });
+                const gatewayProvider = selectGatewayProvider({ specification: item.specification, managed: managedConfig });
                 // Anchored, no-follow resolution: the resolver refuses protected names and anything outside the workspace.
                 const resolved = [];
                 for (const entry of plan.grants) {
@@ -189,7 +191,7 @@ export function createExecutionFactory({
                     state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
                     referenceId: null, layout, sandbox: supervisor, walker, clock
                 });
-                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels, activity, gatewayModel, executionId: item.executionId });
+                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels, activity, gatewayModel, gatewayProvider, executionId: item.executionId });
             } catch (error) {
                 await closeAll();
                 throw error;
@@ -197,7 +199,7 @@ export function createExecutionFactory({
         }
     });
 
-    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels, activity, gatewayModel, executionId }) {
+    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels, activity, gatewayModel, gatewayProvider, executionId }) {
         let endpointServer = null;
         let hosted = null;
         let model = null;
@@ -224,7 +226,7 @@ export function createExecutionFactory({
                     if (modelUpstream === null) throw new ExecutionSetupError('model_channel_unavailable');
                     model = await make.modelChannel({
                         socketDirectory: `${supervisor.runtimeDir}/model`, configDirectory: `${supervisor.runtimeDir}/channels`,
-                        allowed: gatewayModel, upstream: modelUpstream, activity, log, executionId
+                        allowed: gatewayModel, providerId: gatewayProvider, upstream: modelUpstream, activity, log, executionId
                     });
                 }
                 await ledger.publish({ kind: 'netns' });
