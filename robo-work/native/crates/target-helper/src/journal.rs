@@ -17,6 +17,7 @@
 //! | `journal/journal-store.json` | Witness `{version:1, journalStoreIdentity}`, written once |
 //! | `journal/head.json` | `{version:1, journalStoreIdentity, revision, entries}`, rewritten after every revision |
 //! | `journal/lock` | `flock(LOCK_EX)` held for the handle's lifetime: one writer per journal |
+//! | `journal/keepers/` | The keeper supervisor's per-key attempt records (P8), created here at provisioning with `witness.json` (the same text as `journal-store.json`); never read by the journal itself |
 //! | `journal/records/<sha256(keyText)>.json` | One canonical entry per operation key: a full record or a tombstone |
 //!
 //! A new key is published with `link(2)` from a fsynced temporary file, so the unique key is atomic (an existing file is
@@ -30,8 +31,9 @@
 //! # Effects and crash safety
 //!
 //! Effects go through [`Hooks`]. The key and exact request are durable before the gated create; a record in `reserved`
-//! state therefore means "create may have happened", so `Hooks::create` must be idempotent per key (the keeper launch
-//! reconciles by its deterministic locator, P8). The gate-release intent is durable before the release effect and is
+//! state therefore means "create may have happened", so `Hooks::create` must be idempotent per key (the keeper supervisor
+//! durably records a per-key attempt before it spawns and never spawns twice for one key, P8). The gate-release intent is
+//! durable before the release effect and is
 //! never replayed. Stop is idempotent and is sent before `stopping` is recorded. A hook failure is `outcome_unknown`.
 //!
 //! # Bounds
@@ -129,6 +131,37 @@ pub trait Hooks {
     /// Test seam: true simulates a crash at `point` (the operation stops and reports `outcome_unknown`).
     fn crash_at(&mut self, _point: CrashPoint) -> bool {
         false
+    }
+}
+
+/// A read-only summary of one record (slice P8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordView {
+    pub key: Value,
+    pub key_text: String,
+    pub lease_id: String,
+    pub helper_incarnation: String,
+    pub state: String,
+    pub created: bool,
+    pub stopped: bool,
+    pub gate_released: bool,
+    /// `(resourceId, kind, state)` in record order.
+    pub resources: Vec<(String, String, String)>,
+}
+
+impl RecordView {
+    fn of(record: &Record, key_text: String) -> RecordView {
+        RecordView {
+            key: record.key.clone(),
+            key_text,
+            lease_id: record.lease_id.clone(),
+            helper_incarnation: record.helper_incarnation.clone(),
+            state: record.state.clone(),
+            created: record.created,
+            stopped: record.stopped,
+            gate_released: record.gate_released,
+            resources: record.resources.iter().map(|resource| (resource.resource_id.clone(), resource.kind.clone(), resource.state.clone())).collect(),
+        }
     }
 }
 
@@ -506,6 +539,16 @@ fn temp_name() -> String {
     format!(".tmp-{}-{counter}", std::process::id())
 }
 
+/// The keeper supervisor's attempt store below `<root>/journal/` (slice P8), created with the journal store and
+/// witnessed by the same `{version:1, journalStoreIdentity}` text as `journal-store.json`.
+pub const KEEPER_ATTEMPTS_DIRECTORY: &str = "keepers";
+pub const KEEPER_ATTEMPTS_WITNESS: &str = "witness.json";
+
+/// The canonical witness text of a journal store (`journal-store.json`, `keepers/witness.json`).
+pub fn store_witness_text(store: &str) -> Result<String, Code> {
+    canon::canonical_text(&witness_value(store))
+}
+
 fn witness_value(store: &str) -> Value {
     obj(vec![("version", Value::Int(1)), ("journalStoreIdentity", s(store))])
 }
@@ -613,6 +656,10 @@ impl Journal {
         write_new_file(&staging.join("lock"), b"").map_err(io)?;
         let witness = canon::canonical_text(&witness_value(store_identity))?;
         write_new_file(&staging.join("journal-store.json"), witness.as_bytes()).map_err(io)?;
+        // The keeper supervisor's attempt store (P8) lives and dies with this journal store: its witness names the store.
+        fs::DirBuilder::new().mode(0o700).create(staging.join(KEEPER_ATTEMPTS_DIRECTORY)).map_err(io)?;
+        write_new_file(&staging.join(KEEPER_ATTEMPTS_DIRECTORY).join(KEEPER_ATTEMPTS_WITNESS), witness.as_bytes()).map_err(io)?;
+        sync_dir(&staging.join(KEEPER_ATTEMPTS_DIRECTORY)).map_err(io)?;
         sync_dir(&staging.join("records")).map_err(io)?;
         sync_dir(&staging).map_err(io)?;
         fs::rename(&staging, &dir).map_err(io)?;
@@ -731,6 +778,44 @@ impl Journal {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// A read-only view of the record for `key` (slice P8: lease checks and resource kinds); `None` for an absent key
+    /// or a tombstone.
+    pub fn peek(&self, key: &Value) -> Result<Option<RecordView>, Code> {
+        self.verify()?;
+        let text = key_text(key)?;
+        match self.read_entry(&text)? {
+            Some(Entry::Record(record)) => Ok(Some(RecordView::of(&record, text))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Every record whose state is still `reserved`, `prepared`, `running` or `stopping`, of any helper incarnation
+    /// (slice P8: startup reconciliation and lease expiry). Read-only; a damaged entry is `state_corrupt`.
+    pub fn unsettled(&self) -> Result<Vec<RecordView>, Code> {
+        self.verify()?;
+        let mut out = Vec::new();
+        for item in fs::read_dir(&self.records).map_err(|_| Code::JournalUnavailable)? {
+            let item = item.map_err(|_| Code::StateCorrupt)?;
+            let name = item.file_name();
+            let name = name.to_str().ok_or(Code::StateCorrupt)?.to_string();
+            if name.starts_with(".tmp-") {
+                continue;
+            }
+            let hash = name.strip_suffix(".json").filter(|hash| is_digest_text(hash)).ok_or(Code::StateCorrupt)?;
+            need(self.keys.contains(hash), Code::StateCorrupt)?;
+            let bytes = read_file(&item.path(), RECORD_BUDGET_BYTES).map_err(|_| Code::StateCorrupt)?;
+            let value = canon::parse_canonical(&bytes, RECORD_BUDGET_BYTES).map_err(|_| Code::StateCorrupt)?;
+            let (text, entry, _) = decode_entry(&value, &self.store, Some(hash))?;
+            if let Entry::Record(record) = entry {
+                if ["reserved", "prepared", "running", "stopping"].contains(&record.state.as_str()) {
+                    out.push(RecordView::of(&record, text));
+                }
+            }
+        }
+        out.sort_by(|left, right| left.key_text.cmp(&right.key_text));
+        Ok(out)
     }
 
     /// Re-checks that this handle's journal is still the one it opened: the directory and witness identities, and
@@ -1333,7 +1418,7 @@ impl Hooks for FixtureEffects {
     }
 }
 
-/// Production hooks while keeper launch is not wired (before G1): every effect refuses.
+/// Effects with no keeper behind them: every effect refuses (`keeper::UnavailableUntilG1`).
 pub struct NoEffects;
 
 impl Hooks for NoEffects {

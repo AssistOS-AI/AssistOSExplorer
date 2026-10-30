@@ -254,7 +254,7 @@ fn binary_roles_serve_and_worker_peer() {
     let mut server = Command::new(binary).args(serve_args(&journal_root, store)).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut ready = String::new();
     BufReader::new(server.stdout.take().unwrap()).read_line(&mut ready).unwrap();
-    assert_eq!(ready.trim(), format!(r#"{{"ok":true,"value":{{"helperIncarnation":"{incarnation}","journalStoreIdentity":"{store}","keeperLauncher":"unavailable-until-g1","session":"helper-ticket-secret","state":"ready"}}}}"#));
+    assert_eq!(ready.trim(), format!(r#"{{"ok":true,"value":{{"helperIncarnation":"{incarnation}","journalStoreIdentity":"{store}","keeperLauncher":"keeper-supervisor","session":"helper-ticket-secret","state":"ready"}}}}"#));
     assert!(!secret.exists(), "consumed before ready");
     // A second helper incarnation cannot take the same journal while the first holds it.
     let second = Command::new(binary).args(serve_args(&journal_root, store)).output().unwrap();

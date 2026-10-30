@@ -81,13 +81,13 @@ fn serve(label: &str, mode: Mode) -> Served {
     std::fs::set_permissions(&secret_file, std::fs::Permissions::from_mode(0o600)).unwrap();
     let mut args = vec!["serve".to_string(), "--mailbox".into(), mailbox.display().to_string(), "--journal-root".into(), root.display().to_string(), "--store-identity".into(), store.clone(), "--helper-incarnation".into(), INCARNATION.into(), "--secret-file".into(), secret_file.display().to_string()];
     let (session_label, launcher) = match mode {
-        Mode::Secret => ("helper-ticket-secret", "unavailable-until-g1"),
+        Mode::Secret => ("helper-ticket-secret", "keeper-supervisor"),
         Mode::Fixture { keeper } => {
             args.push("--proof-fixture-session".into());
             if keeper {
                 args.push("--proof-fixture-keeper".into());
             }
-            ("proof-fixture", if keeper { "proof-fixture-no-keeper" } else { "unavailable-until-g1" })
+            ("proof-fixture", if keeper { "proof-fixture-no-keeper" } else { "keeper-supervisor" })
         }
     };
     let mut child = Command::new(binary).args(&args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();

@@ -10,9 +10,11 @@
 //! | `frame` | Target frame encoder and validator (length prefix, canonical header, body, HKDF direction-key MAC) | `transportContract.mjs` `validateTargetFrame` |
 //! | `journal` | Management-private durable operation journal (file-backed, flock single writer, atomic unique key) | `journalModel.mjs` (helper side) |
 //! | `mailbox` | Linux AF_UNIX mailbox endpoint: bounded `recvmsg` frame receive with SCM_RIGHTS on the first byte only | T0 section 8 "Native frame" |
-//! | `keeper` | Keeper launch: a stub that refuses until G1 | none |
+//! | `keeper` | The keeper launcher trait (journal effects, prepare admission, ended executions); the refusing and proof-fixture test launchers | none |
+//! | `supervisor` | Linux: the production launcher, one `keeper serve` child per execution over the v1 keeper protocol (slice P8) | `keeperFrames.mjs` (via `rw_proto::keeper_frames`) |
+//! | `workload` | The prepare body's workload and the resource kinds a target keeper creates (slice P8) | `providerSchema.mjs` (via `rw_proto::provider_schema`) |
 //! | `launch` | The single-use per-helper-incarnation ticket-secret file (`serve --secret-file`): checked, read, unlinked, parsed | Ploinky `provisioning.mjs` (shared v1 vector) |
-//! | `service` | Journal operations behind authenticated frames, gated on keeper availability | none |
+//! | `service` | Journal operations behind authenticated frames, gated on keeper availability; journals keeper outcomes, startup reconciliation and lease expiry | none |
 //! | `session` | Session handshake per T0 amendment A11 (challenge, ticket, lease-bound session-key possession proofs); the proof-fixture ticket key | none (vectors: `tests/vectors/session-fixture-v1.json`) |
 //! | `peer` | Linux: the helper's authenticated connection handler and the worker-side session (slice P6b) | `transportContract.mjs` `validateTargetFrame` (worker side) |
 //!
@@ -31,10 +33,14 @@ pub mod mailbox;
 pub mod peer;
 pub mod service;
 pub mod session;
+#[cfg(target_os = "linux")]
+pub mod supervisor;
 pub mod ticket;
+pub mod workload;
 
 /// Refusal codes. The spellings are those of the Node enumerations (`TRANSPORT_ERROR_CODES`, `CONTRACT_ERROR_CODES`,
-/// `JOURNAL_ERROR_CODES`), except `KeeperUnavailable`, which is helper-local (keeper launch is not wired before G1).
+/// `JOURNAL_ERROR_CODES`), except `KeeperUnavailable`, which is helper-local (no keeper can be launched: the keeper binary
+/// is absent, or a test launcher refuses).
 /// `ConnectRefused`/`ConnectTimeout` are the `TRANSPORT_ERROR_CODES` spellings, used by the worker peer when the mailbox
 /// cannot be reached at all (nothing was sent).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

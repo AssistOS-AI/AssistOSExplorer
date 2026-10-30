@@ -1,5 +1,5 @@
 #!/bin/sh
-# rwtarget management launcher (proof slices P3, P6b; helper-ticket-secret spec). Runs as container root, the main
+# rwtarget management launcher (proof slices P3, P6b, P8; helper-ticket-secret spec). Runs as container root, the main
 # command under Ploinky's AgentEntrypoint. It consumes the single-use helper launch record that Ploinky provisioned in
 # the control directory (so a restarted container can never present the same helper incarnation again), starts the
 # target helper, and starts the distinct non-management peer under uid/gid 65534 with no capabilities and no_new_privs.
@@ -41,11 +41,11 @@ esac
 
 # Proof-fixture session (slice P6b): the helper must be the `proof-fixture` build. It consumes the ticket secret before it
 # opens the journal (refusal: exit 78), then serves the A11 session handshake with the public fixture ticket key, because
-# Ploinky has no Router mint route yet and the fixture worker minter holds only that key, and the fixture launcher,
-# which launches no keeper (keeper launch through the helper is slice P8).
+# Ploinky has no Router mint route yet and the fixture worker minter holds only that key. Keeper launch (slice P8) is
+# the helper's keeper supervisor, not a fixture switch: one /usr/local/libexec/robo-work/keeper per execution.
 "$HELPER" serve --mailbox /run/ploinky-target/mailbox/helper.sock --journal-root /run/ploinky-target/journal \
     --store-identity "$store" --helper-incarnation "$incarnation" --secret-file "$SECRET" \
-    --proof-fixture-session --proof-fixture-keeper &
+    --proof-fixture-session &
 helper=$!
 /bin/setpriv --reuid=65534 --regid=65534 --clear-groups --inh-caps=-all --ambient-caps=-all --bounding-set=-all \
     --no-new-privs -- "$PEER" &

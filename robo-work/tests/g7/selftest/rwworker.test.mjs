@@ -286,9 +286,9 @@ test('replacing the target between admission and commit refuses; the journal rec
     assert.deepEqual([records[0].body.state, records[0].body.gateReleased, records[0].body.helperIncarnation], ['prepared', false, w.incarnation]);
 });
 
-test('pre-G1 launcher: prepare refuses keeper_unavailable before any journal write; only lookup absence proves nothing was created', { skip: SKIP }, async (t) => {
+test('keeper supervisor without a keeper binary: prepare refuses keeper_unavailable before any journal write; only lookup absence proves nothing was created', { skip: SKIP }, async (t) => {
     const { host, root, helper } = await world(t, { keeper: false });
-    assert.equal(helper.ready.value.keeperLauncher, 'unavailable-until-g1');
+    assert.equal(helper.ready.value.keeperLauncher, 'keeper-supervisor');
     host.defineOperation('main', { resources: resources('main') });
     const refused = await host.prepare('main');
     assert.deepEqual([refused.ok, refused.code, refused.classification], [false, 'keeper_unavailable', 'outcome-unknown']);

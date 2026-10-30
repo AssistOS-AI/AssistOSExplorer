@@ -15,11 +15,23 @@
 //! | `prepare` | `{version:1, resources:[{resourceId, kind, locatorDigest}]}`; SHA-256 of the body must be the ticket's `requestDigest` | `prepare {key, targetBindingDigest, reservationId, requestDigest, leaseId, journalStoreIdentity, resources}` | `prepared` (the receipt) |
 //! | `commit` | `{version:1, workerCommitDigest, preparedReceiptSequence, preparedResourcesDigest}` | `commit` with the same fields plus key, binding digest and reservation | `receipt` |
 //! | `lookup` | `{version:1}` | `lookup {key, targetBindingDigest}` | `lookup-result` |
+//! | `stop` (P8) | `{version:1}` | `stop {key}` (then `observe_exit` once the tree is verified gone) | `receipt` |
+//! | `release` (P8) | `{version:1, evidence:{resources:[{resourceId, kind, evidenceDigest?}]}}` | `release {key, evidence}` (the launcher verifies absence itself) | `receipt` |
+//!
+//! Since slice P8 a prepare body may also carry `workload: {executable, args}` (`workload`), covered by the ticketed
+//! request digest; the keeper supervisor requires it. A commit must come from the lease that prepared the record
+//! (`binding_mismatch` otherwise); stop, release and lookup are also open to a recovery lease of the same binding scope.
 //!
 //! A journal or permission refusal is an authenticated `failure` frame with body `{version:1, code}`; the session stays
 //! open. A frame that fails validation closes the connection (its descriptors are closed with it) and gets no reply.
 //! Descriptor import is not part of this slice: a frame carrying descriptors is refused `descriptor_role`. The lease is
-//! treated as active (stop and release are not served yet). The lease is the verified ticket claim `leaseId` (A11.1).
+//! the verified ticket claim `leaseId` (A11.1).
+//!
+//! Lease renewal (P8; T0 `leaseTtlMs`, `challengeTimeoutMs`): every accepted handshake for a lease is its renewal (a
+//! fresh helper nonce, a strictly greater channel epoch and the 5 s challenge deadline) and moves the lease's
+//! helper-local monotonic deadline to now + [`LEASE_TTL_MS`]. At the deadline the lease is retired: only its unsettled
+//! records are stopped and journaled exited (`service::TargetService::expire_lease`), its open session's next frame is
+//! refused `lease_retired`, and no ticket can reopen it. Recovery uses another lease.
 //! Per-lease channel epochs live in helper memory (A11.5): a new helper incarnation starts with none, which is safe
 //! because the ticket audience binds the incarnation. A ticket must carry a strictly greater epoch than the one held for
 //! its lease, and the new epoch is recorded only after `accepted` was sent (A11.2). The map holds at most
@@ -46,10 +58,22 @@ use crate::ticket::{self, ChannelState, Expected, ReplayStore, TICKET_REPLAY_ENT
 pub const CHALLENGE_WAIT: Duration = Duration::from_millis(5000);
 pub const IDLE_TIMEOUT: Duration = Duration::from_millis(300_000);
 pub const REPLY_WAIT: Duration = Duration::from_millis(30_000);
+/// How often an idle session runs the serve loop's housekeeping.
+pub const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(1000);
 /// Leases whose channel epoch one helper incarnation remembers.
 pub const EPOCH_LEASES: usize = 4096;
 /// `TARGET_LIMITS_V1.executionLifetimeMs`: a lease idle longer than this cannot belong to a live execution.
 pub const EPOCH_IDLE_PRUNE_MS: i64 = 86_400_000;
+/// `TARGET_LIMITS_V1.leaseTtlMs`: an unrenewed lease expires this long after its last accepted handshake.
+pub const LEASE_TTL_MS: i64 = 15_000;
+
+/// The helper-local monotonic deadline of one lease, and whether it was retired (expired; never reopened).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeaseClock {
+    pub deadline_mono_ms: i64,
+    pub retired: bool,
+    pub renewed_ms: i64,
+}
 
 /// The epoch last accepted for one lease and when.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +120,9 @@ pub struct HelperState {
     pub replay: ReplayStore,
     /// Verified leaseId -> the epoch last accepted for it.
     pub epochs: HashMap<String, LeaseEpoch>,
+    /// Verified leaseId -> its renewal deadline (slice P8).
+    pub leases: HashMap<String, LeaseClock>,
+    pub lease_ttl_ms: i64,
     pub clock_uncertainty_ms: i64,
 }
 
@@ -107,6 +134,8 @@ impl HelperState {
             store_identity: store_identity.to_string(),
             replay: ReplayStore::new(),
             epochs: HashMap::new(),
+            leases: HashMap::new(),
+            lease_ttl_ms: LEASE_TTL_MS,
             clock_uncertainty_ms: 0,
         }
     }
@@ -252,6 +281,7 @@ fn handshake(connection: &Connection, state: &mut HelperState, clock: &dyn Clock
     if !state.epochs.contains_key(&lease) && state.epochs.len() >= EPOCH_LEASES {
         let horizon = clock.now_ms().saturating_sub(EPOCH_IDLE_PRUNE_MS);
         state.epochs.retain(|_, held| held.accepted_ms > horizon);
+        state.leases.retain(|_, held| held.renewed_ms > horizon);
         if state.epochs.len() >= EPOCH_LEASES {
             return Err(refuse(Code::CapacityExceeded));
         }
@@ -263,7 +293,9 @@ fn handshake(connection: &Connection, state: &mut HelperState, clock: &dyn Clock
         request_digest: text("requestDigest"),
         helper_nonce: challenge.helper_nonce.clone(),
     };
-    let channel = ChannelState { current_epoch: state.epochs.get(&lease).map(|held| held.epoch.clone()), lease_active: true };
+    // A retired (expired) lease cannot be reopened by any ticket.
+    let lease_active = !state.leases.get(&lease).is_some_and(|held| held.retired);
+    let channel = ChannelState { current_epoch: state.epochs.get(&lease).map(|held| held.epoch.clone()), lease_active };
     let challenge_record = ticket::Challenge { id: challenge.challenge_id.clone(), issued_mono_ms };
     let secret = state.ticket_key.secret.clone();
     let verified = ticket::verify_helper_ticket(
@@ -295,6 +327,8 @@ fn handshake(connection: &Connection, state: &mut HelperState, clock: &dyn Clock
     send_message(connection, &accepted_message(&helper_proof)).map_err(SessionEnd::HandshakeLost)?;
     // A11.2: recorded only once `accepted` is on its way; a failed send leaves the held epoch unchanged.
     state.epochs.insert(lease.clone(), LeaseEpoch { epoch: epoch.clone(), accepted_ms: clock.now_ms() });
+    // The accepted handshake renews the lease (P8).
+    state.leases.insert(lease.clone(), LeaseClock { deadline_mono_ms: clock.mono_ms().saturating_add(state.lease_ttl_ms), retired: false, renewed_ms: clock.now_ms() });
     let ids = ExpectedIds { lease_id: lease, reservation_id: expected.reservation_id, operation_id: expected.operation_id, request_digest: expected.request_digest };
     Ok(Established { key, claims_canonical, claims, binding, ids, epoch })
 }
@@ -316,6 +350,8 @@ fn dispatch<L: KeeperLauncher>(session: &Established, kind: &str, body: &[u8], s
         "prepare" => ("prepare", "prepared"),
         "commit" => ("commit", "receipt"),
         "lookup" => ("lookup", "lookup-result"),
+        "stop" => ("stop", "receipt"),
+        "release" => ("release", "receipt"),
         _ => return Err(Code::InvalidRequest),
     };
     // A ticket authorizes only the operations it lists.
@@ -325,10 +361,14 @@ fn dispatch<L: KeeperLauncher>(session: &Established, kind: &str, body: &[u8], s
     let binding_digest = s(&canon::digest_of(binding)?);
     let value = match kind {
         "prepare" => {
-            let request = body_object(body, &["version", "resources"])?;
+            let request = match body_object(body, &["version", "resources", "workload"]) {
+                Ok(request) => request,
+                Err(Code::InvalidRequest) => body_object(body, &["version", "resources"])?,
+                Err(code) => return Err(code),
+            };
             // The ticket's request digest names exactly this request body; another payload needs its own ticket.
             need(sha256_hex(body) == session.ids.request_digest, Code::FrameBinding)?;
-            service.prepare(
+            service.prepare_workload(
                 &obj(vec![
                     ("key", key),
                     ("targetBindingDigest", binding_digest),
@@ -338,11 +378,16 @@ fn dispatch<L: KeeperLauncher>(session: &Established, kind: &str, body: &[u8], s
                     ("journalStoreIdentity", binding.get("journalStoreIdentity").cloned().unwrap_or(Value::Null)),
                     ("resources", request.get("resources").cloned().unwrap_or(Value::Null)),
                 ]),
+                request.get("workload"),
                 now,
             )?
         }
         "commit" => {
             let request = body_object(body, &["version", "workerCommitDigest", "preparedReceiptSequence", "preparedResourcesDigest"])?;
+            // Only the lease that prepared the record releases its gate (a recovery lease may look up, stop and release).
+            if let Some(lease) = service.record_lease(&key)? {
+                need(lease == session.ids.lease_id, Code::BindingMismatch)?;
+            }
             let field = |name: &str| request.get(name).cloned().unwrap_or(Value::Null);
             service.commit(
                 &obj(vec![
@@ -356,12 +401,61 @@ fn dispatch<L: KeeperLauncher>(session: &Established, kind: &str, body: &[u8], s
                 now,
             )?
         }
+        "stop" => {
+            body_object(body, &["version"])?;
+            service.stop(&obj(vec![("key", key)]), now)?
+        }
+        "release" => {
+            let request = body_object(body, &["version", "evidence"])?;
+            service.release(&obj(vec![("key", key), ("evidence", request.get("evidence").cloned().unwrap_or(Value::Null))]), now)?
+        }
         _ => {
             body_object(body, &["version"])?;
             service.lookup(&obj(vec![("key", key), ("targetBindingDigest", binding_digest)]), now)?
         }
     };
     Ok((reply, value))
+}
+
+/// Retires every lease whose renewal deadline passed and stops only its unsettled records (slice P8). `emit` receives
+/// diagnostic events (lease IDs are opaque identities, never secrets).
+pub fn expire_leases<L: KeeperLauncher>(state: &mut HelperState, service: &mut TargetService<L>, clock: &dyn Clock, emit: &mut dyn FnMut(&str, Vec<(&str, Value)>)) {
+    let now_mono = clock.mono_ms();
+    let mut expired: Vec<String> = state.leases.iter().filter(|(_, held)| !held.retired && held.deadline_mono_ms <= now_mono).map(|(lease, _)| lease.clone()).collect();
+    expired.sort();
+    for lease in expired {
+        if let Some(held) = state.leases.get_mut(&lease) {
+            held.retired = true;
+        }
+        match service.expire_lease(&lease, clock.now_ms()) {
+            Ok(settled) => {
+                emit("lease_expired", vec![("leaseId", s(&lease)), ("records", Value::Int(settled.len() as i64))]);
+                for item in settled {
+                    journaled_event(&item, emit);
+                }
+            }
+            Err(code) => emit("lease_expired", vec![("leaseId", s(&lease)), ("code", s(code.as_str()))]),
+        }
+    }
+}
+
+/// One `journaled` diagnostic event (the key digest, never the key's identifiers in clear).
+pub fn journaled_event(item: &crate::service::Journaled, emit: &mut dyn FnMut(&str, Vec<(&str, Value)>)) {
+    let mut fields = vec![("keyDigest", s(&sha256_hex(item.key_text.as_bytes()))), ("cause", s(item.cause))];
+    match &item.outcome {
+        Ok(state) => fields.push(("state", s(state))),
+        Err(code) => fields.push(("code", s(code.as_str()))),
+    }
+    emit("journaled", fields);
+}
+
+/// Everything the serve loop does between frames and connections: journal what the launcher observed, then expire
+/// leases.
+pub fn housekeeping<L: KeeperLauncher>(state: &mut HelperState, service: &mut TargetService<L>, clock: &dyn Clock, emit: &mut dyn FnMut(&str, Vec<(&str, Value)>)) {
+    for item in service.pump(clock.now_ms()) {
+        journaled_event(&item, emit);
+    }
+    expire_leases(state, service, clock, emit);
 }
 
 /// Serves one accepted connection: handshake, then authenticated frames until the peer closes or a frame is refused.
@@ -389,7 +483,24 @@ pub fn serve_session<L: KeeperLauncher>(
     let mut send_sequence: u128 = 1;
     let mut frames: u64 = 0;
     loop {
-        let limits = RecvLimits { idle_timeout: Some(IDLE_TIMEOUT), ..RecvLimits::default() };
+        // While the session is idle, housekeeping still runs every HOUSEKEEPING_INTERVAL (keeper outcomes are journaled
+        // and leases expire) until a frame starts or the idle timeout passes.
+        let idle_since = Instant::now();
+        loop {
+            let mut entry = libc::pollfd { fd: std::os::fd::AsRawFd::as_raw_fd(connection), events: libc::POLLIN, revents: 0 };
+            // SAFETY: one valid pollfd.
+            let ready = unsafe { libc::poll(&mut entry, 1, HOUSEKEEPING_INTERVAL.as_millis() as libc::c_int) };
+            if ready != 0 {
+                break;
+            }
+            if idle_since.elapsed() >= IDLE_TIMEOUT {
+                emit("frame_refused", vec![("code", s(Code::FrameLayout.as_str())), ("transport", s("timeout"))]);
+                return SessionEnd::FrameRefused(Code::FrameLayout);
+            }
+            housekeeping(state, service, clock, emit);
+        }
+        let remaining = IDLE_TIMEOUT.saturating_sub(idle_since.elapsed()).max(Duration::from_millis(1));
+        let limits = RecvLimits { idle_timeout: Some(remaining), ..RecvLimits::default() };
         let received = match connection.recv_frame(limits) {
             Ok(received) => received,
             Err(RecvError::Closed) => {
@@ -403,6 +514,10 @@ pub fn serve_session<L: KeeperLauncher>(
             }
         };
         let next = receive_sequence.to_string();
+        // Journal keeper outcomes and expire leases before the frame is judged: a lookup sees the current state and a
+        // retired lease's frame is refused.
+        housekeeping(state, service, clock, emit);
+        let lease_active = !state.leases.get(&session.ids.lease_id).is_some_and(|held| held.retired);
         let frame_state = FrameState {
             direction: WORKER_TO_TARGET,
             session_key: &session.key,
@@ -411,7 +526,7 @@ pub fn serve_session<L: KeeperLauncher>(
             expected: &session.ids,
             channel_epoch: &session.epoch,
             next_sequence: &next,
-            lease_active: true,
+            lease_active,
             ancillary: received.ancillary,
             channel_manifest: None,
             limits: FrameLimits::default(),

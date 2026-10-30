@@ -13,9 +13,11 @@
 // drives it over stdin/stdout and gives it the session key only on stdin.
 //
 // PROOF-FIXTURE departures (each recorded in the evidence): tickets come from `fixtureMinter.mjs` (no Router mint route
-// and no per-incarnation secret delivery exist yet); the helper runs the fixture launcher, which launches no keeper (G1);
-// the worker's own durable state is this file-backed record, not the S1 worker store; facts that Ploinky does not yet
-// produce (source protection, attestation digests, HOME compatibility) are fixture-supplied by the operator.
+// and no per-incarnation secret delivery exist yet); the worker's own durable state is this file-backed record, not the
+// S1 worker store; facts that Ploinky does not yet produce (source protection, attestation digests, HOME compatibility)
+// are fixture-supplied by the operator. Since slice P8 the helper launches one real keeper per execution: a prepare body
+// may name the workload (`{executable, args}`, an image inventory name), and `stop`, `release` and a recovery `rebind`
+// (a replaced target: the same execution under the new target identity and a new recovery lease) are served.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -186,10 +188,12 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         };
     }
 
+    // The receipt an operation's record carries names the binding and lease that defined it (they differ from the current
+    // ones only after a recovery `rebind`).
     function expectedFor(state, op) {
         return {
-            key: operationKey(state, op.operationId), targetBindingDigest: digestOf(state.binding), reservationId: op.reservationId,
-            requestDigest: op.requestDigest, journalStoreIdentity: state.binding.journalStoreIdentity, leaseId: state.leaseId,
+            key: operationKey(state, op.operationId), targetBindingDigest: op.bindingDigest ?? digestOf(state.binding), reservationId: op.reservationId,
+            requestDigest: op.requestDigest, journalStoreIdentity: state.binding.journalStoreIdentity, leaseId: op.leaseId ?? state.leaseId,
             lastReceiptSequence: op.lastReceiptSequence
         };
     }
@@ -207,10 +211,21 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         const qualificationRecord = found.value.record;
         const counted = store.consumeExecution(decision.value.ref, operationId);
         if (!counted.ok) return record(state, { ...fail('admit', counted.error.code), step: 'admit' });
+        const binding = bindingFor({ facts, decision, qualificationRecord, fixtureDigests, ids: { robotId: randomId(random), executionId: randomId(random), attemptId: randomId(random) } });
+        const checked = validateTargetBinding(binding);
+        if (!checked.ok) return record(state, { ...fail('admit', `binding_${checked.error.code}`), step: 'admit' });
+        state.binding = binding;
+        state.admission = { selection, ref: decision.value.ref, principal: decision.value.principal, qualificationRecordDigest: decision.value.qualificationRecordDigest, operationId, executionsUsed: counted.value.used };
+        state.leaseId = randomId(random);
+        return record(state, { ok: true, step: 'admit', admission: state.admission, targetBindingDigest: digestOf(binding) });
+    }
+
+    // The TargetBinding for an admission decision and the execution identifiers.
+    function bindingFor({ facts, decision, qualificationRecord, fixtureDigests, ids }) {
         const entry = facts.entries.find((candidate) => candidate.ref === decision.value.ref);
         const worker = facts.current.worker;
         const sourceRecord = facts.sourceState.record;
-        const binding = {
+        return {
             version: 1,
             scope: {
                 workspaceId: facts.live.workspaceId, boxIdentity: facts.live.boxIdentity, boxGeneration: facts.live.boxGeneration,
@@ -225,7 +240,7 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
                 sourceAcceptanceIdentity: sourceRecord.sourceAcceptanceIdentity
             },
             targetImageDigest: qualificationRecord.targetImageDigest, contractVersion: 1, journalStoreIdentity: facts.current.journalStoreIdentity,
-            robotId: randomId(random), executionId: randomId(random), attemptId: randomId(random), configRevision: 1,
+            robotId: ids.robotId, executionId: ids.executionId, attemptId: ids.attemptId, configRevision: 1,
             helperExecutableDigest: qualificationRecord.helperExecutableDigest, contractDigest: qualificationRecord.contractDigest,
             inventoryDigest: qualificationRecord.inventoryDigest, profileDigest: qualificationRecord.profileDigest,
             limitsDigest: facts.current.limitsDigest, qualificationRecordDigest: decision.value.qualificationRecordDigest,
@@ -233,12 +248,32 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
             ...Object.fromEntries(FIXTURE_DIGEST_KEYS.map((key) => [key, fixtureDigests[key]])),
             homeCompatibilityDigest: digestOf(qualificationRecord.homeCompatibility)
         };
+    }
+
+    // RECOVERY (slice P8): the admitted target was replaced (new container and helper incarnation, same helper-only
+    // journal). The same execution (robot, execution and attempt IDs) is bound to the replacement's current identity for
+    // lookup, stop and release of its old operations only, under a new recovery lease; nothing is admitted or counted
+    // again. The journal refuses a prepare (changed binding digest) and the helper a commit (another lease), so the old
+    // operation can never be adopted or relaunched.
+    function rebind({ facts, fixtureDigests }) {
+        const state = load();
+        if (state.binding === null) return fail('rebind', 'not_admitted');
+        const decision = requireExecutionTarget(state.admission.selection, factsWith(facts, null));
+        if (!decision.ok) return record(state, { ...fail('rebind', decision.error.code), step: 'rebind' });
+        const store = openStore();
+        const found = store.get(decision.value.ref);
+        if (!found.ok) return record(state, { ...fail('rebind', found.error.code), step: 'rebind' });
+        const ids = { robotId: state.binding.robotId, executionId: state.binding.executionId, attemptId: state.binding.attemptId };
+        const binding = bindingFor({ facts, decision, qualificationRecord: found.value.record, fixtureDigests, ids });
         const checked = validateTargetBinding(binding);
-        if (!checked.ok) return record(state, { ...fail('admit', `binding_${checked.error.code}`), step: 'admit' });
+        if (!checked.ok) return record(state, { ...fail('rebind', `binding_${checked.error.code}`), step: 'rebind' });
+        if (binding.journalStoreIdentity !== state.binding.journalStoreIdentity) return record(state, { ...fail('rebind', 'journal_store_changed'), step: 'rebind' });
+        state.previousBindings = [...(state.previousBindings ?? []), { binding: state.binding, leaseId: state.leaseId }];
         state.binding = binding;
-        state.admission = { selection, ref: decision.value.ref, principal: decision.value.principal, qualificationRecordDigest: decision.value.qualificationRecordDigest, operationId, executionsUsed: counted.value.used };
         state.leaseId = randomId(random);
-        return record(state, { ok: true, step: 'admit', admission: state.admission, targetBindingDigest: digestOf(binding) });
+        state.leaseEpoch = null;
+        state.leaseAttempt = null;
+        return record(state, { ok: true, step: 'rebind', targetBindingDigest: digestOf(binding), helperIncarnation: binding.scope.helperIncarnation });
     }
 
     // Revalidation of the admitted binding against current trusted facts (queued dispatch / final gate release).
@@ -251,23 +286,26 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
 
     // A worker operation: one exact request body, so one request digest. A second label may reuse the operation ID of
     // another (`sameOperationAs`) only to exercise the conflicting-payload refusal.
-    function defineOperation(label, { resources, sameOperationAs = null }) {
+    // `workload` (slice P8): `{executable, args}` for the target keeper, part of the ticketed request body.
+    function defineOperation(label, { resources, sameOperationAs = null, workload = null }) {
         const state = load();
         if (state.binding === null) throw new Error('not admitted');
         if (state.operations[label]) throw new Error(`operation ${label} exists`);
-        const body = canonical({ version: 1, resources: [...resources].sort((left, right) => (left.resourceId < right.resourceId ? -1 : 1)) }, 256 * 1024);
+        const sorted = [...resources].sort((left, right) => (left.resourceId < right.resourceId ? -1 : 1));
+        const body = canonical(workload === null ? { version: 1, resources: sorted } : { version: 1, resources: sorted, workload }, 256 * 1024);
         // A target operation ID is the worker's own (distinct from the coordinator operation that was admitted).
         const operationId = sameOperationAs ? state.operations[sameOperationAs].operationId : randomId(random);
         state.operations[label] = {
             operationId, reservationId: sameOperationAs ? state.operations[sameOperationAs].reservationId : randomId(random), body,
-            requestDigest: crypto.createHash('sha256').update(body, 'utf8').digest('hex'), lastReceiptSequence: 0, receipt: null, outcome: null
+            requestDigest: crypto.createHash('sha256').update(body, 'utf8').digest('hex'), lastReceiptSequence: 0, receipt: null, outcome: null,
+            bindingDigest: digestOf(state.binding), leaseId: state.leaseId
         };
         save(state);
         return { label, operationId, requestDigest: state.operations[label].requestDigest };
     }
 
     // `loseAccepted`: the PROOF-FIXTURE lost-`accepted` fault (the peer sends the bootstrap and closes without reading).
-    async function openSession(state, op, { loseAccepted = false } = {}) {
+    async function openSession(state, op, { loseAccepted = false, permissions = ['commit', 'lookup', 'prepare'] } = {}) {
         const peer = new PeerProcess(peerCommand, ['worker-peer', '--mailbox', mailbox, '--session']);
         const first = await peer.next();
         if (first === null || first.ok === false) {
@@ -289,7 +327,7 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         const minted = mintFixtureTicket({
             key: ticketKey, binding: state.binding, reservationId: op.reservationId, leaseId: state.leaseId, operationId: op.operationId,
             requestDigest: op.requestDigest, helperNonce: challenge.helperNonce, channelEpoch: epoch, previousChannelEpoch: previous, nowMs: now(),
-            randomBytes: random
+            randomBytes: random, permissions
         });
         // The production validator must accept every ticket this stand-in mints (fresh replay map: nothing is consumed).
         const selfCheck = validateHelperTicketClaims(minted.ticket, {
@@ -425,6 +463,47 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         return record(state, { ok: true, step: 'commit', label, receipt: summary(reply.value), nodeValidated: reply.nodeValidated });
     }
 
+    // stop (slice P8): exact-tree cancellation of this operation; the helper answers the `exited` receipt once the tree is
+    // verified gone. Any lease of this execution may stop (a recovery lease after `rebind` included).
+    async function stop(label) {
+        const state = load();
+        const op = state.operations[label];
+        const expected = expectedFor(state, op);
+        const session = await openSession(state, op, { permissions: ['lookup', 'stop'] });
+        if (session.refusal) return record(state, { step: 'stop', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
+        const reply = await request(state, op, session, 'stop', canonical({ version: 1 }));
+        await session.peer.close();
+        if (reply.kind !== 'receipt') return record(state, { ...fail('stop', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'stop', label });
+        const reconciled = reconcileTargetReceipt(expected, { state: reply.value.state, receipt: reply.value });
+        if (!reconciled.ok) return record(state, { ...fail('stop', reconciled.error.code), step: 'stop', label });
+        adopt(op, reply.value);
+        return record(state, { ok: true, step: 'stop', label, receipt: summary(reply.value), nodeValidated: reply.nodeValidated });
+    }
+
+    // release (slice P8): every recorded resource with PROOF-FIXTURE worker evidence (a digest naming the exited receipt);
+    // the helper verifies each absence itself before it records the release.
+    async function release(label) {
+        const state = load();
+        const op = state.operations[label];
+        if (!op.receipt || !['exited', 'stopping', 'quarantined'].includes(op.receipt.state)) return record(state, { ...fail('release', 'not_ended'), step: 'release', label });
+        const expected = expectedFor(state, op);
+        const session = await openSession(state, op, { permissions: ['lookup', 'release'] });
+        if (session.refusal) return record(state, { step: 'release', label, ...session.refusal, challengeIncarnation: session.challengeIncarnation ?? null });
+        const evidence = {
+            resources: op.receipt.resources.map((entry) => ({
+                resourceId: entry.resourceId, kind: 'verified-absent',
+                evidenceDigest: digestOf({ version: 1, key: expected.key, resourceId: entry.resourceId, endedReceiptSequence: op.receipt.receiptSequence })
+            }))
+        };
+        const reply = await request(state, op, session, 'release', canonical({ version: 1, evidence }));
+        await session.peer.close();
+        if (reply.kind !== 'receipt') return record(state, { ...fail('release', reply.value ? knownCode(reply.value.code) : localCode(reply.transport ?? reply.frameRefused)), step: 'release', label });
+        const reconciled = reconcileTargetReceipt(expected, { state: reply.value.state, receipt: reply.value });
+        if (!reconciled.ok) return record(state, { ...fail('release', reconciled.error.code), step: 'release', label });
+        adopt(op, reply.value);
+        return record(state, { ok: true, step: 'release', label, receipt: summary(reply.value), nodeValidated: reply.nodeValidated });
+    }
+
     function summary(receipt) {
         const checked = validateTargetReceipt(receipt);
         return {
@@ -434,5 +513,5 @@ export function createWorkerHost({ stateDir, mailbox, peerCommand, ticketKey, qu
         };
     }
 
-    return Object.freeze({ admit, revalidate, defineOperation, prepare, lookup, commit, state: load });
+    return Object.freeze({ admit, revalidate, rebind, defineOperation, prepare, lookup, commit, stop, release, state: load });
 }

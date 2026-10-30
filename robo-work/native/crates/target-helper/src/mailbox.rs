@@ -153,6 +153,14 @@ impl Listener {
     }
 }
 
+/// The listening descriptor, for `poll` readiness only (slice P8: the serve loop waits for a connection or keeper
+/// activity, whichever comes first).
+impl AsRawFd for Listener {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
 impl Drop for Listener {
     fn drop(&mut self) {
         if let Ok(metadata) = std::fs::symlink_metadata(&self.path) {
@@ -167,6 +175,14 @@ impl Drop for Listener {
 #[derive(Debug)]
 pub struct Connection {
     fd: OwnedFd,
+}
+
+/// The connected descriptor, for `poll` readiness only (slice P8: an idle session still runs the serve loop's
+/// housekeeping every second).
+impl AsRawFd for Connection {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
 }
 
 impl std::os::fd::AsFd for Connection {

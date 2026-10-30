@@ -5,8 +5,9 @@
 //
 //   node main.mjs --state <dir> --mailbox <socket> --peer <rw-target-helper> --store-root <dir> [--facts <file>] <command>
 //     admit --selection <Ref> --operation-id <OperationId>     (facts file: {facts, fixtureDigests})
-//     define <label> --resources <n> --seed <text> [--same-operation-as <label>]
+//     define <label> --resources <n> --seed <text> [--same-operation-as <label>] [--kinds <k1,k2,..>] [--workload <json>]
 //     prepare <label> [--drop] | lookup <label> [--lose-accepted] | commit <label> [--revalidate] | revalidate | state
+//     stop <label> | release <label> | rebind                    (slice P8; rebind reads the facts file)
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,7 +15,7 @@ import { canonicalTargetJson } from '../../../../server/executionTarget/contract
 import { loadFixtureTicketKey } from './fixtureMinter.mjs';
 import { createWorkerHost } from './workerHost.mjs';
 
-const VALUED = new Set(['--state', '--mailbox', '--peer', '--store-root', '--facts', '--selection', '--operation-id', '--resources', '--seed', '--same-operation-as']);
+const VALUED = new Set(['--state', '--mailbox', '--peer', '--store-root', '--facts', '--selection', '--operation-id', '--resources', '--seed', '--same-operation-as', '--kinds', '--workload']);
 const FLAGS = new Set(['--drop', '--revalidate', '--lose-accepted']);
 
 function parse(argv) {
@@ -31,10 +32,13 @@ function parse(argv) {
     return { options, positional };
 }
 
-function resourcesFor(count, seed) {
+// `kinds` (slice P8): explicit resource kinds, one resource each (the keeper supervisor needs one keeper and at most one
+// of each other kind); otherwise `count` resources: a keeper, then gates.
+function resourcesFor(count, seed, kinds = null) {
     const id = (label) => crypto.createHash('sha256').update(`rwworker-resource:${seed}:${label}`).digest().subarray(0, 16).toString('base64url');
-    return Array.from({ length: count }, (_, index) => ({
-        resourceId: id(index), kind: index === 0 ? 'keeper' : 'gate',
+    const list = kinds ?? Array.from({ length: count }, (_, index) => (index === 0 ? 'keeper' : 'gate'));
+    return list.map((kind, index) => ({
+        resourceId: id(index), kind,
         locatorDigest: crypto.createHash('sha256').update(`rwworker-locator:${seed}:${index}`).digest('hex')
     }));
 }
@@ -58,7 +62,14 @@ async function main(argv) {
         result = host.admit({ selection: options['--selection'], facts: facts.facts, operationId: options['--operation-id'], fixtureDigests: facts.fixtureDigests });
         break;
     case 'define':
-        result = { ok: true, ...host.defineOperation(label, { resources: resourcesFor(Number(options['--resources'] ?? 1), options['--seed'] ?? label), sameOperationAs: options['--same-operation-as'] ?? null }) };
+        result = {
+            ok: true,
+            ...host.defineOperation(label, {
+                resources: resourcesFor(Number(options['--resources'] ?? 1), options['--seed'] ?? label, options['--kinds'] ? options['--kinds'].split(',') : null),
+                sameOperationAs: options['--same-operation-as'] ?? null,
+                workload: options['--workload'] ? JSON.parse(options['--workload']) : null
+            })
+        };
         break;
     case 'prepare':
         result = await host.prepare(label, { drop: options['--drop'] === true });
@@ -74,6 +85,15 @@ async function main(argv) {
         break;
     case 'state':
         result = { ok: true, state: host.state() };
+        break;
+    case 'stop':
+        result = await host.stop(label);
+        break;
+    case 'release':
+        result = await host.release(label);
+        break;
+    case 'rebind':
+        result = host.rebind({ facts: facts.facts, fixtureDigests: facts.fixtureDigests });
         break;
     default:
         throw new Error(`unknown command ${command}`);

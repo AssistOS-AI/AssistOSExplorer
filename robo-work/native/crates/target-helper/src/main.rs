@@ -145,10 +145,11 @@ mod roles {
     use rw_target_helper::canon::{self, Value, obj, s};
     use rw_target_helper::crypto::b64url_encode;
     use rw_target_helper::journal::{Journal, JournalLimits};
-    use rw_target_helper::keeper::{KeeperLauncher, UnavailableUntilG1};
+    use rw_target_helper::keeper::KeeperLauncher;
     use rw_target_helper::launch::consume_ticket_secret;
     use rw_target_helper::mailbox::{Connection, Listener, PeerCredentials, RecvError, RecvLimits, connect_error_code};
-    use rw_target_helper::peer::{self, HelperState, SystemClock, WorkerSession};
+    use rw_target_helper::peer::{self, Clock, HelperState, SystemClock, WorkerSession};
+    use rw_target_helper::supervisor::{KEEPER_PATH, KeeperSupervisor, ProcessSpawner, RUNTIME_BASE};
     use rw_target_helper::service::TargetService;
     use rw_target_helper::session::TicketKey;
     use rw_target_helper::{Code, ok_value};
@@ -185,9 +186,10 @@ mod roles {
     /// The secret file is read and unlinked before anything else touches the journal or the mailbox; a missing, unsafe,
     /// malformed or foreign file refuses `invalid_request` with exit 78 and nothing else happens. Every connection runs the
     /// A11 handshake (`session`, `peer`) with the ticket key of this helper incarnation: the consumed secret (kid
-    /// `hti1.<incarnation>`), or in a `proof-fixture` build with `--proof-fixture-session` the public fixture key. Keeper
-    /// launch refuses until G1 (`service`) unless `--proof-fixture-keeper` selects the fixture launcher, which launches
-    /// nothing.
+    /// `hti1.<incarnation>`), or in a `proof-fixture` build with `--proof-fixture-session` the public fixture key. The
+    /// launcher is the keeper supervisor (one `keeper serve` per execution, `supervisor`), whatever the session key;
+    /// mutations refuse `keeper_unavailable` before the journal when the keeper binary is absent. Only the test-only
+    /// `--proof-fixture-keeper` (a `proof-fixture` build) replaces it with the launcher that launches nothing.
     pub fn serve(options: &Options) -> i32 {
         let root = options.root.as_deref().unwrap_or(std::path::Path::new(""));
         let store = options.store_identity.as_deref().unwrap_or_default();
@@ -219,7 +221,14 @@ mod roles {
             Ok(status) => return status,
             Err(unused) => unused,
         };
-        serve_with(options, TargetService::new(journal, UnavailableUntilG1), session, "unavailable-until-g1")
+        let supervisor = KeeperSupervisor::new(
+            Box::new(ProcessSpawner::new(std::path::Path::new(KEEPER_PATH))),
+            root,
+            std::path::Path::new(RUNTIME_BASE),
+            journal.helper_incarnation(),
+            journal.store_identity(),
+        );
+        serve_with(options, TargetService::new(journal, supervisor), session)
     }
 
     /// The ticket key a `serve` process verifies tickets with, and which key it is (reported on the ready line).
@@ -231,7 +240,7 @@ mod roles {
     /// `--proof-fixture-keeper`: serve with the fixture launcher (launches nothing). Returns the journal otherwise.
     #[cfg(feature = "proof-fixture")]
     fn fixture_keeper(options: &Options, journal: Journal, session: Session) -> Result<i32, (Journal, Session)> {
-        if options.fixture_keeper { Ok(serve_with(options, TargetService::proof_fixture(journal), session, "proof-fixture-no-keeper")) } else { Err((journal, session)) }
+        if options.fixture_keeper { Ok(serve_with(options, TargetService::proof_fixture(journal), session)) } else { Err((journal, session)) }
     }
 
     #[cfg(not(feature = "proof-fixture"))]
@@ -239,7 +248,27 @@ mod roles {
         Err((journal, session))
     }
 
-    fn serve_with<L: KeeperLauncher>(options: &Options, mut service: TargetService<L>, session: Session, launcher: &str) -> i32 {
+    /// Startup reconciliation (keeper supervisor), bind, ready line, then the serve loop: one connection at a time, and
+    /// between connections (at most every second) the housekeeping that journals keeper outcomes and expires leases.
+    fn serve_with<L: KeeperLauncher>(options: &Options, mut service: TargetService<L>, session: Session) -> i32 {
+        let clock = SystemClock::new();
+        let mut emit_event = |name: &str, fields: Vec<(&str, Value)>| event(name, fields);
+        if service.launcher().reconcile_on_start() {
+            // Before readiness: no keeper of an earlier helper process survives it, so every unsettled record is
+            // stopped (absence verified) and journaled exited; none is relaunched.
+            match service.reconcile_at_start(clock.now_ms()) {
+                Ok(settled) => {
+                    event("startup_reconciled", vec![("records", Value::Int(settled.len() as i64))]);
+                    for item in &settled {
+                        peer::journaled_event(item, &mut emit_event);
+                    }
+                }
+                Err(code) => {
+                    emit(&code.result_value());
+                    return if code == Code::JournalUnavailable { 75 } else { 1 };
+                }
+            }
+        }
         let mailbox = options.mailbox.as_deref().unwrap_or(std::path::Path::new(""));
         let listener = match Listener::bind(mailbox) {
             Ok(listener) => listener,
@@ -253,11 +282,26 @@ mod roles {
             ("helperIncarnation", s(service.journal().helper_incarnation())),
             ("journalStoreIdentity", s(service.journal().store_identity())),
             ("session", s(session.label)),
-            ("keeperLauncher", s(launcher)),
+            ("keeperLauncher", s(service.launcher().label())),
         ])));
         let mut state = HelperState::new(session.ticket_key, service.journal().helper_incarnation(), service.journal().store_identity());
-        let clock = SystemClock::new();
         loop {
+            peer::housekeeping(&mut state, &mut service, &clock, &mut emit_event);
+            let mut fds = vec![libc::pollfd { fd: std::os::fd::AsRawFd::as_raw_fd(&listener), events: libc::POLLIN, revents: 0 }];
+            fds.extend(service.poll_fds().into_iter().map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }));
+            // SAFETY: a valid pollfd array of fds.len() entries.
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 1000) };
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                event("poll_failed", vec![("kind", s(&format!("{:?}", error.kind())))]);
+                return 74;
+            }
+            if fds[0].revents & libc::POLLIN == 0 {
+                continue;
+            }
             let connection = match listener.accept() {
                 Ok(connection) => connection,
                 Err(error) => {
@@ -269,7 +313,7 @@ mod roles {
                 Ok(credentials) => event("connection", vec![("peer", peer(&credentials))]),
                 Err(_) => event("connection", vec![("peer", Value::Null)]),
             }
-            peer::serve_session(&connection, &mut state, &mut service, &clock, &mut |name, fields| event(name, fields));
+            peer::serve_session(&connection, &mut state, &mut service, &clock, &mut emit_event);
             drop(connection);
         }
     }

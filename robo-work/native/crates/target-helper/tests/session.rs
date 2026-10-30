@@ -367,6 +367,46 @@ fn a_prepare_body_that_is_not_the_ticketed_request_and_a_missing_permission_refu
     assert_eq!((replies[1].0.as_str(), replies[1].1.str_at("code")), ("failure", Some("ticket_binding")), "commit is not in the ticket permissions");
 }
 
+#[test]
+fn a_retired_lease_is_never_reopened_and_stop_release_need_their_permissions() {
+    let dir = common::temp_dir("session-p8-lease");
+    let mut helper = helper(TargetService::new(journal(&dir), UnavailableUntilG1));
+    let digest = digest_of_text(&prepare_body("l"));
+    let lease = id("lease-retired");
+    // An accepted handshake renews the lease: its deadline is one lease TTL ahead on the monotonic clock.
+    let (end, _) = session(&mut helper, run(Mint::new(&binding(INCARNATION, STORE), "op-l", &digest), lease.clone(), vec![("lookup", lookup_body())]));
+    assert_eq!(end, SessionEnd::Closed { frames: 1 });
+    let held = helper.state.leases.get(&lease).cloned().unwrap();
+    assert!(!held.retired && held.deadline_mono_ms >= peer::LEASE_TTL_MS);
+    // Expired: no ticket reopens it, whatever its epoch.
+    helper.state.leases.get_mut(&lease).unwrap().retired = true;
+    let (end, result) = session(&mut helper, run(Mint::new(&binding(INCARNATION, STORE), "op-l", &digest).epoch("9", Some("1")), lease.clone(), vec![]));
+    assert_eq!(end, SessionEnd::Refused(Code::LeaseRetired));
+    assert_eq!(result.err(), Some("lease_retired".to_string()));
+    // stop and release are served only with their permissions (the default mint lists commit, lookup and prepare).
+    let (_, replies) = session(&mut helper, run(Mint::new(&binding(INCARNATION, STORE), "op-l", &digest), id("lease-other"), vec![("stop", lookup_body()), ("release", r#"{"evidence":{"resources":[]},"version":1}"#.into())]));
+    let replies = replies.unwrap();
+    assert_eq!((replies[0].0.as_str(), replies[0].1.str_at("code")), ("failure", Some("ticket_binding")));
+    assert_eq!((replies[1].0.as_str(), replies[1].1.str_at("code")), ("failure", Some("ticket_binding")));
+    // With them, the refusing launcher answers before the journal.
+    let mut mint = Mint::new(&binding(INCARNATION, STORE), "op-l", &digest);
+    mint.permissions = vec!["release", "stop"];
+    let (_, replies) = session(&mut helper, run(mint, id("lease-third"), vec![("stop", lookup_body())]));
+    assert_eq!(replies.unwrap()[0].1.str_at("code"), Some("keeper_unavailable"));
+}
+
+#[test]
+fn a_prepare_body_may_carry_a_workload_and_nothing_else() {
+    let dir = common::temp_dir("session-p8-body");
+    let mut helper = helper(TargetService::new(journal(&dir), UnavailableUntilG1));
+    let with_workload = r#"{"resources":[],"version":1,"workload":{"args":[],"executable":"sh"}}"#.to_string();
+    let with_extra = r#"{"extra":1,"resources":[],"version":1}"#.to_string();
+    let (_, replies) = session(&mut helper, run(Mint::new(&binding(INCARNATION, STORE), "op-w", &digest_of_text(&with_workload)), id("lease-w"), vec![("prepare", with_workload)]));
+    assert_eq!(replies.unwrap()[0].1.str_at("code"), Some("keeper_unavailable"), "the body shape is accepted; the launcher refuses");
+    let (_, replies) = session(&mut helper, run(Mint::new(&binding(INCARNATION, STORE), "op-x", &digest_of_text(&with_extra)), id("lease-x"), vec![("prepare", with_extra)]));
+    assert_eq!(replies.unwrap()[0].1.str_at("code"), Some("invalid_request"));
+}
+
 #[cfg(feature = "proof-fixture")]
 mod proof_fixture {
     use super::*;
@@ -443,6 +483,34 @@ mod proof_fixture {
         let refused = replies.unwrap().remove(0);
         assert_eq!((refused.0.as_str(), refused.1.str_at("code")), ("failure", Some("operation_conflict")));
         assert_eq!(helper.service.journal().revision(), revision, "the conflicting payload changed nothing");
+    }
+
+    #[test]
+    fn stop_and_release_frames_settle_the_record_and_only_the_preparing_lease_commits() {
+        let dir = common::temp_dir("session-p8-stop");
+        let mut helper = fixture_helper(&dir);
+        let body = prepare_body("st");
+        let digest = digest_of_text(&body);
+        let lease = id("lease-st");
+        let (_, replies) = session(&mut helper, run(Mint::new(&binding(INCARNATION, STORE), "op-st", &digest), lease.clone(), vec![("prepare", body)]));
+        let prepared = replies.unwrap().remove(0).1;
+        // Another lease of the same binding cannot release the gate.
+        let mint = Mint::new(&binding(INCARNATION, STORE), "op-st", &digest);
+        let (_, replies) = session(&mut helper, run(mint, id("lease-intruder"), vec![("commit", commit_body(&prepared))]));
+        assert_eq!(replies.unwrap()[0].1.str_at("code"), Some("binding_mismatch"));
+        let mut mint = Mint::new(&binding(INCARNATION, STORE), "op-st", &digest).epoch("2", Some("1"));
+        mint.permissions = vec!["commit", "lookup", "release", "stop"];
+        let resources = prepared.get("resources").and_then(Value::arr).unwrap().to_vec();
+        let evidence = Value::Arr(resources.iter().map(|resource| obj(vec![("resourceId", resource.get("resourceId").cloned().unwrap()), ("kind", s("verified-absent")), ("evidenceDigest", s(&sha256_hex(b"absent")))])).collect());
+        let release = canon::canonical_text(&obj(vec![("version", Value::Int(1)), ("evidence", obj(vec![("resources", evidence)]))])).unwrap();
+        let (end, replies) = session(&mut helper, run(mint, lease.clone(), vec![("commit", commit_body(&prepared)), ("stop", lookup_body()), ("stop", lookup_body()), ("release", release)]));
+        assert_eq!(end, SessionEnd::Closed { frames: 4 });
+        let replies = replies.unwrap();
+        assert_eq!(replies[0].1.str_at("state"), Some("running"));
+        assert_eq!((replies[1].0.as_str(), replies[1].1.str_at("state")), ("receipt", Some("exited")), "stop answers the exited receipt");
+        assert_eq!(replies[2].1.get("receiptSequence"), replies[1].1.get("receiptSequence"), "a repeated stop changes nothing");
+        assert_eq!(replies[3].1.str_at("state"), Some("exited"));
+        assert!(replies[3].1.get("resources").and_then(Value::arr).unwrap().iter().all(|resource| resource.str_at("state") == Some("released")));
     }
 
     #[test]

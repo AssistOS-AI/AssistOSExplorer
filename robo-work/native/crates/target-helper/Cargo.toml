@@ -4,21 +4,22 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "The RoboWork target helper (plan section 5.6): the target transport frame codec and helper-ticket verification (T0 section 8), the management-private durable operation journal (T0 section 9) and the private AF_UNIX mailbox endpoint with SCM_RIGHTS receive. Keeper launch is a refusing stub until G1."
+description = "The RoboWork target helper (plan section 5.6): the target transport frame codec and helper-ticket verification (T0 section 8), the management-private durable operation journal (T0 section 9), the private AF_UNIX mailbox endpoint with SCM_RIGHTS receive and one target keeper per execution driven over the v1 keeper protocol (slice P8)."
 
 [[bin]]
 name = "rw-target-helper"
 path = "src/main.rs"
 
 [features]
-# PROOF-FIXTURE ONLY (slice P6b): the `serve --proof-fixture-session` ticket key (public synthetic) and
-# `--proof-fixture-keeper` launcher that launches nothing. Off by default; a production build never contains either.
+# PROOF-FIXTURE ONLY (slice P6b): the `serve --proof-fixture-session` ticket key (public synthetic) and the test-only
+# `--proof-fixture-keeper` launcher that launches nothing (host round-trip tests; the rwtarget launcher no longer selects
+# it since slice P8). Off by default; a production build never contains either. Keeper launch itself is not gated.
 proof-fixture = []
 
 [dependencies]
-# Same vendored, locked version as the other crates; no new crate. Used for flock, fsync and the Linux mailbox.
+# Same vendored, locked version as the other crates; no new crate. Used for flock, fsync, the Linux mailbox and the
+# keeper launch (fork, pidfd, poll).
 libc = { workspace = true }
-
-[dev-dependencies]
-# Lenient (JSON.parse-compatible) reading of the pretty-printed vector files only.
+# The v1 keeper wire schema and frame codec (slice P8: the helper is the supervisor of each target keeper). Also used by
+# the tests for lenient reading of the pretty-printed vector files.
 rw-proto = { path = "../proto" }
