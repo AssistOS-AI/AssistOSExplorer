@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-    EVENTS_PAGE_MAX_BYTES, OUTPUT_EVENTS_PER_REFERENCE, OUTPUT_EVENT_MAX_BYTES, TRUNCATED_EVENTS_PER_REFERENCE
+    EVENTS_PAGE_MAX_BYTES, OUTPUT_EVENTS_PER_REFERENCE, OUTPUT_EVENT_MAX_BYTES, RESERVED_MARKER_SLOTS, TRUNCATED_EVENTS_PER_REFERENCE
 } from '../server/stateObservation.mjs';
 import { SPECIFICATION_VERSION_2, validateSpecificationV2 } from '../server/stateProtocol.mjs';
 import {
@@ -47,6 +47,10 @@ test('version 2 specification: every field is checked, optional fields and folde
         folders: [{ path: '/ws/skills', access: 'read', as: 'skills' }, { path: '/ws/out', access: 'write' }, { path: '/ws/s', access: 'read', at: '/ws/project/.agents/skills', expose: true }],
         ignore: ['/ws/project/.achilles'], sessionId: 'session:chat-1.v2', turnId: 'turn:1'
     }), LIMITS_X);
+    // M-20: no cwd means no project selected.
+    const { cwd, ...withoutCwd } = spec2();
+    void cwd;
+    validateSpecificationV2(withoutCwd, LIMITS_X);
     const big = { requestBytes: 8 * 1024 * 1024 };
     validateSpecificationV2(spec2({ prompt: 'x'.repeat(1024 * 1024), displayText: 'y'.repeat(256 * 1024) }), big);
     assert.throws(() => validateSpecificationV2(spec2({ prompt: 'x'.repeat(1024 * 1024 + 1) }), big), (error) => error.code === 'invalid_request', 'prompt over 1 MiB');
@@ -107,9 +111,9 @@ test('output events are stored after state events, with sequence continuity; bou
     expectCode(assert, () => store.recordReferenceEvents({ ...ids, events: [] }), 'invalid_request');
 });
 
-test('per-reference caps: ala events stop at the cap, truncated markers are capped, refused events are counted', (t) => {
-    const { store, robotId } = setup(t);
-    const { ids } = running(store, robotId);
+test('per-reference caps: ala events stop at the cap, but every drop stays visible in the reserved marker room', (t) => {
+    const { store, robotId, owner } = ((ctx) => ({ ...ctx, owner: user('alice') }))(setup(t));
+    const { admitted, ids } = running(store, robotId, owner);
     let stored = 0;
     let dropped = 0;
     for (let batch = 0; batch * 1000 < OUTPUT_EVENTS_PER_REFERENCE + 500; batch += 1) {
@@ -117,10 +121,28 @@ test('per-reference caps: ala events stop at the cap, truncated markers are capp
         stored += result.stored;
         dropped += result.dropped;
     }
-    assert.equal(stored, OUTPUT_EVENTS_PER_REFERENCE);
+    // 8192 ala events and the store's own marker at the first refusal; the rest are counted in `dropped` for the relay's total.
+    assert.equal(stored, OUTPUT_EVENTS_PER_REFERENCE + 1);
     assert.equal(dropped, 9000 - OUTPUT_EVENTS_PER_REFERENCE);
-    const markers = Array.from({ length: TRUNCATED_EVENTS_PER_REFERENCE + 4 }, () => ({ type: 'truncated', data: { dropped: 1, reason: 'event_limit' } }));
-    assert.deepEqual(store.recordReferenceEvents({ ...ids, events: markers }), { stored: TRUNCATED_EVENTS_PER_REFERENCE, dropped: 4 });
+    const markers = () => {
+        const found = [];
+        for (let after = 0; ;) {
+            const page = store.listReferenceEvents(owner, { referenceId: admitted.reference.id, after, limit: 1000 });
+            if (page.events.length === 0) return found;
+            found.push(...page.events.filter((event) => event.type === 'truncated'));
+            after = page.nextAfter;
+        }
+    };
+    assert.deepEqual(markers().map((event) => event.data.reason), ['event_limit']);
+    // Ordinary markers cannot take the two reserved slots, so the relay's final total always fits.
+    const ordinary = Array.from({ length: TRUNCATED_EVENTS_PER_REFERENCE + 4 }, () => ({ type: 'truncated', data: { dropped: 1, reason: 'relay_backlog' } }));
+    const result = store.recordReferenceEvents({ ...ids, events: ordinary });
+    assert.equal(result.stored, TRUNCATED_EVENTS_PER_REFERENCE - RESERVED_MARKER_SLOTS - 1);
+    assert.deepEqual(store.recordReferenceEvents({ ...ids, events: [{ type: 'truncated', data: { dropped: 808, reason: 'event_limit' } }] }), { stored: 1, dropped: 0 });
+    assert.equal(markers().length, TRUNCATED_EVENTS_PER_REFERENCE - 1, 'the store marker, the ordinary markers and the final total');
+    assert.deepEqual(markers().at(-1).data, { dropped: 808, reason: 'event_limit' });
+    assert.deepEqual(store.recordReferenceEvents({ ...ids, events: [{ type: 'truncated', data: { dropped: 1, reason: 'event_limit' } }] }), { stored: 1, dropped: 0 }, 'one slot is still reserved');
+    assert.deepEqual(store.recordReferenceEvents({ ...ids, events: [{ type: 'truncated', data: { dropped: 1, reason: 'event_limit' } }] }), { stored: 0, dropped: 1 });
 });
 
 test('an events page is bounded by bytes and still makes progress; output is refused for a queued or terminal attempt', (t) => {

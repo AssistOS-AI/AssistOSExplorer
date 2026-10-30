@@ -35,6 +35,18 @@ test('plan: virtual paths, ALA arguments, environment and the first control reco
     assert.ok(plan.argv.every((entry) => !entry.includes('/ws')), 'no host path reaches ALA');
 });
 
+test('plan: no cwd selects no project (M-20): ALA starts in the HOME, folders stay explicit grants', () => {
+    const { cwd, ...rest } = spec();
+    void cwd;
+    const none = planAlaExecution({ workspaceRoot: ROOT, specification: rest });
+    assert.deepEqual([...none.grants], []);
+    assert.equal(none.cwd, '/home/robot');
+    assert.deepEqual(none.argv.slice(none.argv.indexOf('--cwd'), none.argv.indexOf('--cwd') + 2), ['--cwd', '/home/robot']);
+    const withFolder = planAlaExecution({ workspaceRoot: ROOT, specification: { ...rest, folders: [{ path: '/ws/skills', access: 'read' }, { path: '/ws/out', access: 'write' }], ignore: ['/ws/skills/x'] } });
+    assert.deepEqual(withFolder.grants.map((grant) => [grant.path, grant.access]), [['/projects/g0', 'read'], ['/projects/g1', 'write']]);
+    assert.deepEqual(withFolder.argv.slice(withFolder.argv.indexOf('--folder')), ['--folder', '/projects/g0', '--folder', '/projects/g1', 'write', '--ignore', '/projects/g0/x']);
+});
+
 test('plan: refusals are bounded reasons', () => {
     const reason = (overrides, workspaceRoot = ROOT) => {
         try { planAlaExecution({ workspaceRoot, specification: spec(overrides) }); } catch (error) { assert.ok(error instanceof PlanError); return error.reason; }

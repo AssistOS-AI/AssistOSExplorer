@@ -16,10 +16,10 @@ const PROVIDER_ADMISSION = Object.freeze({ key: 'providerAdmission', targetAgent
     scopes: ['execution:owner'], ttlSeconds: 30 });
 
 // The exact set of paths whose routed requests the Router mints `providerAdmission` for (decisions
-// M-13 and the base section 8.2): the worker coordinator API, robot create and update, flow start and
-// schedule run-now. `/api/robots/*` is the narrowest grammar for `/api/robots/<id>/coding-agents`
+// M-13 and M-21, base section 8.2): the worker coordinator API, robot create and update, flow start,
+// schedule run-now and the `/api/control` task start. `/api/robots/*` is the narrowest grammar for `/api/robots/<id>/coding-agents`
 // (a path ends in one `/*`), and the Router's trailing `/*` also matches the bare prefix.
-const MINTING = ['/api/worker/*', '/api/robots/*', '/api/roboflow/flows', '/api/roboflow/schedules/*'];
+const MINTING = ['/api/worker/*', '/api/robots/*', '/api/roboflow/flows', '/api/roboflow/schedules/*', '/api/control'];
 
 test('E14: the grant-bearing routes are exactly the declared set, each before the broad route, which mints nothing', () => {
     const manifest = readManifest();
@@ -35,7 +35,7 @@ test('E14: the grant-bearing routes are exactly the declared set, each before th
     // The Router's first-match selection: these paths get exactly one grant.
     const minting = ['/api/worker/admissions', '/api/worker/lookup', `/api/worker/references/${'r'.repeat(22)}/control`, '/api/worker/bindings', '/api/worker/robots/ensure',
         '/api/robots', '/api/robots/import-emails', '/api/robots/default-ab12cd/coding-agents',
-        '/api/roboflow/flows', '/api/roboflow/schedules', `/api/roboflow/schedules/cron_${'0f'.repeat(12)}/run-now`];
+        '/api/roboflow/flows', '/api/roboflow/schedules', `/api/roboflow/schedules/cron_${'0f'.repeat(12)}/run-now`, '/api/control'];
     for (const pathname of minting) {
         const definition = routeDefinition(`${PREFIX}${pathname}`);
         assert.deepEqual(definition.delegations.map((entry) => [entry.key, entry.targetAgentId, entry.tools, entry.scope, entry.ttlSeconds]),
@@ -48,7 +48,7 @@ test('E14: the grant-bearing routes are exactly the declared set, each before th
     // Every other path mints nothing, including the flow endpoints that do not start a flow.
     const silent = ['/api/roboflow/schedules-x', '/api/roboflow/flows/flow_aaaaaaaaaaaaaaaaaaaaaaaa', '/api/roboflow/flows/flow_aaaaaaaaaaaaaaaaaaaaaaaa/pause',
         '/api/roboflow/workflows', '/api/roboflow/generate', '/api/roboflow', '/api/roboflow/validate', '/api/workers', '/api/worker-x/admissions', '/api/robot',
-        '/api/robots-x', '/api/control', '/api/live-sessions', '/api/terminal-profiles/resolve', '/status', '/flows', '/'];
+        '/api/robots-x', '/api/control/', '/api/controls', '/api/control-x', '/api/live-sessions', '/api/terminal-profiles/resolve', '/status', '/flows', '/'];
     for (const pathname of silent) {
         assert.deepEqual(routeDefinition(`${PREFIX}${pathname}`).delegations, [], pathname);
         assert.equal(Object.hasOwn(authInfoOf(routedHeaders({ id: 'alice', roles: ['user'] }, 'GET', pathname)), 'delegations'), false, pathname);
@@ -73,8 +73,12 @@ test('E12: the shim scope and the Router scope come from the same manifest value
     assert.equal(MANIFEST_RUNTIME_SCOPE, manifest.webchat.runtimeScope === 'principal' ? 'principal' : null);
 });
 
-test('the coordinator selector base is a declared profile variable whose value the integrator sets', () => {
+test('the coordinator selector base is a declared profile variable with the worker\'s coordinator base as its value', () => {
     const manifest = readManifest();
-    assert.ok(manifest.profiles.default.env.includes(COORDINATOR_BASE_ENV));
+    const entry = manifest.profiles.default.env.find((item) => (typeof item === 'string' ? item : item?.name) === COORDINATOR_BASE_ENV);
+    assert.ok(entry, 'declared in the default profile');
+    // The deployment sets the value; the manifest may carry it as a `{name, value}` pair. It is the selector
+    // base only, never a route.
+    if (typeof entry === 'object') assert.match(entry.value, /^\/base-agent-additional-server\/[A-Za-z0-9_-]+\/[1-9][0-9]{0,4}$/u);
     assert.equal(JSON.stringify(manifest).includes('/v1/coordinator'), false, 'no coordinator route value is hard-coded here');
 });

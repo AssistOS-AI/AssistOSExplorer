@@ -72,10 +72,11 @@ function scripted(rows, { snapshot = DONE, hold = false } = {}) {
 const COMPLETE_ROWS = () => [state('queued', 1), state('running', 2), ala(SELECTED, 3), ala(MESSAGE, 4), ala(FINAL('Final answer'), 5), state('completed', 6)];
 
 async function harness(t, { rows = COMPLETE_ROWS(), execution = {}, permission = 'full-access', client = scripted(rows), engineOptions = {},
-    robot = { id: 'robo', name: 'default', codingAgents: ['codex'], worker: { robotId: ROBOT } }, grant = freshGrant('admission'), freshest = null } = {}) {
+    robot = { id: 'robo', name: 'default', codingAgents: ['codex'], worker: { robotId: ROBOT } }, grant = freshGrant('admission'), freshest = null,
+    atRoot = false, snapshotExtra = null } = {}) {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'worker-engine-'));
     const oldRoot = process.env.PLOINKY_WORKSPACE_ROOT;
-    process.env.PLOINKY_WORKSPACE_ROOT = path.dirname(workingDir);
+    process.env.PLOINKY_WORKSPACE_ROOT = atRoot ? workingDir : path.dirname(workingDir);
     const store = new ConversationSessionStore({ workingDir });
     const session = await store.createSession();
     const ensured = [];
@@ -83,7 +84,7 @@ async function harness(t, { rows = COMPLETE_ROWS(), execution = {}, permission =
         async ensureReady(current, auth) { ensured.push({ robot: current, auth }); return { robotId: ROBOT, configRevision: 3, configuration: CONFIGURATION }; },
         desiredConfiguration: () => CONFIGURATION,
     };
-    const catalog = { async refresh() { return { skills: [{ name: 'bash', skillDir: workingDir, enabled: true }], taskRepositories: [] }; } };
+    const catalog = { async refresh() { return { skills: [{ name: 'bash', skillDir: workingDir, enabled: true }], taskRepositories: [], ...(snapshotExtra?.(workingDir) || {}) }; } };
     const admitted = [];
     const coordinator = {
         async admitTurn(evidence, request) {
@@ -476,6 +477,52 @@ test('inputs the worker cannot use are refused or reported, never dropped silent
     const outside = await harness(t);
     const events = [];
     await outside.engine.executeTurn({ sessionId: outside.sessionId, prompt: 'p', owner: outside.owner, onEvent: (event) => events.push(event) });
-    assert.ok(events.some((event) => event.type === 'diagnostic' && /human-input channel is outside the shared workspace/.test(event.message)));
+    assert.ok(events.some((event) => event.type === 'diagnostic' && /1 folder\(s\) outside the shared workspace/.test(event.message)));
     assert.equal(JSON.stringify(outside.admitted[0].request.specification).includes('roboteam-human-input-test'), false);
+});
+
+test('the workspace root is never granted: a project folder is the writable grant, no project means no grant, and naming the root is refused', async (t) => {
+    // A project folder below the root: the writable cwd grant plus explicit read-only extras, never the root.
+    const withSkills = await harness(t, { snapshotExtra: (dir) => ({ skillsDirectory: path.join(path.dirname(dir), 'overlay'), mounts: [{ source: path.join(path.dirname(dir), 'skill-src'), target: path.join(dir, '.agents', 'skills', 'x') }] }) });
+    const events = [];
+    await withSkills.engine.executeTurn({ sessionId: withSkills.sessionId, prompt: 'p', owner: withSkills.owner, onEvent: (event) => events.push(event) });
+    const spec = withSkills.admitted[0].request.specification;
+    const root = path.dirname(await fs.realpath(withSkills.workingDir));
+    assert.equal(spec.cwd, await fs.realpath(withSkills.workingDir));
+    assert.deepEqual(spec.folders, [{ path: path.join(path.dirname(withSkills.workingDir), 'skill-src'), access: 'read' }, { path: path.join(path.dirname(withSkills.workingDir), 'overlay'), access: 'read' }]);
+    for (const folder of spec.folders) assert.deepEqual(Object.keys(folder).sort(), ['access', 'path'], 'no as, at or expose');
+    assert.ok([spec.cwd, ...spec.folders.map((folder) => folder.path)].every((granted) => granted !== root));
+    assert.ok(events.some((event) => event.type === 'diagnostic' && /\.agents\/skills placement/.test(event.message)));
+
+    // No project selected (the conversation sits at the workspace root): no project grant at all.
+    const none = await harness(t, { atRoot: true });
+    await none.engine.executeTurn({ sessionId: none.sessionId, prompt: 'p', owner: none.owner });
+    const bare = none.admitted[0].request.specification;
+    assert.equal(Object.hasOwn(bare, 'cwd'), false);
+    assert.equal(Object.hasOwn(bare, 'ignore'), false);
+    assert.equal(JSON.stringify(bare).includes(await fs.realpath(none.workingDir) + '"'), false, 'the root appears nowhere as a grant');
+
+    // The root named explicitly (a task or phase working folder): refused before anything is admitted.
+    const explicit = await harness(t, { atRoot: true, execution: { cwdExplicit: true } });
+    await assert.rejects(explicit.engine.executeTurn({ sessionId: explicit.sessionId, prompt: 'p', owner: explicit.owner }),
+        (error) => error.code === 'workspace_root_not_granted' && error.status === 400 && /Pick a project folder/.test(error.message));
+    assert.equal(explicit.ensured.length, 0);
+    assert.equal(explicit.admitted.length, 0);
+});
+
+test('a task child with the one grant its parent handed it admits a task under its deterministic origin and keeps nothing', async (t) => {
+    const grant = freshGrant('control-request');
+    const h = await harness(t, { execution: { worker: { originRequestId: ORIGIN } } });
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'p', owner: { evidence: { ok: true, grant } } });
+    assert.equal(result.outputText, 'Final answer');
+    assert.equal(h.admitted.length, 0, 'not the WebChat admission');
+    assert.deepEqual(h.client.calls.admit[0].auth, { grant });
+    assert.equal(h.client.calls.admit[0].body.originRequestId, ORIGIN);
+    assert.equal(h.client.calls.admit[0].body.kind, 'task');
+    assert.equal(Object.hasOwn(h.client.calls.admit[0].body, 'bindingId'), false);
+    assert.deepEqual(h.client.calls.subscribe[0].auth, { grant }, 'one subscription, opened with that grant');
+    assert.deepEqual(h.ensured[0].auth, { grant });
+    // Without a deterministic origin the grant alone admits nothing.
+    const bare = await harness(t);
+    await assert.rejects(bare.engine.executeTurn({ sessionId: bare.sessionId, prompt: 'p', owner: { evidence: { ok: true, grant } } }), (error) => error.code === 'owner_evidence_unavailable');
 });

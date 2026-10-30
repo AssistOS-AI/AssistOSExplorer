@@ -40,8 +40,14 @@ export function managedAlaConfig(configuration) {
     for (const [name, model] of Object.entries(settings.models ?? {})) {
         if (ALA_AGENTS.includes(name) && typeof model === 'string' && model.trim()) models[name] = model.trim();
     }
+    // RoboTeam's one-agent robot sends `settings.model` and `settings.effort` for its `backend`; a plural map wins when both exist.
+    if (ALA_AGENTS.includes(configuration?.backend) && models[configuration.backend] === undefined
+        && typeof settings.model === 'string' && settings.model.trim()) {
+        models[configuration.backend] = settings.model.trim();
+    }
     const efforts = {};
-    for (const [name, effort] of Object.entries(settings.efforts ?? {})) {
+    const singleEffort = ALA_AGENTS.includes(configuration?.backend) && typeof settings.effort === 'string' ? { [configuration.backend]: settings.effort } : {};
+    for (const [name, effort] of Object.entries({ ...singleEffort, ...(settings.efforts ?? {}) })) {
         if (models[name] && typeof effort === 'string' && /^[A-Za-z0-9_-]+$/u.test(effort)) efforts[name] = effort;
     }
     config.models = models;

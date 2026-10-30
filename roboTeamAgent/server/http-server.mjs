@@ -1000,9 +1000,14 @@ export function createRoboTeamServer(options) {
                 }
                 const startTypes = { 'start-desktop-task': 'desktop', 'start-browser-task': 'browser', 'start-simple-task': 'simple' };
                 if (startTypes[operation]) {
+                    // With the worker configured, this request's own grant goes to the task child over its stdin
+                    // for the one admission (decision M-21); a start without one is refused.
+                    const ownerGrant = worker.enabled ? worker.grant(req) : null;
+                    if (worker.enabled && !ownerGrant) return sendError(res, 403, 'owner_evidence_unavailable');
                     const task = await skillsets.start(robot, body, (current, skillSelection) => runtimeManager.startTask(current, startTypes[operation], {
                         cwd: body.cwd, task: String(body.task || ''), skillPolicyRef: skillSelection.policyId, alaSessionId: skillSelection.policyId,
                         model: body.model || null, ca: body.ca || 'auto', ownerPrincipal: signedOwner(req),
+                        ...(ownerGrant ? { ownerGrant } : {}),
                     }));
                     return sendJson(res, 202, {
                         ok: true,

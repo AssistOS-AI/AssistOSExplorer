@@ -25,3 +25,12 @@ export function workerBindingFor(request, taskId) {
     if (typeof flowId !== 'string' || typeof instanceId !== 'string' || !isFlowBindingId(flowId)) return null;
     return { bindingId: flowId, originRequestId: phaseOriginId({ flowId, instanceId, runtimeTaskId: taskId }) };
 }
+
+// The origin request ID of a task started by one `/api/control` request: derived from the runtime task
+// ID (a UUID RoboTeam allocated for this attempt), so the child's admission is idempotent.
+export function taskOriginId(taskId) {
+    if (typeof taskId !== 'string' || taskId.length === 0) throw new TypeError('taskId is required');
+    const id = crypto.createHash('sha256').update(`roboteam/task/v1\n${taskId}`).digest().subarray(0, 16).toString('base64url');
+    if (!isOriginId(id)) throw new Error('derived origin is not canonical');
+    return id;
+}

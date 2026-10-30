@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 
 import { createDispatcher, fitOutcome } from '../../server/runtime/dispatcher.mjs';
@@ -27,7 +27,7 @@ const wait = async (predicate, label, ms = 2000) => {
     }
 };
 
-function rig(t, { openFails = null, startFails = null, maxConcurrent = 2 } = {}) {
+function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, controlPollMs = 10, storeWrap = (store) => store } = {}) {
     const store = openStore(makeTempDir(t), { limits: LIMITS_X });
     t.after(() => store.close());
     const robotId = readyRobot(store, syntheticContext({ robotOwnerId: ROBOTS, scope: 'scope-robots' }));
@@ -37,16 +37,20 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2 } = {})
         async open({ item, plan, context }) {
             if (openFails) throw openFails;
             const run = {
-                item, plan, ended: [], prompt: null, received: [], exitedControl: {},
-                stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough()
+                item, plan, ended: [], prompt: null, received: [], exitedControl: {}, stdinFlushMs: 0,
+                stdout: new PassThrough(), stderr: new PassThrough()
             };
-            run.exited = new Promise((resolve) => { run.exitedControl.resolve = resolve; });
-            run.stdin.on('data', (chunk) => {
-                for (const line of chunk.toString().split('\n').filter(Boolean)) {
-                    const record = JSON.parse(line);
-                    if (run.prompt === null) run.prompt = record; else run.received.push(record);
+            // The bytes are seen at once; the write callback (the flush) comes `stdinFlushMs` later, like a slow consumer.
+            run.stdin = new Writable({
+                write(chunk, _encoding, callback) {
+                    for (const line of chunk.toString().split('\n').filter(Boolean)) {
+                        const record = JSON.parse(line);
+                        if (run.prompt === null) run.prompt = record; else run.received.push(record);
+                    }
+                    setTimeout(callback, run.stdinFlushMs);
                 }
             });
+            run.exited = new Promise((resolve) => { run.exitedControl.resolve = resolve; });
             run.event = (event) => run.stderr.write(`${EVENT_PREFIX.toString()}${JSON.stringify(event)}\n`);
             run.finishWith = (text, exitCode = 0) => {
                 if (text !== null) run.stdout.write(text);
@@ -67,8 +71,8 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2 } = {})
         }
     };
     const dispatcher = createDispatcher({
-        store, workspaceId: WORKSPACE, workspaceRoot: '/ws', factory, log: (event, fields) => logs.push({ event, ...fields }),
-        options: { pollMs: 10, controlPollMs: 10, drainMs: 100, maxConcurrent, resultBytes: 1500 }
+        store: storeWrap(store), workspaceId: WORKSPACE, workspaceRoot: '/ws', factory, log: (event, fields) => logs.push({ event, ...fields }),
+        options: { pollMs: 10, controlPollMs, drainMs: 100, maxConcurrent, resultBytes: 1500 }
     });
     t.after(() => dispatcher.close());
     const alice = owner('alice');
@@ -194,4 +198,38 @@ test('turns of one session start first in, first out', async (t) => {
     await wait(() => runs.length === 2, 'second turn starts');
     runs[1].finishWith('two');
     await wait(() => view(two).state === 'completed', 'second done');
+});
+
+test('a message control is delivered exactly once even when the stdin flush takes longer than the control poll interval', async (t) => {
+    const { dispatcher, runs, admit, view, store, alice } = rig(t, { controlPollMs: 20 });
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    runs[0].stdinFlushMs = 400;
+    store.controlReference(alice, { referenceId: admitted.reference.id, operationId: newId(), op: 'message', payload: { message: 'do X once', id: 'm-1' } });
+    await wait(() => runs[0].received.length >= 1, 'delivered');
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    assert.deepEqual(runs[0].received.map((record) => record.id), ['m-1'], 'one delivery, not one per interval tick');
+    assert.equal(store.takePendingControls({ executionId: admitted.executionId, attemptId: admitted.attemptId }).length, 0, 'and it was acknowledged');
+    runs[0].stdinFlushMs = 0;
+    runs[0].finishWith('done');
+    await wait(() => view(admitted).state === 'completed', 'completed');
+});
+
+test('a start the store refuses for a reason a retry cannot change fails the attempt once and is not retried at every poll', async (t) => {
+    let transitions = 0;
+    const { dispatcher, admit, view, logs } = rig(t, {
+        storeWrap: (store) => new Proxy(store, { get(target, name) {
+            if (name === 'transitionAttempt') return () => { transitions += 1; throw Object.assign(new Error('boom'), { code: 'EIO' }); };
+            const value = target[name];
+            return typeof value === 'function' ? value.bind(target) : value;
+        } })
+    });
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => view(admitted).state === 'failed', 'failed');
+    assert.deepEqual(view(admitted).result.data, { reason: 'start_refused' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(transitions, 1);
+    assert.equal(logs.filter((entry) => entry.event === 'transition_refused').length, 1, 'logged once');
 });

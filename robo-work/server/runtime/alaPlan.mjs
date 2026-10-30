@@ -85,7 +85,9 @@ export function planAlaExecution({ specification, workspaceRoot }) {
         throw new PlanError('prompt_too_large');
     }
 
-    const cwd = grantFor(specification.cwd, 'write');
+    // M-20: a specification without `cwd` selects no project. ALA starts in the robot HOME and the plan has no project grant (R05);
+    // `cwd` (or a folder) equal to the workspace root, or any whole-workspace grant, stays refused.
+    const cwd = specification.cwd === undefined ? null : grantFor(specification.cwd, 'write');
     const folders = (specification.folders ?? []).map((folder) => grantFor(folder.path, folder.access));
 
     // A host path inside a grant, as the sandbox sees it.
@@ -102,12 +104,12 @@ export function planAlaExecution({ specification, workspaceRoot }) {
         if (virtual !== null) ignore.push(virtual);
     }
 
-    const argv = ['--execution-provider', 'protocol', '--home', VIRTUAL_HOME, '--config', VIRTUAL_CONFIG, '--cwd', cwd.path,
+    const argv = ['--execution-provider', 'protocol', '--home', VIRTUAL_HOME, '--config', VIRTUAL_CONFIG, '--cwd', cwd === null ? VIRTUAL_HOME : cwd.path,
         '--session-id', alaSessionId(specification.sessionId), '--turn-id', alaTurnId(specification.turnId), '--control-stdin', '--permissions', specification.permissions];
     if (specification.model !== undefined) argv.push('--model', specification.model, '--effort', specification.effort ?? 'default');
     else if (specification.effort !== undefined) argv.push('--effort', specification.effort);
     if (specification.codingAgent !== undefined) argv.push('--ca', specification.codingAgent);
-    const emitted = new Set([cwd]);
+    const emitted = new Set(cwd === null ? [] : [cwd]);
     for (const grant of folders) {
         // The cwd grant is already mounted writable, and ALA refuses a folder that duplicates the working directory.
         if (emitted.has(grant)) continue;
@@ -121,7 +123,7 @@ export function planAlaExecution({ specification, workspaceRoot }) {
 
     return Object.freeze({
         grants: Object.freeze(grants.map((grant) => Object.freeze({ ...grant }))),
-        cwd: cwd.path,
+        cwd: cwd === null ? VIRTUAL_HOME : cwd.path,
         argv: Object.freeze(argv),
         env: Object.freeze({ ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: VIRTUAL_SESSIONS }),
         prompt

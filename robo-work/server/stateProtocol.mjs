@@ -418,15 +418,16 @@ function specBytesBetween(value, min, max) {
 }
 
 export function validateSpecificationV2(value, limits) {
-    exactObject(value, ['version', 'prompt', 'displayText', 'sessionId', 'turnId', 'cwd', 'permissions'],
-        ['model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution']);
+    exactObject(value, ['version', 'prompt', 'displayText', 'sessionId', 'turnId', 'permissions'],
+        ['cwd', 'model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution']);
     if (value.version !== SPECIFICATION_VERSION_2) fail('invalid_request');
     if (!specBytesBetween(value.prompt, 1, SPEC_V2_PROMPT_MAX_BYTES)) fail('invalid_request');
     if (!specBytesBetween(value.displayText, 0, SPEC_V2_DISPLAY_MAX_BYTES)) fail('invalid_request');
     for (const key of ['sessionId', 'turnId']) {
         if (typeof value[key] !== 'string' || !SPEC_OPAQUE_ID.test(value[key])) fail('invalid_request');
     }
-    if (!isSpecAbsolutePath(value.cwd)) fail('invalid_request');
+    // No `cwd` means no project is selected (M-20): ALA starts in the robot HOME and has no project grant.
+    if (value.cwd !== undefined && !isSpecAbsolutePath(value.cwd)) fail('invalid_request');
     if (value.permissions !== 'full-access' && value.permissions !== 'ask-for-approval') fail('invalid_request');
     if (value.model !== undefined && !boundedText(value.model, 1, 128)) fail('invalid_request');
     if (value.effort !== undefined && (typeof value.effort !== 'string' || !SPEC_EFFORT.test(value.effort))) fail('invalid_request');

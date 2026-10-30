@@ -36,6 +36,12 @@ test('the managed ALA configuration keeps only what ALA accepts', () => {
     assert.deepEqual(managedAlaConfig({ backend: 'codex', settings: { models: { codex: 'gpt-x', bogus: 'y', claude: ' ' }, efforts: { codex: 'high', claude: 'low' }, extra: 1 } }),
         { codingAgent: 'codex', models: { codex: 'gpt-x' }, efforts: { codex: 'high' } });
     assert.deepEqual(managedAlaConfig({ backend: 'synthetic', settings: {} }), { models: {}, efforts: {} });
+    // RoboTeam's one-agent robot: `settings.model` and `settings.effort` apply to its `backend`; a plural map wins; an effort needs a model.
+    assert.deepEqual(managedAlaConfig({ backend: 'claude', settings: { codingAgents: ['claude'], model: 'opus', effort: 'high' } }),
+        { codingAgent: 'claude', models: { claude: 'opus' }, efforts: { claude: 'high' } });
+    assert.deepEqual(managedAlaConfig({ backend: 'claude', settings: { model: 'single', models: { claude: 'plural' } } }).models, { claude: 'plural' });
+    assert.deepEqual(managedAlaConfig({ backend: 'codex', settings: { effort: 'high' } }), { codingAgent: 'codex', models: {}, efforts: {} });
+    assert.deepEqual(managedAlaConfig({ backend: 'auto', settings: { codingAgents: ['codex', 'claude'], model: 'x' } }), { models: {}, efforts: {} }, 'no single backend, no model');
 });
 
 test('provision: the driver creates HOME, sessions and the managed configuration, then S1 attests the robot', async (t) => {

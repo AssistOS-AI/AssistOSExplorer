@@ -48,6 +48,7 @@ export function createDispatcher({
         workspaceId, scope: 'worker:adapter', ownerId: 'worker:adapter', robotOwnerId: 'worker:adapter', operations: ['adapter_complete']
     });
     const active = new Map(); // executionId -> { promise, shutdown }
+    const givenUp = new Set(); // attempts whose start was refused for a reason that a retry cannot change
     let timer = null;
     let closed = false;
     const sleep = (ms) => new Promise((resolve) => { timers.setTimeout(resolve, ms).unref?.(); });
@@ -74,7 +75,11 @@ export function createDispatcher({
             store.transitionAttempt({ executionId: item.executionId, attemptId: item.attemptId, expectedState: 'queued', nextState: 'running' });
         } catch (error) {
             if (error instanceof WorkerStateError && SKIPPED_TRANSITION.has(error.code)) return;
-            throw error;
+            // Anything else would be retried at every poll for ever: fail the attempt once, and remember the refusal if even that fails.
+            log('transition_refused', { executionId: item.executionId, error: describe(error) });
+            givenUp.add(item.executionId);
+            endDirect(item, 'queued', { classification: 'failed', data: { reason: 'start_refused' } });
+            return;
         }
 
         let execution = null;
@@ -111,8 +116,21 @@ export function createDispatcher({
             return finish({ classification: 'interrupted', outputText: partialText(), data: { reason: 'worker_shutdown' } });
         };
 
+        // One delivery pass at a time per attempt, and a control that was written is never written again, whatever the stdin
+        // flush or the acknowledgement does: a pass that awaits a slow stdin must not let the next interval tick re-take it.
+        let delivering = false;
+        const writtenControls = new Set();
         async function deliverControls() {
-            if (finishing !== null) return;
+            if (finishing !== null || delivering) return;
+            delivering = true;
+            try {
+                await deliverPass();
+            } finally {
+                delivering = false;
+            }
+        }
+
+        async function deliverPass() {
             let controls;
             try {
                 controls = store.takePendingControls({ executionId: item.executionId, attemptId: item.attemptId });
@@ -128,12 +146,15 @@ export function createDispatcher({
                     return;
                 }
                 if (control.op !== 'message') { ack(); continue; }
+                const key = `${control.actorKey}|${control.operationId}`;
+                if (writtenControls.has(key)) { ack(); continue; }
                 const record = { type: 'message', id: control.payload.id ?? control.operationId, message: control.payload.message };
                 if (control.payload.displayText !== undefined) record.displayText = control.payload.displayText;
                 let delivered = false;
                 try { delivered = await streams.reader.writeControl(record); } catch { delivered = false; }
                 // A control that could not be written stays pending; the attempt is ending (stdin closed).
                 if (!delivered) return;
+                writtenControls.add(key);
                 ack();
             }
         }
@@ -212,7 +233,7 @@ export function createDispatcher({
         }
         for (const item of items) {
             if (slots <= 0) break;
-            if (active.has(item.executionId)) continue;
+            if (active.has(item.executionId) || givenUp.has(item.executionId)) continue;
             slots -= 1;
             const ref = { shutdown: null };
             const promise = run(item, ref).catch((error) => log('run_failed', { error: describe(error) })).finally(() => active.delete(item.executionId));

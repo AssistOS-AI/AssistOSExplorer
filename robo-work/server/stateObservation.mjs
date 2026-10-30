@@ -33,6 +33,11 @@ export const EVENTS_MAX_LIMIT = 1000;
 export const OUTPUT_EVENT_MAX_BYTES = 48 * 1024;
 export const OUTPUT_EVENTS_PER_REFERENCE = 8192;
 export const TRUNCATED_EVENTS_PER_REFERENCE = 16;
+// Of those, the last two slots are reserved for the `event_limit` markers (decision M-7: a drop is never silent): the store writes
+// the first one at the moment it first refuses an `ala` event, and the relay writes a final one with the total at the end of the
+// attempt. Ordinary markers (backlog, oversize record) cannot take them.
+export const RESERVED_MARKER_SLOTS = 2;
+export const EVENT_LIMIT_REASON = 'event_limit';
 export const EVENTS_PAGE_MAX_BYTES = 512 * 1024;
 export const OUTPUT_EVENT_TYPES = Object.freeze(['ala', 'truncated']);
 
@@ -133,6 +138,8 @@ export function appendOutputEvents(db, referenceId, events, now) {
         .map((row) => [row.type, row.count]));
     let ala = counts.ala ?? 0;
     let truncated = counts.truncated ?? 0;
+    let limitMarked = db.prepare("SELECT COUNT(*) AS count FROM reference_event WHERE reference_id = ? AND type = 'truncated' AND data LIKE ?")
+        .get(referenceId, `%"reason":"${EVENT_LIMIT_REASON}"%`).count > 0;
     let sequence = cursor.last_sequence;
     let stored = 0;
     let dropped = 0;
@@ -142,22 +149,34 @@ export function appendOutputEvents(db, referenceId, events, now) {
         insert.run(referenceId, sequence, now, type, canonicalJson(data));
         stored += 1;
     };
+    const ordinaryRoom = () => truncated < TRUNCATED_EVENTS_PER_REFERENCE - RESERVED_MARKER_SLOTS;
     for (const event of events) {
         if (!OUTPUT_EVENT_TYPES.includes(event.type)) fail('invalid_request');
         let data;
         try { data = canonicalJson(event.data); } catch { dropped += 1; continue; } // too deep or not JSON: never stored
         if (event.type === 'ala') {
-            if (ala >= OUTPUT_EVENTS_PER_REFERENCE) { dropped += 1; continue; }
+            if (ala >= OUTPUT_EVENTS_PER_REFERENCE) {
+                dropped += 1;
+                // The first refusal is marked where it happens, in the reserved room.
+                if (!limitMarked && truncated < TRUNCATED_EVENTS_PER_REFERENCE) {
+                    put('truncated', { dropped: 1, reason: EVENT_LIMIT_REASON });
+                    truncated += 1;
+                    limitMarked = true;
+                }
+                continue;
+            }
             if (Buffer.byteLength(data, 'utf8') > OUTPUT_EVENT_MAX_BYTES) {
-                if (truncated < TRUNCATED_EVENTS_PER_REFERENCE) { put('truncated', { dropped: 1, reason: 'record_too_large' }); truncated += 1; } else dropped += 1;
+                if (ordinaryRoom()) { put('truncated', { dropped: 1, reason: 'record_too_large' }); truncated += 1; } else dropped += 1;
                 continue;
             }
             put('ala', event.data);
             ala += 1;
         } else {
-            if (truncated >= TRUNCATED_EVENTS_PER_REFERENCE || Buffer.byteLength(data, 'utf8') > 1024) { dropped += 1; continue; }
+            const isLimit = event.data?.reason === EVENT_LIMIT_REASON;
+            if (Buffer.byteLength(data, 'utf8') > 1024 || (isLimit ? truncated >= TRUNCATED_EVENTS_PER_REFERENCE : !ordinaryRoom())) { dropped += 1; continue; }
             put('truncated', event.data);
             truncated += 1;
+            if (isLimit) limitMarked = true;
         }
     }
     if (stored > 0) db.prepare('UPDATE reference_cursor SET last_sequence = ? WHERE reference_id = ?').run(sequence, referenceId);

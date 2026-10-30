@@ -24,7 +24,7 @@ import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './co
 import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
-import { workerBindingFor } from './worker-coordinator/flow-origins.mjs';
+import { taskOriginId, workerBindingFor } from './worker-coordinator/flow-origins.mjs';
 import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
 import { NFT_COMMAND, NSENTER_COMMAND, writeContainerFirewallRules } from './proxy-pool/container-firewall.mjs';
@@ -268,6 +268,9 @@ export class RuntimeManager {
         this.pending = new Map();
         this.shuttingDown = false;
         this.messageWaiters = new Map();
+        // The owner grants of started tasks, in memory only, until each task's child takes its grant over
+        // stdin (decision M-21). A grant is never part of a task record, a status or the environment.
+        this.taskGrants = new Map();
         this.deletedRobots = new Set();
         this.skillsets = options.skillsets || null;
         this.soulGateway = options.soulGateway || createSoulGatewayService();
@@ -587,7 +590,9 @@ export class RuntimeManager {
 
     _enqueueTask(robot, type, request, { first = false } = {}) {
         if (this.deletedRobots.has(robot.id)) throw new Error('robot was deleted');
-        request = structuredClone(request);
+        // The request's own Router-minted grant is held apart from the request, which is persisted.
+        const { ownerGrant, ...persistable } = request;
+        request = structuredClone(persistable);
         // Owner and workflow phase are fixed when work is admitted. Only a
         // signed user principal is kept; anything else is the system owner.
         if (typeof request.ownerPrincipal !== 'string' || !OWNER_PRINCIPAL.test(request.ownerPrincipal)) delete request.ownerPrincipal;
@@ -600,6 +605,7 @@ export class RuntimeManager {
             this.manualControl.delete(robot.id);
         }
         const task = this._newTask(robot, type, request);
+        if (this.workerMode && typeof ownerGrant === 'string' && ownerGrant) this.taskGrants.set(task.taskId, ownerGrant);
         this._emitTaskEvent({ kind: 'admitted', robotId: robot.id, robotName: robot.name, taskId: task.taskId, type, state: 'queued',
             cwd: typeof request.cwd === 'string' ? request.cwd : null, ownerPrincipal: request.ownerPrincipal || null,
             workflowRunId: typeof request.workflowRunId === 'string' && request.workflowRunId ? request.workflowRunId : null,
@@ -756,10 +762,15 @@ export class RuntimeManager {
             // Only Browser and Desktop tasks work in the robot's Chromium, where its mailbox is signed in.
             const emailAddress = GUI_MODES.has(task.type) ? robotEmailAddress(robot) : null;
             if (task.cancelRequested) throw new Error('task was paused');
+            // The grant leaves this map here and goes to the child over its stdin alone: never argv, env or a file.
+            const ownerGrant = this.taskGrants.get(task.taskId) || null;
+            this.taskGrants.delete(task.taskId);
             const worker = this.workerMode ? workerBindingFor(task.request, task.taskId) : null;
+            const origin = this.workerMode && !worker && ownerGrant ? taskOriginId(task.taskId) : null;
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
                 '--robot', robot.name, ...args,
-                ...(worker ? ['--worker-binding', worker.bindingId, '--worker-origin', worker.originRequestId] : [])],
+                ...(worker ? ['--worker-binding', worker.bindingId, '--worker-origin', worker.originRequestId] : []),
+                ...(origin ? ['--worker-origin', origin] : [])],
                 { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
             child.stdin?.on('error', () => {});
@@ -768,7 +779,7 @@ export class RuntimeManager {
             const systemPrompt = [task.type === 'desktop' ? DESKTOP_TASK_INSTRUCTIONS : '', emailAddress ? emailInstructions(emailAddress) : '',
                 task.request.systemPrompt].filter(Boolean).join('\n\n');
             child.stdin?.write(`${JSON.stringify({ type: 'prompt', prompt: task.request.task,
-                ...(systemPrompt ? { systemPrompt } : {}) })}\n`);
+                ...(systemPrompt ? { systemPrompt } : {}), ...(origin ? { ownerGrant } : {}) })}\n`);
             const resultDecoder = new StringDecoder('utf8');
             let resultBytes = 0;
             child.stdout?.on('data', (chunk) => {
@@ -823,6 +834,7 @@ export class RuntimeManager {
             }
         } finally {
             await humanInputChannel?.close().catch(() => {});
+            this.taskGrants.delete(task.taskId);
             task.child = null;
             task.controlReady = false;
             for (const [id, waiter] of this.messageWaiters) {
@@ -1035,6 +1047,7 @@ export class RuntimeManager {
 
     async stopAll() {
         this.shuttingDown = true;
+        this.taskGrants.clear();
         for (const task of this.tasks.values()) {
             if (!['queued', 'starting', 'running'].includes(task.state)) continue;
             const neverStarted = task.state === 'queued';

@@ -50,15 +50,21 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         input.once('close', () => receivePrompt?.(null));
         const task = await promptRecord;
         if (!task) throw new Error('The task prompt was not received.');
+        // The one-request owner grant of an `/api/control` task, received over stdin only. It is used at once for
+        // admission and is neither logged nor written anywhere.
+        const ownerGrant = typeof task.ownerGrant === 'string' && task.ownerGrant ? task.ownerGrant : null;
+        delete task.ownerGrant;
         runtime = await createCliRuntime({ workingDir: options['--cwd'], skillRoots: [],
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
             execution: { workflowExecution: options['--workflow-execution'] === true, captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
                 model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access',
-                ...(options['--worker-binding'] && options['--worker-origin']
-                    ? { worker: { bindingId: options['--worker-binding'], originRequestId: options['--worker-origin'] } } : {}),
+                ...(options['--worker-origin']
+                    ? { worker: { ...(options['--worker-binding'] ? { bindingId: options['--worker-binding'] } : {}), originRequestId: options['--worker-origin'] } } : {}),
+                cwdExplicit: true,
                 ...(task.systemPrompt ? { systemPrompt: task.systemPrompt } : {}) } }, { reattachExistingTasks: false });
         const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt: task.prompt,
             signal: controller.signal, context: { workingDir: options['--cwd'], rawText: task.prompt },
+            ...(ownerGrant && !options['--worker-binding'] ? { owner: { evidence: { ok: true, grant: ownerGrant } } } : {}),
             onControl: (send) => { control = send; },
             onEvent: (event) => { process.stderr.write('@@ALA_EVENT@@' + JSON.stringify(event) + '\n'); } });
         process.stdout.write(result.outputText);

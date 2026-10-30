@@ -11,7 +11,6 @@ import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
 import { ALA_BACKENDS, createAlaRecordHandler } from './alaRecordHandler.mjs';
 import { detachReason, isDetach, stopReason } from './abortReasons.mjs';
-import { alaFolderSpecifications, alaSkillFolderArguments } from './alaSkillMounts.mjs';
 import { TERMINAL_STATES, WorkerError, stopOperationId } from '../../../../server/worker-coordinator/worker-client.mjs';
 import { isOriginId } from '../../../../server/worker-coordinator/identities.mjs';
 
@@ -49,6 +48,15 @@ const EVIDENCE_WAIT_MS = 60000;
 // The conversation records its engine binding against this neutral directory: the robot HOME is
 // the worker's (decision M-10), and no RoboTeam path is bound or sent.
 const WORKER_SESSION_HOME = '/';
+
+const belowRoot = (root, candidate) => typeof candidate === 'string' && candidate.startsWith(`${root}${path.sep}`);
+
+// The refusal of a workspace-root working folder, with the message the user sees.
+function rootRefusal() {
+    const error = new WorkerError('workspace_root_not_granted', 400);
+    error.message = 'workspace_root_not_granted: the workspace root cannot be used as a working folder. Pick a project folder inside it, or start without one.';
+    return error;
+}
 
 function interrupted() {
     return Object.assign(new Error('Execution interrupted.'), { name: 'AbortError', code: 'ABORT_ERR', exitCode: 130 });
@@ -95,6 +103,14 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
     // The owner evidence of one turn: a WebChat envelope's verified grant (coordinator-API row), or the
     // flow binding of a RoboFlow phase (background row). Anything else has no evidence at all.
     function authorityFor(owner) {
+        // A task child started by `/api/control` holds only the one grant its parent handed it over stdin: it
+        // admits with it at once (a task admission under a deterministic origin) and never keeps it.
+        if (!owner?.coordinator && owner?.evidence?.ok === true && owner.evidence.grant) {
+            const base = owner.evidence;
+            const origin = execution.worker?.originRequestId;
+            if (!isOriginId(origin)) throw new WorkerError('owner_evidence_unavailable', 403);
+            return { mode: 'grant', direct: true, originRequestId: origin, principal: base.principal, best: () => (usable(base) ? base : null) };
+        }
         if (owner?.coordinator && owner.evidence?.ok === true && owner.evidence.grant) {
             const base = owner.evidence;
             return {
@@ -134,7 +150,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
     }
 
     async function admit({ authority, owner, auth, robotId, configRevision, sessionId, specification }) {
-        if (authority.mode === 'binding') {
+        if (authority.mode === 'binding' || authority.direct) {
             return client.admit({ originRequestId: authority.originRequestId, robotId, configRevision, kind: 'task', specification }, auth);
         }
         // The evidence is the newest unexpired one: provisioning may have outlived the first grant.
@@ -221,6 +237,12 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             }
             const cwd = await fs.realpath(session.engine?.cwd || session.cwd || workingDir);
             const workspaceRoot = resolveAchillesWorkspaceRoot(cwd, env);
+            // The workspace root is never granted (base section 4.1): the worker refuses a grant equal to it. A
+            // conversation that never picked a project folder runs with no project grant (the worker starts in
+            // the robot HOME); a task or phase that explicitly names the root is refused here, before admission.
+            const atRoot = cwd === workspaceRoot;
+            if (atRoot && execution.cwdExplicit === true) throw rootRefusal();
+            const projectCwd = atRoot ? null : cwd;
             const stored = settings.readAchillesSettings?.(cwd) || {};
             const permissionMode = execution.permissions || settings.getPermissionMode?.(cwd) || stored.permissionMode || 'full-access';
             if (!['ask-for-approval', 'full-access'].includes(permissionMode)) throw new Error('Invalid native permission mode.');
@@ -269,26 +291,34 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             // channel and the human-input channel are RoboTeam-local resources outside the shared
             // workspace; they are not sent (open issue: worker-owned channels, plan section 9).
             const nativePrompt = buildNativePrompt({ prompt, resume, selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
-            const args = ['--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
-            if (workspaceRoot !== cwd) args.push('--folder', workspaceRoot);
-            if (snapshot.skillsDirectory) args.push(...await alaSkillFolderArguments({ snapshot, workspaceRoot, cwd }));
-            if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) {
-                if (!path.relative(workspaceRoot, env.ROBOTEAM_HUMAN_INPUT_DIRECTORY).startsWith('..')) {
-                    args.push('--folder', env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, 'as', 'roboflow-human-input');
-                } else {
-                    await emit({ type: 'diagnostic', message: 'The human-input channel is outside the shared workspace and is not available through the worker.' });
-                }
+            // Extra folders are explicit read-only grants strictly below the workspace root (skills and the
+            // human-input channel), never the root and never the project itself. The placement modifiers
+            // (`as`, `at`, `expose`) cannot run in the worker, so a skill source is granted at its own path.
+            const candidates = [];
+            if (snapshot.skillsDirectory) {
+                for (const mount of snapshot.mounts || []) candidates.push(mount.source);
+                candidates.push(snapshot.skillsDirectory);
+                await emit({ type: 'diagnostic', message: 'Skills are granted as read-only folders; their .agents/skills placement is not available through the worker.' });
             }
+            if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) candidates.push(env.ROBOTEAM_HUMAN_INPUT_DIRECTORY);
+            const folders = [];
+            let skipped = 0;
+            for (const candidate of [...new Set(candidates)]) {
+                if (!belowRoot(workspaceRoot, candidate)) { skipped += 1; continue; }
+                if (projectCwd && (candidate === projectCwd || candidate.startsWith(`${projectCwd}${path.sep}`))) continue;
+                folders.push({ path: candidate, access: 'read' });
+            }
+            if (skipped) await emit({ type: 'diagnostic', message: `${skipped} folder(s) outside the shared workspace are not available through the worker.` });
+            const ignore = projectCwd ? [path.resolve(projectCwd, ACHILLES_PRIVATE_DIRECTORY_NAME)] : [];
             if (execution.workflowExecution && skills.some((skill) => skill.name === 'report-task-blocked')) {
                 await emit({ type: 'diagnostic', message: 'The task-failure channel is not available through the worker; report-task-blocked is not offered.' });
             }
-            const { folders, ignore } = alaFolderSpecifications(args);
             const overridden = Boolean(session.modelOverride || execution.model);
             const specification = {
                 version: SPEC_VERSION,
                 prompt: sanitize(nativePrompt),
                 displayText: sanitize(context.rawText || prompt),
-                sessionId, turnId, cwd, permissions: permissionMode,
+                sessionId, turnId, ...(projectCwd ? { cwd: projectCwd } : {}), permissions: permissionMode,
                 ...(overridden && backend && models[backend] ? { model: models[backend], effort: efforts[backend] || 'default' } : {}),
                 ...(!resume && requestedBackend ? { codingAgent: requestedBackend } : {}),
                 ...(resume ? { resume: true } : {}),
