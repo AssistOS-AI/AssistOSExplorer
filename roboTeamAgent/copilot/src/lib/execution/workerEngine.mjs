@@ -50,6 +50,16 @@ const EVIDENCE_WAIT_MS = 60000;
 // the worker's (decision M-10), and no RoboTeam path is bound or sent.
 const WORKER_SESSION_HOME = '/';
 
+// OpenCode serves Soul Gateway models under the `soul-gateway` provider, through a Unix socket in the robot home
+// (the legacy path's plugin); the worker has no such socket.
+const needsLocalProxy = (model) => typeof model === 'string' && /^soul-gateway\//iu.test(model.trim());
+
+function modelRefusal(model) {
+    const error = new WorkerError('model_unavailable_in_worker', 400);
+    error.message = `model_unavailable_in_worker: the model "${model}" is served through Soul Gateway on a local socket, which the worker cannot reach. Choose another model with /model, or /model default for the free default model.`;
+    return error;
+}
+
 // The refusal of a workspace-root working folder, with the message the user sees.
 function rootRefusal() {
     const error = new WorkerError('workspace_root_not_granted', 400);
@@ -169,9 +179,10 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
     // The one-agent robot's model and effort from the worker's robot configuration.
     function seedModels(configuration) {
         const configured = ALA_BACKENDS.includes(configuration?.backend) ? configuration.backend : null;
+        const plural = Object.fromEntries(Object.entries(configuration?.settings?.models || {}).filter(([name, model]) => ALA_BACKENDS.includes(name) && typeof model === 'string' && model));
         return {
             configured,
-            models: configured && configuration.settings?.model ? { [configured]: configuration.settings.model } : {},
+            models: { ...plural, ...(configured && configuration.settings?.model ? { [configured]: configuration.settings.model } : {}) },
             efforts: configured && configuration.settings?.effort ? { [configured]: configuration.settings.effort } : {},
         };
     }
@@ -191,7 +202,10 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             models[backend] = session.modelOverride.model;
             if (session.modelOverride.effort) efforts[backend] = session.modelOverride.effort; else delete efforts[backend];
         }
-        return { session, backend, models, efforts, configuration };
+        // Where the shown model comes from: the conversation's own choice, the robot's chosen model, or the default.
+        const source = backend && models[backend] ? (session.modelOverride?.backend === backend ? 'selected'
+            : (configuration.settings?.modelSource === 'default' ? 'default' : 'selected')) : null;
+        return { session, backend, models, efforts, configuration, source };
     }
 
     async function executeTurn({ sessionId, turnId = randomUUID(), prompt, skillName, context = {}, signal, onEvent, onControl, owner = null } = {}) {
@@ -259,10 +273,19 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             if (session.modelOverride && backend && session.modelOverride.backend !== backend) {
                 throw new Error('The session model belongs to another coding agent; reset /model or create a new session.');
             }
+            // The conversation's own model choice (`/model`) wins over the robot's configured one, as in alaEngine.
+            if (session.modelOverride && backend) {
+                models[backend] = session.modelOverride.model;
+                if (session.modelOverride.effort) efforts[backend] = session.modelOverride.effort; else delete efforts[backend];
+            }
             if (execution.model && backend) {
                 if (execution.model !== models[backend]) delete efforts[backend];
                 models[backend] = execution.model;
             }
+            // A model served through Soul Gateway needs a local proxy socket the worker cannot reach. It is refused here,
+            // before admission, and never replaced by the free default.
+            const chosenModel = backend ? models[backend] : null;
+            if (needsLocalProxy(chosenModel)) throw modelRefusal(chosenModel);
             if (backend === 'pi' && permissionMode === 'ask-for-approval') {
                 throw new Error('Pi does not support ask-for-approval; select full-access or use Codex, OpenCode or Claude Code.');
             }
@@ -649,7 +672,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
         async getModel({ sessionId } = {}) {
             const info = await modelState(sessionId);
             return { backend: info.backend, model: info.backend ? info.models[info.backend] || null : null,
-                effort: info.backend ? info.efforts[info.backend] || null : null };
+                effort: info.backend ? info.efforts[info.backend] || null : null, modelSource: info.source };
         },
         async setModel({ sessionId, backend, model, effort = null } = {}) {
             const current = await modelState(sessionId);

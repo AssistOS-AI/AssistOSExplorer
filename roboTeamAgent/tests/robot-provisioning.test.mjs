@@ -3,6 +3,11 @@ import test from 'node:test';
 import { WorkerError } from '../server/worker-coordinator/worker-client.mjs';
 import { configurationDigest, createRobotProvisioner, desiredConfiguration, lifecycleOperationId } from '../server/worker-coordinator/robot-provisioning.mjs';
 import { isOperationId } from '../server/worker-coordinator/identities.mjs';
+import { DEFAULT_MODELS } from '../server/worker-coordinator/robot-provisioning.mjs';
+import { managedAlaConfig } from '../../robo-work/server/runtime/robotStore.mjs';
+import { validateConfiguration } from '../../robo-work/server/stateProtocol.mjs';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // The robot provisioning client against a fake worker client: the worker mints the robot ID, every
 // lifecycle call has a deterministic operation ID, and readiness is polled within a bound.
@@ -114,4 +119,63 @@ test('failure, a vanished robot and a slow preparation end explicitly', async ()
     assert.equal(missing.calls.some(([call]) => call === 'provision'), false, 'never a second worker robot for one RoboTeam robot');
     const slow = fixture({ views: [{ ...ready(configuration), preparing: true, ready: false }] });
     await assert.rejects(slow.provisioner.ensureReady(robot({ worker: { robotId: WORKER_ROBOT } }), {}), (error) => error.code === 'worker_robot_not_ready');
+});
+
+const OPENCODE_DEFAULT = 'opencode/glm-5.3-flash-free';
+
+test('a robot that picked no model gets its agent\'s free default, marked as a default; a chosen model is never replaced', () => {
+    assert.deepEqual(DEFAULT_MODELS, { opencode: OPENCODE_DEFAULT });
+    assert.deepEqual(desiredConfiguration(robot({ codingAgents: ['opencode'] })), { backend: 'opencode', settings: { codingAgents: ['opencode'], model: OPENCODE_DEFAULT, modelSource: 'default' } });
+    assert.deepEqual(desiredConfiguration(robot({ codingAgents: ['opencode'], selection: { model: 'opencode/mine', effort: 'high' } })),
+        { backend: 'opencode', settings: { codingAgents: ['opencode'], model: 'opencode/mine', effort: 'high' } });
+    assert.deepEqual(desiredConfiguration(robot({ codingAgents: ['codex'], selection: { model: 'gpt-x' } })).settings, { codingAgents: ['codex'], model: 'gpt-x' });
+    // No default exists for the other agents, so nothing is invented for them.
+    assert.deepEqual(desiredConfiguration(robot({ codingAgents: ['codex'] })).settings, { codingAgents: ['codex'] });
+    assert.deepEqual(desiredConfiguration(robot({ codingAgents: ['claude'] })).settings, { codingAgents: ['claude'] });
+    // Several agents: the defaults of those that have one, as a map.
+    assert.deepEqual(desiredConfiguration(robot({ codingAgents: ['codex', 'opencode'] })),
+        { backend: 'auto', settings: { codingAgents: ['codex', 'opencode'], models: { opencode: OPENCODE_DEFAULT }, modelSource: 'default' } });
+    assert.deepEqual(desiredConfiguration(robot({ codingAgents: ['codex', 'claude'] })).settings, { codingAgents: ['codex', 'claude'] });
+});
+
+test('the worker accepts the configuration and maps the default into the robot\'s ALA config; the marker never reaches ALA', () => {
+    const limits = { requestBytes: 1024 * 1024, resultBytes: 1024 * 1024 };
+    for (const configuration of [
+        desiredConfiguration(robot({ codingAgents: ['opencode'] })),
+        desiredConfiguration(robot({ codingAgents: ['opencode'], selection: { model: 'opencode/mine', effort: 'high' } })),
+        desiredConfiguration(robot({ codingAgents: ['codex', 'opencode'] })),
+    ]) validateConfiguration(configuration, limits);
+    assert.deepEqual(managedAlaConfig(desiredConfiguration(robot({ codingAgents: ['opencode'] }))),
+        { codingAgent: 'opencode', models: { opencode: OPENCODE_DEFAULT }, efforts: {} });
+    assert.deepEqual(managedAlaConfig(desiredConfiguration(robot({ codingAgents: ['opencode'], selection: { model: 'opencode/mine', effort: 'high' } }))),
+        { codingAgent: 'opencode', models: { opencode: 'opencode/mine' }, efforts: { opencode: 'high' } });
+    assert.deepEqual(managedAlaConfig(desiredConfiguration(robot({ codingAgents: ['codex', 'opencode'] }))),
+        { models: { opencode: OPENCODE_DEFAULT }, efforts: {} });
+    assert.deepEqual(managedAlaConfig(desiredConfiguration(robot({ codingAgents: ['codex'] }))), { codingAgent: 'codex', models: {}, efforts: {} });
+});
+
+test('provisioning sends the default model to the worker, and changing from default to a chosen model is a configure', async () => {
+    const defaults = fixture({ views: [ready(desiredConfiguration(robot({ codingAgents: ['opencode'] })))] });
+    await defaults.provisioner.ensureReady(robot({ codingAgents: ['opencode'], worker: { robotId: WORKER_ROBOT } }), {});
+    assert.equal(defaults.calls.some(([call]) => call === 'configure'), false, 'a robot already on the default is not reconfigured');
+    const chosen = robot({ codingAgents: ['opencode'], selection: { model: 'opencode/mine' }, worker: { robotId: WORKER_ROBOT } });
+    const f = fixture({ views: [ready(desiredConfiguration(robot({ codingAgents: ['opencode'] })), 2), ready(desiredConfiguration(chosen), 3)] });
+    await f.provisioner.ensureReady(chosen, { grant: 'g' });
+    const configure = f.calls.find(([call]) => call === 'configure');
+    assert.equal(configure[1].configuration.settings.model, 'opencode/mine');
+    assert.equal(Object.hasOwn(configure[1].configuration.settings, 'modelSource'), false, 'a chosen model carries no default marker');
+});
+
+// Product code never writes a provider credential into a worker HOME: the worker creates and attests the HOME, and the
+// only thing RoboTeam sends is the configuration above (agents, model, effort, source marker).
+test('no RoboTeam worker-side module writes into a robot HOME, and the configuration carries no credential', () => {
+    const modules = ['../server/worker-coordinator/robot-provisioning.mjs', '../server/worker-coordinator/worker-client.mjs',
+        '../server/worker-coordinator/grant-actions.mjs', '../copilot/src/lib/execution/workerEngine.mjs'];
+    for (const relative of modules) {
+        const text = fs.readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8');
+        assert.doesNotMatch(text, /\b(writeFile|writeFileSync|appendFile|copyFile|cp\(|symlink)\b/u, relative);
+        assert.doesNotMatch(text, /auth\.json|\.ala\/config|\.codex\/|\.config\/opencode|API_KEY|apiKey/u, relative);
+    }
+    const settings = desiredConfiguration(robot({ codingAgents: ['opencode'], selection: { model: 'm', effort: 'e' } })).settings;
+    assert.deepEqual(Object.keys(settings).sort(), ['codingAgents', 'effort', 'model']);
 });

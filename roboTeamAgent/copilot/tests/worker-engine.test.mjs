@@ -73,16 +73,17 @@ const COMPLETE_ROWS = () => [state('queued', 1), state('running', 2), ala(SELECT
 
 async function harness(t, { rows = COMPLETE_ROWS(), execution = {}, permission = 'full-access', client = scripted(rows), engineOptions = {},
     robot = { id: 'robo', name: 'default', codingAgents: ['codex'], worker: { robotId: ROBOT } }, grant = freshGrant('admission'), freshest = null,
-    atRoot = false, snapshotExtra = null } = {}) {
+    atRoot = false, snapshotExtra = null, configuration = CONFIGURATION } = {}) {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'worker-engine-'));
     const oldRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = atRoot ? workingDir : path.dirname(workingDir);
     const store = new ConversationSessionStore({ workingDir });
     const session = await store.createSession();
     const ensured = [];
+    client.getRobot = async () => { client.calls.getRobot += 1; return { configuration }; };
     const provisioner = {
-        async ensureReady(current, auth) { ensured.push({ robot: current, auth }); return { robotId: ROBOT, configRevision: 3, configuration: CONFIGURATION }; },
-        desiredConfiguration: () => CONFIGURATION,
+        async ensureReady(current, auth) { ensured.push({ robot: current, auth }); return { robotId: ROBOT, configRevision: 3, configuration }; },
+        desiredConfiguration: () => configuration,
     };
     const catalog = { async refresh() { return { skills: [{ name: 'bash', skillDir: workingDir, enabled: true }], taskRepositories: [], ...(snapshotExtra?.(workingDir) || {}) }; } };
     const admitted = [];
@@ -416,10 +417,10 @@ test('a message control carries the grant of its own request; one without is rej
 
 test('model reads come from the worker robot, never from a RoboTeam home', async (t) => {
     const info = await harness(t);
-    assert.deepEqual(await info.engine.getModel({ sessionId: info.sessionId }), { backend: 'codex', model: null, effort: null });
+    assert.deepEqual(await info.engine.getModel({ sessionId: info.sessionId }), { backend: 'codex', model: null, effort: null, modelSource: null });
     assert.equal(info.client.calls.getRobot, 1, 'read from robots/get');
     const set = await info.engine.setModel({ sessionId: info.sessionId, backend: 'codex', model: 'gpt-x', effort: 'high' });
-    assert.deepEqual(set, { backend: 'codex', model: 'gpt-x', effort: 'high' });
+    assert.deepEqual(set, { backend: 'codex', model: 'gpt-x', effort: 'high', modelSource: 'selected' });
     await assert.rejects(info.engine.listModels({ sessionId: info.sessionId }), (error) => error.code === 'worker_model_listing_unavailable');
     await assert.rejects(info.engine.setModel({ sessionId: info.sessionId, backend: 'opencode', model: 'x' }), /backend changed/);
 });
@@ -526,4 +527,48 @@ test('a task child with the one grant its parent handed it admits a task under i
     // Without a deterministic origin the grant alone admits nothing.
     const bare = await harness(t);
     await assert.rejects(bare.engine.executeTurn({ sessionId: bare.sessionId, prompt: 'p', owner: { evidence: { ok: true, grant } } }), (error) => error.code === 'owner_evidence_unavailable');
+});
+
+const OPENCODE_DEFAULT = 'opencode/glm-5.3-flash-free';
+const opencodeConfiguration = (settings) => ({ backend: 'opencode', settings: { codingAgents: ['opencode'], ...settings } });
+const opencodeRobot = { id: 'robo', name: 'default', codingAgents: ['opencode'], worker: { robotId: ROBOT } };
+const opencodeRows = () => [state('running', 1), ala({ ...SELECTED, agent: 'opencode' }, 2), ala({ ...FINAL('Final answer'), agent: 'opencode' }, 3), state('completed', 4)];
+
+test('a model served through Soul Gateway is refused before admission and never replaced by the free default', async (t) => {
+    // The robot's chosen model, a conversation override and an explicit task model are all checked.
+    const gateway = await harness(t, { rows: opencodeRows(), robot: opencodeRobot,
+        configuration: opencodeConfiguration({ model: 'soul-gateway/gpt-x', modelSource: 'selected' }) });
+    await assert.rejects(gateway.engine.executeTurn({ sessionId: gateway.sessionId, prompt: 'p', owner: gateway.owner }),
+        (error) => error.code === 'model_unavailable_in_worker' && error.status === 400
+            && /soul-gateway\/gpt-x/.test(error.message) && /Soul Gateway/.test(error.message) && /\/model default/.test(error.message));
+    assert.equal(gateway.admitted.length, 0);
+    assert.equal(gateway.client.calls.subscribe.length, 0);
+
+    const override = await harness(t, { rows: opencodeRows(), robot: opencodeRobot, configuration: opencodeConfiguration({ model: OPENCODE_DEFAULT, modelSource: 'default' }) });
+    await override.store.updateSession(override.sessionId, (session) => { session.modelOverride = { backend: 'opencode', model: 'Soul-Gateway/claude', effort: null }; });
+    await assert.rejects(override.engine.executeTurn({ sessionId: override.sessionId, prompt: 'p', owner: override.owner }), (error) => error.code === 'model_unavailable_in_worker');
+    assert.equal(override.admitted.length, 0);
+
+    const task = await harness(t, { rows: opencodeRows(), robot: opencodeRobot, configuration: opencodeConfiguration({ model: OPENCODE_DEFAULT, modelSource: 'default' }),
+        execution: { model: 'soul-gateway/x', worker: { originRequestId: ORIGIN } } });
+    await assert.rejects(task.engine.executeTurn({ sessionId: task.sessionId, prompt: 'p', owner: { evidence: { ok: true, grant: task.grant } } }), (error) => error.code === 'model_unavailable_in_worker');
+    assert.equal(task.client.calls.admit.length, 0);
+});
+
+test('the free default model runs and is shown as the default, not as the user\'s choice', async (t) => {
+    const h = await harness(t, { rows: opencodeRows(), robot: opencodeRobot, configuration: opencodeConfiguration({ model: OPENCODE_DEFAULT, modelSource: 'default' }) });
+    assert.deepEqual(await h.engine.getModel({ sessionId: h.sessionId }), { backend: 'opencode', model: OPENCODE_DEFAULT, effort: null, modelSource: 'default' });
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'p', owner: h.owner });
+    assert.equal(result.outputText, 'Final answer');
+    // The default is the robot's configured model, not a per-turn override: the specification carries no model.
+    assert.equal(Object.hasOwn(h.admitted[0].request.specification, 'model'), false);
+    // The conversation's own model choice is what the turn runs with, and is shown as selected.
+    await h.engine.setModel({ sessionId: h.sessionId, backend: 'opencode', model: 'opencode/other', effort: null });
+    assert.equal((await h.engine.getModel({ sessionId: h.sessionId })).modelSource, 'selected');
+    h.admitted.length = 0;
+    await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'again', owner: h.owner });
+    assert.equal(h.admitted[0].request.specification.model, 'opencode/other', 'the session override reaches the specification');
+    // A robot's chosen model is selected too.
+    const chosen = await harness(t, { rows: opencodeRows(), robot: opencodeRobot, configuration: opencodeConfiguration({ model: 'opencode/mine', modelSource: 'selected' }) });
+    assert.equal((await chosen.engine.getModel({ sessionId: chosen.sessionId })).modelSource, 'selected');
 });

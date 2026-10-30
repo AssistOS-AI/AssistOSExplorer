@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WorkerError } from './worker-client.mjs';
+import { DEFAULT_OPENCODE_MODEL } from '../agent-model-config.mjs';
 
 // RoboTeam's robot provisioning client (RoboWork r10 decision M-6, plan section 6). RoboTeam keeps
 // the desired catalog metadata; the worker owns the robot HOME and the effective revision. The
@@ -31,14 +32,33 @@ export function lifecycleOperationId(kind, ...parts) {
     return crypto.createHash('sha256').update(`roboteam/robot-${kind}/v1\n${parts.join('\n')}`).digest('base64url').slice(0, 22);
 }
 
-// The worker's robot configuration: `{backend, settings}`. A robot with several coding agents
-// leaves the choice to ALA (`auto`); model and effort apply to a one-agent robot.
+// The free default model of each coding agent when the user picked none (DS002: OpenCode's free native model, so a
+// headless run never falls back to whatever model OpenCode picks on its own). A model the user chose is never
+// replaced by it.
+export const DEFAULT_MODELS = Object.freeze({ opencode: DEFAULT_OPENCODE_MODEL });
+
+// The worker's robot configuration: `{backend, settings}`. A robot with several coding agents leaves the choice to
+// ALA (`auto`). A one-agent robot sends the model and effort the user chose (no `modelSource`), or else the
+// agent's free default marked `modelSource: 'default'`, so the robot's settings and the UI never show a default as the
+// user's choice. A several-agent robot sends the defaults of its agents as a `models` map.
 export function desiredConfiguration(robot) {
     const agents = Array.isArray(robot.codingAgents) ? [...robot.codingAgents] : [];
     const settings = { codingAgents: agents };
-    if (agents.length === 1 && robot.selection && typeof robot.selection === 'object') {
-        if (typeof robot.selection.model === 'string' && robot.selection.model) settings.model = robot.selection.model;
-        if (typeof robot.selection.effort === 'string' && robot.selection.effort) settings.effort = robot.selection.effort;
+    if (agents.length === 1) {
+        const selection = robot.selection && typeof robot.selection === 'object' ? robot.selection : {};
+        if (typeof selection.model === 'string' && selection.model) {
+            settings.model = selection.model;
+            if (typeof selection.effort === 'string' && selection.effort) settings.effort = selection.effort;
+        } else if (DEFAULT_MODELS[agents[0]]) {
+            settings.model = DEFAULT_MODELS[agents[0]];
+            settings.modelSource = 'default';
+        }
+    } else {
+        const defaults = Object.fromEntries(agents.filter((agent) => DEFAULT_MODELS[agent]).map((agent) => [agent, DEFAULT_MODELS[agent]]));
+        if (Object.keys(defaults).length) {
+            settings.models = defaults;
+            settings.modelSource = 'default';
+        }
     }
     return { backend: agents.length === 1 ? agents[0] : 'auto', settings };
 }
