@@ -32,9 +32,12 @@ const { primary } = JSON.parse(fs.readFileSync(accountsPath, 'utf8'));
 if (process.env.GATE === '1' && !/^[0-9a-f]{7,40}$/i.test(process.env.SMOKE_EXPECT_EXPLORER_COMMIT || '')) {
   throw new Error('GATE=1 requires SMOKE_EXPECT_EXPLORER_COMMIT (a 7 to 40 digit hexadecimal commit).');
 }
+const specArgsRaw = process.argv.slice(2);
 const baseEnv = {
   ...process.env,
   SMOKE_ROBOWORK: '1',
+  // Running the preflight spec by itself is an explicit request for it.
+  ...(specArgsRaw.some((entry) => /07-robowork-preflight/.test(entry)) ? { SMOKE_ROBOWORK_PREFLIGHT: '1' } : {}),
   SMOKE_BASE_URL: process.env.SMOKE_BASE_URL || 'http://localhost:8080',
   SMOKE_WORKSPACE_ROOT: process.env.SMOKE_WORKSPACE_ROOT || path.join(os.homedir(), 'work/testExplorerFresh'),
   SMOKE_LOGIN_EMAIL: primary.loginEmail,

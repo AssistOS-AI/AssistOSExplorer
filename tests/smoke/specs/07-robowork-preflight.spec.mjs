@@ -6,7 +6,7 @@ import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { signIn } from '../lib/auth.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
-import { discoverContainers, collectEnvironment } from '../lib/robowork-e2e.mjs';
+import { discoverContainers, collectEnvironment, probeZenModels } from '../lib/robowork-e2e.mjs';
 import { ProviderStall, makeStallGuard, apiOk } from '../lib/robowork-scenarios.mjs';
 import { chatTurn, stopChatTurn, applyModel } from '../lib/robowork-interaction.mjs';
 
@@ -45,8 +45,20 @@ test('provider liveness: a tiny turn gets an answer', async ({ page }, testInfo)
   fs.mkdirSync(path.join(workspaceRoot, project), { recursive: true });
   const tried = [];
   let selected = null;
+  // One direct request per candidate from the worker's network: a provider quota (429 FreeUsageLimitError) is reported at once instead of after
+  // minutes of stalled turns. The deployment default's model id comes from the robot's coding-agent config.
+  const deploymentDefault = (await apiOk(roboTeamApi, page, { path: `api/robots/${e2e.id}/coding-agents` })).defaultModels?.opencode ?? '';
+  const ids = candidates.map((model) => (model || deploymentDefault).replace(/^opencode\//, ''));
+  const probes = probeZenModels(containers, [...new Set(ids)]);
+  save('provider-probes.json', probes);
+  const probeOf = (model) => probes.find((entry) => entry.model === (model || deploymentDefault).replace(/^opencode\//, ''));
   try {
     for (const model of candidates) {
+      const probe = probeOf(model);
+      if (probe && probe.status === 429) {
+        tried.push({ model: model || '(deployment default)', result: `quota: ${probe.type} (retry-after ${probe.retryAfterSeconds ?? '?'} s)`, ms: probe.ms });
+        continue;
+      }
       const startedMs = Date.now();
       const entry = { model: model || '(deployment default)', startedAt: new Date().toISOString() };
       tried.push(entry);

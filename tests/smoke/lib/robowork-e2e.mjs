@@ -220,3 +220,28 @@ export function removeRunDirectory({ workspaceRoot, name, prefixes = ['e2e-flow-
   if (path.dirname(target) !== workspaceRoot) throw new Error(`Refusing to remove ${target}.`);
   fs.rmSync(target, { recursive: true, force: true });
 }
+
+// A direct, one-request probe of the OpenCode Zen chat endpoint from inside the worker container (the network the executions use), per model id
+// (without the `opencode/` prefix). It tells a provider quota ("FreeUsageLimitError", HTTP 429, with retry-after seconds) from a model that
+// answers, in about a second, so the preflight does not spend minutes on stalled turns. Anonymous key only; no credential is involved.
+export function probeZenModels(containers, models) {
+  const script = `
+    const models = JSON.parse(process.argv[1]);
+    (async () => {
+      const out = [];
+      for (const model of models) {
+        const t = Date.now();
+        try {
+          const r = await fetch('https://opencode.ai/zen/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer public' },
+            body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with OK' }], max_tokens: 8, stream: false }), signal: AbortSignal.timeout(30000) });
+          const text = await r.text();
+          let type = null; try { type = JSON.parse(text).error?.type ?? null; } catch {}
+          out.push({ model, status: r.status, type, retryAfterSeconds: Number(r.headers.get('retry-after')) || null, ms: Date.now() - t });
+        } catch (error) { out.push({ model, status: 0, type: error.name, ms: Date.now() - t }); }
+      }
+      console.log(JSON.stringify(out));
+    })();`;
+  try {
+    return JSON.parse(nested(containers, containers.worker, ['node', '-e', script, JSON.stringify(models)], { timeout: 120_000 }).trim());
+  } catch (error) { return models.map((model) => ({ model, status: -1, type: `probe-failed: ${String(error.message).slice(0, 80)}` })); }
+}
