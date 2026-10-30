@@ -1,0 +1,14 @@
+8010 8009 0:168 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+8023 8010 0:110 /storage-run-1000/crun/.empty-directory /proc/acpi ro,nosuid,nodev,relatime - tmpfs tmpfs rw,uid=100000,gid=100000,inode64
+8024 8010 0:7 /null /proc/kcore ro,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+8025 8010 0:7 /null /proc/keys ro,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+8026 8010 0:7 /null /proc/latency_stats ro,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+8027 8010 0:110 /storage-run-1000/crun/.empty-directory /proc/scsi ro,nosuid,nodev,relatime - tmpfs tmpfs rw,uid=100000,gid=100000,inode64
+8028 8010 0:7 /null /proc/timer_list ro,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+8031 8010 0:7 /null /proc/interrupts ro,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+8053 8010 0:168 /asound /proc/asound ro,nosuid,nodev,noexec,relatime - proc proc rw
+8054 8010 0:168 /bus /proc/bus ro,nosuid,nodev,noexec,relatime - proc proc rw
+8055 8010 0:168 /fs /proc/fs ro,nosuid,nodev,noexec,relatime - proc proc rw
+8056 8010 0:168 /irq /proc/irq ro,nosuid,nodev,noexec,relatime - proc proc rw
+8057 8010 0:168 /sys /proc/sys ro,nosuid,nodev,noexec,relatime - proc proc rw
+8058 8010 0:168 /sysrq-trigger /proc/sysrq-trigger ro,nosuid,nodev,noexec,relatime - proc proc rw

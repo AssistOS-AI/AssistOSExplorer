@@ -51,3 +51,21 @@ test('procMaskArgs: ro-bind /dev/null for files, empty read-only dirs, self ro-b
     assert.ok(line.includes('--ro-bind /dev/null /proc/sysrq-trigger'));
     assert.throws(() => procMaskArgs([{ path: '/proc/x', bwrap: 'bogus' }]), { code: 'invalid_request' });
 });
+
+// Observed in a Ploinky Box (nested Podman with crun): masked directories are binds of crun's shared empty directory.
+test('the nested Box form of the masks (crun .empty-directory binds) is classified, nothing left unclassified', () => {
+    const text = fs.readFileSync(fileURLToPath(new URL('./fixtures/box-nested-mountinfo.txt', import.meta.url)), 'utf8');
+    const { masks, unclassified } = classifyProcMasks(text);
+    assert.deepEqual(unclassified, []);
+    const byPath = new Map(masks.map((mask) => [mask.path, mask.kind]));
+    assert.equal(byPath.get('/proc/acpi'), 'empty-dir');
+    assert.equal(byPath.get('/proc/scsi'), 'empty-dir');
+    assert.equal(byPath.get('/proc/keys'), 'null-file');
+    assert.equal(byPath.get('/proc/sys'), 'proc-ro');
+    assert.equal(masks.length, 13);
+});
+
+test('a tmpfs over a /proc path whose root is some other directory stays unclassified', () => {
+    const line = '9 1 0:110 /storage-run-1000/other /proc/acpi ro - tmpfs tmpfs rw';
+    assert.equal(classifyProcMasks(line).unclassified.length, 1);
+});

@@ -55,7 +55,9 @@ export function classifyProcMasks(text) {
         const { mountpoint: path, fstype, root } = mount;
         if (fstype === 'devtmpfs' && root.startsWith('/') && !root.includes('/', 1)) {
             masks.push({ path, kind: 'null-file', bwrap: 'ro-bind-null' });
-        } else if (fstype === 'tmpfs' && root === '/') {
+        } else if (fstype === 'tmpfs' && (root === '/' || /^\/[^\0]*\/crun\/\.empty-directory$/u.test(root))) {
+            // A tmpfs of its own (podman/runc), or crun's shared read-only empty directory (crun in a nested Box binds
+            // <run>/crun/.empty-directory over masked directories).
             masks.push({ path, kind: 'empty-dir', bwrap: 'empty-dir' });
         } else if (fstype === 'proc' && path === `/proc${root}` && root.indexOf('/', 1) === -1) {
             const name = root.slice(1);
