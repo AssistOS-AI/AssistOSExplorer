@@ -7,7 +7,7 @@
 //        together read /proc once). Never throws: an unreadable /proc is a snapshot with ok:false (no credit, and the meters keep
 //        their baselines).
 //   createActivityMeter({ walk, ... })          -> { sample(workloads) -> boolean }       one meter per execution
-//        workloads: [{ pidNs, init: { pid, startTime } }] the live workload trees of the execution. A process is a MEMBER when its
+//        workloads: [{ pidNs, owner: '<monitor pid>:<startTime>', init: { pid, startTime } }] the live workload trees of the execution. A process is a MEMBER when its
 //        pid-namespace inode equals the tree's AND that inode is still proven to be the recorded one (pinned, or the recorded init is
 //        alive in it): an inode alone is reused by the kernel. Per sample the meter reports ACTIVITY when
 //          - a member appeared (pid + start time not seen at the previous sample), or
@@ -64,7 +64,7 @@ export function createWorkloadActivityWalk({ view, now = Date.now, shareMs = DEF
             if (parsed.startTime !== startTime) return { gone: true }; // the pid was reused: the member is gone
             return { ticks: parsed.ticks };
         },
-        isPinned: (type, inode) => view.isPinned?.(type, inode) === true
+        isPinned: (type, inode, owner) => view.isPinned?.(type, inode, owner) === true
     });
 }
 
@@ -80,7 +80,7 @@ export function createActivityMeter({ walk, now = Date.now, fraction = ACTIVITY_
             const members = [];
             for (const workload of workloads ?? []) {
                 if (typeof workload?.pidNs !== 'string') continue;
-                const proven = walk.isPinned('pid', workload.pidNs)
+                const proven = walk.isPinned('pid', workload.pidNs, workload.owner)
                     || processes.some((entry) => entry.pid === workload.init?.pid && entry.startTime === workload.init?.startTime && entry.pidNs === workload.pidNs);
                 if (!proven) continue;
                 for (const entry of processes) if (entry.pidNs === workload.pidNs) members.push(entry);

@@ -112,3 +112,28 @@ test('B3: a removal that leaves the nft table (or the veth) behind ends quaranti
         assert.equal(await world.walker.walk(netns(null)), 'quarantined', `${stubborn} (uncommitted)`);
     }
 });
+
+// ---- M-36 at the walker ------------------------------------------------------------------------------------------------------
+
+test('M-36: a thread of a zombie leader that holds the network namespace holds it (by the thread\'s readable link); one that does not, does not', async () => {
+    const recovery = (processes) => createRecoveryView({ exists: () => false, remove: () => true }, { runSync: () => ({ status: 0, stdout: '', stderr: '' }), exists: () => false });
+    const make = (processes) => createWalker({ view: { ...recovery(processes), listProcesses: () => processes, listMounts: () => [] }, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: () => null });
+    const netns = { kind: 'netns', identity: { netNs: '4026539101' }, locator: { netns: '0123456789abcdef0123456789abcdef', keeper: 'k' } };
+    const holder = proc(900, { pidNs: '5', netNs: '4026531000', mntNs: '6', threadNs: { pidNs: ['5'], netNs: ['4026531000', '4026539101'], mntNs: ['6'] } });
+    assert.equal(make([holder]).prove(netns).absent, false, 'its second thread sits in the execution network');
+    assert.ok(make([holder]).prove(netns).holders.some((entry) => entry.via === 'ns-link' && entry.pid === 900));
+    const bystander = proc(901, { pidNs: '5', netNs: '4026531000', mntNs: '6', threadNs: { pidNs: ['5'], netNs: ['4026531000'], mntNs: ['6'] } });
+    assert.equal(make([bystander]).prove(netns).absent, true);
+});
+
+test('M-36: robot A\'s long-lived opaque process cannot make execution B\'s netns, mount or tree release wait or quarantine', async () => {
+    const hostile = proc(700, { ppid: 650, state: 'Z', pidNs: '4026534500', netNs: null, mntNs: null, fdNs: [], opaque: true, threadNs: { pidNs: ['4026534500'], netNs: [], mntNs: [] } });
+    const aInit = proc(650, { pidNs: '4026534500', netNs: '4026539100', mntNs: '4026539200' });
+    const view = { listProcesses: () => [hostile, aInit], listMounts: () => [], exists: () => false, remove: () => true, kill: () => false, unmount: () => false, isPinned: () => false };
+    const walker = createWalker({ view, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: () => null });
+    assert.equal(await walker.walk({ kind: 'netns', identity: { netNs: '4026539999' }, locator: { netns: 'b'.repeat(32), keeper: 'kb' } }), 'released', 'B\'s network');
+    assert.equal(await walker.walk({ kind: 'mount', identity: { mntNs: '4026539998', mountId: 9, mountpoint: '/b' }, locator: { mount: 'b' } }), 'released', 'B\'s mount');
+    assert.equal(await walker.walk({ kind: 'process-tree', identity: { pid: 800, startTime: '800', pidNs: '4026534600', init: { pid: 801, startTime: '801' } }, locator: { marker: 'mb' } }), 'released', 'B\'s tree');
+    // A's own network IS held by the opaque leader that descends from A's init (which readably holds it)
+    assert.equal(walker.prove({ kind: 'netns', identity: { netNs: '4026539100' }, locator: { netns: 'a'.repeat(32), keeper: 'ka' } }).absent, false);
+});

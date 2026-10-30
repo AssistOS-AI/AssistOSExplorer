@@ -3,7 +3,7 @@
 // to verify a sandbox claim before anything is committed. Nothing here believes a sandbox: every answer is read from
 // /proc or the file system, and anything that cannot be read is answered "present" or throws.
 //
-//   listProcesses() -> [{ pid, ppid, startTime, cmdline, pidNs, netNs, mntNs, fdNs, opaque? }]   start times and inodes are
+//   listProcesses() -> [{ pid, ppid, startTime, cmdline, pidNs, netNs, mntNs, fdNs, threadNs?, opaque? }]   start times and inodes are
 //                      canonical decimal strings, pids integers (the types toLedgerIdentity commits)
 //   listMounts()    -> [{ mountId, mountpoint, mntNs, fstype, nsInode, majorMinor }]
 //   exists(kind, locator), kill({ pid, startTime }), remove(kind, locator), unmount() (always false)
@@ -104,21 +104,24 @@ export function createProcView({
             throw new ProcUnreadable(where, error);
         }
     }
-    const nsLink = (pid, type) => {
-        const target = guarded(`${pid}/ns/${type}`, () => fs.readlinkSync(at(pid, 'ns', type)));
+    const nsLinkAt = (base, label, type) => {
+        const target = guarded(`${label}/ns/${type}`, () => fs.readlinkSync(path.join(base, 'ns', type)));
         const match = NS_LINK.exec(target);
-        if (!match || match[1] !== type) throw new ProcUnreadable(`${pid}/ns/${type}`);
+        if (!match || match[1] !== type) throw new ProcUnreadable(`${label}/ns/${type}`);
         return match[2];
     };
+    const nsLink = (pid, type) => nsLinkAt(at(pid), String(pid), type);
 
     // The namespace inodes a process holds through descriptors, and the devices of its path descriptors.
-    function readFds(pid, { devices = false } = {}) {
-        const names = guarded(`${pid}/fd`, () => fs.readdirSync(at(pid, 'fd')));
+    function readFds(pid, { devices = false } = {}) { return readFdsAt(at(pid), String(pid), { devices }); }
+
+    function readFdsAt(base, pid, { devices = false } = {}) {
+        const names = guarded(`${pid}/fd`, () => fs.readdirSync(path.join(base, 'fd')));
         const fdNs = [];
         const devs = [];
         for (const name of names) {
             let target;
-            try { target = fs.readlinkSync(at(pid, 'fd', name)); } catch (error) {
+            try { target = fs.readlinkSync(path.join(base, 'fd', name)); } catch (error) {
                 if (VANISHED.has(error?.code)) continue; // this descriptor closed
                 throw new ProcUnreadable(`${pid}/fd/${name}`, error);
             }
@@ -128,7 +131,7 @@ export function createProcView({
                 continue; // socket:[N], pipe:[N] and namespace links are never a devpts file
             }
             if (!devices || !target.startsWith('/')) continue;
-            try { devs.push(String(fs.statSync(at(pid, 'fd', name), { bigint: true }).dev)); } catch (error) {
+            try { devs.push(String(fs.statSync(path.join(base, 'fd', name), { bigint: true }).dev)); } catch (error) {
                 if (VANISHED.has(error?.code)) continue;
                 throw new ProcUnreadable(`${pid}/fd/${name}`, error);
             }
@@ -154,31 +157,61 @@ export function createProcView({
         } catch { return false; }
     }
 
+    // One task's (the leader's, or a thread's) view: each field is the value, or undefined when the system refuses it (permission,
+    // a refused path, or ENOENT on an ending task). A link of the wrong shape or another errno is damaged input and throws.
+    function readTask(base, label) {
+        const attempt = (read) => {
+            try { return read(); } catch (error) {
+                if (error instanceof Vanished || (error instanceof ProcUnreadable && OPAQUE_ERRNOS.has(error.errno))) return undefined;
+                throw error;
+            }
+        };
+        return {
+            pidNs: attempt(() => nsLinkAt(base, label, 'pid')), netNs: attempt(() => nsLinkAt(base, label, 'net')),
+            mntNs: attempt(() => nsLinkAt(base, label, 'mnt')), fdNs: attempt(() => readFdsAt(base, label).fdNs)
+        };
+    }
+
+    const NS_FIELDS = ['pidNs', 'netNs', 'mntNs'];
+
     function readProcess(pid) {
         const stat = parseStatLine(guarded(`${pid}/stat`, () => fs.readFileSync(at(pid, 'stat'), 'utf8')));
         if (!stat || stat.pid !== pid) throw new ProcUnreadable(`${pid}/stat`);
         const raw = guarded(`${pid}/cmdline`, () => fs.readFileSync(at(pid, 'cmdline')));
         const cmdline = raw.length === 0 ? [] : raw.toString('utf8').replace(/\0$/u, '').split('\0');
-        try {
-            const { fdNs } = readFds(pid);
-            return { pid, ppid: stat.ppid, startTime: stat.startTime, cmdline, pidNs: nsLink(pid, 'pid'), netNs: nsLink(pid, 'net'), mntNs: nsLink(pid, 'mnt'), fdNs };
-        } catch (error) {
-            // Only a refusal by the system (permission denied, or a refused path) can be a process that is ending; a link of the wrong
-            // shape (EINVAL), an I/O error or any other errno is malformed or damaged input and stays an error.
-            if (!(error instanceof ProcUnreadable) || !OPAQUE_ERRNOS.has(error.errno)) throw error;
-            // A process that is ending has unreadable descriptors and namespace links (EACCES on fd, ENOENT on ns, on Linux), and its
-            // state moves while it is read, so the state is read again here. Observed live in the Box (F13): after a multi-threaded
-            // process is killed with SIGKILL its leader is `Z` with other threads still exiting (13198 samples: fd EACCES, ns ENOENT)
-            // and, briefly, still `R` (9 samples: the same errors). Throwing there aborted the whole listing out of the end path.
-            //  - gone, dead, or a zombie with one thread: it holds nothing and runs nothing (a container whose pid 1 does not reap
-            //    leaves such zombies behind): it counts as gone.
-            //  - anything else that cannot be read is PRESENT but opaque: listed with no namespace and no descriptors and flagged
-            //    `opaque`, so the walker waits for it and never rules it out as a holder. It is never counted as absent; a process that
-            //    stays unreadable ends the walk quarantined at the deadline.
-            const state = stateNow(pid);
-            if (state === 'gone' || state === 'X' || state === 'x' || isDeadZombie(pid)) throw new Vanished(`${pid}`);
-            return { pid, ppid: stat.ppid, startTime: stat.startTime, cmdline, pidNs: null, netNs: null, mntNs: null, fdNs: [], opaque: true };
+        const head = { pid, ppid: stat.ppid, startTime: stat.startTime, cmdline };
+        const leader = readTask(at(pid), String(pid));
+        if (NS_FIELDS.every((field) => leader[field] !== undefined) && leader.fdNs !== undefined) return { ...head, ...leader };
+
+        // The leader cannot be read in full. That is a process that is ending (observed live, F13: after SIGKILL a multi-threaded
+        // leader is `Z`, and briefly `R`, with fd EACCES and ns ENOENT), or a robot's trick: a leader that exits with pthread_exit()
+        // while a thread lives on is a zombie for as long as the thread runs (M-36). Gone, dead, or a zombie with one thread holds
+        // nothing: it counts as gone.
+        const state = stateNow(pid);
+        if (state === 'gone' || state === 'X' || state === 'x' || isDeadZombie(pid)) throw new Vanished(`${pid}`);
+
+        // The threads: setns is per thread, so each thread may differ, and a thread of a zombie leader is readable (its ns links and
+        // fd). The union of everything readable is what the process holds. The process stays `opaque` only when some part is readable
+        // from NO thread at all (every thread is exiting): then it is present but unknowable, and waits.
+        let tids = [];
+        try { tids = fs.readdirSync(at(pid, 'task')).filter((name) => PID_ENTRY.test(name) && Number(name) !== pid); } catch { tids = []; }
+        const views = [leader];
+        for (const tid of tids) {
+            try { views.push(readTask(at(pid, 'task', tid), `${pid}/task/${tid}`)); } catch (error) { if (!(error instanceof ProcUnreadable)) throw error; }
         }
+        const distinct = (field) => [...new Set(views.map((view) => view[field]).filter((value) => value !== undefined))];
+        const merged = { ...head };
+        const threadNs = {};
+        for (const field of NS_FIELDS) {
+            const values = distinct(field);
+            merged[field] = leader[field] ?? values[0] ?? null;
+            threadNs[field] = values;
+        }
+        const fdSets = views.map((view) => view.fdNs).filter((value) => value !== undefined);
+        merged.fdNs = [...new Set(fdSets.flat())];
+        merged.threadNs = threadNs;
+        if (NS_FIELDS.some((field) => merged[field] === null) || fdSets.length === 0) merged.opaque = true;
+        return merged;
     }
 
     function pids() {
@@ -389,18 +422,31 @@ export function createProcView({
         // Namespace pins (B1). The supervisor holds an open descriptor on /proc/<pid>/ns/<type> of every committed sandbox until its
         // blocker settles, so the kernel cannot reuse that inode for another sandbox meanwhile. The registry lets the recovery walker
         // trust an inode only while it is pinned. Returns an unpin function (counted, so the same inode may be pinned twice).
-        pinNamespace(type, inode) {
+        // A pin belongs to an OWNER (the sandbox's monitor, "pid:startTime"). The kernel reuses an inode number once the namespace is gone
+        // (observed live: 8 of 8 back-to-back sandboxes in the Box worker got the previous one's pid-namespace inode), so "this inode is
+        // pinned" is not an answer to "is it MY namespace": a later sandbox's pin of the same number would make an earlier, recorded
+        // sandbox look pinned and its walk would seed (and kill) the later one. isPinned(type, inode, owner) asks for that owner's pin.
+        pinNamespace(type, inode, owner = '') {
             const key = `${type}:${inode}`;
-            namespacePins.set(key, (namespacePins.get(key) ?? 0) + 1);
+            const owners = namespacePins.get(key) ?? new Map();
+            owners.set(owner, (owners.get(owner) ?? 0) + 1);
+            namespacePins.set(key, owners);
             let released = false;
             return () => {
                 if (released) return;
                 released = true;
-                const left = (namespacePins.get(key) ?? 1) - 1;
-                if (left <= 0) namespacePins.delete(key); else namespacePins.set(key, left);
+                const held = namespacePins.get(key);
+                if (!held) return;
+                const left = (held.get(owner) ?? 1) - 1;
+                if (left <= 0) held.delete(owner); else held.set(owner, left);
+                if (held.size === 0) namespacePins.delete(key);
             };
         },
-        isPinned: (type, inode) => namespacePins.has(`${type}:${inode}`),
+        isPinned: (type, inode, owner) => {
+            const owners = namespacePins.get(`${type}:${inode}`);
+            if (!owners) return false;
+            return owner === undefined ? owners.size > 0 : owners.has(owner);
+        },
         registerSandboxChild({ pid, startTime, kill: killChild }) {
             const entry = { startTime, kill: killChild };
             sandboxChildren.set(pid, entry);

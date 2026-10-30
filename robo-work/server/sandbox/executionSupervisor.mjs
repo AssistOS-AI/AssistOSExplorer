@@ -455,7 +455,7 @@ export function createExecutionSupervisor({
         // M-35, once per watchdog tick: did this execution's workloads show activity? A new member, or CPU growth of the persisting
         // members of at least 2 % of one CPU since the previous tick (workloadActivity.mjs). Read-only; false when no workload runs.
         workloadActivity() {
-            const live = [...workloads.values()].filter((sandbox) => !sandbox.exited && sandbox.identity?.pidNs).map((sandbox) => sandbox.identity);
+            const live = [...workloads.values()].filter((sandbox) => !sandbox.exited && sandbox.identity?.pidNs).map((sandbox) => ({ ...sandbox.identity, owner: `${sandbox.identity.pid}:${sandbox.identity.startTime}` }));
             return meter.sample(live);
         },
         get endpointSocket() { return endpointSandbox?.channel ?? null; },

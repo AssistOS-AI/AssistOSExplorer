@@ -74,17 +74,39 @@ test('F13: a leader that never goes away is quarantined at the deadline, not thr
     assert.equal(await walker.walk(blocker), 'quarantined');
 });
 
-test('an opaque process holds a namespace until it is gone (it may hold anything)', async (t) => {
+test('an opaque process holds a namespace only if it is attributable to it (a descendant of a process that holds it), until it is gone', async (t) => {
     const { proc, view } = incident(t);
-    proc.remove(886);
     // the recovery view answers for the network objects (none exist here)
     const recovery = createRecoveryView(view, { runSync: () => ({ status: 0, stdout: '', stderr: '' }), exists: () => false });
     const walker = createWalker({ view: recovery, clock: clock(), releaseDeadlineMs: 300, pollMs: 100, sandboxRecord: () => null });
-    const netns = { kind: 'netns', identity: { netNs: '4026534199' }, locator: { netns: '0123456789abcdef0123456789abcdef', keeper: 'k' } };
-    assert.equal(walker.prove(netns).absent, false);
-    assert.ok(walker.prove(netns).holders.some((holder) => holder.via === 'opaque'));
+    // 887 (opaque: its descriptors cannot be read) descends from 886, which readably holds net:[4026531886]
+    const mine = { kind: 'netns', identity: { netNs: '4026531886' }, locator: { netns: '0123456789abcdef0123456789abcdef', keeper: 'k' } };
+    assert.equal(walker.prove(mine).absent, false);
+    assert.ok(walker.prove(mine).holders.some((holder) => holder.via === 'opaque' && holder.pid === 887));
+    // another execution's network: nothing readable names it and 887 does not descend from a holder of it
+    const other = { ...mine, identity: { netNs: '4026539999' } };
+    assert.equal(walker.prove(other).absent, true, 'an unattributable opaque process delays nobody');
     proc.remove(887);
-    assert.equal(walker.prove(netns).absent, true);
+    proc.remove(886);
+    assert.equal(walker.prove(mine).absent, true);
+});
+
+test('M-36: an opaque process left running on purpose by one robot does not hold, delay or quarantine another execution\'s release', async (t) => {
+    const proc = fakeProc(t);
+    // execution A: init 700 with a hostile leader 701 whose descriptors are unreadable and which stays (a pthread_exit trick)
+    proc.add({ pid: 700, ppid: 1, cmd: 'bwrap', pidNs: 4026534500 });
+    proc.add({ pid: 701, ppid: 700, state: 'Z', threads: 2, unreadableFd: true, cmd: 'python3', pidNs: 4026534500 });
+    // execution B: init 800 holding its own netns, released earlier or now
+    proc.add({ pid: 800, ppid: 1, cmd: 'bwrap', pidNs: 4026534600 });
+    const view = createProcView({ procRoot: proc.root, signal: () => {} });
+    const recovery = createRecoveryView(view, { runSync: () => ({ status: 0, stdout: '', stderr: '' }), exists: () => false });
+    const walker = createWalker({ view: recovery, clock: clock(), releaseDeadlineMs: 300, pollMs: 100, sandboxRecord: () => null });
+    const netnsOfB = { kind: 'netns', identity: { netNs: '4026539001' }, locator: { netns: 'b'.repeat(32), keeper: 'kb' } };
+    proc.remove(800); // B's processes are gone; A's opaque leader is still there
+    assert.equal(await walker.walk(netnsOfB), 'released');
+    // and the mount namespace of B the same way
+    const mountOfB = { kind: 'mount', identity: { mntNs: '4026539002', mountId: 5, mountpoint: '/x' }, locator: { mount: 'b' } };
+    assert.equal(await walker.walk(mountOfB), 'released');
 });
 
 test('an unreadable /proc is "not proven", never an exception: walk quarantines, attempt is undecided, force is silent, a transient failure heals', async () => {

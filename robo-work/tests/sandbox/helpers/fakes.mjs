@@ -17,8 +17,15 @@ export function createFakeView() {
     const pinned = new Map();
     const view = {
         procs, registered, self, pinned,
-        pinNamespace: (type, inode) => { const key = `${type}:${inode}`; pinned.set(key, (pinned.get(key) ?? 0) + 1); return () => { const left = (pinned.get(key) ?? 1) - 1; if (left <= 0) pinned.delete(key); else pinned.set(key, left); }; },
-        isPinned: (type, inode) => pinned.has(`${type}:${inode}`),
+        // owner-aware like procView: the kernel reuses inode numbers, so a pin is "this owner pinned this number"
+        pinNamespace: (type, inode, owner = '') => {
+            const key = `${type}:${inode}`;
+            const owners = pinned.get(key) ?? new Map();
+            owners.set(owner, (owners.get(owner) ?? 0) + 1);
+            pinned.set(key, owners);
+            return () => { const held = pinned.get(key); if (!held) return; const left = (held.get(owner) ?? 1) - 1; if (left <= 0) held.delete(owner); else held.set(owner, left); if (held.size === 0) pinned.delete(key); };
+        },
+        isPinned: (type, inode, owner) => { const owners = pinned.get(`${type}:${inode}`); return owners !== undefined && (owner === undefined ? owners.size > 0 : owners.has(owner)); },
         process: (pid) => procs.get(pid) ?? null,
         listProcesses: () => [...procs.values()].map((entry) => ({ ...entry })),
         selfNamespaces: () => ({ ...self }),
@@ -31,6 +38,7 @@ export function createFakeView() {
 
 // Fake child_process.spawn. `script` shapes what the "chain" does; the default is a healthy sandbox.
 //   exitBefore  exit code of the chain before bwrap reports (a prep failure)
+//   exitAfterInfoEnd  the same, but the info pipe is closed first and the exit event follows 40 ms later (the real ordering)
 //   initPidNs, initMntNs, initNetNs, monitorMntNs, monitorPpid, omitMarker   knobs for identity mismatch
 //   spawnError  an Error emitted on 'error'
 export function createFakeSpawn(view, script = {}) {
@@ -73,6 +81,8 @@ export function createFakeSpawn(view, script = {}) {
         child.kill = (signal = 'SIGTERM') => { record.kills.push(signal); if (signal === 'SIGKILL') finish(null, 'SIGKILL'); return true; };
         setImmediate(() => {
             if (script.spawnError) { child.emit('error', script.spawnError); return; }
+            // the real ordering: the info pipe closes with the chain's exit, and the exit event comes later
+            if (script.exitAfterInfoEnd !== undefined) { record.info.end(); setTimeout(() => finish(script.exitAfterInfoEnd, null), 40); return; }
             if (script.exitBefore !== undefined) { finish(script.exitBefore, null); return; }
             view.add({
                 pid: child.pid, ppid: script.monitorPpid ?? SUPERVISOR_PID, cmdline: script.omitMarker ? ['/usr/bin/bwrap'] : ['/usr/bin/bwrap', '--unshare-uts', '--unsetenv', marker, '--args', String(argsFd)],

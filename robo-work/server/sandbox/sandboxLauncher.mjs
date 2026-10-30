@@ -67,6 +67,7 @@ const ARCH = { x64: 'x86_64', arm64: 'aarch64' };
 const ROLE_FD_ALLOW = { orchestration: [0, 1, 2, 3], endpoint: [0, 1, 2, 3, 4], workload: [0, 1, 2], terminal: [0, 1, 2] };
 const SECCOMP_PROFILE = { orchestration: 'orchestration', endpoint: 'orchestration', workload: 'workload', terminal: 'workload' };
 const DIGITS = /^[0-9]{1,20}$/u;
+const EXIT_AFTER_CLOSE_MS = 3000;
 
 const defer = () => { const d = {}; d.promise = new Promise((resolve, reject) => { d.resolve = resolve; d.reject = reject; }); return d; };
 const invalid = (detail) => sandboxError('invalid_request', detail);
@@ -185,7 +186,7 @@ export function createSandboxLauncher({
             // --- the chain: marker trails the stage.sh command line, and is again on bwrap's real argv
             const prepSpec = {
                 supervisorMntNs: view.selfNamespaces().mntNs,
-                stageDir, maskDir: stageDir && `${stageDir}/mask-dir`, maskFile: stageDir && `${stageDir}/mask-file`,
+                stageDir, maskDir: stageDir && `${stageDir}/mask-dir`, maskFile: stageDir && `${stageDir}/mask-file`, masksFile: stageDir && `${stageDir}/masks.json`,
                 grants: mounts.grants, binds: mounts.binds, limits: spec.scanLimits
             };
             const command = ['--pdeathsig', 'KILL', '--'];
@@ -195,7 +196,12 @@ export function createSandboxLauncher({
             child = spawnImpl('setpriv', command, { stdio, env: { PATH: toolPath }, cwd: '/', detached: false });
             for (const fd of closeLater.splice(0)) { try { fsImpl.closeSync(fd); } catch { /* closed */ } }
 
-            return await supervise(child, spec, layout, stageDir, stageNames);
+            const sandbox = await supervise(child, spec, layout, stageDir, stageNames);
+            // On request: what prep masked, with the identity (device, inode) of each covered object. Evidence only.
+            if (spec.reportMasks === true && stageDir) {
+                try { sandbox.masked = JSON.parse(fsImpl.readFileSync(`${stageDir}/masks.json`, 'utf8')).grants; } catch { sandbox.masked = null; }
+            }
+            return sandbox;
         } catch (error) {
             if (child) { try { child.kill('SIGKILL'); } catch { /* gone */ } }
             for (const fd of closeLater.splice(0)) { try { fsImpl.closeSync(fd); } catch { /* closed */ } }
@@ -264,7 +270,7 @@ export function createSandboxLauncher({
             ...names.grants.map((name) => () => fsImpl.rmdirSync(`${dir}/projects/${name}`)),
             ...names.binds.map((name) => () => fsImpl.rmdirSync(`${dir}/binds/${name}`)),
             () => fsImpl.rmdirSync(`${dir}/projects`), () => fsImpl.rmdirSync(`${dir}/binds`), () => fsImpl.rmdirSync(`${dir}/mask-dir`),
-            () => fsImpl.unlinkSync(`${dir}/mask-file`), () => fsImpl.rmdirSync(dir)
+            () => fsImpl.unlinkSync(`${dir}/mask-file`), () => fsImpl.unlinkSync(`${dir}/masks.json`), () => fsImpl.rmdirSync(dir)
         ];
         let clean = true;
         for (const step of steps) { try { step(); } catch (error) { if (error?.code !== 'ENOENT') clean = false; } }
@@ -320,7 +326,7 @@ export function createSandboxLauncher({
         try {
             for (const [pid, type, inode] of [[identity.init.pid, 'pid', identity.pidNs], [identity.init.pid, 'mnt', identity.mntNs], [identity.pid, 'mnt', identity.stageMntNs]]) {
                 const opened = openNamespace(pid, type);
-                const unpinView = view.pinNamespace?.(type, inode) ?? (() => {});
+                const unpinView = view.pinNamespace?.(type, inode, `${identity.pid}:${identity.startTime}`) ?? (() => {});
                 pins.push(() => { unpinView(); opened.close(); });
                 if (String(opened.inode) !== String(inode)) throw sandboxError('identity_mismatch', `${type} namespace changed while being pinned`);
             }
@@ -391,8 +397,11 @@ export function createSandboxLauncher({
                     }
                     return false;
                 };
+                const recorded = [identity.pidNs, identity.mntNs, identity.stageMntNs];
                 const holders = processes.filter((entry) => (entry.opaque === true && descends(entry)) || entry.pidNs === identity.pidNs || entry.mntNs === identity.mntNs
                     || entry.mntNs === identity.stageMntNs
+                    // setns is per thread: a thread of a zombie leader may be the one that holds a recorded namespace
+                    || Object.values(entry.threadNs ?? {}).some((inodes) => inodes.some((inode) => recorded.includes(inode)))
                     || (entry.pid !== supervisorPid && [identity.pidNs, identity.mntNs, identity.stageMntNs].some((inode) => entry.fdNs?.includes(inode))));
                 if (holders.length > 0) problems.push('namespace_held');
             }
@@ -476,7 +485,14 @@ export function createSandboxLauncher({
             };
             failedPromise.catch((error) => finish(reject, error));
             info.on('data', (chunk) => { text += chunk; if (text.length > 4096) finish(reject, sandboxError('setup_failed', 'info too long')); else parse(); });
-            info.on('end', () => { parse(); finish(reject, sandboxError('setup_failed', 'info closed')); });
+            // The info pipe closes when the chain exits, usually BEFORE the exit event is delivered: closing is not the answer, the exit
+            // code is (prep's refusal: mask_unverified, mask_scan_limit, ...). Wait for the exit for a moment before saying "info closed";
+            // answering at once turned every refusal under a racing project into a bare setup_failed (found by the P-RACE probe).
+            info.on('end', () => {
+                parse();
+                const grace = setTimeout(() => finish(reject, sandboxError('setup_failed', 'info closed')), EXIT_AFTER_CLOSE_MS);
+                grace.unref?.();
+            });
             // The chain ended before bwrap reported: prep's exit code says why.
             exitPromise.then(({ code }) => {
                 setImmediate(() => {

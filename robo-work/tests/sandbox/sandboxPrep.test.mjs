@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 
 import { exitCodeFor, main, openAnchored, runPrep } from '../../server/sandbox/sandboxPrep.mjs';
 import { PREP_EXIT } from '../../server/sandbox/sandboxErrors.mjs';
+import { scanProtected as scanProtectedReal } from '../../server/sandbox/protectedScan.mjs';
 
 const FIXTURE = fs.readFileSync(fileURLToPath(new URL('./fixtures/podman-nested-mountinfo.txt', import.meta.url)), 'utf8');
 const PREP = fileURLToPath(new URL('../../server/sandbox/sandboxPrep.mjs', import.meta.url));
@@ -221,4 +222,37 @@ test('E: an exclusion through a symlink is refused with invalid_request (exit 24
     }
     // the mounts "succeed" in the fake but nothing is really masked: the read-back fails
     assert.throws(() => runPrep(MARKER, spec(null, stage, { grants: [{ name: 'a', ...idOf(grant), exclusions: ['notes.txt'] }] }), { ...rig(), openDir: reopen, verify: () => ({ ok: true }) }), { code: 'mask_unverified' });
+}));
+
+test('prep records what it masked, with the identity (dev, ino) of each covered object, as evidence; a failed write of the evidence does not fail the start', () => tree((root) => {
+    const { grant, stage } = layout(root);
+    const reopen = () => fs.openSync(grant, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+    const written = [];
+    const withFile = { ...spec(grant, stage), masksFile: `${stage}/masks.json` };
+    runPrep(MARKER, withFile, { ...rig(), openDir: reopen, verify: () => ({ ok: true }), writeFile: (file, text) => written.push([file, JSON.parse(text)]) });
+    assert.equal(written.length, 1);
+    assert.equal(written[0][0], `${stage}/masks.json`);
+    const entries = written[0][1].grants.a;
+    assert.deepEqual(entries.map((entry) => entry.rel).sort(), ['.env', 'sub/.data', 'sub/x.secrets']);
+    const env = fs.statSync(path.join(grant, '.env'), { bigint: true });
+    assert.deepEqual(entries.find((entry) => entry.rel === '.env'), { rel: '.env', kind: 'file', dev: String(env.dev), ino: String(env.ino) });
+    runPrep(MARKER, withFile, { ...rig(), openDir: reopen, verify: () => ({ ok: true }), writeFile: () => { throw new Error('disk full'); } });
+    assert.throws(() => runPrep(MARKER, { ...withFile, masksFile: '/elsewhere/masks.json' }, rig()), { code: 'setup_failed' });
+}));
+
+test('P-RACE: protected objects that change identity between the scan and the masking (a rename and a swap) refuse the start with mask_unverified', () => tree((root) => {
+    const { grant, stage } = layout(root);
+    const reopen = () => fs.openSync(grant, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+    let calls = 0;
+    const real = (fd, limits, options) => scanProtectedReal(fd, limits, options);
+    // the second scan of the real tree finds `.env` is now a different object than the first scan covered
+    const swapping = (fd, limits, options) => {
+        calls += 1;
+        const result = real(fd, limits, options);
+        if (calls === 2) result.entries = result.entries.map((entry) => (entry.rel === '.env' ? { ...entry, ino: String(BigInt(entry.ino) + 1n) } : entry));
+        return result;
+    };
+    assert.throws(() => runPrep(MARKER, spec(grant, stage), { ...rig(), openDir: reopen, scan: swapping, verify: () => ({ ok: true }) }), { code: 'mask_unverified' });
+    assert.equal(calls, 2, 'the real tree is scanned twice');
+    runPrep(MARKER, spec(grant, stage), { ...rig(), openDir: reopen, scan: real, verify: () => ({ ok: true }) });
 }));

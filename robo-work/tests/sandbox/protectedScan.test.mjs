@@ -94,3 +94,16 @@ test('verifyMasks: unmasked entries fail, matching identities pass', () => {
         });
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('scanProtected(identity) adds the device and inode of each protected object (decimal strings); the default shape is unchanged', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-scan-id-'));
+    try {
+        fs.writeFileSync(path.join(root, '.env'), 'x');
+        const fd = fs.openSync(root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+        const st = fs.statSync(path.join(root, '.env'), { bigint: true });
+        try {
+            assert.deepEqual(scanProtected(fd).entries, [{ rel: '.env', kind: 'file' }]);
+            assert.deepEqual(scanProtected(fd, undefined, { identity: true }).entries, [{ rel: '.env', kind: 'file', dev: String(st.dev), ino: String(st.ino) }]);
+        } finally { fs.closeSync(fd); }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

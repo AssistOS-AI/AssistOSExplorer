@@ -86,7 +86,8 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
     // recorded one: the supervisor pins it with an open descriptor (view.isPinned) or the recorded init (pid + start time) is
     // alive and in that namespace. A process that merely shows the same number is not a member and is never killed.
     function pidNamespaceProven(identity, processes) {
-        if (view.isPinned?.('pid', identity.pidNs) === true) return true;
+        // pinned by THIS sandbox (its monitor), not merely by someone holding the same number: inode numbers are reused
+        if (identity.pid !== undefined && view.isPinned?.('pid', identity.pidNs, `${identity.pid}:${identity.startTime}`) === true) return true;
         const anchor = identity.init ?? identity;
         return processes.some((entry) => entry.pid === anchor.pid && entry.startTime === anchor.startTime && entry.pidNs === identity.pidNs);
     }
@@ -106,13 +107,23 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
         return descend ? withDescendants(seed, processes) : seed;
     }
 
+    // Who holds a namespace inode: a process whose link (or whose thread's link: setns is per thread) or descriptor names it, an nsfs
+    // mount, and a process that cannot be read at all and is ATTRIBUTABLE to it. An unreadable (opaque) process is a holder only when
+    // some ancestor of it holds the inode through a readable link (it descends from a process of that namespace). One that cannot be
+    // attributed is nobody's: a robot can leave an opaque zombie leader running on purpose (M-36), and it must not delay or
+    // quarantine another execution's release.
     function namespaceHolders(inode, field, processes, mounts) {
+        const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
+        const names = (entry) => entry[field] === inode || entry.threadNs?.[field]?.includes(inode) === true;
+        const attributable = (entry) => {
+            for (let depth = 0, at = byPid.get(entry.ppid); at && depth < 64; depth += 1, at = byPid.get(at.ppid)) if (names(at)) return true;
+            return false;
+        };
         const holders = [];
         for (const entry of processes) {
-            if (entry[field] === inode) holders.push({ via: 'ns-link', pid: entry.pid });
+            if (names(entry)) holders.push({ via: 'ns-link', pid: entry.pid });
             if (entry.fdNs.includes(inode)) holders.push({ via: 'fd-link', pid: entry.pid });
-            // A process that is ending and cannot be read (a zombie leader whose threads still run) may hold anything: wait for it.
-            if (entry.opaque === true) holders.push({ via: 'opaque', pid: entry.pid });
+            if (entry.opaque === true && !names(entry) && attributable(entry)) holders.push({ via: 'opaque', pid: entry.pid });
         }
         for (const mount of mounts) if (mount.fstype === 'nsfs' && mount.nsInode === inode) holders.push({ via: 'nsfs-mount', mountId: mount.mountId });
         return holders;

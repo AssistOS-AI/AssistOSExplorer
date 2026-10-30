@@ -87,9 +87,11 @@ function walk(rootFd, limitsInput) {
     return { entries, scanned };
 }
 
-export function scanProtected(dirFd, limits) {
+// `identity: true` adds the device and inode (decimal strings) of each protected object as it is NOW, i.e. of the object that is about to
+// be covered by a mask. They are evidence of what was masked (race.mjs checks that exactly those objects never show real content).
+export function scanProtected(dirFd, limits, { identity = false } = {}) {
     const { entries, scanned } = walk(dirFd, limits);
-    return { entries: entries.map(({ rel, kind }) => ({ rel, kind })), scanned };
+    return { entries: entries.map(({ rel, kind, dev, ino }) => (identity ? { rel, kind, dev: String(dev), ino: String(ino) } : { rel, kind })), scanned };
 }
 
 export function verifyMasks(dirFd, entries, maskIds, limits) {

@@ -4,7 +4,7 @@
 // --mount --propagation private` created for this start:
 //
 //   node sandboxPrep.mjs <marker> <spec-json>
-//   spec  { supervisorMntNs: "<inode>", stageDir, maskDir, maskFile, limits?,
+//   spec  { supervisorMntNs: "<inode>", stageDir, maskDir, maskFile, masksFile? (= <stageDir>/masks.json: evidence of what was masked), limits?,
 //           grants: [{ name, path, dev, ino, exclusions? }],  bound at <stageDir>/projects/<name>, scanned and masked;
 //                   exclusions are grant-relative paths masked like protected names (exclusions.mjs)
 //           binds:  [{ name, path, dev, ino }] }  bound at <stageDir>/binds/<name> (HOME, session storage, config)
@@ -77,6 +77,7 @@ function checkSpec(marker, spec) {
     for (const key of spec.grants.length + spec.binds.length === 0 ? [] : ['stageDir', 'maskDir', 'maskFile']) {
         if (typeof spec[key] !== 'string' || !spec[key].startsWith('/') || spec[key].includes('\0') || spec[key].split('/').includes('..')) throw sandboxError('setup_failed', `invalid ${key}`);
     }
+    if (spec.masksFile !== undefined && spec.masksFile !== null && spec.masksFile !== `${spec.stageDir}/masks.json`) throw sandboxError('setup_failed', 'invalid masksFile');
 }
 
 // An anchored walk from / with O_NOFOLLOW at every component (the grantResolver.mjs Linux strategy). Returns an open descriptor.
@@ -99,7 +100,7 @@ export function runPrep(marker, spec, deps = {}) {
     const {
         runTool = defaultRunTool, readlink = (file) => fs.readlinkSync(file), readFile = (file) => fs.readFileSync(file, 'utf8'),
         pid = process.pid, scan = scanProtected, verify = verifyMasks, lstat = (file) => fs.lstatSync(file, { bigint: true }),
-        openDir = (file) => fs.openSync(file, DIRECTORY_FLAGS), closeFd = (fd) => fs.closeSync(fd), openPath = openAnchored, verifyExclusions = verifyExclusionMasks,
+        openDir = (file) => fs.openSync(file, DIRECTORY_FLAGS), closeFd = (fd) => fs.closeSync(fd), openPath = openAnchored, verifyExclusions = verifyExclusionMasks, writeFile = (file, text) => fs.writeFileSync(file, text, { mode: 0o600 }),
         fstat = (fd) => fs.fstatSync(fd, { bigint: true })
     } = deps;
     checkSpec(marker, spec);
@@ -124,6 +125,7 @@ export function runPrep(marker, spec, deps = {}) {
     // 3. Directories: open anchored, prove identity, bind.
     if (spec.grants.length + spec.binds.length === 0) return;
     const opened = [];
+    const masked = {};
     try {
         const open = (entry, target) => {
             const fd = openPath(entry.path);
@@ -144,7 +146,7 @@ export function runPrep(marker, spec, deps = {}) {
         for (const grant of spec.grants) {
             const staged = `${spec.stageDir}/projects/${grant.name}`;
             const grantFd = open(grant, staged);
-            const { entries } = scan(grantFd, spec.limits);
+            const { entries } = scan(grantFd, spec.limits, { identity: true });
             // Exclusions: resolved from the same anchored descriptor, a missing one skipped, a link refused (invalid_request).
             const extra = dropCovered(resolveExclusions(grantFd, grant.exclusions ?? []), entries);
             const maxMasks = { ...DEFAULT_SCAN_LIMITS, ...(spec.limits ?? {}) }.maxMasks;
@@ -154,6 +156,14 @@ export function runPrep(marker, spec, deps = {}) {
                 const masked = runTool('mount', ['--no-canonicalize', '--bind', '-o', 'ro', source, `${staged}/${entry.rel}`]);
                 if (masked.status !== 0) throw sandboxError('mask_unverified', `a mask mount failed: ${firstLine(masked.stderr)}`);
             }
+            // A mask lands on whatever object holds the name when mount(2) runs. The scan above and the mounts are not atomic, so a writer
+            // that renames a protected object away and another in (D <-> .data) between them would have the mask cover the wrong object. The
+            // REAL tree (this descriptor does not see the masks) is scanned again: every protected name must still be the object that was
+            // scanned, or the start is refused. This shrinks the window to a rename-and-back inside the mount calls; the verification below
+            // proves the names are masked.
+            const rescanned = scan(grantFd, spec.limits, { identity: true }).entries;
+            const fingerprint = (list) => list.map((entry) => `${entry.rel}\0${entry.kind}\0${entry.dev}\0${entry.ino}`).sort().join('\n');
+            if (fingerprint(rescanned) !== fingerprint(entries)) throw sandboxError('mask_unverified', 'the protected entries changed while they were masked');
             let fresh;
             try {
                 fresh = openDir(staged);
@@ -166,6 +176,11 @@ export function runPrep(marker, spec, deps = {}) {
             } finally {
                 closeFd(fresh);
             }
+            masked[grant.name] = entries.map(({ rel, kind, dev, ino }) => ({ rel, kind, dev, ino }));
+        }
+        // Advisory evidence of what was masked, with the identity of each covered object (read back by the launcher on request).
+        if (typeof spec.masksFile === 'string') {
+            try { writeFile(spec.masksFile, JSON.stringify({ grants: masked })); } catch { /* evidence only: the masks themselves are verified */ }
         }
     } finally {
         for (const fd of opened) { try { closeFd(fd); } catch { /* closed */ } }

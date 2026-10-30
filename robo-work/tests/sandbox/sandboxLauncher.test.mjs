@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { createWalker } from '../../server/execution/recoveryWalk.mjs';
 import { createSandboxLauncher, slotLayout } from '../../server/sandbox/sandboxLauncher.mjs';
 import { markerSlot } from '../../server/sandbox/marker.mjs';
 import { readProcMasks } from '../../server/sandbox/procMasks.mjs';
@@ -505,5 +506,73 @@ test('F13: an opaque (unreadable, dying) process counts as holding the sandbox o
         world.view.drop(9302);
         world.view.drop(9303);
         assert.equal((await sandbox.verifyAbsent()).absent, true);
+    } finally { world.done(); }
+});
+
+test('M-36: a thread of a zombie leader that sits in the sandbox\'s namespace holds it (setns is per thread); an unrelated opaque process does not', async () => {
+    const world = rig();
+    try {
+        const sandbox = await world.launcher.launch(workloadSpec(world));
+        await sandbox.gate.commit();
+        world.spawned[0].finish(0, null);
+        world.view.add({ pid: 9400, ppid: 1, pidNs: '1000', mntNs: '2000', netNs: '3000', opaque: true, threadNs: { pidNs: ['1000'], mntNs: [], netNs: [] } });
+        assert.equal((await sandbox.verifyAbsent()).absent, true, 'opaque and unrelated');
+        world.view.add({ pid: 9401, ppid: 1, pidNs: '1000', mntNs: '2000', netNs: '3000', threadNs: { pidNs: ['1000', sandbox.identity.pidNs], mntNs: ['2000'], netNs: ['3000'] } });
+        assert.deepEqual((await sandbox.verifyAbsent()).problems, ['namespace_held']);
+    } finally { world.done(); }
+});
+
+test('B1 live finding: the kernel gives a LATER sandbox the same pid-namespace inode as an earlier, released one (8 of 8 in the Box worker); walking the earlier one\'s blocker never kills the later one, even though the later one pins that very number', async () => {
+    const SAME = '555000';
+    const world = rig({ initPidNs: SAME });
+    try {
+        const first = await world.launcher.launch(workloadSpec(world));
+        await first.gate.commit();
+        const recorded = { kind: 'process-tree', identity: structuredClone(first.identity), locator: { marker: MARKER } };
+        world.spawned[0].finish(0, null);
+        await first.stop({ graceMs: 1 });
+        await first.release();
+        assert.equal(world.view.isPinned('pid', SAME), false, 'nothing pins the number any more');
+        const second = await world.launcher.launch(workloadSpec(world, { marker: 'rw-SecondSandbox0123456789' }));
+        await second.gate.commit();
+        assert.equal(second.identity.pidNs, SAME, 'the same inode number');
+        assert.equal(world.view.isPinned('pid', SAME), true, 'now pinned, by the second sandbox');
+        assert.equal(world.view.isPinned('pid', SAME, `${first.identity.pid}:${first.identity.startTime}`), false, 'but not by the first');
+        assert.equal(world.view.isPinned('pid', SAME, `${second.identity.pid}:${second.identity.startTime}`), true);
+        const kills = [];
+        const view = { ...world.view, listMounts: () => [], exists: () => false, remove: () => false, unmount: () => false, kill: (target) => { kills.push(target); return true; } };
+        const walker = createWalker({ view, clock: fakeClock(), releaseDeadlineMs: 100, pollMs: 10, sandboxRecord: () => null });
+        assert.equal(walker.prove(recorded).absent, true, 'the earlier sandbox is gone; the later one is not its member');
+        assert.equal(await walker.walk(recorded), 'released');
+        assert.deepEqual(kills, [], 'nothing of the later sandbox was killed');
+        assert.equal(world.view.process(second.identity.init.pid)?.startTime, second.identity.init.startTime);
+    } finally { world.done(); }
+});
+
+test('P-RACE finding: the info pipe closes before the exit event, and the prep exit code must still be what is reported (mask_unverified, not "info closed")', async () => {
+    for (const [status, code] of [[20, 'mask_scan_limit'], [21, 'mask_unverified'], [22, 'setup_failed'], [24, 'invalid_request']]) {
+        const world = rig({ exitAfterInfoEnd: status });
+        try {
+            await assert.rejects(world.launcher.launch(workloadSpec(world)), { code }, `exit ${status}`);
+            await assert.rejects(world.launcher.launch(workloadSpec(world, { marker: 'rw-OtherMarker012345678901' })), { code }, `again ${status}`);
+        } finally { world.done(); }
+    }
+});
+
+test('reportMasks: the launcher hands back what prep recorded (evidence only), and nothing without the request', async () => {
+    const world = rig({ beforeGate: (record) => {
+        const prep = JSON.parse(record.args[record.args.indexOf('prep') + 5]);
+        assert.equal(prep.masksFile, `${prep.stageDir}/masks.json`);
+        fs.writeFileSync(prep.masksFile, JSON.stringify({ grants: { a: [{ rel: '.env', kind: 'file', dev: '1', ino: '2' }] } }));
+    } });
+    try {
+        const plain = await world.launcher.launch(workloadSpec(world));
+        assert.equal(plain.masked, undefined);
+        const reported = await world.launcher.launch(workloadSpec(world, { marker: 'rw-ReportMasks0123456789ab', reportMasks: true }));
+        assert.deepEqual(reported.masked, { a: [{ rel: '.env', kind: 'file', dev: '1', ino: '2' }] });
+        const missing = rig();
+        try { assert.equal((await missing.launcher.launch(workloadSpec(missing, { reportMasks: true }))).masked, null); } finally { missing.done(); }
+        await reported.release();
+        assert.ok(!fs.existsSync(`${world.dir}/stage/rw-ReportMasks0123456789ab`));
     } finally { world.done(); }
 });
