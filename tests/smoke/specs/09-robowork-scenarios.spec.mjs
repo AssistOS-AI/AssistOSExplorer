@@ -13,8 +13,9 @@ import {
   discoverContainers, nestedLogsMerged, startPoller, stopPoller, readPoll, bwrapMarkerProcesses, createProjectFixture, sentinelHits, collectEnvironment, removeRunDirectory,
 } from '../lib/robowork-e2e.mjs';
 import {
-  sleep, waitFor, readLedgerSince, markerOf, terminalEvent, queuedEvent, toolOutputs, finalText, workerProcesses, orphanReport, isClean, apiOk,
+  ProviderStall, makeStallGuard, terminateFlows, sleep, waitFor, readLedgerSince, markerOf, terminalEvent, queuedEvent, toolOutputs, finalText, workerProcesses, orphanReport, isClean, apiOk,
 } from '../lib/robowork-scenarios.mjs';
+import { stopChatTurn, applySelectedModel } from '../lib/robowork-interaction.mjs';
 
 // RoboWork r10 e2e scenarios on a live deployment (run `node scripts/run-robowork-e2e.mjs specs/09-robowork-scenarios.spec.mjs`).
 //   SMOKE_ROBOWORK_FLOW=1     (A) two-phase RoboFlow: both phases run as worker executions, in order, with the right files
@@ -34,6 +35,7 @@ const stamp = () => Date.now().toString(36);
 
 // Run-owned project directories are removed after each test, once a listing (names and sizes, no contents) is in the evidence. The phase files
 // and outputs the assertions need are saved by the test before it ends.
+const flowIds = [];
 const runDirectories = [];
 function ownProject(ctx, name) {
   runDirectories.push({ ctx, name });
@@ -62,13 +64,14 @@ async function openRoboTeam(page) {
 async function ensureRobot(page) {
   const listed = await apiOk(roboTeamApi, page, { path: 'api/robots' });
   if (!listed.robots.some((robot) => robot.name === robotName)) {
-    await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name: robotName, codingAgents: ['opencode'] } });
+    const made = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name: robotName, codingAgents: ['opencode'] } })).robot;
+    await applySelectedModel(roboTeamApi, page, made.id);
   }
   return listed.robots;
 }
 
 // Sends one WebChat turn to the robot, targeting the project, and waits for the answer.
-async function chatTurn(page, project, prompt, { timeoutMs = 5 * 60_000, robot = robotName } = {}) {
+async function chatTurn(page, project, prompt, { timeoutMs = 5 * 60_000, robot = robotName, check = null } = {}) {
   const params = new URLSearchParams({ agent: smokeConfig.webchatAgent, robot, 'forward-envelope': '1', 'workspace-dir': project });
   if (!page.url().includes(`workspace-dir=${project}`) || !page.url().includes(`robot=${encodeURIComponent(robot)}`)) {
     await page.goto(`/webchat?${params}`, { waitUntil: 'load' });
@@ -84,6 +87,7 @@ async function chatTurn(page, project, prompt, { timeoutMs = 5 * 60_000, robot =
     const texts = await page.locator(BOT).allTextContents();
     const busy = await page.locator('#cancelBtn').isVisible().catch(() => false);
     if (!busy && texts.length > before) return texts.slice(before).join('\n---\n');
+    if (check) await check();
     if (Date.now() > deadline) throw new Error(`The turn did not finish within ${timeoutMs / 1000} s.`);
   }
 }
@@ -111,6 +115,7 @@ async function createTwoPhaseWorkflow(page, { name, p1, p2 }) {
 
 async function startFlow(page, { workflowId, folder, objective }) {
   const started = await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/flows', body: { workflowTypeId: workflowId, folder, objective } }, [201]);
+  flowIds.push(started.flow.id);
   return started.flow;
 }
 
@@ -178,7 +183,14 @@ const phasePrompts = (nonce, { sleepSeconds = 0 } = {}) => ({
 // ---------------------------------------------------------------------------------------------------------------- A
 
 test.describe('RoboWork scenarios', () => {
-  test.afterEach(() => {
+  test.afterEach(async ({ page }) => {
+    // Stop what the scenario left running (a chat generation, flow phases), through the product, so a stall cannot starve the next scenario.
+    await stopChatTurn(page);
+    if (flowIds.length) {
+      if (!new URL(page.url()).pathname.startsWith(ROBOTEAM_BASE_PATH)) await page.goto(ROBOTEAM_BASE_PATH, { waitUntil: 'load' }).catch(() => {});
+      const stopped = await terminateFlows(roboTeamApi, page, flowIds.splice(0)).catch(() => []);
+      if (stopped.length && runDirectories[0]) runDirectories[0].ctx.save('teardown-terminated-flows.json', stopped);
+    }
     for (const { ctx, name } of runDirectories.splice(0)) {
       const root = path.join(ctx.workspaceRoot, name);
       try {
@@ -201,6 +213,7 @@ test.describe('RoboWork scenarios', () => {
     test.skip(!FLOW, 'Opt in with SMOKE_ROBOWORK_FLOW=1.');
     test.setTimeout(MAX_ATTEMPTS * 8 * 60_000);
     const ctx = context('flow', testInfo);
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
     const project = ownProject(ctx, `e2e-flow-${stamp()}`);
     const attempts = [];
     let outcome = null;
@@ -222,7 +235,7 @@ test.describe('RoboWork scenarios', () => {
         const finished = await waitFor(`flow ${flow.id} to finish`, async () => {
           const current = await getFlow(page, flow.id);
           return TERMINAL_FLOW.has(current.status) ? current : null;
-        }, { timeoutMs: 7 * 60_000, intervalMs: 3000 });
+        }, { timeoutMs: 7 * 60_000, intervalMs: 3000, check: guard });
         ctx.save(`${dir}/flow-final.json`, finished);
         await sleep(2000);
         const ledger = readLedgerSince({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: attemptStartMs, cwd: fixture.root });
@@ -256,6 +269,7 @@ test.describe('RoboWork scenarios', () => {
     test.skip(!LATE, 'Opt in with SMOKE_ROBOWORK_LATE=1.');
     test.setTimeout(MAX_ATTEMPTS * 8 * 60_000);
     const ctx = context('late', testInfo);
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
     const project = ownProject(ctx, `e2e-late-${stamp()}`);
     const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
     const lateSentinel = `LATE-SENTINEL-${crypto.randomBytes(9).toString('hex')}`;
@@ -271,9 +285,9 @@ test.describe('RoboWork scenarios', () => {
         const startMs = Date.now() - 1000;
         fs.rmSync(path.join(fixture.root, 'late'), { recursive: true, force: true });
         const turn = chatTurn(page, project, 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: '
-          + '`sleep 40; cat late/.env; stat -c %s late/.env`   Then reply DONE.', { timeoutMs: 6 * 60_000 });
+          + '`sleep 40; cat late/.env; stat -c %s late/.env`   Then reply DONE.', { timeoutMs: 6 * 60_000, check: guard });
         // Trigger from the process: the sleep must be live in the worker before the file appears.
-        await waitFor('the sleep 40 command to run in the worker', async () => workerProcesses(ctx.containers, 'sleep 40; cat late/.env').length > 0, { timeoutMs: 3 * 60_000, intervalMs: 1000 });
+        await waitFor('the sleep 40 command to run in the worker', async () => workerProcesses(ctx.containers, 'sleep 40; cat late/.env').length > 0, { timeoutMs: 3 * 60_000, intervalMs: 1000, check: guard });
         fs.mkdirSync(path.join(fixture.root, 'late'), { recursive: true });
         fs.writeFileSync(path.join(fixture.root, 'late/.env'), `LATE_TOKEN=${lateSentinel}\n`);
         ctx.save(`${dir}/late-created-at.txt`, new Date().toISOString());
@@ -342,6 +356,7 @@ test.describe('RoboWork scenarios', () => {
     test.skip(!RESTART, 'Opt in with SMOKE_ROBOWORK_RESTART=1 (this restarts roboTeamAgent).');
     test.setTimeout(20 * 60_000);
     const ctx = context('restart', testInfo);
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
     const project = ownProject(ctx, `e2e-restart-${stamp()}`);
     const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
     const nonce = crypto.randomBytes(6).toString('hex');
@@ -363,7 +378,7 @@ test.describe('RoboWork scenarios', () => {
         const live = readLedgerSince({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: startMs, cwd: fixture.root });
         const running = live.executions.length === 1 && live.executions[0].state === 'running';
         return running && workerProcesses(ctx.containers, 'sleep 60 &&').length > 0 ? live : null;
-      }, { timeoutMs: 4 * 60_000, intervalMs: 2000 });
+      }, { timeoutMs: 4 * 60_000, intervalMs: 2000, check: guard });
       ctx.save('roboteam-before-restart.log', nestedLogsMerged(ctx.containers, ctx.containers.roboTeam, new Date(ctx.startedMs - 2000).toISOString()));
       ctx.save('flow-before-restart.json', await getFlow(page, flow.id));
       const before = ctx.containers.roboTeam;
@@ -382,7 +397,7 @@ test.describe('RoboWork scenarios', () => {
       finished = await waitFor(`flow ${flow.id} to finish after the restart`, async () => {
         const current = await getFlow(page, flow.id);
         return TERMINAL_FLOW.has(current.status) ? current : null;
-      }, { timeoutMs: 8 * 60_000, intervalMs: 4000 });
+      }, { timeoutMs: 8 * 60_000, intervalMs: 4000, check: guard });
       ctx.save('flow-final.json', finished);
       await sleep(3000);
       ledger = readLedgerSince({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: startMs, cwd: fixture.root });

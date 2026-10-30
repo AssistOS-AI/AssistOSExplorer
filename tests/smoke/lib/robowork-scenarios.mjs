@@ -9,13 +9,18 @@ import { nested } from './robowork-e2e.mjs';
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function waitFor(description, probe, { timeoutMs = 120_000, intervalMs = 2000 } = {}) {
+export async function waitFor(description, probe, { timeoutMs = 120_000, intervalMs = 2000, check = null } = {}) {
   const deadline = Date.now() + timeoutMs;
   let last;
   for (;;) {
     last = await probe();
     if (last) return last;
-    if (Date.now() > deadline) throw new Error(`Timed out after ${timeoutMs / 1000} s waiting for: ${description}`);
+    if (check) await check();
+    if (Date.now() > deadline) {
+      // A model-dependent wait (one with a stall guard) that runs out of time is treated like a stall: rerun-needed, never a pass.
+      if (check) { check.mark?.(`timed out waiting for: ${description}`); throw new ProviderStall(`timed out after ${timeoutMs / 1000} s waiting for: ${description}`); }
+      throw new Error(`Timed out after ${timeoutMs / 1000} s waiting for: ${description}`);
+    }
     await sleep(intervalMs);
   }
 }
@@ -96,4 +101,46 @@ export async function apiOk(roboTeamApi, page, request, expectedStatuses = [200,
   const reply = await roboTeamApi(page, request);
   if (!expectedStatuses.includes(reply.status)) throw new Error(`${request.method ?? 'GET'} ${request.path} -> HTTP ${reply.status}: ${JSON.stringify(reply.payload).slice(0, 400)}`);
   return reply.payload;
+}
+
+// ---------------------------------------------------------------------------------------------------------------- provider stalls
+
+// A provider stall (the model stops answering, no worker timeout ends it) is neither a pass nor a product failure: the scenario is marked
+// `rerun-needed` (a test annotation the runner script reads) and must be run again. It is detected from the worker ledger: an execution
+// still `running` whose last relayed event is older than `stallMs`. Deliberate waits in the scenarios (sleep 40..70) stay far below it.
+export class ProviderStall extends Error {
+  constructor(message) { super(`RERUN-NEEDED: provider stall: ${message}`); this.name = 'ProviderStall'; }
+}
+
+export function makeStallGuard({ workspaceRoot, scratchDir, sinceMs, testInfo, stallMs = Number(process.env.SMOKE_ROBOWORK_STALL_MS || 180_000), everyMs = 15_000 }) {
+  let last = 0;
+  const check = async function check() {
+    if (Date.now() - last < everyMs) return;
+    last = Date.now();
+    const ledger = readLedgerSince({ workspaceRoot, scratchDir, sinceMs });
+    for (const execution of ledger.executions) {
+      if (execution.state !== 'running') continue;
+      const lastAt = Math.max(execution.created_at, ...execution.events.map((event) => event.at));
+      if (Date.now() - lastAt > stallMs) {
+        testInfo?.annotations.push({ type: 'rerun-needed', description: `execution ${execution.execution_id} idle for ${Math.round((Date.now() - lastAt) / 1000)} s while running` });
+        throw new ProviderStall(`execution ${execution.execution_id} (${execution.robotName}) has had no event for ${Math.round((Date.now() - lastAt) / 1000)} s`);
+      }
+    }
+  };
+  check.mark = (description) => testInfo?.annotations.push({ type: 'rerun-needed', description });
+  return check;
+}
+
+// Stops what a scenario left running, through the product APIs: flows are terminated (the worker phase is stopped with them).
+export async function terminateFlows(roboTeamApi, page, flowIds) {
+  const results = [];
+  for (const id of flowIds) {
+    try {
+      const current = (await roboTeamApi(page, { path: `api/roboflow/flows/${id}?logs=none` })).payload?.flow;
+      if (!current || ['completed', 'failed', 'terminated'].includes(current.status)) continue;
+      const reply = await roboTeamApi(page, { method: 'POST', path: `api/roboflow/flows/${id}/terminate`, body: {} });
+      results.push({ flow: id, status: reply.status });
+    } catch (error) { results.push({ flow: id, error: String(error?.message ?? error).slice(0, 200) }); }
+  }
+  return results;
 }

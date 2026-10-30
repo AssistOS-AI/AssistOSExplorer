@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { expect } from './fixtures.mjs';
 import { smokeConfig } from './config.mjs';
-import { setComposer } from './webchat.mjs';
+import { setComposer, cancelWebchatGenerationIfActive } from './webchat.mjs';
 
 // Helpers of specs/10-robowork-interaction.spec.mjs (human input, explicit task failure, robot delete). Read-only against the worker.
 
@@ -59,7 +59,7 @@ export function singleTaskWorkflow({ name, prompt, allowsHumanInput = false }) {
 }
 
 // Sends one WebChat turn to a robot, targeting a project directory under the workspace, and waits for the answer.
-export async function chatTurn(page, { robot, project, prompt, timeoutMs = 5 * 60_000 }) {
+export async function chatTurn(page, { robot, project, prompt, timeoutMs = 5 * 60_000, check = null }) {
   const params = new URLSearchParams({ agent: smokeConfig.webchatAgent, robot, 'forward-envelope': '1', 'workspace-dir': project });
   await page.goto(`/webchat?${params}`, { waitUntil: 'load' });
   await expect(page.locator('#cmd')).toBeVisible();
@@ -73,6 +73,24 @@ export async function chatTurn(page, { robot, project, prompt, timeoutMs = 5 * 6
     const texts = await page.locator(BOT).allTextContents();
     const busy = await page.locator('#cancelBtn').isVisible().catch(() => false);
     if (!busy && texts.length > before) return texts.slice(before).join('\n---\n');
+    if (check) await check();
     if (Date.now() > deadline) throw new Error(`The turn did not finish within ${timeoutMs / 1000} s.`);
   }
+}
+
+// Stops a WebChat generation that is still running (the product's cancel button), so a stalled or abandoned turn does not hold a worker slot.
+export async function stopChatTurn(page) {
+  try { await cancelWebchatGenerationIfActive(page, { timeout: 30_000 }); return true; } catch { return false; }
+}
+
+// Applies a model to an opencode robot through the product API (the robot must be idle). Used for the model chosen by the preflight.
+export async function applyModel(roboTeamApi, page, robotId, model) {
+  return roboTeamApi(page, { method: 'PATCH', path: `api/robots/${robotId}/coding-agents`, body: { codingAgents: ['opencode'], model } });
+}
+
+// Applies the model the preflight selected (SMOKE_ROBOWORK_MODEL, empty for the deployment default) to a robot a scenario creates.
+export async function applySelectedModel(roboTeamApi, page, robotId) {
+  const model = process.env.SMOKE_ROBOWORK_MODEL || '';
+  if (!model) return null;
+  return applyModel(roboTeamApi, page, robotId, model);
 }

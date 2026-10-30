@@ -10,8 +10,8 @@ import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs'
 import {
   discoverContainers, nestedLogsMerged, startPoller, stopPoller, readPoll, bwrapMarkerProcesses, createProjectFixture, sentinelHits, collectEnvironment, removeRunDirectory,
 } from '../lib/robowork-e2e.mjs';
-import { sleep, waitFor, readLedgerSince, markerOf, toolOutputs, workerProcesses, apiOk } from '../lib/robowork-scenarios.mjs';
-import { readControls, workerRobots, workerRobotDirs, channelEvents, singleTaskWorkflow, chatTurn } from '../lib/robowork-interaction.mjs';
+import { ProviderStall, makeStallGuard, terminateFlows, sleep, waitFor, readLedgerSince, markerOf, toolOutputs, workerProcesses, apiOk } from '../lib/robowork-scenarios.mjs';
+import { readControls, workerRobots, workerRobotDirs, channelEvents, singleTaskWorkflow, chatTurn, stopChatTurn, applySelectedModel } from '../lib/robowork-interaction.mjs';
 
 // RoboWork r10 e2e: worker channels and robot delete on a live deployment (run `node scripts/run-robowork-e2e.mjs specs/10-robowork-interaction.spec.mjs`).
 //   SMOKE_ROBOWORK_HUMAN=1    (D) a phase asks a question through require-human-input; answering continues it as a new admission
@@ -26,6 +26,7 @@ const MAX_ATTEMPTS = 3;
 const TERMINAL_FLOW = new Set(['completed', 'failed', 'terminated']);
 const stamp = () => Date.now().toString(36);
 
+const flowIds = [];
 const runDirectories = [];
 function context(label) {
   const workspaceRoot = smokeConfig.workspaceRoot;
@@ -51,7 +52,14 @@ async function finishEvidence(ctx, page) {
 }
 
 test.describe('RoboWork interaction scenarios', () => {
-  test.afterEach(() => {
+  test.afterEach(async ({ page }) => {
+    // Stop what the scenario left running, through the product, so a stall cannot starve the next scenario.
+    await stopChatTurn(page);
+    if (flowIds.length) {
+      if (!new URL(page.url()).pathname.startsWith(ROBOTEAM_BASE_PATH)) await page.goto(ROBOTEAM_BASE_PATH, { waitUntil: 'load' }).catch(() => {});
+      const stopped = await terminateFlows(roboTeamApi, page, flowIds.splice(0)).catch(() => []);
+      if (stopped.length && runDirectories[0]) runDirectories[0].ctx.save('teardown-terminated-flows.json', stopped);
+    }
     for (const { ctx, name } of runDirectories.splice(0)) {
       try {
         const root = path.join(ctx.workspaceRoot, name);
@@ -76,6 +84,7 @@ test.describe('RoboWork interaction scenarios', () => {
     test.skip(!HUMAN, 'Opt in with SMOKE_ROBOWORK_HUMAN=1.');
     test.setTimeout(MAX_ATTEMPTS * 10 * 60_000);
     const ctx = context('human-input');
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
     const project = ownProject(ctx, `e2e-human-${stamp()}`);
     const attempts = [];
     let kept = null;
@@ -91,13 +100,14 @@ test.describe('RoboWork interaction scenarios', () => {
         const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body: singleTaskWorkflow({ name: `e2e human ${stamp()}`, prompt, allowsHumanInput: true }) }, [201])).workflow;
         const startMs = Date.now() - 1000;
         const flow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/flows', body: { workflowTypeId: workflow.id, folder: fixture.root, objective: `Human input e2e ${stamp()}` } }, [201])).flow;
+        flowIds.push(flow.id);
         ctx.save(`${dir}/flow-started.json`, flow);
         // Wait for the question (or the end of the flow: the model did not ask).
         const waiting = await waitFor('a pending question or the end of the flow', async () => {
           const current = await getFlow(page, flow.id);
           if (current.humanInput?.status === 'pending' && current.humanInput.executionEnded) return { current, asked: true };
           return flowTerminal(current) ? { current, asked: false } : null;
-        }, { timeoutMs: 6 * 60_000, intervalMs: 3000 });
+        }, { timeoutMs: 6 * 60_000, intervalMs: 3000, check: guard });
         ctx.save(`${dir}/flow-at-question.json`, waiting.current);
         let verdict = { verdict: 'pass' };
         let answerReply = null;
@@ -121,7 +131,8 @@ test.describe('RoboWork interaction scenarios', () => {
           expect(answerReply.status, `answer: ${JSON.stringify(answerReply.payload).slice(0, 300)}`).toBe(200);
           secondReply = await roboTeamApi(page, { method: 'POST', path: 'api/roboflow/human-input/answer', body: { flowId: flow.id, requestId: question.id, option: choice } });
           ctx.save(`${dir}/second-answer-reply.json`, { status: secondReply.status, error: secondReply.payload?.error });
-          const finished = await waitFor('the flow to finish after the answer', async () => { const current = await getFlow(page, flow.id); return flowTerminal(current) ? current : null; }, { timeoutMs: 6 * 60_000, intervalMs: 3000 });
+          expect(secondReply.status, `the repeated answer must be refused: ${JSON.stringify(secondReply.payload).slice(0, 200)}`).toBe(409);
+          const finished = await waitFor('the flow to finish after the answer', async () => { const current = await getFlow(page, flow.id); return flowTerminal(current) ? current : null; }, { timeoutMs: 6 * 60_000, intervalMs: 3000, check: guard });
           ctx.save(`${dir}/flow-final.json`, finished);
           await sleep(2000);
           const ledger = readLedgerSince({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: startMs, cwd: fixture.root });
@@ -177,6 +188,7 @@ test.describe('RoboWork interaction scenarios', () => {
     test.skip(!FAILURE, 'Opt in with SMOKE_ROBOWORK_FAILURE=1.');
     test.setTimeout(MAX_ATTEMPTS * 8 * 60_000);
     const ctx = context('task-failure');
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
     const project = ownProject(ctx, `e2e-fail-${stamp()}`);
     const attempts = [];
     let kept = null;
@@ -192,7 +204,8 @@ test.describe('RoboWork interaction scenarios', () => {
         const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body: singleTaskWorkflow({ name: `e2e fail ${stamp()}`, prompt }) }, [201])).workflow;
         const startMs = Date.now() - 1000;
         const flow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/flows', body: { workflowTypeId: workflow.id, folder: fixture.root, objective: `Task failure e2e ${nonce}` } }, [201])).flow;
-        const finished = await waitFor('the flow to finish', async () => { const current = await getFlow(page, flow.id); return flowTerminal(current) ? current : null; }, { timeoutMs: 6 * 60_000, intervalMs: 3000 });
+        flowIds.push(flow.id);
+        const finished = await waitFor('the flow to finish', async () => { const current = await getFlow(page, flow.id); return flowTerminal(current) ? current : null; }, { timeoutMs: 6 * 60_000, intervalMs: 3000, check: guard });
         ctx.save(`${dir}/flow-final.json`, finished);
         await sleep(2000);
         const ledger = readLedgerSince({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: startMs, cwd: fixture.root });
@@ -231,12 +244,14 @@ test.describe('RoboWork interaction scenarios', () => {
     test.skip(!DELETE, 'Opt in with SMOKE_ROBOWORK_DELETE=1.');
     test.setTimeout(30 * 60_000);
     const ctx = context('robot-delete');
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
     const outcome = { steps: [] };
     const record = (step) => { outcome.steps.push(step); ctx.save('outcome.json', outcome); };
     const robotsList = async () => (await apiOk(roboTeamApi, page, { path: 'api/robots' })).robots;
     const createRobot = async (name) => {
       const before = workerRobotDirs(ctx.workspaceRoot);
-      await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name, codingAgents: ['opencode'] } }, [201]);
+      const made = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name, codingAgents: ['opencode'] } }, [201])).robot;
+      await applySelectedModel(roboTeamApi, page, made.id);
       const row = workerRobots({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir }).find((entry) => entry.name === name);
       const dir = row?.id ?? workerRobotDirs(ctx.workspaceRoot).find((entry) => !before.includes(entry));
       return { name, workerId: dir };
@@ -249,10 +264,12 @@ test.describe('RoboWork interaction scenarios', () => {
       const reply = await target.request.post(`${ROBOTEAM_BASE_PATH}api/control`, { headers: { origin: new URL(target.url()).origin, 'x-ploinky-browser-csrf-token': proof.csrfToken, 'content-type': 'application/json', accept: 'application/json' }, data: JSON.stringify({ robotName: name, operation: 'robot-delete' }) });
       return { status: reply.status(), payload: await reply.json().catch(() => ({})) };
     };
+    const created = [];
     await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
-
+    try {
     // 1. An idle scratch robot: deleting it removes RoboTeam's record and the worker's robots/<id> directory.
     const idle = await createRobot(`e2e-del-${stamp()}`);
+    created.push(idle.name);
     expect(idle.workerId, 'the worker created a robot directory').toBeTruthy();
     expect(workerRobotDirs(ctx.workspaceRoot)).toContain(idle.workerId);
     const deletedAt = Date.now();
@@ -265,47 +282,124 @@ test.describe('RoboWork interaction scenarios', () => {
     expect((await robotsList()).some((robot) => robot.name === idle.name), 'RoboTeam record removed').toBe(false);
     record({ step: 'idle robot gone', workerRows: workerRobots({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir }).filter((row) => row.name === idle.name) });
 
-    // 2. A robot with a running task is refused; its RoboTeam record and worker directory stay.
+    // 2a. Local-busy: a running WebChat turn. RoboTeam checks its local holders (live chat helper, CLI task, unfinished task) BEFORE asking the worker,
+    // so the refusal is RoboTeam's own 409 and the worker is never asked: its robot row and robots/<id> directory stay untouched.
     const busy = await createRobot(`e2e-busy-${stamp()}`);
+    created.push(busy.name);
     const project = ownProject(ctx, `e2e-delete-${stamp()}`);
-    const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
-    void fixture;
+    createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
     let turn = null;
     let chatPage = null;
     try {
       startPoller(ctx.containers);
       chatPage = await page.context().newPage();
-      turn = chatTurn(chatPage, { robot: busy.name, project, prompt: 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: `sleep 70`   Then reply DONE.', timeoutMs: 8 * 60_000 });
+      turn = chatTurn(chatPage, { robot: busy.name, project, prompt: 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: `sleep 70`   Then reply DONE.', timeoutMs: 8 * 60_000, check: guard });
       turn.catch(() => {});
-      await waitFor('the sleep 70 command in the worker', async () => workerProcesses(ctx.containers, 'sleep 70').length > 0, { timeoutMs: 4 * 60_000, intervalMs: 1000 });
+      await waitFor('the sleep 70 command in the worker', async () => workerProcesses(ctx.containers, 'sleep 70').length > 0, { timeoutMs: 4 * 60_000, intervalMs: 1000, check: guard });
       const refused = await deleteRobotQuietly(page, busy.name);
-      record({ step: 'delete busy robot', robot: busy, status: refused.status, payload: refused.payload });
+      record({ step: 'local-busy delete refused', robot: busy, status: refused.status, payload: refused.payload });
       expect.soft(refused.status, `refused: ${JSON.stringify(refused.payload)}`).toBe(409);
-      expect.soft(JSON.stringify(refused.payload), 'the worker refusal (robot_busy) rather than a local one').toMatch(/running or unsettled work/);
-      const list = await roboTeamApi(page, { path: 'api/robots' });
-      expect.soft(list.payload.robots.some((robot) => robot.name === busy.name), 'RoboTeam record kept').toBe(true);
+      expect.soft(JSON.stringify(refused.payload), 'a local refusal, not the worker robot_busy message').not.toMatch(/running or unsettled work/);
+      expect.soft((await robotsList()).some((robot) => robot.name === busy.name), 'RoboTeam record kept').toBe(true);
       expect.soft(workerRobotDirs(ctx.workspaceRoot), 'worker directory kept').toContain(busy.workerId);
+      expect.soft(workerRobots({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir }).find((row) => row.name === busy.name)?.lifecycle, 'the worker robot row stays ready: the worker was not asked').toBe('ready');
     } finally {
       await turn?.catch(() => {});
-      // Leaving the chat lets RoboTeam's chat helper process of this robot end; it blocks the local delete while it lives (see below).
       await chatPage?.close().catch(() => {});
       stopPoller(ctx.containers);
     }
-    // 3. Once the task ended, the same delete is accepted (the API helper needs a RoboTeam page again).
-    // The WebChat helper process (robot-cli) of the chat stays alive for a few minutes after the page is left, and RoboTeam refuses the local delete
-    // while it lives ("close the robot chat…"). That refusal comes AFTER the worker accepted the delete (finding F12); the replies are recorded.
+    // 3. Once the task ended and the chat helper exited (a few minutes), the same delete is accepted. Every reply is recorded; only 409 may precede the 200.
     const replies = [];
     const settled = await waitFor('the busy robot to be deletable', async () => {
       const reply = await deleteRobotQuietly(page, busy.name);
       replies.push({ at: new Date().toISOString(), status: reply.status, payload: reply.payload });
-      return reply.status === 200 ? reply : null;
+      return reply.status === 200 ? reply : (reply.status === 409 ? null : reply);
     }, { timeoutMs: 12 * 60_000, intervalMs: 20_000 });
     ctx.save('busy-delete-replies.json', replies);
-    if (replies.some((reply) => reply.status === 500)) testInfo.annotations.push({ type: 'finding', description: 'F12: the delete returned 500 after the worker had accepted it (RoboTeam kept the record because the robot chat process was still alive).' });
-    record({ step: 'delete busy robot after its task ended', status: settled.status, payload: settled.payload });
-    expect(settled.status).toBe(200);
+    record({ step: 'delete after the task ended', status: settled.status, payload: settled.payload });
+    expect(settled.status, `delete after the task ended: ${JSON.stringify(replies.at(-1))}`).toBe(200);
+    expect(replies.slice(0, -1).every((reply) => reply.status === 409), `only local 409 replies may precede the 200: ${replies.map((reply) => reply.status)}`).toBe(true);
     await waitFor('the busy robot worker directory to be removed', async () => !workerRobotDirs(ctx.workspaceRoot).includes(busy.workerId), { timeoutMs: 90_000, intervalMs: 1000 });
+    } finally {
+      // Best-effort removal of every scratch robot this test created (best effort: a refusal while a chat helper lives is retried for a few minutes).
+      const leftovers = [];
+      try {
+        const names = new Set((await robotsList()).map((robot) => robot.name));
+        for (const name of created.filter((entry) => names.has(entry))) {
+          const outcome = await waitFor(`scratch robot ${name} to be deleted`, async () => { const reply = await deleteRobotQuietly(page, name); return reply.status === 200 ? reply : (reply.status === 409 ? null : reply); }, { timeoutMs: 4 * 60_000, intervalMs: 15_000 }).catch((error) => ({ status: 'timeout', error: String(error.message) }));
+          if (outcome.status !== 200) leftovers.push({ name, outcome });
+        }
+      } catch (error) { leftovers.push({ error: String(error?.message ?? error) }); }
+      ctx.save('cleanup.json', leftovers);
+    }
     await finishEvidence(ctx, page);
     await testInfo.attach('robot-delete', { body: JSON.stringify(outcome, null, 2), contentType: 'application/json' });
+  });
+
+  // -------------------------------------------------------------------------------------------------------------- G (worker-busy)
+
+  test('G: a robot with worker work but no local holder is refused by the worker (robot_busy) and kept', async ({ page }, testInfo) => {
+    test.skip(!DELETE, 'Opt in with SMOKE_ROBOWORK_DELETE=1.');
+    test.setTimeout(25 * 60_000);
+    const ctx = context('robot-delete-worker-busy');
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
+    const outcome = { steps: [] };
+    const record = (step) => { outcome.steps.push(step); ctx.save('outcome.json', outcome); };
+    const name = `e2e-busy-w-${stamp()}`;
+    const project = ownProject(ctx, `e2e-delete-${stamp()}`);
+    const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
+    const quietDelete = async (target) => {
+      const proof = await target.evaluate(async () => (await (await fetch('/auth/token?mutationRoute=roboTeamAgent', { credentials: 'include', cache: 'no-store' })).json()).browserMutation);
+      const reply = await target.request.post(`${ROBOTEAM_BASE_PATH}api/control`, { headers: { origin: new URL(target.url()).origin, 'x-ploinky-browser-csrf-token': proof.csrfToken, 'content-type': 'application/json', accept: 'application/json' }, data: JSON.stringify({ robotName: name, operation: 'robot-delete' }) });
+      return { status: reply.status(), payload: await reply.json().catch(() => ({})) };
+    };
+    await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
+    let created = false;
+    try {
+      const before = workerRobotDirs(ctx.workspaceRoot);
+      const robot = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name, codingAgents: ['opencode'] } }, [201])).robot;
+      created = true;
+      await applySelectedModel(roboTeamApi, page, robot.id);
+      const workerId = workerRobots({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir }).find((row) => row.name === name)?.id ?? workerRobotDirs(ctx.workspaceRoot).find((entry) => !before.includes(entry));
+      // Only this robot carries the scenario's skill repository, so a workflow task that names its skill can run on no other robot (no chat, no local holder).
+      const repository = path.join(fixture.root, 'skillrepo');
+      fs.mkdirSync(path.join(repository, 'e2e-marker'), { recursive: true });
+      fs.writeFileSync(path.join(repository, 'e2e-marker/SKILL.md'), '---\nname: e2e-marker\ndescription: Marker skill that only selects the scenario robot.\n---\n\nThis skill carries no instructions.\n');
+      await apiOk(roboTeamApi, page, { method: 'POST', path: `api/robots/${robot.id}/skillsets`, body: { name: 'e2emark', source: repository, description: 'e2e marker repository' } });
+      const listed = (await apiOk(roboTeamApi, page, { path: 'api/robots' })).robots.find((entry) => entry.name === name);
+      const skillId = listed.repositories?.find((entry) => entry.id === 'e2emark')?.skills?.[0]?.id;
+      expect(skillId, 'the marker skill id on the robot').toBeTruthy();
+      const body = singleTaskWorkflow({ name: `e2e worker busy ${stamp()}`, prompt: 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: `sleep 70`   Then reply DONE.' });
+      body.tasks[0].skillsets = [skillId];
+      const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body }, [201])).workflow;
+      expect(workflow.coverage.tasks[0].matchingRobotIds, 'only the scenario robot can run the phase').toEqual([robot.id]);
+      startPoller(ctx.containers);
+      try {
+        const flow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/flows', body: { workflowTypeId: workflow.id, folder: fixture.root, objective: `Worker busy e2e ${stamp()}` } }, [201])).flow;
+        flowIds.push(flow.id);
+        await waitFor('the sleep 70 command in the worker', async () => workerProcesses(ctx.containers, 'sleep 70').length > 0, { timeoutMs: 4 * 60_000, intervalMs: 1000, check: guard });
+        const refused = await quietDelete(page);
+        record({ step: 'worker-busy delete refused', robotId: robot.id, workerId, status: refused.status, payload: refused.payload });
+        expect(refused.status, `refused: ${JSON.stringify(refused.payload)}`).toBe(409);
+        expect(JSON.stringify(refused.payload), 'the worker refusal (robot_busy)').toMatch(/running or unsettled work/);
+        expect((await apiOk(roboTeamApi, page, { path: 'api/robots' })).robots.some((entry) => entry.name === name), 'RoboTeam record kept').toBe(true);
+        expect(workerRobotDirs(ctx.workspaceRoot), 'worker directory kept').toContain(workerId);
+        const finished = await waitFor('the flow to finish', async () => { const current = await getFlow(page, flow.id); return flowTerminal(current) ? current : null; }, { timeoutMs: 6 * 60_000, intervalMs: 3000, check: guard });
+        ctx.save('flow-final.json', finished);
+        await apiOk(roboTeamApi, page, { method: 'DELETE', path: `api/roboflow/workflows/${workflow.id}` }, [200, 404]).catch(() => {});
+        const accepted = await waitFor('the robot to be deletable once its work ended', async () => { const reply = await quietDelete(page); return reply.status === 409 ? null : reply; }, { timeoutMs: 3 * 60_000, intervalMs: 5000 });
+        record({ step: 'delete after the phase ended', status: accepted.status, payload: accepted.payload });
+        expect(accepted.status).toBe(200);
+        created = false;
+        await waitFor('the worker directory to be removed', async () => !workerRobotDirs(ctx.workspaceRoot).includes(workerId), { timeoutMs: 90_000, intervalMs: 1000 });
+      } finally { stopPoller(ctx.containers); }
+    } finally {
+      if (created) {
+        const left = await waitFor('the scratch robot to be deleted', async () => { const reply = await quietDelete(page); return reply.status === 200 ? reply : (reply.status === 409 ? null : reply); }, { timeoutMs: 4 * 60_000, intervalMs: 15_000 }).catch((error) => ({ status: 'timeout', error: String(error.message) }));
+        ctx.save('cleanup.json', left);
+      }
+      await finishEvidence(ctx, page);
+    }
+    await testInfo.attach('robot-delete-worker-busy', { body: JSON.stringify(outcome, null, 2), contentType: 'application/json' });
   });
 });
