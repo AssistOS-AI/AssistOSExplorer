@@ -28,6 +28,10 @@ const NATIVE_DIFFERENTIAL = [
     path.join(NATIVE_DIFFERENTIAL_VECTORS, 'gen-journal-differential.mjs'),
     path.join(NATIVE_DIFFERENTIAL_VECTORS, 'journal-differential.json')
 ];
+// Proof-fixture G7 code (P3 rwtarget manifest renderer, P6b rwworker host) and its self-tests may import the modules;
+// nothing outside these two directories may import them (checked below).
+const G7_FIXTURE_DIR = path.join(ROBO_WORK, 'tests', 'g7', 'fixture');
+const G7_SELFTEST_DIR = path.join(ROBO_WORK, 'tests', 'g7', 'selftest');
 
 test('T1-10 the default runtime adapter is unchanged and refuses everything', () => {
     assert.ok(Object.isFrozen(runtimeUnavailable));
@@ -62,6 +66,17 @@ test('T1-10 a store opened with the default runtime provisions, attests and admi
     assert.deepEqual(store.listRobots(context), []);
 });
 
+// Whether `text` (the content of `file`) imports from tests/g7/fixture or tests/g7/selftest: by a path naming them, or by
+// a relative specifier that resolves into them.
+function importsIntoG7(file, text) {
+    if (/(import|require)\s*\(?[^;]*g7\/(fixture|selftest)\//.test(text)) return true;
+    for (const match of text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)['"](\.{1,2}\/[^'"]+)['"]/gm)) {
+        const target = path.resolve(path.dirname(file), match[1]);
+        if (target.startsWith(`${G7_FIXTURE_DIR}${path.sep}`) || target.startsWith(`${G7_SELFTEST_DIR}${path.sep}`)) return true;
+    }
+    return false;
+}
+
 function sourceFiles(root) {
     const files = [];
     const walk = (dir) => {
@@ -87,8 +102,10 @@ test('T1-10 no file outside tests/executionTarget imports the executionTarget mo
         if (file.startsWith(`${MODULE_DIR}${path.sep}`) || file.startsWith(`${TEST_DIR}${path.sep}`) || file === OPERATOR_TOOL) continue;
         if (NATIVE_DIFFERENTIAL.includes(file)) continue;
         if (fs.statSync(file).size > 4 * 1024 * 1024) continue;
-        scanned += 1;
         const text = fs.readFileSync(file, 'utf8');
+        if (file.startsWith(`${G7_FIXTURE_DIR}${path.sep}`) || file.startsWith(`${G7_SELFTEST_DIR}${path.sep}`)) continue;
+        scanned += 1;
+        if (importsIntoG7(file, text)) offenders.push(path.relative(REPOSITORY, file));
         if (/executionTarget\//.test(text) && /(import|require)\s*\(?[^;]*executionTarget\//.test(text)) offenders.push(path.relative(REPOSITORY, file));
         if (/server\/executionTarget/.test(text)) offenders.push(path.relative(REPOSITORY, file));
         if (/install-fixture-record/.test(text)) offenders.push(path.relative(REPOSITORY, file));
@@ -96,6 +113,10 @@ test('T1-10 no file outside tests/executionTarget imports the executionTarget mo
     }
     assert.ok(scanned > 100, 'the scan covered the repository');
     assert.deepEqual([...new Set(offenders)], []);
+    // Negative controls for the G7 importer rule: a sibling importing relatively, another tree importing by path.
+    assert.equal(importsIntoG7(path.join(ROBO_WORK, 'tests', 'g7', 'driver.mjs'), "import { createWorkerHost } from './fixture/rwworker/workerHost.mjs';"), true);
+    assert.equal(importsIntoG7(path.join(ROBO_WORK, 'server', 'x.mjs'), "const m = await import('../tests/g7/selftest/rwworker.test.mjs');"), true);
+    assert.equal(importsIntoG7(path.join(ROBO_WORK, 'tests', 'g7', 'driver.mjs'), "import fs from 'node:fs';\nimport { a } from './tools/install-fixture-record.mjs';"), false);
     assert.ok(fs.statSync(OPERATOR_TOOL).isFile(), 'the single exempt operator tool exists');
     for (const file of NATIVE_DIFFERENTIAL) assert.ok(fs.statSync(file).isFile(), `the exempt native differential file ${path.relative(REPOSITORY, file)} exists`);
 });

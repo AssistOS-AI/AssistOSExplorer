@@ -12,6 +12,8 @@
 //! | `mailbox` | Linux AF_UNIX mailbox endpoint: bounded `recvmsg` frame receive with SCM_RIGHTS on the first byte only | T0 section 8 "Native frame" |
 //! | `keeper` | Keeper launch: a stub that refuses until G1 | none |
 //! | `service` | Journal operations behind authenticated frames, gated on keeper availability | none |
+//! | `session` | Session handshake per T0 amendment A11 (challenge, ticket, lease-bound session-key possession proofs); the proof-fixture ticket key | none (vectors: `tests/vectors/session-fixture-v1.json`) |
+//! | `peer` | Linux: the helper's authenticated connection handler and the worker-side session (slice P6b) | `transportContract.mjs` `validateTargetFrame` (worker side) |
 //!
 //! Every refusal is one enumerated [`Code`]; no token, path, raw input or exception text leaves a validator.
 
@@ -23,11 +25,16 @@ pub mod journal;
 pub mod keeper;
 #[cfg(target_os = "linux")]
 pub mod mailbox;
+#[cfg(target_os = "linux")]
+pub mod peer;
 pub mod service;
+pub mod session;
 pub mod ticket;
 
 /// Refusal codes. The spellings are those of the Node enumerations (`TRANSPORT_ERROR_CODES`, `CONTRACT_ERROR_CODES`,
 /// `JOURNAL_ERROR_CODES`), except `KeeperUnavailable`, which is helper-local (keeper launch is not wired before G1).
+/// `ConnectRefused`/`ConnectTimeout` are the `TRANSPORT_ERROR_CODES` spellings, used by the worker peer when the mailbox
+/// cannot be reached at all (nothing was sent).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Code {
     InvalidRequest,
@@ -61,6 +68,8 @@ pub enum Code {
     DeliveryUnknown,
     StateCorrupt,
     KeeperUnavailable,
+    ConnectRefused,
+    ConnectTimeout,
 }
 
 impl Code {
@@ -97,7 +106,51 @@ impl Code {
             Code::DeliveryUnknown => "delivery_unknown",
             Code::StateCorrupt => "state_corrupt",
             Code::KeeperUnavailable => "keeper_unavailable",
+            Code::ConnectRefused => "connect_refused",
+            Code::ConnectTimeout => "connect_timeout",
         }
+    }
+
+    /// Every code, for spelling lookups.
+    pub const ALL: [Code; 33] = [
+        Code::InvalidRequest,
+        Code::UnsupportedVersion,
+        Code::NoncanonicalEncoding,
+        Code::CapacityExceeded,
+        Code::TicketFormat,
+        Code::TicketAlgorithm,
+        Code::TicketSignature,
+        Code::TicketPurpose,
+        Code::TicketBinding,
+        Code::TicketLifetime,
+        Code::TicketReplayed,
+        Code::ChannelEpochConflict,
+        Code::LeaseRetired,
+        Code::FrameLayout,
+        Code::FrameAuthentication,
+        Code::FrameBinding,
+        Code::FrameSequence,
+        Code::DescriptorCount,
+        Code::DescriptorRole,
+        Code::DescriptorIdentity,
+        Code::ChannelNotAdmitted,
+        Code::RequiredChannelMissing,
+        Code::JournalUnavailable,
+        Code::OperationConflict,
+        Code::BindingMismatch,
+        Code::NotFound,
+        Code::OutcomeUnknown,
+        Code::AbsenceUnverified,
+        Code::DeliveryUnknown,
+        Code::StateCorrupt,
+        Code::KeeperUnavailable,
+        Code::ConnectRefused,
+        Code::ConnectTimeout,
+    ];
+
+    /// The enumerated code with this spelling, if any (A11.6: worker tools never echo a helper's free text).
+    pub fn from_spelling(text: &str) -> Option<Code> {
+        Code::ALL.iter().copied().find(|code| code.as_str() == text)
     }
 
     /// `{ok:false,error:{code}}`.

@@ -3,12 +3,13 @@
 // the exact image reference and the declaration digests. Nothing imports it; it reads no environment variable.
 //
 //   node render-manifest.mjs --image <ref@sha256:...> --inventory <inventory.json> --helper <rw-target-helper>
-//        --transport-vectors <transport-v1.json> --common-vectors <contracts-v1.json>
+//        --transport-vectors <transport-v1.json> --common-vectors <contracts-v1.json> --session-vectors <session-fixture-v1.json>
 //        --seccomp-profile <ploinky nested seccomp json> --out <manifest.json>
 //
 // Digest preimages (proof-fixture definitions, recorded for review; T0 fixes only the Digest format):
 //   helper.executableDigest  SHA-256 of the helper executable bytes (the same file the image carries at the fixed path)
-//   helper.contractDigest    targetDigest({version:1, contractId, transportVectorsSha256, commonVectorsSha256})
+//   helper.contractDigest    targetDigest({version:1, contractId, transportVectorsSha256, commonVectorsSha256, sessionVectorsSha256})
+//                            (A11.4: the session vectors pin the handshake message shapes, HKDF label and proof prefix)
 //   inventoryDigest          targetDigest({version:1, platform, baseImage, files}) with files sorted by path, each
 //                            {path, sha256, mode} as hashed inside the built image (inventory.json)
 //   profile.digest           targetDigest({version:1, id:"nested-podman", containerSecurity:{nestedPodman:true},
@@ -59,7 +60,8 @@ function validInventory(inventory) {
             && (Number.parseInt(file.mode.padStart(4, '0')[0], 8) & 6) === 0);
 }
 
-export function renderManifest({ templateText, image, inventory, helperBytes, transportVectorsBytes, commonVectorsBytes, seccompBytes }) {
+export function renderManifest({ templateText, image, inventory, helperBytes, transportVectorsBytes, commonVectorsBytes, sessionVectorsBytes, seccompBytes }) {
+    if (!sessionVectorsBytes) throw new Error('the session vectors are part of the helper contract (A11.4)');
     if (!/^[^\s@]+@sha256:[0-9a-f]{64}$/.test(image)) throw new Error('image must be an exact digest reference');
     if (!validInventory(inventory)) throw new Error('inventory is invalid or incomplete');
     const executableDigest = sha256Hex(helperBytes);
@@ -73,6 +75,7 @@ export function renderManifest({ templateText, image, inventory, helperBytes, tr
             contractId: HELPER_CONTRACT_ID,
             transportVectorsSha256: sha256Hex(transportVectorsBytes),
             commonVectorsSha256: sha256Hex(commonVectorsBytes),
+            sessionVectorsSha256: sha256Hex(sessionVectorsBytes),
         }),
         INVENTORY_DIGEST: digest(inventory),
         PROFILE_DIGEST: digest({
@@ -93,7 +96,7 @@ export function renderManifest({ templateText, image, inventory, helperBytes, tr
 
 function parseArguments(argv) {
     const names = { '--image': 'image', '--inventory': 'inventory', '--helper': 'helper', '--transport-vectors': 'transportVectors',
-        '--common-vectors': 'commonVectors', '--seccomp-profile': 'seccompProfile', '--out': 'out' };
+        '--common-vectors': 'commonVectors', '--session-vectors': 'sessionVectors', '--seccomp-profile': 'seccompProfile', '--out': 'out' };
     const options = {};
     for (let index = 0; index < argv.length; index += 2) {
         const key = names[argv[index]];
@@ -113,6 +116,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         helperBytes: fs.readFileSync(options.helper),
         transportVectorsBytes: fs.readFileSync(options.transportVectors),
         commonVectorsBytes: fs.readFileSync(options.commonVectors),
+        sessionVectorsBytes: fs.readFileSync(options.sessionVectors),
         seccompBytes: fs.readFileSync(options.seccompProfile),
     });
     fs.writeFileSync(options.out, `${JSON.stringify(manifest, null, 4)}\n`, { flag: 'wx' });

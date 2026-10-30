@@ -27,7 +27,7 @@ fn native_copy_is_byte_identical_to_the_shared_fixture() {
     let source_path = common::robo_work_dir().join("tests/executionTarget/fixtures/transport-v1.json");
     let source = std::fs::read(&source_path).unwrap_or_else(|error| panic!("the shared fixture must be present ({}): {error}", source_path.display()));
     assert_eq!(sha256_hex(&copy), sha256_hex(&source));
-    assert_eq!(sha256_hex(&copy), "cabc04c23afd4815b96156328b98abcd1baa990062262071e08f170a5ec6978f");
+    assert_eq!(sha256_hex(&copy), "1d03e192fd459b9ab0c1d069212adb5f124b2c033d1949ee8d51b7c6ca2a55c7");
 }
 
 #[test]
@@ -76,6 +76,7 @@ fn ticket_fixture(v: &Value) -> TicketFixture {
         binding: ticket.get("claims").unwrap().get("binding").unwrap().clone(),
         expected: Expected {
             reservation_id: text(expected, "reservationId").into(),
+            lease_id: Some(text(expected, "leaseId").into()),
             operation_id: text(expected, "operationId").into(),
             request_digest: text(expected, "requestDigest").into(),
             helper_nonce: text(expected, "helperNonce").into(),
@@ -213,15 +214,28 @@ fn ticket_refusal_order_and_codes() {
     assert_eq!(check(&sign_with(&|c| c.set("reservationId", Value::Str(b64url_encode(&[9u8; 16]))))), Err(Code::TicketBinding));
     assert_eq!(check(&sign_with(&|c| c.set("helperNonce", Value::Str(b64url_encode(&[7u8; 32]))))), Err(Code::TicketBinding));
     assert_eq!(check(&sign_with(&|c| c.set("limitsDigest", Value::Str("f".repeat(64))))), Err(Code::TicketBinding));
-    // Epochs: first bootstrap must be "1"/null; reattach CASes the exact prior epoch; a retired lease never reopens.
-    assert_eq!(check(&sign_with(&|c| c.set("channelEpoch", Value::Str("2".into())))), Err(Code::ChannelEpochConflict));
+    // A11.1: the lease is a required claim; another lease is not the expected one.
+    assert_eq!(check(&sign_with(&|c| c.set("leaseId", Value::Str(b64url_encode(&[5u8; 16]))))), Err(Code::TicketBinding));
+    assert_eq!(check(&sign_with(&|c| c.set("leaseId", Value::Str("short".into())))), Err(Code::TicketFormat));
+    // A11.2 epochs: any positive epoch on first use, previous (when present) below it; then strictly greater than the
+    // held epoch; a retired lease never reopens.
+    assert!(check(&sign_with(&|c| c.set("channelEpoch", Value::Str("2".into())))).is_ok(), "first use need not be 1");
+    assert_eq!(
+        check(&sign_with(&|c| {
+            c.set("channelEpoch", Value::Str("2".into()));
+            c.set("previousChannelEpoch", Value::Str("2".into()));
+        })),
+        Err(Code::ChannelEpochConflict)
+    );
     let reattach = sign_with(&|c| {
         c.set("channelEpoch", Value::Str("4".into()));
         c.set("previousChannelEpoch", Value::Str("3".into()));
     });
     let current = |epoch: &str| ChannelState { current_epoch: Some(epoch.into()), lease_active: true };
     assert!(verify(&fixture, &reattach, &fixture.binding, &current("3"), &mut ReplayStore::new()).is_ok());
-    assert_eq!(verify(&fixture, &reattach, &fixture.binding, &current("2"), &mut ReplayStore::new()), Err(Code::ChannelEpochConflict));
+    assert!(verify(&fixture, &reattach, &fixture.binding, &current("2"), &mut ReplayStore::new()).is_ok(), "a skipped epoch (lost accepted) is fine");
+    assert_eq!(verify(&fixture, &reattach, &fixture.binding, &current("4"), &mut ReplayStore::new()), Err(Code::ChannelEpochConflict), "equal");
+    assert_eq!(verify(&fixture, &reattach, &fixture.binding, &current("5"), &mut ReplayStore::new()), Err(Code::ChannelEpochConflict), "older");
     let retired = ChannelState { current_epoch: Some("3".into()), lease_active: false };
     assert_eq!(verify(&fixture, &reattach, &fixture.binding, &retired, &mut ReplayStore::new()), Err(Code::LeaseRetired));
     // Header: another algorithm, another token type, an extra key, another kid; malformed compact forms.

@@ -102,6 +102,17 @@ fn address(path: &Path) -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
 
 /// The helper's listening mailbox. The socket file is created by `bind` (an existing path is refused, never unlinked)
 /// with mode 0600, and removed on drop only while it is still the same file.
+/// The worker peer's refusal for a mailbox `connect` that failed: nothing was sent, so this is never an unknown
+/// outcome and never a journal fact. A missing path or socket (ENOENT, ENOTDIR), a permission refusal (EACCES, EPERM),
+/// no listener (ECONNREFUSED), a non-socket path (ENOTSOCK) and every other failure are `connect_refused`; only a timeout
+/// (ETIMEDOUT, EAGAIN) is `connect_timeout`.
+pub fn connect_error_code(error: &io::Error) -> crate::Code {
+    match error.raw_os_error() {
+        Some(libc::ETIMEDOUT) | Some(libc::EAGAIN) => crate::Code::ConnectTimeout,
+        _ => crate::Code::ConnectRefused,
+    }
+}
+
 #[derive(Debug)]
 pub struct Listener {
     fd: OwnedFd,

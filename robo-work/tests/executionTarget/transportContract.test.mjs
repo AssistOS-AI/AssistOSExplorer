@@ -68,13 +68,13 @@ function targetIdentity(scope) {
     }));
 }
 
-const EXPECTED = { reservationId: sid('reservation'), operationId: sid('op-start'), requestDigest: sdg('request'), helperNonce: nonce('helper') };
+const EXPECTED = { reservationId: sid('reservation'), leaseId: sid('lease'), operationId: sid('op-start'), requestDigest: sdg('request'), helperNonce: nonce('helper') };
 
 function claims(overrides = {}) {
     const b = binding();
     return {
         version: 1, iss: 'ploinky-router', sub: b.scope.workerPrincipal, purpose: 'ploinky.target-helper.v1',
-        aud: `ploinky:target-helper:${targetIdentity(b.scope)}`, binding: b, reservationId: EXPECTED.reservationId, operationId: EXPECTED.operationId,
+        aud: `ploinky:target-helper:${targetIdentity(b.scope)}`, binding: b, reservationId: EXPECTED.reservationId, leaseId: EXPECTED.leaseId, operationId: EXPECTED.operationId,
         requestDigest: EXPECTED.requestDigest, helperNonce: EXPECTED.helperNonce, jti: nonce(`jti-${Math.random()}`), iat: NOW / 1000 - 1,
         exp: NOW / 1000 + 20, channelEpoch: '1', previousChannelEpoch: null, permissions: ['commit', 'lookup', 'prepare'], limitsDigest: b.limitsDigest,
         ...overrides
@@ -142,6 +142,10 @@ test('ticket decoding: algorithm, key, signature, canonical bytes, exact claims 
     refused(validateHelperTicketClaims(sign(claims({ jti: 'short' })), options), 'ticket_format', 'jti not 32 random bytes');
     refused(validateHelperTicketClaims(sign(claims({ permissions: ['prepare', 'commit'] })), options), 'ticket_format', 'unsorted permissions');
     refused(validateHelperTicketClaims(sign(claims({ permissions: ['exec'] })), options), 'ticket_format', 'unknown permission');
+    refused(validateHelperTicketClaims(sign(claims({ leaseId: 'short' })), options), 'ticket_format', 'A11.1 lease claim is an Id');
+    const { leaseId: _lease, ...withoutLease } = claims();
+    refused(validateHelperTicketClaims(sign(withoutLease), options), 'ticket_format', 'A11.1 lease claim is required');
+    refused(validateHelperTicketClaims(sign(claims({ leaseId: sid('lease-b') })), options), 'ticket_binding', 'A11.1 a ticket for lease B is not lease A');
     assert.equal(options.replay.size, 0);
 });
 
@@ -191,10 +195,13 @@ test('TKT-04 replayed JTI or challenge and stale reattach CAS refuse; a retired 
     const reattach = (current, channelEpoch, previousChannelEpoch) => validateHelperTicketClaims(sign(claims({ channelEpoch, previousChannelEpoch })), ticketOptions({ channel: { currentEpoch: current, leaseState: 'active' } }));
     assert.equal(reattach('1', '2', '1').ok, true, 'reattach advances the epoch');
     assert.equal(reattach('18446744073709551614', '18446744073709551615', '18446744073709551614').ok, true, 'U64 epoch arithmetic');
-    refused(reattach('2', '2', '1'), 'channel_epoch_conflict', 'stale reattach CAS');
-    refused(reattach('1', '3', '1'), 'channel_epoch_conflict', 'skipped epoch');
+    // A11.2: strictly greater than the held epoch; a lost `accepted` or a worker crash costs an epoch number, never recovery.
+    refused(reattach('2', '2', '1'), 'channel_epoch_conflict', 'equal epoch');
+    refused(reattach('3', '2', '1'), 'channel_epoch_conflict', 'older epoch');
+    assert.equal(reattach('1', '3', '1').ok, true, 'a skipped epoch is accepted');
     refused(reattach('2', '1', null), 'channel_epoch_conflict', 'first bootstrap on an existing channel');
-    refused(reattach(null, '2', '1'), 'channel_epoch_conflict', 'reattach without a channel');
+    assert.equal(reattach(null, '2', '1').ok, true, 'first use of a lease may start above 1');
+    refused(reattach(null, '2', '2'), 'channel_epoch_conflict', 'previous epoch not below the new epoch');
     refused(validateHelperTicketClaims(sign(claims()), ticketOptions({ channel: { currentEpoch: null, leaseState: 'retired' } })), 'lease_retired', 'stopped or expired lease');
 });
 

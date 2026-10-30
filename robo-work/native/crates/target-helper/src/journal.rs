@@ -1308,6 +1308,31 @@ impl Journal {
     }
 }
 
+/// PROOF-FIXTURE ONLY (feature `proof-fixture`, slice P6b): effects that create nothing. `create` returns one synthetic
+/// identity digest per resource (`SHA256("proof-fixture-identity\0" || keyText || "\0" || resourceId)`), and the gate
+/// release, stop and resource release succeed without any process. Used only with `keeper::ProofFixtureNoKeeper`.
+#[cfg(feature = "proof-fixture")]
+pub struct FixtureEffects;
+
+#[cfg(feature = "proof-fixture")]
+impl Hooks for FixtureEffects {
+    fn create(&mut self, key_text: &str, resources: &[ResourceSpec]) -> Result<Vec<String>, HookFailure> {
+        Ok(resources
+            .iter()
+            .map(|resource| sha256_hex(format!("proof-fixture-identity\0{key_text}\0{}", resource.resource_id).as_bytes()))
+            .collect())
+    }
+    fn release_gate(&mut self, _key_text: &str) -> Result<(), HookFailure> {
+        Ok(())
+    }
+    fn stop(&mut self, _key_text: &str) -> Result<(), HookFailure> {
+        Ok(())
+    }
+    fn release(&mut self, _key_text: &str, _resource_id: &str) -> Result<(), HookFailure> {
+        Ok(())
+    }
+}
+
 /// Production hooks while keeper launch is not wired (before G1): every effect refuses.
 pub struct NoEffects;
 

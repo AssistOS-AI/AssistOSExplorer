@@ -42,7 +42,7 @@ const MAX_TOKEN_LENGTH = 65536;
 const NATIVE_CONFIG_MAX_BYTES = 1024 * 1024;
 const NATIVE_CONFIG_MAX_FILES = 128;
 const CLAIM_KEYS = Object.freeze([
-    'version', 'iss', 'sub', 'purpose', 'aud', 'binding', 'reservationId', 'operationId', 'requestDigest', 'helperNonce', 'jti',
+    'version', 'iss', 'sub', 'purpose', 'aud', 'binding', 'reservationId', 'leaseId', 'operationId', 'requestDigest', 'helperNonce', 'jti',
     'iat', 'exp', 'channelEpoch', 'previousChannelEpoch', 'permissions', 'limitsDigest'
 ]);
 const HEADER_KEYS = Object.freeze([
@@ -117,11 +117,12 @@ function sweep(replay, nowMs) {
 // Order (after coordinatorAuth.mjs): strict decode; header `alg`, `typ` (purpose domain), exact keys, `kid`; HMAC in
 // constant time; canonical claims, version and exact keys; issuer and purpose; lifetime (30 s, no expiry extension,
 // 2 s future skew, challenge 5 s monotonic); audience and binding; channel epoch CAS; replay (last, only after every
-// other check passed). `options`:
+// other check passed). A11: the claims carry the lease (`leaseId`), and a channel epoch is accepted when it is strictly
+// greater than the epoch currently held for that lease (any positive epoch on first use). `options`:
 //   secret        per-helper-incarnation key (Buffer, at least 32 bytes; synthetic in tests)
 //   kid           the expected key ID
 //   binding       the TargetBinding the helper already holds
-//   expected      {reservationId, operationId, requestDigest, helperNonce}
+//   expected      {reservationId, leaseId, operationId, requestDigest, helperNonce}
 //   channel       {currentEpoch: null (first bootstrap) | U64Text, leaseState: 'active' | 'retired'}
 //   challenge     {id, issuedMonoMs}; nowMonoMs; nowMs; clockUncertaintyMs (default 0)
 //   replay        Map of replay-key digest -> retain-until ms (durable records hold only digests and expiry)
@@ -164,25 +165,25 @@ export function validateHelperTicketClaims(token, options = {}) {
         const challenge = options.challenge;
         need(isPlainObject(challenge) && typeof challenge.id === 'string' && challenge.id.length > 0 && Number.isSafeInteger(challenge.issuedMonoMs));
         need(options.nowMonoMs - challenge.issuedMonoMs < CHALLENGE_TIMEOUT_MS && options.nowMonoMs >= challenge.issuedMonoMs, 'ticket_lifetime');
-        need(isNonce(claims.jti) && isNonce(claims.helperNonce), 'ticket_format');
+        need(isNonce(claims.jti) && isNonce(claims.helperNonce) && isId(claims.leaseId), 'ticket_format');
         need(Array.isArray(claims.permissions) && claims.permissions.length > 0
             && claims.permissions.every((entry, index) => TICKET_PERMISSIONS.includes(entry) && (index === 0 || claims.permissions[index - 1] < entry)), 'ticket_format');
         need(claims.aud === `${TICKET_AUDIENCE_PREFIX}${targetIdentityDigest(binding.scope)}`, 'ticket_binding');
         need(digestOf(claims.binding) === digestOf(binding), 'ticket_binding');
         need(claims.sub === binding.scope.workerPrincipal && claims.limitsDigest === binding.limitsDigest, 'ticket_binding');
-        need(claims.reservationId === expected.reservationId && claims.operationId === expected.operationId
+        need(claims.reservationId === expected.reservationId && claims.leaseId === expected.leaseId && claims.operationId === expected.operationId
             && claims.requestDigest === expected.requestDigest && claims.helperNonce === expected.helperNonce, 'ticket_binding');
         const channel = options.channel;
         need(isPlainObject(channel), 'invalid_request');
         // A stopped or expired lease cannot be reopened by any ticket.
         need(channel.leaseState === 'active', 'lease_retired');
         need(isPositiveU64Text(claims.channelEpoch) && (claims.previousChannelEpoch === null || isPositiveU64Text(claims.previousChannelEpoch)), 'ticket_format');
-        if (channel.currentEpoch === null) {
-            need(claims.channelEpoch === '1' && claims.previousChannelEpoch === null, 'channel_epoch_conflict');
-        } else {
+        // A11.2: strictly greater than the epoch held for this lease (a lost `accepted` or a worker crash costs one epoch
+        // number, never recovery); `previousChannelEpoch`, when present, is below the new epoch.
+        need(claims.previousChannelEpoch === null || BigInt(claims.previousChannelEpoch) < BigInt(claims.channelEpoch), 'channel_epoch_conflict');
+        if (channel.currentEpoch !== null) {
             need(isPositiveU64Text(channel.currentEpoch), 'invalid_request');
-            need(claims.previousChannelEpoch === channel.currentEpoch
-                && claims.channelEpoch === String(BigInt(channel.currentEpoch) + 1n), 'channel_epoch_conflict');
+            need(BigInt(claims.channelEpoch) > BigInt(channel.currentEpoch), 'channel_epoch_conflict');
         }
         const jtiKey = `jti:${crypto.createHash('sha256').update(claims.jti).digest('hex')}`;
         const challengeKey = `challenge:${crypto.createHash('sha256').update(challenge.id).digest('hex')}`;

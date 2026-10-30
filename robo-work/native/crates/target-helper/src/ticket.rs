@@ -28,9 +28,10 @@ pub const REPLAY_MARGIN_MS: i64 = 2000;
 pub const MAX_TOKEN_LENGTH: usize = 65536;
 /// `TARGET_LIMITS_V1.ticketReplayEntries`.
 pub const TICKET_REPLAY_ENTRIES: usize = 32768;
-pub const CLAIM_KEYS: [&str; 17] = [
-    "version", "iss", "sub", "purpose", "aud", "binding", "reservationId", "operationId", "requestDigest", "helperNonce", "jti", "iat",
-    "exp", "channelEpoch", "previousChannelEpoch", "permissions", "limitsDigest",
+/// A11.1 adds the required `leaseId` claim.
+pub const CLAIM_KEYS: [&str; 18] = [
+    "version", "iss", "sub", "purpose", "aud", "binding", "reservationId", "leaseId", "operationId", "requestDigest", "helperNonce", "jti",
+    "iat", "exp", "channelEpoch", "previousChannelEpoch", "permissions", "limitsDigest",
 ];
 
 /// One-use replay records: replay-key digest -> retain-until (ms).
@@ -65,12 +66,15 @@ impl ReplayStore {
 #[derive(Clone, Debug)]
 pub struct Expected {
     pub reservation_id: String,
+    /// The lease the caller expects. The helper passes None: it keys session state on the verified claim (A11.1).
+    pub lease_id: Option<String>,
     pub operation_id: String,
     pub request_digest: String,
     pub helper_nonce: String,
 }
 
-/// `channel`: `current_epoch` None for the first bootstrap.
+/// `channel`: the epoch currently held for the ticket's lease, None on first use. A11.2: a ticket is accepted only with a
+/// strictly greater epoch.
 #[derive(Clone, Debug)]
 pub struct ChannelState {
     pub current_epoch: Option<String>,
@@ -153,7 +157,10 @@ pub fn verify_helper_ticket(token: &str, options: TicketOptions<'_>) -> Result<V
     need(!challenge.id.is_empty(), Code::InvalidRequest)?;
     let elapsed = options.now_mono_ms as i128 - challenge.issued_mono_ms as i128;
     need(elapsed < CHALLENGE_TIMEOUT_MS as i128 && elapsed >= 0, Code::TicketLifetime)?;
-    need(claims.get("jti").is_some_and(is_nonce) && claims.get("helperNonce").is_some_and(is_nonce), Code::TicketFormat)?;
+    need(
+        claims.get("jti").is_some_and(is_nonce) && claims.get("helperNonce").is_some_and(is_nonce) && claims.get("leaseId").is_some_and(contract::is_id),
+        Code::TicketFormat,
+    )?;
     let permissions = claims.get("permissions").and_then(Value::arr).unwrap_or_default();
     let mut previous: Option<&str> = None;
     let mut permissions_ok = claims.get("permissions").and_then(Value::arr).is_some() && !permissions.is_empty();
@@ -179,7 +186,8 @@ pub fn verify_helper_ticket(token: &str, options: TicketOptions<'_>) -> Result<V
         claims.str_at("reservationId") == Some(expected.reservation_id.as_str())
             && claims.str_at("operationId") == Some(expected.operation_id.as_str())
             && claims.str_at("requestDigest") == Some(expected.request_digest.as_str())
-            && claims.str_at("helperNonce") == Some(expected.helper_nonce.as_str()),
+            && claims.str_at("helperNonce") == Some(expected.helper_nonce.as_str())
+            && expected.lease_id.as_deref().is_none_or(|lease| claims.str_at("leaseId") == Some(lease)),
         Code::TicketBinding,
     )?;
     // A stopped or expired lease cannot be reopened by any ticket.
@@ -187,13 +195,14 @@ pub fn verify_helper_ticket(token: &str, options: TicketOptions<'_>) -> Result<V
     let epoch = claims.get("channelEpoch").ok_or(Code::TicketFormat)?;
     let previous_epoch = claims.get("previousChannelEpoch").ok_or(Code::TicketFormat)?;
     need(is_positive_u64_text(epoch) && (previous_epoch.is_null() || is_positive_u64_text(previous_epoch)), Code::TicketFormat)?;
-    match &options.channel.current_epoch {
-        None => need(epoch.str() == Some("1") && previous_epoch.is_null(), Code::ChannelEpochConflict)?,
-        Some(current) => {
-            need(is_positive_u64_text(&Value::Str(current.clone())), Code::InvalidRequest)?;
-            let next = (current.parse::<u128>().map_err(|_| Code::InvalidRequest)? + 1).to_string();
-            need(previous_epoch.str() == Some(current.as_str()) && epoch.str() == Some(next.as_str()), Code::ChannelEpochConflict)?;
-        }
+    // A11.2: strictly greater than the epoch held for the lease; a present `previousChannelEpoch` is below the new epoch.
+    let number = |value: &Value| value.str().and_then(|text| text.parse::<u128>().ok());
+    let epoch_number = number(epoch).ok_or(Code::TicketFormat)?;
+    need(previous_epoch.is_null() || number(previous_epoch).is_some_and(|previous| previous < epoch_number), Code::ChannelEpochConflict)?;
+    if let Some(current) = &options.channel.current_epoch {
+        need(is_positive_u64_text(&Value::Str(current.clone())), Code::InvalidRequest)?;
+        let current = current.parse::<u128>().map_err(|_| Code::InvalidRequest)?;
+        need(epoch_number > current, Code::ChannelEpochConflict)?;
     }
     let jti_key = format!("jti:{}", sha256_hex(claims.str_at("jti").unwrap_or_default().as_bytes()));
     let challenge_key = format!("challenge:{}", sha256_hex(challenge.id.as_bytes()));

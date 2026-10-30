@@ -23,6 +23,21 @@ impl KeeperLauncher for UnavailableUntilG1 {
     }
 }
 
+/// PROOF-FIXTURE ONLY (feature `proof-fixture`, slice P6b): reports gated creation as available so the journal round trip
+/// (prepare, commit, lookup) can be exercised over the authenticated mailbox before G1. It launches nothing: its effects
+/// ([`crate::journal::FixtureEffects`]) return synthetic identity digests and accept the gate release without any process,
+/// so a receipt it produces names no real keeper. Never a production launcher; the default build does not contain it.
+#[cfg(feature = "proof-fixture")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProofFixtureNoKeeper;
+
+#[cfg(feature = "proof-fixture")]
+impl KeeperLauncher for ProofFixtureNoKeeper {
+    fn available(&self) -> Result<(), Code> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

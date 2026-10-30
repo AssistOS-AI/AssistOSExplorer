@@ -10,6 +10,11 @@ description = "The RoboWork target helper (plan section 5.6): the target transpo
 name = "rw-target-helper"
 path = "src/main.rs"
 
+[features]
+# PROOF-FIXTURE ONLY (slice P6b): the `serve --proof-fixture-session` ticket key (public synthetic) and
+# `--proof-fixture-keeper` launcher that launches nothing. Off by default; a production build never contains either.
+proof-fixture = []
+
 [dependencies]
 # Same vendored, locked version as the other crates; no new crate. Used for flock, fsync and the Linux mailbox.
 libc = { workspace = true }

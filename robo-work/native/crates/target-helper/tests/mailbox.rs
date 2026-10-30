@@ -265,3 +265,35 @@ fn binary_roles_serve_and_worker_peer() {
     assert!(events.contains(r#"{"event":"connection","peer":{"gid":"#), "{events}");
     assert!(events.contains(r#"{"code":"frame_authentication","descriptorsClosed":1,"event":"frame_refused"}"#), "{events}");
 }
+
+#[test]
+fn connect_failures_map_to_connect_refusal_codes_never_to_journal_facts() {
+    use rw_target_helper::mailbox::connect_error_code;
+    let code = |errno: i32| connect_error_code(&std::io::Error::from_raw_os_error(errno)).as_str();
+    for errno in [libc::ENOENT, libc::EACCES, libc::ECONNREFUSED, libc::EPERM, libc::ENOTDIR, libc::ENOTSOCK, libc::EINVAL] {
+        assert_eq!(code(errno), "connect_refused", "errno {errno}");
+    }
+    assert_eq!(code(libc::ETIMEDOUT), "connect_timeout");
+    assert_eq!(code(libc::EAGAIN), "connect_timeout");
+    assert_eq!(connect_error_code(&std::io::Error::new(std::io::ErrorKind::InvalidInput, "mailbox path length")).as_str(), "connect_refused");
+}
+
+#[test]
+fn binary_worker_peer_reports_a_missing_or_listenerless_mailbox_as_connect_refused() {
+    let _guard = serial();
+    let binary = env!("CARGO_BIN_EXE_rw-target-helper");
+    let dir = common::temp_dir("connect");
+    let missing = dir.join("absent.sock");
+    for mode in ["--probe", "--session"] {
+        let output = Command::new(binary).args(["worker-peer", "--mailbox", &missing.display().to_string(), mode]).output().unwrap();
+        assert_eq!(output.status.code(), Some(75));
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), r#"{"error":{"code":"connect_refused"},"ok":false}"#, "{mode}");
+    }
+    // A stale socket path with no listener (ECONNREFUSED), as after a target replacement.
+    let stale = dir.join("stale.sock");
+    // std's listener leaves its socket file behind when dropped.
+    std::os::unix::net::UnixListener::bind(&stale).map(drop).unwrap();
+    assert!(stale.exists());
+    let output = Command::new(binary).args(["worker-peer", "--mailbox", &stale.display().to_string(), "--probe"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), r#"{"error":{"code":"connect_refused"},"ok":false}"#);
+}
