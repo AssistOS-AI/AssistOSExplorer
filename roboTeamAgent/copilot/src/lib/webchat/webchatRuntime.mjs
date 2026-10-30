@@ -14,7 +14,7 @@ import { isWebchatEscapeControlChunk } from './webchatControl.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
 import { WEBCHAT_RUNTIME_OPEN_EVENT, createRuntimeWebchatCoordinator } from './webchatCoordinator.mjs';
-import { detachReason, stopReason } from '../execution/abortReasons.mjs';
+import { STOP_NOT_AUTHORIZED_MESSAGE, detachReason, stopReason } from '../execution/abortReasons.mjs';
 
 // The event of a Router-signed stop envelope: the stop button's own envelope, carrying the grant the Router minted for that request
 // (decision M-40). An older Router sends an unsigned control line instead, which carries no grant and so cannot authorize the worker stop.
@@ -91,6 +91,14 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             console.error(`[roboTeamAgent] webchat stop failed: ${error?.message || error}`);
             logDiagnostic(runtime.workingDir, 'webchat.stop.error', { sessionId: operation.sessionId, ...errorFields(error) });
         });
+    };
+    // The running operations of the tab (and page) a stop envelope names.
+    const matchingOperations = (message) => [...active].filter(([, operation]) => message.sourceTabId && operation.context.sourceTabId === message.sourceTabId
+        && (!message.sourcePageInstanceId || operation.context.sourcePageInstanceId === message.sourcePageInstanceId));
+    const stopNotAuthorized = (operationId, operation) => {
+        console.error('[roboTeamAgent] webchat stop not delivered (stop_unverified); the task may still be running');
+        logDiagnostic(runtime.workingDir, 'webchat.stop.not_delivered', { sessionId: operation.sessionId, code: 'stop_unverified' });
+        fail(new Error(STOP_NOT_AUTHORIZED_MESSAGE), operation.context, operation.sessionId);
     };
     const fail = (error, context, sessionId) => {
         const text = createSanitizer(context, process.env)(error?.name === 'AbortError' || error?.exitCode === 130 ? '[cancelled]' : formatWebchatError(error, { publicBaseUrl: context.webchatOrigin?.publicBaseUrl }));
@@ -255,14 +263,18 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 if (seen.event === WEBCHAT_RUNTIME_OPEN_EVENT) return;
                 // A Router-signed stop: the stop button's own envelope, which carries the user's grant for the worker stop.
                 if (seen.event === WEBCHAT_STOP_EVENT) {
-                    for (const [operationId, operation] of active) {
-                        if (message.sourceTabId && operation.context.sourceTabId === message.sourceTabId
-                            && (!message.sourcePageInstanceId || operation.context.sourcePageInstanceId === message.sourcePageInstanceId)) {
-                            stopOperation(operationId, operation, ownerOf(message));
-                        }
-                    }
+                    for (const [operationId, operation] of matchingOperations(message)) stopOperation(operationId, operation, ownerOf(message));
                     return;
                 }
+            }
+            // An envelope that claims to be a stop but did not verify (no usable signature or grant) stops nothing, and the user is told:
+            // never a silent drop. Without a worker coordinator there is nothing to verify, and the stop is the local one.
+            if (message.event === WEBCHAT_STOP_EVENT) {
+                for (const [operationId, operation] of matchingOperations(message)) {
+                    if (coordinator) stopNotAuthorized(operationId, operation);
+                    else stopOperation(operationId, operation);
+                }
+                return;
             }
             if (!message.rawText.trim()) return;
             // Only selection/control commands serialize. Turns acquire their own session lease

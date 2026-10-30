@@ -421,21 +421,27 @@ export class RoboFlowService {
         this.onRuntimeTaskEvent({ kind: 'terminal', taskId, state: 'completed', result: decision.event.result });
         while (this.chains.size) await Promise.allSettled([...this.chains.values()]);
     }
-    // A flow cancel, pause or failure ends the worker's execution of a phase too (decision M-12 (c)). A
-    // system-initiated stop (a flow failure, recovery) uses the coordinator identity and the flow binding. A
-    // user's pause or terminate (`user.grant`, decision M-12 (b), M-40) carries that request's own grant and
-    // never the binding. The operation ID is the one the phase's own child uses, so both are one stop at the
-    // worker. Best effort: a phase the worker never admitted, or already ended, needs none, and a stop the
-    // worker refuses is logged and left to the worker's own end-of-run handling.
+    // A flow cancel, pause or failure ends the worker's execution of a phase too (decision M-12 (c)). The phase is found with the
+    // coordinator identity and the flow binding in every case: the worker records a phase's origin under the binding row
+    // (`binding:<flowId>`), so a lookup with a user's grant (which searches that user's own `owner:` row) would never find it.
+    // The `stop` control is then sent on that reference: a system-initiated stop (a flow failure, recovery) with the binding, and a
+    // user's pause or terminate (`user.grant`, decisions M-12 (b), M-40) with that request's own grant, which the worker accepts
+    // from the reference's owner or an administrator. The operation ID is the one the phase's own child uses, so both are one stop
+    // at the worker. Best effort for a system stop. A user's stop that does not reach the worker is recorded in `user.undelivered`
+    // and told to that user: that includes a phase the worker has no record of although it had started, while a phase that never
+    // started needs no stop.
     async _stopWorkerPhase(flow, instance, user = null) {
         if (!this.worker || !instance.runtimeTaskId) return;
         try {
             const origin = phaseOriginId({ flowId: flow.id, instanceId: instance.id, runtimeTaskId: instance.runtimeTaskId });
             if (user && !user.grant) throw Object.assign(new Error('owner_evidence_unavailable'), { code: 'owner_evidence_unavailable' });
-            const auth = user ? { grant: user.grant } : { bindingId: flow.id };
-            const accepted = await this.worker.client.lookup(origin, auth);
-            if (!accepted) return;
-            await this.worker.client.control(accepted.referenceId, { operationId: stopOperationId(accepted.referenceId), op: 'stop' }, auth);
+            const binding = { bindingId: flow.id };
+            const accepted = await this.worker.client.lookup(origin, binding);
+            if (!accepted) {
+                if (user && instance.startedAt) throw Object.assign(new Error('worker_phase_not_found'), { code: 'worker_phase_not_found' });
+                return;
+            }
+            await this.worker.client.control(accepted.referenceId, { operationId: stopOperationId(accepted.referenceId), op: 'stop' }, user ? { grant: user.grant } : binding);
         } catch (error) {
             console.error(`[roboflow] worker stop of a phase was not delivered (${error?.code || error?.message}); the phase may still run on the worker`);
             // A user's stop that did not reach the worker is told to that user, never silent.

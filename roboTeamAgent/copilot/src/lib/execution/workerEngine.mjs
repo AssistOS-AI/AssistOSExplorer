@@ -10,7 +10,7 @@ import { ACHILLES_PRIVATE_DIRECTORY_NAME, resolveAchillesWorkspaceRoot } from '.
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
 import { ALA_BACKENDS, createAlaRecordHandler } from './alaRecordHandler.mjs';
-import { detachReason, isDetach, stopReason } from './abortReasons.mjs';
+import { STOP_NOT_AUTHORIZED_MESSAGE, detachReason, isDetach, stopReason } from './abortReasons.mjs';
 import { isGrantableFolder } from './grantablePaths.mjs';
 import { workspaceCodePath } from './workspaceCodePath.mjs';
 import { TERMINAL_STATES, WorkerError, stopOperationId } from '../../../../server/worker-coordinator/worker-client.mjs';
@@ -74,7 +74,7 @@ function rootRefusal() {
 // What the chat shows when a stop could not be delivered: the task may still be running, and pressing stop again retries.
 function stopNotDelivered(code) {
     return code === 'worker_stop_not_authorized'
-        ? 'Stop not delivered: the worker needs your fresh authorization. The task may still be running; press stop again.'
+        ? STOP_NOT_AUTHORIZED_MESSAGE
         : `Stop not delivered (${code}). The task may still be running; press stop again.`;
 }
 

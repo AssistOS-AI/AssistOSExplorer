@@ -13,4 +13,7 @@ export function stopReason({ owner = null, userInitiated = false } = {}) {
     return Object.assign(new Error('Execution stopped.'), { name: 'AbortError', code: 'ROBOTEAM_STOP', exitCode: 130, owner, userInitiated });
 }
 
+// What the chat shows when a stop could not be authorized: the task may still be running, and pressing stop again retries.
+export const STOP_NOT_AUTHORIZED_MESSAGE = 'Stop not delivered: the worker needs your fresh authorization. The task may still be running; press stop again.';
+
 export const isDetach = (reason) => reason?.code === 'ROBOTEAM_DETACH';

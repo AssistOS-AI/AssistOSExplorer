@@ -145,3 +145,25 @@ test('a stop that is not delivered is told to the user and logged, and the turn 
     await settle();
     assert.equal(f.written.filter((envelope) => envelope.event === 'error').length, 2);
 });
+
+test('a stop envelope that does not verify stops nothing and the user is told, never a silent drop', async (t) => {
+    const logged = [];
+    const original = console.error;
+    console.error = (...args) => { logged.push(args.join(' ')); };
+    t.after(() => { console.error = original; });
+    const stops = [];
+    // The default coordinator fake answers event '' to every envelope: the verifier did not accept this one.
+    const f = await fixture(t, { stopTurn: async (request) => { stops.push(request); return { delivered: true }; } });
+    f.dispatcher.receive(message('first', 'tok-1'));
+    await settle();
+    f.dispatcher.receive(JSON.stringify({ __webchatMessage: 1, version: 1, text: '', event: 'stop', sourceTabId: 'tabA', sourcePageInstanceId: 'page1',
+        presentation: { visible: false }, invocation: { token: 'forged' } }));
+    await settle();
+    assert.deepEqual(stops, [], 'nothing is stopped on an unverified claim');
+    const errors = f.written.filter((envelope) => envelope.event === 'error');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].error, /Stop not delivered: the worker needs your fresh authorization/);
+    assert.equal(errors[0].targetTabId, 'tabA');
+    assert.ok(logged.some((line) => /webchat stop not delivered \(stop_unverified\)/.test(line)));
+    assert.equal(f.seen[0].reason, null, 'the turn keeps running');
+});
