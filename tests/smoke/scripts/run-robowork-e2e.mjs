@@ -72,7 +72,11 @@ async function pass(name, extra, extraEnv = {}) {
     const walk = (suite) => {
       for (const spec of suite.specs ?? []) {
         const test = spec.tests?.[0];
-        specs.push({ title: spec.title, file: spec.file, ok: spec.ok === true, skipped: test?.status === 'skipped', rerunNeeded: (test?.annotations ?? []).some((annotation) => annotation.type === 'rerun-needed') });
+        const result = test?.results?.at(-1);
+        const message = String(result?.error?.message ?? result?.errors?.[0]?.message ?? '').replace(/\u001b\[[0-9;]*m/g, '').split('\n').find((line) => line.trim()) ?? '';
+        specs.push({ title: spec.title, file: spec.file, ok: spec.ok === true, skipped: test?.status === 'skipped', error: message.slice(0, 300),
+          rerunNeeded: (test?.annotations ?? []).some((annotation) => annotation.type === 'rerun-needed'),
+          rerunEvidence: (test?.annotations ?? []).filter((annotation) => annotation.type === 'rerun-needed').map((annotation) => annotation.description).join('; ').slice(0, 300) });
       }
       for (const child of suite.suites ?? []) walk(child);
     };
@@ -92,7 +96,15 @@ async function preflight(label) {
 }
 
 const finalStatus = new Map();
-const record = (specs) => { for (const spec of specs) if (!spec.skipped || !finalStatus.has(spec.title)) finalStatus.set(spec.title, spec); };
+// Keeps the first failure reason of a scenario next to its final verdict, also when a rerun later passed.
+const record = (specs, passName) => {
+  for (const spec of specs) {
+    if (spec.skipped && finalStatus.has(spec.title)) continue;
+    const previous = finalStatus.get(spec.title);
+    const firstFailure = previous?.firstFailure ?? (!spec.ok && !spec.skipped ? { pass: passName, reason: spec.error, rerunNeeded: spec.rerunNeeded, evidence: spec.rerunEvidence } : undefined);
+    finalStatus.set(spec.title, { ...spec, firstFailure });
+  }
+};
 
 let modelEnv = {};
 if (preflightWanted) {
@@ -106,7 +118,7 @@ if (preflightWanted) {
 }
 
 let current = await pass('pass-1', specArgs, modelEnv);
-record(current.specs);
+record(current.specs, 'pass-1');
 let exitCode = current.code;
 for (let rerun = 1; rerun <= maxReruns; rerun += 1) {
   const pending = current.specs.filter((spec) => !spec.ok && !spec.skipped && spec.rerunNeeded);
@@ -119,7 +131,7 @@ for (let rerun = 1; rerun <= maxReruns; rerun += 1) {
   }
   const grep = pending.map((spec) => spec.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
   current = await pass(`pass-${rerun + 1}`, [...specArgs, '--grep', grep], modelEnv);
-  record(current.specs);
+  record(current.specs, `pass-${rerun + 1}`);
 }
 
 // The verdict: every scenario's last result. A scenario still marked rerun-needed is not a pass.
@@ -129,6 +141,7 @@ for (const spec of finalStatus.values()) {
   const verdict = spec.skipped ? 'skipped' : spec.ok ? 'passed' : spec.rerunNeeded ? 'RERUN-NEEDED (provider stall, not a pass)' : 'FAILED';
   if (!spec.skipped && !spec.ok) failed += 1;
   console.error(`  ${verdict.padEnd(12)} ${spec.title}`);
+  if (spec.firstFailure) console.error(`               ${spec.firstFailure.pass} failure: ${spec.firstFailure.reason}${spec.firstFailure.evidence ? ` [rerun-needed evidence: ${spec.firstFailure.evidence}]` : ''}`);
 }
 if (exitCode === 3) process.exit(3);
 const passed = [...finalStatus.values()].filter((spec) => spec.ok && !spec.skipped).length;

@@ -83,14 +83,15 @@ export async function stopChatTurn(page) {
   try { await cancelWebchatGenerationIfActive(page, { timeout: 30_000 }); return true; } catch { return false; }
 }
 
-// Applies a model to an opencode robot through the product API (the robot must be idle). Used for the model chosen by the preflight.
-export async function applyModel(roboTeamApi, page, robotId, model) {
-  return roboTeamApi(page, { method: 'PATCH', path: `api/robots/${robotId}/coding-agents`, body: { codingAgents: ['opencode'], model } });
+// Applies a model to a robot through the product API (the robot must be idle). The robot's existing coding agents are sent back unchanged;
+// `model: null` clears the selection, which returns the robot to the deployment default. Only robots the run created are ever patched.
+export async function applyModel(roboTeamApi, page, robot, model) {
+  return roboTeamApi(page, { method: 'PATCH', path: `api/robots/${robot.id}/coding-agents`, body: { codingAgents: robot.codingAgents, model } });
 }
 
 // Applies the model the preflight selected (SMOKE_ROBOWORK_MODEL, empty for the deployment default) to a robot a scenario creates.
-export async function applySelectedModel(roboTeamApi, page, robotId) {
+export async function applySelectedModel(roboTeamApi, page, robot) {
   const model = process.env.SMOKE_ROBOWORK_MODEL || '';
   if (!model) return null;
-  return applyModel(roboTeamApi, page, robotId, model);
+  return applyModel(roboTeamApi, page, robot, model);
 }

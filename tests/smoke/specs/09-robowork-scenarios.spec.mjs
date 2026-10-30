@@ -65,7 +65,7 @@ async function ensureRobot(page) {
   const listed = await apiOk(roboTeamApi, page, { path: 'api/robots' });
   if (!listed.robots.some((robot) => robot.name === robotName)) {
     const made = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name: robotName, codingAgents: ['opencode'] } })).robot;
-    await applySelectedModel(roboTeamApi, page, made.id);
+    await applySelectedModel(roboTeamApi, page, made);
   }
   return listed.robots;
 }
@@ -213,7 +213,7 @@ test.describe('RoboWork scenarios', () => {
     test.skip(!FLOW, 'Opt in with SMOKE_ROBOWORK_FLOW=1.');
     test.setTimeout(MAX_ATTEMPTS * 8 * 60_000);
     const ctx = context('flow', testInfo);
-    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(ctx.workspaceRoot, project) }) });
     const project = ownProject(ctx, `e2e-flow-${stamp()}`);
     const attempts = [];
     let outcome = null;
@@ -269,7 +269,7 @@ test.describe('RoboWork scenarios', () => {
     test.skip(!LATE, 'Opt in with SMOKE_ROBOWORK_LATE=1.');
     test.setTimeout(MAX_ATTEMPTS * 8 * 60_000);
     const ctx = context('late', testInfo);
-    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(ctx.workspaceRoot, project), robotName }) });
     const project = ownProject(ctx, `e2e-late-${stamp()}`);
     const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
     const lateSentinel = `LATE-SENTINEL-${crypto.randomBytes(9).toString('hex')}`;
@@ -356,7 +356,7 @@ test.describe('RoboWork scenarios', () => {
     test.skip(!RESTART, 'Opt in with SMOKE_ROBOWORK_RESTART=1 (this restarts roboTeamAgent).');
     test.setTimeout(20 * 60_000);
     const ctx = context('restart', testInfo);
-    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(ctx.workspaceRoot, project) }) });
     const project = ownProject(ctx, `e2e-restart-${stamp()}`);
     const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
     const nonce = crypto.randomBytes(6).toString('hex');

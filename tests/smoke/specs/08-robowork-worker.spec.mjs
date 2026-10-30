@@ -54,7 +54,7 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
     const containers = discoverContainers({ workspaceRoot });
     save('containers.json', containers);
     save('environment.json', collectEnvironment({ workspaceRoot, containers }));
-    const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: Date.now() - 1000, testInfo });
+    const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: Date.now() - 1000, testInfo, scope: () => ({ cwd: path.join(workspaceRoot, projectName), robotName }) });
     const startedAt = new Date(Date.now() - 2000).toISOString();
     const outcome = { robotName, projectName, startedAt, steps: {} };
     let fixture;
@@ -78,7 +78,7 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
         // RoboTeam provisions the robot on the worker with this request's grant (decision M-13) and reports the result here.
         expect(created.payload.worker, 'the worker provisioning result').toMatchObject({ ready: true });
         robot = created.payload.robot;
-        await applySelectedModel(roboTeamApi, page, robot.id);
+        await applySelectedModel(roboTeamApi, page, robot);
       }
       outcome.steps.robot = { id: robot.id, name: robot.name };
 
@@ -106,7 +106,12 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
         const busy = await page.locator('#cancelBtn').isVisible().catch(() => false);
         if (!busy && texts.length > before) break;
         await guard();
-        if (Date.now() > deadline) { testInfo.annotations.push({ type: 'rerun-needed', description: 'the turn did not finish in time' }); throw new ProviderStall(`the turn did not finish within ${TURN_TIMEOUT_MS / 1000} s`); }
+        if (Date.now() > deadline) {
+          // Only a stall shown by this scenario's own execution in the ledger is rerun-needed; a plain timeout is a failure.
+          const evidence = guard.evidence();
+          if (evidence) { guard.mark(evidence); throw new ProviderStall(`the turn did not finish within ${TURN_TIMEOUT_MS / 1000} s; ${evidence}`); }
+          throw new Error(`The turn did not finish within ${TURN_TIMEOUT_MS / 1000} s (no provider-stall evidence in the ledger).`);
+        }
       }
       answer = texts.slice(before).join('\n---\n');
       save('webchat-answer.txt', answer);
@@ -199,7 +204,7 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
     const save = (name, value) => fs.writeFileSync(path.join(evidenceDir, name), typeof value === 'string' ? value : JSON.stringify(value, null, 2));
     const containers = discoverContainers({ workspaceRoot });
     save('environment.json', collectEnvironment({ workspaceRoot, containers }));
-    const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: Date.now() - 1000, testInfo });
+    const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: Date.now() - 1000, testInfo, scope: () => ({ cwd: path.join(workspaceRoot, projectName), robotName }) });
     const commands = [
       'stat -c %s .env master-key x.secrets sub/.env',
       'ls -A .data sub/.data .ploinky sub/.ploinky .roboteam',
@@ -246,7 +251,12 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
         const busy = await page.locator('#cancelBtn').isVisible().catch(() => false);
         if (!busy && texts.length > before) break;
         await guard();
-        if (Date.now() > deadline) { testInfo.annotations.push({ type: 'rerun-needed', description: 'the turn did not finish in time' }); throw new ProviderStall(`the turn did not finish within ${TURN_TIMEOUT_MS / 1000} s`); }
+        if (Date.now() > deadline) {
+          // Only a stall shown by this scenario's own execution in the ledger is rerun-needed; a plain timeout is a failure.
+          const evidence = guard.evidence();
+          if (evidence) { guard.mark(evidence); throw new ProviderStall(`the turn did not finish within ${TURN_TIMEOUT_MS / 1000} s; ${evidence}`); }
+          throw new Error(`The turn did not finish within ${TURN_TIMEOUT_MS / 1000} s (no provider-stall evidence in the ledger).`);
+        }
       }
       const answer = texts.slice(before).join('\n---\n');
       saveAttempt('webchat-answer.txt', answer);

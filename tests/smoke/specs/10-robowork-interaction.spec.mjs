@@ -84,7 +84,7 @@ test.describe('RoboWork interaction scenarios', () => {
     test.skip(!HUMAN, 'Opt in with SMOKE_ROBOWORK_HUMAN=1.');
     test.setTimeout(MAX_ATTEMPTS * 10 * 60_000);
     const ctx = context('human-input');
-    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(ctx.workspaceRoot, project) }) });
     const project = ownProject(ctx, `e2e-human-${stamp()}`);
     const attempts = [];
     let kept = null;
@@ -188,7 +188,7 @@ test.describe('RoboWork interaction scenarios', () => {
     test.skip(!FAILURE, 'Opt in with SMOKE_ROBOWORK_FAILURE=1.');
     test.setTimeout(MAX_ATTEMPTS * 8 * 60_000);
     const ctx = context('task-failure');
-    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(ctx.workspaceRoot, project) }) });
     const project = ownProject(ctx, `e2e-fail-${stamp()}`);
     const attempts = [];
     let kept = null;
@@ -244,14 +244,14 @@ test.describe('RoboWork interaction scenarios', () => {
     test.skip(!DELETE, 'Opt in with SMOKE_ROBOWORK_DELETE=1.');
     test.setTimeout(30 * 60_000);
     const ctx = context('robot-delete');
-    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(ctx.workspaceRoot, project) }) });
     const outcome = { steps: [] };
     const record = (step) => { outcome.steps.push(step); ctx.save('outcome.json', outcome); };
     const robotsList = async () => (await apiOk(roboTeamApi, page, { path: 'api/robots' })).robots;
     const createRobot = async (name) => {
       const before = workerRobotDirs(ctx.workspaceRoot);
       const made = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name, codingAgents: ['opencode'] } }, [201])).robot;
-      await applySelectedModel(roboTeamApi, page, made.id);
+      await applySelectedModel(roboTeamApi, page, made);
       const row = workerRobots({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir }).find((entry) => entry.name === name);
       const dir = row?.id ?? workerRobotDirs(ctx.workspaceRoot).find((entry) => !before.includes(entry));
       return { name, workerId: dir };
@@ -342,7 +342,7 @@ test.describe('RoboWork interaction scenarios', () => {
     test.skip(!DELETE, 'Opt in with SMOKE_ROBOWORK_DELETE=1.');
     test.setTimeout(25 * 60_000);
     const ctx = context('robot-delete-worker-busy');
-    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo });
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(ctx.workspaceRoot, project) }) });
     const outcome = { steps: [] };
     const record = (step) => { outcome.steps.push(step); ctx.save('outcome.json', outcome); };
     const name = `e2e-busy-w-${stamp()}`;
@@ -359,7 +359,7 @@ test.describe('RoboWork interaction scenarios', () => {
       const before = workerRobotDirs(ctx.workspaceRoot);
       const robot = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name, codingAgents: ['opencode'] } }, [201])).robot;
       created = true;
-      await applySelectedModel(roboTeamApi, page, robot.id);
+      await applySelectedModel(roboTeamApi, page, robot);
       const workerId = workerRobots({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir }).find((row) => row.name === name)?.id ?? workerRobotDirs(ctx.workspaceRoot).find((entry) => !before.includes(entry));
       // Only this robot carries the scenario's skill repository, so a workflow task that names its skill can run on no other robot (no chat, no local holder).
       const repository = path.join(fixture.root, 'skillrepo');
