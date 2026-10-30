@@ -57,6 +57,9 @@ import { compileSeccomp } from './seccompBpf.mjs';
 import { SandboxError, codeForPrepExit, sandboxError } from './sandboxErrors.mjs';
 
 export const STAGE_SCRIPT = fileURLToPath(new URL('./stage.sh', import.meta.url));
+// Where a workload or terminal sandbox sees stage.sh (bound read-only from the supervisor's own copy): `stage.sh final`
+// runs inside the sandbox, where the supervisor's code path does not exist.
+export const SANDBOX_STAGE_SCRIPT = '/opt/robo-work/stage.sh';
 export const TOOL_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const REQUIRED_TOOLS = ['setpriv', 'unshare', 'mount', 'umount', 'node'];
 const ARCH = { x64: 'x86_64', arm64: 'aarch64' };
@@ -156,10 +159,11 @@ export function createSandboxLauncher({
             const bwrapSpec = {
                 role: spec.role, marker: spec.marker, netMode,
                 seccompFd: layout.seccomp, blockFd: layout.block, infoFd: layout.info, jsonStatusFd: layout.status,
-                roBinds: spec.roBinds, symlinks: spec.symlinks, binds: spec.binds,
+                roBinds: workloadLike ? [...(spec.roBinds ?? []), { source: stageScript, dest: SANDBOX_STAGE_SCRIPT }] : spec.roBinds,
+                symlinks: spec.symlinks, binds: spec.binds,
                 stageBinds: workloadLike ? undefined : (spec.anchored ?? []).map((bind) => ({ name: bind.name, dest: bind.dest, mode: bind.mode })),
                 env, cwd: spec.cwd, argv: spec.argv, procMasks,
-                stagingDir: stageDir ?? undefined, channelsDir: spec.channelsDir, stageScript,
+                stagingDir: stageDir ?? undefined, channelsDir: spec.channelsDir, stageScript: SANDBOX_STAGE_SCRIPT,
                 fdAllow, grants: spec.grants, tmpDir: spec.tmpDir, grantPaths: spec.grantPaths
             };
             const argsBuffer = buildBwrapArgs(bwrapSpec);
