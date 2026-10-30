@@ -13,6 +13,9 @@ import { createExecutionSupervisor } from '../../../server/sandbox/executionSupe
 import { createSandboxLauncher } from '../../../server/sandbox/sandboxLauncher.mjs';
 import { readProcMasks } from '../../../server/sandbox/procMasks.mjs';
 
+// The robo-work tree on this machine (bound read-only at /opt/robo-work inside the sandboxes).
+const SOURCE = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..');
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-crash-'));
 const project = path.join(root, 'project');
 fs.mkdirSync(project, { recursive: true });
@@ -21,7 +24,7 @@ const runtimeRoot = path.join(root, 'runtime');
 fs.mkdirSync(runtimeRoot);
 const fdOf = (dir) => fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
 const view = createProcView({ runtimeRoot });
-const image = { roBinds: [{ source: '/usr', dest: '/usr' }, { source: '/opt/robo-work', dest: '/opt/robo-work' }], symlinks: [
+const image = { roBinds: [{ source: '/usr', dest: '/usr' }, { source: SOURCE, dest: '/opt/robo-work' }], symlinks: [
     { target: 'usr/bin', dest: '/bin' }, { target: 'usr/lib', dest: '/lib' }, { target: 'usr/lib64', dest: '/lib64' }] };
 const idle = ['/usr/local/bin/node', '--import', '/opt/robo-work/server/sandbox/fdTrim.mjs', '-e', 'setInterval(() => {}, 1e6)'];
 const supervisor = createExecutionSupervisor({

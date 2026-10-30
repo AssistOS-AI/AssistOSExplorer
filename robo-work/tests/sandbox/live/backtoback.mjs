@@ -16,6 +16,9 @@ import { createRecoveryView } from '../../../server/sandbox/executionSupervisor.
 import { createSandboxLauncher } from '../../../server/sandbox/sandboxLauncher.mjs';
 import { readProcMasks } from '../../../server/sandbox/procMasks.mjs';
 
+// The robo-work tree on this machine (bound read-only at /opt/robo-work inside the sandboxes).
+const SOURCE = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..');
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-b2b-'));
 const runtimeDir = path.join(root, 'rt');
 for (const dir of ['channels', 'ctl', 'stage', 'tmp']) fs.mkdirSync(path.join(runtimeDir, dir), { recursive: true });
@@ -31,7 +34,7 @@ const check = (name, ok, extra = {}) => { evidence.checks[name] = { ok, ...extra
 const marker = () => `-${crypto.randomBytes(15).toString('base64url')}`;
 const launch = (label) => launcher.launch({
     role: 'workload', marker: marker(), runtimeDir, netMode: 'none', cwd: '/', argv: ['/usr/bin/sleep', '1000'], env: { PATH: '/usr/bin:/bin' },
-    roBinds: [{ source: '/usr', dest: '/usr' }, { source: '/opt/robo-work', dest: '/opt/robo-work' }],
+    roBinds: [{ source: '/usr', dest: '/usr' }, { source: SOURCE, dest: '/opt/robo-work' }],
     symlinks: [{ target: 'usr/bin', dest: '/bin' }, { target: 'usr/lib', dest: '/lib' }, { target: 'usr/lib64', dest: '/lib64' }],
     home: { path: home, fd: homeFd }, grants: [], channelsDir: path.join(runtimeDir, 'channels'), stdio: ['ignore', 'ignore', 'ignore'],
     onIdentity: async () => {}, label

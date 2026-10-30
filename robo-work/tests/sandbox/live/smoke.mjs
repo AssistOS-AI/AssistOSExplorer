@@ -23,6 +23,9 @@ import { createExecutionSupervisor } from '../../../server/sandbox/executionSupe
 import { createSandboxLauncher } from '../../../server/sandbox/sandboxLauncher.mjs';
 import { readProcMasks } from '../../../server/sandbox/procMasks.mjs';
 
+// The robo-work tree on this machine (bound read-only at /opt/robo-work inside the sandboxes).
+const SOURCE = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..');
+
 const CODE = '/opt/robo-work';
 const evidence = { steps: {}, errors: [], roles: {} };
 const log = (text) => process.stderr.write(`[smoke] ${text}\n`);
@@ -138,7 +141,7 @@ const launcher = createSandboxLauncher({
     // diagnostics only: whatever the chain writes to stderr (bwrap errors) is shown
     spawnImpl: (file, args, options) => { const child = spawn(file, args, options); child.stdio[2]?.on?.('data', (chunk) => process.stderr.write(`[chain stderr] ${chunk}`)); return child; }
 });
-const image = { roBinds: [{ source: '/usr', dest: '/usr' }, { source: CODE, dest: '/opt/robo-work' }], symlinks: [
+const image = { roBinds: [{ source: '/usr', dest: '/usr' }, { source: SOURCE, dest: '/opt/robo-work' }], symlinks: [
     { target: 'usr/bin', dest: '/bin' }, { target: 'usr/lib', dest: '/lib' }, { target: 'usr/lib64', dest: '/lib64' }, { target: 'usr/sbin', dest: '/sbin' }] };
 const nodeArgv = (role) => ['/usr/local/bin/node', '--import', `${CODE}/server/sandbox/fdTrim.mjs`, '-e', PROBE, role];
 supervisor = createExecutionSupervisor({
