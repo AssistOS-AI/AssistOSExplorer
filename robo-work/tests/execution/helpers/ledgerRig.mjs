@@ -77,11 +77,11 @@ export async function createLedgerRig(t, { keeperOptions = {}, faults = {}, robo
     // The keeper's own record, found through the reservation ID every dependent carries in its locator, whatever the
     // keeper's release state (a quarantined keeper is still a keeper).
     // A lookup that fails throws: the walker treats an unreadable record as unprovable, never as an absent keeper.
-    const keeperRecord = (blocker) => store.getResource({ resourceId: blocker.locator.keeper });
-    rig.walker = () => createWalker({ view: rig.world.view, clock: rig.clock, releaseDeadlineMs: RELEASE_DEADLINE_MS, pollMs: POLL_MS, keeperRecord });
+    const sandboxRecord = (blocker) => store.getResource({ resourceId: blocker.locator.keeper });
+    rig.walker = () => createWalker({ view: rig.world.view, clock: rig.clock, releaseDeadlineMs: RELEASE_DEADLINE_MS, pollMs: POLL_MS, sandboxRecord });
     rig.ledger = (overrides = {}) => createExecutionLedger({
         state: store, context: rig.context, robotId: rig.robotId, executionId: rig.admitted.executionId, attemptId: rig.admitted.attemptId,
-        referenceId: rig.admitted.reference.id, layout: LAYOUT, keeper: rig.keeper, walker: rig.walker(), clock: rig.clock, ...overrides,
+        referenceId: rig.admitted.reference.id, layout: LAYOUT, sandbox: rig.keeper, walker: rig.walker(), clock: rig.clock, ...overrides,
         faults: withTruth(overrides.faults ?? faults)
     });
     rig.reference = () => store.getReference(rig.context, { referenceId: rig.admitted.reference.id });

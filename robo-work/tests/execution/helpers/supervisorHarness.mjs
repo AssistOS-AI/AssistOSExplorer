@@ -25,8 +25,8 @@ export function testLimits(overrides = {}) {
 }
 
 // Attaches the real supervisor-side server to a socket and records how the execution ends.
-export function attachSupervisor({ socket, admission, keeper, limits = testLimits() }) {
+export function attachSupervisor({ socket, admission, sandbox, limits = testLimits() }) {
     const ends = [];
-    const server = createSupervisorEndpointServer({ socket, admission, keeper, limits, onEnd: (reason) => ends.push(reason) });
+    const server = createSupervisorEndpointServer({ socket, admission, sandbox, limits, onEnd: (reason) => ends.push(reason) });
     return { server, ends, limits };
 }

@@ -11,10 +11,10 @@ import { fileURLToPath } from 'node:url';
 import { requireExecutionTarget } from '../../server/executionTarget/availability.mjs';
 import { canonicalTargetJson, validateQualificationRecord } from '../../server/executionTarget/contract.mjs';
 import { QUALIFICATION_STORE_ERROR_CODES, createQualificationStore } from '../../server/executionTarget/qualificationStore.mjs';
-import { installFixtureRecord } from '../g7/tools/install-fixture-record.mjs';
+import { installFixtureRecord } from '../../tools/install-fixture-record.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const TOOL = path.join(here, '..', 'g7', 'tools', 'install-fixture-record.mjs');
+const TOOL = path.join(here, '..', '..', 'tools', 'install-fixture-record.mjs');
 const UID = process.getuid();
 const sha = (input) => crypto.createHash('sha256').update(input).digest('hex');
 const sid = (label) => crypto.createHash('sha256').update(`synthetic-id:${label}`).digest().subarray(0, 16).toString('base64url');

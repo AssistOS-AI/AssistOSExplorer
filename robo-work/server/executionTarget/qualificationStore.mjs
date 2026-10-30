@@ -8,7 +8,7 @@ import {
 // erratum A10 for the proof-fixture bootstrap record).
 //
 // Authority model:
-//   - Records are written only by trusted management: the operator tool (`tests/g7/tools/install-fixture-record.mjs`) or a
+//   - Records are written only by trusted management: the operator tool (`tools/install-fixture-record.mjs`) or a
 //     later reviewed production installer, after independent verification and after the helper started (the record binds
 //     the exact containerId and helperIncarnation, which exist only then). A robot, project or target declaration has no
 //     write path: the store is a private directory of the worker (mode 0700, files 0600, owned by the worker uid), is

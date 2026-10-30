@@ -14,7 +14,7 @@ import { validateHelperTicketClaims } from '../../server/executionTarget/transpo
 import { HELPER_TICKET_MINT_CODES, HELPER_TICKET_REQUEST_KEYS, createHelperTicketClient } from '../../server/helperTicketClient.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const SESSION_FIXTURE = JSON.parse(fs.readFileSync(path.join(here, '..', '..', 'native', 'crates', 'target-helper', 'tests', 'vectors', 'session-fixture-v1.json'), 'utf8'));
+const SESSION_FIXTURE = JSON.parse(fs.readFileSync(path.join(here, 'fixtures', 'session-fixture-v1.json'), 'utf8'));
 
 const b64 = (bytes) => Buffer.from(bytes).toString('base64url');
 const canon = (value) => canonicalTargetJson(value).value;

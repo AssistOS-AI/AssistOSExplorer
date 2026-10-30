@@ -1,9 +1,9 @@
 import net from 'node:net';
 import { once } from 'node:events';
 
-// A deterministic fake keeper behind the supervisor's keeper interface (supervisorEndpointServer.mjs). It starts no
+// A deterministic fake sandbox supervisor behind the endpoint server's sandbox interface (supervisorEndpointServer.mjs). It starts no
 // process. For each admitted start it connects the workload's side of every requested stream to the endpoint's
-// path, as the real keeper does before the final exec, and then lets a script write and end them.
+// path, as the real sandbox supervisor does before the final exec, and then lets a script write and end them.
 
 async function connectUnix(socketPath) {
     const socket = net.connect(socketPath);

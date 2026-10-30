@@ -54,7 +54,7 @@ export async function createEndpointRig({ limits = {}, keeper, relays = [], hold
     const fakeKeeper = keeper || createFakeKeeper();
     let resolved;
     try { resolved = testLimits(limits); } catch (error) { removeDirectory(directory); throw error; }
-    const supervisor = attachSupervisor({ socket: supervisorSide, admission: conformanceAdmission(streamDirectory), keeper: fakeKeeper, limits: resolved });
+    const supervisor = attachSupervisor({ socket: supervisorSide, admission: conformanceAdmission(streamDirectory), sandbox: fakeKeeper, limits: resolved });
     const endEvents = [];
     const endpoint = createProviderEndpoint({
         channel, supervisorSocket: endpointSide, limits: resolved, streamDirectory, relays, onEnd: (reason) => endEvents.push(reason)

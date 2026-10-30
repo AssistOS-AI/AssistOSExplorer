@@ -7,7 +7,6 @@ import test from 'node:test';
 import {
     O_NOFOLLOW_ANY, STRATEGIES, classifyGrantRequestPath, defaultStrategy, resolveGrant, sameGrantIdentity
 } from '../../server/views/grantResolver.mjs';
-import { createRootLeaseIssuer } from '../../server/views/rootLease.mjs';
 import { resolveViewLimits as resolveViewLimitsDefaults } from '../../server/views/viewLimits.mjs';
 
 // Real temporary workspace. The root is realpath'ed because /var and /tmp are symlinks on macOS and O_NOFOLLOW_ANY
@@ -668,19 +667,16 @@ test('verifyBinding: EACCES, EIO and EMFILE are unproven (never bound) and not s
     await grant.close();
 });
 
-test('unproven withholds renewal and is not sticky, through the real resolver: no frame, then a renew with the next epoch', async (t) => {
+test('unproven is not sticky, through the real resolver: unproven, then bound again, then unbound after a move', async (t) => {
     const root = workspace(t);
     const fsApi = faultyFs();
     const grant = await grantFor(root, 'proj', 'write', 'project', { fsApi });
-    const issuer = createRootLeaseIssuer({ grantId: 'project', verify: () => grant.verifyBinding(), now: () => 0 });
-    assert.equal((await issuer.initial()).ok, true);
+    assert.deepEqual(await grant.verifyBinding(), { state: 'bound' });
     fsApi.failures.push('EACCES');
-    assert.deepEqual(await issuer.next(), { frame: null, state: 'unproven' });
-    const renewed = await issuer.next();
-    assert.equal(renewed.state, 'bound');
-    assert.deepEqual(renewed.frame, { op: 'view_root_lease', grantId: 'project', epoch: 2, verdict: 'renew', ttlMs: 3000 });
+    assert.equal((await grant.verifyBinding()).state, 'unproven');
+    assert.deepEqual(await grant.verifyBinding(), { state: 'bound' });
     mv(root, 'proj', '.data/proj');
-    assert.equal((await issuer.next()).frame.reason, 'root_unbound');
+    assert.equal((await grant.verifyBinding()).code, 'root_unbound');
     await grant.close();
 });
 

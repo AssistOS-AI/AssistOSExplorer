@@ -1,13 +1,13 @@
 // The supervisor's side of one execution's provider-endpoint channel (fd 4). One instance per execution. It frames,
-// bounds and validates everything the endpoint sends, applies the admission decisions, and drives the keeper through a
+// bounds and validates everything the endpoint sends, applies the admission decisions, and drives the sandbox supervisor through a
 // small interface:
 //
-//   keeper.inventory()                       -> array of { name, version? }   (optional; the admission inventory is used otherwise)
-//   keeper.tempdir()                         -> Promise<string>               a private temporary directory
-//   keeper.start({ process, request, streams }) -> Promise<void>              resolves once the workload exists and is
+//   sandbox.inventory()                       -> array of { name, version? }   (optional; the admission inventory is used otherwise)
+//   sandbox.tempdir()                         -> Promise<string>               a private temporary directory
+//   sandbox.start({ process, request, streams }) -> Promise<void>              resolves once the workload exists and is
 //                                               connected to every stream path; rejects when setup fails
-//   keeper.stop({ process, graceMs })        -> Promise<void>
-//   keeper.setExitHandler((process, code, signal) => void)
+//   sandbox.stop({ process, graceMs })        -> Promise<void>
+//   sandbox.setExitHandler((process, code, signal) => void)
 //
 // Whatever the endpoint does, the failure ends only this execution: onEnd is called once with a reason, the socket is
 // destroyed, and nothing is thrown into the shared supervisor.
@@ -17,7 +17,7 @@ import { validateEndpointEvent, validateEndpointRequest } from './endpointFrames
 import { admitStartRequest, admitStreamPaths } from './supervisorRequestValidator.mjs';
 import { virtualPathProblem } from './providerSchema.mjs';
 
-export function createSupervisorEndpointServer({ socket, admission, keeper, limits, onEnd, timers }) {
+export function createSupervisorEndpointServer({ socket, admission, sandbox, limits, onEnd, timers }) {
     const processes = new Map();
     // Request ids rise strictly. Remembering only the last one keeps the supervisor's memory independent of the number
     // of requests an endpoint sends.
@@ -45,7 +45,7 @@ export function createSupervisorEndpointServer({ socket, admission, keeper, limi
         onClose: () => finish('endpoint_lost')
     });
 
-    keeper.setExitHandler?.((process, code, signal) => {
+    sandbox.setExitHandler?.((process, code, signal) => {
         const entry = processes.get(process);
         if (ended || !entry || entry.state === 'exited') return;
         // An exit that arrives while the start is still being answered is sent after the answer.
@@ -95,10 +95,10 @@ export function createSupervisorEndpointServer({ socket, admission, keeper, limi
     async function dispatch(frame) {
         switch (frame.op) {
             case 'inventory':
-                answer(frame.id, { ok: true, value: (await keeper.inventory?.()) ?? admission.inventory.map((entry) => ({ ...entry })) });
+                answer(frame.id, { ok: true, value: (await sandbox.inventory?.()) ?? admission.inventory.map((entry) => ({ ...entry })) });
                 return;
             case 'tempdir': {
-                const path = await keeper.tempdir();
+                const path = await sandbox.tempdir();
                 if (virtualPathProblem(path) || path === '/') {
                     failure(frame.id, { code: 'internal', message: 'The temporary directory is not valid' });
                 } else answer(frame.id, { ok: true, value: { path } });
@@ -126,7 +126,7 @@ export function createSupervisorEndpointServer({ socket, admission, keeper, limi
     }
 
     // A stop is answered ok only after it has been performed. A stop that arrives while the start is still pending cannot
-    // be performed yet: it is recorded against the entry (keeping the smallest grace), the keeper is asked to stop the
+    // be performed yet: it is recorded against the entry (keeping the smallest grace), the sandbox supervisor is asked to stop the
     // process as soon as its start has resolved, and the stop is answered after that. Repeated stops collapse: one that
     // asks for no less grace than a stop already sent waits for that stop instead of being sent again.
     async function stop(processNumber, entry, graceMs) {
@@ -138,7 +138,7 @@ export function createSupervisorEndpointServer({ socket, admission, keeper, limi
         }
         if (entry.sentGrace !== undefined && graceMs >= entry.sentGrace) { await entry.stopping; return; }
         entry.sentGrace = graceMs;
-        entry.stopping = keeper.stop({ process: processNumber, graceMs });
+        entry.stopping = sandbox.stop({ process: processNumber, graceMs });
         entry.stopping.catch(() => {});
         await entry.stopping;
     }
@@ -152,7 +152,7 @@ export function createSupervisorEndpointServer({ socket, admission, keeper, limi
         const entry = { state: 'starting', processClass: request.processClass, stopWaiters: [] };
         processes.set(process, entry);
         try {
-            await keeper.start({ process, request, streams });
+            await sandbox.start({ process, request, streams });
         } catch {
             entry.state = 'exited';
             // Nothing was started, so a stop that was waiting has nothing left to stop.
@@ -164,7 +164,7 @@ export function createSupervisorEndpointServer({ socket, admission, keeper, limi
         answer(frame.id, { ok: true });
         if (entry.pendingStop !== undefined) {
             entry.sentGrace = entry.pendingStop;
-            entry.stopping = keeper.stop({ process, graceMs: entry.pendingStop });
+            entry.stopping = sandbox.stop({ process, graceMs: entry.pendingStop });
             entry.stopping.catch(() => {});
             try {
                 await entry.stopping;

@@ -5,11 +5,11 @@
 //   - namespaces that exist while a process is a member, a process holds a descriptor, or an nsfs mount binds them;
 //   - parent-death SIGKILL, PID-namespace init death killing the whole namespace, mounts and veth pairs vanishing
 //     with their namespace, and nftables tables, cgroups, runtime directories and GUI containers outliving every
-//     process (the objects section 5.5 says can outlive the supervisor and the keeper);
+//     process (the objects section 5.5 says can outlive the supervisor and the sandbox supervisor);
 //   - a fake /proc (listProcesses) and fake mountinfo (listMounts), which are the only things the walker reads;
-//   - gate pipes whose decision is made by the REAL awaitGate of gateProtocol.mjs, read through an injected readSync.
+//   - gate pipes whose decision is made by awaitGate of localGate.mjs, read through an injected readSync.
 
-import { awaitGate, GATE_COMMIT } from '../../../server/execution/gateProtocol.mjs';
+import { awaitGate, GATE_COMMIT } from './localGate.mjs';
 
 export function createModelClock(start = 1_000_000) {
     let time = start;
@@ -214,7 +214,7 @@ export function createModelWorld({ clock }) {
         mounts: () => mounts.map((mount) => ({ ...mount })),
         onExecute: (listener) => listeners.execute.push(listener),
         onSupervisorLost: (listener) => listeners.supervisorLost.push(listener),
-        // The supervisor dies: every gate it held reaches end-of-file, and the keeper (if alive) reacts to the closed channel.
+        // The supervisor dies: every gate it held reaches end-of-file, and the sandbox supervisor (if alive) reacts to the closed channel.
         // leakGates models a defect (a gate descriptor inherited by another process), so that end-of-file never arrives
         // and recovery has to find the gated helper by its marker.
         crashSupervisor({ leakGates = false } = {}) {

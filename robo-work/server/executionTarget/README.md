@@ -10,7 +10,7 @@ Internal, inert worker-side library for the existing-agent terminal contract: th
 | `limits.mjs` | `TARGET_LIMITS_V1`, `TARGET_POLICY_V1`, `INTERLOCK_LIMITS_V1`, `validateTargetLimits`, `combineTargetLimits`, `LIMITS_ERROR_CODES` | Frozen v1 ceilings in the three A1.4 scopes (A2.3 removed `retiredWorkerGenerations`), relationships checked after combination (A2.4: `3 * renewIntervalMs <= leaseTtlMs`, `dataBytesPerFrame <= bufferedBytesPerConnection`, `frameBytes >= 589824`) |
 | `availability.mjs` | `requireExecutionTarget`, `projectExecutionTargets`, `AVAILABILITY_ERROR_CODES` | Pure eligibility decisions in the A1.7 precedence order, exclusion of RoboTeam and the owning worker by canonical principal, alias, stale spelling and runtime identity |
 | `sourceReservations.mjs` | `createWritableReservationController`, `checkWritableSourceConflict`, `RESERVATION_ERROR_CODES` | Worker reservation sequencing over `reserveResource`, `commitResource`, `settleResource`, `listUnsettledResources`, `getResource` and `getWorkerStatus`, with an injected remote interlock |
-| `journalModel.mjs` | `createTargetJournalModel`, `JOURNAL_ERROR_CODES` | Deterministic target-operation journal (the semantic oracle of the later native helper) plus the worker start/stop side |
+| `journalModel.mjs` | `createTargetJournalModel`, `JOURNAL_ERROR_CODES` | Deterministic target-operation journal (the semantic oracle for a later journal implementation) plus the worker start/stop side |
 | `receipts.mjs` | `reconcileTargetReceipt`, `classifyTargetStartOutcome`, `RECEIPT_ERROR_CODES` | Exact receipt reconciliation and the three start outcomes |
 | `transportContract.mjs` | `validateHelperTicketClaims`, `validateTargetFrame`, `validateDescriptorTransfer`, `evaluateServiceConnect`, `TRANSPORT_ERROR_CODES` | Ticket, frame, descriptor and service-connect barrier decisions. No socket transport |
 
@@ -87,21 +87,13 @@ Methods: `syncStore`, `registerGeneration({operationId})`, `acknowledgeStore({op
 
 `createTargetJournalModel({journalStoreIdentity, helperIncarnation, now, limits})` is synchronous. The key is `{workspaceId, workerGeneration, executionId, attemptId, operationId}`. `effects()` lists every gated create, gate release, stop and resource release. One-shot faults: `lost-reply`, `crash-before-durable`, `crash-after-persist`, `crash-after-intent`. The worker side (`startExecution`, `requestStop`, `reconcileStart`, `workerEntry`) classifies start outcomes with `receipts.mjs`: only journal absence evidence is `refused-before-create`; an unknown start keeps a stop pending until a same-key lookup returns a receipt (the stop is then sent) or authenticated absence. A retried start whose prepare reports a released gate, or that has a pending stop, classifies the recorded receipt and delivers the pending stop; a stopped start never releases the gate. A refusal is classified `refused-before-create` only after the same-key lookup passes `reconcileTargetReceipt` (key, binding and journal store). Records are keyed only by the operation key, so `recreateHelper` never makes an old key new. It has no equivalent of the local endpoint's "nothing was started" branch.
 
+## Confinement
+
+Confinement of a robot process is done in Node with `/usr/bin/bwrap`; the modules live in `server/sandbox/` (`bwrapArgs`, `sandboxLauncher`, `sandboxPrep`, `protectedScan`, `seccompBpf`, `executionNetwork`, `stage.sh`, `fdTrim`). There is no native helper, keeper or FUSE file server in this tree.
+
 ## Persistence preconditions (not implemented here)
 
-The controller-private source-protection store, its witness, lock and atomic publication (A1.3, A2.2) are Ploinky's. The helper journal's durable storage, fsync discipline and authenticated transport are later native work. The worker's own durable state is the S1 store; this slice adds no table and does not change the schema version.
-
-## G7 artifact checklist (all native results NOT RUN / BLOCKED)
-
-| Artifact | Status |
-| --- | --- |
-| Candidate manifest (revisions, diff hashes, untracked-file manifest, common-vector digest) | To be captured by the parent at freeze |
-| Profile worksheet (T0 matrix, EA-D1, no eligible target) | BLOCKED: no eligible production target |
-| Protocol corpus | `contracts-v1.json` plus the journal and connect-ack tests here |
-| Authenticated fixture design | NOT RUN |
-| Native proof matrix (A35/A38/A42-A44/A46-A50, both native platforms) | BLOCKED |
-| Observation schema, fault/cleanup script | NOT RUN |
-| T1-L zero stop/remove/create call count (A1.6) | Pending, Ploinky-owned |
+The controller-private source-protection store, its witness, lock and atomic publication (A1.3, A2.2) are Ploinky's. The journal's durable storage, fsync discipline and authenticated transport are later work. The worker's own durable state is the S1 store; this slice adds no table and does not change the schema version.
 
 ## Tests
 

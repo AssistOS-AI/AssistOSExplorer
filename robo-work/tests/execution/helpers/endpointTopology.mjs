@@ -42,7 +42,7 @@ export async function runEndpointTopology(options) {
         ]
     });
     const supervisor = attachSupervisor({
-        socket: topology.sockets.sup, admission: options.admission ? options.admission(streamDirectory) : conformanceAdmission(streamDirectory), keeper, limits
+        socket: topology.sockets.sup, admission: options.admission ? options.admission(streamDirectory) : conformanceAdmission(streamDirectory), sandbox: keeper, limits
     });
     try {
         // With `during`, the test drives the running topology and the harness then ends it by the recorded parent.

@@ -4,10 +4,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { ProcUnreadable, createProcView, devMajorMinor, parseMountinfoLine, parseStatLine } from '../../server/execution/procView.mjs';
-import { confirmRevocation } from '../../server/views/rootLease.mjs';
-import { SELF_MNT_NS, SELF_NET_NS, SELF_PID_NS, createFakeWorld } from './helpers/fakeKeeperProcess.mjs';
+import { SELF_MNT_NS, SELF_NET_NS, SELF_PID_NS, createFakeWorld } from './helpers/fakeProcWorld.mjs';
 
-// The supervisor's own /proc reader over a FAKE procRoot (keeper wire contract delta section 6, R1.1, R1.7). Unit
+// The supervisor's own /proc reader over a FAKE procRoot (R1.1, R1.7). Unit
 // evidence only: real /proc, AppArmor reads and devpts devices are Linux and G1 work.
 
 const view = (world, extra = {}) => createProcView({
@@ -142,7 +141,7 @@ test('exists(pty), committed: present while any process descriptor or mount has 
     const pty = world.newPtyFile(0);
     let identity = { pty: hex('c'), devptsDev: pty.dev, index: 0 };
     let throws = false;
-    const v = view(world, { identityForLocator: () => { if (throws) throw new Error('no blocker'); return identity; }, keeperRecord: () => null });
+    const v = view(world, { identityForLocator: () => { if (throws) throw new Error('no blocker'); return identity; }, sandboxRecord: () => null });
     world.writeProcess({ pid: 300030, ppid: 1, startTime: '5', cmdline: ['k'] });
     world.writeProcess({ pid: 300031, ppid: 1, startTime: '6', cmdline: ['other'] });
     world.addFd(300031, 9, '/nonexistent/closed');
@@ -165,7 +164,7 @@ test('exists(pty), uncommitted: absent only when the keeper named by the locator
     const marker = 'AAECAwQFBgcICQoLDA0ODw';
     let record = { locator: { marker }, identity: null };
     let throws = false;
-    const v = view(world, { identityForLocator: () => null, keeperRecord: () => { if (throws) throw new Error('unreadable'); return record; } });
+    const v = view(world, { identityForLocator: () => null, sandboxRecord: () => { if (throws) throw new Error('unreadable'); return record; } });
     world.writeProcess({ pid: 300040, ppid: 1, startTime: '9', cmdline: ['keeper', '--reservation', marker] });
     assert.equal(v.exists('pty', { pty: hex('d'), keeper: marker }), true, 'the uncommitted keeper carries its marker');
     record = { locator: { marker }, identity: { pid: 300040, startTime: '9' } };
@@ -192,7 +191,7 @@ test('kill re-reads the start time; the registered keeper child goes through its
     assert.deepEqual(world.signals, [{ pid: 300050, name: 'SIGKILL' }]);
     world.writeProcess({ pid: 300051, ppid: 1, startTime: '51', cmdline: ['keeper'] });
     const kills = [];
-    const unregister = v.registerKeeperChild({ pid: 300051, startTime: '51', kill: () => kills.push('child') });
+    const unregister = v.registerSandboxChild({ pid: 300051, startTime: '51', kill: () => kills.push('child') });
     assert.equal(v.kill({ pid: 300051, startTime: '51' }), true);
     assert.deepEqual(kills, ['child']);
     assert.equal(world.signals.length, 1, 'no signal for the keeper');
@@ -218,18 +217,16 @@ test('remove(runtime-dir) removes only an exact locator directory with no mount 
     assert.equal(v.unmount({ mountId: 1, mountpoint: '/' }), false);
 });
 
-test('processIdentity has exactly the shape the root lease accepts, and heldNamespaces reports descriptor-held namespaces', async (t) => {
+test('processIdentity reports pid, start time and pid namespace, and heldNamespaces reports descriptor-held namespaces', async (t) => {
     const world = createFakeWorld(t);
     world.writeProcess({ pid: 300060, ppid: 1, startTime: '60', cmdline: ['fs'], pidNs: '4026599300' });
     world.addFd(300060, 7, 'mnt:[4026599301]');
     const v = view(world);
     const identity = v.processIdentity(300060);
     assert.deepEqual(identity, { pid: 300060, startTime: '60', pidNamespaceInode: '4026599300' });
-    assert.deepEqual(await confirmRevocation({ identity, probe: (pid) => v.processIdentity(pid) }), { state: 'alive', action: 'kill_keeper_and_quarantine' });
     assert.deepEqual(v.heldNamespaces(300060), { pidNs: '4026599300', netNs: SELF_NET_NS, mntNs: SELF_MNT_NS, fdNs: ['4026599301'] });
     world.removeProcess(300060);
     assert.equal(v.processIdentity(300060), null);
-    assert.deepEqual(await confirmRevocation({ identity, probe: (pid) => v.processIdentity(pid) }), { state: 'gone', action: 'none' });
 });
 
 test('devMajorMinor uses the Linux dev_t encoding', () => {

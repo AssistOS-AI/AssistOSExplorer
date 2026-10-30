@@ -156,7 +156,7 @@ async function attackFd4(mode, args, { keeper, limits } = {}) {
         children: [{ name: 'endpoint', command: findPython(), argv: ['-I', rawEndpointPeer, mode, ...args], fds: { 4: 'supervisor:sup' } }]
     });
     const supervisor = attachSupervisor({
-        socket: topology.sockets.sup, admission: conformanceAdmission('/run/ep/streams'), keeper: keeper || createFakeKeeper(), limits
+        socket: topology.sockets.sup, admission: conformanceAdmission('/run/ep/streams'), sandbox: keeper || createFakeKeeper(), limits
     });
     try {
         const ended = await topology.finished;

@@ -9,8 +9,8 @@
 //        --container-id <64 hex> --helper-incarnation <id> [--forbidden-root <abs>]... [--replace] [--create]
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseCanonicalTargetJson } from '../../../server/executionTarget/contract.mjs';
-import { createQualificationStore } from '../../../server/executionTarget/qualificationStore.mjs';
+import { parseCanonicalTargetJson } from '../server/executionTarget/contract.mjs';
+import { createQualificationStore } from '../server/executionTarget/qualificationStore.mjs';
 
 const RECORD_FILE_BYTES = 1 << 20;
 

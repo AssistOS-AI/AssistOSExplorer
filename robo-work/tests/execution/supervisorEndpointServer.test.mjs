@@ -19,20 +19,20 @@ const request = (extra = {}) => ({
 const streams = { stdout: `${STREAMS}/aaaaaaaaaaaa`, stderr: `${STREAMS}/bbbbbbbbbbbb` };
 
 // A stand-in for the endpoint: frames go to the real supervisor server over an in-memory socket.
-function execution(keeperOverrides = {}, limitOverrides = {}) {
+function execution(sandboxOverrides = {}, limitOverrides = {}) {
     const [serverSide, endpointSide] = duplexPair();
     let exitHandler = () => {};
     const calls = [];
-    const keeper = {
+    const sandbox = {
         setExitHandler: (handler) => { exitHandler = handler; },
         tempdir: async () => '/tmp/ala-1',
         start: async (call) => { calls.push(['start', call]); },
         stop: async (call) => { calls.push(['stop', call]); },
-        ...keeperOverrides
+        ...sandboxOverrides
     };
     const ends = [];
     const server = createSupervisorEndpointServer({
-        socket: serverSide, admission, keeper, limits: testLimits(limitOverrides), onEnd: (reason) => ends.push(reason)
+        socket: serverSide, admission, sandbox, limits: testLimits(limitOverrides), onEnd: (reason) => ends.push(reason)
     });
     const received = [];
     let buffer = Buffer.alloc(0);
@@ -47,10 +47,10 @@ function execution(keeperOverrides = {}, limitOverrides = {}) {
     endpointSide.on('error', () => {});
     const send = (frame) => endpointSide.write(encodeFrame(frame, { maxFrameBytes: 1 << 20 }));
     const answer = (id) => waitFor(() => received.find((frame) => frame.id === id));
-    return { server, ends, send, answer, received, calls, keeper, exit: (...args) => exitHandler(...args), endpointSide };
+    return { server, ends, send, answer, received, calls, sandbox, exit: (...args) => exitHandler(...args), endpointSide };
 }
 
-test('an admitted start reaches the keeper with the request and stream paths and is answered ok', async () => {
+test('an admitted start reaches the sandbox with the request and stream paths and is answered ok', async () => {
     const run = execution();
     run.send({ id: 1, op: 'start', process: 1, request: request(), streams });
     assert.deepEqual(await run.answer(1), { id: 1, ok: true });
@@ -65,7 +65,7 @@ test('an exit that arrives before the start is answered is sent after the answer
     assert.deepEqual(run.received.map((frame) => frame.id ?? frame.event), [1, 'exit']);
 });
 
-test('a refused start never reaches the keeper and the refusal carries its own code', async () => {
+test('a refused start never reaches the sandbox and the refusal carries its own code', async () => {
     const run = execution();
     run.send({ id: 1, op: 'start', process: 1, request: request({ cwd: '/outside' }), streams });
     run.send({ id: 2, op: 'start', process: 2, request: request({ executable: '/bin/sh' }), streams });
@@ -80,7 +80,7 @@ test('a refused start never reaches the keeper and the refusal carries its own c
     assert.deepEqual(run.ends, [], 'a refusal does not end the execution');
 });
 
-test('a keeper failure is answered as a failure with a generic message and no keeper text', async () => {
+test('a sandbox failure is answered as a failure with a generic message and no sandbox text', async () => {
     const run = execution({ start: async () => { throw new Error('secret /host/path detail'); } });
     run.send({ id: 1, op: 'start', process: 1, request: request(), streams });
     const answer = await run.answer(1);
@@ -183,16 +183,16 @@ const gated = () => { let release; const wait = new Promise((resolve) => { relea
 function slowStart() {
     const startGate = gated();
     const stops = [];
-    const keeper = {
+    const sandbox = {
         start: async () => { await startGate.wait; },
         stop: async (call) => { stops.push(call); }
     };
-    return { startGate, stops, keeper };
+    return { startGate, stops, sandbox };
 }
 
 test('a stop that arrives while the start is pending is performed as soon as the start resolves, with the smallest grace', async () => {
-    const { startGate, stops, keeper } = slowStart();
-    const run = execution(keeper);
+    const { startGate, stops, sandbox } = slowStart();
+    const run = execution(sandbox);
     run.send({ id: 1, op: 'start', process: 1, request: request(), streams });
     run.send({ id: 2, op: 'stop', process: 1, graceMs: 5000 });
     run.send({ id: 3, op: 'stop', process: 1, graceMs: 0 });
@@ -206,7 +206,7 @@ test('a stop that arrives while the start is pending is performed as soon as the
     assert.deepEqual(run.received.map((frame) => frame.id), [1, 2, 3], 'the start is answered before the stops');
 });
 
-test('a stop that waited for a failed start has nothing to stop and is answered ok without reaching the keeper', async () => {
+test('a stop that waited for a failed start has nothing to stop and is answered ok without reaching the sandbox', async () => {
     const stops = [];
     const startGate = gated();
     const run = execution({ start: async () => { await startGate.wait; throw new Error('setup'); }, stop: async (call) => { stops.push(call); } });
@@ -235,7 +235,7 @@ test('repeated stops of a running process collapse: one that asks for no less gr
     for (const id of [2, 3, 4, 5]) assert.equal((await run.answer(id)).ok, true, `stop ${id}`);
 });
 
-test('a keeper that fails to stop is answered as a failure, not as ok', async () => {
+test('a sandbox that fails to stop is answered as a failure, not as ok', async () => {
     const run = execution({ stop: async () => { throw new Error('cannot stop'); } });
     run.send({ id: 1, op: 'start', process: 1, request: request(), streams });
     await run.answer(1);
@@ -244,8 +244,8 @@ test('a keeper that fails to stop is answered as a failure, not as ok', async ()
 });
 
 test('the stop of a pending start is still performed when the endpoint is gone before the start resolves', async () => {
-    const { startGate, stops, keeper } = slowStart();
-    const run = execution(keeper);
+    const { startGate, stops, sandbox } = slowStart();
+    const run = execution(sandbox);
     run.send({ id: 1, op: 'start', process: 1, request: request(), streams });
     run.send({ id: 2, op: 'stop', process: 1, graceMs: 0 });
     await new Promise((resolve) => setTimeout(resolve, 40));

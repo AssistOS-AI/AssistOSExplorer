@@ -1,4 +1,4 @@
-// Length-prefixed frame codec for the supervisor <-> keeper and supervisor <-> provider endpoint channels
+// Length-prefixed frame codec for the supervisor <-> sandbox and supervisor <-> provider endpoint channels
 // (plan section 5.5), Node side. A frame is a 4-byte big-endian length followed by that many bytes of UTF-8 JSON
 // that encode one object. The channel carries no descriptors.
 //

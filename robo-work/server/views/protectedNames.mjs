@@ -11,7 +11,7 @@
 //   - `.roboteam` is protected. Neither Ploinky nor Explorer knows it (R4-4 item 2).
 //   - A second, separate layer strips Unicode default-ignorable code points before folding (risk table of the
 //     review: HFS+ and older ext4 casefold ignore some of them). It only ever adds refusals. Whether to keep it is
-//     design question D-S5-1 (designQuestions.mjs); `hardening: false` yields Ploinky's behaviour plus
+//     design question D-S5-1; `hardening: false` yields Ploinky's behaviour plus
 //     `.roboteam` for the conformance vectors and for the negative controls.
 //
 // The fold itself is Ploinky's `foldPathName` (`ploinky-box/hostState/paths.mjs`), copied unchanged. A test reads Ploinky's

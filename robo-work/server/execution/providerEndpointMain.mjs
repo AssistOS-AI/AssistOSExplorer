@@ -1,4 +1,4 @@
-// Entry point of the provider endpoint process. The keeper starts it with ALA's provider channel as fd 3
+// Entry point of the provider endpoint process. The sandbox supervisor starts it with ALA's provider channel as fd 3
 // (NODE_CHANNEL_FD=3, JSON serialization) and the framed supervisor channel as fd 4. Its configuration is one JSON
 // argument: { limits, streamDirectory, relays: [{ port, target }] }.
 import net from 'node:net';

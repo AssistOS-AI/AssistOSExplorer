@@ -1,23 +1,23 @@
-// The supervisor's own view of the container (keeper wire contract delta sections 3, 5 and 6, R1.1, R1.7): the
-// production /proc reader behind the recovery walk's view interface (recoveryWalk.mjs), plus what the keeper client needs
-// to verify a keeper's claim before anything is committed. Nothing here believes a keeper: every answer is read from
+// The supervisor's own view of the container (R1.1, R1.7): the
+// production /proc reader behind the recovery walk's view interface (recoveryWalk.mjs), plus what the Node sandbox supervisor (bwrap) needs
+// to verify a sandbox claim before anything is committed. Nothing here believes a sandbox: every answer is read from
 // /proc or the file system, and anything that cannot be read is answered "present" or throws.
 //
 //   listProcesses() -> [{ pid, ppid, startTime, cmdline, pidNs, netNs, mntNs, fdNs }]   start times and inodes are
 //                      canonical decimal strings, pids integers (the types toLedgerIdentity commits)
 //   listMounts()    -> [{ mountId, mountpoint, mntNs, fstype, nsInode, majorMinor }]
 //   exists(kind, locator), kill({ pid, startTime }), remove(kind, locator), unmount() (always false)
-//   processIdentity(pid) -> { pid, startTime, pidNamespaceInode } | null   (the shape rootLease.confirmRevocation accepts)
+//   processIdentity(pid) -> { pid, startTime, pidNamespaceInode } | null   (pid, start time and pid namespace inode)
 //   heldNamespaces(pid)  -> { pidNs, netNs, mntNs, fdNs } | null
-//   process(pid), fdDevices(pid), pathIdentity(path), selfNamespaces(), containerDevptsDev(), registerKeeperChild()
+//   process(pid), fdDevices(pid), pathIdentity(path), selfNamespaces(), containerDevptsDev(), registerSandboxChild()
 //
 // Read errors: a per-pid ENOENT or ESRCH means the process vanished and it is skipped; an ENOENT on one fd/N means that
 // descriptor closed and only it is skipped. Any other errno makes listProcesses or listMounts throw `proc_unreadable`,
 // which rejects the walk: fail closed, never a release.
 //
 // Safety (R1.7): a procRoot other than /proc needs an explicit `signal`, so a test over a fake /proc can never signal a
-// real pid taken from a fake entry. The keeper itself is a direct child of the supervisor and is killed only through its
-// ChildProcess (registerKeeperChild); anything else gets `signal` after its start time has been re-read (open risk K-3:
+// real pid taken from a fake entry. The sandbox supervisor itself is a direct child of the supervisor and is killed only through its
+// ChildProcess (registerSandboxChild); anything else gets `signal` after its start time has been re-read (open risk K-3:
 // Node has no pidfd, so a reuse window remains between that check and kill(2)).
 
 import fs from 'node:fs';
@@ -83,7 +83,7 @@ export function parseMountinfoLine(line, mntNs) {
 }
 
 export function createProcView({
-    procRoot = '/proc', signal, runtimeRoot = null, cgroupSubtree = null, identityForLocator = null, keeperRecord = null,
+    procRoot = '/proc', signal, runtimeRoot = null, cgroupSubtree = null, identityForLocator = null, sandboxRecord = null,
     containerDevpts = '/dev/pts', statfs
 } = {}) {
     if (procRoot !== '/proc' && typeof signal !== 'function') throw new TypeError('procView over a procRoot other than /proc needs an explicit signal');
@@ -91,7 +91,7 @@ export function createProcView({
     if (cgroupSubtree !== null && (cgroupSubtree === '/' || virtualPathProblem(cgroupSubtree, 989) !== null)) throw new TypeError('Invalid cgroup subtree');
     const readStatfs = statfs ?? fs.statfsSync;
     const send = typeof signal === 'function' ? signal : (pid, name) => process.kill(pid, name);
-    const keeperChildren = new Map();
+    const sandboxChildren = new Map();
     const at = (...parts) => path.join(procRoot, ...parts.map(String));
 
     // A read that distinguishes "vanished" (ENOENT/ESRCH) from "unreadable" (anything else).
@@ -239,12 +239,12 @@ export function createProcView({
         } catch { return null; }
     }
 
-    // Whether the keeper named by the locator is present, from its own S1 record: committed { pid, startTime }, or its
+    // Whether the sandbox supervisor named by the locator is present, from its own S1 record: committed { pid, startTime }, or its
     // marker if it never committed. An unreadable record is present.
-    function keeperPresent(locator) {
-        if (typeof keeperRecord !== 'function') return true;
+    function sandboxPresent(locator) {
+        if (typeof sandboxRecord !== 'function') return true;
         let record;
-        try { record = keeperRecord({ locator }); } catch { return true; }
+        try { record = sandboxRecord({ locator }); } catch { return true; }
         if (!record || typeof record !== 'object' || !record.locator) return true;
         const processes = listProcesses();
         if (record.identity === null) return processes.some((entry) => entry.cmdline.includes(record.locator.marker));
@@ -255,8 +255,8 @@ export function createProcView({
         let identity;
         try { identity = identityForLocator('pty', locator); } catch { return true; }
         if (identity === null || identity === undefined || typeof identity.devptsDev !== 'string' || !DIGITS.test(identity.devptsDev)) {
-            // Uncommitted (or no usable identity): only the keeper can hold it. Absent only when the keeper is.
-            return keeperPresent(locator);
+            // Uncommitted (or no usable identity): only the sandbox supervisor can hold it. Absent only when the sandbox supervisor is.
+            return sandboxPresent(locator);
         }
         const device = identity.devptsDev;
         for (const pid of pids()) {
@@ -280,11 +280,11 @@ export function createProcView({
         }
     }
 
-    // Kills only a process whose start time still matches. The keeper goes through its ChildProcess.
+    // Kills only a process whose start time still matches. The sandbox supervisor goes through its ChildProcess.
     function kill({ pid, startTime }) {
         const entry = processOrNull(pid);
         if (!entry || entry.startTime !== startTime) return false;
-        const child = keeperChildren.get(pid);
+        const child = sandboxChildren.get(pid);
         if (child && child.startTime === startTime) {
             try { child.kill(); } catch { return false; }
             return true;
@@ -345,12 +345,12 @@ export function createProcView({
         pathIdentity,
         selfNamespaces,
         containerDevptsDev,
-        // The keeper client registers its live keeper child, so that a kill of that pid and start time goes to
+        // The sandbox supervisor registers its live bwrap child, so that a kill of that pid and start time goes to
         // ChildProcess.kill('SIGKILL') and never to kill(2). Returns an unregister function.
-        registerKeeperChild({ pid, startTime, kill: killChild }) {
+        registerSandboxChild({ pid, startTime, kill: killChild }) {
             const entry = { startTime, kill: killChild };
-            keeperChildren.set(pid, entry);
-            return () => { if (keeperChildren.get(pid) === entry) keeperChildren.delete(pid); };
+            sandboxChildren.set(pid, entry);
+            return () => { if (sandboxChildren.get(pid) === entry) sandboxChildren.delete(pid); };
         }
     };
 }

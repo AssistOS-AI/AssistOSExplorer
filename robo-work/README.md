@@ -139,3 +139,7 @@ A failed provision leaves the robot `failed` at revision 0; it is repaired with 
 ## Tests
 
 From the repository root: `node --test 'robo-work/tests/*.test.mjs'`. Tests use isolated temporary directories and synthetic children (`tests/helpers/stateChild.mjs`); native durability and routed authorization are not proven by them.
+
+## Confinement
+
+Confinement of robot processes is Node plus `/usr/bin/bwrap`. Its modules are in `server/sandbox/` (`bwrapArgs`, `sandboxLauncher`, `sandboxPrep`, `protectedScan`, `seccompBpf`, `executionNetwork`, `stage.sh`, `fdTrim`) with tests in `tests/sandbox/`. The grant resolver (`server/views/grantResolver.mjs`) supplies the open grant-root descriptors that are handed to the launcher. There is no Rust code, native helper, keeper or FUSE file server in this tree.

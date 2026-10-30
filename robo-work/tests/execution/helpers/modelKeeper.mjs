@@ -1,5 +1,5 @@
-// MODEL of the execution keeper behind the ledger's keeper interface, acting on the model world. It extends the
-// existing fake keeper (provider start/stop streams) with the resource-creation and end-path methods of section 5.5.
+// MODEL of the Node sandbox supervisor (bwrap) behind the ledger's sandbox interface, acting on the model world. It extends the
+// existing fake sandbox supervisor (provider start/stop streams) with the resource-creation and end-path methods of section 5.5.
 // Never A40 or G1 evidence.
 //
 // Rules it enforces, so that a ledger that gets them wrong fails:
@@ -8,11 +8,11 @@
 //   - at step 4 it closes its network-namespace descriptor, and at step 5 its mount-namespace descriptor, after the
 //     endpoint has ended (R3-5), so that those steps can be verified;
 //   - on end-of-file from a lost supervisor it kills and tears down everything it owns, then exits.
-// Fault options (all off by default) make a keeper that does its part wrongly:
+// Fault options (all off by default) make a sandbox supervisor that does its part wrongly:
 //   forgetNetnsFd, forgetMntnsFd, ignoresEof, stuckTrees (the process trees ignore SIGKILL), slowTrees (ms until a
 //   killed tree is gone), neverExits.
 
-import { createGate } from '../../../server/execution/gateProtocol.mjs';
+import { createGate } from './localGate.mjs';
 import { createFakeKeeper } from './fakeKeeper.mjs';
 
 export class KeeperRefusal extends Error {
@@ -28,7 +28,7 @@ export function createModelKeeper(world, options = {}) {
     function gatedProcess({ kind, resourceId, marker, ppid, newPidNs, netNs = null, mntNs = null, role }) {
         const { gate, writeEnd } = world.createGatePipe();
         const entry = world.spawn({
-            ppid, cmdline: ['/usr/lib/robo-work/' + role, '--reservation', marker], newPidNs, netNs, mntNs, gate, role, marker
+            ppid, cmdline: ['/usr/bin/bwrap', '--hostname', marker, '--args', '3'], newPidNs, netNs, mntNs, gate, role, marker
         });
         world.attachGate(entry);
         const identity = kind === 'keeper' ? { pid: entry.pid, startTime: entry.startTime }

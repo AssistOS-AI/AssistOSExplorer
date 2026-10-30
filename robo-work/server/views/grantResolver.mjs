@@ -3,7 +3,7 @@
 // A trusted client names a role, an access mode and a workspace-relative path. The resolver never accepts a host path.
 // It refuses controller state, key material, private storage and the other locations of the refusal set, and it
 // returns an OPEN DESCRIPTOR for the grant root together with its identity. The descriptor, not the path, is what the
-// keeper and the file server use afterwards (mountFrames.mjs), so the directory cannot be substituted after validation.
+// sandbox launcher uses afterwards (`--bind-fd` / the preparation bind source), so the directory cannot be substituted after validation.
 //
 // Anchored resolution with Node
 //   Node's fs has no openat. Two strategies, selected by platform and recorded in the result:
@@ -34,7 +34,7 @@
 //   A resolved grant keeps its whole walk chain: the workspace-root anchor, the descriptor of every component between it
 //   and the grant root, and the grant root (segments.length + 1 descriptors). The chain stays in the supervisor, inside
 //   this closure: the grant object exposes only the grant root (`handle`, `fd`), which is the one descriptor that is
-//   handed to the keeper (mountFrames.mjs grantRootSlots). Node opens descriptors with O_CLOEXEC, so a spawned child
+//   handed to the sandbox launcher (`--bind-fd` / prep bind source). Node opens descriptors with O_CLOEXEC, so a spawned child
 //   inherits only the slots it is given explicitly. `close()` releases the root and the chain.
 //   `grant.verifyBinding()` re-resolves every recorded component top-down and without following links, and compares it
 //   with its admission identity. It never reclassifies names: if every component still resolves to its admission

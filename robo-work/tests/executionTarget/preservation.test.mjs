@@ -19,15 +19,7 @@ const MODULE_DIR = path.join(ROBO_WORK, 'server', 'executionTarget');
 const TEST_DIR = here;
 const TEMP_DIR = fs.realpathSync(os.tmpdir());
 // The one operator tool (P6a) that may import the module from outside tests/executionTarget; nothing may import the tool.
-const OPERATOR_TOOL = path.join(ROBO_WORK, 'tests', 'g7', 'tools', 'install-fixture-record.mjs');
-// The native target helper's journal differential (P2): the generator imports journalModel.mjs read-only to produce the
-// vector, and the vector records the oracle module paths and digests. Exactly these two files; nothing may import them
-// except the drift test in tests/executionTarget.
-const NATIVE_DIFFERENTIAL_VECTORS = path.join(ROBO_WORK, 'native', 'crates', 'target-helper', 'tests', 'vectors');
-const NATIVE_DIFFERENTIAL = [
-    path.join(NATIVE_DIFFERENTIAL_VECTORS, 'gen-journal-differential.mjs'),
-    path.join(NATIVE_DIFFERENTIAL_VECTORS, 'journal-differential.json')
-];
+const OPERATOR_TOOL = path.join(ROBO_WORK, 'tools', 'install-fixture-record.mjs');
 // Proof-fixture G7 code (P3 rwtarget manifest renderer, P6b rwworker host) and its self-tests may import the modules;
 // nothing outside these two directories may import them (checked below).
 const G7_FIXTURE_DIR = path.join(ROBO_WORK, 'tests', 'g7', 'fixture');
@@ -100,7 +92,6 @@ test('T1-10 no file outside tests/executionTarget imports the executionTarget mo
     let scanned = 0;
     for (const file of sourceFiles(REPOSITORY)) {
         if (file.startsWith(`${MODULE_DIR}${path.sep}`) || file.startsWith(`${TEST_DIR}${path.sep}`) || file === OPERATOR_TOOL) continue;
-        if (NATIVE_DIFFERENTIAL.includes(file)) continue;
         if (fs.statSync(file).size > 4 * 1024 * 1024) continue;
         const text = fs.readFileSync(file, 'utf8');
         if (file.startsWith(`${G7_FIXTURE_DIR}${path.sep}`) || file.startsWith(`${G7_SELFTEST_DIR}${path.sep}`)) continue;
@@ -118,7 +109,6 @@ test('T1-10 no file outside tests/executionTarget imports the executionTarget mo
     assert.equal(importsIntoG7(path.join(ROBO_WORK, 'server', 'x.mjs'), "const m = await import('../tests/g7/selftest/rwworker.test.mjs');"), true);
     assert.equal(importsIntoG7(path.join(ROBO_WORK, 'tests', 'g7', 'driver.mjs'), "import fs from 'node:fs';\nimport { a } from './tools/install-fixture-record.mjs';"), false);
     assert.ok(fs.statSync(OPERATOR_TOOL).isFile(), 'the single exempt operator tool exists');
-    for (const file of NATIVE_DIFFERENTIAL) assert.ok(fs.statSync(file).isFile(), `the exempt native differential file ${path.relative(REPOSITORY, file)} exists`);
 });
 
 test('T1-10 the new modules import only each other and Node built-ins', () => {

@@ -187,9 +187,9 @@ test('MODEL CHECK recovery: the walk goes keeper, endpoint, process trees, PTYs,
 
 test('MODEL CHECK recovery: the walker needs explicit positive deadlines and cannot prove a kind it does not know', () => {
     const view = { listProcesses: () => [], listMounts: () => [], exists: () => false };
-    assert.throws(() => createWalker({ view, clock: {}, releaseDeadlineMs: 0, pollMs: 10, keeperRecord: () => null }), TypeError);
-    assert.throws(() => createWalker({ view, clock: {}, releaseDeadlineMs: 10, pollMs: -1, keeperRecord: () => null }), TypeError);
-    const walker = createWalker({ view, clock: {}, releaseDeadlineMs: 10, pollMs: 5, keeperRecord: () => null });
+    assert.throws(() => createWalker({ view, clock: {}, releaseDeadlineMs: 0, pollMs: 10, sandboxRecord: () => null }), TypeError);
+    assert.throws(() => createWalker({ view, clock: {}, releaseDeadlineMs: 10, pollMs: -1, sandboxRecord: () => null }), TypeError);
+    const walker = createWalker({ view, clock: {}, releaseDeadlineMs: 10, pollMs: 5, sandboxRecord: () => null });
     assert.equal(walker.prove({ kind: 'mystery', locator: {}, identity: null }).absent, false);
     assert.ok(RELEASE_DEADLINE_MS > 0);
 });
@@ -223,7 +223,7 @@ test('MODEL CHECK recovery: GUI views and containers live in the container\'s ow
     await assert.rejects((async () => { await publishAll(ledger); await ledger.publish({ kind: 'gui-view' }); })(), (error) => error instanceof InjectedCrash);
     const blocker = rig.store.listUnsettledResources().find((entry) => entry.kind === 'gui-view');
     const view = { ...rig.world.view, unmount: () => false };
-    const stubborn = createWalker({ view, clock: rig.clock, releaseDeadlineMs: 1000, pollMs: 100, keeperRecord: () => null });
+    const stubborn = createWalker({ view, clock: rig.clock, releaseDeadlineMs: 1000, pollMs: 100, sandboxRecord: () => null });
     assert.equal(await stubborn.walk(blocker, {}), 'quarantined');
 });
 
@@ -289,8 +289,8 @@ test('MODEL CHECK recovery: an uncommitted dependent of a keeper that is really 
     }
 });
 
-// N1 (probe keeperRecordDefault): a missing or unreadable keeper record must never read as an absent keeper.
-test('MODEL CHECK recovery: keeperRecord is required, and a record that is missing or unreadable makes an uncommitted dependent unprovable', async (t) => {
+// N1 (probe sandboxRecordDefault): a missing or unreadable keeper record must never read as an absent keeper.
+test('MODEL CHECK recovery: sandboxRecord is required, and a record that is missing or unreadable makes an uncommitted dependent unprovable', async (t) => {
     const rig = await createLedgerRig(t);
     const ledger = rig.ledger({ faults: crashAt('afterCreate', 'netns') });
     await ledger.startKeeper();
@@ -299,8 +299,8 @@ test('MODEL CHECK recovery: keeperRecord is required, and a record that is missi
     assert.ok(netns.locator.keeper, 'the dependent names its keeper');
     const options = { view: rig.world.view, clock: rig.clock, releaseDeadlineMs: RELEASE_DEADLINE_MS, pollMs: 250 };
     // No default: the probe's bare walker cannot be built.
-    assert.throws(() => createWalker(options), { name: 'TypeError', message: 'keeperRecord is required' });
-    assert.throws(() => createWalker({ ...options, keeperRecord: 'x' }), TypeError);
+    assert.throws(() => createWalker(options), { name: 'TypeError', message: 'sandboxRecord is required' });
+    assert.throws(() => createWalker({ ...options, sandboxRecord: 'x' }), TypeError);
     // Wired to the store, the live keeper keeps the namespace unproven.
     assert.equal(rig.keeper.alive(), true);
     assert.equal(rig.world.namespaceExists(rig.keeper.model.netns[0]), true);
@@ -312,26 +312,26 @@ test('MODEL CHECK recovery: keeperRecord is required, and a record that is missi
         'returns null': () => null,
         'returns a non-record': () => ({ state: 'released' })
     };
-    for (const [name, keeperRecord] of Object.entries(broken)) {
-        const walker = createWalker({ ...options, keeperRecord });
+    for (const [name, sandboxRecord] of Object.entries(broken)) {
+        const walker = createWalker({ ...options, sandboxRecord });
         assert.equal(walker.prove(netns).absent, false, `${name}: uncommitted netns`);
-        assert.deepEqual(walker.prove(netns).holders, [{ via: 'keeper-record-unavailable' }], name);
+        assert.deepEqual(walker.prove(netns).holders, [{ via: 'sandbox-record-unavailable' }], name);
         const endpoint = { kind: 'endpoint', identity: null, locator: { marker: 'no-such-marker', keeper: netns.locator.keeper } };
         assert.equal(walker.prove(endpoint).absent, false, `${name}: uncommitted process-bearing`);
     }
     // Even with the keeper really gone, an unreadable record is not an absent keeper.
     rig.keeper.crash();
-    assert.equal(createWalker({ ...options, keeperRecord: broken.throws }).prove(netns).absent, false);
+    assert.equal(createWalker({ ...options, sandboxRecord: broken.throws }).prove(netns).absent, false);
     assert.equal(rig.walker().prove(netns).absent, true, 'with a readable record and the keeper gone it is proven');
-    // A blocker that names no keeper has none to wait for, and keeperRecord is not consulted.
-    const none = createWalker({ ...options, keeperRecord: () => { throw new Error('must not be called'); } });
+    // A blocker that names no keeper has none to wait for, and sandboxRecord is not consulted.
+    const none = createWalker({ ...options, sandboxRecord: () => { throw new Error('must not be called'); } });
     assert.equal(none.prove({ kind: 'runtime-dir', identity: null, locator: { path: '/x' } }).absent, true);
     assert.equal(none.prove({ kind: 'endpoint', identity: null, locator: { marker: 'm' } }).absent, true);
 });
 
 test('MODEL CHECK recovery: an execution whose keeper record cannot be read ends with its uncommitted dependents quarantined, not released', async (t) => {
     const rig = await createLedgerRig(t);
-    const unreadable = createWalker({ view: rig.world.view, clock: rig.clock, releaseDeadlineMs: RELEASE_DEADLINE_MS, pollMs: 250, keeperRecord: () => { throw new Error('store unavailable'); } });
+    const unreadable = createWalker({ view: rig.world.view, clock: rig.clock, releaseDeadlineMs: RELEASE_DEADLINE_MS, pollMs: 250, sandboxRecord: () => { throw new Error('store unavailable'); } });
     const ledger = rig.ledger({ walker: unreadable, faults: crashAt('afterCreate', 'netns') });
     await assert.rejects(publishAll(ledger), (error) => error instanceof InjectedCrash);
     const ended = await ledger.endExecution({ classification: 'failed' });

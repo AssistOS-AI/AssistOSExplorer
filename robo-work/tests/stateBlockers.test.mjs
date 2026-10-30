@@ -133,7 +133,7 @@ test('an uncommitted process-bearing reservation is released when no marker-bear
         return store.settleResource({ resourceId, generationId, outcome: markerPresent || keeperPresent ? 'quarantined' : 'released' });
     };
     const survived = store.reserveResource({ kind: 'keeper', processBearing: true, locator: { cgroup: 'a' } }).resourceId;
-    proc.cmdlines.push(`rw-keeper --reservation ${survived}`);
+    proc.cmdlines.push(`/usr/bin/bwrap --hostname ${survived} --args 3`);
     assert.equal(walk(survived).state, 'quarantined');
     const gone = store.reserveResource({ kind: 'keeper', processBearing: true, locator: { cgroup: 'b' } }).resourceId;
     assert.equal(store.getResource({ resourceId: gone }).identity, null);
@@ -386,7 +386,7 @@ test('clearQuarantine through the default runtime is refused, and an uncommitted
     expectCode(assert, () => store.clearQuarantine(ADMIN(), request), 'runtime_unavailable');
     store.close();
     // the same marker check as the transition table, over a synthetic /proc
-    const proc = [`rw-keeper --reservation ${blocker}`];
+    const proc = [`/usr/bin/bwrap --hostname ${blocker} --args 3`];
     const runtime = syntheticRuntime({ absence: (info) => !proc.some((line) => line.includes(info.marker)) });
     store = openStore(dir, { create: false, runtime });
     expectCode(assert, () => store.clearQuarantine(ADMIN(), request), 'resource_present');

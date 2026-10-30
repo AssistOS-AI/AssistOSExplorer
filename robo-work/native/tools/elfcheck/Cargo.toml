@@ -1,6 +1,0 @@
-[package]
-name = "elfcheck"
-version = "0.1.0"
-edition = "2024"
-publish = false
-description = "Std-only ELF64 static check (no PT_INTERP, no DT_NEEDED), adapted unchanged from the R-B toolchain proof."

@@ -3,13 +3,13 @@
 // merely sent.
 //
 //   - A reserved but uncommitted process-bearing resource is walked by its marker alone: the reservation ID that the
-//     keeper and each gated pre-exec stage carry in argv, visible in /proc/<pid>/cmdline until the final exec. Proven
-//     absence needs no /proc entry carrying the marker AND the keeper's identity absent, so a crash before commit
+//     sandbox supervisor and each gated pre-exec stage carry in argv (the bwrap `--hostname rw-<id>` element), visible in /proc/<pid>/cmdline until the final exec. Proven
+//     absence needs no /proc entry carrying the marker AND the sandbox supervisor's identity absent, so a crash before commit
 //     leaves no permanent quarantine when nothing survives (R3-1). The same holds for an uncommitted namespace or
-//     mount, which has no recorded inode and is held only by the keeper and its tree: it is absent only when the keeper
-//     is. The keeper is judged from ITS OWN record (its committed identity or its marker, checked against /proc),
-//     whatever its release state: a keeper that was quarantined is still running, and is present. Every dependent
-//     records the keeper's reservation ID in its locator (`keeper`), so the record can be found at any later time, also
+//     mount, which has no recorded inode and is held only by the sandbox supervisor and its tree: it is absent only when the sandbox supervisor
+//     is. The sandbox supervisor is judged from ITS OWN record (its committed identity or its marker, checked against /proc),
+//     whatever its release state: a sandbox supervisor that was quarantined is still running, and is present. Every dependent
+//     records the sandbox supervisor's reservation ID in its locator (`keeper`), so the record can be found at any later time, also
 //     after a crash during recovery.
 //   - Any other uncommitted resource is walked by its locator. Anything found under a locator derived from an
 //     unguessable id is treated as owned.
@@ -19,7 +19,7 @@
 //     nsfs mount may carry it).
 //   - The outcome is `released` on proven absence within the release deadline and `quarantined` otherwise.
 //
-// Nothing is ever assumed absent: an answer from the keeper ("I aborted it") is a request, not a proof.
+// Nothing is ever assumed absent: an answer from the sandbox supervisor ("I aborted it") is a request, not a proof.
 //
 // The view is an injected interface (the model checks back it with a fake /proc and fake mountinfo):
 //   view.listProcesses() -> [{ pid, ppid, startTime, cmdline: string[], pidNs, netNs, mntNs, fdNs: number[] }]
@@ -57,29 +57,29 @@ function withDescendants(seed, processes) {
 
 const identityMatches = (entry, identity) => entry.pid === identity.pid && entry.startTime === identity.startTime;
 
-// keeperRecord(blocker) -> the keeper's own public record (any release state) for a blocker whose locator names a
-// keeper. It is REQUIRED: a walker without it could not tell a missing keeper from an absent one. It is called only for
-// a blocker that names a keeper, and a record that cannot be read (it throws, or returns nothing) makes that blocker's
-// absence unprovable, never absent. Pass `() => null` only where no blocker names a keeper.
-export function createWalker({ view, clock, releaseDeadlineMs, pollMs, keeperRecord }) {
-    if (typeof keeperRecord !== 'function') throw new TypeError('keeperRecord is required');
+// sandboxRecord(blocker) -> the sandbox supervisor's own public record (any release state) for a blocker whose locator names a
+// sandbox. It is REQUIRED: a walker without it could not tell a missing sandbox from an absent one. It is called only for
+// a blocker that names a sandbox supervisor, and a record that cannot be read (it throws, or returns nothing) makes that blocker's
+// absence unprovable, never absent. Pass `() => null` only where no blocker names a sandbox supervisor.
+export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRecord }) {
+    if (typeof sandboxRecord !== 'function') throw new TypeError('sandboxRecord is required');
     for (const [name, value] of Object.entries({ releaseDeadlineMs, pollMs })) {
         if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive integer`);
     }
 
-    // The keeper's processes as /proc shows them now, from the keeper's own record whatever its release state: its
-    // committed identity, or its marker if it never committed. A blocker that names no keeper has none to wait for
+    // The sandbox supervisor's processes as /proc shows them now, from the sandbox supervisor's own record whatever its release state: its
+    // committed identity, or its marker if it never committed. A blocker that names no sandbox has none to wait for
     // ([]). A blocker that names one whose record is missing or unreadable returns null: that is unprovable.
-    function keeperProcesses(blocker, processes) {
+    function sandboxProcesses(blocker, processes) {
         if (!blocker.locator?.keeper) return [];
-        let keeper;
-        try { keeper = keeperRecord(blocker); } catch { return null; }
-        if (!keeper || typeof keeper !== 'object' || !keeper.locator) return null;
-        if (keeper.identity === null) return processes.filter((entry) => entry.cmdline.includes(keeper.locator.marker));
-        return processes.filter((entry) => identityMatches(entry, keeper.identity));
+        let sandbox;
+        try { sandbox = sandboxRecord(blocker); } catch { return null; }
+        if (!sandbox || typeof sandbox !== 'object' || !sandbox.locator) return null;
+        if (sandbox.identity === null) return processes.filter((entry) => entry.cmdline.includes(sandbox.locator.marker));
+        return processes.filter((entry) => identityMatches(entry, sandbox.identity));
     }
 
-    // `descend` also takes the descendants (needed to force, since a double-forked child must die too). The keeper's own
+    // `descend` also takes the descendants (needed to force, since a double-forked child must die too). The sandbox supervisor's own
     // absence does not wait for them: each of them has its own blocker.
     function processMembers(blocker, processes, { descend = true } = {}) {
         let seed;
@@ -112,20 +112,20 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, keeperRec
         const { kind } = blocker;
         if (PROCESS_KINDS.has(kind)) {
             const members = processMembers(blocker, processes, { descend: kind !== 'keeper' });
-            const needsKeeper = blocker.identity === null && kind !== 'keeper';
-            const keeper = needsKeeper ? keeperProcesses(blocker, processes) : [];
-            if (keeper === null) return { absent: false, holders: [{ via: 'keeper-record-unavailable' }] };
-            return { absent: members.length === 0 && keeper.length === 0, holders: members.map((entry) => ({ pid: entry.pid })) };
+            const needsSandbox = blocker.identity === null && kind !== 'keeper';
+            const sandbox = needsSandbox ? sandboxProcesses(blocker, processes) : [];
+            if (sandbox === null) return { absent: false, holders: [{ via: 'sandbox-record-unavailable' }] };
+            return { absent: members.length === 0 && sandbox.length === 0, holders: members.map((entry) => ({ pid: entry.pid })) };
         }
         if (kind === 'netns' || kind === 'mount') {
             const field = NAMESPACE_KINDS[kind];
             if (blocker.identity === null) {
-                // A namespace that was created and not yet committed has no recorded inode. It is held only by the keeper
-                // and its descendants, so it is absent when the keeper's tree is, and not otherwise.
-                const keeper = keeperProcesses(blocker, processes);
-                if (keeper === null) return { absent: false, holders: [{ via: 'keeper-record-unavailable' }] };
-                const keeperTree = withDescendants(keeper, processes);
-                return { absent: keeperTree.length === 0, holders: keeperTree.map((entry) => ({ pid: entry.pid })) };
+                // A namespace that was created and not yet committed has no recorded inode. It is held only by the sandbox supervisor
+                // and its descendants, so it is absent when the sandbox supervisor's tree is, and not otherwise.
+                const sandbox = sandboxProcesses(blocker, processes);
+                if (sandbox === null) return { absent: false, holders: [{ via: 'sandbox-record-unavailable' }] };
+                const sandboxTree = withDescendants(sandbox, processes);
+                return { absent: sandboxTree.length === 0, holders: sandboxTree.map((entry) => ({ pid: entry.pid })) };
             }
             const inode = blocker.identity[field];
             const holders = namespaceHolders(inode, field, processes, mounts);
