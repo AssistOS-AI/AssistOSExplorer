@@ -143,7 +143,7 @@ test('the hop refuses before any I/O without a base, identity, Agent libraries, 
     for (const grant of ['not-a-jwt', 'a.b.c\r\nx-evil: 1', `${'a'.repeat(17000)}.b.c`]) {
         await assert.rejects(hop.call('lookup', { originRequestId: newOriginId() }, { grant }), (error) => error.code === 'owner_evidence_unavailable');
     }
-    for (const operation of ['robots/delete', 'robots/list', 'references/short/read', 'admissions?x=1', '../admissions', 'references/' + 'a'.repeat(22) + '/delete']) {
+    for (const operation of ['robots/list', 'robots/remove', 'references/short/read', 'admissions?x=1', '../admissions', 'references/' + 'a'.repeat(22) + '/delete']) {
         await assert.rejects(hop.call(operation, {}), (error) => error.code === 'invalid_request', operation);
     }
     assert.equal(stub.seen.length, 0, 'no request reached the listener');

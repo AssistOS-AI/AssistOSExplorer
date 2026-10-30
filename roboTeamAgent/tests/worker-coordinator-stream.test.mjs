@@ -84,7 +84,7 @@ test('the caller can end a stream, and a refused or plain answer resolves like a
 
     const unsent = await hopFor('http://127.0.0.1:1').stream(OPERATION, { after: 0 }, {});
     assert.equal(unsent.outcome, 'unsent');
-    await assert.rejects(hopFor(refused.url).stream('robots/delete', {}, {}), (error) => error.code === 'invalid_request');
+    await assert.rejects(hopFor(refused.url).stream('robots/list', {}, {}), (error) => error.code === 'invalid_request');
     await assert.rejects(hopFor(refused.url).stream(OPERATION, { after: 0 }, { grant: 'not-a-jwt' }), (error) => error.code === 'owner_evidence_unavailable');
 });
 

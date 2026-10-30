@@ -77,6 +77,7 @@ export class RoboFlowService {
             : null;
         this.reconciliation = null;
         this.wakeReconcile = null;
+        this.log = options.log || ((line) => console.log(line));
         this.presetTimer = null;
         if (!Number.isSafeInteger(this.maxVisits) || this.maxVisits < 1) throw new Error('Workflow visit limit must be a positive integer');
         this.discover = options.discoverSkillsets || (() => discoverWorkflowSkillsets(this.skillsets?.repositoriesClient));
@@ -138,6 +139,7 @@ export class RoboFlowService {
         const { client, sleep, reconcileMs } = this.worker;
         await sleep(0);
         const unreconciled = new Map();
+        const followed = new Set();
         for (const flow of await this.store.list()) {
             if (flow.status === 'pending' || terminal(flow.status)) continue;
             for (const instance of flow.instances) if (!terminal(instance.state)) unreconciled.set(`${flow.id}\n${instance.id}`, { flowId: flow.id, instanceId: instance.id });
@@ -155,6 +157,11 @@ export class RoboFlowService {
                     : { action: 'never_admitted' };
                 if (decision.action === 'unknown') continue;
                 answered = true;
+                // One line for every decision the worker's answer allowed (a running phase once, when it is first seen).
+                if (decision.action !== 'running' || !followed.has(key)) {
+                    this.log(`[roboflow] reconcile flow=${flowId} phase=${instanceId} decision=${decision.action === 'finished' ? `finished:${decision.event.state}${decision.terminationUnverified ? ' (termination_unverified)' : ''}` : decision.action}`);
+                    if (decision.action === 'running') followed.add(key);
+                }
                 if (decision.action === 'running') continue;
                 unreconciled.delete(key);
                 if (decision.action === 'never_admitted') {
@@ -310,6 +317,22 @@ export class RoboFlowService {
             flow.instances.push(instance); flow.currentInstanceId = instance.id;
         });
     }
+    // The robots a phase of this flow may be dispatched to: those matching the node's skillsets, and for a GUI mode those whose
+    // coding agents support it.
+    async _eligibleRobots(flow, node, mode) {
+        const matching = (await this.robotStore.list()).filter(robot => (flow.graph.kind !== 'default' || robot.name === 'default') && matchRobot(robot, node));
+        return { matching, eligible: matching.filter(robot => mode === 'terminal' || GUI_CODING_AGENTS.some(agent => robotCodingAgents(robot).includes(agent))) };
+    }
+    // Every robot any phase of the flow may run on: the ones to prepare on the worker when the starting request holds a grant.
+    async flowRobots(flow) {
+        const robots = new Map();
+        for (const node of flow.graph.tasks) {
+            if (isCoordinator(node)) continue;
+            const mode = flow.graph.kind === 'default' ? flow.executionType : node.executionType;
+            for (const robot of (await this._eligibleRobots(flow, node, mode)).eligible) robots.set(robot.id, robot);
+        }
+        return [...robots.values()];
+    }
     async _dispatch(id, instanceId = null, continuationPrompt = '') {
         let flow = await this.store.get(id);
         if (!flow || terminal(flow.status)) return;
@@ -320,9 +343,8 @@ export class RoboFlowService {
             if (flow.instances.length > this.maxVisits) throw new Error('maximum task visits reached');
             if (isCoordinator(node)) return await this.subflows.dispatch(flow, instance);
             const mode = flow.graph.kind === 'default' ? flow.executionType : node.executionType;
-            const robots = (await this.robotStore.list()).filter(robot => (flow.graph.kind !== 'default' || robot.name === 'default') && matchRobot(robot, node));
+            const { matching: robots, eligible } = await this._eligibleRobots(flow, node, mode);
             if (!robots.length) throw new Error(`No robot has matching skillsets for task ${node.id}`);
-            const eligible = robots.filter(robot => mode === 'terminal' || GUI_CODING_AGENTS.some(agent => robotCodingAgents(robot).includes(agent)));
             if (!eligible.length) throw new Error(`No matching robot supports ${mode} for task ${node.id}`);
             const idle = mode === 'terminal' ? eligible : eligible.filter(robot => !this.runtimeManager.guiBusy?.(robot.id));
             const pool = idle.length ? idle : eligible;

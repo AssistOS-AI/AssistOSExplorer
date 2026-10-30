@@ -93,8 +93,14 @@ function createAlaProgressParser(onText, onEvent = () => {}) {
     };
 }
 
+// A child that stopped on a worker precondition prints `<code>: <message for the user>` (robot-provisioning.mjs, workerEngine.mjs).
+// That line is the task's error as it is, not wrapped in an opaque "ALA exited with" message.
+const WORKER_USER_ERROR = /^((?:worker_robot_stale|worker_robot_not_provisioned|worker_robot_missing|model_unavailable_in_worker|workspace_root_not_granted)): (.+)$/mu;
+
 function alaFailureMessage(exit, output) {
     const normalized = String(output || '').replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '').trim();
+    const workerError = WORKER_USER_ERROR.exec(normalized);
+    if (workerError) return workerError[0];
     const detail = normalized.length > ALA_FAILURE_DETAIL_LIMIT
         ? `…${normalized.slice(-ALA_FAILURE_DETAIL_LIMIT)}`
         : normalized;
@@ -837,6 +843,7 @@ export class RuntimeManager {
                     task.result += resultDecoder.end();
                     if (forcedFailure) return reject(forcedFailure);
                     if (task.resultOverflow) return reject(new Error('Final response exceeds the 1 MiB limit'));
+                    task.exitCode = code;
                     if (code === 0) resolve();
                     else {
                         // The child exits 75 when the worker did not confirm the stop it asked for.
@@ -852,9 +859,11 @@ export class RuntimeManager {
             if (task.stopNotConfirmed && task.cancelRequested) {
                 // The worker did not confirm the stop: the execution may still be running there. Never shown as paused.
                 task.state = 'failed'; task.error = 'stop_not_confirmed: the worker did not confirm the stop; the execution may still be running'; task.completedAt = new Date().toISOString();
-            } else if (task.state === 'pausing') {
+            } else if (task.state === 'pausing' && !forcedFailure && !(Number.isInteger(task.exitCode) && task.exitCode !== 130)) {
+                // A stop requested through the worker ended before or with the interruption (exit 130, or no child at all).
                 task.state = 'paused'; task.completedAt = new Date().toISOString();
             } else if (forcedFailure || task.state !== 'paused') {
+                // Any other end of a task that was stopping, such as a child that failed on its own, is a failure, not a pause.
                 error = forcedFailure || error;
                 task.state = 'failed'; task.error = String(error?.message || error); task.completedAt = new Date().toISOString();
             }
@@ -868,6 +877,12 @@ export class RuntimeManager {
                 clearTimeout(waiter.timer);
                 waiter.reject(this._messageFailure('run_ended', 'Task ended before the message was acknowledged.'));
                 this.messageWaiters.delete(id);
+            }
+            // No end path leaves a task `pausing`: it is only ever a wait for the worker's confirmation of a stop.
+            if (task.state === 'pausing') {
+                task.state = task.cancelRequested && !Number.isInteger(task.exitCode) ? 'paused' : 'failed';
+                task.error ||= task.state === 'failed' ? 'The task ended without a final state' : null;
+                task.completedAt ||= new Date().toISOString();
             }
             await this._saveTask(task).catch(() => {});
             if (['completed', 'failed', 'paused'].includes(task.state)) {
@@ -953,6 +968,11 @@ export class RuntimeManager {
                     this.manualControl.set(robot.id, internal.taskId);
                 }
                 const neverStarted = internal.state === 'queued';
+                // Through the worker a finished task has nothing left to stop; marking it `pausing` would leave it so forever.
+                if (this.workerMode && ['completed', 'failed', 'paused'].includes(internal.state)) {
+                    operation.state = 'completed'; operation.completedAt = new Date().toISOString();
+                    return;
+                }
                 internal.cancelRequested = true;
                 // Through the worker a running task is not stopped until the worker says so: it is `pausing`, and
                 // only the child's confirmed exit makes it `paused` (an unconfirmed stop makes it `failed`).

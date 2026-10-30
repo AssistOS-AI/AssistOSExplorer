@@ -179,3 +179,85 @@ test('no RoboTeam worker-side module writes into a robot HOME, and the configura
     const settings = desiredConfiguration(robot({ codingAgents: ['opencode'], selection: { model: 'm', effort: 'e' } })).settings;
     assert.deepEqual(Object.keys(settings).sort(), ['codingAgents', 'effort', 'model']);
 });
+
+// ---- robot deletion (decision M-29) ----
+function deletion({ views = [ready(desiredConfiguration(robot()), 3)], deleteReplies = [{}] } = {}) {
+    const calls = [];
+    const queue = [...deleteReplies];
+    const client = {
+        async getRobot(robotId, auth) {
+            calls.push(['getRobot', robotId, auth]);
+            const view = views.length > 1 ? views.shift() : views[0];
+            if (view instanceof Error) throw view;
+            return view;
+        },
+        async deleteRobot(body, auth) {
+            calls.push(['deleteRobot', body, auth]);
+            const reply = queue.length > 1 ? queue.shift() : queue[0];
+            if (reply instanceof Error) throw reply;
+            return reply;
+        },
+    };
+    return { provisioner: createRobotProvisioner({ client, robotStore: {}, sleep: async () => {} }), calls };
+}
+const owned = robot({ worker: { robotId: WORKER_ROBOT } });
+
+test('a robot with running or unsettled work is refused by the worker, with the user\'s message, and nothing else happens', async () => {
+    const f = deletion({ deleteReplies: [new WorkerError('robot_busy', 409)] });
+    await assert.rejects(f.provisioner.deleteRobot(owned, { grant: 'g' }),
+        (error) => error.code === 'robot_busy' && error.status === 409 && /running or unsettled work; stop it first/.test(error.message));
+    assert.equal(f.calls.filter(([call]) => call === 'deleteRobot').length, 1, 'asked once, not retried');
+});
+
+test('deletion is asked of the worker with the request\'s grant and the robot\'s revision, under a deterministic operation', async () => {
+    const f = deletion();
+    assert.deepEqual(await f.provisioner.deleteRobot(owned, { grant: 'g' }), { deleted: true, alreadyGone: false });
+    const [, body, auth] = f.calls.find(([call]) => call === 'deleteRobot');
+    assert.deepEqual(auth, { grant: 'g' });
+    assert.equal(body.robotId, WORKER_ROBOT);
+    assert.equal(body.expectedRevision, 3);
+    assert.equal(body.operationId, lifecycleOperationId('delete', 'default-ab12cd', WORKER_ROBOT, 3));
+    assert.equal(isOperationId(body.operationId), true);
+    await assert.rejects(deletion().provisioner.deleteRobot(owned, {}), (error) => error.code === 'owner_evidence_unavailable' && error.status === 403);
+});
+
+test('a lost reply is retried once under the same operation ID; an already deleted robot is success', async () => {
+    const f = deletion({ deleteReplies: [new WorkerError('worker_reply_unknown', 503), {}] });
+    assert.deepEqual(await f.provisioner.deleteRobot(owned, { grant: 'g' }), { deleted: true, alreadyGone: false });
+    const sent = f.calls.filter(([call]) => call === 'deleteRobot');
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0][1].operationId, sent[1][1].operationId, 'the retry is the same operation, which returns the recorded receipt');
+    const lostTwice = deletion({ deleteReplies: [new WorkerError('worker_reply_unknown', 503)] });
+    await assert.rejects(lostTwice.provisioner.deleteRobot(owned, { grant: 'g' }), (error) => error.code === 'worker_reply_unknown');
+    assert.equal(lostTwice.calls.filter(([call]) => call === 'deleteRobot').length, 2, 'bounded');
+    // Already gone at the worker: not found, a tombstone, or a deletion it already accepted.
+    for (const views of [[new WorkerError('not_found', 404)], [{ ...ready(null, 4), lifecycle: 'deleted', ready: false }], [{ ...ready(null, 4), lifecycle: 'deleting', ready: false }]]) {
+        const gone = deletion({ views });
+        assert.deepEqual(await gone.provisioner.deleteRobot(owned, { grant: 'g' }), { deleted: true, alreadyGone: true });
+        assert.equal(gone.calls.some(([call]) => call === 'deleteRobot'), false);
+    }
+    // A robot the worker never had needs no worker call.
+    const never = deletion();
+    assert.deepEqual(await never.provisioner.deleteRobot(robot(), {}), { deleted: true, alreadyGone: true });
+    assert.deepEqual(never.calls, []);
+});
+
+test('a revision that changed between the read and the delete is read again and deleted once', async () => {
+    const f = deletion({ views: [ready(desiredConfiguration(robot()), 3), ready(desiredConfiguration(robot()), 4)], deleteReplies: [new WorkerError('revision_conflict', 409), {}] });
+    assert.deepEqual(await f.provisioner.deleteRobot(owned, { grant: 'g' }), { deleted: true, alreadyGone: false });
+    const sent = f.calls.filter(([call]) => call === 'deleteRobot').map(([, body]) => body.expectedRevision);
+    assert.deepEqual(sent, [3, 4]);
+});
+
+test('RoboTeam removes its own record only after the worker accepted; a busy robot keeps it', async () => {
+    const { removeRobotOnWorker } = await import('../server/worker-coordinator/grant-actions.mjs');
+    const kept = [];
+    const refuse = deletion({ deleteReplies: [new WorkerError('robot_busy', 409)] });
+    await assert.rejects(removeRobotOnWorker({ provisioner: refuse.provisioner, robot: owned, grant: 'g' }),
+        (error) => error.statusCode === 409 && error.code === 'robot_busy' && /stop it first/.test(error.message));
+    await assert.rejects(removeRobotOnWorker({ provisioner: refuse.provisioner, robot: owned, grant: null }), (error) => error.statusCode === 403);
+    kept.push('record kept');
+    const accept = deletion();
+    assert.deepEqual(await removeRobotOnWorker({ provisioner: accept.provisioner, robot: owned, grant: 'g' }), { deleted: true, alreadyGone: false });
+    assert.deepEqual(kept, ['record kept']);
+});

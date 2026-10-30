@@ -167,3 +167,64 @@ test('a stop the worker did not confirm is recorded as stop_not_confirmed, never
     assert.match(status.error, /stop_not_confirmed/);
     assert.equal(status.stopNotConfirmed, true);
 });
+
+// ---- how a worker task ends (F8): a precondition failure is shown plainly, and nothing is left `pausing` ----
+const STALE = 'worker_robot_stale: Robot "Stopper"\'s configuration changed; open the robot or start the flow again to update it.';
+
+test('a child that stopped on a worker precondition leaves that message as the task error, not an opaque ALA exit', async (t) => {
+    const f = await runningTask(t);
+    f.child.child.stderr.write(`${STALE}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    f.child.child.emit('close', 1, null);
+    const status = await settled(f.manager, f.robot, f.accepted.taskId);
+    assert.equal(status.state, 'failed');
+    assert.equal(status.error, STALE);
+    assert.equal(/ALA exited/.test(status.error), false);
+});
+
+test('stopping an already failed worker task leaves it failed, never pausing', async (t) => {
+    const f = await runningTask(t);
+    f.child.child.stderr.write(`${STALE}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    f.child.child.emit('close', 1, null);
+    await settled(f.manager, f.robot, f.accepted.taskId);
+    // RoboFlow's `_fail` stops the phases of a failed flow, including this one.
+    f.manager.stopTask(f.robot, 'simple', f.accepted.taskId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const status = f.manager.taskStatus(f.robot.id, f.accepted.taskId);
+    assert.equal(status.state, 'failed');
+    assert.equal(status.error, STALE);
+    assert.deepEqual(f.child.lines().filter((record) => record.type === 'stop'), [], 'no stop is sent to a child that is gone');
+});
+
+test('a task whose stop is pending ends on every path as paused, failed or completed, never pausing', async (t) => {
+    // The child fails on its own while the stop is pending: a failure, with its message.
+    const failing = await runningTask(t);
+    failing.manager.stopTask(failing.robot, 'simple', failing.accepted.taskId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(failing.manager.taskStatus(failing.robot.id, failing.accepted.taskId).state, 'pausing');
+    failing.child.child.stderr.write(`${STALE}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    failing.child.child.emit('close', 1, null);
+    const failed = await settled(failing.manager, failing.robot, failing.accepted.taskId);
+    assert.equal(failed.state, 'failed');
+    assert.equal(failed.error, STALE);
+
+    // The model reported the task blocked while the stop was pending: still a failure.
+    const blocked = await runningTask(t);
+    blocked.manager.stopTask(blocked.robot, 'simple', blocked.accepted.taskId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    blocked.child.child.stderr.write(`@@ALA_EVENT@@${JSON.stringify({ type: 'task-failed', message: 'Blocked.' })}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    blocked.child.child.emit('close', 1, null);
+    assert.equal((await settled(blocked.manager, blocked.robot, blocked.accepted.taskId)).state, 'failed');
+
+    // A confirmed interruption (130) and a child that had already finished (0) are paused.
+    for (const code of [130, 0]) {
+        const stopped = await runningTask(t);
+        stopped.manager.stopTask(stopped.robot, 'simple', stopped.accepted.taskId);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        stopped.child.child.emit('close', code, null);
+        assert.equal((await settled(stopped.manager, stopped.robot, stopped.accepted.taskId)).state, 'paused', `exit ${code}`);
+    }
+});

@@ -26,7 +26,7 @@ import { renderAlaTurnLog } from '../copilot/src/lib/webchat/webchatTurnLog.mjs'
 import { ADMISSIONS_PATH, handleWorkerRoutes, isWorkerRoute } from './worker-coordinator/browser-routes.mjs';
 import { createWorkerClient } from './worker-coordinator/worker-client.mjs';
 import { createRobotProvisioner } from './worker-coordinator/robot-provisioning.mjs';
-import { ensureRobotWithGrant, registerRootFlowBinding, workerGrantFor } from './worker-coordinator/grant-actions.mjs';
+import { ensureRobotWithGrant, prepareFlowStart, removeRobotOnWorker, workerGrantFor } from './worker-coordinator/grant-actions.mjs';
 import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -763,9 +763,17 @@ export function createRoboTeamServer(options) {
     const worker = {
         enabled: workerEnabled,
         grant: (req) => workerGrantFor(req, req[ACCESS]),
+        // Deletes the robot on the worker first (decision M-29), with this request's own grant. Returns null when the worker is not
+        // configured; throws `{statusCode, message}` for a refusal, which keeps RoboTeam's own record.
+        remove: async (req, robot) => (workerEnabled && workerProvisioner
+            ? removeRobotOnWorker({ provisioner: workerProvisioner, robot, grant: workerGrantFor(req, req[ACCESS]) }) : null),
         ensure: async (req, robot) => (workerEnabled && workerProvisioner
             ? ensureRobotWithGrant({ provisioner: workerProvisioner, robot, grant: workerGrantFor(req, req[ACCESS]) }) : null),
-        beforeDispatch: (req) => (workerEnabled ? (flow) => registerRootFlowBinding({ hop: workerHop, flow, grant: workerGrantFor(req, req[ACCESS]) }) : undefined),
+        // Before the first phase: the binding is registered, and every robot the phases may use is prepared (provisioned or
+        // reconfigured when stale), both with this request's own grant. A phase runs on the coordinator alone and cannot do either.
+        beforeDispatch: (req) => (workerEnabled ? async (flow) => {
+            await prepareFlowStart({ hop: workerHop, provisioner: workerProvisioner, roboflow, flow, grant: workerGrantFor(req, req[ACCESS]) });
+        } : undefined),
     };
     const workerRecords = roboflow ? {
         getSchedule: (id) => { roboflow.schedules.database.initialize(); return roboflow.schedules.getSync(id); },
@@ -996,6 +1004,10 @@ export function createRoboTeamServer(options) {
                     if (status.state !== 'stopped' || runtimeManager.hasUnfinishedTasks?.(robot.id)
                         || ['queued', 'starting', 'running', 'pausing'].includes(status.task?.state)) {
                         return sendError(res, 409, 'stop the robot before deleting it');
+                    }
+                    // The worker decides first: busy work refuses the delete, and only an accepted deletion removes RoboTeam's record.
+                    try { await worker.remove(req, robot); } catch (error) {
+                        return sendError(res, error.statusCode || 503, error.code === 'robot_busy' ? 'the robot has running or unsettled work; stop it first' : error.message);
                     }
                     if (runtimeManager.deleteRobot) await runtimeManager.deleteRobot(robot.id, () => robotStore.delete(robot.id));
                     else await robotStore.delete(robot.id);

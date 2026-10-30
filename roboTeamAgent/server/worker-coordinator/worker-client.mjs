@@ -137,5 +137,6 @@ export function createWorkerClient({ hop } = {}) {
         getOperation: (operationId, auth) => call('operations/get', { operationId }, auth),
         provision: (body, auth) => call('robots/provision', body, auth),
         configure: (body, auth) => call('robots/configure', body, auth),
+        deleteRobot: (body, auth) => call('robots/delete', body, auth),
     });
 }

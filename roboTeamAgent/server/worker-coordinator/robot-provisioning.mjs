@@ -63,6 +63,13 @@ export function desiredConfiguration(robot) {
     return { backend: agents.length === 1 ? agents[0] : 'auto', settings };
 }
 
+// A refusal with a message for the user: `<code>: <text>`, which a task child prints and the task keeps as its error.
+function userError(code, status, text) {
+    const error = new WorkerError(code, status);
+    error.message = `${code}: ${text}`;
+    return error;
+}
+
 const sameConfiguration = (left, right) => canonical(left) === canonical(right);
 
 // `client` is a worker client (worker-client.mjs); `robotStore.withRobot(id, (robot, save) => ...)`
@@ -111,6 +118,9 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
         }, auth));
     }
 
+    const staleError = (robot) => userError('worker_robot_stale', 409,
+        `Robot "${robot.name}"'s configuration changed; open the robot or start the flow again to update it.`);
+
     // Polls robots/get until the worker reports the robot ready with the desired configuration, a
     // failed preparation, or the bound ends. Never provisions or configures again.
     async function awaitReady(robot, workerRobotId, auth) {
@@ -124,7 +134,7 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
             }
             if (!view.preparing && view.lifecycle === 'failed') throw new WorkerError('worker_robot_failed', 503, { reason: view.reason || null });
             if (!view.preparing && view.lifecycle === 'ready' && !sameConfiguration(view.configuration, configuration)) {
-                throw new WorkerError('worker_robot_stale', 409);
+                throw staleError(robot);
             }
             if (now() >= deadline) throw new WorkerError('worker_robot_not_ready', 503);
             await sleep(wait);
@@ -140,22 +150,56 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
     async function ensureReady(robot, auth = {}) {
         let workerRobotId = robot.worker?.robotId || null;
         if (!workerRobotId) {
-            if (!auth.grant) throw new WorkerError('worker_robot_not_provisioned', 409);
+            if (!auth.grant) throw userError('worker_robot_not_provisioned', 409, `Robot "${robot.name}" is not set up on the worker yet; open the robot or start the flow again to set it up.`);
             workerRobotId = await provision(robot, auth);
         }
         let view;
         try {
             view = await client.getRobot(workerRobotId, auth);
         } catch (error) {
-            if (error instanceof WorkerError && error.code === 'not_found') throw new WorkerError('worker_robot_missing', 409);
+            if (error instanceof WorkerError && error.code === 'not_found') throw userError('worker_robot_missing', 409, `Robot "${robot.name}" is no longer known to the worker; ask an administrator to check it.`);
             throw error;
         }
         if (!view.preparing && !sameConfiguration(view.configuration, desiredConfiguration(robot))) {
-            if (!auth.grant) throw new WorkerError('worker_robot_stale', 409);
+            if (!auth.grant) throw staleError(robot);
             await configure(robot, workerRobotId, view, auth);
         }
         return awaitReady(robot, workerRobotId, auth);
     }
 
-    return Object.freeze({ ensureReady, provision, desiredConfiguration });
+    // Deletes the robot on the worker (decision M-29) with the deleting request's own administrator grant; RoboTeam removes its
+    // own record only after this returns. A robot with running or unsettled work is refused by the worker (`robot_busy`) and
+    // stays as it is. Idempotent: a robot the worker no longer has, or has already accepted the deletion of, is success, and a
+    // lost reply is retried once under the same operation ID, which returns the recorded receipt.
+    async function deleteRobot(robot, auth = {}) {
+        const workerRobotId = robot.worker?.robotId || null;
+        if (!workerRobotId) return { deleted: true, alreadyGone: true };
+        if (!auth.grant) throw userError('owner_evidence_unavailable', 403, 'Deleting a robot needs the administrator\'s own request; try again from the robot page.');
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            let view;
+            try {
+                view = await client.getRobot(workerRobotId, auth);
+            } catch (error) {
+                if (error instanceof WorkerError && error.code === 'not_found') return { deleted: true, alreadyGone: true };
+                throw error;
+            }
+            if (view.lifecycle === 'deleted' || view.lifecycle === 'deleting') return { deleted: true, alreadyGone: true };
+            try {
+                await lifecycle(() => client.deleteRobot({
+                    operationId: lifecycleOperationId('delete', robot.id, workerRobotId, view.revision), robotId: workerRobotId, expectedRevision: view.revision,
+                }, auth));
+                return { deleted: true, alreadyGone: false };
+            } catch (error) {
+                if (error instanceof WorkerError && error.code === 'robot_busy') {
+                    throw userError('robot_busy', 409, 'the robot has running or unsettled work; stop it first.');
+                }
+                // The robot changed between the read and the delete: read it again and delete that revision, once.
+                if (error instanceof WorkerError && error.code === 'revision_conflict' && attempt === 0) continue;
+                throw error;
+            }
+        }
+        throw new WorkerError('revision_conflict', 409);
+    }
+
+    return Object.freeze({ ensureReady, provision, deleteRobot, desiredConfiguration });
 }
