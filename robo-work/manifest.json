@@ -1,5 +1,5 @@
 {
-  "container": "docker.io/assistos/robo-work-worker@sha256:eff68701ce6d3a211680c20e35c8a4646aca777f9e86be445ce609bd10e42ae1",
+  "container": "docker.io/assistos/robo-work-worker@sha256:ad60b288d0147b427db48387b54f636c5266ec145aafeb2d26e09578cf0901fd",
   "about": "RoboWork execution provider: owns robot HOMEs and runs AI tasks for RoboTeam in confined Bubblewrap sandboxes.",
   "containerSecurity": {
     "nestedPodman": true
