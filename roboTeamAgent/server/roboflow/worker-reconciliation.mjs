@@ -31,9 +31,11 @@ export async function classifyPhase({ client, flow, instance }) {
     case 'completed':
         return { action: 'finished', originRequestId, referenceId: accepted.referenceId, event: { kind: 'terminal', taskId, state: 'completed', result: text, error: null } };
     case 'failed': {
+        // termination_unverified is the top-level reason; the worker's own end reason (inactive_timeout, ...) lives in result.data.
         const reason = typeof result.reason === 'string' ? result.reason : null;
+        const dataReason = typeof result.data?.reason === 'string' ? result.data.reason : null;
         return { action: 'finished', originRequestId, referenceId: accepted.referenceId, terminationUnverified: reason === 'termination_unverified',
-            event: { kind: 'terminal', taskId, state: 'failed', result: text, error: plainStopMessage(reason, result.data) || `Worker execution failed${reason ? ` (${reason})` : ''}.` } };
+            event: { kind: 'terminal', taskId, state: 'failed', result: text, error: plainStopMessage(reason, result.data) || plainStopMessage(dataReason, result.data) || `Worker execution failed${reason ? ` (${reason})` : ''}.` } };
     }
     case 'human-input': {
         // The model asked while RoboTeam was down: the question the worker holds is read back from the reference's events, so it is

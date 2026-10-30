@@ -242,8 +242,9 @@ test('cancelling or pausing a flow stops its worker phase with the coordinator i
 
 test('a phase the worker stopped for inactivity or its maximum duration while RoboTeam was down fails the flow in plain words, with no successor and no retry', async (t) => {
     const cases = [
-        [{ reason: 'inactive_timeout', data: { minutes: 20 } }, 'Stopped: no activity from the model for 20 minutes'],
-        [{ reason: 'deadline_exceeded' }, 'Stopped: the task exceeded its maximum duration'],
+        // The worker's real shape: the end reason lives in result.data (only termination_unverified is top-level).
+        [{ data: { reason: 'inactive_timeout', minutes: 20 } }, 'Stopped: no activity from the model for 20 minutes'],
+        [{ data: { reason: 'deadline_exceeded' } }, 'Stopped: the task exceeded its maximum duration'],
     ];
     for (const [fields, message] of cases) {
         const setup = await interrupted(t);
@@ -256,7 +257,7 @@ test('a phase the worker stopped for inactivity or its maximum duration while Ro
         assert.equal(after.length, 0, 'no successor and no re-dispatch of the same phase');
         assert.equal(worker.calls.read.length, 1, 'the result was read once and never asked again');
     }
-    const decision = await classifyPhase({ client: fakeWorker({ lookup: ACCEPTED, read: { state: 'failed', result: { reason: 'inactive_timeout', data: { minutes: 20 }, outputText: '' } } }), flow: { id: `flow_${'ab'.repeat(12)}` }, instance: { id: 'inv_1', runtimeTaskId: 'task-1' } });
+    const decision = await classifyPhase({ client: fakeWorker({ lookup: ACCEPTED, read: { state: 'failed', result: { data: { reason: 'inactive_timeout', minutes: 20 }, outputText: '' } } }), flow: { id: `flow_${'ab'.repeat(12)}` }, instance: { id: 'inv_1', runtimeTaskId: 'task-1' } });
     assert.equal(decision.event.error, 'Stopped: no activity from the model for 20 minutes');
     assert.equal(decision.terminationUnverified, false);
 });
