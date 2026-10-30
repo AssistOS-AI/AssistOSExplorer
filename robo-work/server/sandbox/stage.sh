@@ -45,7 +45,7 @@ prep)
         redirs="$redirs $g>&-"
     done
     IFS=$oldifs
-    eval "exec$redirs /usr/bin/bwrap --unshare-uts --hostname \"\$marker\" --args \"\$argsfd\" -- \"\$@\""
+    eval "exec$redirs /usr/bin/bwrap --unshare-uts --unsetenv \"\$marker\" --args \"\$argsfd\" -- \"\$@\""
     exit 71
     ;;
 final)

@@ -378,7 +378,7 @@ test('recovery helpers: the anchor record by locator, marker-bearing processes, 
     assert.deepEqual(asked, [{ resourceId: 'K1' }]);
     const view = createFakeView();
     view.add({ pid: 1, cmdline: ['setpriv', '--', 'sh', 'stage.sh', 'prep', MARKER, '4000'] });
-    view.add({ pid: 2, cmdline: ['/usr/bin/bwrap', '--hostname', MARKER] });
+    view.add({ pid: 2, cmdline: ['/usr/bin/bwrap', '--unsetenv', MARKER] });
     view.add({ pid: 3, cmdline: ['node', `${MARKER}-longer`] });
     view.add({ pid: 4, pidNs: '100' });
     view.add({ pid: 5, mntNs: '201' });

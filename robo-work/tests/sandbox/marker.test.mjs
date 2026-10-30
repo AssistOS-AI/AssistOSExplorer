@@ -59,10 +59,10 @@ test('no other marker validator exists in server/sandbox or server/execution (so
     }
 });
 
-test('bwrapRealArgv: the marker is only the value of --hostname', () => {
+test('bwrapRealArgv: the marker is only the value of --unsetenv', () => {
     for (const command of [[], ['/bin/sh', '/s/stage.sh', 'final', '0,1,2', 'A', '/bin/echo']]) {
         const argv = bwrapRealArgv({ argsFd: 4, marker: DASHED, command });
-        assert.equal(onlyAfter(argv, ['--hostname'], 'bwrapRealArgv'), 1);
+        assert.equal(onlyAfter(argv, ['--hostname', '--unsetenv'], 'bwrapRealArgv'), 1);
     }
 });
 
@@ -144,16 +144,16 @@ test('anchor process (executionSupervisor): the marker is the positional after t
     assert.equal(args[c + 2], 'rw-anchor');
 });
 
-test('stage.sh: every use of $marker is a positional (prep $2, node script argument, bash re-exec) or the value of --hostname', () => {
+test('stage.sh: every use of $marker is a positional (prep $2, node script argument, bash re-exec) or the value of --unsetenv', () => {
     const lines = fs.readFileSync(STAGE, 'utf8').split('\n').filter((line) => line.includes('$marker') || line.includes('marker=') );
     const uses = lines.filter((line) => !/^\s*(case \$marker in|\[ "\$\{#marker\}")/u.test(line) && !/marker=\$2/u.test(line));
     assert.equal(uses.length, 3, uses.join('\n'));
     assert.ok(uses.some((line) => /exec \/bin\/bash "\$0" prep "\$marker"/u.test(line)), 're-exec: after the script and the prep subcommand');
     assert.ok(uses.some((line) => /node "\$dir\/sandboxPrep\.mjs" "\$marker" "\$prepspec"/u.test(line)), 'node: after the script name');
-    assert.ok(uses.some((line) => /--unshare-uts --hostname \\"\\\$marker\\" --args/u.test(line)), 'bwrap: only --hostname value');
+    assert.ok(uses.some((line) => /--unshare-uts --unsetenv \\"\\\$marker\\" --args/u.test(line)), 'bwrap: only --unsetenv value');
 });
 
-test('stage.sh run with stub binaries and a dashed marker: node script and bwrap see it only as argv[1] and after --hostname; bash re-exec keeps it after prep', () => {
+test('stage.sh run with stub binaries and a dashed marker: node script and bwrap see it only as argv[1] and after --unsetenv; bash re-exec keeps it after prep', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-marker-stage-'));
     try {
         const stage = path.join(dir, 'stage.sh');
@@ -171,8 +171,8 @@ test('stage.sh run with stub binaries and a dashed marker: node script and bwrap
                 assert.equal(nodeArgv[0], path.join(dir, 'sandboxPrep.mjs'));
                 assert.equal(nodeArgv[1], DASHED, 'the first argument of the node script');
                 const bwrapArgv = r.stdout.split('\n').filter(Boolean);
-                assert.equal(onlyAfter(bwrapArgv, ['--hostname'], `bwrap (grants=${JSON.stringify(grants)})`), 1);
-                assert.deepEqual(bwrapArgv.slice(0, 3), ['--unshare-uts', '--hostname', DASHED]);
+                assert.equal(onlyAfter(bwrapArgv, ['--hostname', '--unsetenv'], `bwrap (grants=${JSON.stringify(grants)})`), 1);
+                assert.deepEqual(bwrapArgv.slice(0, 3), ['--unshare-uts', '--unsetenv', DASHED]);
             } finally { fs.closeSync(fd); }
         }
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }

@@ -59,7 +59,7 @@ test('prep: a marker that begins with a dash (an S1 id does so about once in 64)
     const r = spawnSync('/bin/sh', [stage, 'prep', dashed, String(process.pid), '', '4', SPEC, '--', '/bin/cmd'], { encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
     assert.equal(fs.readFileSync(path.join(dir, 'prep.arg'), 'utf8'), dashed);
-    assert.equal(r.stdout, `--unshare-uts --hostname ${dashed} --args 4 -- /bin/cmd\n`);
+    assert.equal(r.stdout, `--unshare-uts --unsetenv ${dashed} --args 4 -- /bin/cmd\n`);
 }));
 
 test('final: bad arguments are refused', () => {
@@ -98,7 +98,7 @@ test('prep: success closes grant fds and execs bwrap with the marker on real arg
             '#!/bin/sh\necho "$@"\nfor f in /proc/self/fd/*; do l=$(readlink "$f" 2>/dev/null) || continue; case $l in */fd) continue;; esac; echo "fd ${f##*/}"; done\n');
         const r = spawnSync('/bin/sh', [stage, 'prep', MARKER, String(process.pid), '3', '4', SPEC, '--', '/bin/cmd', 'a b', '--x'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', grant, keep] });
         assert.equal(r.status, 0, r.stderr);
-        assert.ok(r.stdout.startsWith(`--unshare-uts --hostname ${MARKER} --args 4 -- /bin/cmd a b --x\n`), r.stdout);
+        assert.ok(r.stdout.startsWith(`--unshare-uts --unsetenv ${MARKER} --args 4 -- /bin/cmd a b --x\n`), r.stdout);
         const open = r.stdout.split('\n').filter((l) => l.startsWith('fd ')).map((l) => Number(l.split(' ')[1])).filter((n) => n >= 3);
         assert.deepEqual(open, [4], 'grant fd 3 closed, bwrap args fd 4 kept');
         assert.equal(fs.readFileSync(path.join(dir, 'prep.out'), 'utf8').split(' ')[0], MARKER);

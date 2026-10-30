@@ -15,7 +15,7 @@
 //
 // spec
 //   role         'orchestration' | 'endpoint' | 'workload' | 'terminal'
-//   marker       the S1 reservation id; a literal argv element of the whole chain and `--hostname` of bwrap
+//   marker       the S1 reservation id; a literal argv element of the whole chain and the `--unsetenv` value of bwrap
 //   runtimeDir   the execution's runtime directory (absolute): descriptor files and the staging directory live below it
 //   netMode      'join' (default; endpoint and workload join the execution netns) or 'none' (workload, terminal: loopback only)
 //   netns        path of the execution netns (/run/netns/<name>) for every role except orchestration; netnsInode (optional)

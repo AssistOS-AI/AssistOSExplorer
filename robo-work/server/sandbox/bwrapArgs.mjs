@@ -9,9 +9,9 @@
 //     (node directly, no shell). workload and terminal: ['/bin/sh', stageScript, 'final', <fd allowlist csv>,
 //     <env names csv>, ...argv]; the environment VALUES are in the buffer and reach the command through stage.sh final.
 //   bwrapRealArgv({ argsFd, marker, command? }) -> string[] : the REAL argv of the bwrap process (publication barrier):
-//        ['/usr/bin/bwrap', '--unshare-uts', '--hostname', marker, '--args', String(argsFd), '--', ...command]
+//        ['/usr/bin/bwrap', '--unshare-uts', '--unsetenv', marker, '--args', String(argsFd), '--', ...command]
 //     The marker (the S1 reservation id) must be a literal element of the real argv so that recovery can match it with
-//     `cmdline.includes`; it is never put in the --args buffer. `--unshare-uts` precedes `--hostname` because bwrap
+//     `cmdline.includes`; it is never put in the --args buffer. `--unsetenv <marker>` unsets a name that does not exist (no effect inside the sandbox; the sandbox keeps the worker's hostname in its private UTS namespace); `--unshare-uts` stays because bwrap
 //     requires it; the buffer repeats `--unshare-uts` harmlessly. stage.sh prep execs this argv.
 //   BWRAP_PATH, ROLES, FIXED_DESTINATIONS
 //
@@ -126,7 +126,7 @@ export function bwrapRealArgv({ argsFd, marker, command = [] }) {
     if (!isFd(argsFd)) throw invalid('argsFd must be a file descriptor number');
     if (!isMarker(marker)) throw invalid('Invalid marker');
     if (!Array.isArray(command) || command.some((item) => typeof item !== 'string' || item.includes('\0'))) throw invalid('Invalid command');
-    return [BWRAP_PATH, '--unshare-uts', '--hostname', marker, '--args', String(argsFd), ...(command.length > 0 ? ['--', ...command] : [])];
+    return [BWRAP_PATH, '--unshare-uts', '--unsetenv', marker, '--args', String(argsFd), ...(command.length > 0 ? ['--', ...command] : [])];
 }
 
 export function bwrapCommand(spec) {

@@ -65,8 +65,17 @@ test('validation: destination, grant source, role, markers, argv', () => {
 });
 
 test('real argv carries the marker; the buffer does not', () => {
-    assert.deepEqual(bwrapRealArgv({ argsFd: 4, marker: MARKER }), ['/usr/bin/bwrap', '--unshare-uts', '--hostname', MARKER, '--args', '4']);
+    assert.deepEqual(bwrapRealArgv({ argsFd: 4, marker: MARKER }), ['/usr/bin/bwrap', '--unshare-uts', '--unsetenv', MARKER, '--args', '4']);
     assert.deepEqual(bwrapRealArgv({ argsFd: 4, marker: MARKER, command: ['/bin/true'] }).slice(-2), ['--', '/bin/true']);
     assert.ok(!buildBwrapArgs(workload).toString().includes(MARKER));
     assert.throws(() => bwrapRealArgv({ argsFd: 4, marker: 'x' }), { code: 'invalid_request' });
+});
+
+// M-24: the marker rides as the value of --unsetenv on the real argv while --clearenv sits in the --args buffer. Both are
+// plain environment operations of bwrap, applied in argv order; neither rejects the other, so their order does not matter.
+test('the real argv carries the marker after --unsetenv and never --hostname; --clearenv stays in the buffer', () => {
+    const argv = bwrapRealArgv({ argsFd: 7, marker: '-AbCdEf12345678901234', command: ['/bin/true'] });
+    assert.deepEqual(argv.slice(0, 6), ['/usr/bin/bwrap', '--unshare-uts', '--unsetenv', '-AbCdEf12345678901234', '--args', '7']);
+    assert.equal(argv.includes('--hostname'), false);
+    assert.equal(argv.includes('--clearenv'), false);
 });

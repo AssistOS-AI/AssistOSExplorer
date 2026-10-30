@@ -75,7 +75,7 @@ export function createFakeSpawn(view, script = {}) {
             if (script.spawnError) { child.emit('error', script.spawnError); return; }
             if (script.exitBefore !== undefined) { finish(script.exitBefore, null); return; }
             view.add({
-                pid: child.pid, ppid: script.monitorPpid ?? SUPERVISOR_PID, cmdline: script.omitMarker ? ['/usr/bin/bwrap'] : ['/usr/bin/bwrap', '--unshare-uts', '--hostname', marker, '--args', String(argsFd)],
+                pid: child.pid, ppid: script.monitorPpid ?? SUPERVISOR_PID, cmdline: script.omitMarker ? ['/usr/bin/bwrap'] : ['/usr/bin/bwrap', '--unshare-uts', '--unsetenv', marker, '--args', String(argsFd)],
                 pidNs: view.self.pidNs, mntNs: script.monitorMntNs ?? mntNsOf(child.pid), netNs: script.monitorNetNs ?? '3000'
             });
             view.add({
