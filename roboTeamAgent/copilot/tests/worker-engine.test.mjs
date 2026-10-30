@@ -483,13 +483,14 @@ test('inputs the worker cannot use are refused or reported, never dropped silent
 
 test('the workspace root is never granted: a project folder is the writable grant, no project means no grant, and naming the root is refused', async (t) => {
     // A project folder below the root: the writable cwd grant plus explicit read-only extras, never the root.
-    const withSkills = await harness(t, { snapshotExtra: (dir) => ({ skillsDirectory: path.join(path.dirname(dir), 'overlay'), mounts: [{ source: path.join(path.dirname(dir), 'skill-src'), target: path.join(dir, '.agents', 'skills', 'x') }] }) });
+    const withSkills = await harness(t, { snapshotExtra: (dir) => ({ skillsDirectory: path.join(dir, '.roboteam', 'sessions', 's1', 'skills'), mounts: [{ source: path.join(path.dirname(dir), 'skill-src'), target: path.join(dir, '.agents', 'skills', 'x') }] }) });
     const events = [];
     await withSkills.engine.executeTurn({ sessionId: withSkills.sessionId, prompt: 'p', owner: withSkills.owner, onEvent: (event) => events.push(event) });
     const spec = withSkills.admitted[0].request.specification;
     const root = path.dirname(await fs.realpath(withSkills.workingDir));
     assert.equal(spec.cwd, await fs.realpath(withSkills.workingDir));
-    assert.deepEqual(spec.folders, [{ path: path.join(path.dirname(withSkills.workingDir), 'skill-src'), access: 'read' }, { path: path.join(path.dirname(withSkills.workingDir), 'overlay'), access: 'read' }]);
+    // Only the skill sources: the private session overlay is never sent.
+    assert.deepEqual(spec.folders, [{ path: path.join(path.dirname(withSkills.workingDir), 'skill-src'), access: 'read' }]);
     for (const folder of spec.folders) assert.deepEqual(Object.keys(folder).sort(), ['access', 'path'], 'no as, at or expose');
     assert.ok([spec.cwd, ...spec.folders.map((folder) => folder.path)].every((granted) => granted !== root));
     assert.ok(events.some((event) => event.type === 'diagnostic' && /\.agents\/skills placement/.test(event.message)));

@@ -2,8 +2,9 @@ import readline from 'node:readline';
 import { prepareCopilotContext } from './copilot-context.mjs';
 import { setRobotContext } from '../copilot/src/lib/execution/robotContext.mjs';
 import { createCliRuntime } from '../copilot/src/index.mjs';
+import { stopReasonFromRecord, taskExitCode } from './worker-coordinator/task-exit.mjs';
 import { workerModeSelected } from '../copilot/src/lib/execution/engineSelection.mjs';
-import { detachReason, stopReason } from '../copilot/src/lib/execution/abortReasons.mjs';
+import { detachReason } from '../copilot/src/lib/execution/abortReasons.mjs';
 
 import { pathToFileURL } from 'node:url';
 
@@ -44,7 +45,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
                     if (message.type !== 'prompt' || typeof message.prompt !== 'string' || !message.prompt.trim()) throw new Error('The first task record must be the prompt.');
                     receivePrompt(message); receivePrompt = null;
                 } else if (message.type === 'message') control?.(message);
-                else if (message.type === 'stop') controller.abort(stopReason());
+                else if (message.type === 'stop') controller.abort(stopReasonFromRecord(message));
             } catch (error) { console.error(error.message || 'Invalid task control message.'); }
         });
         input.once('close', () => receivePrompt?.(null));
@@ -70,7 +71,8 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         process.stdout.write(result.outputText);
     } catch (error) {
         console.error(error.message);
-        process.exitCode = controller.signal.aborted ? 130 : 1;
+        // A stop the worker did not confirm is not an interruption: the execution may still be running there.
+        process.exitCode = taskExitCode(error, controller.signal.aborted);
     } finally {
         input?.close();
         process.stdin.pause();

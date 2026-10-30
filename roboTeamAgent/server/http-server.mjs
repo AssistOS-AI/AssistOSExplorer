@@ -1018,12 +1018,12 @@ export function createRoboTeamServer(options) {
                     });
                 }
                 const stopTypes = { 'stop-desktop-task': 'desktop', 'stop-browser-task': 'browser', 'stop-simple-task': 'simple' };
-                if (stopTypes[operation]) return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot, stopTypes[operation], body.taskId) });
+                if (stopTypes[operation]) return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot, stopTypes[operation], body.taskId, worker.enabled ? { ownerGrant: worker.grant(req) } : undefined) });
                 if (operation === 'take-control') {
                     return sendJson(res, 202, {
                         ok: true,
                         robotName: robot.name,
-                        ...runtimeManager.takeControl(robot, body.taskId),
+                        ...runtimeManager.takeControl(robot, body.taskId, worker.enabled ? { ownerGrant: worker.grant(req) } : undefined),
                     });
                 }
                 if (operation === 'resume-task') {

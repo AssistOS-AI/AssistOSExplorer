@@ -26,6 +26,7 @@ import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { taskOriginId, workerBindingFor } from './worker-coordinator/flow-origins.mjs';
 import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
+import { STOP_NOT_CONFIRMED_EXIT } from './worker-coordinator/task-exit.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
 import { NFT_COMMAND, NSENTER_COMMAND, writeContainerFirewallRules } from './proxy-pool/container-firewall.mjs';
 
@@ -560,11 +561,14 @@ export class RuntimeManager {
     }
 
     // A user stop of a task child. Through the worker the stop is an explicit record the child sends
-    // to the worker as a control (SIGTERM would only detach it); the signal remains the backstop.
-    _stopChild(child) {
+    // to the worker as a control (SIGTERM would only detach it); the signal remains the backstop. The
+    // record carries the stopping request's own grant when it has one (decision M-12 (b), M-21): in
+    // memory and on stdin only, never persisted. Without a grant the child reports the stop as not
+    // confirmed.
+    _stopChild(child, { ownerGrant = null } = {}) {
         if (!child) return;
         if (!this.workerMode) { child.kill('SIGTERM'); return; }
-        try { child.stdin?.write(`${JSON.stringify({ type: 'stop' })}\n`); } catch { /* the backstop below ends it */ }
+        try { child.stdin?.write(`${JSON.stringify({ type: 'stop', ...(typeof ownerGrant === 'string' && ownerGrant ? { ownerGrant } : {}) })}\n`); } catch { /* the backstop below ends it */ }
         const timer = setTimeout(() => child.kill('SIGTERM'), 30000);
         timer.unref?.();
         child.once?.('close', () => clearTimeout(timer));
@@ -822,13 +826,23 @@ export class RuntimeManager {
                     if (forcedFailure) return reject(forcedFailure);
                     if (task.resultOverflow) return reject(new Error('Final response exceeds the 1 MiB limit'));
                     if (code === 0) resolve();
-                    else reject(new Error(alaFailureMessage(signal || code, `${task.logTail}${task.result}`)));
+                    else {
+                        // The child exits 75 when the worker did not confirm the stop it asked for.
+                        if (code === STOP_NOT_CONFIRMED_EXIT) task.stopNotConfirmed = true;
+                        reject(new Error(alaFailureMessage(signal || code, `${task.logTail}${task.result}`)));
+                    }
                 });
             });
             if (!task.cancelRequested) task.state = 'completed';
+            else if (task.state === 'pausing') task.state = 'paused';
             task.completedAt = new Date().toISOString();
         } catch (error) {
-            if (forcedFailure || task.state !== 'paused') {
+            if (task.stopNotConfirmed && task.cancelRequested) {
+                // The worker did not confirm the stop: the execution may still be running there. Never shown as paused.
+                task.state = 'failed'; task.error = 'stop_not_confirmed: the worker did not confirm the stop; the execution may still be running'; task.completedAt = new Date().toISOString();
+            } else if (task.state === 'pausing') {
+                task.state = 'paused'; task.completedAt = new Date().toISOString();
+            } else if (forcedFailure || task.state !== 'paused') {
                 error = forcedFailure || error;
                 task.state = 'failed'; task.error = String(error?.message || error); task.completedAt = new Date().toISOString();
             }
@@ -905,7 +919,7 @@ export class RuntimeManager {
         return id ? this.taskStatus(robotId, id) : null;
     }
 
-    stopTask(robot, expectedType = null, taskId = null, { manualControl = false } = {}) {
+    stopTask(robot, expectedType = null, taskId = null, { manualControl = false, ownerGrant = null } = {}) {
         if (!taskId && expectedType === 'simple') {
             const candidates = [...this.tasks.values()].filter((task) => task.robotId === robot.id
                 && task.type === 'simple' && ['queued', 'starting', 'running'].includes(task.state));
@@ -928,7 +942,11 @@ export class RuntimeManager {
                 }
                 const neverStarted = internal.state === 'queued';
                 internal.cancelRequested = true;
-                internal.state = 'paused'; internal.completedAt = new Date().toISOString(); this._stopChild(internal.child);
+                // Through the worker a running task is not stopped until the worker says so: it is `pausing`, and
+                // only the child's confirmed exit makes it `paused` (an unconfirmed stop makes it `failed`).
+                if (this.workerMode && !neverStarted) internal.state = 'pausing';
+                else { internal.state = 'paused'; internal.completedAt = new Date().toISOString(); }
+                this._stopChild(internal.child, { ownerGrant });
                 // A queued attempt never reaches its run's terminal report.
                 if (neverStarted) this._emitTaskTerminal(internal, { state: 'paused', result: internal.result, error: internal.error });
             }
@@ -937,8 +955,8 @@ export class RuntimeManager {
         return { taskId: operation.taskId, state: operation.state };
     }
 
-    takeControl(robot, taskId) {
-        return this.stopTask(robot, null, taskId, { manualControl: true });
+    takeControl(robot, taskId, { ownerGrant = null } = {}) {
+        return this.stopTask(robot, null, taskId, { manualControl: true, ownerGrant });
     }
 
     // Every continuation is a new attempt with its own task id. Its owner is the

@@ -90,7 +90,7 @@ test('publication order, ALA command line, descriptor custody and the end path',
     assert.ok(orchestration.roBinds.some((bind) => bind.source === '/Agent/linked/AdvancedLanguageAgent' && bind.dest === '/opt/robo-work/ala'));
     assert.ok(!supervisorOptions.roles.workload.roBinds.some((bind) => bind.dest.startsWith('/opt/robo-work')), 'the workload sees no robo-work code or ALA');
     assert.deepEqual(supervisorOptions.roles.endpoint.argv, ['/usr/local/bin/node', '--import', '/opt/robo-work/fdTrim.mjs', '/opt/robo-work/execution/providerEndpointMain.mjs']);
-    assert.equal(ledgerOptions.referenceId, 'REF');
+    assert.equal(ledgerOptions.referenceId, null, 'the ledger must not read the owner\'s reference back with the adapter context');
     assert.deepEqual(ledgerOptions.layout, { runtimeDir: '/store/runtime', cgroupSubtree: '/store/runtime/cgroup' });
 
     const opened = await execution.start();

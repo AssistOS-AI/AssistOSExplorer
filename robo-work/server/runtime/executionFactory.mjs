@@ -6,6 +6,7 @@ import { createSupervisorEndpointServer } from '../execution/supervisorEndpointS
 import { createAdmission } from '../execution/supervisorRequestValidator.mjs';
 import { resolveEndpointLimits } from '../execution/executionLimits.mjs';
 import { createExecutionSupervisor } from '../sandbox/executionSupervisor.mjs';
+import { foldPathName } from '../views/protectedNames.mjs';
 import { resolveGrant } from '../views/grantResolver.mjs';
 import { VIRTUAL_CONFIG, VIRTUAL_SESSIONS } from './alaPlan.mjs';
 
@@ -19,6 +20,14 @@ function deferred() {
     const control = {};
     control.promise = new Promise((resolve, reject) => { control.resolve = resolve; control.reject = reject; });
     return control;
+}
+
+// The grant role of a plan grant. A read-only folder under `.ploinky/repos/<repo>/` is a skill source (the resolver's only exemption
+// for a managed source, never writable); every other grant, and every writable one (the cwd is always writable), is a project.
+export function grantRoleFor(entry) {
+    const segments = String(entry.relativePath).split('/');
+    const managed = segments.length >= 3 && foldPathName(segments[0]) === '.ploinky' && segments[1] === 'repos';
+    return managed && entry.access === 'read' ? 'skill-source' : 'project';
 }
 
 export class ExecutionSetupError extends Error {
@@ -104,7 +113,7 @@ export function createExecutionFactory({
                 // Anchored, no-follow resolution: the resolver refuses protected names and anything outside the workspace.
                 const resolved = [];
                 for (const entry of plan.grants) {
-                    const result = await make.grant({ role: 'project', access: entry.access, relativePath: entry.relativePath },
+                    const result = await make.grant({ role: grantRoleFor(entry), access: entry.access, relativePath: entry.relativePath },
                         { workspaceRoot, protectedLocations: [{ label: 'the worker store', path: robots.root }] });
                     if (!result.ok) throw new ExecutionSetupError(`grant_${String(result.code).replace(/[^a-z_]/gu, '').slice(0, 40)}`);
                     grants.push(result.grant);
@@ -135,10 +144,12 @@ export function createExecutionFactory({
                     launcher, view, admission, roles, home: { path: where.home, fd: homeFd }, grants: resolved,
                     onInfrastructureLoss: (reason) => lost.resolve(`infrastructure_lost:${reason}`)
                 });
+                // referenceId stays null: the ledger would read the reference back with the adapter context, which the store (rightly) does
+                // not let see an owner's reference (scope and 'read' operation), and the dispatcher does not use that read.
                 const layout = { runtimeDir, cgroupSubtree: path.join(runtimeDir, 'cgroup') };
                 const ledger = make.ledger({
                     state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
-                    referenceId: item.referenceId, layout, sandbox: supervisor, walker, clock
+                    referenceId: null, layout, sandbox: supervisor, walker, clock
                 });
                 return buildExecution({ supervisor, ledger, admission, closeAll, lost });
             } catch (error) {

@@ -11,6 +11,7 @@ import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
 import { ALA_BACKENDS, createAlaRecordHandler } from './alaRecordHandler.mjs';
 import { detachReason, isDetach, stopReason } from './abortReasons.mjs';
+import { isGrantableFolder } from './grantablePaths.mjs';
 import { TERMINAL_STATES, WorkerError, stopOperationId } from '../../../../server/worker-coordinator/worker-client.mjs';
 import { isOriginId } from '../../../../server/worker-coordinator/identities.mjs';
 
@@ -48,8 +49,6 @@ const EVIDENCE_WAIT_MS = 60000;
 // The conversation records its engine binding against this neutral directory: the robot HOME is
 // the worker's (decision M-10), and no RoboTeam path is bound or sent.
 const WORKER_SESSION_HOME = '/';
-
-const belowRoot = (root, candidate) => typeof candidate === 'string' && candidate.startsWith(`${root}${path.sep}`);
 
 // The refusal of a workspace-root working folder, with the message the user sees.
 function rootRefusal() {
@@ -291,24 +290,26 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             // channel and the human-input channel are RoboTeam-local resources outside the shared
             // workspace; they are not sent (open issue: worker-owned channels, plan section 9).
             const nativePrompt = buildNativePrompt({ prompt, resume, selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
-            // Extra folders are explicit read-only grants strictly below the workspace root (skills and the
-            // human-input channel), never the root and never the project itself. The placement modifiers
-            // (`as`, `at`, `expose`) cannot run in the worker, so a skill source is granted at its own path.
+            // Extra folders are explicit read-only grants strictly below the workspace root, never the root and never
+            // the project itself: the skill mount SOURCES and the human-input channel. The session skills overlay
+            // (`<project>/.roboteam/sessions/<id>/skills`) is private storage the worker refuses at open, so it is
+            // never sent, and neither is any path with a protected component (a managed `.ploinky/repos/<repo>`
+            // skill source excepted, which the worker resolves as a skill source). The placement modifiers (`as`,
+            // `at`, `expose`) cannot run in the worker, so a source is granted at its own path.
             const candidates = [];
-            if (snapshot.skillsDirectory) {
+            if (snapshot.skillsDirectory || snapshot.mounts?.length) {
                 for (const mount of snapshot.mounts || []) candidates.push(mount.source);
-                candidates.push(snapshot.skillsDirectory);
                 await emit({ type: 'diagnostic', message: 'Skills are granted as read-only folders; their .agents/skills placement is not available through the worker.' });
             }
             if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) candidates.push(env.ROBOTEAM_HUMAN_INPUT_DIRECTORY);
             const folders = [];
             let skipped = 0;
             for (const candidate of [...new Set(candidates)]) {
-                if (!belowRoot(workspaceRoot, candidate)) { skipped += 1; continue; }
+                if (!isGrantableFolder(workspaceRoot, candidate)) { skipped += 1; continue; }
                 if (projectCwd && (candidate === projectCwd || candidate.startsWith(`${projectCwd}${path.sep}`))) continue;
                 folders.push({ path: candidate, access: 'read' });
             }
-            if (skipped) await emit({ type: 'diagnostic', message: `${skipped} folder(s) outside the shared workspace are not available through the worker.` });
+            if (skipped) await emit({ type: 'diagnostic', message: `${skipped} folder(s) outside the shared workspace or in private storage are not available through the worker.` });
             const ignore = projectCwd ? [path.resolve(projectCwd, ACHILLES_PRIVATE_DIRECTORY_NAME)] : [];
             if (execution.workflowExecution && skills.some((skill) => skill.name === 'report-task-blocked')) {
                 await emit({ type: 'diagnostic', message: 'The task-failure channel is not available through the worker; report-task-blocked is not offered.' });
@@ -565,6 +566,8 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             }
             try { await queued; } catch (error) { await fatal(error); }
             if (getFailure()) await fatal(getFailure());
+            // A stop the worker confirmed by ending the execution needs no result, and so no fresh grant.
+            if (stopSent && terminalRow && ['cancelled', 'interrupted', 'paused'].includes(terminalRow.state)) throw interrupted();
             if (terminalRow?.result && typeof terminalRow.result === 'object') return outcomeOf({ state: terminalRow.state, result: terminalRow.result }, sanitize);
             // The result is a read: it needs a fresh grant, so it waits for the user's next envelope. The
             // execution is finished and its result stays retrievable when the user comes back.

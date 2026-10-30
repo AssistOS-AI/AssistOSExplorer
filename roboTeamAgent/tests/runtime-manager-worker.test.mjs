@@ -8,6 +8,7 @@ import test from 'node:test';
 import { RuntimeManager } from '../server/runtime-manager.mjs';
 import { taskOriginId } from '../server/worker-coordinator/flow-origins.mjs';
 import { isOriginId } from '../server/worker-coordinator/identities.mjs';
+import { STOP_NOT_CONFIRMED_EXIT } from '../server/worker-coordinator/task-exit.mjs';
 
 // A user stop of a robot-task child. Through the worker it is an explicit stdin record (a signal would
 // only detach the child, which leaves the worker execution running); locally it is the signal.
@@ -108,4 +109,61 @@ test('without the worker a grant is neither kept nor sent', async (t) => {
     while (!['completed', 'failed'].includes(manager.taskStatus(robot.id, accepted.taskId).state)) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(manager.taskGrants.size, 0);
     assert.equal(texts.join('').includes('SECRETSIGNATURE'), false);
+});
+
+// A running worker task that a user stops: the stop record carries the stopping request's own grant over stdin, the task is
+// `pausing` until the child confirms, and an unconfirmed stop is a failure, never paused.
+async function runningTask(t) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-stop-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const dataDir = path.join(root, 'data');
+    const workspace = path.join(root, 'workspace');
+    const robot = { id: 'stopper-a1b2c3', name: 'Stopper' };
+    await Promise.all([fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }), fs.mkdir(workspace, { recursive: true })]);
+    const spawned = [];
+    const spawnImpl = (command, args) => {
+        const child = new EventEmitter();
+        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true; child.stdin = new PassThrough();
+        let text = '';
+        child.stdin.on('data', (chunk) => { text += chunk; });
+        spawned.push({ child, args, lines: () => text.split('\n').filter(Boolean).map((line) => JSON.parse(line)) });
+        return child;
+    };
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, workerMode: true, toolCache, execFileImpl: async () => ({ stdout: '[]', stderr: '' }) });
+    t.after(() => manager.stopAll());
+    const accepted = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', ownerPrincipal: 'user:alice' });
+    while (!spawned.length || manager.taskStatus(robot.id, accepted.taskId).state !== 'running') await new Promise((resolve) => setTimeout(resolve, 5));
+    return { manager, robot, accepted, child: spawned[0], root };
+}
+const settled = async (manager, robot, taskId) => { while (!['completed', 'failed', 'paused'].includes(manager.taskStatus(robot.id, taskId).state)) await new Promise((resolve) => setTimeout(resolve, 5)); return manager.taskStatus(robot.id, taskId); };
+
+test('a user stop sends its own grant to the child over stdin; the task is pausing until the worker confirms', async (t) => {
+    const f = await runningTask(t);
+    const grant = 'h.e30.STOPSIGNATURE';
+    f.manager.stopTask(f.robot, 'simple', f.accepted.taskId, { ownerGrant: grant });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const stop = f.child.lines().find((record) => record.type === 'stop');
+    assert.deepEqual(stop, { type: 'stop', ownerGrant: grant }, 'the stop record carries the stopping request\'s grant');
+    const shown = f.manager.taskStatus(f.robot.id, f.accepted.taskId);
+    assert.equal(shown.state, 'pausing', 'not paused as if stopped');
+    assert.equal(JSON.stringify(shown).includes('STOPSIGNATURE'), false);
+    assert.equal(JSON.stringify(f.child.args).includes('STOPSIGNATURE'), false);
+    f.child.child.emit('close', 130, null);
+    assert.equal((await settled(f.manager, f.robot, f.accepted.taskId)).state, 'paused', 'paused once the child confirmed');
+    const files = [];
+    const walk = async (directory) => { for (const entry of await fs.readdir(directory, { withFileTypes: true })) { const full = path.join(directory, entry.name); if (entry.isDirectory()) await walk(full); else files.push(full); } };
+    await walk(f.root);
+    for (const file of files) assert.equal((await fs.readFile(file, 'utf8').catch(() => '')).includes('STOPSIGNATURE'), false, file);
+});
+
+test('a stop the worker did not confirm is recorded as stop_not_confirmed, never paused', async (t) => {
+    const f = await runningTask(t);
+    f.manager.stopTask(f.robot, 'simple', f.accepted.taskId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(f.child.lines().find((record) => record.type === 'stop'), { type: 'stop' }, 'no grant to carry');
+    f.child.child.emit('close', STOP_NOT_CONFIRMED_EXIT, null);
+    const status = await settled(f.manager, f.robot, f.accepted.taskId);
+    assert.equal(status.state, 'failed');
+    assert.match(status.error, /stop_not_confirmed/);
+    assert.equal(status.stopNotConfirmed, true);
 });
