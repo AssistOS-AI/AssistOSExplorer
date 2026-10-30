@@ -30,7 +30,7 @@ test('plan: virtual paths, ALA arguments, environment and the first control reco
         '--folder', '/projects/g1', '--folder', '/projects/g2', 'write', '--folder', '/projects/g3',
         '--ignore', '/projects/g0/.achilles', '--ignore', '/projects/g1', '--resume-session', '--MCPServers', 'a=http://x:1'
     ]);
-    assert.deepEqual({ ...plan.env }, { ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: '/session' });
+    assert.deepEqual({ ...plan.env }, { HOME: '/home/robot', ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: '/session' });
     assert.deepEqual({ ...plan.prompt }, { type: 'prompt', prompt: 'native prompt', displayText: 'plain' });
     assert.ok(plan.argv.every((entry) => !entry.includes('/ws')), 'no host path reaches ALA');
 });

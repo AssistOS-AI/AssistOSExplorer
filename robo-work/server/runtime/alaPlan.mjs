@@ -125,7 +125,10 @@ export function planAlaExecution({ specification, workspaceRoot }) {
         grants: Object.freeze(grants.map((grant) => Object.freeze({ ...grant }))),
         cwd: cwd === null ? VIRTUAL_HOME : cwd.path,
         argv: Object.freeze(argv),
-        env: Object.freeze({ ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: VIRTUAL_SESSIONS }),
+        // HOME is the virtual robot HOME, as `--home` says: ALA evaluates os.homedir() eagerly (config.mjs:11), which throws ENOENT in a
+        // view without /etc/passwd, and sandbox.mjs:158 reads env.HOME. ALA stats and creates nothing under it in protocol mode
+        // (the configuration path is explicit); it is a name, not a directory the orchestration view must contain.
+        env: Object.freeze({ HOME: VIRTUAL_HOME, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: VIRTUAL_SESSIONS }),
         prompt
     });
 }

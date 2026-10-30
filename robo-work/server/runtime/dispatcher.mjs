@@ -17,7 +17,7 @@ import { createEventRelay } from './eventRelay.mjs';
 //
 // A failure before an execution exists ends the attempt directly through beginAttemptEnd.
 
-const DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, resultBytes: 512 * 1024 - 1024 });
+const DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 750, resultBytes: 512 * 1024 - 1024 });
 const FATAL_READER_ENDS = new Set(['control_stream_violation', 'control_stall', 'stdin_stall', 'stdin_overflow', 'stdout_error']);
 const SKIPPED_TRANSITION = new Set(['robot_busy', 'operation_conflict', 'stale_generation', 'not_found']);
 
@@ -33,6 +33,14 @@ export function fitOutcome({ classification, outputText = '', data = null }, res
         text = outputText.slice(0, cut);
     }
     return { classification, outputText: text, data: marker };
+}
+
+// The last of ALA's own diagnostic lines, for the worker log only (never the result): lines that start with `ala:` (ALA's error
+// prefix) and nothing the coding agents wrote, each cut and stripped of anything that looks like a token or key, at most 2 KiB.
+export function alaDiagnostics(tail) {
+    const lines = tail.toString('utf8').split('\n').filter((line) => line.startsWith('ala:'))
+        .map((line) => line.slice(0, 300).replace(/Bearer\s+\S+/giu, 'Bearer [redacted]').replace(/[A-Za-z0-9_+/=-]{32,}/gu, '[redacted]'));
+    return lines.join('\n').slice(-2048);
 }
 
 export function createDispatcher({
@@ -82,6 +90,7 @@ export function createDispatcher({
             return;
         }
 
+        log('attempt_start', { executionId: item.executionId, attemptId: item.attemptId, robotId: item.robotId, kind: item.kind });
         let execution = null;
         let streams = null;
         let relay = null;
@@ -105,8 +114,13 @@ export function createDispatcher({
                 streams?.reader.end('ended_by_dispatcher');
                 if (relay) await relay.close().catch(() => {});
                 const fitted = fitOutcome(outcome, settings.resultBytes);
+                if (streams && fitted.classification !== 'completed' && fitted.classification !== 'cancelled') {
+                    const text = alaDiagnostics(streams.reader.stderrTail());
+                    if (text) log('ala_stderr_tail', { executionId: item.executionId, attemptId: item.attemptId, text });
+                }
                 if (execution) await execution.end(fitted);
                 else store.beginAttemptEnd(context, { executionId: item.executionId, attemptId: item.attemptId, expectedState: 'running', outcome: fitted });
+                log('attempt_end', { executionId: item.executionId, attemptId: item.attemptId, classification: fitted.classification, reason: fitted.data?.reason ?? null });
             })();
             return finishing;
         };
@@ -193,8 +207,14 @@ export function createDispatcher({
 
             // `execution.lost` (optional) resolves with a reason when the endpoint or the anchor is lost before the end.
             if (execution.lost) execution.lost.then((reason) => { if (fatal === null) { fatal = { reason: 'execution_lost', detail: String(reason).slice(0, 80) }; fatalSignal.resolve(); } });
-            const exit = await Promise.race([execution.exited, fatalSignal.promise.then(() => null), endedSignal.then(() => null)]);
+            let exit = await Promise.race([execution.exited, fatalSignal.promise.then(() => null), endedSignal.then(() => null)]);
             if (finishing !== null) { await finishing; return; }
+            // An endpoint that ends because ALA died is reported first by the channel and a moment later by the process: when the process
+            // exits within the grace period, its exit code is the reason (the endpoint loss is only its echo).
+            if (exit === null && fatal?.reason === 'execution_lost') {
+                const late = await Promise.race([execution.exited, sleep(settings.exitGraceMs)]);
+                if (late && typeof late === 'object') { fatal = null; exit = late; }
+            }
             if (exit === null) {
                 await finish({ classification: 'failed', outputText: partialText(), data: { reason: fatal.reason, ...(fatal.detail ? { detail: fatal.detail } : {}) } });
                 return;
@@ -208,12 +228,17 @@ export function createDispatcher({
             else if (exit.exitCode === 0 && text.length > 0) await finish({ classification: 'completed', outputText: text, data: null });
             else if (exit.exitCode === 0) await finish({ classification: 'failed', data: { reason: 'no_result' } });
             else if (exit.exitCode === 130) await finish({ classification: 'interrupted', outputText: text, data: { reason: 'ala_interrupted' } });
-            else await finish({ classification: 'failed', outputText: text, data: { reason: 'ala_failed', exitCode: exit.exitCode, signal: exit.signal } });
+            else await finish({ classification: 'failed', outputText: text, data: { reason: 'ala_failed', exitCode: exit.exitCode, signal: exit.signal, detail: `ala_exit:${exit.exitCode ?? exit.signal}` } });
         } catch (error) {
-            log('execution_failed', { error: describe(error) });
+            // A sandbox launch failure carries a bounded code and detail (SandboxError); nothing of the prompt or the environment.
+            log('execution_failed', {
+                executionId: item.executionId, attemptId: item.attemptId, error: describe(error),
+                ...(error?.name === 'SandboxError' || error?.name === 'ExecutionSetupError' ? { detail: String(error.detail ?? error.message ?? '').slice(0, 200) } : {})
+            });
             try {
                 const reason = typeof error?.reason === 'string' && /^[a-z0-9_]{1,48}$/u.test(error.reason) ? error.reason : null;
-                await finish({ classification: 'failed', outputText: partialText(), data: { reason: reason ?? (streams === null ? 'start_failed' : 'execution_error') } });
+                const code = error?.name === 'SandboxError' && /^[a-z_]{1,40}$/u.test(String(error.code)) ? error.code : null;
+                await finish({ classification: 'failed', outputText: partialText(), data: { reason: reason ?? (streams === null ? 'start_failed' : 'execution_error'), ...(code ? { detail: code } : {}) } });
             } catch (endError) {
                 log('end_failed', { error: describe(endError) });
             }

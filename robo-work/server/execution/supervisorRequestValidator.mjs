@@ -10,9 +10,13 @@ export const ROBOT_HOME = '/home/robot';
 // Variables the provider owns: HOME, the XDG directories and the native state paths. ALA cannot add them.
 const PROVIDER_OWNED = new Set(['HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'TMPDIR', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
     'PI_CODING_AGENT_DIR']);
-// PROVISIONAL allowlist: the explicit additions that ALA's adapters generate (DS006). G5 and the image inventory fix it.
+// The explicit environment additions that ALA's adapters generate at cf2996dc (audited in coding-agents/provider-request.mjs,
+// opencode-server.mjs): Claude Code IS_SANDBOX and DISABLE_AUTOUPDATER, Pi PI_OFFLINE and PI_SKIP_VERSION_CHECK, and OpenCode
+// OPENCODE_ENABLE_EXA (0 or 1), OPENCODE_CONFIG_CONTENT (a JSON overlay) and OPENCODE_SERVER_PASSWORD (the random password of the
+// loopback `opencode serve` that ALA itself talks to). Nothing inherited crosses the protocol (ALA forwards only additions) and an
+// API key or token is not on the list. G5 and the image inventory fix the final set.
 export const DEFAULT_ENV_ALLOWLIST = Object.freeze(['IS_SANDBOX', 'DISABLE_AUTOUPDATER', 'PI_OFFLINE',
-    'PI_SKIP_VERSION_CHECK', 'OPENCODE_SERVER_PASSWORD', 'OPENCODE_CONFIG_CONTENT']);
+    'PI_SKIP_VERSION_CHECK', 'OPENCODE_ENABLE_EXA', 'OPENCODE_SERVER_PASSWORD', 'OPENCODE_CONFIG_CONTENT']);
 const STREAM_BASENAME = /^[a-z0-9]{8,64}$/u;
 
 const within = (child, parent) => child === parent || child.startsWith(`${parent}/`);

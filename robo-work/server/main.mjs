@@ -180,7 +180,8 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
         secret: config.secret, audience: config.audience, coordinators: config.coordinators, replayCache: createReplayCache()
     });
     const httpLimits = { requestBytes: limits.requestBytes };
-    const onRefusal = ({ route, code, reason }) => log('refusal', { route, code, reason });
+    // The request line is logged with a refusal (no query, no header) so that an unexpected caller can be identified from the path.
+    const onRefusal = ({ route, code, reason, method, path: requestPath }) => log('refusal', { route, code, reason, method, path: requestPath });
     const coordinatorHandler = createCoordinatorHttpHandler({
         adapter: createCoordinatorAdapter({ store, workspaceId: config.workspaceId, verifier }), limits: httpLimits, onRefusal
     });

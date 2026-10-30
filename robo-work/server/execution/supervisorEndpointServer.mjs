@@ -17,7 +17,7 @@ import { validateEndpointEvent, validateEndpointRequest } from './endpointFrames
 import { admitStartRequest, admitStreamPaths } from './supervisorRequestValidator.mjs';
 import { virtualPathProblem } from './providerSchema.mjs';
 
-export function createSupervisorEndpointServer({ socket, admission, sandbox, limits, onEnd, timers }) {
+export function createSupervisorEndpointServer({ socket, admission, sandbox, limits, onEnd, timers, log = () => {} }) {
     const processes = new Map();
     // Request ids rise strictly. Remembering only the last one keeps the supervisor's memory independent of the number
     // of requests an endpoint sends.
@@ -153,7 +153,11 @@ export function createSupervisorEndpointServer({ socket, admission, sandbox, lim
         processes.set(process, entry);
         try {
             await sandbox.start({ process, request, streams });
-        } catch {
+        } catch (error) {
+            // The endpoint is told only `setup_failed`; the worker log gets the code and a bounded detail (never request content).
+            try {
+                log('sandbox_start_failed', { process, executable: request.executable, code: error?.code ?? error?.name ?? 'error', detail: String(error?.detail ?? error?.message ?? '').slice(0, 200) });
+            } catch { /* logging must not change the answer */ }
             entry.state = 'exited';
             // Nothing was started, so a stop that was waiting has nothing left to stop.
             for (const waiter of entry.stopWaiters.splice(0)) waiter.resolve();

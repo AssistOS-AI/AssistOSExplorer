@@ -174,7 +174,7 @@ export function createExecutionFactory({
                 await ledger.publish({ kind: 'netns' });
                 await ledger.publish({ kind: 'endpoint', spec: { config: { streamDirectory: STREAM_DIRECTORY, relays: [] } } });
                 endpointServer = make.endpointServer({
-                    socket: supervisor.endpointSocket, admission, sandbox: supervisor.providerSandbox(ledger), limits: endpointLimits,
+                    socket: supervisor.endpointSocket, admission, sandbox: supervisor.providerSandbox(ledger), limits: endpointLimits, log,
                     onEnd: (reason) => { if (ended === null) lostRef.resolve(`endpoint_ended:${reason}`); }
                 });
                 const published = await ledger.publish({ kind: 'process-tree', spec: { role: 'orchestration' } });

@@ -347,3 +347,18 @@ test('M-12 background row: the coordinator and the persisted flow binding read, 
     await wait(async () => (await read(flowRef, null, { bindingId: flowId })).state === 'cancelled', 'flow run cancelled');
     void fake;
 });
+
+test('a refusal is logged with the request method and path (no query), so an unexpected caller can be identified', async (t) => {
+    const root = makeTempDir(t);
+    fs.mkdirSync(path.join(root, 'ws'));
+    const logs = [];
+    const worker = await startWorker({
+        env: environment(root), overrides: { preflight: Object.freeze({ ok: false, missing: [], masks: [], reason: 'x' }), alaRoot: null, config: { coordinatorHost: '127.0.0.1' }, log: (event, fields) => logs.push({ event, ...fields }) }
+    });
+    t.after(() => worker.close());
+    const unknown = await post(worker.coordinatorPort, { path: '/mcp?token=SECRET', body: Buffer.from('{}'), headers: {} });
+    assert.equal(unknown.status, 404);
+    const refusal = logs.find((entry) => entry.event === 'refusal');
+    assert.deepEqual({ route: refusal.route, code: refusal.code, method: refusal.method, path: refusal.path }, { route: null, code: 'not_found', method: 'POST', path: '/mcp' });
+    assert.equal(JSON.stringify(logs).includes('SECRET'), false);
+});

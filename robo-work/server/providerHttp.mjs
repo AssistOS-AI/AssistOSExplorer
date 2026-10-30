@@ -212,7 +212,7 @@ function createHandler({ resolve, maxBody, onRefusal, streaming = {} }) {
             const refusal = mapRefusal(error);
             if (typeof onRefusal === 'function') {
                 try {
-                    onRefusal({ route, code: refusal.code, reason: refusal.reason });
+                    onRefusal({ route, code: refusal.code, reason: refusal.reason, method: String(req.method || '').slice(0, 16), path: String(req.url || '').split('?')[0].slice(0, 160) });
                 } catch {
                     // Diagnostics never change the response.
                 }

@@ -19,7 +19,7 @@ const request = (extra = {}) => ({
 const streams = { stdout: `${STREAMS}/aaaaaaaaaaaa`, stderr: `${STREAMS}/bbbbbbbbbbbb` };
 
 // A stand-in for the endpoint: frames go to the real supervisor server over an in-memory socket.
-function execution(sandboxOverrides = {}, limitOverrides = {}) {
+function execution(sandboxOverrides = {}, limitOverrides = {}, serverOptions = {}) {
     const [serverSide, endpointSide] = duplexPair();
     let exitHandler = () => {};
     const calls = [];
@@ -32,7 +32,7 @@ function execution(sandboxOverrides = {}, limitOverrides = {}) {
     };
     const ends = [];
     const server = createSupervisorEndpointServer({
-        socket: serverSide, admission, sandbox, limits: testLimits(limitOverrides), onEnd: (reason) => ends.push(reason)
+        socket: serverSide, admission, sandbox, limits: testLimits(limitOverrides), onEnd: (reason) => ends.push(reason), ...serverOptions
     });
     const received = [];
     let buffer = Buffer.alloc(0);
@@ -291,4 +291,20 @@ test('a status that answers a report is accepted once, including one that arrive
     run.send({ event: 'status', descriptors: 9 });
     assert.equal(await waitFor(() => run.ends.length === 1), true);
     assert.deepEqual(run.ends, ['channel_violation:unsolicited_status']);
+});
+
+test('a sandbox start that fails is answered setup_failed and logged with its code and a bounded detail, never the request content', async () => {
+    const logs = [];
+    const failure = Object.assign(new Error('setup_failed: mask scan'), { name: 'SandboxError', code: 'mask_scan_limit', detail: 'x'.repeat(500) });
+    const run = execution({ start: async () => { throw failure; } }, {}, { log: (event, fields) => logs.push({ event, ...fields }) });
+    run.send({ id: 1, op: 'start', process: 1, request: request({ args: ['SECRET-PROMPT'] }), streams });
+    const answer = await run.answer(1);
+    assert.equal(answer.ok, false);
+    assert.equal(answer.error.code, 'setup_failed');
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].event, 'sandbox_start_failed');
+    assert.equal(logs[0].code, 'mask_scan_limit');
+    assert.equal(logs[0].executable, 'codex');
+    assert.equal(logs[0].detail.length, 200);
+    assert.equal(JSON.stringify(logs).includes('SECRET-PROMPT'), false);
 });

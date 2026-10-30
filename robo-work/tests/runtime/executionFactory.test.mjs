@@ -82,7 +82,7 @@ test('publication order, ALA command line, descriptor custody and the end path',
     const orchestration = supervisorOptions.roles.orchestration;
     assert.deepEqual(orchestration.argv.slice(0, 4), ['/usr/local/bin/node', '--import', '/opt/robo-work/fdTrim.mjs', '/opt/robo-work/ala/bin/ala.mjs']);
     assert.deepEqual(orchestration.argv.slice(4), [...plan.argv]);
-    assert.deepEqual(orchestration.env, { ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: '/session' });
+    assert.deepEqual(orchestration.env, { HOME: '/home/robot', ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: '/session' });
     assert.deepEqual(orchestration.anchored, [
         { name: 'session', path: '/store/robots/ROBOT/sessions', fd: 21, dest: '/session', mode: 'rw' },
         { name: 'config', path: '/store/robots/ROBOT/config', fd: 22, dest: '/config', mode: 'ro' }

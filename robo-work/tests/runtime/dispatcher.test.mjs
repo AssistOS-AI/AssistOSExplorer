@@ -51,6 +51,7 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
                 }
             });
             run.exited = new Promise((resolve) => { run.exitedControl.resolve = resolve; });
+            run.lost = new Promise((resolve) => { run.lose = resolve; });
             run.event = (event) => run.stderr.write(`${EVENT_PREFIX.toString()}${JSON.stringify(event)}\n`);
             run.finishWith = (text, exitCode = 0) => {
                 if (text !== null) run.stdout.write(text);
@@ -60,7 +61,7 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
             };
             runs.push(run);
             return {
-                exited: run.exited,
+                exited: run.exited, lost: run.lost,
                 async start() { if (startFails) throw startFails; return { stdin: run.stdin, stdout: run.stdout, stderr: run.stderr }; },
                 async end(outcome) {
                     run.ended.push(outcome);
@@ -72,7 +73,7 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
     };
     const dispatcher = createDispatcher({
         store: storeWrap(store), workspaceId: WORKSPACE, workspaceRoot: '/ws', factory, log: (event, fields) => logs.push({ event, ...fields }),
-        options: { pollMs: 10, controlPollMs, drainMs: 100, maxConcurrent, resultBytes: 1500 }
+        options: { pollMs: 10, controlPollMs, drainMs: 100, exitGraceMs: 80, maxConcurrent, resultBytes: 1500 }
     });
     t.after(() => dispatcher.close());
     const alice = owner('alice');
@@ -137,7 +138,7 @@ test('failures: a nonzero exit, an empty result, a control-stream violation and 
     runs[0].event({ type: 'x' });
     runs[0].finishWith('partial', 2);
     await wait(() => view(failed).state === 'failed', 'failed');
-    assert.deepEqual(view(failed).result.data, { reason: 'ala_failed', exitCode: 2, signal: null });
+    assert.deepEqual(view(failed).result.data, { reason: 'ala_failed', exitCode: 2, signal: null, detail: 'ala_exit:2' });
     await wait(() => runs.length >= 3, 'third run');
     runs[1].finishWith(null, 0);
     await wait(() => view(empty).state === 'failed', 'empty result');
@@ -232,4 +233,63 @@ test('a start the store refuses for a reason a retry cannot change fails the att
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(transitions, 1);
     assert.equal(logs.filter((entry) => entry.event === 'transition_refused').length, 1, 'logged once');
+});
+
+test('worker log: attempt start and end lines carry ids, class and reason, never the prompt or the result text', async (t) => {
+    const { dispatcher, runs, admit, view, logs } = rig(t);
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    runs[0].finishWith('secret result text');
+    await wait(() => view(admitted).state === 'completed', 'completed');
+    await wait(() => logs.some((entry) => entry.event === 'attempt_end'), 'end logged');
+    const start = logs.find((entry) => entry.event === 'attempt_start');
+    assert.deepEqual(Object.keys(start).sort(), ['attemptId', 'event', 'executionId', 'kind', 'robotId']);
+    assert.equal(start.kind, 'task');
+    assert.deepEqual(logs.find((entry) => entry.event === 'attempt_end'), { event: 'attempt_end', executionId: admitted.executionId, attemptId: admitted.attemptId, classification: 'completed', reason: null });
+    assert.equal(JSON.stringify(logs).includes('native prompt'), false);
+    assert.equal(JSON.stringify(logs).includes('secret result text'), false);
+});
+
+test('ALA dying makes the endpoint report its loss first: the exit code is the reason, and ALA\'s own last lines (redacted) go to the log', async (t) => {
+    const { dispatcher, runs, admit, view, logs } = rig(t);
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    runs[0].stderr.write('coding agent noise with sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd\n');
+    runs[0].stderr.write('ala: A system error occurred: uv_os_homedir returned ENOENT, token 0123456789abcdef0123456789abcdef0123\n');
+    runs[0].lose('endpoint_ended:endpoint_lost');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    runs[0].stdout.end();
+    runs[0].stderr.end();
+    runs[0].exitedControl.resolve({ exitCode: 5, signal: null });
+    await wait(() => view(admitted).state === 'failed', 'failed');
+    assert.deepEqual(view(admitted).result.data, { reason: 'ala_failed', exitCode: 5, signal: null, detail: 'ala_exit:5' });
+    const tail = logs.find((entry) => entry.event === 'ala_stderr_tail');
+    assert.ok(tail, 'stderr tail logged');
+    assert.match(tail.text, /^ala: A system error occurred: uv_os_homedir returned ENOENT, token \[redacted\]$/u);
+    assert.equal(tail.text.includes('sk-'), false);
+    assert.deepEqual(logs.find((entry) => entry.event === 'attempt_end'), { event: 'attempt_end', executionId: admitted.executionId, attemptId: admitted.attemptId, classification: 'failed', reason: 'ala_failed' });
+});
+
+test('a lost execution whose ALA never exits keeps the loss as the reason', async (t) => {
+    const { dispatcher, runs, admit, view } = rig(t);
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    runs[0].lose('endpoint_ended:endpoint_lost');
+    await wait(() => view(admitted).state === 'failed', 'failed');
+    assert.deepEqual(view(admitted).result.data, { reason: 'execution_lost', detail: 'endpoint_ended:endpoint_lost' });
+});
+
+test('a sandbox launch failure is logged with its code and detail and recorded as the result detail', async (t) => {
+    const failure = Object.assign(new Error('setup_failed: x'), { name: 'SandboxError', code: 'mask_unverified', detail: 'mask check' });
+    const { dispatcher, admit, view, logs } = rig(t, { startFails: failure });
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => view(admitted).state === 'failed', 'failed');
+    assert.deepEqual(view(admitted).result.data, { reason: 'start_failed', detail: 'mask_unverified' });
+    const entry = logs.find((line) => line.event === 'execution_failed');
+    assert.equal(entry.error, 'mask_unverified');
+    assert.equal(entry.detail, 'mask check');
 });
