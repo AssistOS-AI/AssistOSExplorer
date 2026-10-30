@@ -27,6 +27,7 @@ import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { taskOriginId, workerBindingFor } from './worker-coordinator/flow-origins.mjs';
 import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
 import { STOP_NOT_CONFIRMED_EXIT } from './worker-coordinator/task-exit.mjs';
+import { STOP_MESSAGE_LINE } from './worker-coordinator/stop-reasons.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
 import { NFT_COMMAND, NSENTER_COMMAND, writeContainerFirewallRules } from './proxy-pool/container-firewall.mjs';
 
@@ -101,6 +102,8 @@ function alaFailureMessage(exit, output) {
     const normalized = String(output || '').replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '').trim();
     const workerError = WORKER_USER_ERROR.exec(normalized);
     if (workerError) return workerError[0];
+    const stopped = STOP_MESSAGE_LINE.exec(normalized);
+    if (stopped) return stopped[0];
     const detail = normalized.length > ALA_FAILURE_DETAIL_LIMIT
         ? `…${normalized.slice(-ALA_FAILURE_DETAIL_LIMIT)}`
         : normalized;

@@ -228,3 +228,15 @@ test('a task whose stop is pending ends on every path as paused, failed or compl
         assert.equal((await settled(stopped.manager, stopped.robot, stopped.accepted.taskId)).state, 'paused', `exit ${code}`);
     }
 });
+
+test('a child that the worker stopped for inactivity or duration leaves that plain line as the task error', async (t) => {
+    for (const line of ['Stopped: no activity from the model for 20 minutes', 'Stopped: the task exceeded its maximum duration']) {
+        const f = await runningTask(t);
+        f.child.child.stderr.write(`${line}\n`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        f.child.child.emit('close', 1, null);
+        const status = await settled(f.manager, f.robot, f.accepted.taskId);
+        assert.equal(status.state, 'failed');
+        assert.equal(status.error, line);
+    }
+});

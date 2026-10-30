@@ -1,4 +1,5 @@
 import { phaseOriginId } from '../worker-coordinator/flow-origins.mjs';
+import { plainStopMessage } from '../worker-coordinator/stop-reasons.mjs';
 
 // What a worker execution says about one RoboFlow phase attempt after a RoboTeam restart (plan
 // section 9: query the worker before changing a phase). The decision is read-only:
@@ -32,7 +33,7 @@ export async function classifyPhase({ client, flow, instance }) {
     case 'failed': {
         const reason = typeof result.reason === 'string' ? result.reason : null;
         return { action: 'finished', originRequestId, referenceId: accepted.referenceId, terminationUnverified: reason === 'termination_unverified',
-            event: { kind: 'terminal', taskId, state: 'failed', result: text, error: `Worker execution failed${reason ? ` (${reason})` : ''}.` } };
+            event: { kind: 'terminal', taskId, state: 'failed', result: text, error: plainStopMessage(reason, result.data) || `Worker execution failed${reason ? ` (${reason})` : ''}.` } };
     }
     case 'human-input': {
         // The model asked while RoboTeam was down: the question the worker holds is read back from the reference's events, so it is

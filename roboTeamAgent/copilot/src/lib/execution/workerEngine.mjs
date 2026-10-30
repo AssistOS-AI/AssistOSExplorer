@@ -15,6 +15,7 @@ import { isGrantableFolder } from './grantablePaths.mjs';
 import { workspaceCodePath } from './workspaceCodePath.mjs';
 import { TERMINAL_STATES, WorkerError, stopOperationId } from '../../../../server/worker-coordinator/worker-client.mjs';
 import { isOriginId } from '../../../../server/worker-coordinator/identities.mjs';
+import { plainStopMessage } from '../../../../server/worker-coordinator/stop-reasons.mjs';
 
 // The worker cutover seam (RoboWork r10 decision M-5). `createWorkerEngine` has alaEngine's public
 // interface (`executeTurn`, `getModel`, `setModel`, `listModels`, `close`) but starts no process:
@@ -437,6 +438,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             if (!cancelled && !workerFailure && cause?.exitCode !== undefined) error.exitCode = cause.exitCode;
             if (cause?.execution) error.execution = cause.execution;
             if (cause?.taskBlocked) error.taskBlocked = true;
+            if (cause?.stoppedByWorker) error.stoppedByWorker = cause.stoppedByWorker;
             if (cause?.workerClassification) Object.assign(error, { workerClassification: cause.workerClassification, terminationUnverified: cause.terminationUnverified === true });
             liveResult = cancelled ? { status: 'stopped', reason: detached ? 'detached' : 'stopped' }
                 : { status: 'failed', reason: error.message, ...(Number.isSafeInteger(error.exitCode) ? { code: error.exitCode } : {}) };
@@ -702,7 +704,16 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             throw error;
         }
         if (snapshot.state === 'cancelled' || snapshot.state === 'interrupted' || snapshot.state === 'paused') throw interrupted();
-        const reason = typeof result.reason === 'string' ? result.reason : null;
+        const reason = typeof result.reason === 'string' ? result.reason : (typeof result.data?.reason === 'string' ? result.data.reason : null);
+        // The worker stopped the attempt itself (no activity, or the maximum duration): plain words, a failure, never retried here.
+        const stopped = plainStopMessage(reason, result.data);
+        if (stopped) {
+            const error = new Error(stopped);
+            error.exitCode = 1;
+            error.workerClassification = classification;
+            error.stoppedByWorker = reason;
+            throw error;
+        }
         const error = new Error(sanitize(`Worker execution failed${reason ? ` (${reason})` : ''}.${result.outputText ? `\n${String(result.outputText).slice(-2048)}` : ''}`));
         error.exitCode = 1;
         error.workerClassification = classification;

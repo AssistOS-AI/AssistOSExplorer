@@ -650,3 +650,29 @@ test('a human-input question is announced with its worker reference and the turn
     // The engine itself sends no answer: the answer is the user's, from RoboFlow.
     assert.equal(h.client.calls.control.length, 0);
 });
+
+// ---- the worker stops an attempt on its own (decision M-33) ----
+test('an attempt the worker stopped for inactivity or for its maximum duration fails with plain words, once, with no retry or stop', async (t) => {
+    const cases = [
+        [{ reason: 'inactive_timeout', data: { minutes: 20 } }, 'Stopped: no activity from the model for 20 minutes'],
+        [{ reason: 'inactive_timeout', data: { inactiveMinutes: 45 } }, 'Stopped: no activity from the model for 45 minutes'],
+        [{ reason: 'inactive_timeout' }, 'Stopped: no activity from the model for the allowed time'],
+        [{ reason: 'deadline_exceeded', data: { minutes: 240 } }, 'Stopped: the task exceeded its maximum duration'],
+        [{ reason: 'deadline_exceeded' }, 'Stopped: the task exceeded its maximum duration'],
+    ];
+    for (const [fields, message] of cases) {
+        const snapshot = { state: 'failed', result: { status: 'failed', outputText: 'partial', ...fields } };
+        const h = await harness(t, { client: scripted(COMPLETE_ROWS(), { snapshot }) });
+        await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'p', owner: h.owner }),
+            (error) => error.message === message && error.exitCode === 1 && error.stoppedByWorker === fields.reason && !error.terminationUnverified);
+        assert.equal(h.store.loadSession(h.sessionId).messages.at(-1).status, 'failed');
+        assert.equal(h.admitted.length, 1, 'admitted once; nothing is retried');
+        assert.equal(h.client.calls.control.length, 0, 'the worker already ended it, so no stop is sent');
+    }
+    // The reason may also arrive in the result's data, as the blocked-task and human-input ends do.
+    const inData = await harness(t, { client: scripted(COMPLETE_ROWS(), { snapshot: { state: 'failed', result: { status: 'failed', outputText: '', data: { reason: 'deadline_exceeded' } } } }) });
+    await assert.rejects(inData.engine.executeTurn({ sessionId: inData.sessionId, prompt: 'p', owner: inData.owner }), /Stopped: the task exceeded its maximum duration/);
+    // Any other failure keeps its generic wording.
+    const other = await harness(t, { client: scripted(COMPLETE_ROWS(), { snapshot: { state: 'failed', result: { status: 'failed', reason: 'exit_1', outputText: '' } } }) });
+    await assert.rejects(other.engine.executeTurn({ sessionId: other.sessionId, prompt: 'p', owner: other.owner }), (error) => /Worker execution failed \(exit_1\)/.test(error.message) && error.stoppedByWorker === undefined);
+});
