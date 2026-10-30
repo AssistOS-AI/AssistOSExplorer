@@ -3,7 +3,7 @@
 // protected name that existed at verification) or REFUSED `mask_unverified`. Any other outcome, or any real content visible through a
 // protected name, fails. sha256sum manifests of the worker store, the other HOMEs and the outside directory the swaps point at must be
 // identical before and after (nothing outside the grant is ever written).
-//   node race.mjs [starts=200]       run as container root in the nested-podman profile (or as an extra process in the Box worker)
+//   node race.mjs [starts=200] [pauseMs]    (env RACE_PAUSE_MS; default 4) run as container root in the nested-podman profile (or as an extra process in the Box worker)
 // Prints one JSON document; exit 0 on PASS.
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -12,15 +12,30 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createProcView } from '../../../server/execution/procView.mjs';
+import { createWalker } from '../../../server/execution/recoveryWalk.mjs';
+import { classifyGrantName } from '../../../server/views/protectedNames.mjs';
+import { createRecoveryView } from '../../../server/sandbox/executionSupervisor.mjs';
 import { createSandboxLauncher } from '../../../server/sandbox/sandboxLauncher.mjs';
 import { readProcMasks } from '../../../server/sandbox/procMasks.mjs';
 
 const CODE = path.resolve(new URL('../../..', import.meta.url).pathname);
 const SECRET = 'SECRET-DO-NOT-READ';
 
+// Which names each racer operation can change (index = position in the racer's operation list). Used to tell a writer's rename DURING a start
+// (the accepted late-name class) from a protected name that was never touched while the start ran.
+const OP_TOUCHES = [
+    (rel) => rel === 'sub' || rel.startsWith('sub/') || rel.startsWith('sub.real'),
+    (rel) => rel.startsWith('sub/deep'),
+    (rel) => rel === '.data' || rel === 'D' || rel === 'data.tmp' || rel.startsWith('.data/') || rel.startsWith('D/'),
+    (rel) => rel === '.env' || rel === 'env.tmp',
+    () => false,
+    () => false
+];
+
 // ---- the racer (child process): tight loops of renames, symlink swaps and protected-name churn inside the project -----------------------------
 if (process.argv[2] === '--racer') {
-    const [, , , project, out, stopFile] = process.argv;
+    const [, , , project, out, stopFile, pauseArg] = process.argv;
+    const pauseMs = Number(pauseArg ?? 0);
     const p = (...parts) => path.join(project, ...parts);
     const nap = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.floor(Math.random() * 3));
     const quiet = (fn) => { try { fn(); } catch { /* the race is the point */ } };
@@ -40,8 +55,12 @@ if (process.argv[2] === '--racer') {
         () => { quiet(() => fs.symlinkSync('README.md', p('link.env'))); quiet(() => fs.symlinkSync(path.join(out, 'x.secrets'), p('out.secrets'))); nap(); quiet(() => fs.unlinkSync(p('link.env'))); quiet(() => fs.unlinkSync(p('out.secrets'))); }
     ];
     let count = 0;
-    while (!fs.existsSync(stopFile)) { ops[Math.floor(Math.random() * ops.length)](); count += 1; nap(); }
-    process.stdout.write(`${JSON.stringify({ racerOps: count })}\n`);
+    // The pause between operations leaves windows in which a start can complete untouched; without it nearly every start is refused and
+    // the probe proves little. The operations themselves stay back-to-back inside (rename, swap, rename back).
+    const pause = () => { if (pauseMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.floor(Math.random() * 2 * pauseMs)); };
+    const log = [];
+    while (!fs.existsSync(stopFile)) { const i = Math.floor(Math.random() * ops.length); const t0 = Date.now(); ops[i](); log.push([i, t0, Date.now()]); count += 1; nap(); pause(); }
+    process.stdout.write(`${JSON.stringify({ racerOps: count, log })}\n`);
     process.exit(0);
 }
 
@@ -72,6 +91,9 @@ import('/opt/robo-work/server/views/protectedNames.mjs').then(({ classifyGrantNa
 
 // ---- setup -------------------------------------------------------------------------------------------------------------------------------
 const starts = Number(process.argv[2] ?? 200);
+const pauseMs = Number(process.argv[3] ?? process.env.RACE_PAUSE_MS ?? 4);
+// A PASS with (almost) no verified start proves nothing: at least 25 % of the starts (and 30, when there are that many) must verify.
+const verifiedFloor = Math.min(starts, Math.max(30, Math.ceil(starts * 0.25)));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-race-'));
 const project = path.join(root, 'project');
 const out = path.join(root, 'outside');
@@ -100,19 +122,40 @@ function manifest(...dirs) {
     for (const dir of dirs) walk(dir);
     return crypto.createHash('sha256').update(lines.join('\n')).digest('hex');
 }
+// An inventory of the project taken by THIS script, not by prep (and not from prep's record): every object (no link followed) with the name it
+// has, and whether the name is protected. Taken just before each start, it lets the harness say which unmasked protected names were already
+// there before the start (a failure) and which only appeared by a writer's rename or creation afterwards (the accepted limitation).
+function inventory() {
+    const objects = new Map();
+    const walk = (dir, rel) => {
+        let names; try { names = fs.readdirSync(dir); } catch { return; }
+        for (const name of names) {
+            const file = path.join(dir, name); let st; try { st = fs.lstatSync(file, { bigint: true }); } catch { continue; }
+            if (st.isSymbolicLink()) continue;
+            const here = rel === '' ? name : `${rel}/${name}`;
+            objects.set(`${st.dev}:${st.ino}`, { rel: here, protectedName: classifyGrantName(name) !== null });
+            if (st.isDirectory() && !(classifyGrantName(name) !== null)) walk(file, here);
+            else if (st.isDirectory()) { try { for (const inner of fs.readdirSync(file)) { const innerStat = fs.lstatSync(path.join(file, inner), { bigint: true }); objects.set(`${innerStat.dev}:${innerStat.ino}`, { rel: `${here}/${inner}`, protectedName: false }); } } catch { /* raced away */ } }
+        }
+    };
+    walk(project, '');
+    return objects;
+}
 const protectedDirs = [store, path.join(homes, 'robotB'), path.join(homes, 'robotC'), out];
 const before = protectedDirs.map((dir) => manifest(dir));
 
 const view = createProcView({ runtimeRoot: path.join(root, 'runtime') });
 const launcher = createSandboxLauncher({ view, procMasks: readProcMasks() });
+const walker = createWalker({ view: createRecoveryView(view), clock: { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }, releaseDeadlineMs: 6000, pollMs: 100, sandboxRecord: () => null });
 const runtimeDir = path.join(root, 'rt');
 for (const dir of ['channels', 'ctl', 'stage', 'tmp']) fs.mkdirSync(path.join(runtimeDir, dir), { recursive: true });
 const fdOf = (target) => fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
 const homeFd = fdOf(home);
 const projectFd = fdOf(project);
-const result = { starts, verified: 0, refusedMaskUnverified: 0, refusedByBwrapAfterPrep: 0, otherOutcomes: {}, violations: [], protectedSeenInVerified: 0, lateNames: 0, maskedObjectsTotal: 0, errors: [] };
+const stableCandidates = [];
+const result = { starts, verified: 0, refusedMaskUnverified: 0, refusedByBwrapAfterPrep: 0, otherOutcomes: {}, violations: [], protectedSeenInVerified: 0, lateNames: 0, lateRenamed: 0, lateCreated: 0, verifiedFloor, racerPauseMs: pauseMs, bwrapRefusals: [], maskedObjectsTotal: 0, errors: [] };
 
-const racer = spawn(process.execPath, [new URL(import.meta.url).pathname, '--racer', project, out, stopFile], { stdio: ['ignore', 'pipe', 'inherit'] });
+const racer = spawn(process.execPath, [new URL(import.meta.url).pathname, '--racer', project, out, stopFile, String(pauseMs)], { stdio: ['ignore', 'pipe', 'inherit'] });
 let racerText = '';
 racer.stdout.on('data', (chunk) => { racerText += chunk; });
 await new Promise((resolve) => setTimeout(resolve, 300));
@@ -120,6 +163,9 @@ const began = Date.now();
 for (let index = 0; index < starts; index += 1) {
     const marker = crypto.randomBytes(16).toString('base64url');
     let sandbox = null;
+    let bwrapRefusal = null;
+    const tPre = Date.now();
+    const preScan = inventory();
     try {
         sandbox = await launcher.launch({
             role: 'workload', marker, runtimeDir, netMode: 'none', cwd: '/', argv: ['/usr/local/bin/node', '-e', PROBE], env: { PATH: '/usr/local/bin:/usr/bin:/bin' },
@@ -140,7 +186,7 @@ for (let index = 0; index < starts; index += 1) {
             // The chain passed prep and bwrap then failed to build the view because a protected path it had to remount was renamed away
             // by the racer in between ("Unable to apply mount flags: remount ... No such file"): the command never ran, so this is a refused
             // start (no sandbox ran, nothing was exposed), counted apart from the mask_unverified refusals and never as a verified start.
-            if (/^bwrap: /mu.test(errText) && exit.exitCode === 1) { result.refusedByBwrapAfterPrep += 1; continue; }
+            if (/^bwrap: /mu.test(errText) && exit.exitCode === 1) { result.refusedByBwrapAfterPrep += 1; bwrapRefusal = { index, stderr: errText.slice(0, 120) }; continue; }
             result.otherOutcomes.no_probe_result = (result.otherOutcomes.no_probe_result ?? 0) + 1;
             result.errors.push(`start ${index}: the sandbox probe printed no result (exit ${JSON.stringify(exit)}, stderr ${errText.slice(0, 200)})`);
             continue;
@@ -154,8 +200,17 @@ for (let index = 0; index < starts; index += 1) {
         const maskedObjects = new Set(Object.values(sandbox.masked ?? {}).flat().map((entry) => `${entry.dev}:${entry.ino}`));
         if (sandbox.masked === null || sandbox.masked === undefined) result.errors.push(`start ${index}: no evidence of what was masked`);
         for (const violation of found.violations) {
-            if (maskedObjects.has(`${violation.dev}:${violation.ino}`)) result.violations.push(`start ${index}: ${violation.path} (${violation.what}) is an object that was masked at verification`);
-            else result.lateNames += 1;
+            const key = `${violation.dev}:${violation.ino}`;
+            const rel = violation.path.replace(/^\/projects\/p\//u, '');
+            const known = preScan.get(key);
+            if (maskedObjects.has(key)) result.violations.push(`start ${index}: ${violation.path} (${violation.what}) is an object that was masked at verification`);
+            else if (known !== undefined && known.protectedName && known.rel === rel) {
+                // The same object already had this same protected name before the start and nothing masked it. That is a failure unless the writer
+                // touched the name while the start ran (a protected symlink at verification, restored afterwards, is not masked by design): decided
+                // at the end from the racer's own log of what it touched and when.
+                stableCandidates.push({ index, rel, path: violation.path, what: violation.what, tPre, tPost: Date.now() });
+            } else if (known !== undefined) result.lateRenamed += 1; // an object that existed before the start, seen under a protected name only because a writer renamed it
+            else { result.lateCreated += 1; result.violations.push(`start ${index}: ${violation.path} (${violation.what}) is an object that did not exist before the start`); }
         }
         result.maskedObjectsTotal += maskedObjects.size;
     } catch (error) {
@@ -163,17 +218,36 @@ for (let index = 0; index < starts; index += 1) {
         if (code === 'mask_unverified') result.refusedMaskUnverified += 1;
         else { result.otherOutcomes[code] = (result.otherOutcomes[code] ?? 0) + 1; result.errors.push(`start ${index}: ${code} ${String(error?.message ?? error).slice(0, 120)}`); }
     } finally {
-        if (sandbox) { const verdict = await sandbox.release(); if (!verdict.absent || verdict.stageRemoved === false) result.errors.push(`start ${index}: release ${JSON.stringify(verdict)}`); }
+        if (sandbox) {
+            const verdict = await sandbox.release();
+            if (!verdict.absent || verdict.stageRemoved === false) result.errors.push(`start ${index}: release ${JSON.stringify(verdict)}`);
+            if (bwrapRefusal !== null) {
+                // A start that passed prep and failed in bwrap leaves what a failed start leaves: its blocker (the process tree as the ledger would
+                // record it) must be released, with no sandbox process and no staging directory left.
+                const outcome = await walker.walk({ kind: 'process-tree', identity: sandbox.identity, locator: { marker: sandbox.marker } });
+                result.bwrapRefusals.push({ ...bwrapRefusal, releaseAbsent: verdict.absent, stageRemoved: verdict.stageRemoved, blockerOutcome: outcome });
+                if (outcome !== 'released') result.errors.push(`start ${index}: the blocker of a start refused by bwrap was ${outcome}`);
+            }
+        }
     }
 }
 result.ms = Date.now() - began;
 fs.writeFileSync(stopFile, '');
 await new Promise((resolve) => racer.once('exit', resolve));
-result.racerOps = JSON.parse(racerText.trim().split('\n').at(-1) ?? '{}').racerOps ?? 0;
+const racerReport = JSON.parse(racerText.trim().split('\n').at(-1) ?? '{}');
+result.racerOps = racerReport.racerOps ?? 0;
+const racerLog = racerReport.log ?? [];
+// A protected name seen unmasked that was already there before the start is a failure UNLESS the writer touched that name while the start ran.
+for (const candidate of stableCandidates) {
+    const touched = racerLog.some(([i, t0, t1]) => OP_TOUCHES[i](candidate.rel) && t0 <= candidate.tPost && t1 >= candidate.tPre);
+    if (touched) result.lateRenamed += 1;
+    else result.violations.push(`start ${candidate.index}: ${candidate.path} (${candidate.what}) had this protected name before the start, the writer did not touch it during the start, and it was not masked`);
+}
+result.lateNames = result.lateRenamed + result.lateCreated;
 const after = protectedDirs.map((dir) => manifest(dir));
 result.manifestsEqual = before.every((hash, index) => hash === after[index]);
 result.leftSandboxProcesses = view.listProcesses().filter((entry) => entry.cmdline.includes('/projects/p') || entry.cmdline.some((arg) => arg.startsWith('/opt/robo-work/server/sandbox/stage'))).length;
-result.pass = result.violations.length === 0 && result.errors.length === 0 && result.manifestsEqual && result.verified + result.refusedMaskUnverified + result.refusedByBwrapAfterPrep === starts && result.racerOps > 0 && result.leftSandboxProcesses === 0;
+result.pass = result.verified >= verifiedFloor && result.violations.length === 0 && result.errors.length === 0 && result.manifestsEqual && result.verified + result.refusedMaskUnverified + result.refusedByBwrapAfterPrep === starts && result.racerOps > 0 && result.leftSandboxProcesses === 0;
 fs.closeSync(homeFd);
 fs.closeSync(projectFd);
 fs.rmSync(root, { recursive: true, force: true });

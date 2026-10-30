@@ -2,7 +2,8 @@
 // must still stop and release promptly, and A must release too. The trick (python3):
 //   threading.Thread(target=lambda: time.sleep(40)).start(); ctypes.CDLL(None).pthread_exit(None)
 // leaves the leader State Z / Threads 2: its descriptors and mnt/net links are unreadable from outside, but its live thread's are readable.
-// Needs python3 in the workload image (perl has no `threads` here, and node cannot exit one thread). Without it the probe reports that it
+// Needs python3 in the workload image (it is used whenever present: /usr/bin/python3 or /usr/local/bin/python3; the worker image gets python3).
+// perl has no `threads` here and node cannot exit one thread. Without python3 the probe reports that it
 // cannot produce the state and exits 3. Run as container root in the nested-podman profile. Prints one JSON document.
 import crypto from 'node:crypto';
 import fs from 'node:fs';

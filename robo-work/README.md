@@ -144,6 +144,21 @@ From the repository root: `node --test 'robo-work/tests/*.test.mjs'`. Tests use 
 
 Confinement of robot processes is Node plus `/usr/bin/bwrap`. Its modules are in `server/sandbox/` (`bwrapArgs`, `sandboxLauncher`, `sandboxPrep`, `protectedScan`, `seccompBpf`, `executionNetwork`, `stage.sh`, `fdTrim`) with tests in `tests/sandbox/`. The grant resolver (`server/views/grantResolver.mjs`) supplies the open grant-root descriptors that are handed to the launcher. There is no Rust code, native helper, keeper or FUSE file server in this tree.
 
+### Protected-name masks: how they work and their known limits
+
+Protected names (`.env`, `master-key`, `*.secrets`, `.ploinky`, `.data`, `.ploinky-box`, `.roboteam`, folded and Unicode-normalised) inside a project grant are hidden when a sandbox starts. `sandboxPrep` (root, inside a private mount namespace) opens the grant by an anchored `O_NOFOLLOW` walk, refuses a directory whose device and inode differ from the supervisor's record, scans it, binds an empty read-only file or directory over each protected entry (and over each provider `exclusions` path), scans the real tree again, and verifies every mask through a fresh descriptor of the staging view. Only then does bwrap start. A start that cannot be verified is refused `mask_unverified` and no robot code runs. A protected symlink is not masked (its target is governed by its own name).
+
+Known limits, accepted and recorded (decision M-41, r10 AC9):
+
+| Limit | What happens | Why it is not closed |
+| --- | --- | --- |
+| A name created later | A protected name that a writer creates, or attaches to another object by renaming it, AFTER verification is visible in a sandbox that is already running; the next start masks it | Masks are mounts of the start; the project stays live (Daniel, 2026-10-30) |
+| A masked object renamed after verification | The mask is attached to the object, so it moves with the object: the object stays hidden under its new name, and the old name now belongs to whatever the writer put there | A mount follows the object, not the name |
+| A rename and rename-back inside the mount calls | A writer that renames a protected object away and another object in, mounts run, and both are renamed back within the few milliseconds between the second scan and the mounts, can make a mask land on the other object; verification then confirms the NAME is masked while the scanned object is not | mount(8) resolves the target path at the moment of the call; the second scan of the real tree (prep) narrows the window but a rename and rename-back inside it cannot be told apart |
+| A path renamed under bwrap's remount | Between prep and bwrap's own recursive bind, a writer can rename a masked path away; bwrap then fails ("Unable to apply mount flags ... No such file") and the command never runs. This is a refused start (observed 1 in 200 under a racing writer), not an exposure; its blocker is released | The refusal comes after prep from bwrap, so it is not the `mask_unverified` code |
+
+The rename windows need a writer outside the sandbox (Explorer, a human, trusted code): a sandboxed robot cannot rename or delete a masked entry (`EBUSY`). A late protected name can also be made by another robot that shares the grant; a sandbox already running sees it until it ends. `tests/sandbox/live/race.mjs` measures them under a hostile racing writer (200 starts: each verified or refused; no object masked at verification ever shows its real content; the manifests of the worker store and other HOMEs are unchanged; at least 25 % of the starts must verify, so the run cannot pass by refusing everything) and `tests/sandbox/live/hostilepeer.mjs`, `crash.mjs`, `restart.mjs`, `backtoback.mjs`, `smoke.mjs` cover the other confinement and recovery claims. The live probes run as container root in the nested-podman profile (or as extra processes in the Box worker) and print one JSON document.
+
 
 ## Wiring (r10)
 
