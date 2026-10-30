@@ -10,7 +10,7 @@ import { signIn } from '../lib/auth.mjs';
 import { setComposer } from '../lib/webchat.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
 import {
-  discoverContainers, nestedLogsMerged, startPoller, stopPoller, readPoll, bwrapMarkerProcesses, createProjectFixture, sentinelHits,
+  discoverContainers, nestedLogsMerged, startPoller, stopPoller, readPoll, bwrapMarkerProcesses, createProjectFixture, sentinelHits, collectEnvironment, removeRunDirectory,
 } from '../lib/robowork-e2e.mjs';
 import {
   sleep, waitFor, readLedgerSince, markerOf, terminalEvent, queuedEvent, toolOutputs, finalText, workerProcesses, orphanReport, isClean, apiOk,
@@ -32,6 +32,14 @@ const MAX_ATTEMPTS = 3;
 const TERMINAL_FLOW = new Set(['completed', 'failed', 'terminated']);
 const stamp = () => Date.now().toString(36);
 
+// Run-owned project directories are removed after each test, once a listing (names and sizes, no contents) is in the evidence. The phase files
+// and outputs the assertions need are saved by the test before it ends.
+const runDirectories = [];
+function ownProject(ctx, name) {
+  runDirectories.push({ ctx, name });
+  return name;
+}
+
 function context(label, testInfo) {
   const workspaceRoot = smokeConfig.workspaceRoot;
   assert.ok(path.isAbsolute(workspaceRoot), 'Set SMOKE_WORKSPACE_ROOT to the deployed workspace.');
@@ -41,7 +49,10 @@ function context(label, testInfo) {
     fs.mkdirSync(path.dirname(path.join(evidenceDir, name)), { recursive: true });
     fs.writeFileSync(path.join(evidenceDir, name), typeof value === 'string' ? value : JSON.stringify(value, null, 2));
   };
-  return { workspaceRoot, evidenceDir, save, containers: discoverContainers({ workspaceRoot }), startedMs: Date.now(), testInfo };
+  const containers = discoverContainers({ workspaceRoot });
+  // What this run ran on (deployed source revisions, image IDs); asserts SMOKE_EXPECT_EXPLORER_COMMIT when it is set.
+  save('environment.json', collectEnvironment({ workspaceRoot, containers }));
+  return { workspaceRoot, evidenceDir, save, containers, startedMs: Date.now(), testInfo };
 }
 
 async function openRoboTeam(page) {
@@ -54,28 +65,6 @@ async function ensureRobot(page) {
     await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name: robotName, codingAgents: ['opencode'] } });
   }
   return listed.robots;
-}
-
-// A RoboFlow phase is dispatched with the background binding, which cannot configure a worker robot whose desired configuration changed
-// since it was provisioned (`worker_robot_stale`). An administrator request does: PATCH coding-agents with the unchanged agents re-ensures
-// the robot on the worker. The scenario does that first, for every robot, and records each result.
-async function ensureRobotsCurrent(page, save, workspaceRoot) {
-  const listed = await apiOk(roboTeamApi, page, { path: 'api/robots' });
-  const results = [];
-  for (const robot of listed.robots) {
-    const reply = await roboTeamApi(page, { method: 'PATCH', path: `api/robots/${robot.id}/coding-agents`, body: { codingAgents: robot.codingAgents } });
-    const entry = { robot: robot.name, run: robot.run, status: reply.status, worker: reply.payload?.worker ?? reply.payload?.error ?? null };
-    if (reply.status === 409) {
-      // Not stopped / has unfinished tasks: a user WebChat turn to that robot goes through the owner-grant ensure path instead.
-      const scratch = `e2e-ensure-${stamp()}`;
-      fs.mkdirSync(path.join(workspaceRoot, scratch), { recursive: true });
-      entry.fallbackAnswer = (await chatTurn(page, scratch, 'Reply with the single word OK.', { robot: robot.name })).slice(0, 200);
-      await page.goto(`${ROBOTEAM_BASE_PATH}`, { waitUntil: 'load' });
-    }
-    results.push(entry);
-  }
-  save('ensure-robots.json', results);
-  return results;
 }
 
 // Sends one WebChat turn to the robot, targeting the project, and waits for the answer.
@@ -189,15 +178,33 @@ const phasePrompts = (nonce, { sleepSeconds = 0 } = {}) => ({
 // ---------------------------------------------------------------------------------------------------------------- A
 
 test.describe('RoboWork scenarios', () => {
+  test.afterEach(() => {
+    for (const { ctx, name } of runDirectories.splice(0)) {
+      const root = path.join(ctx.workspaceRoot, name);
+      try {
+        const listing = [];
+        const walk = (directory, prefix) => {
+          for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const relative = path.posix.join(prefix, entry.name);
+            if (entry.isDirectory()) { listing.push({ path: `${relative}/` }); walk(path.join(directory, entry.name), relative); }
+            else listing.push({ path: relative, bytes: fs.statSync(path.join(directory, entry.name)).size });
+          }
+        };
+        walk(root, '');
+        ctx.save('project-listing.json', listing);
+      } catch (error) { ctx.save('project-listing.json', { error: String(error?.code ?? error) }); }
+      removeRunDirectory({ workspaceRoot: ctx.workspaceRoot, name });
+    }
+  });
+
   test('A: two-phase RoboFlow runs as two ordered worker executions', async ({ page }, testInfo) => {
     test.skip(!FLOW, 'Opt in with SMOKE_ROBOWORK_FLOW=1.');
     test.setTimeout(MAX_ATTEMPTS * 8 * 60_000);
     const ctx = context('flow', testInfo);
-    const project = `e2e-flow-${stamp()}`;
+    const project = ownProject(ctx, `e2e-flow-${stamp()}`);
     const attempts = [];
     let outcome = null;
     await openRoboTeam(page);
-    await ensureRobotsCurrent(page, ctx.save, ctx.workspaceRoot);
     startPoller(ctx.containers);
     try {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -249,7 +256,7 @@ test.describe('RoboWork scenarios', () => {
     test.skip(!LATE, 'Opt in with SMOKE_ROBOWORK_LATE=1.');
     test.setTimeout(MAX_ATTEMPTS * 8 * 60_000);
     const ctx = context('late', testInfo);
-    const project = `e2e-late-${stamp()}`;
+    const project = ownProject(ctx, `e2e-late-${stamp()}`);
     const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
     const lateSentinel = `LATE-SENTINEL-${crypto.randomBytes(9).toString('hex')}`;
     const attempts = [];
@@ -335,7 +342,7 @@ test.describe('RoboWork scenarios', () => {
     test.skip(!RESTART, 'Opt in with SMOKE_ROBOWORK_RESTART=1 (this restarts roboTeamAgent).');
     test.setTimeout(20 * 60_000);
     const ctx = context('restart', testInfo);
-    const project = `e2e-restart-${stamp()}`;
+    const project = ownProject(ctx, `e2e-restart-${stamp()}`);
     const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
     const nonce = crypto.randomBytes(6).toString('hex');
     const prompts = phasePrompts(nonce, { sleepSeconds: 60 });
@@ -345,7 +352,6 @@ test.describe('RoboWork scenarios', () => {
     let finished = null;
     let flow = null;
     await openRoboTeam(page);
-    await ensureRobotsCurrent(page, ctx.save, ctx.workspaceRoot);
     startPoller(ctx.containers);
     try {
       const workflow = await createTwoPhaseWorkflow(page, { name: `e2e restart ${stamp()}`, ...prompts });

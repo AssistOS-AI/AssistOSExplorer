@@ -163,3 +163,54 @@ export function sentinelHits(text, sentinels) {
   const haystack = String(text);
   return sentinels.filter((sentinel) => haystack.includes(sentinel));
 }
+
+// ---------------------------------------------------------------------------------------------------------------- environment identity
+
+// git from outside any repository (a cwd under the file-parser workspace breaks git discovery on this host).
+function gitHead(repository) {
+  try { return run('git', ['-C', repository, 'rev-parse', 'HEAD'], { timeout: 20_000 }).trim(); } catch (error) { return `unavailable: ${String(error.message).split('\n')[0].slice(0, 120)}`; }
+}
+
+function hostPloinkyCheckout() {
+  const binary = process.env.SMOKE_PLOINKY_BIN || (() => { try { return run('sh', ['-c', 'command -v ploinky']).trim(); } catch { return ''; } })();
+  if (!binary) return null;
+  try { return path.dirname(path.dirname(fs.realpathSync(binary))); } catch { return null; }
+}
+
+// What the run was done on: the deployed source revisions, the host ploinky checkout and the image IDs of the Box and of the two
+// containers. Read-only. Saved with every run; SMOKE_EXPECT_EXPLORER_COMMIT (a full or abbreviated commit) is asserted against the deployed AchillesIDE HEAD.
+export function collectEnvironment({ workspaceRoot, containers }) {
+  const imageId = (argv) => { try { return run('podman', argv, { timeout: 20_000 }).trim(); } catch (error) { return `unavailable: ${String(error.message).split('\n')[0].slice(0, 120)}`; } };
+  const ploinky = hostPloinkyCheckout();
+  const environment = {
+    collectedAt: new Date().toISOString(),
+    workspaceRoot,
+    deployedRevisions: {
+      AchillesIDE: gitHead(path.join(workspaceRoot, '.ploinky/repos/AchillesIDE')),
+      AdvancedLanguageAgent: gitHead(path.join(workspaceRoot, 'AdvancedLanguageAgent')),
+      ploinky: { checkout: ploinky, head: ploinky ? gitHead(ploinky) : null },
+    },
+    images: {
+      box: { container: containers.box, imageId: imageId(['inspect', '--format', '{{.Image}}', containers.box]) },
+      worker: { container: containers.worker, imageId: imageId(['exec', containers.box, 'podman', 'inspect', '--format', '{{.Image}}', containers.worker]) },
+      roboTeam: { container: containers.roboTeam, imageId: imageId(['exec', containers.box, 'podman', 'inspect', '--format', '{{.Image}}', containers.roboTeam]) },
+    },
+    expectedExplorerCommit: process.env.SMOKE_EXPECT_EXPLORER_COMMIT || null,
+  };
+  const expected = environment.expectedExplorerCommit;
+  if (expected) {
+    const head = environment.deployedRevisions.AchillesIDE;
+    if (!/^[0-9a-f]{7,40}$/i.test(expected) || !head.toLowerCase().startsWith(expected.toLowerCase())) {
+      throw new Error(`The deployed AchillesIDE HEAD ${head} does not match SMOKE_EXPECT_EXPLORER_COMMIT ${expected}.`);
+    }
+  }
+  return environment;
+}
+
+// Removes a run-owned project directory: only a directory directly under the workspace root whose name starts with one of the run prefixes.
+export function removeRunDirectory({ workspaceRoot, name, prefixes = ['e2e-flow-', 'e2e-late-', 'e2e-restart-'] }) {
+  if (!prefixes.some((prefix) => name.startsWith(prefix)) || name.includes('/') || name.includes('..')) throw new Error(`Refusing to remove ${name}.`);
+  const target = path.join(workspaceRoot, name);
+  if (path.dirname(target) !== workspaceRoot) throw new Error(`Refusing to remove ${target}.`);
+  fs.rmSync(target, { recursive: true, force: true });
+}

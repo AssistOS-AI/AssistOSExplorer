@@ -9,7 +9,7 @@ import { setComposer } from '../lib/webchat.mjs';
 import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
 import {
-  discoverContainers, nestedLogsMerged, startPoller, stopPoller, readPoll, bwrapMarkerProcesses, readLedger,
+  discoverContainers, nestedLogsMerged, startPoller, stopPoller, readPoll, bwrapMarkerProcesses, readLedger, collectEnvironment,
   createProjectFixture, sentinelHits,
 } from '../lib/robowork-e2e.mjs';
 
@@ -51,6 +51,7 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
     };
     const containers = discoverContainers({ workspaceRoot });
     save('containers.json', containers);
+    save('environment.json', collectEnvironment({ workspaceRoot, containers }));
     const startedAt = new Date(Date.now() - 2000).toISOString();
     const outcome = { robotName, projectName, startedAt, steps: {} };
     let fixture;
@@ -191,6 +192,7 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
     fs.mkdirSync(evidenceDir, { recursive: true });
     const save = (name, value) => fs.writeFileSync(path.join(evidenceDir, name), typeof value === 'string' ? value : JSON.stringify(value, null, 2));
     const containers = discoverContainers({ workspaceRoot });
+    save('environment.json', collectEnvironment({ workspaceRoot, containers }));
     const commands = [
       'stat -c %s .env master-key x.secrets sub/.env',
       'ls -A .data sub/.data .ploinky sub/.ploinky .roboteam',
