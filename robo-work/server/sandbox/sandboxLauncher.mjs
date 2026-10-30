@@ -58,8 +58,9 @@ import { SandboxError, codeForPrepExit, sandboxError } from './sandboxErrors.mjs
 
 export const STAGE_SCRIPT = fileURLToPath(new URL('./stage.sh', import.meta.url));
 // Where a workload or terminal sandbox sees stage.sh (bound read-only from the supervisor's own copy): `stage.sh final`
-// runs inside the sandbox, where the supervisor's code path does not exist.
-export const SANDBOX_STAGE_SCRIPT = '/opt/robo-work/stage.sh';
+// runs inside the sandbox, where the supervisor's code path does not exist. Its own top-level directory: a read-only
+// /opt/robo-work bind would leave bwrap unable to create the file mount point.
+export const SANDBOX_STAGE_SCRIPT = '/rw-stage/stage.sh';
 export const TOOL_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const REQUIRED_TOOLS = ['setpriv', 'unshare', 'mount', 'umount', 'node'];
 const ARCH = { x64: 'x86_64', arm64: 'aarch64' };

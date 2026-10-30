@@ -62,7 +62,7 @@ test('workload: the chain, the marker on argv, the descriptor map, and a gated i
         assert.equal(record.args[prep + 2], String(SUPERVISOR_PID));
         assert.equal(record.args[prep + 3], '', 'no directory descriptor is handed over: prep re-opens them in its own namespace');
         assert.equal(record.args[prep + 4], '7', 'bwrap args at slot 7');
-        assert.deepEqual(record.args.slice(prep + 6), ['--', '/bin/sh', '/opt/robo-work/stage.sh', 'final', '0,1,2', 'HOME', '/usr/bin/echo', 'hi'],
+        assert.deepEqual(record.args.slice(prep + 6), ['--', '/bin/sh', '/rw-stage/stage.sh', 'final', '0,1,2', 'HOME', '/usr/bin/echo', 'hi'],
             'the bwrap command is the tail of the chain, not part of the args buffer; stage.sh final runs at its in-sandbox path');
         const prepSpec = JSON.parse(record.args[prep + 5]);
         assert.equal(record.args[prep + 6], '--');
