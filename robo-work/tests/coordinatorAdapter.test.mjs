@@ -543,7 +543,7 @@ test('unmapped ops are refused before any state access; burning the token is the
     const verifier = createVerifierConfig({ secret, audience: PROVIDER_PRINCIPAL, coordinators: [COORDINATOR], replayCache: createReplayCache() });
     const adapter = createCoordinatorAdapter({ store: spy, workspaceId: WORKSPACE, verifier });
     const unknownReference = crypto.randomBytes(16).toString('base64url');
-    for (const op of ['take-control', 'resume', 'answer']) {
+    for (const op of ['take-control', 'resume']) {
         calls.length = 0;
         expectError(() => adapter.controlReference(hop(secret, { operationId: newId(), op }, { path: referencePath(unknownReference, 'control'), claims: ownerClaims('alice') })),
             'CoordinatorAuthError', 'operation_unavailable', 'operation_unmapped');
@@ -555,7 +555,7 @@ test('unmapped ops are refused before any state access; burning the token is the
             'WorkerStateError', 'invalid_request');
         assert.deepEqual(calls, ['consumeTokenIds']);
     }
-    assert.equal(count(dir, 'token_replay'), 5);
+    assert.equal(count(dir, 'token_replay'), 4);
 });
 
 test('lifecycle: administrator grant only, lifecycle-scope receipts; robot and operation reads for the coordinator', (t) => {

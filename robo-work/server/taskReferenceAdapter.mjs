@@ -21,8 +21,8 @@ import {
 // `pause` is a fence on an observation reference and invalid_request on an execution
 // reference, both decided by S1 after visibility); the others are refused after verification
 // and before any state access.
-export const MAPPED_CONTROL_OPS = Object.freeze(['stop', 'message', 'pause']);
-export const UNMAPPED_CONTROL_OPS = Object.freeze(['take-control', 'resume', 'answer']);
+export const MAPPED_CONTROL_OPS = Object.freeze(['stop', 'message', 'pause', 'answer']);
+export const UNMAPPED_CONTROL_OPS = Object.freeze(['take-control', 'resume']);
 const DEFAULT_EVENTS = Object.freeze({ after: 0, limit: 100 });
 const LOGICAL_KINDS = Object.freeze(['task', 'session', 'flow']);
 export const RECORDED_ADMISSION_STATES = Object.freeze(['queued', 'pending-coordinator']);

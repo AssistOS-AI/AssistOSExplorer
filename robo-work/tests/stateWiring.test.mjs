@@ -222,3 +222,58 @@ test('engine reads: running admissions, pending completions and unattested robot
     store.attestReadiness(syntheticContext({ robotOwnerId: ROBOTS, scope: 'scope-reattest' }), { robotId });
     assert.deepEqual(store.listUnattestedRobots(), []);
 });
+
+// ---- M-14: channel events and the `answer` control ---------------------------------------------------------------------------
+
+const REQUEST_ID = 'rQ0123456789abcdefghij';
+
+function askedAndEnded(store, robotId, owner) {
+    const { admitted, ids } = running(store, robotId, owner);
+    const asked = store.recordChannelEvent({ ...ids, type: 'human-input-request', data: { requestId: REQUEST_ID, question: 'Ship it?', options: ['yes', 'no', 'later'] } });
+    return { admitted, ids, asked };
+}
+const answerRequest = (referenceId, overrides = {}) => ({ referenceId, operationId: newId(), op: 'answer', payload: { requestId: REQUEST_ID, answer: 'yes' }, ...overrides });
+
+test('channel events: one per kind per attempt, durable, bounded; a different second request conflicts', (t) => {
+    const { store, robotId } = setup(t);
+    const owner = user('alice');
+    const { admitted, ids, asked } = askedAndEnded(store, robotId, owner);
+    assert.equal(asked.duplicate, false);
+    assert.deepEqual(store.recordChannelEvent({ ...ids, type: 'human-input-request', data: { requestId: REQUEST_ID, question: 'Ship it?', options: ['yes', 'no', 'later'] } }), { ...asked, duplicate: true });
+    expectCode(assert, () => store.recordChannelEvent({ ...ids, type: 'human-input-request', data: { requestId: 'other0123456789abcdefg', question: 'x', options: [] } }), 'operation_conflict');
+    store.recordChannelEvent({ ...ids, type: 'task-failed', data: { message: 'blocked' } });
+    expectCode(assert, () => store.recordChannelEvent({ ...ids, type: 'task-failed', data: { message: 'x'.repeat(50 * 1024) } }), 'operation_conflict');
+    expectCode(assert, () => store.recordChannelEvent({ ...ids, type: 'ala', data: {} }), 'invalid_request');
+    const rows = store.listReferenceEvents(owner, { referenceId: admitted.reference.id, after: 0, limit: 100 }).events;
+    assert.deepEqual(rows.map((row) => row.type), ['state', 'state', 'human-input-request', 'task-failed']);
+    const big = running(store, robotId, user('bob'));
+    expectCode(assert, () => store.recordChannelEvent({ ...big.ids, type: 'task-failed', data: { message: 'x'.repeat(50 * 1024) } }), 'invalid_request');
+    const queued = store.admit(owner, admitRequest(robotId, { specification: spec2() }, owner));
+    expectCode(assert, () => store.recordChannelEvent({ executionId: queued.executionId, attemptId: queued.attemptId, type: 'task-failed', data: { message: 'x' } }), 'operation_conflict');
+});
+
+test('answer: owner-only, only after the attempt ended human-input, recorded once with its event, replayable; conflicting answers fail', (t) => {
+    const { store, robotId } = setup(t);
+    const alice = user('alice');
+    const { admitted, ids } = askedAndEnded(store, robotId, alice);
+    const referenceId = admitted.reference.id;
+    expectCode(assert, () => store.controlReference(alice, answerRequest(referenceId)), 'operation_conflict');
+    store.beginAttemptEnd(adapter(), { ...ids, expectedState: 'running', outcome: { classification: 'human-input', outputText: 'waiting', data: { reason: 'human_input', requestId: REQUEST_ID } } });
+    expectCode(assert, () => store.controlReference(user('mallory'), answerRequest(referenceId)), 'not_found');
+    expectCode(assert, () => store.controlReference(syntheticContext({ originKey: 'user:root', ownerId: 'user:root', scope: 'scope-root', robotOwnerId: ROBOTS, administrator: true }), answerRequest(referenceId)), 'forbidden');
+    expectCode(assert, () => store.controlReference(alice, answerRequest(referenceId, { payload: { requestId: 'unknown0123456789abcd', answer: 'yes' } })), 'not_found');
+    for (const payload of [{ requestId: REQUEST_ID }, { requestId: REQUEST_ID, answer: '' }, { requestId: REQUEST_ID, answer: 'x'.repeat(8001) }, { requestId: 'short', answer: 'yes' }, { requestId: REQUEST_ID, answer: 'yes', extra: 1 }]) {
+        expectCode(assert, () => store.controlReference(alice, answerRequest(referenceId, { payload })), 'invalid_request');
+    }
+    const first = answerRequest(referenceId);
+    const receipt = store.controlReference(alice, first);
+    assert.deepEqual(receipt, { operationId: first.operationId, op: 'answer', outcome: 'accepted', delivery: 'applied', state: 'human-input', requestId: REQUEST_ID });
+    assert.deepEqual(store.controlReference(alice, first), receipt, 'the same operation: the recorded receipt');
+    const again = store.controlReference(alice, answerRequest(referenceId));
+    assert.equal(again.outcome, 'accepted', 'the same answer under another operation ID: the same receipt');
+    expectCode(assert, () => store.controlReference(alice, answerRequest(referenceId, { payload: { requestId: REQUEST_ID, answer: 'no' } })), 'operation_conflict');
+    expectCode(assert, () => store.controlReference(alice, { ...first, payload: { requestId: REQUEST_ID, answer: 'no' } }), 'operation_conflict');
+    const rows = store.listReferenceEvents(alice, { referenceId, after: 0, limit: 100 }).events;
+    assert.deepEqual(rows.filter((row) => row.type === 'human-input-answered').map((row) => row.data), [{ requestId: REQUEST_ID, answer: 'yes' }], 'a single answered event');
+    assert.deepEqual(store.takePendingControls({ ...ids }), [], 'an answer is applied, not pending delivery');
+});

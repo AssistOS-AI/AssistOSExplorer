@@ -21,7 +21,7 @@ import { canonicalJson, fail } from './stateProtocol.mjs';
 // stop recorded by a pause or cancellation fence; fence stops do not count toward the
 // `controls` capacity (Part D).
 
-export const CONTROL_OPS = Object.freeze(['stop', 'message', 'pause']);
+export const CONTROL_OPS = Object.freeze(['stop', 'message', 'pause', 'answer']);
 export const EVENTS_MAX_LIMIT = 1000;
 // Schema version 7 (RoboWork r10 wiring): output events. `type` is `state` (lifecycle), `ala` (one record that the
 // orchestration domain wrote, relayed unchanged as `data: {record}`) or `truncated` (`data: {dropped, reason}`: records
@@ -40,13 +40,18 @@ export const RESERVED_MARKER_SLOTS = 2;
 export const EVENT_LIMIT_REASON = 'event_limit';
 export const EVENTS_PAGE_MAX_BYTES = 512 * 1024;
 export const OUTPUT_EVENT_TYPES = Object.freeze(['ala', 'truncated']);
+// Channel events (RoboWork r10, decision M-14): `task-failed` {message} (the failure channel), `human-input-request` {requestId, question,
+// options} (the human-input channel) and `human-input-answered` {requestId, answer} (the `answer` control). Each is recorded durably
+// before the channel replies or the answer is acknowledged; they are bounded by CHANNEL_EVENT_MAX_BYTES, one request per attempt.
+export const CHANNEL_EVENT_TYPES = Object.freeze(['task-failed', 'human-input-request']);
+export const CHANNEL_EVENT_MAX_BYTES = 40 * 1024;
 
 export const OBSERVATION_SCHEMA_SQL = `
 CREATE TABLE reference_event (
     reference_id TEXT NOT NULL REFERENCES reference(id),
     sequence INTEGER NOT NULL CHECK (sequence >= 1),
     at INTEGER NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('state', 'ala', 'truncated')),
+    type TEXT NOT NULL CHECK (type IN ('state', 'ala', 'truncated', 'task-failed', 'human-input-request', 'human-input-answered')),
     data TEXT NOT NULL,
     PRIMARY KEY (reference_id, sequence)
 );
@@ -59,7 +64,7 @@ CREATE TABLE reference_control (
     reference_id TEXT NOT NULL REFERENCES reference(id),
     actor_key TEXT NOT NULL,
     operation_id TEXT NOT NULL,
-    op TEXT NOT NULL CHECK (op IN ('stop', 'message', 'pause')),
+    op TEXT NOT NULL CHECK (op IN ('stop', 'message', 'pause', 'answer')),
     payload TEXT,
     digest TEXT NOT NULL,
     response TEXT NOT NULL,
@@ -67,7 +72,7 @@ CREATE TABLE reference_control (
     source TEXT NOT NULL CHECK (source IN ('relay', 'fence')),
     created_at INTEGER NOT NULL,
     PRIMARY KEY (reference_id, actor_key, operation_id),
-    CHECK ((op = 'message') = (payload IS NOT NULL)),
+    CHECK ((op IN ('message', 'answer')) = (payload IS NOT NULL)),
     CHECK (source = 'relay' OR op = 'stop')
 );
 CREATE TRIGGER reference_event_immutable BEFORE UPDATE ON reference_event BEGIN SELECT RAISE(ABORT, 'immutable'); END;
@@ -181,6 +186,30 @@ export function appendOutputEvents(db, referenceId, events, now) {
     }
     if (stored > 0) db.prepare('UPDATE reference_cursor SET last_sequence = ? WHERE reference_id = ?').run(sequence, referenceId);
     return { stored, dropped };
+}
+
+// Appends one channel or answer event (no bound beyond its size: the callers allow at most one per kind per attempt).
+export function appendChannelEvent(db, referenceId, type, data, now) {
+    const text = canonicalJson(data);
+    if (Buffer.byteLength(text, 'utf8') > CHANNEL_EVENT_MAX_BYTES) fail('invalid_request');
+    let cursor = readCursor(db, referenceId);
+    if (!cursor) {
+        db.prepare('INSERT INTO reference_cursor (reference_id, last_sequence, first_retained) VALUES (?, 0, 1)').run(referenceId);
+        cursor = { last_sequence: 0, first_retained: 1 };
+    }
+    const sequence = cursor.last_sequence + 1;
+    db.prepare('INSERT INTO reference_event (reference_id, sequence, at, type, data) VALUES (?, ?, ?, ?, ?)').run(referenceId, sequence, now, type, text);
+    db.prepare('UPDATE reference_cursor SET last_sequence = ? WHERE reference_id = ?').run(sequence, referenceId);
+    return sequence;
+}
+
+// The first event of `type` of a reference whose data names `requestId`, or undefined.
+export function findChannelEvent(db, referenceId, type, requestId) {
+    for (const row of db.prepare('SELECT sequence, data FROM reference_event WHERE reference_id = ? AND type = ? ORDER BY sequence').all(referenceId, type)) {
+        const data = JSON.parse(row.data);
+        if (requestId === undefined || data.requestId === requestId) return { sequence: row.sequence, data };
+    }
+    return undefined;
 }
 
 // Controls still pending delivery for a reference, oldest first, with their payloads (never returned by a read).

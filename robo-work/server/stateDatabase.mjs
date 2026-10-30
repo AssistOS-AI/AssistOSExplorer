@@ -17,7 +17,7 @@ import { OBLIGATION_SCHEMA_SQL } from './stateObligations.mjs';
 // columns, all in this one bump, then once more for the S6 review fixes under delta K-1 (6):
 // the open-continuation index keyed per coordinator and the obligation acceptance sequence.
 // There are no deployed stores to migrate (R18).
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 export const STORE_DIRECTORY = 'execution-store';
 export const STORE_FILE = 'worker-state.sqlite';
 

@@ -34,10 +34,10 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
     const runs = [];
     const logs = [];
     const factory = {
-        async open({ item, plan, context }) {
+        async open({ item, plan, context, channels }) {
             if (openFails) throw openFails;
             const run = {
-                item, plan, ended: [], prompt: null, received: [], exitedControl: {}, stdinFlushMs: 0,
+                item, plan, channels, ended: [], prompt: null, received: [], exitedControl: {}, stdinFlushMs: 0,
                 stdout: new PassThrough(), stderr: new PassThrough()
             };
             // The bytes are seen at once; the write callback (the flush) comes `stdinFlushMs` later, like a slow consumer.
@@ -73,7 +73,7 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
     };
     const dispatcher = createDispatcher({
         store: storeWrap(store), workspaceId: WORKSPACE, workspaceRoot: '/ws', factory, log: (event, fields) => logs.push({ event, ...fields }),
-        options: { pollMs: 10, controlPollMs, drainMs: 100, exitGraceMs: 80, maxConcurrent, resultBytes: 1500 }
+        options: { pollMs: 10, controlPollMs, drainMs: 100, exitGraceMs: 80, failureAbortMs: 20, humanInputGraceMs: 150, maxConcurrent, resultBytes: 1500 }
     });
     t.after(() => dispatcher.close());
     const alice = owner('alice');
@@ -115,7 +115,8 @@ test('a pending message control is written to ALA stdin and acknowledged; a stop
     store.controlReference(alice, { referenceId, operationId: newId(), op: 'message', payload: { message: 'wrapped', displayText: 'plain follow-up', id: 'm-1' } });
     await wait(() => runs[0].received.length === 1, 'message delivered');
     assert.deepEqual(runs[0].received[0], { type: 'message', id: 'm-1', message: 'wrapped', displayText: 'plain follow-up' });
-    assert.equal(store.takePendingControls({ executionId: admitted.executionId, attemptId: admitted.attemptId }).length, 0);
+    // The bytes are seen before the write callback, so the acknowledgement follows a moment later.
+    await wait(() => store.takePendingControls({ executionId: admitted.executionId, attemptId: admitted.attemptId }).length === 0, 'acknowledged');
     runs[0].stdout.write('partial text');
     store.controlReference(alice, { referenceId, operationId: newId(), op: 'stop' });
     await wait(() => view(admitted).state === 'cancelled', 'cancelled');
@@ -292,4 +293,64 @@ test('a sandbox launch failure is logged with its code and detail and recorded a
     const entry = logs.find((line) => line.event === 'execution_failed');
     assert.equal(entry.error, 'mask_unverified');
     assert.equal(entry.detail, 'mask check');
+});
+
+// ---- M-14: the worker-hosted channels --------------------------------------------------------------------------------------
+
+const events = (store, owner, admitted) => store.listReferenceEvents(owner, { referenceId: admitted.reference.id, after: 0, limit: 1000 }).events;
+
+test('channels exist only for an execution admitted for them', async (t) => {
+    const { dispatcher, runs, admit } = rig(t, { maxConcurrent: 4 });
+    admit(spec());
+    admit(spec({ sessionId: 'workflow-1', workflowExecution: true }));
+    admit(spec({ sessionId: 'human-1', humanInput: true }));
+    dispatcher.start();
+    await wait(() => runs.length === 3, 'three runs');
+    const shapes = runs.map((run) => [run.channels.taskFailure !== null, run.channels.humanInput !== null]);
+    assert.deepEqual(shapes, [[false, false], [true, false], [false, true]]);
+});
+
+test('task-failure channel: the event is durable before the handler returns, and the attempt ends failed with task_blocked', async (t) => {
+    const { dispatcher, runs, admit, view, store, alice } = rig(t);
+    const admitted = admit(spec({ workflowExecution: true }));
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    runs[0].stdout.write('partial work');
+    await runs[0].channels.taskFailure({ message: 'Missing access to the database' });
+    const stored = events(store, alice, admitted).filter((event) => event.type === 'task-failed');
+    assert.deepEqual(stored.map((event) => event.data), [{ message: 'Missing access to the database' }]);
+    await runs[0].channels.taskFailure({ message: 'Missing access to the database' });
+    assert.equal(events(store, alice, admitted).filter((event) => event.type === 'task-failed').length, 1, 'a repeat is one event');
+    await wait(() => view(admitted).state === 'failed', 'failed');
+    assert.deepEqual(view(admitted).result.data, { reason: 'task_blocked', message: 'Missing access to the database' });
+    assert.equal(runs[0].ended.length, 1);
+    await assert.rejects(runs[0].channels.taskFailure({ message: 'late' }), (error) => error.statusCode === 409);
+});
+
+test('human-input channel: the question is durable before the reply; ALA ending normally gives the human-input classification; one question per attempt', async (t) => {
+    const { dispatcher, runs, admit, view, store, alice } = rig(t);
+    const admitted = admit(spec({ humanInput: true }));
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    const question = { question: 'Ship it?', options: ['yes', 'no', 'later'] };
+    const { id } = await runs[0].channels.humanInput(question);
+    assert.match(id, /^[A-Za-z0-9_-]{22}$/u);
+    const asked = events(store, alice, admitted).filter((event) => event.type === 'human-input-request');
+    assert.deepEqual(asked.map((event) => event.data), [{ requestId: id, ...question }]);
+    assert.deepEqual(await runs[0].channels.humanInput(question), { id }, 'the same question again: the same request');
+    await assert.rejects(runs[0].channels.humanInput({ ...question, question: 'Other?' }), (error) => error.statusCode === 409);
+    runs[0].finishWith('Waiting for your decision.');
+    await wait(() => view(admitted).state === 'human-input', 'human-input');
+    assert.deepEqual(view(admitted).result, { status: 'human-input', cleanup: 'released', outputText: 'Waiting for your decision.', data: { reason: 'human_input', requestId: id } });
+});
+
+test('human-input channel: a model that does not end by itself is ended after the grace period', async (t) => {
+    const { dispatcher, runs, admit, view } = rig(t);
+    const admitted = admit(spec({ humanInput: true }));
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    const { id } = await runs[0].channels.humanInput({ question: 'Ship it?', options: ['yes', 'no', 'later'] });
+    await wait(() => view(admitted).state === 'human-input', 'ended by the worker');
+    assert.equal(view(admitted).result.data.requestId, id);
+    assert.equal(runs[0].ended.length, 1);
 });

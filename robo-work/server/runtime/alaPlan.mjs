@@ -129,6 +129,9 @@ export function planAlaExecution({ specification, workspaceRoot }) {
         // view without /etc/passwd, and sandbox.mjs:158 reads env.HOME. ALA stats and creates nothing under it in protocol mode
         // (the configuration path is explicit); it is a name, not a directory the orchestration view must contain.
         env: Object.freeze({ HOME: VIRTUAL_HOME, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: VIRTUAL_SESSIONS }),
+        // The worker-hosted channels this execution is admitted for (M-14): the task-failure channel for workflow work, the
+        // human-input channel when the specification allows it. Neither reaches ALA: they are sockets in the channels directory.
+        channels: Object.freeze({ taskFailure: specification.workflowExecution === true, humanInput: specification.humanInput === true }),
         prompt
     });
 }

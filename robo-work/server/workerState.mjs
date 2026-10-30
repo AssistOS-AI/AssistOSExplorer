@@ -17,7 +17,7 @@ import {
     isActiveBinding, isBindingId, isOwnerKey, moveBinding
 } from './stateBindings.mjs';
 import {
-    CONTROL_OPS, EVENTS_MAX_LIMIT, appendOutputEvents, appendStateEvent, countControls, getControl, hasPendingStop, insertControl, insertFenceStop,
+    CONTROL_OPS, EVENTS_MAX_LIMIT, CHANNEL_EVENT_TYPES, appendChannelEvent, appendOutputEvents, findChannelEvent, appendStateEvent, countControls, getControl, hasPendingStop, insertControl, insertFenceStop,
     listEvents, listPendingControls, markControlApplied, readCursor, referenceForExecution
 } from './stateObservation.mjs';
 import {
@@ -748,6 +748,12 @@ class WorkerState {
             if (request.payload.id !== undefined) payload.id = request.payload.id;
             // The persisted canonical JSON is bounded by requestBytes before persistence.
             if (byteLength(payload) > this.#limits.requestBytes) fail('invalid_request');
+        } else if (request.op === 'answer') {
+            // M-14: the answer to a human-input question, `{requestId, answer}`.
+            exactObject(request.payload, ['requestId', 'answer']);
+            if (typeof request.payload.requestId !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/u.test(request.payload.requestId)) fail('invalid_request');
+            if (typeof request.payload.answer !== 'string' || request.payload.answer.trim().length === 0 || request.payload.answer.length > 8000) fail('invalid_request');
+            payload = { requestId: request.payload.requestId, answer: request.payload.answer };
         } else if (request.payload !== undefined) {
             fail('invalid_request');
         }
@@ -762,6 +768,7 @@ class WorkerState {
             // `pause` applies only to an observation reference (Part D); on an execution
             // reference it is invalid_request, decided after visibility.
             if (op === 'pause') fail('invalid_request');
+            if (op === 'answer') return this.#answerHumanInput(db, context, { admission, owner, referenceId, operationId, payload, requestDigest, attemptId });
             // M-12: stop is owner-or-administrator, message owner-only. A background row (the coordinator plus the persisted flow
             // binding the reference was admitted under) may also stop its own flow work (cancel, timeout, reconciliation); it is
             // visible only for references admitted under that very binding, so an interactive reference is `not_found` to it.
@@ -1403,6 +1410,56 @@ class WorkerState {
             if (row.generation_id !== generation.id) fail('stale_generation');
             if (row.state !== 'running' && row.state !== 'stopping') fail('operation_conflict');
             return appendOutputEvents(db, referenceForExecution(db, row.execution_id).id, request.events, this.#now());
+        });
+    }
+
+    // Answer to a human-input question (M-14, plan section 9): owner-only, accepted only after the question's attempt has ended with
+    // the `human-input` classification and the question exists. Recorded once, durably, together with its `human-input-answered`
+    // event; the same answer again returns the first receipt, a different one is operation_conflict.
+    #answerHumanInput(db, context, { admission, owner, referenceId, operationId, payload, requestDigest, attemptId }) {
+        if (!owner) fail('forbidden');
+        const recorded = getControl(db, referenceId, context.scope, operationId);
+        if (recorded) {
+            if (recorded.digest !== requestDigest || recorded.op !== 'answer') fail('operation_conflict');
+            return JSON.parse(recorded.response);
+        }
+        if (attemptId !== null && attemptId !== admission.attempt_id) fail('operation_conflict');
+        if (admission.state !== 'human-input') fail('operation_conflict');
+        if (findChannelEvent(db, referenceId, 'human-input-request', payload.requestId) === undefined) fail('not_found');
+        const previous = findChannelEvent(db, referenceId, 'human-input-answered', payload.requestId);
+        const response = { operationId, op: 'answer', outcome: 'accepted', delivery: 'applied', state: admission.state, requestId: payload.requestId };
+        if (previous !== undefined) {
+            if (previous.data.answer !== payload.answer) fail('operation_conflict');
+            // The identical answer under another operation ID: the same receipt, nothing new recorded.
+            return response;
+        }
+        if (countControls(db) >= this.#extensionLimit('controls')) fail('capacity_exceeded');
+        const now = this.#now();
+        insertControl(db, { referenceId, actorKey: context.scope, operationId, op: 'answer', payload, digest: requestDigest, response, delivery: 'applied', now });
+        appendChannelEvent(db, referenceId, 'human-input-answered', { requestId: payload.requestId, answer: payload.answer }, now);
+        return JSON.parse(canonicalJson(response));
+    }
+
+    // Records a channel event of a running attempt (M-14) before the channel replies: `task-failed` {message} or
+    // `human-input-request` {requestId, question, options}. At most one of each kind per attempt: the same request again returns
+    // the recorded one (`duplicate: true`), a different one is operation_conflict. Returns {sequence, duplicate, data}.
+    recordChannelEvent(request) {
+        exactObject(request, ['executionId', 'attemptId', 'type', 'data']);
+        validateInternalId(request.executionId);
+        validateInternalId(request.attemptId);
+        if (!CHANNEL_EVENT_TYPES.includes(request.type)) fail('invalid_request');
+        return this.#mutate('recordChannelEvent', (db, generation) => {
+            const row = db.prepare('SELECT * FROM admission WHERE execution_id = ? AND attempt_id = ?').get(request.executionId, request.attemptId);
+            if (!row) fail('not_found');
+            if (row.generation_id !== generation.id) fail('stale_generation');
+            if (row.state !== 'running') fail('operation_conflict');
+            const referenceId = referenceForExecution(db, row.execution_id).id;
+            const existing = findChannelEvent(db, referenceId, request.type);
+            if (existing !== undefined) {
+                if (canonicalJson(existing.data) !== canonicalJson(request.data)) fail('operation_conflict');
+                return { sequence: existing.sequence, duplicate: true, data: existing.data };
+            }
+            return { sequence: appendChannelEvent(db, referenceId, request.type, request.data, this.#now()), duplicate: false, data: request.data };
         });
     }
 

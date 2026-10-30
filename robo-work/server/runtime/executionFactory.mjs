@@ -9,6 +9,7 @@ import { createExecutionSupervisor } from '../sandbox/executionSupervisor.mjs';
 import { foldPathName } from '../views/protectedNames.mjs';
 import { resolveGrant } from '../views/grantResolver.mjs';
 import { VIRTUAL_CONFIG, VIRTUAL_SESSIONS } from './alaPlan.mjs';
+import { createExecutionChannels } from './channels.mjs';
 
 // The production execution factory: for one admitted attempt it assembles the per-execution Node supervisor
 // (sandbox/executionSupervisor.mjs), the resource ledger (execution/resourceLedger.mjs) and the supervisor side of the
@@ -92,7 +93,7 @@ export function createExecutionFactory({
     const endpointLimits = resolveEndpointLimits();
 
     return Object.freeze({
-        async open({ item, plan, context }) {
+        async open({ item, plan, context, channels = {} }) {
             const fds = [];
             const grants = [];
             const lost = deferred();
@@ -154,7 +155,7 @@ export function createExecutionFactory({
                     state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
                     referenceId: null, layout, sandbox: supervisor, walker, clock
                 });
-                return buildExecution({ supervisor, ledger, admission, closeAll, lost });
+                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels });
             } catch (error) {
                 await closeAll();
                 throw error;
@@ -162,8 +163,9 @@ export function createExecutionFactory({
         }
     });
 
-    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef }) {
+    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels }) {
         let endpointServer = null;
+        let hosted = null;
         let tree = null;
         let ended = null;
         const exitedControl = deferred();
@@ -174,6 +176,10 @@ export function createExecutionFactory({
             async start() {
                 await ledger.startKeeper();
                 await ledger.publish({ kind: 'runtime-dir' });
+                // The admitted channels live in the channels directory of the runtime directory (read-only in every workload).
+                if (channels.taskFailure || channels.humanInput) {
+                    hosted = await make.channels({ directory: `${supervisor.runtimeDir}/channels`, taskFailure: channels.taskFailure ?? null, humanInput: channels.humanInput ?? null });
+                }
                 await ledger.publish({ kind: 'netns' });
                 await ledger.publish({ kind: 'endpoint', spec: { config: { streamDirectory: STREAM_DIRECTORY, relays: [] } } });
                 endpointServer = make.endpointServer({
@@ -190,6 +196,7 @@ export function createExecutionFactory({
                 ended ??= (async () => {
                     try {
                         endpointServer?.end('execution_ended');
+                        await hosted?.close().catch(() => {});
                         return await ledger.endExecution(outcome);
                     } finally {
                         await supervisor.exit().catch(() => {});

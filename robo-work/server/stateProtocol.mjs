@@ -419,7 +419,7 @@ function specBytesBetween(value, min, max) {
 
 export function validateSpecificationV2(value, limits) {
     exactObject(value, ['version', 'prompt', 'displayText', 'sessionId', 'turnId', 'permissions'],
-        ['cwd', 'model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution']);
+        ['cwd', 'model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution', 'humanInput']);
     if (value.version !== SPECIFICATION_VERSION_2) fail('invalid_request');
     if (!specBytesBetween(value.prompt, 1, SPEC_V2_PROMPT_MAX_BYTES)) fail('invalid_request');
     if (!specBytesBetween(value.displayText, 0, SPEC_V2_DISPLAY_MAX_BYTES)) fail('invalid_request');
@@ -432,7 +432,7 @@ export function validateSpecificationV2(value, limits) {
     if (value.model !== undefined && !boundedText(value.model, 1, 128)) fail('invalid_request');
     if (value.effort !== undefined && (typeof value.effort !== 'string' || !SPEC_EFFORT.test(value.effort))) fail('invalid_request');
     if (value.codingAgent !== undefined && !CODING_AGENTS.includes(value.codingAgent)) fail('invalid_request');
-    for (const key of ['resume', 'workflowExecution']) {
+    for (const key of ['resume', 'workflowExecution', 'humanInput']) {
         if (value[key] !== undefined && typeof value[key] !== 'boolean') fail('invalid_request');
     }
     if (value.folders !== undefined) {

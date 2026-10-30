@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 import { createVerifiedServiceContext, WorkerStateError, byteLength } from '../stateProtocol.mjs';
 import { resolveControlStreamLimits } from '../execution/executionLimits.mjs';
 import { PlanError, planAlaExecution } from './alaPlan.mjs';
@@ -17,7 +19,7 @@ import { createEventRelay } from './eventRelay.mjs';
 //
 // A failure before an execution exists ends the attempt directly through beginAttemptEnd.
 
-const DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 750, resultBytes: 512 * 1024 - 1024 });
+const DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 750, failureAbortMs: 100, humanInputGraceMs: 10000, resultBytes: 512 * 1024 - 1024 });
 const FATAL_READER_ENDS = new Set(['control_stream_violation', 'control_stall', 'stdin_stall', 'stdin_overflow', 'stdout_error']);
 const SKIPPED_TRANSITION = new Set(['robot_busy', 'operation_conflict', 'stale_generation', 'not_found']);
 
@@ -44,7 +46,7 @@ export function alaDiagnostics(tail) {
 }
 
 export function createDispatcher({
-    store, workspaceId, workspaceRoot, factory, controlLimits, options = {}, log = () => {}, timers = { setInterval, clearInterval, setTimeout }
+    store, workspaceId, workspaceRoot, factory, controlLimits, options = {}, log = () => {}, timers = { setInterval, clearInterval, setTimeout, clearTimeout }
 }) {
     for (const method of ['listQueuedAdmissions', 'transitionAttempt', 'beginAttemptEnd', 'recordReferenceEvents', 'takePendingControls', 'ackControl']) {
         if (!store || typeof store[method] !== 'function') throw new TypeError(`The store lacks ${method}`);
@@ -106,11 +108,44 @@ export function createDispatcher({
         const endedSignal = new Promise((resolve) => { signalEnded = resolve; });
 
         const partialText = () => (streams ? streams.final.text().trimEnd() : '');
+        let failureMessage = null;
+        let humanRequest = null;
+        let channelTimer = null;
+        const endLater = (ms, outcome) => {
+            channelTimer ??= timers.setTimeout(() => { finish(outcome()).catch((error) => log('end_failed', { error: describe(error) })); }, ms);
+            channelTimer.unref?.();
+        };
+        const refused = (status, message) => Object.assign(new Error(message), { statusCode: status });
+        // The worker-hosted channels (M-14). Each handler records its event durably BEFORE it returns, which is before the channel
+        // replies to the skill. The failure channel ends the run as the local engine does (the skill tells the model to stop); the
+        // human-input channel tells the model to end, and the worker ends the attempt `human-input` after a bounded grace.
+        const channels = {
+            taskFailure: plan.channels.taskFailure ? async ({ message }) => {
+                if (finishing !== null) throw refused(409, 'The execution is ending');
+                store.recordChannelEvent({ executionId: item.executionId, attemptId: item.attemptId, type: 'task-failed', data: { message } });
+                failureMessage ??= message;
+                endLater(settings.failureAbortMs, () => ({ classification: 'failed', outputText: partialText(), data: { reason: 'task_blocked', message: failureMessage } }));
+                return {};
+            } : null,
+            humanInput: plan.channels.humanInput ? async ({ question, options }) => {
+                if (finishing !== null) throw refused(409, 'The execution is ending');
+                if (humanRequest !== null) {
+                    if (humanRequest.question === question && JSON.stringify(humanRequest.options) === JSON.stringify(options)) return { id: humanRequest.requestId };
+                    throw refused(409, 'A human-input question is already pending');
+                }
+                const requestId = crypto.randomBytes(16).toString('base64url');
+                store.recordChannelEvent({ executionId: item.executionId, attemptId: item.attemptId, type: 'human-input-request', data: { requestId, question, options } });
+                humanRequest = { requestId, question, options };
+                endLater(settings.humanInputGraceMs, () => ({ classification: 'human-input', outputText: partialText(), data: { reason: 'human_input', requestId } }));
+                return { id: requestId };
+            } : null
+        };
         // The one end of this attempt, whoever asks first (exit, stop, a fatal stream error, shutdown).
         const finish = (outcome) => {
             if (finishing === null) signalEnded();
             finishing ??= (async () => {
                 if (controlTimer !== null) { timers.clearInterval(controlTimer); controlTimer = null; }
+                if (channelTimer !== null) { timers.clearTimeout(channelTimer); channelTimer = null; }
                 streams?.reader.end('ended_by_dispatcher');
                 if (relay) await relay.close().catch(() => {});
                 const fitted = fitOutcome(outcome, settings.resultBytes);
@@ -175,7 +210,7 @@ export function createDispatcher({
 
         try {
             starting = (async () => {
-                execution = await factory.open({ item, plan, context });
+                execution = await factory.open({ item, plan, context, channels });
                 return execution.start();
             })();
             const opened = await starting;
@@ -225,6 +260,8 @@ export function createDispatcher({
             const text = streams.final.text().trimEnd();
             if (fatal !== null) await finish({ classification: 'failed', outputText: text, data: { reason: fatal.reason } });
             else if (streams.final.overflowed) await finish({ classification: 'failed', outputText: text, data: { reason: 'output_too_large' } });
+            else if (failureMessage !== null) await finish({ classification: 'failed', outputText: text, data: { reason: 'task_blocked', message: failureMessage } });
+            else if (humanRequest !== null && exit.exitCode === 0) await finish({ classification: 'human-input', outputText: text, data: { reason: 'human_input', requestId: humanRequest.requestId } });
             else if (exit.exitCode === 0 && text.length > 0) await finish({ classification: 'completed', outputText: text, data: null });
             else if (exit.exitCode === 0) await finish({ classification: 'failed', data: { reason: 'no_result' } });
             else if (exit.exitCode === 130) await finish({ classification: 'interrupted', outputText: text, data: { reason: 'ala_interrupted' } });
