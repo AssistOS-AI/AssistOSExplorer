@@ -36,7 +36,7 @@ export async function requireHumanInput(input, { directory = '/workspace/roboflo
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     try {
-        const { values } = parseArgs({ options: { input: { type: 'string' } }, allowPositionals: false });
-        console.log(JSON.stringify(await requireHumanInput(JSON.parse(values.input))));
+        const { values } = parseArgs({ options: { input: { type: 'string' }, directory: { type: 'string' } }, allowPositionals: false });
+        console.log(JSON.stringify(await requireHumanInput(JSON.parse(values.input), values.directory ? { directory: values.directory } : undefined)));
     } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

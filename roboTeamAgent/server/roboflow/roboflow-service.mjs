@@ -21,6 +21,7 @@ import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
 import { COORDINATOR_BASE_ENV } from '../worker-coordinator/hop.mjs';
 import { createWorkerClient, stopOperationId } from '../worker-coordinator/worker-client.mjs';
 import { phaseOriginId } from '../worker-coordinator/flow-origins.mjs';
+import { isReferenceId } from '../worker-coordinator/identities.mjs';
 import { parentBindingFor, registerDerivedBinding } from '../worker-coordinator/background.mjs';
 import { classifyPhase } from './worker-reconciliation.mjs';
 
@@ -653,8 +654,12 @@ export class RoboFlowService {
                 throw invalid('A human-input question is already pending');
             }
             if (flow.status !== 'running' || terminal(instance.state) || flow.pauseRequested) throw invalid('This workflow execution is no longer active');
+            // A question asked through the worker keeps the worker's reference and request ID, which its answer control names.
+            const worker = input.worker && isReferenceId(input.worker.referenceId) && typeof input.worker.requestId === 'string' && /^[A-Za-z0-9_-]{16,64}$/u.test(input.worker.requestId)
+                ? { referenceId: input.worker.referenceId, requestId: input.worker.requestId } : null;
+            if (input.worker && !worker) throw invalid('The worker question is not valid');
             const request = { id: crypto.randomUUID(), instanceId: instance.id, runtimeTaskId, question, options,
-                status: 'pending', executionEnded: false, createdAt: new Date().toISOString() };
+                status: 'pending', executionEnded: false, createdAt: new Date().toISOString(), ...(worker ? { worker } : {}) };
             await this.store.update(flow.id, current => {
                 current.humanInput = request;
                 current.status = 'paused'; current.finishedAt = request.createdAt; current.error = null;
@@ -665,7 +670,11 @@ export class RoboFlowService {
             return { id: request.id };
         });
     }
-    async answerHumanInput(id, input, actorId = '') {
+    // `grant` is the answering request's own Router-minted grant (decision M-12 (b)). A question the worker holds is answered to
+    // the worker first, once, with that grant; only after the worker accepted it is the continuation dispatched, with a new
+    // runtime task (so a new deterministic origin). An answer the worker did not accept is never sent again by RoboTeam: the user
+    // answers again, and the same answer is the same operation at the worker.
+    async answerHumanInput(id, input, actorId = '', { grant = null } = {}) {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
@@ -675,8 +684,19 @@ export class RoboFlowService {
             const choice = input.option;
             if (!Number.isInteger(choice) || choice < 0 || choice > 3) throw invalid('Choose one of the four answer options');
             const answer = choice === 3 ? textField(input.text, 'answer', 32000, true) : request.options[choice];
+            if (request.worker) await this._answerToWorker(request, answer, grant);
             return this._resumeInstance(id, request.instanceId, `My answer to your question is: ${answer}`, request.id, actorId);
         });
+    }
+    async _answerToWorker(request, answer, grant) {
+        if (!this.worker) throw Object.assign(invalid('The worker is not configured for this question'), { statusCode: 503 });
+        if (!grant) throw Object.assign(new Error('owner_evidence_unavailable'), { statusCode: 403 });
+        const operationId = crypto.createHash('sha256').update(`roboteam/answer/v1\n${request.id}\n${answer}`).digest('base64url').slice(0, 22);
+        try {
+            await this.worker.client.control(request.worker.referenceId, { operationId, op: 'answer', payload: { requestId: request.worker.requestId, answer } }, { grant });
+        } catch (error) {
+            throw Object.assign(new Error(error?.code || 'worker_coordinator_unavailable'), { statusCode: error?.status || 503 });
+        }
     }
     async getFlow(id, { logMode = 'none' } = {}) {
         const flow = await this.store.get(id);

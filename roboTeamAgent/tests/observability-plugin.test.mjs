@@ -93,10 +93,10 @@ test('answer submission includes the question identity, choice and custom text t
     const input = { requestId: 'question-1', option: 3, text: 'Partners' };
     const flow = { id: 'flow-1', status: 'running' };
     assert.deepEqual(await answerHumanInput('flow-1', input, { fetchImpl: async (url, options) => {
-        assert.equal(url, '/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/flows/flow-1/human-input/answer');
+        assert.equal(url, '/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/human-input/answer');
         assert.equal(options.method, 'POST');
         assert.equal(options.credentials, 'include');
-        assert.deepEqual(JSON.parse(options.body), input);
+        assert.deepEqual(JSON.parse(options.body), { ...input, flowId: 'flow-1' });
         return { ok: true, json: async () => ({ flow }) };
     } }), flow);
     await assert.rejects(answerHumanInput('flow-1', input, { fetchImpl: async () => ({ ok: false, status: 409, json: async () => ({ error: 'Already answered' }) }) }), /Already answered/);

@@ -13,7 +13,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
 
     for (let index = 0; index < argv.length; index++) {
         const key = argv[index];
-        options[key] = ['--resume-session', '--control-stdin', '--workflow-execution'].includes(key) ? true : argv[++index];
+        options[key] = ['--resume-session', '--control-stdin', '--workflow-execution', '--human-input'].includes(key) ? true : argv[++index];
     }
     const controller = new AbortController();
     // Through the worker a signal only detaches (RoboTeam is shutting down; the worker keeps the
@@ -57,7 +57,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         delete task.ownerGrant;
         runtime = await createCliRuntime({ workingDir: options['--cwd'], skillRoots: [],
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
-            execution: { workflowExecution: options['--workflow-execution'] === true, captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
+            execution: { workflowExecution: options['--workflow-execution'] === true, humanInput: options['--human-input'] === true, captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
                 model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access',
                 ...(options['--worker-origin']
                     ? { worker: { ...(options['--worker-binding'] ? { bindingId: options['--worker-binding'] } : {}), originRequestId: options['--worker-origin'] } } : {}),

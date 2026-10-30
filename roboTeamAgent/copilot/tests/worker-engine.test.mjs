@@ -73,7 +73,7 @@ const COMPLETE_ROWS = () => [state('queued', 1), state('running', 2), ala(SELECT
 
 async function harness(t, { rows = COMPLETE_ROWS(), execution = {}, permission = 'full-access', client = scripted(rows), engineOptions = {},
     robot = { id: 'robo', name: 'default', codingAgents: ['codex'], worker: { robotId: ROBOT } }, grant = freshGrant('admission'), freshest = null,
-    atRoot = false, snapshotExtra = null, configuration = CONFIGURATION } = {}) {
+    atRoot = false, snapshotExtra = null, configuration = CONFIGURATION, skills = null } = {}) {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'worker-engine-'));
     const oldRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = atRoot ? workingDir : path.dirname(workingDir);
@@ -85,7 +85,7 @@ async function harness(t, { rows = COMPLETE_ROWS(), execution = {}, permission =
         async ensureReady(current, auth) { ensured.push({ robot: current, auth }); return { robotId: ROBOT, configRevision: 3, configuration }; },
         desiredConfiguration: () => configuration,
     };
-    const catalog = { async refresh() { return { skills: [{ name: 'bash', skillDir: workingDir, enabled: true }], taskRepositories: [], ...(snapshotExtra?.(workingDir) || {}) }; } };
+    const catalog = { async refresh() { return { skills: skills ? skills(workingDir) : [{ name: 'bash', skillDir: workingDir, enabled: true }], taskRepositories: [], ...(snapshotExtra?.(workingDir) || {}) }; } };
     const admitted = [];
     const coordinator = {
         async admitTurn(evidence, request) {
@@ -472,14 +472,16 @@ test('inputs the worker cannot use are refused or reported, never dropped silent
     await assert.rejects(loopback.engine.executeTurn({ sessionId: loopback.sessionId, prompt: 'p', owner: loopback.owner }), (error) => error.code === 'worker_mcp_loopback_unsupported');
     assert.equal(loopback.admitted.length, 0);
 
-    const old = process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
-    process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY = '/var/lib/roboteam-human-input-test';
-    t.after(() => { if (old === undefined) delete process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY; else process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY = old; });
-    const outside = await harness(t);
+    // Skills outside the shared workspace cannot be granted: reported, never dropped silently, and the prompt does not offer them.
+    const outside = await harness(t, { atRoot: true, execution: { workflowExecution: true, humanInput: true, codeRoot: '/nonexistent-code' },
+        skills: (dir) => [{ name: 'report-task-blocked', skillDir: '/var/lib/not-in-workspace/report-task-blocked', enabled: true }, { name: 'require-human-input', skillDir: '/var/lib/not-in-workspace/require-human-input', enabled: true }] });
     const events = [];
     await outside.engine.executeTurn({ sessionId: outside.sessionId, prompt: 'p', owner: outside.owner, onEvent: (event) => events.push(event) });
-    assert.ok(events.some((event) => event.type === 'diagnostic' && /1 folder\(s\) outside the shared workspace/.test(event.message)));
-    assert.equal(JSON.stringify(outside.admitted[0].request.specification).includes('roboteam-human-input-test'), false);
+    assert.equal(events.filter((event) => event.type === 'diagnostic' && /skill is not available through the worker/.test(event.message)).length, 2);
+    const unavailable = outside.admitted[0].request.specification;
+    assert.equal(unavailable.prompt.includes('/projects/g'), false);
+    assert.equal(unavailable.workflowExecution, true);
+    assert.equal(unavailable.humanInput, true);
 });
 
 test('the workspace root is never granted: a project folder is the writable grant, no project means no grant, and naming the root is refused', async (t) => {
@@ -571,4 +573,80 @@ test('the free default model runs and is shown as the default, not as the user\'
     // A robot's chosen model is selected too.
     const chosen = await harness(t, { rows: opencodeRows(), robot: opencodeRobot, configuration: opencodeConfiguration({ model: 'opencode/mine', modelSource: 'selected' }) });
     assert.equal((await chosen.engine.getModel({ sessionId: chosen.sessionId })).modelSource, 'selected');
+});
+
+// ---- the worker-hosted channels (decision M-14) ----
+const QUESTION = { requestId: 'q'.repeat(20), question: 'Which customer?', options: ['Retail', 'Business', 'Enterprise'] };
+
+// A workspace-resident copy of the bundled skills, as the worker sees them (`.ploinky/repos/<repo>/<agent>/…`).
+async function channelSkills(root) {
+    const base = path.join(root, '.ploinky', 'repos', 'AchillesIDE', 'roboTeamAgent', 'copilot', 'src', 'skills');
+    for (const name of ['report-task-blocked', 'require-human-input']) await fs.mkdir(path.join(base, name, 'scripts'), { recursive: true });
+    return [{ name: 'report-task-blocked', skillDir: path.join(base, 'report-task-blocked'), enabled: true },
+        { name: 'require-human-input', skillDir: path.join(base, 'require-human-input'), enabled: true }];
+}
+
+test('the channel skills are read-only grants, the prompt names their granted path and the worker channel, and humanInput is set only where asked', async (t) => {
+    const withChannelSkills = async (options) => {
+        let list;
+        const built = await harness(t, { atRoot: true, ...options, skills: () => list });
+        list = await channelSkills(await fs.realpath(built.workingDir));
+        return built;
+    };
+    const h = await withChannelSkills({ execution: { workflowExecution: true, humanInput: true } });
+    await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Do the phase', owner: h.owner });
+    const spec = h.admitted[0].request.specification;
+    assert.equal(spec.workflowExecution, true);
+    assert.equal(spec.humanInput, true);
+    assert.deepEqual(spec.folders.map((folder) => folder.access), ['read', 'read']);
+    assert.deepEqual(spec.folders.map((folder) => path.basename(folder.path)), ['report-task-blocked', 'require-human-input']);
+    // No project: the folders are g0 and g1; the prompt names those paths and the worker's channel directories.
+    assert.match(spec.prompt, /Read \/projects\/g0\/SKILL\.md\. Use this required skill if missing resources/);
+    assert.match(spec.prompt, /--directory \/run\/robo-work\/channels\/task-failure/);
+    assert.match(spec.prompt, /Read \/projects\/g1\/SKILL\.md\. Use this required skill to ask the user/);
+    assert.match(spec.prompt, /--directory \/run\/robo-work\/channels\/human-input/);
+    assert.equal(spec.prompt.includes('/workspace/'), false, 'no local-mode path');
+
+    // A plain turn offers neither skill and sets neither flag.
+    const plain = await withChannelSkills({});
+    await plain.engine.executeTurn({ sessionId: plain.sessionId, prompt: 'p', owner: plain.owner });
+    const bare = plain.admitted[0].request.specification;
+    assert.equal(Object.hasOwn(bare, 'humanInput'), false);
+    assert.equal(Object.hasOwn(bare, 'workflowExecution'), false);
+    assert.equal(bare.prompt.includes('/projects/g'), false);
+
+    // A workflow phase without human input offers only the failure skill.
+    const failureOnly = await withChannelSkills({ execution: { workflowExecution: true } });
+    await failureOnly.engine.executeTurn({ sessionId: failureOnly.sessionId, prompt: 'p', owner: failureOnly.owner });
+    const only = failureOnly.admitted[0].request.specification;
+    assert.equal(Object.hasOwn(only, 'humanInput'), false);
+    assert.equal(only.folders.length, 1);
+});
+
+test('a blocked-task report is the same task-failed event and failure as the local engine', async (t) => {
+    const rows = [state('running', 1), ala(SELECTED, 2), { seq: 3, kind: 'task-failed', message: 'Deployment credentials are unavailable.' },
+        state('failed', 4, { status: 'failed', outputText: 'partial', data: { reason: 'task_blocked', message: 'Deployment credentials are unavailable.' } })];
+    const h = await harness(t, { rows, execution: { workflowExecution: true }, client: scripted(rows, { snapshot: { state: 'failed', result: { status: 'failed', outputText: 'partial', data: { reason: 'task_blocked', message: 'Deployment credentials are unavailable.' } } } }) });
+    const events = [];
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'p', owner: h.owner, onEvent: (event) => events.push(event) }),
+        (error) => error.message === 'Deployment credentials are unavailable.' && error.exitCode === 1 && error.taskBlocked === true);
+    assert.deepEqual(events.find((event) => event.type === 'task-failed'), { type: 'task-failed', message: 'Deployment credentials are unavailable.' });
+    assert.equal(h.store.loadSession(h.sessionId).messages.at(-1).status, 'failed');
+    // The worker's own row form maps the same way.
+    assert.deepEqual(normalizeEventRow({ sequence: 3, at: 'x', type: 'task-failed', data: { message: 'm' } }), { sequence: 3, kind: 'task-failed', message: 'm' });
+});
+
+test('a human-input question is announced with its worker reference and the turn ends normally for RoboFlow to pause on', async (t) => {
+    const rows = [state('running', 1), ala(SELECTED, 2), { seq: 3, kind: 'human-input-request', ...QUESTION },
+        state('human-input', 4, { status: 'human-input', outputText: 'Waiting for the answer.', data: { reason: 'human_input', requestId: QUESTION.requestId } })];
+    const h = await harness(t, { rows, execution: { humanInput: true, workflowExecution: true }, client: scripted(rows, { snapshot: { state: 'human-input', result: { status: 'human-input', outputText: 'Waiting for the answer.', data: { reason: 'human_input', requestId: QUESTION.requestId } } } }) });
+    const events = [];
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'p', owner: h.owner, onEvent: (event) => events.push(event) });
+    assert.equal(result.outputText, 'Waiting for the answer.');
+    assert.deepEqual(events.find((event) => event.type === 'human-input-request'), { type: 'human-input-request', ...QUESTION, referenceId: REFERENCE });
+    assert.equal(h.store.loadSession(h.sessionId).messages.at(-1).status, 'completed', 'the turn ended normally: the question, not a failure');
+    assert.deepEqual(normalizeEventRow({ sequence: 3, type: 'human-input-request', data: QUESTION }), { sequence: 3, kind: 'human-input-request', ...QUESTION });
+    assert.equal(normalizeEventRow({ sequence: 5, type: 'human-input-answered', data: { requestId: QUESTION.requestId } }).kind, 'human-input-answered');
+    // The engine itself sends no answer: the answer is the user's, from RoboFlow.
+    assert.equal(h.client.calls.control.length, 0);
 });

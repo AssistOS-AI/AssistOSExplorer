@@ -12,6 +12,7 @@ import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
 import { ALA_BACKENDS, createAlaRecordHandler } from './alaRecordHandler.mjs';
 import { detachReason, isDetach, stopReason } from './abortReasons.mjs';
 import { isGrantableFolder } from './grantablePaths.mjs';
+import { workspaceCodePath } from './workspaceCodePath.mjs';
 import { TERMINAL_STATES, WorkerError, stopOperationId } from '../../../../server/worker-coordinator/worker-client.mjs';
 import { isOriginId } from '../../../../server/worker-coordinator/identities.mjs';
 
@@ -49,6 +50,8 @@ const EVIDENCE_WAIT_MS = 60000;
 // The conversation records its engine binding against this neutral directory: the robot HOME is
 // the worker's (decision M-10), and no RoboTeam path is bound or sent.
 const WORKER_SESSION_HOME = '/';
+// Where every workload sees the worker-hosted channels of its execution (read-only).
+const CHANNELS_ROOT = '/run/robo-work/channels';
 
 // OpenCode serves Soul Gateway models under the `soul-gateway` provider, through a Unix socket in the robot home
 // (the legacy path's plugin); the worker has no such socket.
@@ -92,6 +95,10 @@ export function normalizeEventRow(row) {
     if (kind === 'ala') return { sequence, kind, record: row.record ?? data.record ?? data };
     if (kind === 'truncated') return { sequence, kind, dropped: row.dropped ?? data.dropped ?? null, reason: row.reason ?? data.reason ?? 'bound' };
     if (kind === 'state') return { sequence, kind, state: row.state ?? data.state, result: row.result ?? data.result };
+    // Channel events the worker records for the skills' callbacks (decision M-14).
+    if (kind === 'task-failed') return { sequence, kind, message: row.message ?? data.message };
+    if (kind === 'human-input-request') return { sequence, kind, requestId: row.requestId ?? data.requestId, question: row.question ?? data.question, options: row.options ?? data.options };
+    if (kind === 'human-input-answered') return { sequence, kind, requestId: row.requestId ?? data.requestId };
     return { sequence, kind: 'unknown' };
 }
 
@@ -309,12 +316,12 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             await sessionStore.bindEngine(sessionId, { home: WORKER_SESSION_HOME, cwd, backend, robotId: execution.robotId });
 
             // The same native prompt and ALA inputs alaEngine builds. The ALA home is the worker's and
-            // no path of the RoboTeam robot home is sent. The task-script context, the task-failure
-            // channel and the human-input channel are RoboTeam-local resources outside the shared
-            // workspace; they are not sent (open issue: worker-owned channels, plan section 9).
+            // no path of the RoboTeam robot home is sent. The task-script context is a RoboTeam-local
+            // resource outside the shared workspace and is not sent; the task-failure and human-input
+            // channels are the worker's own (below).
             const nativePrompt = buildNativePrompt({ prompt, resume, selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
             // Extra folders are explicit read-only grants strictly below the workspace root, never the root and never
-            // the project itself: the skill mount SOURCES and the human-input channel. The session skills overlay
+            // the project itself: the skill mount SOURCES and the channel skills. The session skills overlay
             // (`<project>/.roboteam/sessions/<id>/skills`) is private storage the worker refuses at open, so it is
             // never sent, and neither is any path with a protected component (a managed `.ploinky/repos/<repo>`
             // skill source excepted, which the worker resolves as a skill source). The placement modifiers (`as`,
@@ -324,7 +331,22 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 for (const mount of snapshot.mounts || []) candidates.push(mount.source);
                 await emit({ type: 'diagnostic', message: 'Skills are granted as read-only folders; their .agents/skills placement is not available through the worker.' });
             }
-            if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) candidates.push(env.ROBOTEAM_HUMAN_INPUT_DIRECTORY);
+            // The worker hosts the task-failure and human-input channels (decision M-14): their skills are ordinary
+            // read-only grants (RoboTeam's bundled skills by their managed-repository workspace path) and the prompt
+            // names the granted path and the channel directory, which are the same in every workload.
+            const channelSkills = [];
+            for (const [skillName, channel, wanted] of [['report-task-blocked', 'task-failure', execution.workflowExecution === true],
+                ['require-human-input', 'human-input', execution.humanInput === true]]) {
+                if (!wanted) continue;
+                const skill = skills.find((entry) => entry.name === skillName);
+                const hostPath = skill ? await workspaceCodePath(skill.skillDir, { workspaceRoot, env, codeRoot: execution.codeRoot }).catch(() => null) : null;
+                if (!hostPath || !isGrantableFolder(workspaceRoot, hostPath)) {
+                    await emit({ type: 'diagnostic', message: `The ${skillName} skill is not available through the worker (its folder is not in the shared workspace).` });
+                    continue;
+                }
+                candidates.push(hostPath);
+                channelSkills.push({ skillName, channel, hostPath });
+            }
             const folders = [];
             let skipped = 0;
             for (const candidate of [...new Set(candidates)]) {
@@ -334,13 +356,15 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             }
             if (skipped) await emit({ type: 'diagnostic', message: `${skipped} folder(s) outside the shared workspace or in private storage are not available through the worker.` });
             const ignore = projectCwd ? [path.resolve(projectCwd, ACHILLES_PRIVATE_DIRECTORY_NAME)] : [];
-            if (execution.workflowExecution && skills.some((skill) => skill.name === 'report-task-blocked')) {
-                await emit({ type: 'diagnostic', message: 'The task-failure channel is not available through the worker; report-task-blocked is not offered.' });
-            }
+            // Grant i is `/projects/g<i>` in the worker's plan: the project (when there is one) first, then the folders in order.
+            const virtualOf = (hostPath) => `/projects/g${(projectCwd ? 1 : 0) + folders.findIndex((folder) => folder.path === hostPath)}`;
+            const channelPrompt = channelSkills.filter((entry) => folders.some((folder) => folder.path === entry.hostPath)).map((entry) => (entry.channel === 'task-failure'
+                ? `\n\nRead ${virtualOf(entry.hostPath)}/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan. Its channel here is ${CHANNELS_ROOT}/task-failure: run the script from the skill directory as \`node scripts/run.mjs --directory ${CHANNELS_ROOT}/task-failure --input '<json>'\`.`
+                : `\n\nRead ${virtualOf(entry.hostPath)}/SKILL.md. Use this required skill to ask the user for a business decision. Its channel here is ${CHANNELS_ROOT}/human-input: run the script from the skill directory as \`node scripts/run.mjs --directory ${CHANNELS_ROOT}/human-input --input '<json>'\`.`)).join('');
             const overridden = Boolean(session.modelOverride || execution.model);
             const specification = {
                 version: SPEC_VERSION,
-                prompt: sanitize(nativePrompt),
+                prompt: sanitize(nativePrompt + channelPrompt),
                 displayText: sanitize(context.rawText || prompt),
                 sessionId, turnId, ...(projectCwd ? { cwd: projectCwd } : {}), permissions: permissionMode,
                 ...(overridden && backend && models[backend] ? { model: models[backend], effort: efforts[backend] || 'default' } : {}),
@@ -350,6 +374,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 ...(ignore.length ? { ignore } : {}),
                 ...(execution.mcpServers ? { mcpServers: execution.mcpServers } : {}),
                 ...(execution.workflowExecution ? { workflowExecution: true } : {}),
+                ...(execution.humanInput === true ? { humanInput: true } : {}),
             };
             // GUI tasks carry the address of a RoboTeam-local MCP server, which the worker cannot reach.
             if (LOOPBACK_MCP.test(String(execution.mcpServers || ''))) throw new WorkerError('worker_mcp_loopback_unsupported', 400);
@@ -411,6 +436,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 : new Error(sanitize(cause?.message || String(cause)), { cause });
             if (!cancelled && !workerFailure && cause?.exitCode !== undefined) error.exitCode = cause.exitCode;
             if (cause?.execution) error.execution = cause.execution;
+            if (cause?.taskBlocked) error.taskBlocked = true;
             if (cause?.workerClassification) Object.assign(error, { workerClassification: cause.workerClassification, terminationUnverified: cause.terminationUnverified === true });
             liveResult = cancelled ? { status: 'stopped', reason: detached ? 'detached' : 'stopped' }
                 : { status: 'failed', reason: error.message, ...(Number.isSafeInteger(error.exitCode) ? { code: error.exitCode } : {}) };
@@ -488,8 +514,17 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             throw error;
         };
 
+        // Channel events (decision M-14): the blocked-task report fails the turn as in the local engine; a human-input
+        // question is announced to the caller (RoboFlow pauses the phase on it) and the attempt then ends `human-input`.
+        let blocked = null;
         const processRow = async (row) => {
-            if (row.kind === 'state') {
+            if (row.kind === 'task-failed') {
+                const message = sanitize(String(row.message ?? '')).trim();
+                blocked ||= message;
+                await emit({ type: 'task-failed', message });
+            } else if (row.kind === 'human-input-request') {
+                await emit({ type: 'human-input-request', requestId: row.requestId, question: row.question, options: row.options, referenceId });
+            } else if (row.kind === 'state') {
                 if (TERMINAL_STATES.includes(row.state)) { terminal = true; terminalRow = row; }
             } else if (row.kind === 'ala') {
                 await records.handle(row.record);
@@ -593,7 +628,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             if (getFailure()) await fatal(getFailure());
             // A stop the worker confirmed by ending the execution needs no result, and so no fresh grant.
             if (stopSent && terminalRow && ['cancelled', 'interrupted', 'paused'].includes(terminalRow.state)) throw interrupted();
-            if (terminalRow?.result && typeof terminalRow.result === 'object') return outcomeOf({ state: terminalRow.state, result: terminalRow.result }, sanitize);
+            if (terminalRow?.result && typeof terminalRow.result === 'object') return outcomeOf({ state: terminalRow.state, result: terminalRow.result }, sanitize, blocked);
             // The result is a read: it needs a fresh grant, so it waits for the user's next envelope. The
             // execution is finished and its result stays retrievable when the user comes back.
             for (;;) {
@@ -605,7 +640,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                     throw error;
                 }
                 if (snapshot.state === 'stopping' || !snapshot.result) { await sleep(backoff); backoff = Math.min(pollMaxMs, backoff * 2); continue; }
-                return outcomeOf(snapshot, sanitize);
+                return outcomeOf(snapshot, sanitize, blocked);
             }
         }
 
@@ -645,7 +680,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 if (terminal && !progressed) {
                     const snapshot = await reading(async () => client.read(referenceId, auth));
                     if (snapshot.state === 'stopping' || !snapshot.result) { await sleep(wait); wait = Math.min(pollMaxMs, wait * 2); continue; }
-                    return outcomeOf(snapshot, sanitize);
+                    return outcomeOf(snapshot, sanitize, blocked);
                 }
                 if (progressed) wait = pollMinMs;
                 else { await sleep(wait); wait = Math.min(pollMaxMs, wait * 2); }
@@ -653,11 +688,20 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
         }
     }
 
-    function outcomeOf(snapshot, sanitize) {
+    function outcomeOf(snapshot, sanitize, blocked = null) {
         const result = snapshot.result || {};
         const classification = result.classification ?? snapshot.state;
         if (snapshot.state === 'completed') return { outputText: result.outputText ?? '' };
-        if (snapshot.state === 'cancelled' || snapshot.state === 'interrupted' || snapshot.state === 'paused' || snapshot.state === 'human-input') throw interrupted();
+        // A human-input question ended the attempt: the turn ends normally with the model's last text and RoboFlow waits for the answer.
+        if (snapshot.state === 'human-input') return { outputText: result.outputText ?? '', humanInput: result.data?.requestId ?? true };
+        // A blocked-task report fails the turn with the model's message, exactly as the local failure channel does.
+        if (snapshot.state === 'failed' && (result.data?.reason === 'task_blocked' || blocked)) {
+            const error = new Error(sanitize(String(result.data?.message || blocked || 'The task is blocked.')));
+            error.exitCode = 1;
+            error.taskBlocked = true;
+            throw error;
+        }
+        if (snapshot.state === 'cancelled' || snapshot.state === 'interrupted' || snapshot.state === 'paused') throw interrupted();
         const reason = typeof result.reason === 'string' ? result.reason : null;
         const error = new Error(sanitize(`Worker execution failed${reason ? ` (${reason})` : ''}.${result.outputText ? `\n${String(result.outputText).slice(-2048)}` : ''}`));
         error.exitCode = 1;

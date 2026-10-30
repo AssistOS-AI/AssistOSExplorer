@@ -589,6 +589,13 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         sendJson(res, 200, { ok: true, flow: await roboflow.answerHumanInput(answerId, await readJsonBody(req), actor.id) });
         return true;
     }
+    // The same answer on the one exact path that mints the owner grant a worker-held question needs (decision M-12 (b)).
+    if (pathname === '/api/roboflow/human-input/answer' && req.method === 'POST') {
+        const { flowId, ...input } = await readJsonBody(req);
+        if (typeof flowId !== 'string' || !/^flow_[0-9a-f]{24}$/u.test(flowId)) { sendError(res, 400, 'a valid flowId is required'); return true; }
+        sendJson(res, 200, { ok: true, flow: await roboflow.answerHumanInput(flowId, input, actor.id, { grant: worker?.enabled ? worker.grant(req) : null }) });
+        return true;
+    }
     const pauseId = pathname.match(new RegExp(`^${FLOW_PATH}/pause$`))?.[1];
     if (pauseId && req.method === 'POST') {
         sendJson(res, 200, { ok: true, flow: await roboflow.pauseFlow(pauseId) });

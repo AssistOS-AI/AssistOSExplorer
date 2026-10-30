@@ -63,9 +63,10 @@ export async function fetchWorkflows({ signal, fetchImpl = globalThis.fetch } = 
 }
 
 export async function answerHumanInput(flowId, input, { signal, fetchImpl = globalThis.fetch } = {}) {
-    const response = await fetchImpl(`${WORKFLOW_BASE}api/roboflow/flows/${encodeURIComponent(flowId)}/human-input/answer`, {
+    // One exact path whose request the Router mints the owner grant for, which an answer to a worker-held question needs.
+    const response = await fetchImpl(`${WORKFLOW_BASE}api/roboflow/human-input/answer`, {
         method: 'POST', credentials: 'include', signal,
-        headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(input),
+        headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ ...input, flowId }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `Could not send the answer (${response.status}).`);

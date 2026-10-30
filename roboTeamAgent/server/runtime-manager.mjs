@@ -753,7 +753,11 @@ export class RuntimeManager {
                 ALA_EVENT_STREAM: '1',
             };
             delete childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
-            if (task.request.allowsHumanInput) {
+            // Through the worker the human-input channel is the worker's (decision M-14): the child asks for it with
+            // `--human-input` and its question comes back as a `human-input-request` event.
+            const workerHumanInput = this.workerMode && task.request.allowsHumanInput === true;
+            if (workerHumanInput && !this.requestHumanInput) throw new Error('Workflow human-input handler is unavailable');
+            if (task.request.allowsHumanInput && !workerHumanInput) {
                 if (!this.requestHumanInput) throw new Error('Workflow human-input handler is unavailable');
                 humanInputChannel = await createHumanInputChannel({
                     request: input => this.requestHumanInput(task.taskId, input),
@@ -774,7 +778,8 @@ export class RuntimeManager {
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
                 '--robot', robot.name, ...args,
                 ...(worker ? ['--worker-binding', worker.bindingId, '--worker-origin', worker.originRequestId] : []),
-                ...(origin ? ['--worker-origin', origin] : [])],
+                ...(origin ? ['--worker-origin', origin] : []),
+                ...(workerHumanInput ? ['--human-input'] : [])],
                 { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
             child.stdin?.on('error', () => {});
@@ -793,6 +798,13 @@ export class RuntimeManager {
             });
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
                 if (event.type === 'task-failed' && typeof event.message === 'string') forcedFailure ||= new Error(event.message);
+                // The worker recorded the question; RoboFlow pauses the phase on it exactly as for the local channel. A phase
+                // that may not ask (or a refusal) fails the task, because the model was told its question was delivered.
+                if (event.type === 'human-input-request' && workerHumanInput) {
+                    Promise.resolve(this.requestHumanInput(task.taskId, { question: event.question, options: event.options,
+                        worker: { referenceId: event.referenceId, requestId: event.requestId } }))
+                        .catch((error) => { forcedFailure ||= error; this._stopChild(task.child); });
+                }
                 if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
                 // Only the identifiers of the first turn are kept, never the event body.
                 if (event.type === 'turn-started' && !task.transcriptRef
