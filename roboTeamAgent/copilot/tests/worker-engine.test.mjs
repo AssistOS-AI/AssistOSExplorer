@@ -676,3 +676,92 @@ test('an attempt the worker stopped for inactivity or for its maximum duration f
     const other = await harness(t, { client: scripted(COMPLETE_ROWS(), { snapshot: { state: 'failed', result: { status: 'failed', reason: 'exit_1', outputText: '' } } }) });
     await assert.rejects(other.engine.executeTurn({ sessionId: other.sessionId, prompt: 'p', owner: other.owner }), (error) => /Worker execution failed \(exit_1\)/.test(error.message) && error.stoppedByWorker === undefined);
 });
+
+// ---- the chat's stop (decision M-12 (b)): a control with the user's grant, repeatable, never a silent detach ----
+async function stoppable(t, options = {}) {
+    const stopClient = endsOnStop([state('running', 1), ala(SELECTED, 2)]);
+    const h = await harness(t, { client: stopClient, ...options });
+    const outcome = h.engine.executeTurn({ sessionId: h.sessionId, turnId: 'turn-stop-1', prompt: 'p', owner: h.owner }).then((result) => ({ result }), (error) => ({ error }));
+    while (!stopClient.calls.subscribe.length) await tick(5);
+    await tick(20);
+    return { h, stopClient, outcome };
+}
+
+test('the chat stop sends exactly one stop control with the stopping request\'s own grant, and the turn ends when the worker confirms', async (t) => {
+    const { h, stopClient, outcome } = await stoppable(t);
+    const stopGrant = freshGrant('chat-stop');
+    const sent = await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: { evidence: evidenceOf(stopGrant) } });
+    assert.deepEqual(sent, { delivered: true });
+    const ended = await outcome;
+    assert.equal(ended.error.name, 'AbortError', 'the worker confirmed the stop by ending the execution');
+    assert.equal(stopClient.calls.control.length, 1, 'exactly one stop control');
+    assert.deepEqual(stopClient.calls.control[0].auth, { grant: stopGrant });
+    assert.equal(stopClient.calls.control[0].body.op, 'stop');
+    assert.equal(stopClient.calls.control[0].body.operationId, stopOperationId(REFERENCE));
+});
+
+test('a stop that carries no grant of its own (the Router\'s stop button) uses the newest unexpired grant of the same user; detaching sends none', async (t) => {
+    const later = freshGrant('later-envelope');
+    const { h, stopClient, outcome } = await stoppable(t, { freshest: () => evidenceOf(later) });
+    assert.deepEqual(await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: null }), { delivered: true });
+    await outcome;
+    assert.deepEqual(stopClient.calls.control.map((call) => call.auth), [{ grant: later }]);
+
+    const holdClient = scripted([state('running', 1), ala(SELECTED, 2)], { hold: true });
+    const detached = await harness(t, { client: holdClient });
+    const controller = new AbortController();
+    const pending = detached.engine.executeTurn({ sessionId: detached.sessionId, prompt: 'p', owner: detached.owner, signal: controller.signal });
+    await tick(30);
+    controller.abort(detachReason());
+    await assert.rejects(pending, (error) => error.code === 'ROBOTEAM_DETACH');
+    assert.equal(holdClient.calls.control.length, 0, 'a page unload or shutdown only detaches');
+});
+
+test('a stop that cannot be delivered is reported, leaves the turn running, and pressing stop again delivers it once', async (t) => {
+    // No grant at all: the admission grant is past its life and no later envelope arrived.
+    const expired = grantOf(Math.floor(Date.now() / 1000) + 2, 'short');
+    const { h, stopClient, outcome } = await stoppable(t, { grant: expired });
+    await tick(1100);
+    const first = await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: null });
+    assert.equal(first.delivered, false);
+    assert.equal(first.code, 'worker_stop_not_authorized');
+    assert.match(first.message, /Stop not delivered: the worker needs your fresh authorization\. The task may still be running; press stop again\./);
+    assert.equal(stopClient.calls.control.length, 0, 'nothing was sent under an expired credential');
+    // The user presses stop again; this press carries a fresh grant.
+    const fresh = freshGrant('second-press');
+    assert.deepEqual(await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: { evidence: evidenceOf(fresh) } }), { delivered: true });
+    await outcome;
+    assert.equal(stopClient.calls.control.length, 1);
+    assert.deepEqual(stopClient.calls.control[0].auth, { grant: fresh });
+});
+
+test('a failing stop control is reported and retried only by the user; an accepted stop that never ends the execution is unconfirmed', async (t) => {
+    const failing = endsOnStop([state('running', 1), ala(SELECTED, 2)]);
+    let calls = 0;
+    failing.control = async (reference, body, auth) => { calls += 1; failing.calls.control.push({ reference, body, auth }); if (calls === 1) throw new WorkerError('worker_unreachable', 503); if (body.op === 'stop') failing.rows.push(state('cancelled', failing.rows.at(-1).seq + 1)); return {}; };
+    const h = await harness(t, { client: failing });
+    const outcome = h.engine.executeTurn({ sessionId: h.sessionId, turnId: 'turn-stop-1', prompt: 'p', owner: h.owner }).then((result) => ({ result }), (error) => ({ error }));
+    while (!failing.calls.subscribe.length) await tick(5);
+    await tick(20);
+    const first = await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: null });
+    assert.deepEqual([first.delivered, first.code], [false, 'worker_unreachable']);
+    await tick(30);
+    assert.equal(calls, 1, 'RoboTeam does not retry a control by itself');
+    assert.deepEqual(await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: null }), { delivered: true });
+    assert.equal((await outcome).error.name, 'AbortError');
+    assert.equal(calls, 2);
+
+    // Accepted by the worker, but the execution never ends: the turn ends as unconfirmed within the bound.
+    const silent = scripted([state('running', 1), ala(SELECTED, 2)], { hold: true });
+    const g = await harness(t, { client: silent, engineOptions: { engine: { stopWaitMs: 60 } } });
+    const ended = g.engine.executeTurn({ sessionId: g.sessionId, turnId: 'turn-silent', prompt: 'p', owner: g.owner }).then((result) => ({ result }), (error) => ({ error }));
+    while (!silent.calls.subscribe.length) await tick(5);
+    await tick(20);
+    assert.deepEqual(await g.engine.stopTurn({ turnId: 'turn-silent', owner: null }), { delivered: true });
+    const unconfirmed = (await ended).error;
+    assert.equal(unconfirmed.code, 'worker_stop_unconfirmed');
+    assert.equal(unconfirmed.execution, 'may_still_run');
+    assert.equal(silent.calls.control.length, 1);
+    // A turn that is not running cannot be stopped.
+    assert.equal((await g.engine.stopTurn({ turnId: 'nothing' })).code, 'not_running');
+});

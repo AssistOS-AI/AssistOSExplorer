@@ -71,6 +71,13 @@ function rootRefusal() {
     return error;
 }
 
+// What the chat shows when a stop could not be delivered: the task may still be running, and pressing stop again retries.
+function stopNotDelivered(code) {
+    return code === 'worker_stop_not_authorized'
+        ? 'Stop not delivered: the worker needs your fresh authorization. The task may still be running; press stop again.'
+        : `Stop not delivered (${code}). The task may still be running; press stop again.`;
+}
+
 function interrupted() {
     return Object.assign(new Error('Execution interrupted.'), { name: 'AbortError', code: 'ABORT_ERR', exitCode: 130 });
 }
@@ -231,7 +238,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
         signal?.addEventListener('abort', abort, { once: true });
         if (signal?.aborted) abort();
         let finish;
-        const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
+        const operation = { controller, turnId, stop: null, done: new Promise((resolve) => { finish = resolve; }) };
         active.add(operation);
         let release, catalogRelease, turn, live = null, liveResult = null;
         const phase = (event, extra = {}) => logDiagnostic(workingDir, `turn.${event}`, { sessionId, turnId,
@@ -417,7 +424,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             onControl?.(writeControl);
             live?.attach(writeControl);
 
-            const outcome = await followReference({ referenceId, authority, controller, records, emit, sanitize, phase, openAuth: admissionAuth, getFailure: () => failure });
+            const outcome = await followReference({ referenceId, authority, controller, operation, records, emit, sanitize, phase, openAuth: admissionAuth, getFailure: () => failure });
             live?.childExited();
             if (failure) throw failure;
             controller.signal.throwIfAborted();
@@ -468,7 +475,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
     // returns its result. An interactive turn (grant) uses one event subscription opened with the
     // admission grant; a RoboFlow phase (binding) polls with the coordinator identity and the binding.
     // A user stop is sent once as a `stop` control; a detach leaves the worker running.
-    async function followReference({ referenceId, authority, controller, records, emit, sanitize, phase, openAuth, getFailure }) {
+    async function followReference({ referenceId, authority, controller, operation, records, emit, sanitize, phase, openAuth, getFailure }) {
         let terminal = false;
         let terminalRow = null;
         let stopSent = false;
@@ -499,6 +506,29 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                     error?.status || 503, { execution: 'may_still_run' });
                 streamAbort.abort();
             }
+        };
+
+        // A user's stop pressed in the chat (decision M-12 (b)). It is a control, not an abort: sent to the worker with the stopping
+        // request's own grant when the stop carries one, else with the newest unexpired grant the user's own verified envelopes
+        // supplied (the Router's stop button carries none). The turn stays open until the worker ends the execution, so a stop that
+        // cannot be delivered is reported and the user simply presses stop again; the control is one idempotent operation.
+        operation.stop = async (stopOwner = null) => {
+            const evidence = usable(stopOwner?.evidence) ? stopOwner.evidence : (authority.mode === 'grant' ? authority.best() : null);
+            try {
+                await client.control(referenceId, { operationId: stopOperationId(referenceId), op: 'stop' },
+                    controlAuth(authority, evidence, { user: authority.mode === 'grant' }));
+            } catch (error) {
+                const code = error?.code === 'forbidden' || error?.code === 'owner_evidence_unavailable' ? 'worker_stop_not_authorized' : (error?.code || 'worker_stop_undelivered');
+                phase('stop.not_delivered', { code });
+                return { delivered: false, code, message: stopNotDelivered(code) };
+            }
+            phase('stop.sent', { referenceId });
+            if (!stopSent) {
+                stopSent = true;
+                stopTimer = setTimeout(() => { if (!terminal) { stopTimedOut = true; streamAbort.abort(); } }, stopWaitMs);
+                stopTimer.unref?.();
+            }
+            return { delivered: true };
         };
 
         // A protocol or handler failure ends the turn, and the execution with it: alaEngine kills its child
@@ -724,6 +754,15 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
 
     return Object.freeze({
         executeTurn,
+        // The user's stop of a running turn (see `operation.stop`). Before the worker has the execution there is nothing to stop there,
+        // so the turn is only cancelled here.
+        async stopTurn({ turnId, owner = null } = {}) {
+            const operation = [...active].find((entry) => entry.turnId === turnId);
+            if (!operation) return { delivered: false, code: 'not_running', message: 'Nothing is running to stop.' };
+            if (operation.stop) return operation.stop(owner);
+            operation.controller.abort(stopReason({ owner }));
+            return { delivered: true, local: true };
+        },
         async getModel({ sessionId } = {}) {
             const info = await modelState(sessionId);
             return { backend: info.backend, model: info.backend ? info.models[info.backend] || null : null,

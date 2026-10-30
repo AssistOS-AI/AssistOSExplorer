@@ -10,11 +10,14 @@ import { createWebchatSkillsEnvelope } from '../skills/workspaceSkillsState.mjs'
 import { createWebchatRuntimeStateEnvelope } from './webchatRuntimeState.mjs';
 import { createProgressLineBuffer, createWebchatProgressEnvelope, codingAgentLabel } from './webchatProgressState.mjs';
 import { executeRuntimeCommand } from '../cli/cliRuntimeCommands.mjs';
-import { handleWebchatControlChunk, isWebchatEscapeControlChunk } from './webchatControl.mjs';
+import { isWebchatEscapeControlChunk } from './webchatControl.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
 import { WEBCHAT_RUNTIME_OPEN_EVENT, createRuntimeWebchatCoordinator } from './webchatCoordinator.mjs';
 import { detachReason, stopReason } from '../execution/abortReasons.mjs';
+
+// The event of a Router-signed stop envelope (the stop button with the user's grant); the Router does not send one yet.
+const WEBCHAT_STOP_EVENT = 'stop';
 
 function target(context) {
     return {
@@ -72,6 +75,21 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
         const evidence = coordinator.evidenceFor(message);
         if (evidence?.ok === true && evidence.grant) newest.set(evidence.principal, evidence);
         return { coordinator, evidence, freshest: (principal) => newest.get(principal) ?? null };
+    };
+    // The user's stop of one running operation. With an engine that holds its work elsewhere (the worker) it is a control that the
+    // engine delivers with the stopping request's grant and that can be pressed again; a stop that cannot be delivered is told to the
+    // user and logged, never silent. Other engines are stopped by aborting the turn.
+    const stopOperation = (operationId, operation, owner = null) => {
+        if (typeof runtime.engine?.stopTurn !== 'function') { operation.controller.abort(stopReason({ owner })); return; }
+        void Promise.resolve(runtime.engine.stopTurn({ turnId: operationId, owner })).then((result) => {
+            if (result?.delivered) return;
+            console.error(`[roboTeamAgent] webchat stop not delivered (${result?.code || 'unknown'}); the task may still be running`);
+            logDiagnostic(runtime.workingDir, 'webchat.stop.not_delivered', { sessionId: operation.sessionId, code: result?.code || null });
+            fail(new Error(result?.message || 'Stop not delivered. The task may still be running; press stop again.'), operation.context, operation.sessionId);
+        }).catch((error) => {
+            console.error(`[roboTeamAgent] webchat stop failed: ${error?.message || error}`);
+            logDiagnostic(runtime.workingDir, 'webchat.stop.error', { sessionId: operation.sessionId, ...errorFields(error) });
+        });
     };
     const fail = (error, context, sessionId) => {
         const text = createSanitizer(context, process.env)(error?.name === 'AbortError' || error?.exitCode === 130 ? '[cancelled]' : formatWebchatError(error, { publicBaseUrl: context.webchatOrigin?.publicBaseUrl }));
@@ -179,7 +197,8 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             diag('execute.end', { engineStarted });
         } catch (error) {
             // Tab-bound errors after the engine started are not shown to the user, so record them here.
-            const reported = Boolean(emitOutput && (!engineStarted || !context.sourceTabId));
+            const reported = Boolean(emitOutput && (!engineStarted || !context.sourceTabId || error?.execution === 'may_still_run'));
+            if (error?.execution === 'may_still_run') console.error(`[roboTeamAgent] webchat turn ended but the worker execution may still be running (${error.code || error.message})`);
             diag('execute.error', { engineStarted, failCalled: reported, hasCommandTurn: Boolean(commandTurn),
                 aborted: controller.signal.aborted, ...errorFields(error) });
             if (commandTurn) {
@@ -188,7 +207,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                     { status: controller.signal.aborted || error?.name === 'AbortError' || error?.exitCode === 130 ? 'interrupted' : 'failed' });
                 update(runtime.sessionStore.loadSession(sessionId), context);
             } else if (engineStarted) update(runtime.sessionStore.loadSession(sessionId), context);
-            if (emitOutput && (!engineStarted || !context.sourceTabId)) fail(error, context, sessionId);
+            if (reported) fail(error, context, sessionId);
         } finally {
             active.delete(operationId);
             // A claim whose turn published no run is dropped.
@@ -208,18 +227,19 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             let control;
             try { control = JSON.parse(raw); } catch { /* Plain text is a prompt. */ }
             if (control?.__webchatControl === 1 && control.type === 'stop') {
-                for (const operation of active.values()) {
+                for (const [operationId, operation] of active) {
                     if (operation.sessionId !== connections.get(control.sourceTabId || 'legacy')?.sessionId) continue;
                     if (control.sourceTabId && operation.context.sourceTabId === control.sourceTabId
                         && (!control.sourcePageInstanceId || operation.context.sourcePageInstanceId === control.sourcePageInstanceId)) {
-                        // The user's stop; the stop envelope's own evidence (when signed) authorizes the worker control.
-                        operation.controller.abort(stopReason({ owner: ownerOf({ invocationToken: control.invocation?.token, signedArgs: webchatSignedArgs(control) }) }));
+                        // The user's stop. The Router's stop control is unsigned, so it carries no grant of its own (a signed one, below, does).
+                        stopOperation(operationId, operation, ownerOf({ invocationToken: control.invocation?.token, signedArgs: webchatSignedArgs(control) }));
                     }
                 }
                 return;
             }
             if (isWebchatEscapeControlChunk(raw)) {
-                if (active.size === 1) handleWebchatControlChunk(raw, { isProcessing: true, abortController: active.values().next().value.controller });
+                // The Escape key: the same stop as the stop button.
+                if (active.size === 1) { const [[operationId, operation]] = active; stopOperation(operationId, operation); }
                 return;
             }
             const message = normalizeWebchatMessage(raw);
@@ -232,6 +252,16 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 ownerOf(message);
                 track(seen.done);
                 if (seen.event === WEBCHAT_RUNTIME_OPEN_EVENT) return;
+                // A Router-signed stop: the stop button's own envelope, which carries the user's grant for the worker stop.
+                if (seen.event === WEBCHAT_STOP_EVENT) {
+                    for (const [operationId, operation] of active) {
+                        if (message.sourceTabId && operation.context.sourceTabId === message.sourceTabId
+                            && (!message.sourcePageInstanceId || operation.context.sourcePageInstanceId === message.sourcePageInstanceId)) {
+                            stopOperation(operationId, operation, ownerOf(message));
+                        }
+                    }
+                    return;
+                }
             }
             if (!message.rawText.trim()) return;
             // Only selection/control commands serialize. Turns acquire their own session lease
