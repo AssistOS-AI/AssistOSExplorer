@@ -43,20 +43,22 @@ export const TOOL_INVENTORY = Object.freeze(['codex', 'claude', 'opencode', 'pi'
 const STREAM_DIRECTORY = '/stream';
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
 const OPT = '/opt/robo-work';
+const TOOLS = '/opt/robo-work-tools';
 
 // The read-only image binds shared by every role: /usr and the certificate directories, plus symlinks for the merged-usr
 // directories. A system without a merged /usr binds the directories themselves.
 export function imageBinds({ exists = (target) => fs.existsSync(target), readlink = (target) => { try { return fs.readlinkSync(target); } catch { return null; } } } = {}) {
     const roBinds = [];
     const symlinks = [];
-    // /opt/robo-work-tools holds the image's locked coding-agent tree; /usr/local/sbin/<agent> are symlinks into it.
-    for (const dir of ['/usr', '/etc/ssl', '/etc/ca-certificates', '/etc/alternatives', '/opt/robo-work-tools']) if (exists(dir)) roBinds.push({ source: dir, dest: dir });
+    for (const dir of ['/usr', '/etc/ssl', '/etc/ca-certificates', '/etc/alternatives']) if (exists(dir)) roBinds.push({ source: dir, dest: dir });
     for (const dir of ['/bin', '/sbin', '/lib', '/lib64']) {
         const link = readlink(dir);
         if (link !== null) symlinks.push({ target: link.startsWith('/') ? link.slice(1) : link, dest: dir });
         else if (exists(dir)) roBinds.push({ source: dir, dest: dir });
     }
-    return { roBinds, symlinks };
+    // The image's locked coding-agent tree (/usr/local/sbin/<agent> link into it), bound read-only for workloads only.
+    const toolBinds = exists(TOOLS) ? [{ source: TOOLS, dest: TOOLS }] : [];
+    return { roBinds, symlinks, toolBinds };
 }
 
 // Where Node, ALA and the endpoint code are seen inside the sandboxes. `serverDir` is robo-work/server.
@@ -139,7 +141,7 @@ export function createExecutionFactory({
                         ]
                     },
                     endpoint: { ...common, env: {}, argv: [code.node, '--import', `${OPT}/fdTrim.mjs`, `${OPT}/execution/providerEndpointMain.mjs`] },
-                    workload: { roBinds: image.roBinds, symlinks: image.symlinks }
+                    workload: { roBinds: [...image.roBinds, ...(image.toolBinds ?? [])], symlinks: image.symlinks }
                 };
                 const supervisor = make.supervisor({
                     launcher, view, admission, roles, home: { path: where.home, fd: homeFd }, grants: resolved,
