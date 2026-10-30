@@ -96,6 +96,8 @@ struct Script {
     refuse_workload: bool,
     /// Fail the workload create after scheduling (`failure`: the keeper may have created something).
     fail_workload: bool,
+    /// With `fail_workload`: only the first spawned keeper fails it.
+    fail_workload_once: bool,
 }
 
 #[derive(Default)]
@@ -217,7 +219,11 @@ impl KeeperSpawner for FakeSpawner {
         self.shared.spawns.fetch_add(1, Ordering::SeqCst);
         assert!(plan.home.is_dir() && plan.runtime_root.is_dir(), "the execution HOME and runtime root exist before the spawn");
         let (ours, theirs) = UnixStream::pair()?;
-        let (script, shared, marker) = (self.script, self.shared.clone(), plan.reservation.clone());
+        let mut script = self.script;
+        if script.fail_workload_once && self.shared.spawns.load(Ordering::SeqCst) > 1 {
+            script.fail_workload = false;
+        }
+        let (shared, marker) = (self.shared.clone(), plan.reservation.clone());
         std::thread::spawn(move || fake_keeper(theirs, marker, script, shared));
         Ok(Spawned { channel: ours, peers: Vec::new(), process: None })
     }
@@ -706,6 +712,10 @@ fn an_exit_is_reported_only_after_its_absence_is_verified_and_then_exactly_once(
     // The exit arrived but /proc answers nothing decidable: nothing is reported or journaled.
     assert!(service.pump(2).is_empty());
     assert_eq!(lookup(&mut service, "n").str_at("state"), Some("running"));
+    // A retry of the failed verification probes once and never waits.
+    let started = std::time::Instant::now();
+    assert!(service.pump(2).is_empty());
+    assert!(started.elapsed() < Duration::from_millis(1000), "retry took {:?}", started.elapsed());
     allow.store(true, Ordering::SeqCst);
     let journaled = service.pump(3);
     assert_eq!(journaled.len(), 1);
@@ -752,4 +762,30 @@ fn a_requested_role_without_an_identity_is_unverified_unless_the_boot_changed() 
     assert!(!attempt_absence(&record, &host, &identity_liveness));
     record.boot_id = Some("00000000-0000-0000-0000-000000000000".into());
     assert!(attempt_absence(&record, &host, &identity_liveness));
+}
+
+#[test]
+fn quarantine_drops_an_unverifiable_execution_and_frees_its_slot_without_claiming_absence() {
+    let fixture = fixture("sup-quarantine-slot");
+    let journal = Journal::open(&fixture.root, STORE, &id("helper-q"), JournalLimits::default(), Duration::from_millis(1000)).unwrap();
+    let supervisor = KeeperSupervisor::new(Box::new(FakeSpawner { script: Script { fail_workload: true, fail_workload_once: true, ..Script::default() }, shared: fixture.shared.clone() }), &fixture.root, &fixture.runtime, &id("helper-q"), STORE).with_capacity(1);
+    let mut service = TargetService::new(journal, supervisor);
+    // The workload anchor was requested but never recorded: the execution can never be verified and holds the one slot.
+    assert_eq!(service.prepare_workload(&prepare_request("q1", "lease-q", &KINDS), Some(&workload()), 1).err(), Some(Code::OutcomeUnknown));
+    assert_eq!(service.prepare_workload(&prepare_request("q2", "lease-q", &KINDS), Some(&workload()), 1).err(), Some(Code::CapacityExceeded));
+    assert_eq!(service.stop(&obj(vec![("key", key("q1"))]), 2).unwrap().str_at("state"), Some("stopping"));
+    for _ in 0..3 {
+        service.pump(3);
+    }
+    assert_eq!(service.prepare_workload(&prepare_request("q2", "lease-q", &KINDS), Some(&workload()), 4).err(), Some(Code::CapacityExceeded), "without quarantine the slot stays held");
+    assert_eq!(service.launcher().describe().len(), 1);
+    let quarantine = obj(vec![("resources", Value::Arr(prepare_request("q1", "lease-q", &KINDS).get("resources").and_then(Value::arr).unwrap().iter().map(|resource| obj(vec![("resourceId", resource.get("resourceId").cloned().unwrap()), ("kind", s("quarantine"))])).collect()))]);
+    assert_eq!(service.release(&obj(vec![("key", key("q1")), ("evidence", quarantine)]), 5).unwrap().str_at("state"), Some("quarantined"));
+    assert!(service.launcher().describe().is_empty(), "the tracked execution was dropped");
+    // Absence is still never claimed for the quarantined key.
+    assert_eq!(service.launcher_mut().absence_verified(&key_text(&key("q1")).unwrap()), Ok(false));
+    assert_eq!(lookup(&mut service, "q1").str_at("state"), Some("quarantined"));
+    // The slot is free: a new key prepares.
+    assert_eq!(service.prepare_workload(&prepare_request("q3", "lease-q3", &KINDS), Some(&workload()), 6).unwrap().str_at("state"), Some("prepared"));
+    assert_eq!(spawns(&fixture), 2);
 }

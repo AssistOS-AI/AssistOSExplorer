@@ -55,6 +55,9 @@ pub trait KeeperLauncher: Hooks {
     fn poll_fds(&self) -> Vec<i32> {
         Vec::new()
     }
+    /// The record was settled `quarantined` (the operator's explicit acceptance of unknown state; absence is never
+    /// claimed). The launcher may give up tracking the execution once its own child processes are reaped.
+    fn quarantined(&mut self, _key_text: &str) {}
     /// Short label for the ready line.
     fn label(&self) -> &'static str;
     /// Whether `serve` reconciles every unsettled record before readiness (the keeper supervisor: a new helper process

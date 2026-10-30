@@ -137,7 +137,11 @@ impl<L: KeeperLauncher> TargetService<L> {
                 }
             }
         }
-        self.journal.release(request, now, &mut self.launcher)
+        let receipt = self.journal.release(request, now, &mut self.launcher)?;
+        if receipt.str_at("state") == Some("quarantined") {
+            self.launcher.quarantined(&key_text(&key)?);
+        }
+        Ok(receipt)
     }
 
     pub fn lookup(&mut self, request: &Value, now: i64) -> Result<Value, Code> {

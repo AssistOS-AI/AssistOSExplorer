@@ -45,8 +45,10 @@
 //! successful read. Any other `/proc` error, an unparsable line, or an empty or non-numeric recorded start time is
 //! `Unknown`, which never counts as gone and is never signalled. A new prepare is refused `keeper_unavailable` before
 //! the journal write when the attempt store is unverifiable or the runtime base unusable. An end (workload exit or
-//! keeper loss) is reported to the service only after its absence is verified; a failed verification is retried. A
-//! quarantined execution keeps its descriptors until the helper restarts.
+//! keeper loss) is reported to the service only after its absence is verified; a failed verification is retried by
+//! housekeeping with a single probe and no wait. On quarantine (the operator's acceptance of unknown state) the helper
+//! kills and reaps its own keeper child and drops the tracked execution (descriptors and capacity slot), never claiming
+//! absence; a keeper child that cannot be reaped stays tracked.
 //!
 //! Workload HOME is an execution-private directory under the runtime base (slice P9 replaces it with the imported robot
 //! HOME). Workload output goes to a bounded per-execution file (the first [`OUTPUT_LOG_BYTES`]); more than
@@ -208,8 +210,9 @@ fn pidfd_signal(pidfd: &OwnedFd, signal: libc::c_int) -> io::Result<()> {
 }
 
 /// Kills a process that is not this helper's child, after re-checking its exact start time through a pidfd. True only
-/// once it is verifiably gone; an undecidable identity is never signalled and never reported gone.
-fn kill_exact(identity: &ProcIdentity, probe: &Probe) -> bool {
+/// once it is verifiably gone (within `wait` after the signal); an undecidable identity is never signalled and never
+/// reported gone.
+fn kill_exact(identity: &ProcIdentity, probe: &Probe, wait: Duration) -> bool {
     match probe(identity) {
         Liveness::Gone => return true,
         Liveness::Unknown => return false,
@@ -220,7 +223,7 @@ fn kill_exact(identity: &ProcIdentity, probe: &Probe) -> bool {
     if probe(identity) == Liveness::Alive {
         let _ = pidfd_signal(&pidfd, libc::SIGKILL);
     }
-    wait_absent(identity, ABSENCE_WAIT, probe)
+    wait_absent(identity, wait, probe)
 }
 
 fn ns_inode(path: &str) -> Option<String> {
@@ -285,7 +288,7 @@ pub fn deliver_attempt_stop(attempt: &Attempt, host: &HostIdentity, probe: &Prob
     let same_namespace = attempt.helper.pid_ns.is_some() && attempt.helper.pid_ns == host.helper.pid_ns;
     if same_boot && same_namespace {
         for identity in attempt.identities() {
-            kill_exact(identity, probe);
+            kill_exact(identity, probe, ABSENCE_WAIT);
         }
     }
 }
@@ -906,13 +909,14 @@ impl Execution {
         }
     }
 
-    /// Reaps the keeper through its pidfd, killing it (through the pidfd) when it has not exited within `wait`.
-    fn reap(&mut self, wait: Duration) -> bool {
+    /// Reaps the keeper through its pidfd, killing it (through the pidfd) when it has not exited within `wait`, then
+    /// waiting at most `kill_wait` for the kill.
+    fn reap(&mut self, wait: Duration, kill_wait: Duration) -> bool {
         let Some(process) = self.process.as_ref() else { return true };
         let exited = poll_one(process.pidfd.as_raw_fd(), wait).unwrap_or(false);
         if !exited {
             let _ = pidfd_signal(&process.pidfd, libc::SIGKILL);
-            if !poll_one(process.pidfd.as_raw_fd(), EXIT_WAIT).unwrap_or(false) {
+            if !poll_one(process.pidfd.as_raw_fd(), kill_wait).unwrap_or(false) {
                 return false;
             }
         }
@@ -928,11 +932,12 @@ impl Execution {
 
     /// The keeper reaped and every recorded identity (keeper, endpoint, workload anchor) verifiably gone; a requested
     /// role whose identity was never recorded is unverified.
-    fn verify_absent(&self, probe: &Probe) -> bool {
+    /// `wait` bounds each identity's wait (zero: one probe, as in the housekeeping retries).
+    fn verify_absent(&self, probe: &Probe, wait: Duration) -> bool {
         if self.process.is_some() || self.requested.iter().any(|role| self.identity(role).is_none()) {
             return false;
         }
-        [&self.keeper, &self.endpoint, &self.anchor].into_iter().flatten().all(|identity| wait_absent(identity, ABSENCE_WAIT, probe) || kill_exact(identity, probe))
+        [&self.keeper, &self.endpoint, &self.anchor].into_iter().flatten().all(|identity| wait_absent(identity, wait, probe) || kill_exact(identity, probe, wait))
     }
 
     /// Ends the execution: the workload tree (stop or abort), the endpoint and the keeper; reaps and verifies. On
@@ -954,7 +959,7 @@ impl Execution {
             let _ = self.channel.request("shutdown", vec![], REQUEST_WAIT);
         }
         self.drain_streams();
-        let absent = self.reap(EXIT_WAIT) && self.verify_absent(probe);
+        let absent = self.reap(EXIT_WAIT, EXIT_WAIT) && self.verify_absent(probe, ABSENCE_WAIT);
         if absent {
             self.mark_absent();
         }
@@ -1372,6 +1377,9 @@ impl KeeperLauncher for KeeperSupervisor {
             }
             execution.channel.pump();
             execution.drain_streams();
+            // A retry of an end whose verification already failed probes once and never waits, so housekeeping cannot
+            // hold up frames for seconds per stuck execution; full waits belong to the explicit stop path.
+            let retry = execution.pending.is_some();
             if execution.pending.is_none() {
                 let exit = execution.channel.take_events().into_iter().find(|event| event.get("event").and_then(J::as_str) == Some("exit") && event.get("resource").and_then(J::as_str) == Some(execution.workload.as_str()));
                 if let Some(exit) = exit {
@@ -1395,9 +1403,11 @@ impl KeeperLauncher for KeeperSupervisor {
                 }
             }
             let Some(kind) = execution.pending.clone() else { continue };
-            let absent = match kind {
-                EndKind::Exited { .. } => execution.reap(EXIT_WAIT) && execution.verify_absent(probe),
-                _ => execution.phase == Phase::Absent || execution.end(probe),
+            let absent = match (&kind, retry) {
+                (_, _) if execution.phase == Phase::Absent => true,
+                (_, true) => execution.reap(Duration::ZERO, Duration::ZERO) && execution.verify_absent(probe, Duration::ZERO),
+                (EndKind::Exited { .. }, false) => execution.reap(EXIT_WAIT, EXIT_WAIT) && execution.verify_absent(probe, ABSENCE_WAIT),
+                (_, false) => execution.end(probe),
             };
             if absent {
                 execution.mark_absent();
@@ -1428,6 +1438,17 @@ impl KeeperLauncher for KeeperSupervisor {
 
     fn reconcile_on_start(&self) -> bool {
         true
+    }
+
+    /// Quarantine: the helper's own keeper child is killed (exact identity, through its pidfd) and reaped, then the
+    /// tracked execution is dropped (its descriptors close and its `executionsPerTarget` slot is freed). Absence is never
+    /// claimed: the journal record stays `quarantined`. A keeper child that cannot be reaped stays tracked.
+    fn quarantined(&mut self, key_text: &str) {
+        let Some(execution) = self.executions.get_mut(key_text) else { return };
+        if execution.phase != Phase::Absent && !execution.reap(Duration::ZERO, EXIT_WAIT) {
+            return;
+        }
+        self.executions.remove(key_text);
     }
 }
 
