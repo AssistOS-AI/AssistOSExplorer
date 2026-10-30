@@ -174,6 +174,10 @@ test('a workflow execution hosts its channels with the default channel factory (
     await new Promise((resolve) => setTimeout(resolve, 200));
     const entries = fs.readdirSync(path.join(dir, 'channels')).sort();
     if (startError) throw startError;
+    // end() closes the hosted channel servers; the sockets must be gone afterwards (no leaked handles).
+    await execution.end({ classification: 'cancelled', outputText: '', data: null });
     assert.ok(entries.includes('task-failure') || entries.includes('task-failure.sock'), entries.join(','));
     assert.ok(entries.includes('human-input') || entries.includes('human-input.sock'), entries.join(','));
+    const sockets = fs.readdirSync(path.join(dir, 'channels'), { recursive: true }).filter((name) => String(name).endsWith('.sock'));
+    assert.deepEqual(sockets.filter((name) => fs.existsSync(path.join(dir, 'channels', String(name)))), [], 'channel sockets removed at end');
 });
