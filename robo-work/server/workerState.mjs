@@ -17,8 +17,8 @@ import {
     isActiveBinding, isBindingId, isOwnerKey, moveBinding
 } from './stateBindings.mjs';
 import {
-    CONTROL_OPS, EVENTS_MAX_LIMIT, appendStateEvent, countControls, getControl, hasPendingStop, insertControl, insertFenceStop, listEvents,
-    readCursor, referenceForExecution
+    CONTROL_OPS, EVENTS_MAX_LIMIT, appendOutputEvents, appendStateEvent, countControls, getControl, hasPendingStop, insertControl, insertFenceStop,
+    listEvents, listPendingControls, markControlApplied, readCursor, referenceForExecution
 } from './stateObservation.mjs';
 import {
     CANCELLED_RESULT, COORDINATOR_REASON_PREFIX, EXPIRED_RESULT, FENCE_CHANGED, OBLIGATION_KINDS, OUTBOX_KINDS, PAUSED_RESULT, REJECTED_RESULT,
@@ -641,7 +641,7 @@ class WorkerState {
         const administrator = !bindingRow && context.administrator === true;
         const originRow = bindingRow && reference.namespace === context.originNamespace && reference.origin_key === context.originKey;
         if (!owner && !administrator && !originRow) fail('not_found');
-        return { reference, admission, owner, administrator };
+        return { reference, admission, owner, administrator, originRow };
     }
 
     // Observation requires an origin-row context: service contexts are refused.
@@ -737,9 +737,15 @@ class WorkerState {
         const attemptId = request.attemptId === undefined ? null : validateInternalId(request.attemptId);
         let payload = null;
         if (request.op === 'message') {
-            exactObject(request.payload, ['text']);
-            if (typeof request.payload.text !== 'string' || request.payload.text.length === 0) fail('invalid_request');
-            payload = { text: request.payload.text };
+            // The message is written to the orchestration domain as {type: 'message', id?, message, displayText?}.
+            exactObject(request.payload, ['message'], ['displayText', 'id']);
+            if (typeof request.payload.message !== 'string' || request.payload.message.length === 0) fail('invalid_request');
+            for (const key of ['displayText', 'id']) {
+                if (request.payload[key] !== undefined && (typeof request.payload[key] !== 'string' || request.payload[key].length === 0)) fail('invalid_request');
+            }
+            payload = { message: request.payload.message };
+            if (request.payload.displayText !== undefined) payload.displayText = request.payload.displayText;
+            if (request.payload.id !== undefined) payload.id = request.payload.id;
             // The persisted canonical JSON is bounded by requestBytes before persistence.
             if (byteLength(payload) > this.#limits.requestBytes) fail('invalid_request');
         } else if (request.payload !== undefined) {
@@ -749,14 +755,17 @@ class WorkerState {
         const requestDigest = digest({ type: 'control', referenceId, op, attemptId, payload });
         return this.#mutate('controlReference', (db) => {
             this.#consume(db, items);
-            const { admission, obligation, owner, administrator } = this.#visibleReference(db, context, referenceId);
+            const { admission, obligation, owner, administrator, originRow } = this.#visibleReference(db, context, referenceId);
             if (obligation) {
                 return this.#controlObservation(db, context, obligation, { referenceId, operationId, op, attemptId, payload, requestDigest, owner, administrator });
             }
             // `pause` applies only to an observation reference (Part D); on an execution
             // reference it is invalid_request, decided after visibility.
             if (op === 'pause') fail('invalid_request');
-            if (op === 'stop' ? !(owner || administrator) : !owner) fail('forbidden');
+            // M-12: stop is owner-or-administrator, message owner-only. A background row (the coordinator plus the persisted flow
+            // binding the reference was admitted under) may also stop its own flow work (cancel, timeout, reconciliation); it is
+            // visible only for references admitted under that very binding, so an interactive reference is `not_found` to it.
+            if (op === 'stop' ? !(owner || administrator || originRow === true) : !owner) fail('forbidden');
             const recorded = getControl(db, referenceId, context.scope, operationId);
             if (recorded) {
                 if (recorded.digest !== requestDigest || recorded.op !== op) fail('operation_conflict');
@@ -1354,6 +1363,97 @@ class WorkerState {
             appendStateEvent(db, referenceForExecution(db, row.execution_id).id, { state: 'running' }, now);
             return { executionId: row.execution_id, attemptId: row.attempt_id, state: 'running' };
         });
+    }
+
+    // Trusted-adapter reads and writes for the execution engine (RoboWork r10 wiring). None takes a context: like
+    // transitionAttempt they are called only by the in-process engine, never from the network.
+
+    // Admissions of the current generation that are still `queued`, oldest first, with what the engine needs to start
+    // them. The specification and configuration are returned parsed.
+    listQueuedAdmissions({ limit = 16 } = {}) {
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) fail('invalid_request');
+        return this.#state.snapshot((db) => db.prepare(`SELECT a.*, r.id AS reference_id FROM admission a JOIN reference r ON r.execution_id = a.execution_id
+            WHERE a.state = 'queued' AND a.generation_id = ? ORDER BY a.rowid LIMIT ?`).all(this.#generationId, limit).map((row) => ({
+            executionId: row.execution_id, attemptId: row.attempt_id, referenceId: row.reference_id, robotId: row.robot_id,
+            configRevision: row.config_revision, configuration: row.configuration === null ? null : JSON.parse(row.configuration),
+            kind: row.kind, logicalId: row.logical_id, logicalKind: row.logical_kind, specification: JSON.parse(row.specification),
+            generationId: row.generation_id
+        })));
+    }
+
+    // Admissions that are `running` in the current generation. The engine uses it to find work it owns after a start;
+    // a running attempt of an earlier generation was interrupted by the rollover.
+    listRunningAdmissions() {
+        return this.#state.snapshot((db) => db.prepare(`SELECT a.execution_id, a.attempt_id, r.id AS reference_id FROM admission a JOIN reference r ON r.execution_id = a.execution_id
+            WHERE a.state = 'running' AND a.generation_id = ? ORDER BY a.rowid`).all(this.#generationId)
+            .map((row) => ({ executionId: row.execution_id, attemptId: row.attempt_id, referenceId: row.reference_id })));
+    }
+
+    // Appends relayed output events (types `ala` and `truncated`) of a running or stopping attempt in one transaction,
+    // within the bounds of stateObservation.mjs. Returns {stored, dropped}.
+    recordReferenceEvents(request) {
+        exactObject(request, ['executionId', 'attemptId', 'events']);
+        validateInternalId(request.executionId);
+        validateInternalId(request.attemptId);
+        if (!Array.isArray(request.events) || request.events.length < 1 || request.events.length > 1024) fail('invalid_request');
+        for (const event of request.events) exactObject(event, ['type', 'data']);
+        return this.#mutate('recordReferenceEvents', (db, generation) => {
+            const row = db.prepare('SELECT * FROM admission WHERE execution_id = ? AND attempt_id = ?').get(request.executionId, request.attemptId);
+            if (!row) fail('not_found');
+            if (row.generation_id !== generation.id) fail('stale_generation');
+            if (row.state !== 'running' && row.state !== 'stopping') fail('operation_conflict');
+            return appendOutputEvents(db, referenceForExecution(db, row.execution_id).id, request.events, this.#now());
+        });
+    }
+
+    // Controls recorded `pending` for a running attempt, oldest first: {operationId, actorKey, op, payload}. A `stop` has
+    // no payload; a `message` has {message, displayText?, id?}. Delivery is confirmed with ackControl.
+    takePendingControls(request) {
+        exactObject(request, ['executionId', 'attemptId']);
+        validateInternalId(request.executionId);
+        validateInternalId(request.attemptId);
+        return this.#state.snapshot((db) => {
+            const row = db.prepare('SELECT * FROM admission WHERE execution_id = ? AND attempt_id = ?').get(request.executionId, request.attemptId);
+            if (!row) fail('not_found');
+            if (row.generation_id !== this.#generationId) fail('stale_generation');
+            if (row.state !== 'running') return [];
+            return listPendingControls(db, referenceForExecution(db, row.execution_id).id)
+                .map(({ operationId, actorKey, op, payload }) => ({ operationId, actorKey, op, payload }));
+        });
+    }
+
+    // Marks one pending control delivered (`applied`). Idempotent: false when it was not pending.
+    ackControl(request) {
+        exactObject(request, ['executionId', 'attemptId', 'actorKey', 'operationId']);
+        validateInternalId(request.executionId);
+        validateInternalId(request.attemptId);
+        validateOperationId(request.operationId);
+        nonEmptyString(request.actorKey);
+        return this.#mutate('ackControl', (db, generation) => {
+            const row = db.prepare('SELECT * FROM admission WHERE execution_id = ? AND attempt_id = ?').get(request.executionId, request.attemptId);
+            if (!row) fail('not_found');
+            if (row.generation_id !== generation.id) fail('stale_generation');
+            return markControlApplied(db, referenceForExecution(db, row.execution_id).id, request.actorKey, request.operationId) > 0;
+        });
+    }
+
+    // Lifecycle work for the trusted preparation driver: completions still `pending`, with the scope and robot owner
+    // that a completing context must carry, and the candidate configuration of a provision or configure.
+    listPendingCompletions() {
+        return this.#state.snapshot((db) => db.prepare(`SELECT c.scope, c.operation_id, c.op_type, c.robot_id, r.owner_id, r.lifecycle, p.candidate
+            FROM completion c JOIN robot r ON r.id = c.robot_id LEFT JOIN preparation p ON p.robot_id = c.robot_id AND p.operation_id = c.operation_id
+            WHERE c.status = 'pending' ORDER BY c.rowid`).all().map((row) => ({
+            scope: row.scope, operationId: row.operation_id, opType: row.op_type, robotId: row.robot_id, ownerId: row.owner_id,
+            lifecycle: row.lifecycle, candidate: row.candidate === null ? null : JSON.parse(row.candidate)
+        })));
+    }
+
+    // Ready robots of the current generation that lack a readiness attestation (after a restart): the driver verifies
+    // each one and calls attestReadiness. `ownerId` is the robot owner that the attesting context must carry.
+    listUnattestedRobots() {
+        return this.#state.snapshot((db) => db.prepare(`SELECT id, owner_id, configuration FROM robot WHERE lifecycle = 'ready' AND uncertain = 0
+            AND (attested_generation IS NULL OR attested_generation != ?) AND id NOT IN (SELECT robot_id FROM preparation) ORDER BY rowid`)
+            .all(this.#generationId).map((row) => ({ robotId: row.id, ownerId: row.owner_id, configuration: JSON.parse(row.configuration) })));
     }
 
     // Step 1 of ending an attempt: durably records the internal classification and the

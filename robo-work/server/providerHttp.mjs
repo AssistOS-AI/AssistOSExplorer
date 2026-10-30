@@ -105,8 +105,88 @@ function validateLimits(limits) {
     return limits.requestBytes + BODY_ALLOWANCE;
 }
 
+export const STREAM_DEFAULTS = Object.freeze({ pollMs: 200, keepAliveMs: 15000, maxLifetimeMs: 25 * 60 * 1000, maxStreams: 64, maxBytes: 48 * 1024 * 1024 });
+
+// An opened event subscription (M-12): NDJSON, one line per event row `{sequence, at, type, data}`, plus control lines
+// `{"keepalive":true}` (also the first line, which flushes the headers through the Router), `{"gap":true,"snapshotSequence":n}`,
+// `{"error":"<code>"}` and a closing `{"end":true,"nextAfter":n}` (the reference is terminal and every event was sent) or
+// `{"end":false,"nextAfter":n,"reason":"lifetime"}` (reattach with a fresh grant and `after: n`). The stream is authorized once, when
+// it opens; it never carries or returns a credential. The Router relays the response as a stream with a 60 s idle timeout, which
+// the keep-alive lines reset (ploinky executeHttpPlan.js:430-474), and ends below the Router 64 MiB response cap with reason "bytes".
+function streamEvents(res, follow, settings, state) {
+    return new Promise((resolve) => {
+        let after = follow.first.nextAfter ?? 0;
+        let timer = null;
+        let closed = false;
+        let lastWrite = Date.now();
+        let written = 0;
+        const started = Date.now();
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/x-ndjson');
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Accel-Buffering', 'no');
+        const finish = () => {
+            if (closed) return;
+            closed = true;
+            clearInterval(timer);
+            state.open -= 1;
+            if (!res.writableEnded) res.end();
+            resolve();
+        };
+        const line = (value) => {
+            if (closed) return;
+            lastWrite = Date.now();
+            const text = `${JSON.stringify(value)}\n`;
+            written += Buffer.byteLength(text);
+            res.write(text);
+        };
+        const send = (page) => {
+            if (page.gap === true) { line({ gap: true, snapshotSequence: page.snapshotSequence }); finish(); return false; }
+            // The Router cuts a response at 64 MiB (ploinky proxy/limits.js:5), which would break a line: end below it, reattach with the cursor.
+            for (const event of page.events) {
+                if (written + Buffer.byteLength(JSON.stringify(event)) + 1 > settings.maxBytes) {
+                    line({ end: false, nextAfter: after, reason: 'bytes' });
+                    finish();
+                    return false;
+                }
+                line(event);
+                after = event.sequence;
+            }
+            return true;
+        };
+        res.on('close', finish);
+        res.flushHeaders?.();
+        line({ keepalive: true });
+        if (!send(follow.first)) return;
+        let polling = false;
+        timer = setInterval(() => {
+            if (closed || polling) return;
+            polling = true;
+            try {
+                if (res.writableNeedDrain) return;
+                const page = follow.page(after);
+                if (!send(page)) return;
+                if (page.events.length === 0) {
+                    const last = follow.finished();
+                    if (last !== null && after >= last) { line({ end: true, nextAfter: after }); finish(); return; }
+                    if (Date.now() - started >= settings.maxLifetimeMs) { line({ end: false, nextAfter: after, reason: 'lifetime' }); finish(); return; }
+                    if (Date.now() - lastWrite >= settings.keepAliveMs) line({ keepalive: true });
+                }
+            } catch (error) {
+                line({ error: mapRefusal(error).code });
+                finish();
+            } finally {
+                polling = false;
+            }
+        }, settings.pollMs);
+        timer.unref?.();
+    });
+}
+
 // `resolve(method, path)` returns {route, call(request)} or null (404).
-function createHandler({ resolve, maxBody, onRefusal }) {
+function createHandler({ resolve, maxBody, onRefusal, streaming = {} }) {
+    const settings = { ...STREAM_DEFAULTS, ...streaming };
+    const streamState = { open: 0 };
     return async function handle(req, res) {
         let route = null;
         try {
@@ -117,6 +197,12 @@ function createHandler({ resolve, maxBody, onRefusal }) {
             route = match.route;
             const body = await readBody(req, maxBody);
             const result = match.call({ authInfo: authInfoFrom(req.headers), method, path, query, body });
+            if (result && result.follow) {
+                if (streamState.open >= settings.maxStreams) throw new HttpRefusal(503, 'capacity_exceeded');
+                streamState.open += 1;
+                await streamEvents(res, result.follow, settings, streamState);
+                return;
+            }
             if (result && result.gap === true) {
                 send(res, 409, { error: 'retention_gap', snapshotSequence: result.snapshotSequence });
                 return;
@@ -136,7 +222,7 @@ function createHandler({ resolve, maxBody, onRefusal }) {
     };
 }
 
-export function createCoordinatorHttpHandler({ adapter, limits, onRefusal }) {
+export function createCoordinatorHttpHandler({ adapter, limits, onRefusal, streaming }) {
     const maxBody = validateLimits(limits);
     const exact = new Map([
         [`${COORDINATOR_BASE}/admissions`, 'admit'],
@@ -168,7 +254,7 @@ export function createCoordinatorHttpHandler({ adapter, limits, onRefusal }) {
         }
         return name ? { route: name, call: (request) => adapter[name](request) } : null;
     };
-    return createHandler({ resolve, maxBody, onRefusal });
+    return createHandler({ resolve, maxBody, onRefusal, streaming });
 }
 
 export function createTaskReferenceHttpHandler({ adapter, basePath, limits, onRefusal }) {

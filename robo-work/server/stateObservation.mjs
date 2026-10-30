@@ -10,7 +10,7 @@ import { canonicalJson, fail } from './stateProtocol.mjs';
 // S6 adds retention, and a reader asking for events before it gets a retention gap.
 //
 // Controls: one immutable record per (reference, actor, operation ID) with its request digest,
-// its payload (the canonical JSON `{text}` of a `message`, NULL for `stop`, bounded by
+// its payload (the canonical JSON `{message, displayText?, id?}` of a `message`, NULL for `stop`, bounded by
 // requestBytes before persistence) and its recorded response. The payload is kept for the
 // execution engine and is never returned by any read. `delivery` is `applied` (no further
 // work) or `pending` (recorded for the S6 execution engine; S6 widens it).
@@ -23,13 +23,25 @@ import { canonicalJson, fail } from './stateProtocol.mjs';
 
 export const CONTROL_OPS = Object.freeze(['stop', 'message', 'pause']);
 export const EVENTS_MAX_LIMIT = 1000;
+// Schema version 7 (RoboWork r10 wiring): output events. `type` is `state` (lifecycle), `ala` (one record that the
+// orchestration domain wrote, relayed unchanged as `data: {record}`) or `truncated` (`data: {dropped, reason}`: records
+// that were coalesced, cut or dropped, so a gap is never silent). Bounds, all per reference or per page:
+//   an `ala` event's canonical JSON is at most OUTPUT_EVENT_MAX_BYTES (a larger record becomes a `truncated` event);
+//   at most OUTPUT_EVENTS_PER_REFERENCE `ala` events and TRUNCATED_EVENTS_PER_REFERENCE `truncated` events are stored;
+//   an events page holds at most EVENTS_PAGE_MAX_BYTES of event JSON (always at least one event), so a page stays well
+//   below the 1 MiB response bound of the RoboTeam hop.
+export const OUTPUT_EVENT_MAX_BYTES = 48 * 1024;
+export const OUTPUT_EVENTS_PER_REFERENCE = 8192;
+export const TRUNCATED_EVENTS_PER_REFERENCE = 16;
+export const EVENTS_PAGE_MAX_BYTES = 512 * 1024;
+export const OUTPUT_EVENT_TYPES = Object.freeze(['ala', 'truncated']);
 
 export const OBSERVATION_SCHEMA_SQL = `
 CREATE TABLE reference_event (
     reference_id TEXT NOT NULL REFERENCES reference(id),
     sequence INTEGER NOT NULL CHECK (sequence >= 1),
     at INTEGER NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('state')),
+    type TEXT NOT NULL CHECK (type IN ('state', 'ala', 'truncated')),
     data TEXT NOT NULL,
     PRIMARY KEY (reference_id, sequence)
 );
@@ -97,10 +109,73 @@ export function listEvents(db, referenceId, after, limit) {
     if (after < cursor.first_retained - 1) return { gap: true, snapshotSequence: cursor.last_sequence };
     const rows = db.prepare('SELECT * FROM reference_event WHERE reference_id = ? AND sequence > ? ORDER BY sequence LIMIT ?')
         .all(referenceId, after, limit);
-    const events = rows.map((row) => ({
-        sequence: row.sequence, at: new Date(row.at).toISOString(), type: row.type, data: JSON.parse(row.data)
-    }));
+    const events = [];
+    let bytes = 0;
+    for (const row of rows) {
+        bytes += Buffer.byteLength(row.data, 'utf8') + 64;
+        if (events.length > 0 && bytes > EVENTS_PAGE_MAX_BYTES) break;
+        events.push({ sequence: row.sequence, at: new Date(row.at).toISOString(), type: row.type, data: JSON.parse(row.data) });
+    }
     return { events, nextAfter: events.length > 0 ? events[events.length - 1].sequence : after };
+}
+
+// Appends relayed output events (`ala`, `truncated`) of one reference in one transaction, enforcing the per-event and
+// per-reference bounds. An event that does not fit is not stored; the number of events refused is returned as `dropped`
+// (an oversize `ala` record is first replaced by a `truncated` event of reason `record_too_large` when that kind still has room).
+// Returns {stored, dropped}.
+export function appendOutputEvents(db, referenceId, events, now) {
+    let cursor = readCursor(db, referenceId);
+    if (!cursor) {
+        db.prepare('INSERT INTO reference_cursor (reference_id, last_sequence, first_retained) VALUES (?, 0, 1)').run(referenceId);
+        cursor = { last_sequence: 0, first_retained: 1 };
+    }
+    const counts = Object.fromEntries(db.prepare("SELECT type, COUNT(*) AS count FROM reference_event WHERE reference_id = ? AND type IN ('ala', 'truncated') GROUP BY type").all(referenceId)
+        .map((row) => [row.type, row.count]));
+    let ala = counts.ala ?? 0;
+    let truncated = counts.truncated ?? 0;
+    let sequence = cursor.last_sequence;
+    let stored = 0;
+    let dropped = 0;
+    const insert = db.prepare('INSERT INTO reference_event (reference_id, sequence, at, type, data) VALUES (?, ?, ?, ?, ?)');
+    const put = (type, data) => {
+        sequence += 1;
+        insert.run(referenceId, sequence, now, type, canonicalJson(data));
+        stored += 1;
+    };
+    for (const event of events) {
+        if (!OUTPUT_EVENT_TYPES.includes(event.type)) fail('invalid_request');
+        let data;
+        try { data = canonicalJson(event.data); } catch { dropped += 1; continue; } // too deep or not JSON: never stored
+        if (event.type === 'ala') {
+            if (ala >= OUTPUT_EVENTS_PER_REFERENCE) { dropped += 1; continue; }
+            if (Buffer.byteLength(data, 'utf8') > OUTPUT_EVENT_MAX_BYTES) {
+                if (truncated < TRUNCATED_EVENTS_PER_REFERENCE) { put('truncated', { dropped: 1, reason: 'record_too_large' }); truncated += 1; } else dropped += 1;
+                continue;
+            }
+            put('ala', event.data);
+            ala += 1;
+        } else {
+            if (truncated >= TRUNCATED_EVENTS_PER_REFERENCE || Buffer.byteLength(data, 'utf8') > 1024) { dropped += 1; continue; }
+            put('truncated', event.data);
+            truncated += 1;
+        }
+    }
+    if (stored > 0) db.prepare('UPDATE reference_cursor SET last_sequence = ? WHERE reference_id = ?').run(sequence, referenceId);
+    return { stored, dropped };
+}
+
+// Controls still pending delivery for a reference, oldest first, with their payloads (never returned by a read).
+export function listPendingControls(db, referenceId) {
+    return db.prepare("SELECT actor_key, operation_id, op, payload, source FROM reference_control WHERE reference_id = ? AND delivery = 'pending' ORDER BY created_at, rowid")
+        .all(referenceId).map((row) => ({
+            actorKey: row.actor_key, operationId: row.operation_id, op: row.op, source: row.source,
+            payload: row.payload === null ? null : JSON.parse(row.payload)
+        }));
+}
+
+export function markControlApplied(db, referenceId, actorKey, operationId) {
+    return db.prepare("UPDATE reference_control SET delivery = 'applied' WHERE reference_id = ? AND actor_key = ? AND operation_id = ? AND delivery = 'pending'")
+        .run(referenceId, actorKey, operationId).changes;
 }
 
 export function getControl(db, referenceId, actorKey, operationId) {

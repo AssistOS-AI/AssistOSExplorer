@@ -648,8 +648,8 @@ test('M-6: fence stops are exempt from the controls capacity: pause and cancel a
     // Fill the relayed-control capacity with an unrelated message.
     const task = store.admit(alice, admitRequest(robotId, {}, alice));
     start(store, task);
-    store.controlReference(alice, { referenceId: task.reference.id, operationId: newId(), op: 'message', payload: { text: 'hi' } });
-    expectCode(assert, () => store.controlReference(alice, { referenceId: task.reference.id, operationId: newId(), op: 'message', payload: { text: 'more' } }), 'capacity_exceeded');
+    store.controlReference(alice, { referenceId: task.reference.id, operationId: newId(), op: 'message', payload: { message: 'hi' } });
+    expectCode(assert, () => store.controlReference(alice, { referenceId: task.reference.id, operationId: newId(), op: 'message', payload: { message: 'more' } }), 'capacity_exceeded');
     const pause = succeeds(() => control(store, alice, admitted.reference.id, 'pause'), 'a pause is never refused for capacity');
     assert.equal(pause.outcome, 'accepted');
     assert.equal(count(dir, "reference_control WHERE source = 'fence'"), 2, 'one pending fence stop per running descendant');
@@ -667,9 +667,9 @@ test('M-6: fence-written stops do not consume relayed-control capacity', (t) => 
     control(store, alice, admitted.reference.id, 'pause');
     const task = store.admit(alice, admitRequest(robotId, {}, alice));
     start(store, task);
-    succeeds(() => store.controlReference(alice, { referenceId: task.reference.id, operationId: newId(), op: 'message', payload: { text: 'hi' } }),
+    succeeds(() => store.controlReference(alice, { referenceId: task.reference.id, operationId: newId(), op: 'message', payload: { message: 'hi' } }),
         'a relayed control still fits: fence stops are not counted');
-    expectCode(assert, () => store.controlReference(alice, { referenceId: task.reference.id, operationId: newId(), op: 'message', payload: { text: 'more' } }), 'capacity_exceeded');
+    expectCode(assert, () => store.controlReference(alice, { referenceId: task.reference.id, operationId: newId(), op: 'message', payload: { message: 'more' } }), 'capacity_exceeded');
 });
 
 // ---- §15 F-6 / §16 N-7 / §17 D6 generation reads --------------------------------------------
@@ -836,7 +836,7 @@ test('unknown, foreign and malformed: accept, reject and outbox on an unknown ob
         expectCode(assert, bad, 'invalid_request');
     }
     expectCode(assert, () => store.acceptObligation(alice, { operationId: newId(), obligationId: pending.obligationId, domainRecordId: flowId() }), 'forbidden');
-    for (const extra of [{ op: 'message', payload: { text: 'x' } }, { op: 'stop', attemptId: newId() }]) {
+    for (const extra of [{ op: 'message', payload: { message: 'x' } }, { op: 'stop', attemptId: newId() }]) {
         expectCode(assert, () => store.controlReference(ownerRow('bob'), { referenceId: pending.reference.id, operationId: newId(), ...extra }), 'not_found');
         expectCode(assert, () => store.controlReference(alice, { referenceId: pending.reference.id, operationId: newId(), ...extra }), 'invalid_request');
     }

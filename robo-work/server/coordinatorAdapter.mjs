@@ -1,4 +1,4 @@
-import { deriveOperationId, exactObject, fail, isInternalId, isOriginId, isPublicReferenceId } from './stateProtocol.mjs';
+import { TERMINAL_STATES, deriveOperationId, exactObject, fail, isInternalId, isOriginId, isPublicReferenceId } from './stateProtocol.mjs';
 import {
     CoordinatorAuthError, bindingKind, consumeReplay, contextForBinding, contextForBindingRead, contextForCoordinatorRead,
     contextForLifecycle, contextForObligationCoordinator, contextForOrigin, contextForOriginObligation, contextForOwner, requireAdmissionBindingId,
@@ -237,24 +237,59 @@ export function createCoordinatorAdapter({ store, workspaceId, verifier }) {
             return projectSnapshot(store.observeReference(context, { referenceId }));
         },
 
-        // Returns {events, nextAfter} or {gap: true, snapshotSequence}.
+        // Returns {events, nextAfter} or {gap: true, snapshotSequence}. With `stream: true` (`limit` then optional, default 100) the
+        // grant is verified once, here, and the result is `{follow}`: a subscription bound to the authorized context for its lifetime
+        // (M-12). The HTTP layer streams it as NDJSON; reopening needs a fresh grant. In a stream the terminal state row also carries
+        // the result, so the subscriber needs no extra read: data.result {outputText, data}, data.classification, data.reason?.
         referenceEvents(request) {
             const hop = verifyCoordinatorRequest(verifier, request);
             const referenceId = referenceIdFrom(hop, '/events');
-            const body = exactObject(parseJsonBody(request.body), ['after', 'limit'], ['bindingId']);
+            const body = exactObject(parseJsonBody(request.body), ['after'], ['limit', 'bindingId', 'stream']);
+            if (body.stream !== undefined && body.stream !== true) fail('invalid_request');
+            if (body.stream !== true && body.limit === undefined) fail('invalid_request');
             const context = observerContext(hop, body.bindingId, 'read');
             consumeReplay(verifier, [hop]);
-            return store.listReferenceEvents(context, { referenceId, after: body.after, limit: body.limit });
+            const limit = body.limit ?? 100;
+            const page = (after) => store.listReferenceEvents(context, { referenceId, after, limit });
+            if (body.stream !== true) return page(body.after);
+            // The first page also checks visibility and `after` now, so a refusal is an ordinary response and not a stream.
+            const first = page(body.after);
+            const terminalRow = (event) => {
+                if (event.type !== 'state' || !TERMINAL_STATES.includes(event.data.state)) return event;
+                const { result } = store.observeReference(context, { referenceId });
+                if (!result) return event;
+                const data = { ...event.data, result: { outputText: result.outputText, data: result.data }, classification: result.classification ?? result.status };
+                if (result.reason !== undefined) data.reason = result.reason;
+                return { ...event, data };
+            };
+            const decorate = (value) => (value.events ? { ...value, events: value.events.map(terminalRow) } : value);
+            return {
+                follow: {
+                    first: decorate(first), page: (after) => decorate(page(after)),
+                    // The reference reached a terminal state: `sequence` is the last event written for it.
+                    finished: () => {
+                        const snapshot = store.observeReference(context, { referenceId });
+                        return TERMINAL_STATES.includes(snapshot.state) ? snapshot.sequence : null;
+                    }
+                }
+            };
         },
 
-        // Relayed user controls need the acting user's grant.
+        // User controls (stop, message) need the acting user's grant, fresh for each control (M-12). The background row is the
+        // coordinator alone with the `bindingId` the reference was admitted under: it may stop its own flow work, and nothing
+        // else (S1 refuses its message, and an interactive reference is not visible to it).
         controlReference(request) {
             const hop = verifyCoordinatorRequest(verifier, request);
             return withDurableReplay(store, [hop], (replay) => {
                 const referenceId = referenceIdFrom(hop, '/control');
-                const controlRequest = controlRequestFrom(referenceId, parseJsonBody(request.body));
-                if (!hop.owner) refuse('forbidden', 'owner_evidence');
-                return store.controlReference(contextForOwner(workspaceId, hop, 'control'), controlRequest, replay);
+                const { bindingId, ...rest } = parseJsonBody(request.body);
+                const controlRequest = controlRequestFrom(referenceId, rest);
+                if (hop.owner) {
+                    if (bindingId !== undefined) refuse('forbidden', 'row_ambiguous');
+                    return store.controlReference(contextForOwner(workspaceId, hop, 'control'), controlRequest, replay);
+                }
+                if (bindingId === undefined) refuse('forbidden', 'owner_evidence');
+                return store.controlReference(contextForBindingRead(workspaceId, hop, requireReadBindingId(bindingId), 'control'), controlRequest, replay);
             });
         },
 

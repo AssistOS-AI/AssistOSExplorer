@@ -1,0 +1,64 @@
+{
+  "container": "localhost/robo-work-worker:r10-dev",
+  "about": "RoboWork execution provider: owns robot HOMEs and runs AI tasks for RoboTeam in confined Bubblewrap sandboxes.",
+  "containerSecurity": {
+    "nestedPodman": true
+  },
+  "enableModes": [
+    "global"
+  ],
+  "agent": "node /code/server/main.mjs",
+  "readiness": {
+    "protocol": "tcp",
+    "port": 7000
+  },
+  "health": {
+    "readiness": {
+      "interval": 1,
+      "timeout": 1,
+      "failureThreshold": 60,
+      "successThreshold": 1
+    }
+  },
+  "executionProvider": {
+    "version": 1,
+    "port": 7300,
+    "taskReferences": {
+      "path": "/v1/task-refs"
+    },
+    "coordinatorRoutes": [
+      {
+        "path": "/base-agent-additional-server/robo-work/7000/v1/coordinator/*",
+        "callers": [
+          "agent:AchillesIDE/roboTeamAgent"
+        ]
+      }
+    ]
+  },
+  "routerAccess": {
+    "agentPorts": [
+      7000
+    ]
+  },
+  "runtime": {
+    "resources": {
+      "persistentStorage": {
+        "key": "robo-work",
+        "containerPath": "/var/lib/robo-work"
+      },
+      "env": {
+        "ROBO_WORK_DATA_DIR": "{{STORAGE_CONTAINER_PATH}}"
+      }
+    }
+  },
+  "profiles": {
+    "default": {
+      "env": [
+        "ROBO_WORK_MAX_CONCURRENT"
+      ]
+    }
+  },
+  "link-install": [
+    "https://github.com/AssistOS-AI/AdvancedLanguageAgent.git"
+  ]
+}

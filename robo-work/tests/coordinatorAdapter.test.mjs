@@ -509,14 +509,18 @@ test('relayed controls: owner message ok, admin stop ok, admin message refused, 
     const { executionId, attemptId } = attemptOf(dir, admitted.taskRef.id);
     store.transitionAttempt({ executionId, attemptId, expectedState: 'queued', nextState: 'running' });
     const control = (body, claims) => adapter.controlReference(hop(secret, body, { path: referencePath(admitted.taskRef.id, 'control'), claims }));
-    const message = control({ operationId: newId(), op: 'message', payload: { text: 'hello' } }, ownerClaims('ursula'));
+    const message = control({ operationId: newId(), op: 'message', payload: { message: 'hello' } }, ownerClaims('ursula'));
     assert.equal(message.delivery, 'pending');
     const stop = control({ operationId: newId(), op: 'stop', attemptId }, ownerClaims('root', [' Admin ']));
     assert.equal(stop.outcome, 'accepted');
-    expectError(() => control({ operationId: newId(), op: 'message', payload: { text: 'hi' } }, ownerClaims('root', ['admin'])), 'WorkerStateError', 'forbidden');
+    expectError(() => control({ operationId: newId(), op: 'message', payload: { message: 'hi' } }, ownerClaims('root', ['admin'])), 'WorkerStateError', 'forbidden');
     expectError(() => control({ operationId: newId(), op: 'stop' }, {}), 'CoordinatorAuthError', 'forbidden', 'owner_evidence');
     expectError(() => control({ operationId: newId(), op: 'stop' }, ownerClaims('victor')), 'WorkerStateError', 'not_found');
-    expectError(() => control({ operationId: newId(), op: 'stop', bindingId: binding }, {}), 'WorkerStateError', 'invalid_request');
+    // M-12 (C): the coordinator alone with the flow binding may stop its own flow work (the pending stop is returned, not recorded again);
+    // a user grant together with a bindingId is ambiguous, and a message by the binding is owner-only.
+    assert.equal(control({ operationId: newId(), op: 'stop', bindingId: binding }, {}).outcome, 'accepted');
+    expectError(() => control({ operationId: newId(), op: 'stop', bindingId: binding }, ownerClaims('ursula')), 'CoordinatorAuthError', 'forbidden', 'row_ambiguous');
+    expectError(() => control({ operationId: newId(), op: 'message', payload: { message: 'x' }, bindingId: binding }, {}), 'WorkerStateError', 'forbidden');
     assert.equal(count(dir, 'reference_control'), 2);
 });
 

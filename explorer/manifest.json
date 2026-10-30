@@ -19,6 +19,7 @@
         },
         "dpuAgent global",
         "roboTeamAgent global no-wait",
+        "robo-work global no-wait",
         "soul-gateway no-wait",
         "workspaceMonitorAgent no-wait",
         "local-llms/local-llm no-wait"

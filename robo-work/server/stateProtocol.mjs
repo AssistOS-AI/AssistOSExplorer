@@ -241,6 +241,8 @@ export function validateConfiguration(value, limits) {
 
 export function validateSpecification(value, limits) {
     if (!isPlainObject(value)) fail('invalid_request');
+    // Version 2 (execution specification, RoboWork r10 wiring) is validated field by field below.
+    if (value.version === SPECIFICATION_VERSION_2) return validateSpecificationV2(value, limits);
     rejectAuthorityKeys(value);
     assertWithinBytes(value, limits.requestBytes);
     return value;
@@ -388,10 +390,80 @@ function isRelativeCwd(value) {
 
 export const TURN_PROMPT_MAX = 32768;
 
+// Execution specification version 2 (task, continuation and turn kinds; wiring contract). Opaque to the S1 state
+// except for this validation. Every path is an absolute workspace path; the worker re-resolves each one through the
+// grant resolver, which refuses protected and out-of-workspace paths. The generic authority-key rejection is not
+// applied (`folders[].path` is a legitimate key); every key is instead fixed by the exact schema below.
+export const SPECIFICATION_VERSION_2 = 2;
+export const SPEC_V2_PROMPT_MAX_BYTES = 1024 * 1024;
+export const SPEC_V2_DISPLAY_MAX_BYTES = 256 * 1024;
+export const SPEC_V2_MAX_FOLDERS = 32;
+export const SPEC_V2_MAX_IGNORE = 64;
+// sessionId and turnId are safe opaque strings (ALA validates what it needs; a UUID is one such string).
+const SPEC_OPAQUE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
+const SPEC_ALIAS = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
+const SPEC_EFFORT = /^[A-Za-z0-9_-]{1,64}$/u;
+const CODING_AGENTS = Object.freeze(['codex', 'claude', 'opencode', 'pi']);
+
+function isSpecAbsolutePath(value) {
+    if (typeof value !== 'string' || value.length < 1 || value.length > 1024 || !value.startsWith('/')) return false;
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f]/u.test(value) || value.includes('\\') || value.includes('//')) return false;
+    if (value.length > 1 && value.endsWith('/')) return false;
+    return !value.split('/').some((segment) => segment === '.' || segment === '..');
+}
+
+function specBytesBetween(value, min, max) {
+    return typeof value === 'string' && !value.includes('\0') && Buffer.byteLength(value, 'utf8') >= min && Buffer.byteLength(value, 'utf8') <= max;
+}
+
+export function validateSpecificationV2(value, limits) {
+    exactObject(value, ['version', 'prompt', 'displayText', 'sessionId', 'turnId', 'cwd', 'permissions'],
+        ['model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution']);
+    if (value.version !== SPECIFICATION_VERSION_2) fail('invalid_request');
+    if (!specBytesBetween(value.prompt, 1, SPEC_V2_PROMPT_MAX_BYTES)) fail('invalid_request');
+    if (!specBytesBetween(value.displayText, 0, SPEC_V2_DISPLAY_MAX_BYTES)) fail('invalid_request');
+    for (const key of ['sessionId', 'turnId']) {
+        if (typeof value[key] !== 'string' || !SPEC_OPAQUE_ID.test(value[key])) fail('invalid_request');
+    }
+    if (!isSpecAbsolutePath(value.cwd)) fail('invalid_request');
+    if (value.permissions !== 'full-access' && value.permissions !== 'ask-for-approval') fail('invalid_request');
+    if (value.model !== undefined && !boundedText(value.model, 1, 128)) fail('invalid_request');
+    if (value.effort !== undefined && (typeof value.effort !== 'string' || !SPEC_EFFORT.test(value.effort))) fail('invalid_request');
+    if (value.codingAgent !== undefined && !CODING_AGENTS.includes(value.codingAgent)) fail('invalid_request');
+    for (const key of ['resume', 'workflowExecution']) {
+        if (value[key] !== undefined && typeof value[key] !== 'boolean') fail('invalid_request');
+    }
+    if (value.folders !== undefined) {
+        if (!Array.isArray(value.folders) || value.folders.length > SPEC_V2_MAX_FOLDERS) fail('invalid_request');
+        const aliases = new Set();
+        for (const folder of value.folders) {
+            // ALA folder syntax: `<path> [write] [as <alias> | at <absolute-path>] [expose]`. `expose` is a read-only mount with an
+            // explicit destination, and `as` and `at` are alternatives.
+            exactObject(folder, ['path', 'access'], ['as', 'at', 'expose']);
+            if (!isSpecAbsolutePath(folder.path) || (folder.access !== 'read' && folder.access !== 'write')) fail('invalid_request');
+            if (folder.at !== undefined && (!isSpecAbsolutePath(folder.at) || folder.as !== undefined)) fail('invalid_request');
+            if (folder.expose !== undefined && (folder.expose !== true || folder.access !== 'read' || (folder.as === undefined && folder.at === undefined))) fail('invalid_request');
+            if (folder.as !== undefined) {
+                if (typeof folder.as !== 'string' || !SPEC_ALIAS.test(folder.as) || aliases.has(folder.as)) fail('invalid_request');
+                aliases.add(folder.as);
+            }
+        }
+    }
+    if (value.ignore !== undefined) {
+        if (!Array.isArray(value.ignore) || value.ignore.length > SPEC_V2_MAX_IGNORE || !value.ignore.every(isSpecAbsolutePath)) fail('invalid_request');
+    }
+    // eslint-disable-next-line no-control-regex
+    if (value.mcpServers !== undefined && (typeof value.mcpServers !== 'string' || value.mcpServers.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.mcpServers))) fail('invalid_request');
+    assertWithinBytes(value, limits.requestBytes);
+    return value;
+}
+
 // Turn specification version 1 (provisional; interface note 2.3 (9)): exactly
 // {version: 1, prompt, model?, effort?, cwd?}. Attachments, references and live skills are
 // deferred to the cutover. No authority-named key may appear at any depth.
 export function validateTurnSpecification(value, limits) {
+    if (isPlainObject(value) && value.version === SPECIFICATION_VERSION_2) return validateSpecificationV2(value, limits);
     exactObject(value, ['version', 'prompt'], ['model', 'effort', 'cwd']);
     if (value.version !== 1) fail('invalid_request');
     if (!boundedText(value.prompt, 1, TURN_PROMPT_MAX)) fail('invalid_request');

@@ -179,14 +179,16 @@ test('control authorization per op: admin stop accepted, admin message forbidden
     const admin = user('root', { administrator: true });
     const bob = user('bob');
     const originRow = syntheticContext({ originNamespace: 'coordinator:svc1', originKey: 'binding:flow1', ownerId: 'coordinator:svc1', scope: 'scope-read' });
-    const message = (text) => ({ referenceId, operationId: newId(), op: 'message', payload: { text } });
+    const message = (text) => ({ referenceId, operationId: newId(), op: 'message', payload: { message: text } });
     const stop = () => ({ referenceId, operationId: newId(), op: 'stop' });
     assert.deepEqual(store.controlReference(admin, { ...stop(), operationId: 'StopByAdmin00000000000' }),
         { operationId: 'StopByAdmin00000000000', op: 'stop', outcome: 'accepted', delivery: 'pending', state: 'running' });
     expectCode(assert, () => store.controlReference(admin, message('hello')), 'forbidden');
     expectCode(assert, () => store.controlReference(bob, stop()), 'not_found');
     expectCode(assert, () => store.controlReference(bob, message('hello')), 'not_found');
-    expectCode(assert, () => store.controlReference(originRow, stop()), 'forbidden');
+    // M-12 (C): the background row (coordinator plus the flow binding) may stop its own flow work, but a message stays owner-only. A
+    // second stop returns the pending one without a new record.
+    assert.deepEqual({ ...store.controlReference(originRow, stop()), operationId: null }, { operationId: null, op: 'stop', outcome: 'accepted', delivery: 'pending', state: 'running' });
     expectCode(assert, () => store.controlReference(originRow, message('hello')), 'forbidden');
     const sent = store.controlReference(alice, message('hello'));
     assert.deepEqual({ ...sent, operationId: null }, { operationId: null, op: 'message', outcome: 'accepted', delivery: 'pending', state: 'running' });
@@ -204,7 +206,7 @@ test('stop on a queued attempt cancels and publishes once; replay returns the re
     assert.deepEqual({ ...first, operationId: null }, { operationId: null, op: 'stop', outcome: 'accepted', delivery: 'applied', state: 'cancelled' });
     assert.deepEqual(store.controlReference(alice, { ...request }), first);
     expectCode(assert, () => store.controlReference(alice, { ...request, attemptId: admitted.attemptId }), 'operation_conflict');
-    expectCode(assert, () => store.controlReference(alice, { ...request, op: 'message', payload: { text: 'x' } }), 'operation_conflict');
+    expectCode(assert, () => store.controlReference(alice, { ...request, op: 'message', payload: { message: 'x' } }), 'operation_conflict');
     assert.equal(count(dir, 'reference_control'), 1);
     const snapshot = store.observeReference(alice, { referenceId });
     assert.equal(snapshot.state, 'cancelled');
@@ -228,18 +230,18 @@ test('attempt mismatch, message to a terminal attempt, capacity and a stale writ
     expectCode(assert, () => store.controlReference(user('bob'), wrongAttempt), 'not_found');
     const done = admitAs(store, robotId, alice);
     store.beginAttemptEnd(ADAPTER(), { executionId: done.executionId, attemptId: done.attemptId, expectedState: 'queued', outcome: { classification: 'completed' } });
-    expectCode(assert, () => store.controlReference(alice, { referenceId: done.reference.id, operationId: newId(), op: 'message', payload: { text: 'late' } }), 'operation_conflict');
-    for (const payload of [undefined, {}, { text: '' }, { text: 'x', extra: 1 }, { text: 'x'.repeat(LIMITS.requestBytes + 1) }]) {
+    expectCode(assert, () => store.controlReference(alice, { referenceId: done.reference.id, operationId: newId(), op: 'message', payload: { message: 'late' } }), 'operation_conflict');
+    for (const payload of [undefined, {}, { message: '' }, { message: 'x', extra: 1 }, { message: 'x'.repeat(LIMITS.requestBytes + 1) }]) {
         expectCode(assert, () => store.controlReference(alice, { referenceId: live.reference.id, operationId: newId(), op: 'message', payload }), 'invalid_request');
     }
-    for (const bad of [{ op: 'input' }, { op: 'stop', payload: { text: 'x' } }, { op: 'stop', operationId: 'short' }]) {
+    for (const bad of [{ op: 'input' }, { op: 'stop', payload: { message: 'x' } }, { op: 'stop', operationId: 'short' }]) {
         expectCode(assert, () => store.controlReference(alice, { referenceId: live.reference.id, operationId: newId(), ...bad }), 'invalid_request');
     }
     assert.throws(() => store.controlReference(alice, { referenceId: live.reference.id, operationId: newId(), op: 'pause' }),
         (error) => error.name === 'WorkerStateError' && error.code === 'invalid_request', 'pause on an execution reference is invalid_request');
     assert.equal(count(dir, 'reference_control'), 0);
-    store.controlReference(alice, { referenceId: live.reference.id, operationId: newId(), op: 'message', payload: { text: 'one' } });
-    store.controlReference(alice, { referenceId: live.reference.id, operationId: newId(), op: 'message', payload: { text: 'two' } });
+    store.controlReference(alice, { referenceId: live.reference.id, operationId: newId(), op: 'message', payload: { message: 'one' } });
+    store.controlReference(alice, { referenceId: live.reference.id, operationId: newId(), op: 'message', payload: { message: 'two' } });
     expectCode(assert, () => store.controlReference(alice, { referenceId: live.reference.id, operationId: newId(), op: 'stop' }), 'capacity_exceeded');
     // A second handle bound to the old generation is a stale writer once recovery starts.
     const stale = openStore(dir, { limits: { ...EXTENDED, controls: 8 }, create: false });
@@ -263,25 +265,25 @@ test('message payload: stored exactly for the engine, retry returns the record, 
     const referenceId = admitted.reference.id;
     store.transitionAttempt({ executionId: admitted.executionId, attemptId: admitted.attemptId, expectedState: 'queued', nextState: 'running' });
     const secretText = 'owner-only message text \u00e9';
-    const request = { referenceId, operationId: newId(), op: 'message', payload: { text: secretText } };
+    const request = { referenceId, operationId: newId(), op: 'message', payload: { message: secretText } };
     const first = store.controlReference(alice, request);
     assert.deepEqual(Object.keys(first).sort(), ['delivery', 'op', 'operationId', 'outcome', 'state']);
     assert.equal(first.delivery, 'pending');
-    assert.deepEqual(store.controlReference(alice, { ...request, payload: { text: secretText } }), first);
-    expectCode(assert, () => store.controlReference(alice, { ...request, payload: { text: 'changed' } }), 'operation_conflict');
+    assert.deepEqual(store.controlReference(alice, { ...request, payload: { message: secretText } }), first);
+    expectCode(assert, () => store.controlReference(alice, { ...request, payload: { message: 'changed' } }), 'operation_conflict');
     // Bounded by requestBytes on the persisted canonical JSON {"text":...}: exactly the limit is accepted, one byte more refused.
-    const overhead = Buffer.byteLength(JSON.stringify({ text: '' }));
+    const overhead = Buffer.byteLength(JSON.stringify({ message: '' }));
     const exact = 'x'.repeat(LIMITS.requestBytes - overhead);
-    store.controlReference(alice, { referenceId, operationId: newId(), op: 'message', payload: { text: exact } });
-    expectCode(assert, () => store.controlReference(alice, { referenceId, operationId: newId(), op: 'message', payload: { text: `${exact}x` } }), 'invalid_request');
+    store.controlReference(alice, { referenceId, operationId: newId(), op: 'message', payload: { message: exact } });
+    expectCode(assert, () => store.controlReference(alice, { referenceId, operationId: newId(), op: 'message', payload: { message: `${exact}x` } }), 'invalid_request');
     const stop = store.controlReference(alice, { referenceId, operationId: newId(), op: 'stop' });
     assert.equal(stop.delivery, 'pending');
     const db = rawDb(dir);
     try {
         const rows = db.prepare('SELECT op, payload, operation_id FROM reference_control ORDER BY created_at, rowid').all();
         assert.equal(rows.length, 3);
-        assert.equal(rows[0].payload, JSON.stringify({ text: secretText }));
-        assert.equal(rows[1].payload, JSON.stringify({ text: exact }));
+        assert.equal(rows[0].payload, JSON.stringify({ message: secretText }));
+        assert.equal(rows[1].payload, JSON.stringify({ message: exact }));
         assert.equal(rows[2].op, 'stop');
         assert.equal(rows[2].payload, null);
         assert.throws(() => db.prepare("UPDATE reference_control SET payload = '{\"text\":\"forged\"}' WHERE op = 'message'").run(), /immutable/);
@@ -316,13 +318,14 @@ test('F1: a background-binding context gets the origin-row basis only, whatever 
         expectCode(assert, () => store.observeReference(context, { referenceId: mcp.reference.id }), 'not_found');
         expectCode(assert, () => events(store, context, mcp.reference.id), 'not_found');
         expectCode(assert, () => store.controlReference(context, { referenceId: mcp.reference.id, operationId: newId(), op: 'stop' }), 'not_found');
-        // Its own binding reference: readable through the origin row, never controllable.
+        // Its own binding reference: readable through the origin row; it may be stopped (M-12 C) but never sent a message.
         assert.equal(store.observeReference(context, { referenceId: own.reference.id }).state, 'running');
-        expectCode(assert, () => store.controlReference(context, { referenceId: own.reference.id, operationId: newId(), op: 'stop' }), 'forbidden');
-        expectCode(assert, () => store.controlReference(context, { referenceId: own.reference.id, operationId: newId(), op: 'message', payload: { text: 'x' } }), 'forbidden');
+        expectCode(assert, () => store.controlReference(context, { referenceId: own.reference.id, operationId: newId(), op: 'message', payload: { message: 'x' } }), 'forbidden');
     }
+    // The background row's stop of its own flow work is recorded (one pending stop per attempt).
+    assert.equal(store.controlReference(admitter, { referenceId: own.reference.id, operationId: newId(), op: 'stop' }).delivery, 'pending');
     // The owner through an owner row keeps full authority.
-    assert.equal(store.controlReference(alice, { referenceId: own.reference.id, operationId: newId(), op: 'message', payload: { text: 'ok' } }).delivery, 'pending');
+    assert.equal(store.controlReference(alice, { referenceId: own.reference.id, operationId: newId(), op: 'message', payload: { message: 'ok' } }).delivery, 'pending');
 });
 
 test('R1: repeated stops cannot exhaust the controls capacity; not_applicable is computed, not stored; another user cancel still succeeds', (t) => {

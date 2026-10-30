@@ -291,11 +291,11 @@ test('control through real tokens: owner and administrator rules, durable replay
     const id = admitted.taskRef.id;
     const attempt = attemptOf(dir, id);
     store.transitionAttempt({ ...attempt, expectedState: 'queued', nextState: 'running' });
-    const sent = controlRequest(secret, id, { operationId: newId(), op: 'message', payload: { text: 'hello' } }, userClaims('alice'));
+    const sent = controlRequest(secret, id, { operationId: newId(), op: 'message', payload: { message: 'hello' } }, userClaims('alice'));
     assert.equal(refs.control(sent).delivery, 'pending');
     // The exact request again is refused durably, even through a fresh verifier.
     expectError(() => freshRefs().control(sent), 'WorkerStateError', 'forbidden', 'token_replayed');
-    expectError(() => refs.control(controlRequest(secret, id, { operationId: newId(), op: 'message', payload: { text: 'x' } }, userClaims('root', ['admin']))), 'WorkerStateError', 'forbidden');
+    expectError(() => refs.control(controlRequest(secret, id, { operationId: newId(), op: 'message', payload: { message: 'x' } }, userClaims('root', ['admin']))), 'WorkerStateError', 'forbidden');
     assert.equal(refs.control(controlRequest(secret, id, { operationId: newId(), op: 'stop', attemptId: attempt.attemptId }, userClaims('root', ['ADMIN']))).outcome, 'accepted');
     const durable = count(dir, 'token_replay');
     const unmapped = controlRequest(secret, id, { operationId: newId(), op: 'take-control' }, userClaims('alice'));
