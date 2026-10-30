@@ -6,6 +6,7 @@ import { createSupervisorEndpointServer } from '../execution/supervisorEndpointS
 import { createAdmission } from '../execution/supervisorRequestValidator.mjs';
 import { resolveEndpointLimits } from '../execution/executionLimits.mjs';
 import { createExecutionSupervisor } from '../sandbox/executionSupervisor.mjs';
+import { WATCHDOG_TICK_MS, createWorkloadActivityWalk } from '../sandbox/workloadActivity.mjs';
 import { foldPathName } from '../views/protectedNames.mjs';
 import { resolveGrant } from '../views/grantResolver.mjs';
 import { VIRTUAL_CONFIG, VIRTUAL_SESSIONS } from './alaPlan.mjs';
@@ -29,6 +30,18 @@ export function grantRoleFor(entry) {
     const segments = String(entry.relativePath).split('/');
     const managed = segments.length >= 3 && foldPathName(segments[0]) === '.ploinky' && segments[1] === 'repos';
     return managed && entry.access === 'read' ? 'skill-source' : 'project';
+}
+
+// Every request ALA makes to the provider (inventory, tempdir, a workload start or stop) and every workload exit is activity of the attempt
+// (M-33). This is the only view of the workloads the worker has without a change to the stream sockets: the bytes a workload writes go to
+// ALA through sockets that the endpoint passes on unread, so output as such is seen only through the ALA records it leads to.
+export function observed(sandbox, activity) {
+    const wrapped = { ...sandbox };
+    for (const method of ['inventory', 'tempdir', 'start', 'stop']) {
+        if (typeof sandbox[method] === 'function') wrapped[method] = (...args) => { activity(); return sandbox[method](...args); };
+    }
+    if (typeof sandbox.setExitHandler === 'function') wrapped.setExitHandler = (handler) => sandbox.setExitHandler((...args) => { activity(); return handler(...args); });
+    return wrapped;
 }
 
 export class ExecutionSetupError extends Error {
@@ -78,7 +91,7 @@ export function codeBinds({ serverDir, alaRoot, nodePath = process.execPath }) {
 
 export function createExecutionFactory({
     store, robots, launcher, view, walker, clock, workspaceRoot, runtimeDir, serverDir, alaRoot, nodePath = process.execPath,
-    log = () => {}, deps = {}
+    log = () => {}, activityTickMs = WATCHDOG_TICK_MS, deps = {}
 }) {
     const make = {
         supervisor: deps.createExecutionSupervisor ?? createExecutionSupervisor,
@@ -88,13 +101,17 @@ export function createExecutionFactory({
         openDirectory: deps.openDirectory ?? ((target) => fs.openSync(target, DIRECTORY_FLAGS)),
         closeFd: deps.closeFd ?? ((fd) => fs.closeSync(fd)),
         image: deps.imageBinds ?? imageBinds,
-        channels: deps.createExecutionChannels ?? createExecutionChannels
+        channels: deps.createExecutionChannels ?? createExecutionChannels,
+        activityWalk: deps.createWorkloadActivityWalk ?? createWorkloadActivityWalk,
+        timers: deps.timers ?? { setInterval, clearInterval }
     };
     const code = codeBinds({ serverDir, alaRoot, nodePath });
     const endpointLimits = resolveEndpointLimits();
+    // M-35: ONE /proc walk shared by the activity ticks of every execution of this worker.
+    const sharedActivityWalk = typeof view?.listProcesses === 'function' ? make.activityWalk({ view }) : null;
 
     return Object.freeze({
-        async open({ item, plan, context, channels = {} }) {
+        async open({ item, plan, context, channels = {}, activity = () => {} }) {
             const fds = [];
             const grants = [];
             const lost = deferred();
@@ -146,7 +163,7 @@ export function createExecutionFactory({
                     workload: { roBinds: [...image.roBinds, ...(image.toolBinds ?? [])], symlinks: image.symlinks }
                 };
                 const supervisor = make.supervisor({
-                    launcher, view, admission, roles, home: { path: where.home, fd: homeFd }, grants: resolved,
+                    launcher, view, admission, roles, home: { path: where.home, fd: homeFd }, grants: resolved, activityWalk: sharedActivityWalk,
                     onInfrastructureLoss: (reason) => lost.resolve(`infrastructure_lost:${reason}`)
                 });
                 // referenceId stays null: the ledger would read the reference back with the adapter context, which the store (rightly) does
@@ -156,7 +173,7 @@ export function createExecutionFactory({
                     state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
                     referenceId: null, layout, sandbox: supervisor, walker, clock
                 });
-                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels });
+                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels, activity });
             } catch (error) {
                 await closeAll();
                 throw error;
@@ -164,11 +181,12 @@ export function createExecutionFactory({
         }
     });
 
-    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels }) {
+    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels, activity }) {
         let endpointServer = null;
         let hosted = null;
         let tree = null;
         let ended = null;
+        let activityTicker = null;
         const exitedControl = deferred();
         const exited = exitedControl.promise;
         return {
@@ -184,17 +202,24 @@ export function createExecutionFactory({
                 await ledger.publish({ kind: 'netns' });
                 await ledger.publish({ kind: 'endpoint', spec: { config: { streamDirectory: STREAM_DIRECTORY, relays: [] } } });
                 endpointServer = make.endpointServer({
-                    socket: supervisor.endpointSocket, admission, sandbox: supervisor.providerSandbox(ledger), limits: endpointLimits, log,
+                    socket: supervisor.endpointSocket, admission, sandbox: observed(supervisor.providerSandbox(ledger), activity), limits: endpointLimits, log,
                     onEnd: (reason) => { if (ended === null) lostRef.resolve(`endpoint_ended:${reason}`); }
                 });
                 const published = await ledger.publish({ kind: 'process-tree', spec: { role: 'orchestration' } });
                 tree = published.handle;
+                // M-35: on each watchdog tick a workload that used CPU (or appeared) is activity of the attempt, so a silent but busy
+                // attempt is not ended as inactive; an idle one is. The 4 h maximum still bounds a busy loop.
+                if (typeof supervisor.workloadActivity === 'function') {
+                    activityTicker = make.timers.setInterval(() => { try { if (supervisor.workloadActivity()) activity(); } catch { /* sampling is advisory */ } }, activityTickMs);
+                    activityTicker.unref?.();
+                }
                 tree.wait().then(({ exitCode, signal }) => exitedControl.resolve({ exitCode, signal }), (error) => exitedControl.reject(error));
                 return supervisor.controlStreams;
             },
             // The section 5.5 end path (step 1, beginAttemptEnd, is the ledger's first act), then the local cleanup.
             end(outcome) {
                 ended ??= (async () => {
+                    if (activityTicker !== null) { make.timers.clearInterval(activityTicker); activityTicker = null; }
                     try {
                         endpointServer?.end('execution_ended');
                         await hosted?.close().catch(() => {});

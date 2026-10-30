@@ -5,6 +5,7 @@ import { resolveControlStreamLimits } from '../execution/executionLimits.mjs';
 import { PlanError, planAlaExecution } from './alaPlan.mjs';
 import { openAlaStreams } from './alaStreams.mjs';
 import { createEventRelay } from './eventRelay.mjs';
+import { createAttemptWatchdog } from './attemptWatchdog.mjs';
 
 // The execution dispatcher (RoboWork r10 wiring). It picks queued attempts, runs ALA for each one through an execution
 // (the sandbox supervisor, ledger and provider endpoint; see executionFactory.mjs), relays ALA's records as bounded
@@ -19,7 +20,7 @@ import { createEventRelay } from './eventRelay.mjs';
 //
 // A failure before an execution exists ends the attempt directly through beginAttemptEnd.
 
-const DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 750, failureAbortMs: 100, humanInputGraceMs: 10000, resultBytes: 512 * 1024 - 1024 });
+const DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 750, failureAbortMs: 100, humanInputGraceMs: 10000, inactivityTimeoutMs: 20 * 60 * 1000, maxAttemptMs: 4 * 60 * 60 * 1000, resultBytes: 512 * 1024 - 1024 });
 const FATAL_READER_ENDS = new Set(['control_stream_violation', 'control_stall', 'stdin_stall', 'stdin_overflow', 'stdout_error']);
 const SKIPPED_TRANSITION = new Set(['robot_busy', 'operation_conflict', 'stale_generation', 'not_found']);
 
@@ -93,6 +94,22 @@ export function createDispatcher({
         }
 
         log('attempt_start', { executionId: item.executionId, attemptId: item.attemptId, robotId: item.robotId, kind: item.kind });
+        // M-33: the time bounds of a task attempt. Activity is an ALA control-stream record, ALA output, a request from ALA to the provider
+        // (including a workload start, stop and exit) and any input delivered to the attempt (prompt, message). They run from here, while the
+        // attempt is starting or running, and stop with its end or at a human-input question.
+        const watchdog = createAttemptWatchdog({
+            inactivityMs: settings.inactivityTimeoutMs, maxMs: settings.maxAttemptMs, timers, now: settings.now ?? Date.now,
+            onTimeout: (reason, { runningMs }) => {
+                log('attempt_timeout', { executionId: item.executionId, attemptId: item.attemptId, reason, runningMs });
+                (async () => {
+                    // An attempt still being published is ended once that is over, as at a shutdown.
+                    if (starting !== null) await starting.catch(() => {});
+                    if (finishing !== null) return;
+                    // The normal end path; if its stop cannot be verified S1 publishes `termination_unverified`, which wins.
+                    await finish({ classification: 'failed', outputText: partialText(), data: { reason } });
+                })().catch((error) => log('end_failed', { error: describe(error) }));
+            }
+        });
         let execution = null;
         let streams = null;
         let relay = null;
@@ -142,6 +159,7 @@ export function createDispatcher({
         const channels = {
             taskFailure: plan.channels.taskFailure ? async ({ message }) => {
                 if (finishing !== null) throw refused(409, 'The execution is ending');
+                watchdog.touch();
                 store.recordChannelEvent({ executionId: item.executionId, attemptId: item.attemptId, type: 'task-failed', data: { message } });
                 failureMessage ??= message;
                 endLater(settings.failureAbortMs, () => ({ classification: 'failed', outputText: partialText(), data: { reason: 'task_blocked', message: failureMessage } }), { replace: true });
@@ -156,6 +174,8 @@ export function createDispatcher({
                 const requestId = crypto.randomBytes(16).toString('base64url');
                 store.recordChannelEvent({ executionId: item.executionId, attemptId: item.attemptId, type: 'human-input-request', data: { requestId, question, options } });
                 humanRequest = { requestId, question, options };
+                // A human-input wait is not the model's inactivity: the attempt is ended by the grace period, not by the clock.
+                watchdog.suspend();
                 endLater(settings.humanInputGraceMs, () => ({ classification: 'human-input', outputText: partialText(), data: { reason: 'human_input', requestId } }));
                 return { id: requestId };
             } : null
@@ -164,6 +184,7 @@ export function createDispatcher({
         const finish = (outcome) => {
             if (finishing === null) signalEnded();
             finishing ??= (async () => {
+                watchdog.stop();
                 if (controlTimer !== null) { timers.clearInterval(controlTimer); controlTimer = null; }
                 if (channelTimer !== null) { timers.clearTimeout(channelTimer); channelTimer = null; }
                 streams?.reader.end('ended_by_dispatcher');
@@ -224,13 +245,14 @@ export function createDispatcher({
                 // A control that could not be written stays pending; the attempt is ending (stdin closed).
                 if (!delivered) return;
                 writtenControls.add(key);
+                watchdog.touch();
                 ack();
             }
         }
 
         try {
             starting = (async () => {
-                execution = await factory.open({ item, plan, context, channels });
+                execution = await factory.open({ item, plan, context, channels, activity: () => watchdog.touch() });
                 return execution.start();
             })();
             const opened = await starting;
@@ -240,7 +262,8 @@ export function createDispatcher({
             readerEnded = new Promise((resolve) => {
                 streams = openAlaStreams({
                     ...opened, limits: streamLimits,
-                    onRecord: (record, bytes) => relay.push(record, bytes),
+                    onRecord: (record, bytes) => { watchdog.touch(); relay.push(record, bytes); },
+                    onActivity: () => watchdog.touch(),
                     onEnd: (reason, detail) => {
                         resolve();
                         if (FATAL_READER_ENDS.has(reason) && fatal === null) {
@@ -257,6 +280,7 @@ export function createDispatcher({
                 await finish({ classification: 'failed', data: { reason: 'prompt_not_delivered' } });
                 return;
             }
+            watchdog.touch();
             controlTimer = timers.setInterval(() => { deliverControls().catch((error) => log('controls_failed', { error: describe(error) })); }, settings.controlPollMs);
             controlTimer.unref?.();
 

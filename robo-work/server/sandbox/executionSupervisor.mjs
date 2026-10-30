@@ -40,6 +40,7 @@ import { spawn, spawnSync } from 'node:child_process';
 
 import { createExecutionNetwork, namesFor, renderHosts, renderResolvConf } from './executionNetwork.mjs';
 import { mapVirtualExclusions } from './exclusions.mjs';
+import { createActivityMeter, createWorkloadActivityWalk } from './workloadActivity.mjs';
 import { SandboxError, sandboxError } from './sandboxErrors.mjs';
 
 const ANCHOR_KINDS = new Set(['keeper', 'supervisor', 'sandbox']);
@@ -55,13 +56,15 @@ const decimal = (value) => String(value);
 export function createExecutionSupervisor({
     launcher, view, createNetwork = createExecutionNetwork, spawnImpl = spawn, fsImpl = fs, netImpl = net, clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
     admission, roles, home = null, grants = [], workloadPath = WORKLOAD_PATH, onInfrastructureLoss = () => {},
-    limits = {}, supervisorPid = process.pid, pairSocketPathLimit = 100
+    limits = {}, supervisorPid = process.pid, pairSocketPathLimit = 100, activityWalk = null, now = Date.now
 } = {}) {
     if (!launcher || typeof launcher.launch !== 'function') throw new TypeError('A launcher is required');
     if (!view || typeof view.process !== 'function') throw new TypeError('A procView is required');
     if (!admission || !Array.isArray(admission.inventory) || typeof admission.streamDirectory !== 'string') throw new TypeError('An admission is required');
     if (!roles?.orchestration || !roles?.endpoint || !roles?.workload) throw new TypeError('roles.orchestration, roles.endpoint and roles.workload are required');
     const stopGraceMs = limits.stopGraceMs ?? 2000;
+    // M-35: the walk is shared by every execution of the worker (pass the same one to each supervisor); the meter is this execution's.
+    const meter = createActivityMeter({ walk: activityWalk ?? createWorkloadActivityWalk({ view, now }), now });
 
     let runtime = null; // { path, locator }
     let network = null;
@@ -449,6 +452,12 @@ export function createExecutionSupervisor({
         create, alive: () => !lost && !ended && anchor !== null && anchor.isAlive(), abortUncommitted,
         endProcessTrees, endEndpoint, releaseEgress, releaseViews, removeRuntime, exit,
         providerSandbox,
+        // M-35, once per watchdog tick: did this execution's workloads show activity? A new member, or CPU growth of the persisting
+        // members of at least 2 % of one CPU since the previous tick (workloadActivity.mjs). Read-only; false when no workload runs.
+        workloadActivity() {
+            const live = [...workloads.values()].filter((sandbox) => !sandbox.exited && sandbox.identity?.pidNs).map((sandbox) => sandbox.identity);
+            return meter.sample(live);
+        },
         get endpointSocket() { return endpointSandbox?.channel ?? null; },
         get controlStreams() { return orchestration ? { stdin: orchestration.stdio[0], stdout: orchestration.stdio[1], stderr: orchestration.stdio[2] } : null; },
         get network() { return network; },

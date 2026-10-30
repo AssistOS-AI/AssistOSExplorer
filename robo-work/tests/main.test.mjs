@@ -362,3 +362,16 @@ test('a refusal is logged with the request method and path (no query), so an une
     assert.deepEqual({ route: refusal.route, code: refusal.code, method: refusal.method, path: refusal.path }, { route: null, code: 'not_found', method: 'POST', path: '/mcp' });
     assert.equal(JSON.stringify(logs).includes('SECRET'), false);
 });
+
+test('M-33 configuration: the attempt time bounds default to 20 minutes and 4 hours and are validated', () => {
+    const base = environment('/tmp/x');
+    assert.deepEqual([readConfig(base).inactivityTimeoutMs, readConfig(base).maxAttemptMs], [20 * 60 * 1000, 4 * 60 * 60 * 1000]);
+    const set = readConfig({ ...base, ROBO_WORK_INACTIVITY_TIMEOUT_MS: '60000', ROBO_WORK_MAX_ATTEMPT_MS: '7200000' });
+    assert.deepEqual([set.inactivityTimeoutMs, set.maxAttemptMs], [60000, 7200000]);
+    assert.equal(readConfig({ ...base, ROBO_WORK_MAX_ATTEMPT_MS: '' }).maxAttemptMs, 4 * 60 * 60 * 1000, 'empty means the default');
+    for (const name of ['ROBO_WORK_INACTIVITY_TIMEOUT_MS', 'ROBO_WORK_MAX_ATTEMPT_MS']) {
+        for (const bad of ['0', '999', '-5', '1.5', 'soon', '1e6', '604800001', '12 min']) {
+            assert.throws(() => readConfig({ ...base, [name]: bad }), new RegExp(name, 'u'), `${name}=${bad}`);
+        }
+    }
+});

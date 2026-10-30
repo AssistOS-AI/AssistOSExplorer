@@ -27,17 +27,17 @@ const wait = async (predicate, label, ms = 2000) => {
     }
 };
 
-function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, controlPollMs = 10, storeWrap = (store) => store } = {}) {
+function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, controlPollMs = 10, storeWrap = (store) => store, timeouts = {}, quarantineOnEnd = false } = {}) {
     const store = openStore(makeTempDir(t), { limits: LIMITS_X });
     t.after(() => store.close());
     const robotId = readyRobot(store, syntheticContext({ robotOwnerId: ROBOTS, scope: 'scope-robots' }));
     const runs = [];
     const logs = [];
     const factory = {
-        async open({ item, plan, context, channels }) {
+        async open({ item, plan, context, channels, activity }) {
             if (openFails) throw openFails;
             const run = {
-                item, plan, channels, ended: [], prompt: null, received: [], exitedControl: {}, stdinFlushMs: 0,
+                item, plan, channels, activity, ended: [], prompt: null, received: [], exitedControl: {}, stdinFlushMs: 0,
                 stdout: new PassThrough(), stderr: new PassThrough()
             };
             // The bytes are seen at once; the write callback (the flush) comes `stdinFlushMs` later, like a slow consumer.
@@ -65,6 +65,12 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
                 async start() { if (startFails) throw startFails; return { stdin: run.stdin, stdout: run.stdout, stderr: run.stderr }; },
                 async end(outcome) {
                     run.ended.push(outcome);
+                    if (quarantineOnEnd) {
+                        // A process tree whose absence cannot be proven when the stop is done.
+                        const { resourceId } = store.reserveResource({ robotId, executionId: item.executionId, attemptId: item.attemptId, kind: 'process-tree', processBearing: true, locator: { cg: 'x' } });
+                        store.commitResource({ resourceId, identity: { pid: 1, startTime: '1' } });
+                        store.quarantineResource({ resourceId, generationId: store.generationId });
+                    }
                     store.beginAttemptEnd(context, { executionId: item.executionId, attemptId: item.attemptId, expectedState: 'running', outcome });
                     for (const stream of [run.stdin, run.stdout, run.stderr]) stream.destroy();
                 }
@@ -73,7 +79,7 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
     };
     const dispatcher = createDispatcher({
         store: storeWrap(store), workspaceId: WORKSPACE, workspaceRoot: '/ws', factory, log: (event, fields) => logs.push({ event, ...fields }),
-        options: { pollMs: 10, controlPollMs, drainMs: 100, exitGraceMs: 80, failureAbortMs: 20, humanInputGraceMs: 150, maxConcurrent, resultBytes: 1500 }
+        options: { pollMs: 10, controlPollMs, drainMs: 100, exitGraceMs: 80, failureAbortMs: 20, humanInputGraceMs: 150, ...timeouts, maxConcurrent, resultBytes: 1500 }
     });
     t.after(() => dispatcher.close());
     const alice = owner('alice');
@@ -421,4 +427,79 @@ test('a task failure first and a question after it: the attempt still ends faile
     await wait(() => world.view(admitted).state === 'failed', 'failed');
     assert.equal(world.view(admitted).result.data.reason, 'task_blocked');
     void id;
+});
+
+// ---- M-33: the time bounds of a task attempt ------------------------------------------------------------------------------------
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('inactivity: no activity for the bound ends the attempt failed / inactive_timeout, keeping the output so far, once, and the log names it', async (t) => {
+    const { dispatcher, runs, admit, view, logs } = rig(t, { timeouts: { inactivityTimeoutMs: 120 } });
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    runs[0].stdout.write('output so far');
+    await wait(() => view(admitted).state === 'failed', 'failed by inactivity');
+    assert.deepEqual(view(admitted).result.data, { reason: 'inactive_timeout' });
+    assert.equal(view(admitted).result.outputText, 'output so far');
+    assert.equal(runs[0].ended.length, 1, 'one normal end path');
+    const entry = logs.find((line) => line.event === 'attempt_timeout');
+    assert.deepEqual([entry.executionId, entry.attemptId, entry.reason], [admitted.executionId, admitted.attemptId, 'inactive_timeout']);
+    await pause(300);
+    assert.equal(runs.length, 1, 'no automatic retry or replacement');
+});
+
+test('activity resets the inactivity bound: ALA records, a delivered message and a provider request keep the attempt alive', async (t) => {
+    const { dispatcher, runs, admit, view, store, alice } = rig(t, { timeouts: { inactivityTimeoutMs: 200 } });
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    const started = Date.now();
+    let step = 0;
+    while (Date.now() - started < 600) {
+        step += 1;
+        if (step % 3 === 1) runs[0].event({ type: 'progress', step });
+        else if (step % 3 === 2) store.controlReference(alice, { referenceId: admitted.reference.id, operationId: newId(), op: 'message', payload: { message: `m${step}` } });
+        else runs[0].activity();
+        await pause(70);
+    }
+    assert.equal(view(admitted).state, 'running', '600 ms of activity every 70 ms against a 200 ms bound');
+    await wait(() => view(admitted).state === 'failed', 'fires once the activity stops');
+    assert.equal(view(admitted).result.data.reason, 'inactive_timeout');
+});
+
+test('the maximum duration ends the attempt failed / deadline_exceeded despite continuous activity', async (t) => {
+    const { dispatcher, runs, admit, view, logs } = rig(t, { timeouts: { inactivityTimeoutMs: 150, maxAttemptMs: 500 } });
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    const ticker = setInterval(() => runs[0].event({ type: 'progress' }), 30);
+    t.after(() => clearInterval(ticker));
+    await wait(() => view(admitted).state === 'failed', 'deadline', 3000);
+    clearInterval(ticker);
+    assert.deepEqual(view(admitted).result.data, { reason: 'deadline_exceeded' });
+    assert.equal(logs.find((line) => line.event === 'attempt_timeout').reason, 'deadline_exceeded');
+});
+
+test('a human-input wait does not count: the inactivity bound is suspended and the grace period ends the attempt human-input', async (t) => {
+    const { dispatcher, runs, admit, view } = rig(t, { timeouts: { inactivityTimeoutMs: 100, humanInputGraceMs: 500 } });
+    const admitted = admit(spec({ humanInput: true }));
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    const { id } = await runs[0].channels.humanInput({ question: 'Ship it?', options: ['yes', 'no', 'later'] });
+    await pause(300);
+    assert.equal(view(admitted).state, 'running', 'three times the inactivity bound, still waiting');
+    await wait(() => view(admitted).state === 'human-input', 'ended by the grace period');
+    assert.equal(view(admitted).result.data.requestId, id);
+});
+
+test('an unverified stop wins: the result is termination_unverified, with the timeout reason kept in the data', async (t) => {
+    const { dispatcher, runs, admit, view } = rig(t, { timeouts: { inactivityTimeoutMs: 100 }, quarantineOnEnd: true });
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    await wait(() => view(admitted).state === 'failed', 'failed');
+    const result = view(admitted).result;
+    assert.deepEqual([result.status, result.reason, result.classification, result.cleanup], ['failed', 'termination_unverified', 'failed', 'quarantined']);
+    assert.equal(result.data.reason, 'inactive_timeout');
 });

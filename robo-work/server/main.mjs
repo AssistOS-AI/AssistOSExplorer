@@ -45,6 +45,20 @@ import { createRobotStore } from './runtime/robotStore.mjs';
 //   PORT, ROBO_WORK_COORDINATOR_HOST, ROBO_WORK_PROVIDER_PORT, ROBO_WORK_PROVIDER_HOST
 //   ROBO_WORK_ALA_ROOT                the AdvancedLanguageAgent checkout, default /Agent/linked/AdvancedLanguageAgent
 //   ROBO_WORK_MAX_CONCURRENT          concurrent executions, default 4
+//   ROBO_WORK_INACTIVITY_TIMEOUT_MS   a task attempt with no activity for this long is ended `failed` / `inactive_timeout`
+//                                     (activity: an ALA record or output, a request from ALA to the provider, a prompt or message
+//                                     delivered, or workload CPU: every 60 s the workloads of the attempt are sampled read-only from
+//                                     /proc, and a new workload process, or CPU growth of the running ones of at least 2 % of one CPU
+//                                     since the previous sample, counts as activity), default 1200000 (20 minutes).
+//                                     A silent attempt whose workload is also CPU-idle (below 2 %) ends after this bound; a silent but
+//                                     busy one stays alive until ROBO_WORK_MAX_ATTEMPT_MS.
+//   ROBO_WORK_MAX_ATTEMPT_MS          a task attempt is ended `failed` / `deadline_exceeded` after this long, whatever its activity
+//                                     (the 4 h maximum is what bounds a busy loop that CPU activity keeps alive),
+//                                     default 14400000 (4 hours)
+//                                     Both: an integer from 1000 (one second) to 604800000 (7 days); anything else stops the start.
+//                                     They bound task attempts only, run while the attempt is starting or running, and are suspended
+//                                     while a human-input question is waiting. The end is the normal stop path; if the stop cannot be
+//                                     verified the result is `termination_unverified`. No retry and no replacement attempt.
 
 export const DEFAULT_LIMITS = Object.freeze({
     requestBytes: 4 * 1024 * 1024, robots: 256, receipts: 100000, admissions: 100000, resultBytes: 512 * 1024 - 1024,
@@ -69,6 +83,16 @@ function integerPort(value, fallback) {
     return port;
 }
 
+function boundedMs(env, name, fallback) {
+    const text = String(env[name] ?? '').trim();
+    if (!text) return fallback;
+    const value = Number(text);
+    if (!/^[0-9]+$/u.test(text) || !Number.isSafeInteger(value) || value < 1000 || value > 7 * 24 * 60 * 60 * 1000) {
+        throw new Error(`${name} must be an integer from 1000 to 604800000 milliseconds`);
+    }
+    return value;
+}
+
 export function readConfig(env = process.env) {
     const secretHex = required(env, 'PLOINKY_AGENT_SECRET');
     if (!/^[0-9a-f]{64}$/iu.test(secretHex)) throw new Error('PLOINKY_AGENT_SECRET must be 64 hexadecimal characters');
@@ -88,7 +112,9 @@ export function readConfig(env = process.env) {
         coordinatorPort: integerPort(env.PORT, 7000), coordinatorHost: String(env.ROBO_WORK_COORDINATOR_HOST || '0.0.0.0').trim(),
         providerPort: integerPort(env.ROBO_WORK_PROVIDER_PORT, 7300), providerHost: String(env.ROBO_WORK_PROVIDER_HOST || '127.0.0.1').trim(),
         alaRoot: String(env.ROBO_WORK_ALA_ROOT || '/Agent/linked/AdvancedLanguageAgent').trim(),
-        maxConcurrent: integerPort(env.ROBO_WORK_MAX_CONCURRENT, 4)
+        maxConcurrent: integerPort(env.ROBO_WORK_MAX_CONCURRENT, 4),
+        inactivityTimeoutMs: boundedMs(env, 'ROBO_WORK_INACTIVITY_TIMEOUT_MS', 20 * 60 * 1000),
+        maxAttemptMs: boundedMs(env, 'ROBO_WORK_MAX_ATTEMPT_MS', 4 * 60 * 60 * 1000)
     };
 }
 
@@ -208,7 +234,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
         });
     }
     const dispatcher = factory
-        ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, options: { maxConcurrent: config.maxConcurrent }, log })
+        ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, options: { maxConcurrent: config.maxConcurrent, inactivityTimeoutMs: config.inactivityTimeoutMs, maxAttemptMs: config.maxAttemptMs }, log })
         : null;
 
     const coordinatorServer = http.createServer(coordinatorHandler);

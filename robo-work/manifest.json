@@ -54,7 +54,9 @@
   "profiles": {
     "default": {
       "env": [
-        "ROBO_WORK_MAX_CONCURRENT"
+        "ROBO_WORK_MAX_CONCURRENT",
+        "ROBO_WORK_INACTIVITY_TIMEOUT_MS",
+        "ROBO_WORK_MAX_ATTEMPT_MS"
       ]
     }
   },

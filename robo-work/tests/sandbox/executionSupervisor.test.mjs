@@ -44,7 +44,7 @@ function fakeNetwork() {
     return net_;
 }
 
-async function rig({ grants = true, spawnImpl = null, view = createFakeView(), createNetwork = null, hook = null } = {}) {
+async function rig({ grants = true, spawnImpl = null, view = createFakeView(), createNetwork = null, hook = null, activityWalk = null } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-sup-'));
     const homeFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
     const launched = [];
@@ -66,7 +66,7 @@ async function rig({ grants = true, spawnImpl = null, view = createFakeView(), c
             { name: 'a', path: '/projects/a', hostPath: `${dir}/ga`, access: 'write', fd: homeFd }, { name: 'b', path: '/projects/b', hostPath: `${dir}/gb`, access: 'read', fd: homeFd },
             { name: 'c', path: '/projects/c', hostPath: `${dir}/gc`, access: 'write', fd: homeFd }
         ] : [],
-        supervisorPid: SUPERVISOR_PID, onInfrastructureLoss: (reason) => losses.push(reason), limits: { stopGraceMs: 123, killWaitMs: 50 }
+        supervisorPid: SUPERVISOR_PID, onInfrastructureLoss: (reason) => losses.push(reason), limits: { stopGraceMs: 123, killWaitMs: 50 }, ...(activityWalk ? { activityWalk } : {})
     });
     const runtimePath = `${dir}/x/${LOCATOR_ID}`;
     await supervisor.create({ kind: 'runtime-dir', resourceId: 'r1', marker: null, locator: { path: runtimePath } });
@@ -499,6 +499,28 @@ test('workload: a cwd with no folder entry is writable inside a write grant and 
             streams: { stdin: '/stream/stdinaaaa', stdout: '/stream/stdoutbbbb', stderr: '/stream/stderrcccc' }
         });
         assert.deepEqual(world.launched.at(-1).grants.map((grant) => [grant.name, grant.mode]), [['b', 'ro']]);
+        servers.close();
+    } finally { world.done(); }
+});
+
+test('M-35: workloadActivity() samples only the live workload trees of this execution, through the shared walk; false with none, and an exited tree is not sampled', async () => {
+    const samples = [];
+    const walk = {
+        snapshot: () => { samples.push('walk'); return { at: 0, ok: true, processes: [] }; },
+        read: () => ({ gone: true }), isPinned: () => true
+    };
+    const world = await rig({ activityWalk: walk });
+    try {
+        assert.equal(world.supervisor.workloadActivity(), false, 'no workload, no activity');
+        await world.supervisor.create({ kind: 'netns', resourceId: 'n1', locator: { netns: LOCATOR_ID } });
+        const servers = await streamServers(world, ['stdoutbbbb', 'stderrcccc']);
+        const sandbox = world.supervisor.providerSandbox(fakeLedger(world.supervisor));
+        await sandbox.start({ process: 1, streams: { stdout: '/stream/stdoutbbbb', stderr: '/stream/stderrcccc' }, request: request({ network: 'none', communication: { kind: 'stdio', stdin: 'ignore' } }) });
+        const tree = world.sandboxes.at(-1);
+        world.supervisor.workloadActivity();
+        assert.equal(samples.length, 2, 'every call walks through the shared walk object');
+        tree.exited = { code: 0, signal: null };
+        world.supervisor.workloadActivity();
         servers.close();
     } finally { world.done(); }
 });

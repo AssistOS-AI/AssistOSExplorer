@@ -72,7 +72,7 @@ export function splitEventLines(source) {
 }
 
 // Collects ALA's stdout (the final result text) up to `maxBytes`; further bytes are counted and discarded.
-export function collectFinalText(stdout, maxBytes = DEFAULT_MAX_FINAL_BYTES) {
+export function collectFinalText(stdout, maxBytes = DEFAULT_MAX_FINAL_BYTES, onData = () => {}) {
     const chunks = [];
     let size = 0;
     let overflowed = false;
@@ -84,6 +84,7 @@ export function collectFinalText(stdout, maxBytes = DEFAULT_MAX_FINAL_BYTES) {
         stdout.on('error', finish);
     });
     stdout.on('data', (chunk) => {
+        onData();
         if (size >= maxBytes) { overflowed = true; return; }
         const room = maxBytes - size;
         if (chunk.length > room) { chunks.push(chunk.subarray(0, room)); size += room; overflowed = true; return; }
@@ -102,9 +103,9 @@ const validateAlaRecord = (record) => (typeof record.type === 'string' && record
 
 // Wires the three streams of one invocation. `onRecord(record, bytes)` is called for each ALA event record and must not
 // block (the dispatcher's relay only queues it). `onEnd(reason, detail)` is the reader's single end notification.
-export function openAlaStreams({ stdin, stdout, stderr, limits, onRecord, onEnd, timers }) {
+export function openAlaStreams({ stdin, stdout, stderr, limits, onRecord, onEnd, timers, onActivity = () => {} }) {
     const { events, diagnostics } = splitEventLines(stderr);
     const reader = createControlStreamReader({ stdout: events, stderr: diagnostics, stdin, limits, validateRecord: validateAlaRecord, onRecord, onEnd, timers });
-    const final = collectFinalText(stdout);
+    const final = collectFinalText(stdout, DEFAULT_MAX_FINAL_BYTES, onActivity);
     return { reader, final };
 }

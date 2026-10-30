@@ -15,7 +15,7 @@ const spec = (overrides = {}) => ({
     folders: [{ path: '/ws/skills', access: 'read' }], ...overrides
 });
 
-function rig({ grantRefusal = null, supervisorRuntimeDir = undefined } = {}) {
+function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadActivity = undefined, timers = undefined, activityTickMs = undefined } = {}) {
     const calls = [];
     const closedFds = [];
     const closedGrants = [];
@@ -36,6 +36,7 @@ function rig({ grantRefusal = null, supervisorRuntimeDir = undefined } = {}) {
             supervisorOptions = options;
             return {
                 endpointSocket: { fake: 'endpoint' }, controlStreams: streams, providerSandbox: () => ({ fake: 'sandbox' }), runtimeDir: supervisorRuntimeDir,
+                ...(workloadActivity ? { workloadActivity } : {}),
                 exit: async () => { calls.push(['supervisor.exit']); }
             };
         },
@@ -54,12 +55,14 @@ function rig({ grantRefusal = null, supervisorRuntimeDir = undefined } = {}) {
             calls.push(['endpointServer', options.socket]);
             return { end: (reason) => calls.push(['endpointServer.end', reason]), onEnd: options.onEnd };
         },
-        imageBinds: () => ({ roBinds: [{ source: '/usr', dest: '/usr' }], symlinks: [{ target: 'usr/bin', dest: '/bin' }] })
+        imageBinds: () => ({ roBinds: [{ source: '/usr', dest: '/usr' }], symlinks: [{ target: 'usr/bin', dest: '/bin' }] }),
+        ...(timers ? { timers } : {})
     };
     const factory = createExecutionFactory({
         store: {}, robots: { root: '/store', paths: (id) => ({ home: `/store/robots/${id}/home`, sessions: `/store/robots/${id}/sessions`, configDir: `/store/robots/${id}/config` }) },
         launcher: { fake: 'launcher' }, view: { fake: 'view' }, walker: { fake: 'walker' }, clock: { fake: 'clock' }, workspaceRoot: '/ws', runtimeDir: '/store/runtime',
-        serverDir: '/code/server', alaRoot: '/Agent/linked/AdvancedLanguageAgent', nodePath: '/usr/local/bin/node', deps
+        serverDir: '/code/server', alaRoot: '/Agent/linked/AdvancedLanguageAgent', nodePath: '/usr/local/bin/node', deps,
+        ...(activityTickMs ? { activityTickMs } : {})
     });
     const item = { robotId: 'ROBOT', executionId: 'EXEC', attemptId: 'ATT', referenceId: 'REF', specification: spec() };
     const plan = planAlaExecution({ specification: item.specification, workspaceRoot: '/ws' });
@@ -180,4 +183,42 @@ test('a workflow execution hosts its channels with the default channel factory (
     assert.ok(entries.includes('human-input') || entries.includes('human-input.sock'), entries.join(','));
     const sockets = fs.readdirSync(path.join(dir, 'channels'), { recursive: true }).filter((name) => String(name).endsWith('.sock'));
     assert.deepEqual(sockets.filter((name) => fs.existsSync(path.join(dir, 'channels', String(name)))), [], 'channel sockets removed at end');
+});
+
+test('M-35: after start, each watchdog tick asks the supervisor for workload activity and touches the attempt only when there was some; the end clears the tick', async () => {
+    const intervals = [];
+    const cleared = [];
+    const timers = { setInterval: (fn, ms) => { const handle = { fn, ms, unref() {} }; intervals.push(handle); return handle; }, clearInterval: (handle) => cleared.push(handle) };
+    let busy = false;
+    let asked = 0;
+    const { factory, item, plan, context } = rig({ workloadActivity: () => { asked += 1; return busy; }, timers });
+    const touched = [];
+    const execution = await factory.open({ item, plan, context, activity: () => touched.push(asked) });
+    assert.equal(intervals.length, 0, 'nothing ticks before the attempt starts');
+    await execution.start();
+    assert.equal(intervals.length, 1);
+    assert.equal(intervals[0].ms, 60 * 1000, 'the 60 s watchdog tick');
+    intervals[0].fn();
+    assert.deepEqual([asked, touched.length], [1, 0], 'an idle tick asks and does not touch');
+    busy = true;
+    intervals[0].fn();
+    assert.deepEqual([asked, touched.length], [2, 1], 'a busy tick touches');
+    await execution.end({ classification: 'completed' });
+    assert.deepEqual(cleared, [intervals[0]]);
+});
+
+test('M-35: a sampler that throws, or a supervisor without one, never breaks the attempt; the tick length is configurable', async () => {
+    const timers = { setInterval: (fn, ms) => { timers.last = { fn, ms, unref() {} }; return timers.last; }, clearInterval: () => {} };
+    const throwing = rig({ workloadActivity: () => { throw new Error('proc exploded'); }, timers, activityTickMs: 5000 });
+    const touched = [];
+    const execution = await throwing.factory.open({ item: throwing.item, plan: throwing.plan, context: throwing.context, activity: () => touched.push(1) });
+    await execution.start();
+    assert.equal(timers.last.ms, 5000);
+    assert.doesNotThrow(() => timers.last.fn());
+    assert.equal(touched.length, 0);
+    timers.last = null;
+    const without = rig({ timers });
+    const plain = await without.factory.open({ item: without.item, plan: without.plan, context: without.context });
+    await plain.start();
+    assert.equal(timers.last, null, 'no sampler on the supervisor, no tick');
 });
