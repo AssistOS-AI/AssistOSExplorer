@@ -166,9 +166,15 @@ export function sentinelHits(text, sentinels) {
 
 // ---------------------------------------------------------------------------------------------------------------- environment identity
 
-// git from outside any repository (a cwd under the file-parser workspace breaks git discovery on this host).
-function gitHead(repository) {
-  try { return run('git', ['-C', repository, 'rev-parse', 'HEAD'], { timeout: 20_000 }).trim(); } catch (error) { return `unavailable: ${String(error.message).split('\n')[0].slice(0, 120)}`; }
+// git from outside any repository (a cwd under the file-parser workspace breaks git discovery on this host). `dirty` is true when
+// `git status --porcelain` lists anything (tracked changes or untracked files), with the count.
+function gitState(repository) {
+  const git = (args) => run('git', ['-C', repository, ...args], { timeout: 30_000 });
+  try {
+    const head = git(['rev-parse', 'HEAD']).trim();
+    const changes = git(['status', '--porcelain']).split('\n').filter(Boolean);
+    return { head, dirty: changes.length > 0, changedPaths: changes.length };
+  } catch (error) { return { head: `unavailable: ${String(error.message).split('\n')[0].slice(0, 120)}`, dirty: null, changedPaths: null }; }
 }
 
 function hostPloinkyCheckout() {
@@ -186,9 +192,9 @@ export function collectEnvironment({ workspaceRoot, containers }) {
     collectedAt: new Date().toISOString(),
     workspaceRoot,
     deployedRevisions: {
-      AchillesIDE: gitHead(path.join(workspaceRoot, '.ploinky/repos/AchillesIDE')),
-      AdvancedLanguageAgent: gitHead(path.join(workspaceRoot, 'AdvancedLanguageAgent')),
-      ploinky: { checkout: ploinky, head: ploinky ? gitHead(ploinky) : null },
+      AchillesIDE: gitState(path.join(workspaceRoot, '.ploinky/repos/AchillesIDE')),
+      AdvancedLanguageAgent: gitState(path.join(workspaceRoot, 'AdvancedLanguageAgent')),
+      ploinky: { checkout: ploinky, ...(ploinky ? gitState(ploinky) : { head: null, dirty: null, changedPaths: null }) },
     },
     images: {
       box: { container: containers.box, imageId: imageId(['inspect', '--format', '{{.Image}}', containers.box]) },
@@ -199,7 +205,7 @@ export function collectEnvironment({ workspaceRoot, containers }) {
   };
   const expected = environment.expectedExplorerCommit;
   if (expected) {
-    const head = environment.deployedRevisions.AchillesIDE;
+    const head = environment.deployedRevisions.AchillesIDE.head;
     if (!/^[0-9a-f]{7,40}$/i.test(expected) || !head.toLowerCase().startsWith(expected.toLowerCase())) {
       throw new Error(`The deployed AchillesIDE HEAD ${head} does not match SMOKE_EXPECT_EXPLORER_COMMIT ${expected}.`);
     }
