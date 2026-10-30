@@ -205,14 +205,23 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
       + 'one command per call, exactly as written, in this order, '
       + `and do not skip one because an earlier one failed: ${commands.map((command, index) => `${index + 1}. \`${command}\``).join('  ')}  `
       + 'Then reply with the word DONE.';
-    const startedAt = new Date(Date.now() - 2000).toISOString();
-    const fixture = createProjectFixture({ workspaceRoot, name: projectName });
-    let failure = null;
-    let answer = '';
-    try {
-      await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
-      const listed = await roboTeamApi(page, { path: 'api/robots' });
-      assert.ok(listed.payload.robots.some((entry) => entry.name === robotName), `robot ${robotName} exists (run the first test, or create it)`);
+    const MAX_ATTEMPTS = 3;
+    const REJECTED = '(?:Read-only file system|Permission denied|Device or resource busy|Operation not permitted)'; // EROFS, EACCES, EBUSY, EPERM
+    const attempts = [];
+    await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
+    const listed = await roboTeamApi(page, { path: 'api/robots' });
+    assert.ok(listed.payload.robots.some((entry) => entry.name === robotName), `robot ${robotName} exists (run the first test, or create it)`);
+
+    // One attempt = one turn. The mask assertions are identical in every attempt. A repeat is allowed only when the execution completed, no
+    // protected host file changed, no sentinel leaked and a deterministic output is missing (the model skipped or declined a command); a failed
+    // execution, a changed host file or a leaked sentinel ends the test at once. A silent success of `echo x > .env` or `rm sub/.env` would print
+    // nothing, so a missing output is judged together with the host-side byte check, never alone.
+    async function attemptOnce(n) {
+      const dir = path.join(evidenceDir, `attempt-${n}`);
+      fs.mkdirSync(dir, { recursive: true });
+      const saveAttempt = (name, value) => fs.writeFileSync(path.join(dir, name), typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+      const startedAt = new Date(Date.now() - 2000).toISOString();
+      const fixture = createProjectFixture({ workspaceRoot, name: projectName });
       const params = new URLSearchParams({ agent: smokeConfig.webchatAgent, robot: robotName, 'forward-envelope': '1', 'workspace-dir': projectName });
       await page.goto(`/webchat?${params}`, { waitUntil: 'load' });
       await expect(page.locator('#cmd')).toBeVisible();
@@ -229,63 +238,62 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
         if (!busy && texts.length > before) break;
         if (Date.now() > deadline) throw new Error(`The turn did not finish within ${TURN_TIMEOUT_MS / 1000} s.`);
       }
-      answer = texts.slice(before).join('\n---\n');
-      save('webchat-answer.txt', answer);
-    } catch (error) {
-      failure = error;
+      const answer = texts.slice(before).join('\n---\n');
+      saveAttempt('webchat-answer.txt', answer);
+      const logsWorker = nestedLogsMerged(containers, containers.worker, startedAt);
+      saveAttempt('worker.log', logsWorker);
+      const ledger = readLedger({ workspaceRoot, scratchDir: dir, robotName });
+      const last = ledger.executions.at(-1) ?? null;
+      saveAttempt('ledger.json', ledger);
+      const events = (last?.events ?? []).filter((event) => event.type === 'ala');
+      // Real event shape (observed on 7a3af091+413a127d): `ala` events carry `{record: {type: 'coding-agent-message', outputKind, message, ...}}`; the
+      // tool output of each shell call is a record with `outputKind: 'output'` whose `message` is the raw stdout+stderr. The command text is not
+      // in the events, so each command is identified by its deterministic output, and the commands must appear in the asked order.
+      const outputs = events.map((event) => ({ sequence: event.sequence, record: JSON.parse(event.data).record }))
+        .filter(({ record }) => record.type === 'coding-agent-message' && record.outputKind === 'output')
+        .map(({ sequence, record }) => ({ sequence, text: String(record.message) }));
+      const expectations = [
+        { command: commands[0], describe: 'four protected files are 0 bytes', match: (text) => text === '0\n0\n0\n0\n' },
+        { command: commands[1], describe: 'masked and hidden directories list as empty',
+          match: (text) => text === '.data:\n\n.ploinky:\n\n.roboteam:\n\nsub/.data:\n\nsub/.ploinky:\n' },
+        { command: commands[2], describe: 'README.md content is visible', match: (text) => text === `# e2e project\n\n${fixture.mark.readme}\n` },
+        { command: commands[3], describe: 'writing .env is rejected', match: (text) => new RegExp(`^/usr/bin/bash: line \\d+: \\.env: ${REJECTED}\\n$`).test(text) },
+        { command: commands[4], describe: 'removing sub/.env is rejected', match: (text) => new RegExp(`^rm: cannot remove 'sub/\\.env': ${REJECTED}\\n$`).test(text) },
+      ];
+      let cursor = 0;
+      const perCommand = expectations.map((expectation) => {
+        const index = outputs.findIndex((output, position) => position >= cursor && expectation.match(output.text));
+        if (index >= 0) cursor = index + 1;
+        return { command: expectation.command, expected: expectation.describe, matchedSequence: index < 0 ? null : outputs[index].sequence, rawOutput: index < 0 ? null : outputs[index].text };
+      });
+      saveAttempt('mask-matrix.json', { perCommand, allOutputs: outputs });
+      saveAttempt('events.json', events);
+      const hostAfter = Object.fromEntries(Object.keys(fixture.protectedFiles).map((name) => {
+        try { return [name, fs.readFileSync(path.join(fixture.root, name), 'utf8')]; } catch (error) { return [name, `<${error.code}>`]; }
+      }));
+      const unchanged = Object.fromEntries(Object.entries(fixture.protectedFiles).map(([name, text]) => [name, hostAfter[name] === text]));
+      saveAttempt('host-after.json', { unchanged });
+      const sentinels = sentinelHits([answer, logsWorker, JSON.stringify(events)].join('\n'), fixture.sentinels);
+      const missing = perCommand.filter((entry) => entry.matchedSequence === null);
+      const facts = { attempt: n, state: last?.state ?? null, unchanged, sentinels, missing: missing.map((entry) => entry.command), outputs: outputs.map((output) => output.text) };
+      let verdict = 'pass';
+      let reason = null;
+      if (!last || last.state !== 'completed') { verdict = 'fail'; reason = `execution state ${last?.state ?? 'none'}; result=${last?.result}`; }
+      else if (Object.values(unchanged).includes(false)) { verdict = 'fail'; reason = 'a protected host file changed'; }
+      else if (sentinels.length) { verdict = 'fail'; reason = 'a sentinel appeared in the answer, events or logs'; }
+      else if (!events.length) { verdict = 'fail'; reason = 'no ALA events recorded'; }
+      else if (missing.length) { verdict = 'retry'; reason = `deterministic outputs missing: ${missing.map((entry) => entry.expected).join('; ')}`; }
+      attempts.push({ verdict, reason, ...facts });
+      return { verdict, reason, perCommand };
     }
 
-    let last = null;
-    let logsWorker = '';
-    try {
-      logsWorker = nestedLogsMerged(containers, containers.worker, startedAt);
-      save('worker.log', logsWorker);
-      const ledger = readLedger({ workspaceRoot, scratchDir: evidenceDir, robotName });
-      last = ledger.executions.at(-1) ?? null;
-      save('ledger.json', ledger);
-    } catch (error) {
-      failure ??= error;
+    let result;
+    for (let n = 1; n <= MAX_ATTEMPTS; n += 1) {
+      result = await attemptOnce(n);
+      if (result.verdict !== 'retry') break;
     }
-    const events = (last?.events ?? []).filter((event) => event.type === 'ala');
-    // Real event shape (observed on 7a3af091+413a127d): `ala` events carry `{record: {type: 'coding-agent-message', outputKind, message, ...}}`; the
-    // tool output of each shell call is a record with `outputKind: 'output'` whose `message` is the raw stdout+stderr. The command text is not
-    // in the events, so each command is identified by its deterministic output, and the commands must appear in the asked order.
-    const outputs = events.map((event) => ({ sequence: event.sequence, record: JSON.parse(event.data).record }))
-      .filter(({ record }) => record.type === 'coding-agent-message' && record.outputKind === 'output')
-      .map(({ sequence, record }) => ({ sequence, text: String(record.message) }));
-    const REJECTED = '(?:Read-only file system|Permission denied|Device or resource busy|Operation not permitted)'; // EROFS, EACCES, EBUSY, EPERM
-    const expectations = [
-      { command: commands[0], describe: 'four protected files are 0 bytes', match: (text) => text === '0\n0\n0\n0\n' },
-      { command: commands[1], describe: 'masked and hidden directories list as empty',
-        match: (text) => text === '.data:\n\n.ploinky:\n\n.roboteam:\n\nsub/.data:\n\nsub/.ploinky:\n' },
-      { command: commands[2], describe: 'README.md content is visible', match: (text) => text === `# e2e project\n\n${fixture.mark.readme}\n` },
-      { command: commands[3], describe: 'writing .env is rejected', match: (text) => new RegExp(`^/usr/bin/bash: line \\d+: \\.env: ${REJECTED}\\n$`).test(text) },
-      { command: commands[4], describe: 'removing sub/.env is rejected', match: (text) => new RegExp(`^rm: cannot remove 'sub/\\.env': ${REJECTED}\\n$`).test(text) },
-    ];
-    let cursor = 0;
-    const perCommand = expectations.map((expectation) => {
-      const index = outputs.findIndex((output, position) => position >= cursor && expectation.match(output.text));
-      if (index >= 0) cursor = index + 1;
-      return { command: expectation.command, expected: expectation.describe, matchedSequence: index < 0 ? null : outputs[index].sequence, rawOutput: index < 0 ? null : outputs[index].text };
-    });
-    save('mask-matrix.json', { perCommand, allOutputs: outputs });
-    save('events.json', events);
-    const hostAfter = Object.fromEntries(Object.keys(fixture.protectedFiles).map((name) => {
-      try { return [name, fs.readFileSync(path.join(fixture.root, name), 'utf8')]; } catch (error) { return [name, `<${error.code}>`]; }
-    }));
-    const unchanged = Object.fromEntries(Object.entries(fixture.protectedFiles).map(([name, text]) => [name, hostAfter[name] === text]));
-    save('host-after.json', { unchanged });
-    await testInfo.attach('mask-matrix', { body: JSON.stringify({ unchanged, perCommand }, null, 2), contentType: 'application/json' });
-    if (failure) throw failure;
-
-    assert.ok(last, 'the worker ledger has an execution for the robot');
-    expect(last.state, `execution state; result=${last.result}`).toBe('completed');
-    expect(events.length, 'ALA events recorded').toBeGreaterThan(0);
-    for (const entry of perCommand) expect(entry.matchedSequence, `${entry.expected} (${entry.command}); raw outputs: ${JSON.stringify(outputs.map((output) => output.text)).slice(0, 1500)}`).not.toBeNull();
-    expect(unchanged, 'host files after the sandboxed writes and deletes').toEqual({ '.env': true, 'master-key': true, 'x.secrets': true, 'sub/.env': true });
-    const everywhere = [answer, logsWorker].join('\n');
-    expect(sentinelHits(everywhere, fixture.sentinels), 'sentinels in the answer or logs').toEqual([]);
-    // Sentinels may legitimately not appear in events for a hidden/empty file; for a readable one that would be a leak, so check the events too.
-    expect(sentinelHits(JSON.stringify(events), fixture.sentinels), 'sentinels in the raw ALA events').toEqual([]);
+    save('attempts.json', attempts);
+    await testInfo.attach('mask-matrix', { body: JSON.stringify({ attempts: attempts.length, perCommand: result.perCommand }, null, 2), contentType: 'application/json' });
+    expect(result.verdict, `${result.reason}; ${attempts.length} attempt(s): ${JSON.stringify(attempts.at(-1))}`).toBe('pass');
   });
 });
