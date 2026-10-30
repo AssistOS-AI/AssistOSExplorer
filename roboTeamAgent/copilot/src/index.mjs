@@ -9,7 +9,7 @@ import { resolveSkillCatalogRoots, builtInSkillsDir } from './lib/skills/cliSkil
 import { createAnthropicSkillCatalog } from './lib/skills/anthropicSkillCatalog.mjs';
 import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
 import { resolveAlaInstallation } from './lib/execution/alaInstallation.mjs';
-import { createAlaEngine } from './lib/execution/alaEngine.mjs';
+import { createExecutionEngine, workerModeSelected } from './lib/execution/engineSelection.mjs';
 import * as settings from './lib/config/achillesSettings.mjs';
 import { ConversationSessionStore } from './lib/storage/conversationSessionStore.mjs';
 import { createWebchatBackgroundTaskManager } from './lib/webchat/webchatBackgroundTasks.mjs';
@@ -41,7 +41,8 @@ export { parseCliOptions } from './lib/cli/cliOptions.mjs';
 // of createCliRuntime never publish.
 export async function createCliRuntime(options, { webchat = false, reattachExistingTasks = true, livePublisher = null } = {}) {
     const { workingDir } = options;
-    const installation = await resolveAlaInstallation();
+    // The worker owns ALA when ROBOTEAM_WORKER_COORDINATOR_BASE is set; no local installation is resolved then.
+    const installation = workerModeSelected() ? null : await resolveAlaInstallation();
     const robotContext = getRobotContext();
     if (robotContext) registerProject({ dataDir: robotContext.store.dataDir,
         workspaceRoot: robotContext.skillsets.workspaceRoot }, workingDir);
@@ -88,9 +89,13 @@ export async function createCliRuntime(options, { webchat = false, reattachExist
             onTaskStarted: (task, origin) => attachTaskToSession(sessionStore, task, origin, { webchat }),
             livePublisher,
         }) : null;
-        const engine = createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, interactions, backgroundTasks, installation,
-            execution: { ...options.execution, robotId: robotContext?.robot.id },
-            webchatLogsBase: `${PUBLIC_BASE_PATH.replace(/\/+$/, '')}/webchat-logs`, livePublisher });
+        const execution = { ...options.execution, robotId: robotContext?.robot.id };
+        const webchatLogsBase = `${PUBLIC_BASE_PATH.replace(/\/+$/, '')}/webchat-logs`;
+        const engine = createExecutionEngine({
+            localOptions: { workingDir, sessionStore, skillCatalog, settings, interactions, backgroundTasks, installation, execution, webchatLogsBase, livePublisher },
+            workerOptions: { workingDir, sessionStore, skillCatalog, settings, interactions, execution, webchatLogsBase, livePublisher,
+                robotStore: robotContext?.store, robotId: robotContext?.robot.id },
+        });
         const historyManager = new HistoryManager({ workingDir });
         return {
             ...options, installation, skillCatalog, sessionStore, initialSession, engine,

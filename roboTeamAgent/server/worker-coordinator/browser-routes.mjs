@@ -14,6 +14,8 @@ import {
 export const WORKER_ROUTE = /^\/api\/worker(?:\/|$)/u;
 export const isWorkerRoute = (pathname) => WORKER_ROUTE.test(pathname);
 export const ADMISSIONS_PATH = '/api/worker/admissions';
+// An administrator asks RoboTeam to provision or configure one robot on the worker (decision M-6).
+export const ROBOT_ENSURE_PATH = '/api/worker/robots/ensure';
 const REFERENCE_ROUTE = /^\/api\/worker\/references\/([^/]+)\/(read|events|control)$/u;
 const TASK_TYPES = new Set(['simple', 'browser', 'desktop']);
 const CONTROL_OP = /^[a-z][a-z-]{0,31}$/u;
@@ -135,8 +137,26 @@ async function bindingAllowed(bindingId, access, records) {
     return null;
 }
 
-async function route(pathname, input, { access, grant, hop, records }) {
+// Robot provisioning needs a verified direct administrator (the worker requires an administrator
+// grant for lifecycle calls). The page names only the RoboTeam robot; RoboTeam builds the worker
+// body from its own record, so the page cannot choose a configuration.
+async function ensureRobot(input, { access, grant, provisioning }) {
+    if (access.canAdmin !== true) return refusal('forbidden');
+    if (!provisioning) return refusal('worker_coordinator_unavailable');
+    const body = exact(input, ['robotId']);
+    if (typeof body.robotId !== 'string' || !/^[a-z0-9][a-z0-9-]{2,63}$/u.test(body.robotId)) throw new BadRequest();
+    try {
+        const ready = await provisioning.ensureRobot(body.robotId, { grant });
+        return { status: 200, body: { ok: true, ready: true, configRevision: ready.configRevision } };
+    } catch (error) {
+        if (error?.name === 'WorkerError') return { status: error.status || 503, body: { error: error.code } };
+        throw error;
+    }
+}
+
+async function route(pathname, input, { access, grant, hop, records, provisioning }) {
     if (pathname === ADMISSIONS_PATH) return admitWithRecovery(hop, admissionBody(input), grant);
+    if (pathname === ROBOT_ENSURE_PATH) return ensureRobot(input, { access, grant, provisioning });
     if (pathname === '/api/worker/lookup') {
         const body = exact(input, ['originRequestId']);
         if (!isOriginId(body.originRequestId)) throw new BadRequest();
@@ -156,13 +176,13 @@ async function route(pathname, input, { access, grant, hop, records }) {
     return mapHopOutcome(await hop.call(`references/${referenceId}/${action}`, body, { grant }));
 }
 
-const knownPath = (pathname) => ['/api/worker/admissions', '/api/worker/lookup', '/api/worker/bindings'].includes(pathname)
+const knownPath = (pathname) => ['/api/worker/admissions', '/api/worker/lookup', '/api/worker/bindings', ROBOT_ENSURE_PATH].includes(pathname)
     || REFERENCE_ROUTE.test(pathname);
 
 // Writes the response itself and never throws. `access` is the verified request decision,
 // `rawBody` the exact bytes the Router signature was checked against, `records` the RoboFlow
 // schedule and flow reader ({getSchedule(id), getFlow(id)}) or null.
-export async function handleWorkerRoutes({ req, res, pathname, access, rawBody, hop, records, sendJson }) {
+export async function handleWorkerRoutes({ req, res, pathname, access, rawBody, hop, records, provisioning = null, sendJson }) {
     let result;
     try {
         if (!knownPath(pathname)) result = refusal('not_found');
@@ -173,7 +193,7 @@ export async function handleWorkerRoutes({ req, res, pathname, access, rawBody, 
             const grant = grantForPrincipal(parseRouterAuthInfo(req)?.delegations, access.principal);
             if (!grant) result = refusal('owner_evidence_unavailable');
             else if (!hop) result = refusal('worker_coordinator_unavailable');
-            else result = await route(pathname, parseBody(rawBody), { access, grant, hop, records });
+            else result = await route(pathname, parseBody(rawBody), { access, grant, hop, records, provisioning });
         }
     } catch (error) {
         result = error instanceof BadRequest ? refusal(error.code) : errorResult(error);

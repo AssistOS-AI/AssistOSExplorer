@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { isWebchatMessageEnvelope, normalizeWebchatMessage, shouldEmitWebchatOutput } from './webchatEnvelope.mjs';
+import { isWebchatMessageEnvelope, normalizeWebchatMessage, shouldEmitWebchatOutput, webchatSignedArgs } from './webchatEnvelope.mjs';
 import { materializeWebchatContext } from './webchatResources.mjs';
 import { formatWebchatError } from './webchatError.mjs';
 import { createWebchatWorkspaceFileIndex } from './webchatWorkspaceFiles.mjs';
@@ -14,6 +14,7 @@ import { handleWebchatControlChunk, isWebchatEscapeControlChunk } from './webcha
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
 import { WEBCHAT_RUNTIME_OPEN_EVENT, createRuntimeWebchatCoordinator } from './webchatCoordinator.mjs';
+import { detachReason, stopReason } from '../execution/abortReasons.mjs';
 
 function target(context) {
     return {
@@ -60,6 +61,17 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
         promise.finally(() => running.delete(promise)).catch(() => {});
         promise.then(null, (error) => logDiagnostic(runtime.workingDir, 'webchat.track.rejected', errorFields(error)));
         return promise;
+    };
+    // The owner evidence of a Router-signed envelope for engines that run through the worker; a
+    // message without a verified envelope has none, and such an engine refuses it.
+    // `freshest` serves the newest verified evidence of a principal, so a stream that dropped is
+    // reattached with a grant the user's later envelope supplied. It is held in memory only.
+    const newest = new Map();
+    const ownerOf = (message) => {
+        if (!coordinator || typeof coordinator.evidenceFor !== 'function' || !message?.invocationToken) return null;
+        const evidence = coordinator.evidenceFor(message);
+        if (evidence?.ok === true && evidence.grant) newest.set(evidence.principal, evidence);
+        return { coordinator, evidence, freshest: (principal) => newest.get(principal) ?? null };
     };
     const fail = (error, context, sessionId) => {
         const text = createSanitizer(context, process.env)(error?.name === 'AbortError' || error?.exitCode === 130 ? '[cancelled]' : formatWebchatError(error, { publicBaseUrl: context.webchatOrigin?.publicBaseUrl }));
@@ -153,7 +165,8 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             }
             const result = isSlash
                 ? await executeRuntimeCommand({ runtime, connection: isExec ? { ...connection, sessionId } : connection, input, context, signal: controller.signal, onEvent, emit })
-                : await runtime.engine.executeTurn({ sessionId, turnId: operationId, prompt: message.text.trim(), context, signal: controller.signal, onEvent });
+                : await runtime.engine.executeTurn({ sessionId, turnId: operationId, prompt: message.text.trim(), context, signal: controller.signal, onEvent,
+                    ...(ownerOf(message) ? { owner: ownerOf(message) } : {}) });
             const output = sanitize(result.outputText ?? result.output ?? '');
             if (commandTurn) {
                 const session = await runtime.sessionStore.completeCommand(sessionId, commandTurn.assistantMessageId, output);
@@ -198,7 +211,10 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 for (const operation of active.values()) {
                     if (operation.sessionId !== connections.get(control.sourceTabId || 'legacy')?.sessionId) continue;
                     if (control.sourceTabId && operation.context.sourceTabId === control.sourceTabId
-                        && (!control.sourcePageInstanceId || operation.context.sourcePageInstanceId === control.sourcePageInstanceId)) operation.controller.abort();
+                        && (!control.sourcePageInstanceId || operation.context.sourcePageInstanceId === control.sourcePageInstanceId)) {
+                        // The user's stop; the stop envelope's own evidence (when signed) authorizes the worker control.
+                        operation.controller.abort(stopReason({ owner: ownerOf({ invocationToken: control.invocation?.token, signedArgs: webchatSignedArgs(control) }) }));
+                    }
                 }
                 return;
             }
@@ -213,6 +229,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             // output and makes no owner claim.
             if (coordinator && message.invocationToken) {
                 const seen = coordinator.onEnvelope(message);
+                ownerOf(message);
                 track(seen.done);
                 if (seen.event === WEBCHAT_RUNTIME_OPEN_EVENT) return;
             }
@@ -250,7 +267,8 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             while (running.size) await Promise.allSettled([...running]);
         },
         cancel() {
-            for (const operation of active.values()) operation.controller.abort();
+            // Shutdown detaches from work the worker owns; it is not a stop.
+            for (const operation of active.values()) operation.controller.abort(detachReason());
         },
     };
 }

@@ -2,6 +2,8 @@ import readline from 'node:readline';
 import { prepareCopilotContext } from './copilot-context.mjs';
 import { setRobotContext } from '../copilot/src/lib/execution/robotContext.mjs';
 import { createCliRuntime } from '../copilot/src/index.mjs';
+import { workerModeSelected } from '../copilot/src/lib/execution/engineSelection.mjs';
+import { detachReason, stopReason } from '../copilot/src/lib/execution/abortReasons.mjs';
 
 import { pathToFileURL } from 'node:url';
 
@@ -13,7 +15,10 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         options[key] = ['--resume-session', '--control-stdin', '--workflow-execution'].includes(key) ? true : argv[++index];
     }
     const controller = new AbortController();
-    const abort = () => controller.abort();
+    // Through the worker a signal only detaches (RoboTeam is shutting down; the worker keeps the
+    // execution); a stop is the explicit `stop` record on stdin.
+    const workerMode = workerModeSelected();
+    const abort = () => controller.abort(workerMode ? detachReason() : undefined);
     process.once('SIGTERM', abort);
     process.once('SIGINT', abort);
     let runtime;
@@ -39,6 +44,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
                     if (message.type !== 'prompt' || typeof message.prompt !== 'string' || !message.prompt.trim()) throw new Error('The first task record must be the prompt.');
                     receivePrompt(message); receivePrompt = null;
                 } else if (message.type === 'message') control?.(message);
+                else if (message.type === 'stop') controller.abort(stopReason());
             } catch (error) { console.error(error.message || 'Invalid task control message.'); }
         });
         input.once('close', () => receivePrompt?.(null));
@@ -48,6 +54,8 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
             execution: { workflowExecution: options['--workflow-execution'] === true, captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
                 model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access',
+                ...(options['--worker-binding'] && options['--worker-origin']
+                    ? { worker: { bindingId: options['--worker-binding'], originRequestId: options['--worker-origin'] } } : {}),
                 ...(task.systemPrompt ? { systemPrompt: task.systemPrompt } : {}) } }, { reattachExistingTasks: false });
         const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt: task.prompt,
             signal: controller.signal, context: { workingDir: options['--cwd'], rawText: task.prompt },

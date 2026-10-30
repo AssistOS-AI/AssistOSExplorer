@@ -32,7 +32,7 @@ export class WorkflowScheduler {
         try { await this.pending; } finally { this.pending = null; }
     }
     // A manual launch is owned by the acting user; the job owner is unchanged.
-    async runNow(id, revision, createdBy, { ownerPrincipal = null } = {}) {
+    async runNow(id, revision, createdBy, { ownerPrincipal = null, beforeDispatch } = {}) {
         if (this.closed) throw Object.assign(invalid('Cron job scheduler is not running'), { statusCode: 503 });
         if (!Number.isSafeInteger(revision)) throw invalid('A current Cron job revision is required');
         const job = this.schedules.database.transaction(() => {
@@ -49,7 +49,7 @@ export class WorkflowScheduler {
             this.schedules.saveSync(current);
             return structuredClone(current);
         });
-        const launch = this._launch(job, { manual: true, createdBy, ownerPrincipal });
+        const launch = this._launch(job, { manual: true, createdBy, ownerPrincipal, beforeDispatch });
         this.manualLaunches.add(launch);
         try { return await launch; } finally { this.manualLaunches.delete(launch); }
     }
@@ -75,12 +75,12 @@ export class WorkflowScheduler {
         });
         await Promise.all(claimed.map(job => this._launch(job)));
     }
-    async _launch(job, { manual = false, createdBy = job.createdBy, ownerPrincipal = job.ownerPrincipal ?? null } = {}) {
+    async _launch(job, { manual = false, createdBy = job.createdBy, ownerPrincipal = job.ownerPrincipal ?? null, beforeDispatch } = {}) {
         try {
             if (this.closed) throw new Error('Cron job scheduler stopped before launch');
             return await this.startFlow({ workflowTypeId: job.workflowTypeId, objective: job.objective, folder: job.folder, executionType: job.executionType,
                 createdBy, ownerPrincipal }, {
-                scheduleId: job.id, scheduledAt: job.pendingLaunch.scheduledAt, manual, scheduleBindingRevision: job.bindingRevision,
+                scheduleId: job.id, scheduledAt: job.pendingLaunch.scheduledAt, manual, scheduleBindingRevision: job.bindingRevision, beforeDispatch,
                 onCreated: flow => {
                     const current = this.schedules.getSync(job.id);
                     if (this.closed || !current || (!manual && !current.enabled) || current.pendingLaunch?.token !== job.pendingLaunch.token) throw new Error('Cron job changed before launch');

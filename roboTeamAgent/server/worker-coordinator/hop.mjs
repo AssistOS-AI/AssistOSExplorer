@@ -19,7 +19,11 @@ export const GRANT_HEADER = 'x-ploinky-user-delegation';
 export const ASSERTION_HEADER = 'ploinky-agent-assertion';
 const REFUSAL_HEADER = 'x-ploinky-refusal';
 const BASE_PATTERN = /^\/base-agent-additional-server\/[A-Za-z0-9_-]+\/[1-9][0-9]{0,4}$/u;
-const OPERATION_PATTERN = /^(admissions|lookup|bindings|references\/[A-Za-z0-9_-]{22,64}\/(read|events|control))$/u;
+// Exactly the operations RoboTeam calls (RoboWork r10 decision M-6): the four robot and
+// operation reads and lifecycle calls are added to the admission, lookup, binding and
+// reference operations. `robots/delete`, `robots/list`, `obligations*` and everything else
+// stay refused before any I/O.
+const OPERATION_PATTERN = /^(admissions|lookup|bindings|robots\/(provision|configure|get)|operations\/get|references\/[A-Za-z0-9_-]{22,64}\/(read|events|control))$/u;
 const GRANT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u;
 const REFUSAL_PATTERN = /^v=1; stage=(route|auth|relay); cause=([a-z-]{1,64})$/u;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -128,11 +132,117 @@ function send(request, url, headers, bytes, timeoutMs) {
     });
 }
 
+const STREAM_IDLE_MS = 90000;
+
+function dropped() {
+    return new WorkerCoordinatorError('worker_stream_dropped', 503);
+}
+
+// Opens the streaming request. Connection and header handling follow `send`; a non-200 answer is
+// read whole (bounded) and classified like any other response.
+function openStream(requestImpl, url, headers, bytes, { timeoutMs, idleMs, signal }) {
+    return new Promise((resolve) => {
+        let settled = false;
+        let connected = false;
+        let req = null;
+        const done = (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } };
+        const timer = setTimeout(() => { done(connected ? { outcome: 'unknown' } : { outcome: 'unsent' }); req?.destroy(); }, timeoutMs);
+        timer.unref?.();
+        const abort = () => { req?.destroy(); done({ outcome: connected ? 'unknown' : 'unsent' }); };
+        if (signal?.aborted) { done({ outcome: 'unsent' }); return; }
+        signal?.addEventListener('abort', abort, { once: true });
+        try {
+            req = requestImpl(url, { method: 'POST', headers, agent: false }, (res) => {
+                connected = true;
+                const status = res.statusCode;
+                const contentType = String(res.headers['content-type'] || '');
+                if (status !== 200 || !/ndjson|jsonl/iu.test(contentType)) {
+                    const chunks = [];
+                    let total = 0;
+                    res.on('data', (chunk) => {
+                        total += chunk.length;
+                        if (total > MAX_RESPONSE_BYTES) { done({ outcome: 'unknown', status }); res.destroy(); return; }
+                        chunks.push(chunk);
+                    });
+                    res.on('end', () => done(classifyResponse(status, res.headers, Buffer.concat(chunks))));
+                    res.on('aborted', () => done({ outcome: 'unknown' }));
+                    res.on('error', () => done({ outcome: 'unknown' }));
+                    return;
+                }
+                clearTimeout(timer);
+                signal?.removeEventListener('abort', abort);
+                done({ outcome: 'stream', status, lines: lines(res, req, idleMs, signal) });
+            });
+        } catch {
+            done({ outcome: 'unsent' });
+            return;
+        }
+        req.on('socket', (socket) => {
+            if (socket && socket.connecting === false) connected = true;
+            else socket?.once?.('connect', () => { connected = true; });
+        });
+        req.on('error', () => done(connected ? { outcome: 'unknown' } : { outcome: 'unsent' }));
+        req.end(bytes);
+    });
+}
+
+async function* lines(res, req, idleMs, signal) {
+    let buffer = '';
+    let idle;
+    let wake;
+    let failure = null;
+    let finished = false;
+    const queue = [];
+    const poke = () => { wake?.(); wake = null; };
+    const arm = () => {
+        clearTimeout(idle);
+        idle = setTimeout(() => { failure = dropped(); req.destroy(); poke(); }, idleMs);
+        idle.unref?.();
+    };
+    const onAbort = () => { failure = dropped(); req.destroy(); poke(); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    res.setEncoding('utf8');
+    arm();
+    res.on('data', (chunk) => {
+        arm();
+        buffer += chunk;
+        let end;
+        while ((end = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, end).trim();
+            buffer = buffer.slice(end + 1);
+            if (!line) continue;
+            if (line.length > MAX_RESPONSE_BYTES) { failure = dropped(); req.destroy(); break; }
+            const value = parseJson(Buffer.from(line));
+            if (!isPlainObject(value)) { failure = dropped(); req.destroy(); break; }
+            queue.push(value);
+        }
+        if (buffer.length > MAX_RESPONSE_BYTES) { failure = dropped(); req.destroy(); }
+        poke();
+    });
+    res.on('end', () => { finished = true; poke(); });
+    res.on('aborted', () => { failure ||= dropped(); poke(); });
+    res.on('error', () => { failure ||= dropped(); poke(); });
+    res.on('close', () => { if (!finished) failure ||= dropped(); poke(); });
+    try {
+        for (;;) {
+            if (queue.length) { yield queue.shift(); continue; }
+            if (failure) throw failure;
+            if (finished) return;
+            await new Promise((resolve) => { wake = resolve; });
+        }
+    } finally {
+        clearTimeout(idle);
+        signal?.removeEventListener('abort', onAbort);
+        req.destroy();
+    }
+}
+
 // `routerUrl` and `request` are test injections; production reads the private Router
 // location from the verified descriptor only.
-export function createWorkerCoordinatorHop({ env = process.env, routerUrl, request = http.request, timeoutMs = 15000 } = {}) {
+export function createWorkerCoordinatorHop({ env = process.env, routerUrl, request = http.request, timeoutMs = 15000, libraries: injected = null,
+    streamIdleMs = STREAM_IDLE_MS } = {}) {
     const runtimeRoot = () => String(env.PLOINKY_AGENT_RUNTIME_ROOT || '/Agent');
-    let libraries = null;
+    let libraries = injected ? { assertion: injected.assertion, descriptor: null } : null;
 
     async function load() {
         if (libraries) return libraries;
@@ -159,7 +269,8 @@ export function createWorkerCoordinatorHop({ env = process.env, routerUrl, reque
         }
     }
 
-    async function call(operation, body, { grant } = {}) {
+    // Validates the operation, grant and identity and signs the exact body: everything before I/O.
+    async function prepare(operation, body, grant) {
         if (typeof operation !== 'string' || !OPERATION_PATTERN.test(operation)) throw new WorkerCoordinatorError('invalid_request', 400);
         const sendsGrant = typeof grant === 'string' && grant.length > 0;
         if (sendsGrant && (grant.length > MAX_GRANT_BYTES || !GRANT_PATTERN.test(grant))) {
@@ -191,8 +302,25 @@ export function createWorkerCoordinatorHop({ env = process.env, routerUrl, reque
             [ASSERTION_HEADER]: assertion,
         };
         if (sendsGrant) headers[GRANT_HEADER] = grant;
+        return { url, headers, bytes };
+    }
+
+    async function call(operation, body, { grant } = {}) {
+        const { url, headers, bytes } = await prepare(operation, body, grant);
         return send(request, url, headers, bytes, timeoutMs);
     }
 
-    return Object.freeze({ call });
+    // A streaming response (NDJSON, one JSON object per line), authorized at open by the grant sent
+    // with the opening request alone. Resolves like `call` for any answer that is not a 200 stream
+    // ({outcome: 'unsent' | 'unknown' | 'response'}); for a 200 stream resolves
+    // {outcome: 'stream', status: 200, lines} where `lines` is an async iterable of parsed objects.
+    // The iteration ends normally when the worker ends the stream. It throws
+    // `worker_stream_dropped` when the connection fails or goes idle, or a line is malformed or too
+    // large: the caller then reattaches from its cursor, with a fresh grant.
+    async function stream(operation, body, { grant, signal } = {}) {
+        const { url, headers, bytes } = await prepare(operation, body, grant);
+        return openStream(request, url, { ...headers, accept: 'application/x-ndjson' }, bytes, { timeoutMs, idleMs: streamIdleMs, signal });
+    }
+
+    return Object.freeze({ call, stream });
 }

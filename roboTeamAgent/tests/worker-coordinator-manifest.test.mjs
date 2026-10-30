@@ -15,32 +15,47 @@ const PREFIX = '/base-agent-additional-server/roboTeamAgent/3001';
 const PROVIDER_ADMISSION = Object.freeze({ key: 'providerAdmission', targetAgentId: 'agent:./robo-work', tools: ['__coordinator_admission__'],
     scopes: ['execution:owner'], ttlSeconds: 30 });
 
-test('E14: the grant-bearing /api/worker/* route is declared before the broad route, which mints nothing', () => {
+// The exact set of paths whose routed requests the Router mints `providerAdmission` for (decisions
+// M-13 and the base section 8.2): the worker coordinator API, robot create and update, flow start and
+// schedule run-now. `/api/robots/*` is the narrowest grammar for `/api/robots/<id>/coding-agents`
+// (a path ends in one `/*`), and the Router's trailing `/*` also matches the bare prefix.
+const MINTING = ['/api/worker/*', '/api/robots/*', '/api/roboflow/flows', '/api/roboflow/schedules/*'];
+
+test('E14: the grant-bearing routes are exactly the declared set, each before the broad route, which mints nothing', () => {
     const manifest = readManifest();
     const routes = manifest.routerAccess.httpRoutes;
-    const narrow = routes.findIndex((route) => route.path === `${PREFIX}/api/worker/*`);
     const broad = routes.findIndex((route) => route.path === `${PREFIX}/*`);
-    assert.ok(narrow >= 0 && broad >= 0);
-    assert.ok(narrow < broad, 'the narrow route comes first');
-    assert.deepEqual(routes[narrow], { path: `${PREFIX}/api/worker/*`, access: 'authenticated', delegations: [PROVIDER_ADMISSION] });
+    assert.ok(broad >= 0);
+    assert.equal(broad, routes.length - 1, 'the broad route is last, so every declaration above it wins');
+    assert.deepEqual(routes.slice(0, broad).map((route) => route.path), MINTING.map((path) => `${PREFIX}${path}`), 'the minting set is pinned exactly');
+    for (const route of routes.slice(0, broad)) {
+        assert.deepEqual(route, { path: route.path, access: 'authenticated', delegations: [PROVIDER_ADMISSION] });
+    }
     assert.equal(Object.hasOwn(routes[broad], 'delegations'), false);
-    // The Router's first-match selection: worker paths get exactly one grant, every other path none.
-    for (const pathname of ['/api/worker/admissions', '/api/worker/lookup', `/api/worker/references/${'r'.repeat(22)}/control`, '/api/worker/bindings']) {
+    // The Router's first-match selection: these paths get exactly one grant.
+    const minting = ['/api/worker/admissions', '/api/worker/lookup', `/api/worker/references/${'r'.repeat(22)}/control`, '/api/worker/bindings', '/api/worker/robots/ensure',
+        '/api/robots', '/api/robots/import-emails', '/api/robots/default-ab12cd/coding-agents',
+        '/api/roboflow/flows', '/api/roboflow/schedules', `/api/roboflow/schedules/cron_${'0f'.repeat(12)}/run-now`];
+    for (const pathname of minting) {
         const definition = routeDefinition(`${PREFIX}${pathname}`);
         assert.deepEqual(definition.delegations.map((entry) => [entry.key, entry.targetAgentId, entry.tools, entry.scope, entry.ttlSeconds]),
             [['providerAdmission', 'agent:AchillesIDE/robo-work', ['__coordinator_admission__'], ['execution:owner'], 30]], pathname);
-        const grants = authInfoOf(routedHeaders({ id: 'alice', roles: ['user'] }, 'POST', pathname, '{}')).delegations;
+        const method = pathname === '/api/robots/default-ab12cd/coding-agents' ? 'PATCH' : 'POST';
+        const grants = authInfoOf(routedHeaders({ id: 'alice', roles: ['user'] }, method, pathname, '{}')).delegations;
         assert.deepEqual(Object.keys(grants), ['providerAdmission'], pathname);
     }
-    // The Router's trailing `/*` also matches the bare prefix; RoboTeam answers it 404.
     assert.equal(routeDefinition(`${PREFIX}/api/worker`).delegations.length, 1);
-    for (const pathname of ['/api/robots', '/api/roboflow/schedules', '/api/workers', '/api/worker-x/admissions', '/']) {
+    // Every other path mints nothing, including the flow endpoints that do not start a flow.
+    const silent = ['/api/roboflow/schedules-x', '/api/roboflow/flows/flow_aaaaaaaaaaaaaaaaaaaaaaaa', '/api/roboflow/flows/flow_aaaaaaaaaaaaaaaaaaaaaaaa/pause',
+        '/api/roboflow/workflows', '/api/roboflow/generate', '/api/roboflow', '/api/roboflow/validate', '/api/workers', '/api/worker-x/admissions', '/api/robot',
+        '/api/robots-x', '/api/control', '/api/live-sessions', '/api/terminal-profiles/resolve', '/status', '/flows', '/'];
+    for (const pathname of silent) {
         assert.deepEqual(routeDefinition(`${PREFIX}${pathname}`).delegations, [], pathname);
         assert.equal(Object.hasOwn(authInfoOf(routedHeaders({ id: 'alice', roles: ['user'] }, 'GET', pathname)), 'delegations'), false, pathname);
     }
-    // Negative control: with the narrow route after the broad one, worker paths mint nothing.
-    const reordered = { ...manifest, routerAccess: { httpRoutes: [routes[broad], routes[narrow]] } };
-    assert.deepEqual(routeDefinition(`${PREFIX}/api/worker/admissions`, reordered).delegations, []);
+    // Negative control: with the narrow routes after the broad one, nothing mints.
+    const reordered = { ...manifest, routerAccess: { httpRoutes: [routes[broad], ...routes.slice(0, broad)] } };
+    for (const pathname of minting) assert.deepEqual(routeDefinition(`${PREFIX}${pathname}`, reordered).delegations, [], pathname);
 });
 
 test('WebChat declares principal runtime scope and the providerAdmission grant for every envelope', () => {

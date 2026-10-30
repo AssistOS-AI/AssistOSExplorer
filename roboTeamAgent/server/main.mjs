@@ -44,11 +44,13 @@ await runtimeManager.initialize();
 // Shell and socket only: seeding copies thousands of files per robot and runs after the service is listening.
 for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id, { seed: false });
 
+const workerCoordinator = { hop: createWorkerCoordinatorHop({ env: process.env }) };
 const roboflow = new RoboFlowService({
     robotStore,
     runtimeManager,
     skillsets: runtimeManager.skillsets,
     workspaceRoot,
+    workerCoordinator,
 });
 await roboflow.initialize();
 
@@ -73,7 +75,7 @@ const server = createRoboTeamServer({
     routeKey: process.env.ROBOTEAM_ROUTE_KEY || 'roboTeamAgent',
     liveSessions,
     // Fails closed per call until the coordinator base and private identity are configured.
-    workerCoordinator: { hop: createWorkerCoordinatorHop({ env: process.env }) },
+    workerCoordinator,
 });
 
 // Same-container publishers reach the registry over the private IPC socket.

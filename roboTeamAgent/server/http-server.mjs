@@ -24,6 +24,10 @@ import { matchConversationSkillsPath, readConversationSkills, setConversationSki
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 import { renderAlaTurnLog } from '../copilot/src/lib/webchat/webchatTurnLog.mjs';
 import { ADMISSIONS_PATH, handleWorkerRoutes, isWorkerRoute } from './worker-coordinator/browser-routes.mjs';
+import { createWorkerClient } from './worker-coordinator/worker-client.mjs';
+import { createRobotProvisioner } from './worker-coordinator/robot-provisioning.mjs';
+import { ensureRobotWithGrant, registerRootFlowBinding, workerGrantFor } from './worker-coordinator/grant-actions.mjs';
+import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
@@ -453,7 +457,7 @@ function sendText(res, status, body) {
     res.end(payload);
 }
 
-async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath }) {
+async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath, worker }) {
     if (!pathname.startsWith('/api/roboflow') && !['/flows', '/flow-types', '/flow-types/new', '/flow-types/generate-new'].includes(pathname)) {
         return false;
     }
@@ -521,7 +525,8 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     if (runScheduleId && req.method === 'POST') {
         if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
         const input = await readJsonBody(req);
-        sendJson(res, 200, { ok: true, ...await roboflow.runScheduleNow(runScheduleId, input?.revision, actor.id, { ownerPrincipal: signedOwner(req) }) }); return true;
+        if (worker?.enabled && !worker.grant(req)) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        sendJson(res, 200, { ok: true, ...await roboflow.runScheduleNow(runScheduleId, input?.revision, actor.id, { ownerPrincipal: signedOwner(req), ...(worker?.enabled ? { beforeDispatch: worker.beforeDispatch(req) } : {}) }) }); return true;
     }
     const scheduleId = pathname.match(/^\/api\/roboflow\/schedules\/(cron_[0-9a-f]{24})$/)?.[1];
     if (scheduleId && ['PUT', 'DELETE'].includes(req.method)) {
@@ -561,7 +566,10 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     }
     if (pathname === '/api/roboflow/flows' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id, ownerPrincipal: signedOwner(req) }) });
+        // With the worker configured, the flow's binding is registered with this request's own grant before
+        // its first phase is admitted; a request without one is refused before the flow exists.
+        if (worker?.enabled && !worker.grant(req)) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id, ownerPrincipal: signedOwner(req) }, ...(worker?.enabled ? [{ beforeDispatch: worker.beforeDispatch(req) }] : [])) });
         return true;
     }
     const eventsId = pathname.match(new RegExp(`^${FLOW_PATH}/events$`))?.[1];
@@ -735,6 +743,23 @@ export function createRoboTeamServer(options) {
         ? options.liveSessionsStreamLifetimeMs : LIVE_STREAM_LIFETIME_MS;
     // Worker coordinator callers ({hop}); without it the /api/worker/* routes answer 503.
     const workerHop = options.workerCoordinator?.hop || null;
+    // Robot provisioning on the worker for an administrator's request (the only caller that holds the
+    // administrator grant the worker's lifecycle calls require).
+    const workerProvisioner = workerHop ? createRobotProvisioner({ client: createWorkerClient({ hop: workerHop }), robotStore }) : null;
+    const workerProvisioning = workerProvisioner ? { ensureRobot: async (robotId, auth) => {
+        const robot = await robotStore.get(robotId);
+        if (!robot) throw Object.assign(new Error('robot not found'), { name: 'WorkerError', code: 'not_found', status: 404 });
+        return workerProvisioner.ensureReady(robot, auth);
+    } } : null;
+    // With the worker configured, robot create/update and flow start use the grant their route mints.
+    const workerEnabled = Boolean(workerHop) && (options.workerMode ?? String(process.env[COORDINATOR_BASE_ENV] || '').trim() !== '');
+    const worker = {
+        enabled: workerEnabled,
+        grant: (req) => workerGrantFor(req, req[ACCESS]),
+        ensure: async (req, robot) => (workerEnabled && workerProvisioner
+            ? ensureRobotWithGrant({ provisioner: workerProvisioner, robot, grant: workerGrantFor(req, req[ACCESS]) }) : null),
+        beforeDispatch: (req) => (workerEnabled ? (flow) => registerRootFlowBinding({ hop: workerHop, flow, grant: workerGrantFor(req, req[ACCESS]) }) : undefined),
+    };
     const workerRecords = roboflow ? {
         getSchedule: (id) => { roboflow.schedules.database.initialize(); return roboflow.schedules.getSync(id); },
         getFlow: (id) => roboflow.store.get(id),
@@ -782,7 +807,7 @@ export function createRoboTeamServer(options) {
             // grant only, and write their own responses.
             if (isWorkerRoute(pathname)) {
                 return await handleWorkerRoutes({ req, res, pathname, access, rawBody: req[RAW_BODY], hop: workerHop,
-                    records: workerRecords, sendJson });
+                    records: workerRecords, provisioning: workerProvisioning, sendJson });
             }
             // Live Sessions decide on the signed principal and signed admin
             // decision only, before the unsigned actor is consulted.
@@ -884,19 +909,24 @@ export function createRoboTeamServer(options) {
                 await runtimeManager.prepareOpenCode?.(robot.id, { seed: false });
                 runtimeManager.seedOpenCodeInBackground?.(robot);
                 await roboflow?.refreshCoverage();
-                return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)) });
+                // Provisioned on the worker with this request's grant (decision M-13); a failure is reported, not hidden.
+                const provisioned = await worker.ensure(req, await robotStore.get(robot.id));
+                return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)), ...(provisioned ? { worker: provisioned } : {}) });
             }
             if (pathname === '/api/robots/import-emails' && req.method === 'POST') {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);
                 const result = await importEmailRobots(robotStore, body.addresses, { codingAgents: body.codingAgents });
+                const provisioned = [];
                 for (const robot of result.created) {
                     await runtimeManager.prepareOpenCode?.(robot.id, { seed: false });
                     runtimeManager.seedOpenCodeInBackground?.(robot);
+                    const outcome = await worker.ensure(req, await robotStore.get(robot.id));
+                    if (outcome) provisioned.push({ id: robot.id, ...outcome });
                 }
                 if (result.created.length) await roboflow?.refreshCoverage();
                 return sendJson(res, 200, { ok: true, created: result.created.map(robot => ({ id: robot.id, name: robot.name })),
-                    existing: result.existing, invalid: result.invalid });
+                    existing: result.existing, invalid: result.invalid, ...(provisioned.length ? { worker: provisioned } : {}) });
             }
             const modelsId = matchRobotPath(pathname, '/models');
             if (modelsId && req.method === 'GET') {
@@ -933,7 +963,8 @@ export function createRoboTeamServer(options) {
                 }
                 const robot = await robotStore.setCodingAgents(codingAgentsId, body.codingAgents, { model: body.model, effort: body.effort });
                 await roboflow?.refreshCoverage();
-                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)) });
+                const provisioned = await worker.ensure(req, robot);
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)), ...(provisioned ? { worker: provisioned } : {}) });
             }
             const skillsetsId = matchRobotPath(pathname, '/skillsets');
             if (skillsetsId && ['POST', 'DELETE', 'PATCH'].includes(req.method)) {
@@ -1046,7 +1077,7 @@ export function createRoboTeamServer(options) {
                 return sendJson(res, 200, { ok: true, logs: await runtimeManager.logs(robot.id, url.searchParams.get('tail')) });
             }
             if (await handleRobotProxies({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager })) return;
-            if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath })) return;
+            if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath, worker })) return;
             sendError(res, 404, 'not found');
         } catch (error) {
             const message = String(error?.message || '');

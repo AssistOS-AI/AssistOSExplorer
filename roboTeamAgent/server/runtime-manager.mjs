@@ -24,6 +24,8 @@ import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './co
 import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
+import { workerBindingFor } from './worker-coordinator/flow-origins.mjs';
+import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
 import { NFT_COMMAND, NSENTER_COMMAND, writeContainerFirewallRules } from './proxy-pool/container-firewall.mjs';
 
@@ -243,6 +245,10 @@ export class RuntimeManager {
         this.createRelay = options.createRelay || ((upstream) => new ProxyRelay(upstream, {
             log: (line) => console.warn(`[roboTeamAgent] proxy relay: ${line}`),
         }));
+        // With the worker coordinator configured the robot-task child runs through the worker engine: a
+        // stop reaches it as an explicit stdin record (a SIGTERM only detaches), and flow phases pass their
+        // binding and deterministic origin on its command line.
+        this.workerMode = options.workerMode ?? String(process.env[COORDINATOR_BASE_ENV] || '').trim() !== '';
         this.execFileImpl = options.execFileImpl || execFileAsync;
         this.spawnImpl = options.spawnImpl || spawn;
         this.toolCache = options.toolCache || new ToolCache({
@@ -550,6 +556,17 @@ export class RuntimeManager {
         return session ? this.stopContainer(robotId, session.mode) : Promise.resolve({ state: 'stopped' });
     }
 
+    // A user stop of a task child. Through the worker the stop is an explicit record the child sends
+    // to the worker as a control (SIGTERM would only detach it); the signal remains the backstop.
+    _stopChild(child) {
+        if (!child) return;
+        if (!this.workerMode) { child.kill('SIGTERM'); return; }
+        try { child.stdin?.write(`${JSON.stringify({ type: 'stop' })}\n`); } catch { /* the backstop below ends it */ }
+        const timer = setTimeout(() => child.kill('SIGTERM'), 30000);
+        timer.unref?.();
+        child.once?.('close', () => clearTimeout(timer));
+    }
+
     _newTask(robot, type, request, trackLatest = true) {
         const task = {
             taskId: request.runtimeTaskId || (!request.alaSessionId && request.skillSelection?.catalogId) || crypto.randomUUID(), robotId: robot.id, type, state: 'queued',
@@ -739,8 +756,11 @@ export class RuntimeManager {
             // Only Browser and Desktop tasks work in the robot's Chromium, where its mailbox is signed in.
             const emailAddress = GUI_MODES.has(task.type) ? robotEmailAddress(robot) : null;
             if (task.cancelRequested) throw new Error('task was paused');
+            const worker = this.workerMode ? workerBindingFor(task.request, task.taskId) : null;
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
-                '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+                '--robot', robot.name, ...args,
+                ...(worker ? ['--worker-binding', worker.bindingId, '--worker-origin', worker.originRequestId] : [])],
+                { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
             child.stdin?.on('error', () => {});
             // The task prompt is the first control record. The copilot engine adds
@@ -896,7 +916,7 @@ export class RuntimeManager {
                 }
                 const neverStarted = internal.state === 'queued';
                 internal.cancelRequested = true;
-                internal.state = 'paused'; internal.completedAt = new Date().toISOString(); internal.child?.kill('SIGTERM');
+                internal.state = 'paused'; internal.completedAt = new Date().toISOString(); this._stopChild(internal.child);
                 // A queued attempt never reaches its run's terminal report.
                 if (neverStarted) this._emitTaskTerminal(internal, { state: 'paused', result: internal.result, error: internal.error });
             }

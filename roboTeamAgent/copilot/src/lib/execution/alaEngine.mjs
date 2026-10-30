@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { resolveAlaInstallation } from './alaInstallation.mjs';
-import { alaSkillMountArguments } from './alaSkillMounts.mjs';
+import { FAILURE_SKILL_PROMPT, alaSkillFolderArguments } from './alaSkillMounts.mjs';
 import { alaSessionsRoot, readAlaSession } from './alaTranscript.mjs';
 import * as workspaceSettings from '../config/achillesSettings.mjs';
 import { acquireExecutionLease } from '../storage/workspaceStateLock.mjs';
@@ -19,8 +19,9 @@ import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { webchatTurnLogUrl } from '../webchat/webchatTurnLog.mjs';
 import { codingAgentLabel } from '../webchat/webchatProgressState.mjs';
 import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
+import { ALA_BACKENDS, createAlaRecordHandler } from './alaRecordHandler.mjs';
 
-const BACKENDS = ['codex', 'opencode', 'pi', 'claude'];
+const BACKENDS = ALA_BACKENDS;
 const EVENT_PREFIX = '@@ALA_EVENT@@';
 const MAX_OUTPUT = 16 * 1024 * 1024;
 
@@ -257,23 +258,13 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             // The workspace is mounted read-only at its canonical path; the writable
             // cwd is the --cwd grant. ALA mounts exactly what it is given.
             if (config.workspaceRoot !== cwd) args.push('--folder', config.workspaceRoot);
-            if (snapshot.skillsDirectory) {
-                const claude = path.join(cwd, '.claude');
-                const claudeStat = await fs.lstat(claude).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-                // Existing .claude -> .agents aliases already see the same overlay.
-                if (claudeStat?.isSymbolicLink()
-                    && await fs.realpath(claude) !== await fs.realpath(path.join(cwd, '.agents'))) {
-                    throw new Error('Project .claude symlink must point to .agents for session skills.');
-                }
-                args.push(...alaSkillMountArguments({ snapshot, workspaceRoot: config.workspaceRoot, cwd,
-                    includeClaude: !claudeStat?.isSymbolicLink() }));
-            }
+            args.push(...await alaSkillFolderArguments({ snapshot, workspaceRoot: config.workspaceRoot, cwd }));
             args.push('--folder', scriptContext.directory, 'as', 'ploinky-runtime');
             if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) args.push('--folder', env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, 'as', 'roboflow-human-input');
             const failureSkill = skills.find(skill => skill.name === 'report-task-blocked');
             if (execution.workflowExecution && failureSkill) {
                 args.push('--folder', failureSkill.skillDir, 'as', 'report-task-blocked');
-                nativePrompt += '\n\nRead /workspace/report-task-blocked/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan.';
+                nativePrompt += FAILURE_SKILL_PROMPT;
                 failureChannel = await createTaskFailureChannel({ request: async ({ message }) => {
                     if (!forcedFailure) {
                         forcedFailure = new Error(sanitize(message));
@@ -381,12 +372,10 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
     }
 
     async function consumeChild(child, { config, controller, context, sessionId, turnId, emit, sanitize }) {
-        let stdout = '', stderr = '', diagnostics = '', finalText = null, selected = false, protocolError = null;
+        let stdout = '', stderr = '', diagnostics = '', protocolError = null;
         let queued = Promise.resolve();
-        let remainingFinals = 1;
         let killTimer;
         let settled = false;
-        const pendingRequests = new Set();
         const decoder = new StringDecoder('utf8');
         const outputDecoder = new StringDecoder('utf8');
         const sendSignal = (name) => {
@@ -401,50 +390,14 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         };
         const fail = (error) => { if (!settled) { protocolError ||= error; stop(); } };
         const reply = (id, optionId) => {
-            if (!pendingRequests.delete(id) || settled || child.stdin.destroyed || controller.signal.aborted) return;
+            if (!records.claimRequest(id) || settled || child.stdin.destroyed || controller.signal.aborted) return;
             child.stdin.write(`${JSON.stringify({ type: 'interaction-response', id,
                 ...(optionId === null ? { cancelled: true } : { optionId }) })}\n`);
         };
-        const handle = async (event) => {
-            // The wrapper publishes the policy applied to this turn. A pinned envelope may carry an older policy version.
-            if (event.type === 'skill-catalog' && config.skillExecution) {
-                if (/^[a-f0-9]{64}$/.test(config.skillExecution.catalogId) && event.revision !== config.skillExecution.revision) throw new Error('ALA received a different execution catalog revision.');
-                return;
-            }
-            if (!event || typeof event.type !== 'string') throw new Error('Malformed mandatory ALA event.');
-            if (event.type === 'coding-agent-selected') {
-                if (event.agent !== config.backend || event.permissionMode !== config.permissionMode) throw new Error('ALA selected an unexpected backend or permission policy.');
-                selected = true;
-                event = { ...event, effort: config.efforts[config.backend] || null };
-                await sessionStore.bindEngine(sessionId, { home: config.home, cwd: config.cwd, backend: event.agent, robotId: execution.robotId });
-            } else if (event.type === 'coding-agent-final') {
-                if (remainingFinals <= 0 || event.agent !== config.backend || typeof event.message !== 'string') throw new Error('Malformed or duplicate ALA final event.');
-                remainingFinals--;
-                finalText = event.message;
-            } else if (event.type === 'message-accepted' && event.delivery === 'queued') {
-                remainingFinals++;
-            } else if (event.type === 'session-ready' && event.sessionId !== sessionId) {
-                throw new Error('ALA returned a different conversation UUID.');
-            } else if (event.type === 'coding-agent-request') {
-                if (typeof event.id !== 'string' || event.agent !== config.backend || event.kind !== 'permission'
-                    || !Array.isArray(event.options) || !event.options.length
-                    || event.options.some((option) => typeof option.id !== 'string' || typeof option.label !== 'string')) {
-                    throw new Error('Malformed mandatory ALA permission request.');
-                }
-                if (pendingRequests.has(event.id)) throw new Error('Duplicate native permission request ID.');
-                pendingRequests.add(event.id);
-                Promise.resolve().then(() => interactions?.request(sanitize(event), { context, signal: controller.signal, turnId }) ?? null)
-                    .then((optionId) => {
-                        if (optionId !== null && !event.options.some((option) => option.id === optionId)) throw new Error('Unadvertised native permission response.');
-                        reply(event.id, optionId);
-                    }).catch(fail);
-            } else if (event.type === 'coding-agent-request-resolved') {
-                pendingRequests.delete(event.id);
-                interactions?.resolve(event.id, event.reason);
-            }
-            // ALA records coding-agent output in its transcript. Progress is delivered as a transient WebChat status, never persisted on the message.
-            await emit(event);
-        };
+        const records = createAlaRecordHandler({ backend: config.backend, permissionMode: config.permissionMode, efforts: config.efforts,
+            skillExecution: config.skillExecution, sessionId, sanitize, emit, interactions, context, signal: controller.signal, turnId, reply, fail,
+            bindEngine: (agent) => sessionStore.bindEngine(sessionId, { home: config.home, cwd: config.cwd, backend: agent, robotId: execution.robotId }) });
+        const handle = records.handle;
         const line = (value) => {
             if (protocolError) return;
             if (value.length > 1024 * 1024) { fail(new Error('ALA event record exceeded the 1 MiB limit.')); return; }
@@ -484,7 +437,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             await queued;
         } finally {
             settled = true;
-            pendingRequests.clear();
+            records.clearRequests();
             clearTimeout(killTimer);
             controller.signal.removeEventListener('abort', stop);
             interactions?.cancelTurn(turnId);
@@ -493,7 +446,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         if (protocolError) throw protocolError;
         if (outcome.code === 130) throw interrupted();
         if (outcome.code !== 0) throw Object.assign(new Error(`ALA execution failed (${outcome.code ?? outcome.signal}).${diagnostics.trim() ? `\n${diagnostics.trim()}` : ''}`), { exitCode: outcome.code });
-        if (!selected || finalText === null || !stdout.trim() || stdout.trimEnd() !== finalText.trimEnd()) {
+        if (!records.selected || records.finalText === null || !stdout.trim() || stdout.trimEnd() !== records.finalText.trimEnd()) {
             throw new Error('ALA completed without a valid matching native final result.');
         }
         validateNativeSession(sessionStore.loadSession(sessionId), config.home, config.cwd);

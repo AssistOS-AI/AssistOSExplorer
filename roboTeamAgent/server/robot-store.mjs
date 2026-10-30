@@ -271,8 +271,15 @@ export class RobotStore {
         return this.withRobot(robotId, async (robot, save) => {
             // ALA reads the robot's agent from its config in the robot home.
             await ensureAgentConfig(path.join(this.robotPath(robotId), 'home'), { codingAgents: selected, codingAgent: selected[0], model, effort });
-            await save({ ...robot, codingAgents: selected });
-            return { ...robot, codingAgents: selected };
+            // The model and effort chosen for a one-agent robot, kept as desired state for the worker.
+            const unchanged = JSON.stringify(robot.codingAgents) === JSON.stringify(selected);
+            const selection = model === undefined ? (unchanged ? robot.selection : undefined)
+                : (typeof model === 'string' && model.trim() ? { model: model.trim(), ...(effort ? { effort } : {}) } : undefined);
+            const { selection: previous, ...rest } = robot;
+            void previous;
+            const next = { ...rest, codingAgents: selected, ...(selection ? { selection } : {}) };
+            await save(next);
+            return next;
         });
     }
 

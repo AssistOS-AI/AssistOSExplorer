@@ -18,6 +18,11 @@ import { presetGraph, readPresets } from './workflow-presets.mjs';
 import { requiredDocumentationRepository } from '../required-skills.mjs';
 import { EXECUTION_TASK_TYPES, EXECUTION_TYPES } from './constants.mjs';
 import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
+import { COORDINATOR_BASE_ENV } from '../worker-coordinator/hop.mjs';
+import { createWorkerClient, stopOperationId } from '../worker-coordinator/worker-client.mjs';
+import { phaseOriginId } from '../worker-coordinator/flow-origins.mjs';
+import { parentBindingFor, registerDerivedBinding } from '../worker-coordinator/background.mjs';
+import { classifyPhase } from './worker-reconciliation.mjs';
 
 const terminal = state => ['completed', 'failed', 'paused', 'terminated'].includes(state);
 // Live Sessions owner: the signed principal (user:<id>) of the user who started
@@ -61,6 +66,16 @@ export class RoboFlowService {
         this.maxVisits = Number(options.maxVisits ?? process.env.ROBOTEAM_WORKFLOW_MAX_VISITS ?? 500);
         this.presetRetryMs = Number(options.presetRetryMs ?? 5000);
         this.closed = false;
+        // With the worker coordinator configured, phases run on the worker: a restart queries the worker
+        // before touching a phase (plan section 9) instead of resetting it, and derived flow bindings
+        // are registered before a phase is admitted.
+        const workerMode = options.workerMode ?? String(process.env[COORDINATOR_BASE_ENV] || '').trim() !== '';
+        this.worker = workerMode && (options.workerClient || options.workerCoordinator?.hop)
+            ? { hop: options.workerCoordinator?.hop || null, client: options.workerClient || createWorkerClient({ hop: options.workerCoordinator.hop }),
+                sleep: options.workerSleep || (ms => new Promise(resolve => setTimeout(resolve, ms))), reconcileMs: options.workerReconcileMs ?? 2000 }
+            : null;
+        this.reconciliation = null;
+        this.wakeReconcile = null;
         this.presetTimer = null;
         if (!Number.isSafeInteger(this.maxVisits) || this.maxVisits < 1) throw new Error('Workflow visit limit must be a positive integer');
         this.discover = options.discoverSkillsets || (() => discoverWorkflowSkillsets(this.skillsets?.repositoriesClient));
@@ -91,7 +106,8 @@ export class RoboFlowService {
         // this agent until it is ready (for example during a reinstall). They are loaded in the
         // background so startup never waits for or fails on them.
         this.presetReady = this._loadPresets();
-        for (const flow of await this.store.list()) if (flow.status !== 'pending' && !terminal(flow.status)) await this.store.update(flow.id, current => {
+        if (this.worker) this.reconciliation = this._reconcileWorker().catch(error => console.error(`[roboflow] worker reconciliation stopped: ${error.message}`));
+        else for (const flow of await this.store.list()) if (flow.status !== 'pending' && !terminal(flow.status)) await this.store.update(flow.id, current => {
             current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
             for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'paused'; instance.error = current.error; instance.endedAt = current.finishedAt; }
             current.status = deriveFlowStatus(current.instances);
@@ -109,6 +125,51 @@ export class RoboFlowService {
                 .catch(error => this._serialize(flow.parentFlowId, () => this._fail(flow.parentFlowId, error.message)).catch(() => {}));
         };
         this.scheduler.initialize();
+    }
+    // RoboTeam restart with the worker configured (plan section 9, decision M-5). Every unfinished phase
+    // is classified against the worker by its deterministic origin: a phase that finished while RoboTeam
+    // was down is committed through the normal completion path (the successor is dispatched once, and a
+    // failed phase, including `termination_unverified`, dispatches none); a phase the worker never
+    // admitted is paused as before; a running one is followed; a phase whose outcome the worker cannot
+    // currently report is left exactly as it is and asked again with backoff. Nothing is reset to
+    // paused and no successor is dispatched while an outcome is unknown.
+    async _reconcileWorker() {
+        const { client, sleep, reconcileMs } = this.worker;
+        await sleep(0);
+        const unreconciled = new Map();
+        for (const flow of await this.store.list()) {
+            if (flow.status === 'pending' || terminal(flow.status)) continue;
+            for (const instance of flow.instances) if (!terminal(instance.state)) unreconciled.set(`${flow.id}\n${instance.id}`, { flowId: flow.id, instanceId: instance.id });
+        }
+        let delay = reconcileMs;
+        while (unreconciled.size && !this.closed) {
+            let answered = false;
+            for (const [key, { flowId, instanceId }] of [...unreconciled]) {
+                if (this.closed) return;
+                const flow = await this.store.get(flowId);
+                const instance = flow?.instances.find(item => item.id === instanceId);
+                if (!flow || flow.status === 'terminated' || !instance || terminal(instance.state)) { unreconciled.delete(key); continue; }
+                const decision = instance.runtimeTaskId
+                    ? await classifyPhase({ client, flow, instance })
+                    : { action: 'never_admitted' };
+                if (decision.action === 'unknown') continue;
+                answered = true;
+                if (decision.action === 'running') continue;
+                unreconciled.delete(key);
+                if (decision.action === 'never_admitted') {
+                    await this._serialize(flowId, () => this.store.update(flowId, current => {
+                        current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
+                        const visit = current.instances.find(item => item.id === instanceId);
+                        if (visit && !terminal(visit.state)) { visit.state = 'paused'; visit.error = current.error; visit.endedAt = current.finishedAt; }
+                        current.status = deriveFlowStatus(current.instances);
+                    }));
+                } else {
+                    await this._serialize(flowId, () => this._completed({ flowId, instanceId }, decision.event));
+                }
+            }
+            delay = answered ? reconcileMs : Math.min(30000, delay * 2);
+            if (unreconciled.size) await Promise.race([sleep(delay), new Promise(resolve => { this.wakeReconcile = resolve; })]);
+        }
     }
     async _repositoryRoots(preset) {
         const roots = {};
@@ -193,13 +254,16 @@ export class RoboFlowService {
         return (await this.listSchedules()).find(job => job.id === saved.id);
     }
     async deleteSchedule(id) { return this.schedules.remove(id); }
-    async runScheduleNow(id, revision, createdBy, { ownerPrincipal = null } = {}) {
-        const flow = await this.scheduler.runNow(id, revision, createdBy, { ownerPrincipal: ownerPrincipalOf(ownerPrincipal) });
+    async runScheduleNow(id, revision, createdBy, { ownerPrincipal = null, beforeDispatch } = {}) {
+        const flow = await this.scheduler.runNow(id, revision, createdBy, { ownerPrincipal: ownerPrincipalOf(ownerPrincipal), ...(beforeDispatch ? { beforeDispatch } : {}) });
         return { flow, schedule: (await this.listSchedules()).find(job => job.id === id) || null };
     }
     // Scheduled flows record how they were launched and the schedule's binding revision
     // (launch metadata only; the local launch itself is unchanged).
-    async startFlow(input, { onCreated, scheduleId, scheduledAt, manual = false, scheduleBindingRevision } = {}) {
+    // `beforeDispatch(flow)` runs once the flow exists and before its first phase is admitted: the
+    // request that started a root flow registers the flow's binding with its own grant there. A failure
+    // fails the flow (nothing was dispatched) and is rethrown to the caller.
+    async startFlow(input, { onCreated, beforeDispatch, scheduleId, scheduledAt, manual = false, scheduleBindingRevision } = {}) {
         const graph = await this.registry.get(input.workflowTypeId);
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
         assertRunnable(graph);
@@ -221,6 +285,15 @@ export class RoboFlowService {
             throw error;
         }
         await this._serialize(flow.id, async () => {
+            if (beforeDispatch) {
+                try { await beforeDispatch(flow); }
+                catch (error) {
+                    await this.store.update(flow.id, current => {
+                        current.status = 'failed'; current.error = `Flow could not be registered with the worker: ${error.message}`; current.finishedAt = new Date().toISOString();
+                    }).catch(() => {});
+                    throw error;
+                }
+            }
             await this._prepareVisit(flow.id, flow.graph.entryTaskId);
             await this._dispatch(flow.id);
         });
@@ -278,6 +351,12 @@ export class RoboFlowService {
                     logRef: `.roboteam/roboflow/${id}/${instance.id}.log`, resultRef: `.roboteam/roboflow/${id}/${instance.id}.result` });
             });
             this.bindings.set(runtimeTaskId, { flowId: id, instanceId: instance.id });
+            // A child or cron-fired flow's binding derives from its parent's; the coordinator registers it
+            // alone. A root flow's binding is registered with its owner's grant by the owner's page.
+            if (this.worker) {
+                const parentBindingId = parentBindingFor(flow);
+                if (parentBindingId) await registerDerivedBinding({ hop: this.worker.hop, bindingId: id, parentBindingId });
+            }
             const selections = robotSelections(robot);
             const required = node.skillsets.map(identity => selections.find(set => set.id === identity));
             const skillSets = required.filter(item => item.kind === 'skillset').map(item => item.selector);
@@ -299,6 +378,23 @@ export class RoboFlowService {
         if (!this.skillsets) return start(robot);
         return this.skillsets.start(robot, { cwd: request.cwd, skillSets, skills, task: request.task, ca: 'auto', workflowCreator, allowsHumanInput }, start);
     }
+    // A flow cancel, pause or failure ends the worker's execution of a phase too (decision M-12 (c)): a
+    // system-initiated stop with the coordinator identity and the flow binding, no user grant. The
+    // operation ID is the one the phase's own child uses, so both are one stop at the worker. Best effort:
+    // a phase the worker never admitted, or already ended, needs none, and a stop the worker refuses is
+    // logged and left to the worker's own end-of-run handling.
+    async _stopWorkerPhase(flow, instance) {
+        if (!this.worker || !instance.runtimeTaskId) return;
+        try {
+            const origin = phaseOriginId({ flowId: flow.id, instanceId: instance.id, runtimeTaskId: instance.runtimeTaskId });
+            const auth = { bindingId: flow.id };
+            const accepted = await this.worker.client.lookup(origin, auth);
+            if (!accepted) return;
+            await this.worker.client.control(accepted.referenceId, { operationId: stopOperationId(accepted.referenceId), op: 'stop' }, auth);
+        } catch (error) {
+            console.error(`[roboflow] worker stop of a phase was not delivered (${error?.code || error?.message}); the phase may still run on the worker`);
+        }
+    }
     async _fail(id, message, status = 'failed') {
         const flow = await this.store.get(id);
         if (!flow || flow.status === 'terminated') return;
@@ -316,6 +412,7 @@ export class RoboFlowService {
                 const runtime = this.runtimeManager.taskStatus?.(robot.id, instance.runtimeTaskId);
                 if (runtime?.startedAt) started.set(instance.id, runtime.startedAt);
                 try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId); } catch { /* Runtime may already be terminal. */ } }
+            await this._stopWorkerPhase(flow, instance);
         }
         await this.store.update(id, current => {
             current.error = message; current.finishedAt = new Date().toISOString();
@@ -707,5 +804,5 @@ export class RoboFlowService {
         this.generationTasks.delete(id);
         return info;
     }
-    async close() { this.closed = true; this.store.closeObservers(); await this.scheduler.close(); clearTimeout(this.presetTimer); this.presetWake?.(); await this.presetReady?.catch(() => {}); this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
+    async close() { this.closed = true; this.wakeReconcile?.(); await this.reconciliation?.catch(() => {}); this.store.closeObservers(); await this.scheduler.close(); clearTimeout(this.presetTimer); this.presetWake?.(); await this.presetReady?.catch(() => {}); this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
 }

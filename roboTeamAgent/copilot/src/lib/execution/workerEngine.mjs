@@ -1,0 +1,639 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import crypto, { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import { buildNativePrompt, buildTaskPrompt } from '../prompts.mjs';
+import * as workspaceSettings from '../config/achillesSettings.mjs';
+import { acquireExecutionLease } from '../storage/workspaceStateLock.mjs';
+import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
+import { ACHILLES_PRIVATE_DIRECTORY_NAME, resolveAchillesWorkspaceRoot } from '../storage/privateDataRoot.mjs';
+import { createSanitizer } from '../skillRuntimePolicy.mjs';
+import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
+import { ALA_BACKENDS, createAlaRecordHandler } from './alaRecordHandler.mjs';
+import { detachReason, isDetach, stopReason } from './abortReasons.mjs';
+import { alaFolderSpecifications, alaSkillFolderArguments } from './alaSkillMounts.mjs';
+import { TERMINAL_STATES, WorkerError, stopOperationId } from '../../../../server/worker-coordinator/worker-client.mjs';
+import { isOriginId } from '../../../../server/worker-coordinator/identities.mjs';
+
+// The worker cutover seam (RoboWork r10 decision M-5). `createWorkerEngine` has alaEngine's public
+// interface (`executeTurn`, `getModel`, `setModel`, `listModels`, `close`) but starts no process:
+// it builds the same native prompt and ALA inputs, admits them to the worker as a version-2
+// admission specification, follows the reference's events and feeds the relayed ALA records
+// through the same record handler alaEngine uses, so the streaming events are identical.
+//
+// A worker failure is an explicit error. There is no fallback to a local ALA run.
+//
+// Detaching is not stopping (plan sections 9 and 10.2): an abort whose reason is a detach reason
+// (RoboTeam shutdown, engine close) stops following and leaves the worker execution running; any
+// other abort is the user's stop and is sent to the worker as a `stop` control.
+//
+// No follow-up bearer credential (decision M-12). An interactive turn opens ONE event subscription
+// with the admission grant; if the stream drops it is reattached from its cursor with the next fresh
+// grant the user supplies (a later verified envelope), never with a stored or reused one. Each user
+// control (stop, message) carries the grant of the request that asked for it. A RoboFlow phase runs
+// on the background row: the coordinator identity and its persisted binding authorize its reads,
+// events and system-initiated stop, with no user grant.
+
+export const SPEC_VERSION = 2;
+const EVENTS_PAGE = 500;
+const POLL_MIN_MS = 200;
+const POLL_MAX_MS = 2000;
+const READ_EVERY_MS = 2000;
+const STOP_WAIT_MS = 20000;
+const TRANSIENT_WAIT_MS = 60000;
+// Reads are idempotent: these answers (a lost reply, an unreachable or refused route, a restarting
+// worker) say nothing about the execution, which keeps running on the worker.
+const TRANSIENT_CODES = new Set(['worker_stream_dropped', 'worker_reply_unknown', 'worker_unreachable', 'worker_route_unavailable', 'worker_coordinator_unavailable', 'runtime_unavailable']);
+const LOOPBACK_MCP = /\bhttps?:\/\/(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])[:/]/iu;
+const EVIDENCE_WAIT_MS = 60000;
+// The conversation records its engine binding against this neutral directory: the robot HOME is
+// the worker's (decision M-10), and no RoboTeam path is bound or sent.
+const WORKER_SESSION_HOME = '/';
+
+function interrupted() {
+    return Object.assign(new Error('Execution interrupted.'), { name: 'AbortError', code: 'ABORT_ERR', exitCode: 130 });
+}
+
+function liveTitle(text) {
+    const first = String(text || '').trim().split(/\r?\n/u)[0].trim();
+    return first ? `Copilot · ${first.length > 120 ? `${first.slice(0, 119)}…` : first}` : 'Copilot turn';
+}
+
+// 22 base64url characters, deterministic in its parts: a retried control is the same operation.
+const controlOperationId = (...parts) => crypto.createHash('sha256').update(`roboteam/control/v1\n${parts.join('\n')}`).digest('base64url').slice(0, 22);
+
+function jwtExpiry(grant) {
+    try { return Number(JSON.parse(Buffer.from(String(grant).split('.')[1], 'base64url').toString('utf8')).exp) * 1000; } catch { return NaN; }
+}
+
+// One event row of `references/<id>/events`, in the contract form `{seq, at, kind, ...}`. The
+// worker's current state-only rows `{sequence, at, type, data}` are read the same way.
+export function normalizeEventRow(row) {
+    const kind = row?.kind ?? row?.type;
+    const data = row?.data && typeof row.data === 'object' ? row.data : {};
+    const sequence = row?.seq ?? row?.sequence;
+    if (kind === 'ala') return { sequence, kind, record: row.record ?? data.record ?? data };
+    if (kind === 'truncated') return { sequence, kind, dropped: row.dropped ?? data.dropped ?? null, reason: row.reason ?? data.reason ?? 'bound' };
+    if (kind === 'state') return { sequence, kind, state: row.state ?? data.state, result: row.result ?? data.result };
+    return { sequence, kind: 'unknown' };
+}
+
+export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, settings = workspaceSettings, interactions, execution = {},
+    webchatLogsBase = '', livePublisher = null, client, provisioner, getRobot, sleep = delay, evidenceWaitMs = EVIDENCE_WAIT_MS,
+    stopWaitMs = STOP_WAIT_MS, transientWaitMs = TRANSIENT_WAIT_MS, pollMinMs = POLL_MIN_MS, pollMaxMs = POLL_MAX_MS } = {}) {
+    if (!sessionStore || !skillCatalog) throw new TypeError('The worker engine requires a session store and Anthropic skill catalog.');
+    if (!client || !provisioner || typeof getRobot !== 'function') throw new TypeError('The worker engine requires a worker client, a robot provisioner and a robot reader.');
+    const active = new Set();
+    let closed = false;
+
+    const usable = (evidence) => {
+        if (evidence?.ok !== true || typeof evidence.grant !== 'string' || !evidence.grant) return false;
+        const expiry = jwtExpiry(evidence.grant);
+        return !Number.isFinite(expiry) || Date.now() < expiry - 1000;
+    };
+
+    // The owner evidence of one turn: a WebChat envelope's verified grant (coordinator-API row), or the
+    // flow binding of a RoboFlow phase (background row). Anything else has no evidence at all.
+    function authorityFor(owner) {
+        if (owner?.coordinator && owner.evidence?.ok === true && owner.evidence.grant) {
+            const base = owner.evidence;
+            return {
+                mode: 'grant', principal: base.principal,
+                // The newest unexpired evidence the user's own envelopes have supplied: a later envelope of
+                // this principal, else the turn's own.
+                best: () => [owner.freshest?.(base.principal), base].find(usable) ?? null,
+            };
+        }
+        const binding = execution.worker;
+        if (binding?.bindingId && isOriginId(binding.originRequestId)) return { mode: 'binding', bindingId: binding.bindingId, originRequestId: binding.originRequestId };
+        throw new WorkerError('owner_evidence_unavailable', 403);
+    }
+
+    // The auth of a request that is not itself a user control: provisioning, admission, a stream
+    // (re)attach, the result read. The newest unexpired grant; a grant lives 30 seconds, so a request
+    // arriving later waits (bounded) for the user's next envelope, then ends with a named error. The
+    // worker keeps running the execution meanwhile.
+    async function grantFor(authority, { signal, wait = evidenceWaitMs } = {}) {
+        if (authority.mode === 'binding') return { bindingId: authority.bindingId };
+        const deadline = Date.now() + wait;
+        for (;;) {
+            const evidence = authority.best();
+            if (evidence) return { grant: evidence.grant };
+            if (Date.now() >= deadline) throw new WorkerError('owner_evidence_expired', 403);
+            if (signal?.aborted) throw signal.reason;
+            await sleep(500);
+        }
+    }
+
+    // A user control carries the grant of the request that asked for it (decision M-12 (b)). A
+    // background-row stop is system-initiated and carries the coordinator identity and the binding.
+    function controlAuth(authority, evidence, { user = true } = {}) {
+        if (usable(evidence)) return { grant: evidence.grant };
+        if (authority.mode === 'binding' && !user) return { bindingId: authority.bindingId };
+        throw new WorkerError('owner_evidence_unavailable', 403);
+    }
+
+    async function admit({ authority, owner, auth, robotId, configRevision, sessionId, specification }) {
+        if (authority.mode === 'binding') {
+            return client.admit({ originRequestId: authority.originRequestId, robotId, configRevision, kind: 'task', specification }, auth);
+        }
+        // The evidence is the newest unexpired one: provisioning may have outlived the first grant.
+        const evidence = { ...owner.evidence, grant: auth.grant };
+        const result = await owner.coordinator.admitTurn(evidence, { conversationId: sessionId, robotId, configRevision, specification });
+        if (result.status === 200) return { referenceId: result.body?.taskRef?.id, state: result.body?.state, originRequestId: result.body?.originRequestId };
+        // A lost reply: the origin is persisted (the shim settles its row on a later envelope); one lookup
+        // with the same grant recovers the reference now.
+        if (result.body?.error === 'worker_reply_unknown' && result.body.originRequestId) {
+            const found = await client.lookup(result.body.originRequestId, auth).catch(() => null);
+            if (found?.referenceId) return { ...found, originRequestId: result.body.originRequestId };
+        }
+        const { error, ...extra } = result.body || {};
+        throw new WorkerError(typeof error === 'string' ? error : 'worker_reply_unknown', result.status || 503, extra);
+    }
+
+    // The one-agent robot's model and effort from the worker's robot configuration.
+    function seedModels(configuration) {
+        const configured = ALA_BACKENDS.includes(configuration?.backend) ? configuration.backend : null;
+        return {
+            configured,
+            models: configured && configuration.settings?.model ? { [configured]: configuration.settings.model } : {},
+            efforts: configured && configuration.settings?.effort ? { [configured]: configuration.settings.effort } : {},
+        };
+    }
+
+    async function modelState(sessionId) {
+        const session = sessionStore.loadSession(sessionId);
+        const robot = await getRobot();
+        const desired = provisioner.desiredConfiguration(robot);
+        let configuration = desired;
+        if (robot.worker?.robotId) {
+            // What the worker reports is authoritative; the old RoboTeam HOME is never read.
+            configuration = (await client.getRobot(robot.worker.robotId, {})).configuration || desired;
+        }
+        const { configured, models, efforts } = seedModels(configuration);
+        const backend = session.engine?.backend || session.modelOverride?.backend || configured;
+        if (session.modelOverride && session.modelOverride.backend === backend) {
+            models[backend] = session.modelOverride.model;
+            if (session.modelOverride.effort) efforts[backend] = session.modelOverride.effort; else delete efforts[backend];
+        }
+        return { session, backend, models, efforts, configuration };
+    }
+
+    async function executeTurn({ sessionId, turnId = randomUUID(), prompt, skillName, context = {}, signal, onEvent, onControl, owner = null } = {}) {
+        const responseStarted = performance.now();
+        if (closed) throw new Error('The worker engine is closed.');
+        if (typeof prompt !== 'string') throw new TypeError('The turn prompt must be text.');
+        context = { ...context,
+            resources: structuredClone(context.resources || context.webchatResources || []),
+            paths: structuredClone(context.paths || context.webchatPaths || []),
+            origin: structuredClone(context.origin || context.webchatOrigin || {}),
+            attachments: structuredClone(context.attachments || []),
+            references: structuredClone(context.references || []) };
+        const controller = new AbortController();
+        const abort = () => controller.abort(signal?.reason ?? stopReason());
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
+        let finish;
+        const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
+        active.add(operation);
+        let release, catalogRelease, turn, live = null, liveResult = null;
+        const phase = (event, extra = {}) => logDiagnostic(workingDir, `turn.${event}`, { sessionId, turnId,
+            elapsedMs: Math.round(performance.now() - responseStarted), worker: true, ...extra });
+        phase('start');
+        const env = { ...process.env };
+        const sanitize = createSanitizer(context, env);
+        const emit = async (event) => {
+            const clean = sanitize(event);
+            live?.event(clean);
+            await onEvent?.(clean);
+        };
+        try {
+            controller.signal.throwIfAborted();
+            const robotName = String(process.env.ROBOTEAM_COPILOT_ROBOT_NAME || '').trim();
+            await emit({ type: 'progress', reason: robotName ? `Connecting to robot "${robotName}"` : 'Connecting to robot' });
+            release = await acquireExecutionLease(workingDir, `session:${sessionId}`, { label: 'workerEngine.executeTurn' });
+            phase('lease.acquired');
+
+            const authority = authorityFor(owner);
+            const session = sessionStore.loadSession(sessionId);
+            if (session.engine?.robotId && session.engine.robotId !== execution.robotId) {
+                throw new Error('This conversation uses another robot. Open it with that robot, or create a new session.');
+            }
+            const cwd = await fs.realpath(session.engine?.cwd || session.cwd || workingDir);
+            const workspaceRoot = resolveAchillesWorkspaceRoot(cwd, env);
+            const stored = settings.readAchillesSettings?.(cwd) || {};
+            const permissionMode = execution.permissions || settings.getPermissionMode?.(cwd) || stored.permissionMode || 'full-access';
+            if (!['ask-for-approval', 'full-access'].includes(permissionMode)) throw new Error('Invalid native permission mode.');
+            // The worker has no control that answers a native permission request yet.
+            if (permissionMode === 'ask-for-approval') throw new WorkerError('worker_permissions_unsupported', 400);
+
+            const ready = await provisioner.ensureReady(await getRobot(), await grantFor(authority, { signal: controller.signal }));
+            const resume = Boolean(session.engine?.backend) && (session.messages || []).some((message) => message.role === 'assistant'
+                && message.status === 'completed' && message.context !== false);
+            const resumeBackend = resume ? session.engine.backend : null;
+            const configured = ALA_BACKENDS.includes(ready.configuration?.backend) ? ready.configuration.backend : null;
+            const requestedBackend = execution.backend || (!resumeBackend && (session.engine?.backend || session.modelOverride?.backend)) || null;
+            const backend = resumeBackend || requestedBackend || configured || null;
+            const { models, efforts } = seedModels(ready.configuration);
+            if (session.modelOverride && backend && session.modelOverride.backend !== backend) {
+                throw new Error('The session model belongs to another coding agent; reset /model or create a new session.');
+            }
+            if (execution.model && backend) {
+                if (execution.model !== models[backend]) delete efforts[backend];
+                models[backend] = execution.model;
+            }
+            if (backend === 'pi' && permissionMode === 'ask-for-approval') {
+                throw new Error('Pi does not support ask-for-approval; select full-access or use Codex, OpenCode or Claude Code.');
+            }
+
+            const snapshot = await skillCatalog.refresh(sessionId, { execution: true, cwd });
+            catalogRelease = snapshot.release;
+            if (snapshot.revision) await emit({ type: 'skill-catalog', revision: snapshot.revision, policyVersion: snapshot.policyVersion });
+            for (const diagnostic of snapshot.diagnostics || []) await emit({ type: 'diagnostic', category: 'skill-catalog', message: `${diagnostic.state}: ${diagnostic.message}` });
+            const skills = snapshot.skills.filter((skill) => skill.enabled);
+            const selected = skillName ? skills.find((skill) => skill.name === skillName) : null;
+            if (skillName && !selected) throw new Error(`Skill "${skillName}" is missing or disabled.`);
+            controller.signal.throwIfAborted();
+            turn = await sessionStore.beginTurn({ sessionId, turnId, text: sanitize(context.rawText || prompt),
+                attachments: sanitize(context.attachments || []), references: sanitize(context.references || []) });
+            phase('turn.begun');
+            live = createLiveTurn(livePublisher, { title: sanitize(liveTitle(context.rawText || prompt)), cwd, owner: context.liveOwner || null,
+                robot: robotName || execution.robotId || '', transcriptUrl: '',
+                abort: () => controller.abort(stopReason()) });
+            await emit({ type: 'turn-started', ...turn, turnId });
+            controller.signal.throwIfAborted();
+            await sessionStore.bindEngine(sessionId, { home: WORKER_SESSION_HOME, cwd, backend, robotId: execution.robotId });
+
+            // The same native prompt and ALA inputs alaEngine builds. The ALA home is the worker's and
+            // no path of the RoboTeam robot home is sent. The task-script context, the task-failure
+            // channel and the human-input channel are RoboTeam-local resources outside the shared
+            // workspace; they are not sent (open issue: worker-owned channels, plan section 9).
+            const nativePrompt = buildNativePrompt({ prompt, resume, selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
+            const args = ['--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
+            if (workspaceRoot !== cwd) args.push('--folder', workspaceRoot);
+            if (snapshot.skillsDirectory) args.push(...await alaSkillFolderArguments({ snapshot, workspaceRoot, cwd }));
+            if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) {
+                if (!path.relative(workspaceRoot, env.ROBOTEAM_HUMAN_INPUT_DIRECTORY).startsWith('..')) {
+                    args.push('--folder', env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, 'as', 'roboflow-human-input');
+                } else {
+                    await emit({ type: 'diagnostic', message: 'The human-input channel is outside the shared workspace and is not available through the worker.' });
+                }
+            }
+            if (execution.workflowExecution && skills.some((skill) => skill.name === 'report-task-blocked')) {
+                await emit({ type: 'diagnostic', message: 'The task-failure channel is not available through the worker; report-task-blocked is not offered.' });
+            }
+            const { folders, ignore } = alaFolderSpecifications(args);
+            const overridden = Boolean(session.modelOverride || execution.model);
+            const specification = {
+                version: SPEC_VERSION,
+                prompt: sanitize(nativePrompt),
+                displayText: sanitize(context.rawText || prompt),
+                sessionId, turnId, cwd, permissions: permissionMode,
+                ...(overridden && backend && models[backend] ? { model: models[backend], effort: efforts[backend] || 'default' } : {}),
+                ...(!resume && requestedBackend ? { codingAgent: requestedBackend } : {}),
+                ...(resume ? { resume: true } : {}),
+                ...(folders.length ? { folders } : {}),
+                ...(ignore.length ? { ignore } : {}),
+                ...(execution.mcpServers ? { mcpServers: execution.mcpServers } : {}),
+                ...(execution.workflowExecution ? { workflowExecution: true } : {}),
+            };
+            // GUI tasks carry the address of a RoboTeam-local MCP server, which the worker cannot reach.
+            if (LOOPBACK_MCP.test(String(execution.mcpServers || ''))) throw new WorkerError('worker_mcp_loopback_unsupported', 400);
+            await emit({ type: 'progress', reason: 'Starting ALA' });
+            controller.signal.throwIfAborted();
+            const admissionAuth = await grantFor(authority, { signal: controller.signal });
+            const admitted = await admit({ authority, owner, auth: admissionAuth,
+                robotId: ready.robotId, configRevision: ready.configRevision, sessionId, specification });
+            const referenceId = admitted.referenceId;
+            phase('admitted', { referenceId });
+
+            let failure = null;
+            const records = createAlaRecordHandler({ backend, permissionMode, efforts, sessionId, sanitize, emit, interactions,
+                context: { ...context, workingDir: cwd, sessionId, turnId, assistantMessageId: turn.assistantMessageId, signal: controller.signal },
+                skillExecution: snapshot.revision ? { revision: snapshot.revision, catalogId: snapshot.catalogId } : null,
+                signal: controller.signal, turnId,
+                // A native permission request cannot be answered through the worker (refused above).
+                reply: () => {},
+                fail: (error) => { failure ||= error; },
+                bindEngine: (agent) => sessionStore.bindEngine(sessionId, { home: WORKER_SESSION_HOME, cwd, backend: agent, robotId: execution.robotId }) });
+
+            // Message controls: the same record alaEngine writes to ALA stdin, as the worker's `message`
+            // control. A user control carries the grant of its own request (`message.owner.evidence`); a
+            // message with none is rejected, never sent under another credential.
+            const writeControl = (message) => {
+                if (message?.type !== 'message' || typeof message.message !== 'string' || controller.signal.aborted) return false;
+                const id = typeof message.id === 'string' && message.id ? message.id : randomUUID();
+                const payload = { message: buildTaskPrompt({ task: message.message }), displayText: message.message, id };
+                void (async () => {
+                    try {
+                        await client.control(referenceId, { operationId: controlOperationId('message', referenceId, id), op: 'message', payload },
+                            controlAuth(authority, message.owner?.evidence));
+                    } catch (error) {
+                        await emit({ type: 'message-rejected', id, error: error?.code || 'worker_control_failed' }).catch(() => {});
+                    }
+                })();
+                return true;
+            };
+            onControl?.(writeControl);
+            live?.attach(writeControl);
+
+            const outcome = await followReference({ referenceId, authority, controller, records, emit, sanitize, phase, openAuth: admissionAuth, getFailure: () => failure });
+            live?.childExited();
+            if (failure) throw failure;
+            controller.signal.throwIfAborted();
+            const outputText = sanitize(String(outcome.outputText ?? '').trimEnd());
+            const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText,
+                { durationMs: Math.max(0, Math.round(performance.now() - responseStarted)), thinkingUrl: '' });
+            phase('completeTurn.done');
+            liveResult = { status: 'finished', code: 0 };
+            return { outputText, session: completed, turnId, userMessageId: turn.userMessageId,
+                assistantMessageId: turn.assistantMessageId, backend: records.backend || backend };
+        } catch (cause) {
+            phase('catch', errorFields(cause));
+            const workerFailure = cause instanceof WorkerError;
+            const detached = controller.signal.aborted && isDetach(controller.signal.reason);
+            const cancelled = !workerFailure && (controller.signal.aborted || cause?.exitCode === 130 || cause?.name === 'AbortError');
+            const error = workerFailure ? cause : cancelled ? (detached ? controller.signal.reason : interrupted())
+                : new Error(sanitize(cause?.message || String(cause)), { cause });
+            if (!cancelled && !workerFailure && cause?.exitCode !== undefined) error.exitCode = cause.exitCode;
+            if (cause?.execution) error.execution = cause.execution;
+            if (cause?.workerClassification) Object.assign(error, { workerClassification: cause.workerClassification, terminationUnverified: cause.terminationUnverified === true });
+            liveResult = cancelled ? { status: 'stopped', reason: detached ? 'detached' : 'stopped' }
+                : { status: 'failed', reason: error.message, ...(Number.isSafeInteger(error.exitCode) ? { code: error.exitCode } : {}) };
+            // A detached turn keeps running on the worker; its record stays pending for reattachment.
+            if (turn && !detached) {
+                error.session = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, error.message,
+                    { status: cancelled ? 'interrupted' : 'failed', durationMs: Math.max(0, Math.round(performance.now() - responseStarted)) });
+                error.turnId = turnId;
+                error.assistantMessageId = turn.assistantMessageId;
+            }
+            throw error;
+        } finally {
+            signal?.removeEventListener('abort', abort);
+            interactions?.cancelTurn(turnId);
+            try {
+                if (catalogRelease) await catalogRelease();
+            } finally {
+                try { if (release) await release(); } finally {
+                    active.delete(operation); finish();
+                    live?.end(liveResult || { status: 'failed', reason: 'The turn ended unexpectedly.' });
+                }
+            }
+        }
+    }
+
+    // Follows the reference until it is terminal, feeding ALA records to the shared handler, then
+    // returns its result. An interactive turn (grant) uses one event subscription opened with the
+    // admission grant; a RoboFlow phase (binding) polls with the coordinator identity and the binding.
+    // A user stop is sent once as a `stop` control; a detach leaves the worker running.
+    async function followReference({ referenceId, authority, controller, records, emit, sanitize, phase, openAuth, getFailure }) {
+        let terminal = false;
+        let terminalRow = null;
+        let stopSent = false;
+        let stopError = null;
+        let stopTimedOut = false;
+        let stopTimer = null;
+        let queued = Promise.resolve();
+        const enqueue = (work) => { queued = queued.then(work); return queued; };
+        const streamAbort = new AbortController();
+        const handled = new WeakSet();
+        const detached = () => controller.signal.aborted && isDetach(controller.signal.reason);
+
+        // The stop control: the stopping request's own grant (user stop), or the coordinator identity
+        // and binding (a RoboFlow phase's system-initiated stop). Sent once, never retried; one that is
+        // not accepted is reported as such, because the execution may then still run.
+        const sendStop = async (reason, { user = true } = {}) => {
+            if (stopSent) return;
+            stopSent = true;
+            try {
+                await client.control(referenceId, { operationId: stopOperationId(referenceId), op: 'stop' },
+                    controlAuth(authority, reason?.owner?.evidence, { user: authority.mode === 'grant' && user }));
+                stopTimer = setTimeout(() => { if (!terminal) { stopTimedOut = true; streamAbort.abort(); } }, stopWaitMs);
+                stopTimer.unref?.();
+            } catch (error) {
+                stopError = new WorkerError(error?.code === 'forbidden' || error?.code === 'owner_evidence_unavailable' ? 'worker_stop_not_authorized' : (error?.code || 'worker_stop_undelivered'),
+                    error?.status || 503, { execution: 'may_still_run' });
+                streamAbort.abort();
+            }
+        };
+
+        // A protocol or handler failure ends the turn, and the execution with it: alaEngine kills its child
+        // here. Best effort, once, with the best credential available; when the stop is not accepted the
+        // error says the execution may still run.
+        const fatal = async (error) => {
+            if (!stopSent) {
+                stopSent = true;
+                try {
+                    const best = authority.mode === 'grant' ? authority.best() : null;
+                    await client.control(referenceId, { operationId: stopOperationId(referenceId), op: 'stop' }, controlAuth(authority, best, { user: false }));
+                } catch { error.execution = 'may_still_run'; }
+            }
+            handled.add(error);
+            throw error;
+        };
+
+        const processRow = async (row) => {
+            if (row.kind === 'state') {
+                if (TERMINAL_STATES.includes(row.state)) { terminal = true; terminalRow = row; }
+            } else if (row.kind === 'ala') {
+                await records.handle(row.record);
+            } else if (row.kind === 'truncated') {
+                // Never silent: the worker bounded the relayed stream here.
+                await emit({ type: 'diagnostic', category: 'worker-stream', message: `Worker stream truncated${row.dropped != null ? ` (${row.dropped} dropped)` : ''}: ${row.reason}` });
+            }
+        };
+
+        // Reads are idempotent and retried with backoff within a bound; a control never is.
+        const reading = async (call) => {
+            const deadline = Date.now() + transientWaitMs;
+            let backoff = pollMinMs;
+            for (;;) {
+                try {
+                    return await call();
+                } catch (error) {
+                    if (!(error instanceof WorkerError) || !(TRANSIENT_CODES.has(error.code) || error.status === 503)) throw error;
+                    if (detached()) throw controller.signal.reason;
+                    if (Date.now() >= deadline) { error.execution = 'may_still_run'; throw error; }
+                    await sleep(backoff);
+                    backoff = Math.min(pollMaxMs, backoff * 2);
+                }
+            }
+        };
+
+        const onAbort = () => {
+            if (detached()) streamAbort.abort();
+            else void sendStop(controller.signal.reason, { user: true });
+        };
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        if (controller.signal.aborted) onAbort();
+
+        try {
+            const result = authority.mode === 'grant'
+                ? await followStream()
+                : await followPolling();
+            return result;
+        } finally {
+            controller.signal.removeEventListener('abort', onAbort);
+            clearTimeout(stopTimer);
+            streamAbort.abort();
+        }
+
+        // ---- interactive turn: one subscription, reattached from the cursor with a fresh grant ----
+        async function followStream() {
+            let after = 0;
+            let auth = openAuth;
+            let backoff = pollMinMs;
+            let lastProgress = Date.now();
+            while (!terminal) {
+                if (detached()) throw controller.signal.reason;
+                if (stopError) throw stopError;
+                if (stopTimedOut) throw interrupted();
+                if (getFailure()) await fatal(getFailure());
+                if (!auth || (auth.grant && !usable({ ok: true, grant: auth.grant }))) {
+                    try { auth = await grantFor(authority, { signal: streamAbort.signal }); }
+                    catch (error) {
+                        if (detached()) throw controller.signal.reason;
+                        if (stopError || stopTimedOut) continue;
+                        if (error instanceof WorkerError) error.execution = 'may_still_run';
+                        throw error;
+                    }
+                }
+                const opened = auth;
+                auth = null;
+                try {
+                    const lines = await client.subscribe(referenceId, { after }, opened, { signal: streamAbort.signal });
+                    for await (const raw of lines) {
+                        lastProgress = Date.now();
+                        backoff = pollMinMs;
+                        if (raw?.gap) {
+                            await emit({ type: 'diagnostic', category: 'worker-stream', message: 'Worker stream truncated: events before the retained window were dropped.' });
+                            after = Math.max(after, raw.snapshotSequence ?? after);
+                            continue;
+                        }
+                        const row = normalizeEventRow(raw);
+                        if (Number.isSafeInteger(row.sequence)) after = Math.max(after, row.sequence);
+                        try { await enqueue(() => processRow(row)); } catch (error) { await fatal(error); }
+                        if (getFailure()) await fatal(getFailure());
+                        if (terminal) break;
+                    }
+                } catch (error) {
+                    if (handled.has(error)) throw error;
+                    if (detached()) throw controller.signal.reason;
+                    if (stopError || stopTimedOut) continue;
+                    if (!(TRANSIENT_CODES.has(error?.code) || error?.status === 503)) throw error;
+                    if (Date.now() - lastProgress >= transientWaitMs) {
+                        const failed = error instanceof WorkerError ? error : new WorkerError(error.code || 'worker_stream_dropped', 503);
+                        failed.execution = 'may_still_run';
+                        throw failed;
+                    }
+                }
+                if (terminal) break;
+                // The stream ended or dropped before a terminal state: reattach from the cursor, within a bound.
+                if (Date.now() - lastProgress >= transientWaitMs) throw new WorkerError('worker_stream_ended', 503, { execution: 'may_still_run' });
+                await sleep(backoff);
+                backoff = Math.min(pollMaxMs, backoff * 2);
+            }
+            try { await queued; } catch (error) { await fatal(error); }
+            if (getFailure()) await fatal(getFailure());
+            if (terminalRow?.result && typeof terminalRow.result === 'object') return outcomeOf({ state: terminalRow.state, result: terminalRow.result }, sanitize);
+            // The result is a read: it needs a fresh grant, so it waits for the user's next envelope. The
+            // execution is finished and its result stays retrievable when the user comes back.
+            for (;;) {
+                let snapshot;
+                try {
+                    snapshot = await reading(async () => client.read(referenceId, await grantFor(authority, { signal: streamAbort.signal })));
+                } catch (error) {
+                    if (error instanceof WorkerError && error.code === 'owner_evidence_expired') error.execution = 'finished';
+                    throw error;
+                }
+                if (snapshot.state === 'stopping' || !snapshot.result) { await sleep(backoff); backoff = Math.min(pollMaxMs, backoff * 2); continue; }
+                return outcomeOf(snapshot, sanitize);
+            }
+        }
+
+        // ---- RoboFlow phase: the coordinator identity and the persisted binding authorize every read ----
+        async function followPolling() {
+            const auth = { bindingId: authority.bindingId };
+            let after = 0;
+            let wait = pollMinMs;
+            let lastRead = 0;
+            for (;;) {
+                if (detached()) throw controller.signal.reason;
+                if (stopError) throw stopError;
+                if (stopTimedOut && !terminal) throw interrupted();
+                if (getFailure()) await fatal(getFailure());
+
+                const page = await reading(async () => client.events(referenceId, { after, limit: EVENTS_PAGE }, auth));
+                let progressed = false;
+                if (page.gap) {
+                    await emit({ type: 'diagnostic', category: 'worker-stream', message: 'Worker stream truncated: events before the retained window were dropped.' });
+                    after = page.snapshotSequence;
+                    progressed = true;
+                } else {
+                    for (const raw of page.events || []) {
+                        const row = normalizeEventRow(raw);
+                        try { await enqueue(() => processRow(row)); } catch (error) { await fatal(error); }
+                        progressed = true;
+                    }
+                    after = page.nextAfter ?? after;
+                }
+                try { await queued; } catch (error) { await fatal(error); }
+                if (getFailure()) await fatal(getFailure());
+                if (!terminal && Date.now() - lastRead >= READ_EVERY_MS) {
+                    lastRead = Date.now();
+                    const snapshot = await reading(async () => client.read(referenceId, auth));
+                    if (TERMINAL_STATES.includes(snapshot.state)) terminal = true;
+                }
+                if (terminal && !progressed) {
+                    const snapshot = await reading(async () => client.read(referenceId, auth));
+                    if (snapshot.state === 'stopping' || !snapshot.result) { await sleep(wait); wait = Math.min(pollMaxMs, wait * 2); continue; }
+                    return outcomeOf(snapshot, sanitize);
+                }
+                if (progressed) wait = pollMinMs;
+                else { await sleep(wait); wait = Math.min(pollMaxMs, wait * 2); }
+            }
+        }
+    }
+
+    function outcomeOf(snapshot, sanitize) {
+        const result = snapshot.result || {};
+        const classification = result.classification ?? snapshot.state;
+        if (snapshot.state === 'completed') return { outputText: result.outputText ?? '' };
+        if (snapshot.state === 'cancelled' || snapshot.state === 'interrupted' || snapshot.state === 'paused' || snapshot.state === 'human-input') throw interrupted();
+        const reason = typeof result.reason === 'string' ? result.reason : null;
+        const error = new Error(sanitize(`Worker execution failed${reason ? ` (${reason})` : ''}.${result.outputText ? `\n${String(result.outputText).slice(-2048)}` : ''}`));
+        error.exitCode = 1;
+        error.workerClassification = classification;
+        // A quarantined process tree is a failure with a recorded reason, never a completion.
+        if (reason === 'termination_unverified') error.terminationUnverified = true;
+        throw error;
+    }
+
+    return Object.freeze({
+        executeTurn,
+        async getModel({ sessionId } = {}) {
+            const info = await modelState(sessionId);
+            return { backend: info.backend, model: info.backend ? info.models[info.backend] || null : null,
+                effort: info.backend ? info.efforts[info.backend] || null : null };
+        },
+        async setModel({ sessionId, backend, model, effort = null } = {}) {
+            const current = await modelState(sessionId);
+            if (backend !== current.backend) throw new Error('The conversation backend changed; reload /model.');
+            await sessionStore.updateSession(sessionId, (session) => {
+                if (model === null) delete session.modelOverride;
+                else session.modelOverride = { backend, model, effort };
+            });
+            return this.getModel({ sessionId });
+        },
+        // The model catalog needs the coding-agent binaries and the robot HOME, both the worker's.
+        async listModels() {
+            throw new WorkerError('worker_model_listing_unavailable', 501);
+        },
+        async close() {
+            closed = true;
+            const operations = [...active];
+            for (const operation of operations) operation.controller.abort(detachReason());
+            await Promise.all(operations.map((operation) => operation.done));
+        },
+    });
+}

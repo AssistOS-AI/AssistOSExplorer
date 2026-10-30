@@ -9,6 +9,7 @@ import { resolveAlaInstallation } from '../lib/execution/alaInstallation.mjs';
 import { resolveSkillCatalogRoots } from '../lib/skills/cliSkillRoots.mjs';
 import { discoverTaskSkills } from '../../../server/skill-descriptor.mjs';
 import { createAlaEngine } from '../lib/execution/alaEngine.mjs';
+import { workerModeSelected } from '../lib/execution/engineSelection.mjs';
 import * as settings from '../lib/config/achillesSettings.mjs';
 import { ConversationSessionStore } from '../lib/storage/conversationSessionStore.mjs';
 import { buildTaskCompletions, readWorkspaceTasks } from '../lib/tasks/workspaceTasks.mjs';
@@ -82,7 +83,9 @@ export async function toAutocompleteCatalog(options = {}) {
 
 export async function loadAutocompleteCatalog(options = {}) {
     const workingDir = options.dir || process.env.WORKSPACE_PATH || process.cwd();
-    const installation = options.installation || await resolveAlaInstallation();
+    // The worker owns ALA when ROBOTEAM_WORKER_COORDINATOR_BASE is set; no local installation or engine then.
+    const worker = workerModeSelected();
+    const installation = options.installation || (worker ? null : await resolveAlaInstallation());
     const skillCatalog = await discoverCatalog(workingDir, { ...options, installation });
     const storedSessions = new ConversationSessionStore({ workingDir });
     const preview = options.freshSession && !options.sessionId
@@ -91,8 +94,8 @@ export async function loadAutocompleteCatalog(options = {}) {
     const modelSubCommands = [{ name: 'default', description: 'Use the native backend default', argCompletions: [] }];
     let modelError;
     const execution = options.execution || (options.robotId ? { robotId: options.robotId } : {});
-    const engine = options.engine || createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, installation, execution,
-        modelCache: options.modelCache });
+    const engine = options.engine || (worker ? { listModels: async () => { throw new Error('Model listing is not available through the worker.'); }, close: async () => {} } : createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, installation, execution,
+        modelCache: options.modelCache }));
     try {
         const current = options.sessionId ? storedSessions.loadSession(options.sessionId)
             : preview || await storedSessions.ensureCurrentSession();

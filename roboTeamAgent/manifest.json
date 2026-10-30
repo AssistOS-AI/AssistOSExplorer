@@ -7,7 +7,8 @@
   "agent": "exec sh /code/scripts/startAgent.sh",
   "cli": "node /code/server/robot-cli.mjs",
   "enable": [
-    "soul-gateway no-wait"
+    "soul-gateway no-wait",
+    "robo-work global"
   ],
   "webchat": {
     "auth": "static",
@@ -65,6 +66,57 @@
         ]
       },
       {
+        "path": "/base-agent-additional-server/roboTeamAgent/3001/api/robots/*",
+        "access": "authenticated",
+        "delegations": [
+          {
+            "key": "providerAdmission",
+            "targetAgentId": "agent:./robo-work",
+            "tools": [
+              "__coordinator_admission__"
+            ],
+            "scopes": [
+              "execution:owner"
+            ],
+            "ttlSeconds": 30
+          }
+        ]
+      },
+      {
+        "path": "/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/flows",
+        "access": "authenticated",
+        "delegations": [
+          {
+            "key": "providerAdmission",
+            "targetAgentId": "agent:./robo-work",
+            "tools": [
+              "__coordinator_admission__"
+            ],
+            "scopes": [
+              "execution:owner"
+            ],
+            "ttlSeconds": 30
+          }
+        ]
+      },
+      {
+        "path": "/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/schedules/*",
+        "access": "authenticated",
+        "delegations": [
+          {
+            "key": "providerAdmission",
+            "targetAgentId": "agent:./robo-work",
+            "tools": [
+              "__coordinator_admission__"
+            ],
+            "scopes": [
+              "execution:owner"
+            ],
+            "ttlSeconds": 30
+          }
+        ]
+      },
+      {
         "path": "/base-agent-additional-server/roboTeamAgent/3001/*",
         "access": "authenticated"
       }
@@ -85,7 +137,10 @@
         "ROBOTEAM_OPENCODE_VERSION",
         "ROBOTEAM_PI_VERSION",
         "ROBOTEAM_CLAUDE_VERSION",
-        "ROBOTEAM_WORKER_COORDINATOR_BASE"
+        {
+          "name": "ROBOTEAM_WORKER_COORDINATOR_BASE",
+          "value": "/base-agent-additional-server/robo-work/7000"
+        }
       ]
     }
   },
