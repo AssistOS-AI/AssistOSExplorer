@@ -107,7 +107,13 @@ export function createRobotStore({ root }) {
         remove(robotId) {
             const where = paths(robotId);
             if (!where.base.startsWith(`${robotsRoot}${path.sep}`)) throw new Error('Refusing to remove outside the robot store');
-            fs.rmSync(where.base, { recursive: true, force: true });
+            // Never follow: a link in place of the robot directory is removed as a link, and rmSync unlinks every link below it
+            // (HOME is robot-writable) without entering its target. Nothing outside robots/<id> is touched.
+            let stat = null;
+            try { stat = fs.lstatSync(where.base); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+            if (stat === null) return;
+            if (stat.isSymbolicLink() || !stat.isDirectory()) fs.unlinkSync(where.base);
+            else fs.rmSync(where.base, { recursive: true, force: true });
         },
 
         exists(robotId) {

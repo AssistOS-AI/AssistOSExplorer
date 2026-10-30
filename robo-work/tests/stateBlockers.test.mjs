@@ -301,15 +301,14 @@ test('a quarantine recorded on a normal end path refuses the owning robot only, 
     assert.deepEqual([robot.ready, robot.reason], [false, 'resource_quarantined']);
     assert.equal(store.admit(context, admitRequest(other, {}, context)).status, 'admitted', 'another robot still admits');
     assert.equal(store.getWorkerStatus().degraded, false, 'an owned quarantine does not degrade the worker');
-    // an accepted deletion stays deleting under the quarantine
-    const deleteOp = newId();
-    store.beginDelete(context, { operationId: deleteOp, robotId: fixture.robotId, expectedRevision: 1 });
-    expectCode(assert, () => store.completeDelete(context, { operationId: deleteOp }), 'resource_quarantined');
-    assert.deepEqual([store.getRobot(context, { robotId: fixture.robotId }).lifecycle, store.getRobot(context, { robotId: fixture.robotId }).reason], ['deleting', 'resource_quarantined']);
+    // M-29: a robot with a quarantined blocker cannot be deleted (robot_busy) until the quarantine is cleared.
+    expectCode(assert, () => store.beginDelete(context, { operationId: newId(), robotId: fixture.robotId, expectedRevision: 1 }), 'robot_busy');
     const clearOp = newId();
     const cleared = store.clearQuarantine(ADMIN(), { operationId: clearOp, resourceId: blocker, attestation: EVIDENCE });
     assert.deepEqual(cleared, { operationId: clearOp, type: 'clear_quarantine', resourceId: blocker, state: 'released_by_operator' });
     assert.equal(store.getResource({ resourceId: blocker }).state, 'released_by_operator');
+    const deleteOp = newId();
+    store.beginDelete(context, { operationId: deleteOp, robotId: fixture.robotId, expectedRevision: 1 });
     assert.equal(store.completeDelete(context, { operationId: deleteOp }).status, 'succeeded');
     assert.equal(store.getRobot(context, { robotId: fixture.robotId }).lifecycle, 'deleted');
     store.close();

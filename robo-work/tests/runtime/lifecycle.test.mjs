@@ -8,7 +8,7 @@ import { createLifecycleDriver } from '../../server/runtime/lifecycleDriver.mjs'
 import { runSandboxPreflight } from '../../server/runtime/preflight.mjs';
 import { createProductionRuntime } from '../../server/runtime/productionRuntime.mjs';
 import { createRobotStore, managedAlaConfig } from '../../server/runtime/robotStore.mjs';
-import { LIMITS, WORKSPACE, expectCode, makeTempDir, newId, openStore, robotConfig, syntheticContext } from '../helpers/synthetic.mjs';
+import { LIMITS, WORKSPACE, admitRequest, expectCode, makeTempDir, newId, openStore, robotConfig, syntheticContext } from '../helpers/synthetic.mjs';
 
 // The production runtime adapter, the robot storage (decision M-10) and the preparation driver, over real files and a
 // real S1 store (state evidence plus plain filesystem checks; no sandbox is started).
@@ -146,4 +146,71 @@ test('preflight: missing tools and unreadable masks fail it with a reason', () =
     const unreadable = runSandboxPreflight({ access: () => {}, readMasks: () => { throw Object.assign(new Error('x'), { code: 'sandbox_unavailable' }); } });
     assert.equal(unreadable.ok, false);
     assert.match(unreadable.reason, /sandbox_unavailable/u);
+});
+
+// ---- M-29: robot deletion ---------------------------------------------------------------------------------------------------
+
+test('M-29 delete: busy while an execution, a pending create or a quarantined blocker exists; then HOME, sessions and config are removed without following links', async (t) => {
+    const { store, driver, robots, root } = rig(t);
+    const { robotId } = store.beginProvision(lifecycle(), { operationId: newId(), name: 'R', configuration: robotConfig({}, 'codex') });
+    expectCode(assert, () => store.beginDelete(lifecycle(), { operationId: newId(), robotId, expectedRevision: 0 }), 'robot_busy');
+    await driver.tick();
+    const where = robots.paths(robotId);
+    // Content of the robot, including a link out of HOME and a read-only file.
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'keep.txt'), 'must survive');
+    fs.symlinkSync(outside, path.join(where.home, 'link-out'));
+    fs.mkdirSync(path.join(where.home, '.codex'));
+    fs.writeFileSync(path.join(where.home, '.codex', 'auth.json'), '{}', { mode: 0o400 });
+    fs.writeFileSync(path.join(where.sessions, 'x.jsonl'), '');
+
+    // An execution (queued is enough) holds the robot.
+    const alice = syntheticContext({ originNamespace: 'coordinator:agent:fixtures/roboteam', originKey: 'owner:user:alice', ownerId: 'user:alice', scope: 'scope-co-alice', robotOwnerId: ROBOTS });
+    const admitted = store.admit(alice, admitRequest(robotId, { specification: { prompt: 'p' } }, alice));
+    expectCode(assert, () => store.beginDelete(lifecycle(), { operationId: newId(), robotId, expectedRevision: 1 }), 'robot_busy');
+    store.beginAttemptEnd(syntheticContext({ scope: 'scope-adapter' }), { executionId: admitted.executionId, attemptId: admitted.attemptId, expectedState: 'queued', outcome: { classification: 'cancelled' } });
+    // A quarantined blocker holds a robot too (the production runtime cannot prove absence, so a quarantine is cleared by an operator only).
+    const second = store.beginProvision(lifecycle(), { operationId: newId(), name: 'R2', configuration: robotConfig({}, 'codex') }).robotId;
+    await driver.tick();
+    const blocker = store.reserveResource({ robotId: second, kind: 'mount', locator: { m: 1 } });
+    store.commitResource({ resourceId: blocker.resourceId, identity: { mountId: 1 } });
+    store.quarantineResource({ resourceId: blocker.resourceId, generationId: store.generationId });
+    expectCode(assert, () => store.beginDelete(lifecycle(), { operationId: newId(), robotId: second, expectedRevision: 1 }), 'robot_busy');
+
+    const operationId = newId();
+    const request = { operationId, robotId, expectedRevision: 1 };
+    const receipt = store.beginDelete(lifecycle(), request);
+    assert.equal(receipt.status, 'accepted');
+    assert.deepEqual(store.beginDelete(lifecycle(), request), receipt, 'the same operation after a lost reply: the same receipt');
+    await driver.tick();
+    assert.equal(robots.exists(robotId), false, 'the robot directory is gone');
+    assert.equal(fs.existsSync(where.home), false);
+    assert.equal(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8'), 'must survive', 'a link in HOME is removed, never followed');
+    assert.equal(store.getOperationOutcome(lifecycle(), { operationId }).status, 'succeeded');
+    assert.equal(store.getRobot(lifecycle(), { robotId }).lifecycle, 'deleted');
+    assert.deepEqual(store.beginDelete(lifecycle(), request), receipt, 'and after completion');
+
+    // Deleting an already-deleted robot is a success under a new operation, completed at once, and the driver finds nothing to do.
+    const again = newId();
+    assert.equal(store.beginDelete(lifecycle(), { operationId: again, robotId, expectedRevision: 1 }).status, 'accepted');
+    assert.equal(store.getOperationOutcome(lifecycle(), { operationId: again }).status, 'succeeded');
+    assert.deepEqual(store.listPendingCompletions(), []);
+    await driver.tick();
+});
+
+test('M-29 robotStore.remove: a link in place of the robot directory is unlinked, and nothing outside robots/<id> is touched', (t) => {
+    const root = makeTempDir(t);
+    const robots = createRobotStore({ root });
+    const id = 'AAAAAAAAAAAAAAAAAAAAAA';
+    fs.mkdirSync(robots.robotsRoot, { recursive: true });
+    const outside = path.join(root, 'elsewhere');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'f'), 'x');
+    fs.symlinkSync(outside, robots.paths(id).base);
+    robots.remove(id);
+    assert.equal(fs.existsSync(robots.paths(id).base), false);
+    assert.equal(fs.readFileSync(path.join(outside, 'f'), 'utf8'), 'x');
+    robots.remove(id);
+    assert.throws(() => robots.remove('../escape'), TypeError);
 });

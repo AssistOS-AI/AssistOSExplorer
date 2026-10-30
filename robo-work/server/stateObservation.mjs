@@ -44,7 +44,9 @@ export const OUTPUT_EVENT_TYPES = Object.freeze(['ala', 'truncated']);
 // options} (the human-input channel) and `human-input-answered` {requestId, answer} (the `answer` control). Each is recorded durably
 // before the channel replies or the answer is acknowledged; they are bounded by CHANNEL_EVENT_MAX_BYTES, one request per attempt.
 export const CHANNEL_EVENT_TYPES = Object.freeze(['task-failed', 'human-input-request']);
-export const CHANNEL_EVENT_MAX_BYTES = 40 * 1024;
+// 200 KiB holds the worst case of the largest answer: 32,000 characters that JSON escapes to six bytes each (192,000) plus the envelope.
+export const ANSWER_MAX_CHARS = 32000;
+export const CHANNEL_EVENT_MAX_BYTES = 200 * 1024;
 
 export const OBSERVATION_SCHEMA_SQL = `
 CREATE TABLE reference_event (

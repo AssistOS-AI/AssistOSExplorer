@@ -17,7 +17,7 @@ import {
     isActiveBinding, isBindingId, isOwnerKey, moveBinding
 } from './stateBindings.mjs';
 import {
-    CONTROL_OPS, EVENTS_MAX_LIMIT, CHANNEL_EVENT_TYPES, appendChannelEvent, appendOutputEvents, findChannelEvent, appendStateEvent, countControls, getControl, hasPendingStop, insertControl, insertFenceStop,
+    ANSWER_MAX_CHARS, CONTROL_OPS, EVENTS_MAX_LIMIT, CHANNEL_EVENT_TYPES, appendChannelEvent, appendOutputEvents, findChannelEvent, appendStateEvent, countControls, getControl, hasPendingStop, insertControl, insertFenceStop,
     listEvents, listPendingControls, markControlApplied, readCursor, referenceForExecution
 } from './stateObservation.mjs';
 import {
@@ -310,15 +310,26 @@ class WorkerState {
             // A retry replays the recorded receipt before current lifecycle is consulted.
             const existing = this.#findReceipt(db, context, operationId, 'delete', requestDigest);
             if (existing) return existing;
-            const robot = this.#ownedRobot(db, context, robotId);
-            if (robot.lifecycle === 'deleting') fail('robot_busy');
-            if (robot.revision !== expectedRevision) fail('revision_conflict');
-            if (this.#hasActiveWork(db, robotId) || hasRetainedForRobot(db, robotId)) fail('robot_busy');
+            const robot = db.prepare('SELECT * FROM robot WHERE id = ?').get(robotId);
+            if (!robot || robot.owner_id !== robotOwnerOf(context)) fail('not_found');
             this.#checkCapacity(db, 'receipt', this.#limits.receipts);
             const now = this.#now();
+            // M-29: deleting an already-deleted robot is a success with its own recorded (already completed) operation.
+            if (robot.lifecycle === 'deleted') {
+                db.prepare("INSERT INTO completion (scope, operation_id, op_type, robot_id, status, reason, updated_at) VALUES (?, ?, 'delete', ?, 'succeeded', NULL, ?)")
+                    .run(context.scope, operationId, robotId, now);
+                const done = { operationId, type: 'delete', robotId, baseRevision: robot.revision, status: 'accepted' };
+                return this.#recordReceipt(db, context, { operationId, type: 'delete', robotId, requestDigest, response: done });
+            }
+            if (robot.lifecycle === 'deleting') fail('robot_busy');
+            if (robot.revision !== expectedRevision) fail('revision_conflict');
+            // M-29: busy while any execution, pending create or configure, retained resource or quarantined blocker exists.
+            if (robot.lifecycle === 'provisioning' || this.#hasPreparation(db, robotId) || this.#hasActiveWork(db, robotId)
+                || hasRetainedForRobot(db, robotId) || quarantinedForRobot(db, robotId).length > 0) {
+                fail('robot_busy');
+            }
             db.prepare("UPDATE robot SET lifecycle = 'deleting', attested_generation = NULL, delete_scope = ?, delete_operation_id = ?, updated_at = ? WHERE id = ?")
                 .run(context.scope, operationId, now, robotId);
-            db.prepare("UPDATE preparation SET status = 'cancelling' WHERE robot_id = ?").run(robotId);
             db.prepare("INSERT INTO completion (scope, operation_id, op_type, robot_id, status, reason, updated_at) VALUES (?, ?, 'delete', ?, 'pending', NULL, ?)")
                 .run(context.scope, operationId, robotId, now);
             const response = { operationId, type: 'delete', robotId, baseRevision: robot.revision, status: 'accepted' };
@@ -752,8 +763,9 @@ class WorkerState {
             // M-14: the answer to a human-input question, `{requestId, answer}`.
             exactObject(request.payload, ['requestId', 'answer']);
             if (typeof request.payload.requestId !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/u.test(request.payload.requestId)) fail('invalid_request');
-            if (typeof request.payload.answer !== 'string' || request.payload.answer.trim().length === 0 || request.payload.answer.length > 8000) fail('invalid_request');
+            if (typeof request.payload.answer !== 'string' || request.payload.answer.trim().length === 0 || request.payload.answer.length > ANSWER_MAX_CHARS) fail('invalid_request');
             payload = { requestId: request.payload.requestId, answer: request.payload.answer };
+            if (byteLength(payload) > this.#limits.requestBytes) fail('invalid_request');
         } else if (request.payload !== undefined) {
             fail('invalid_request');
         }

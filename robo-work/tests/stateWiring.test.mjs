@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
     EVENTS_PAGE_MAX_BYTES, OUTPUT_EVENTS_PER_REFERENCE, OUTPUT_EVENT_MAX_BYTES, RESERVED_MARKER_SLOTS, TRUNCATED_EVENTS_PER_REFERENCE
 } from '../server/stateObservation.mjs';
+import { ANSWER_MAX_CHARS, CHANNEL_EVENT_MAX_BYTES } from '../server/stateObservation.mjs';
 import { SPECIFICATION_VERSION_2, validateSpecificationV2 } from '../server/stateProtocol.mjs';
 import {
     LIMITS, WORKSPACE, admitRequest, expectCode, makeTempDir, newId, openStore, readyRobot, robotConfig, syntheticContext
@@ -242,12 +243,12 @@ test('channel events: one per kind per attempt, durable, bounded; a different se
     assert.deepEqual(store.recordChannelEvent({ ...ids, type: 'human-input-request', data: { requestId: REQUEST_ID, question: 'Ship it?', options: ['yes', 'no', 'later'] } }), { ...asked, duplicate: true });
     expectCode(assert, () => store.recordChannelEvent({ ...ids, type: 'human-input-request', data: { requestId: 'other0123456789abcdefg', question: 'x', options: [] } }), 'operation_conflict');
     store.recordChannelEvent({ ...ids, type: 'task-failed', data: { message: 'blocked' } });
-    expectCode(assert, () => store.recordChannelEvent({ ...ids, type: 'task-failed', data: { message: 'x'.repeat(50 * 1024) } }), 'operation_conflict');
+    expectCode(assert, () => store.recordChannelEvent({ ...ids, type: 'task-failed', data: { message: 'x'.repeat(250 * 1024) } }), 'operation_conflict');
     expectCode(assert, () => store.recordChannelEvent({ ...ids, type: 'ala', data: {} }), 'invalid_request');
     const rows = store.listReferenceEvents(owner, { referenceId: admitted.reference.id, after: 0, limit: 100 }).events;
     assert.deepEqual(rows.map((row) => row.type), ['state', 'state', 'human-input-request', 'task-failed']);
     const big = running(store, robotId, user('bob'));
-    expectCode(assert, () => store.recordChannelEvent({ ...big.ids, type: 'task-failed', data: { message: 'x'.repeat(50 * 1024) } }), 'invalid_request');
+    expectCode(assert, () => store.recordChannelEvent({ ...big.ids, type: 'task-failed', data: { message: 'x'.repeat(250 * 1024) } }), 'invalid_request');
     const queued = store.admit(owner, admitRequest(robotId, { specification: spec2() }, owner));
     expectCode(assert, () => store.recordChannelEvent({ executionId: queued.executionId, attemptId: queued.attemptId, type: 'task-failed', data: { message: 'x' } }), 'operation_conflict');
 });
@@ -262,18 +263,23 @@ test('answer: owner-only, only after the attempt ended human-input, recorded onc
     expectCode(assert, () => store.controlReference(user('mallory'), answerRequest(referenceId)), 'not_found');
     expectCode(assert, () => store.controlReference(syntheticContext({ originKey: 'user:root', ownerId: 'user:root', scope: 'scope-root', robotOwnerId: ROBOTS, administrator: true }), answerRequest(referenceId)), 'forbidden');
     expectCode(assert, () => store.controlReference(alice, answerRequest(referenceId, { payload: { requestId: 'unknown0123456789abcd', answer: 'yes' } })), 'not_found');
-    for (const payload of [{ requestId: REQUEST_ID }, { requestId: REQUEST_ID, answer: '' }, { requestId: REQUEST_ID, answer: 'x'.repeat(8001) }, { requestId: 'short', answer: 'yes' }, { requestId: REQUEST_ID, answer: 'yes', extra: 1 }]) {
+    for (const payload of [{ requestId: REQUEST_ID }, { requestId: REQUEST_ID, answer: '' }, { requestId: REQUEST_ID, answer: 'x'.repeat(ANSWER_MAX_CHARS + 1) }, { requestId: 'short', answer: 'yes' }, { requestId: REQUEST_ID, answer: 'yes', extra: 1 }]) {
         expectCode(assert, () => store.controlReference(alice, answerRequest(referenceId, { payload })), 'invalid_request');
     }
-    const first = answerRequest(referenceId);
+    // M-14 (ii): the largest answer is 32,000 characters; it fits the request bound, the control row and the event, even in the worst
+    // JSON expansion (every character escaped to six bytes) and with four-byte characters.
+    assert.equal(ANSWER_MAX_CHARS, 32000);
+    assert.ok(Buffer.byteLength(JSON.stringify({ requestId: REQUEST_ID, answer: '\u0001'.repeat(ANSWER_MAX_CHARS) })) < CHANNEL_EVENT_MAX_BYTES);
+    assert.ok(Buffer.byteLength(JSON.stringify({ requestId: REQUEST_ID, answer: '😀'.repeat(ANSWER_MAX_CHARS / 2) })) < CHANNEL_EVENT_MAX_BYTES);
+    const first = answerRequest(referenceId, { payload: { requestId: REQUEST_ID, answer: 'y'.repeat(ANSWER_MAX_CHARS) } });
     const receipt = store.controlReference(alice, first);
     assert.deepEqual(receipt, { operationId: first.operationId, op: 'answer', outcome: 'accepted', delivery: 'applied', state: 'human-input', requestId: REQUEST_ID });
     assert.deepEqual(store.controlReference(alice, first), receipt, 'the same operation: the recorded receipt');
-    const again = store.controlReference(alice, answerRequest(referenceId));
+    const again = store.controlReference(alice, answerRequest(referenceId, { payload: { requestId: REQUEST_ID, answer: 'y'.repeat(ANSWER_MAX_CHARS) } }));
     assert.equal(again.outcome, 'accepted', 'the same answer under another operation ID: the same receipt');
     expectCode(assert, () => store.controlReference(alice, answerRequest(referenceId, { payload: { requestId: REQUEST_ID, answer: 'no' } })), 'operation_conflict');
     expectCode(assert, () => store.controlReference(alice, { ...first, payload: { requestId: REQUEST_ID, answer: 'no' } }), 'operation_conflict');
     const rows = store.listReferenceEvents(alice, { referenceId, after: 0, limit: 100 }).events;
-    assert.deepEqual(rows.filter((row) => row.type === 'human-input-answered').map((row) => row.data), [{ requestId: REQUEST_ID, answer: 'yes' }], 'a single answered event');
+    assert.deepEqual(rows.filter((row) => row.type === 'human-input-answered').map((row) => row.data), [{ requestId: REQUEST_ID, answer: 'y'.repeat(ANSWER_MAX_CHARS) }], 'a single answered event');
     assert.deepEqual(store.takePendingControls({ ...ids }), [], 'an answer is applied, not pending delivery');
 });

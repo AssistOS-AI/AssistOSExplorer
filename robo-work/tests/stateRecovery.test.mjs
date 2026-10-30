@@ -319,19 +319,20 @@ test('an accepted deletion stays deleting through rollover and completes once it
     store.close();
 });
 
-test('preparation completion racing delete and rollover is settled exactly once', (t) => {
+test('preparation completion racing a rollover is settled exactly once; a delete is busy while the creation is pending and works after the rollover', (t) => {
     const dir = makeTempDir(t);
     const store = openStore(dir);
     const context = syntheticContext();
     const provision = { operationId: newId(), name: 'p', configuration: robotConfig() };
     const { robotId } = store.beginProvision(context, provision);
-    const deleteOp = newId();
-    store.beginDelete(context, { operationId: deleteOp, robotId, expectedRevision: 0 });
+    expectCode(assert, () => store.beginDelete(context, { operationId: newId(), robotId, expectedRevision: 0 }), 'robot_busy');
     const old = store.generationId;
     const rolled = store.beginGenerationRecovery(old);
-    // the cancelled preparation was interrupted by the rollover; completion cannot publish it
+    // the preparation was interrupted by the rollover; completion cannot publish it
     expectCode(assert, () => store.completePreparation(context, { operationId: provision.operationId, outcome: 'succeeded' }), 'stale_generation');
     assert.equal(store.getRobot(context, { robotId }).revision, 0);
+    const deleteOp = newId();
+    store.beginDelete(context, { operationId: deleteOp, robotId, expectedRevision: 0 });
     expectCode(assert, () => store.completeDelete(context, { operationId: deleteOp }), 'robot_busy');
     store.releaseResource({ resourceId: rolled.unsettledBlockers[0].resourceId, generationId: old });
     assert.equal(store.completeDelete(context, { operationId: deleteOp }).status, 'succeeded');

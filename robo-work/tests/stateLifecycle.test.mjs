@@ -255,7 +255,10 @@ test('deletion closes admission, blocks configure, needs released blockers and r
     // a retry of the completed deletion returns its original outcome, even after reopen
     assert.deepEqual(store.beginDelete(context, request), accepted);
     assert.deepEqual(store.completeDelete(context, { operationId }), done);
-    expectCode(assert, () => store.beginDelete(context, { ...request, operationId: newId() }), 'not_found');
+    // M-29: deleting an already-deleted robot under a new operation ID succeeds, with its own completed operation.
+    const again = newId();
+    assert.deepEqual(store.beginDelete(context, { ...request, operationId: again }), { operationId: again, type: 'delete', robotId, baseRevision: 1, status: 'accepted' });
+    assert.equal(store.getOperationOutcome(context, { operationId: again }).status, 'succeeded');
     expectCode(assert, () => store.configure(context, { operationId: newId(), robotId, expectedRevision: 1, configuration: robotConfig() }), 'not_found');
     assert.equal(count(dir, 'robot'), 1, 'tombstone persists');
     assert.throws(() => rawDb(dir).exec('DELETE FROM robot'), /immutable/);
@@ -263,19 +266,19 @@ test('deletion closes admission, blocks configure, needs released blockers and r
     store.close();
 });
 
-test('a delayed preparation completion cannot revive a deleting robot', (t) => {
+test('M-29: a delete is refused robot_busy while the robot is being created, and works once it is ready', (t) => {
     const dir = makeTempDir(t);
     const store = openStore(dir);
     const context = syntheticContext();
     const provision = provisionRequest();
     const { robotId } = store.beginProvision(context, provision);
     const deleteOp = newId();
-    store.beginDelete(context, { operationId: deleteOp, robotId, expectedRevision: 0 });
-    expectCode(assert, () => store.completeDelete(context, { operationId: deleteOp }), 'robot_busy');
-    const late = store.completePreparation(context, { operationId: provision.operationId, outcome: 'succeeded' });
-    assert.deepEqual([late.status, late.reason], ['failed', 'robot_deleting']);
-    const robot = store.getRobot(context, { robotId });
-    assert.deepEqual([robot.lifecycle, robot.revision, robot.ready], ['deleting', 0, false]);
+    expectCode(assert, () => store.beginDelete(context, { operationId: deleteOp, robotId, expectedRevision: 0 }), 'robot_busy');
+    assert.equal(store.completePreparation(context, { operationId: provision.operationId, outcome: 'succeeded' }).status, 'succeeded');
+    assert.deepEqual(store.beginDelete(context, { operationId: deleteOp, robotId, expectedRevision: 1 }).status, 'accepted');
+    // A different operation while deleting is busy; the same operation after a lost reply returns the same receipt.
+    expectCode(assert, () => store.beginDelete(context, { operationId: newId(), robotId, expectedRevision: 1 }), 'robot_busy');
+    assert.equal(store.beginDelete(context, { operationId: deleteOp, robotId, expectedRevision: 1 }).operationId, deleteOp);
     assert.equal(store.completeDelete(context, { operationId: deleteOp }).status, 'succeeded');
     assert.equal(store.getRobot(context, { robotId }).lifecycle, 'deleted');
     store.close();
@@ -331,7 +334,8 @@ test('capacity exhaustion is explicit and never prunes receipts or tombstones', 
     expectCode(assert, () => store.beginProvision(context, provisionRequest()), 'capacity_exceeded');
     // receipts at capacity: replay still works, a fresh operation does not
     assert.equal(count(dir, 'receipt'), 3);
-    expectCode(assert, () => store.beginDelete(context, { operationId: newId(), robotId, expectedRevision: 0 }), 'not_found');
+    // M-29: a delete of the tombstone succeeds under a new operation, which still needs receipt capacity.
+    expectCode(assert, () => store.beginDelete(context, { operationId: newId(), robotId, expectedRevision: 0 }), 'capacity_exceeded');
     assert.equal(store.beginProvision(context, first).robotId, robotId);
     store.close();
 });

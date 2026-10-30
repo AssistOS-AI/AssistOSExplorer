@@ -498,6 +498,40 @@ test('F1 pin: coordinator alone with a bindingId observes only references admitt
     }
 });
 
+test('M-14: an answer is accepted only from the reference\'s bound owner and only for a request of that very reference', (t) => {
+    const dir = makeTempDir(t);
+    const store = openExtended(dir);
+    t.after(() => store.close());
+    const { secret, adapter } = rig(store);
+    const robotId = workspaceRobot(store);
+    const service = syntheticContext({ scope: 'scope-adapter' });
+    const asked = (owner) => {
+        const admitted = adapter.admit(hop(secret, admitBody(robotId, newOriginId()), { claims: ownerClaims(owner) }));
+        const { executionId, attemptId } = attemptOf(dir, admitted.taskRef.id);
+        store.transitionAttempt({ executionId, attemptId, expectedState: 'queued', nextState: 'running' });
+        const requestId = crypto.randomBytes(16).toString('base64url');
+        store.recordChannelEvent({ executionId, attemptId, type: 'human-input-request', data: { requestId, question: 'Ship it?', options: ['a', 'b', 'c'] } });
+        store.beginAttemptEnd(service, { executionId, attemptId, expectedState: 'running', outcome: { classification: 'human-input', data: { requestId } } });
+        return { referenceId: admitted.taskRef.id, requestId };
+    };
+    const mine = asked('ursula');
+    const theirs = asked('walter');
+    const answer = (reference, requestId, claims, answerText = 'yes') => adapter.controlReference(hop(secret,
+        { operationId: newId(), op: 'answer', payload: { requestId, answer: answerText } }, { path: referencePath(reference, 'control'), claims }));
+    // An unrelated user sees nothing of the reference; an administrator who is not the owner may not answer.
+    expectError(() => answer(mine.referenceId, mine.requestId, ownerClaims('victor')), 'WorkerStateError', 'not_found');
+    expectError(() => answer(mine.referenceId, mine.requestId, ownerClaims('root', ['admin'])), 'WorkerStateError', 'forbidden');
+    // The coordinator alone (no grant) cannot answer an interactive question.
+    expectError(() => answer(mine.referenceId, mine.requestId, {}), 'CoordinatorAuthError', 'forbidden', 'owner_evidence');
+    // The owner cannot answer with the request of another reference, even one of the same coordinator.
+    expectError(() => answer(mine.referenceId, theirs.requestId, ownerClaims('ursula')), 'WorkerStateError', 'not_found');
+    expectError(() => answer(theirs.referenceId, mine.requestId, ownerClaims('walter')), 'WorkerStateError', 'not_found');
+    assert.equal(count(dir, 'reference_control'), 0, 'every refusal recorded nothing');
+    const receipt = answer(mine.referenceId, mine.requestId, ownerClaims('ursula'));
+    assert.deepEqual([receipt.outcome, receipt.delivery, receipt.requestId], ['accepted', 'applied', mine.requestId]);
+    assert.equal(count(dir, 'reference_control'), 1);
+});
+
 test('relayed controls: owner message ok, admin stop ok, admin message refused, coordinator-alone control refused', (t) => {
     const dir = makeTempDir(t);
     const store = openExtended(dir);
@@ -585,9 +619,10 @@ test('lifecycle: administrator grant only, lifecycle-scope receipts; robot and o
     const outcome = adapter.getOperation(hop(secret, { operationId: request.operationId }, { path: `${BASE}/operations/get` }));
     assert.equal(outcome.status, 'pending');
     // Another administrator manages the same workspace robot.
-    const deleted = adapter.delete(hop(secret, { operationId: newId(), robotId: accepted.robotId, expectedRevision: 0 }, { path: `${robots}/delete`, claims: ownerClaims('other', ['admin']) }));
-    assert.equal(deleted.type, 'delete');
-    assert.equal(adapter.getRobot(hop(secret, { robotId: accepted.robotId }, { path: `${robots}/get` })).lifecycle, 'deleting');
+    // M-29: a robot whose creation is pending cannot be deleted yet.
+    expectError(() => adapter.delete(hop(secret, { operationId: newId(), robotId: accepted.robotId, expectedRevision: 0 }, { path: `${robots}/delete`, claims: ownerClaims('other', ['admin']) })), 'WorkerStateError', 'robot_busy');
+    expectError(() => adapter.delete(hop(secret, { operationId: newId(), robotId: accepted.robotId, expectedRevision: 0 }, { path: `${robots}/delete`, claims: ownerClaims('bob') })), 'CoordinatorAuthError', 'forbidden', 'administrator');
+    assert.equal(adapter.getRobot(hop(secret, { robotId: accepted.robotId }, { path: `${robots}/get` })).lifecycle, 'provisioning');
     expectError(() => adapter.listRobots(hop(secret, { extra: 1 }, { path: `${robots}/list` })), 'WorkerStateError', 'invalid_request');
     expectError(() => adapter.provision(hop(secret, body(), { path: `${robots}/list`, claims: ownerClaims('root', ['admin']) })), 'WorkerStateError', 'invalid_request');
 });
