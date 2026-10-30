@@ -31,10 +31,26 @@ test('the starting request registers the binding, then prepares each robot the f
     assert.deepEqual(order, []);
 });
 
-test('a robot that cannot be prepared stops the flow start with a message naming it; no grant prepares nothing', async () => {
-    const provisioner = { ensureReady: async (robot) => { if (robot.name === 'Beta') throw new WorkerError('worker_robot_not_ready', 503); } };
-    const robots = [{ id: 'a-1', name: 'Alpha' }, { id: 'b-2', name: 'Beta' }];
-    await assert.rejects(ensureFlowRobots({ provisioner, robots, grant: GRANT }), (error) => error.statusCode === 503 && /Robot "Beta" could not be prepared on the worker \(worker_robot_not_ready\)/.test(error.message));
+test('every robot that cannot be prepared is named, with its code and a short reason; the others are still prepared; no grant prepares nothing', async () => {
+    const tried = [];
+    const failing = { Beta: 'worker_robot_not_ready', Delta: 'worker_robot_failed', Echo: 'some_unlisted_code' };
+    const provisioner = { ensureReady: async (robot) => { tried.push(robot.name); if (failing[robot.name]) throw new WorkerError(failing[robot.name], 503); } };
+    const robots = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Echo'].map((name, index) => ({ id: `r-${index}`, name }));
+    await assert.rejects(ensureFlowRobots({ provisioner, robots, grant: GRANT }), (error) => {
+        assert.equal(error.statusCode, 503);
+        assert.match(error.message, /^These 3 robots could not be prepared on the worker: /);
+        assert.match(error.message, /"Beta" \(worker_robot_not_ready: it did not become ready in time\)/);
+        assert.match(error.message, /"Delta" \(worker_robot_failed: its preparation failed on the worker\)/);
+        assert.match(error.message, /"Echo" \(some_unlisted_code\)/, 'a code without a known reason is still named');
+        assert.equal(error.message.includes('Alpha') || error.message.includes('Gamma'), false, 'ready robots are not blamed');
+        assert.match(error.message, /fix them or deselect them/);
+        assert.deepEqual(error.failures, [{ robot: 'Beta', code: 'worker_robot_not_ready' }, { robot: 'Delta', code: 'worker_robot_failed' }, { robot: 'Echo', code: 'some_unlisted_code' }]);
+        return true;
+    });
+    assert.deepEqual(tried, ['Alpha', 'Beta', 'Gamma', 'Delta', 'Echo'], 'every robot was tried, not just up to the first failure');
+    // One failure reads in the singular.
+    await assert.rejects(ensureFlowRobots({ provisioner: { ensureReady: async () => { throw new WorkerError('worker_robot_stale', 409); } }, robots: [robots[0]], grant: GRANT }),
+        (error) => /^This robot could not be prepared on the worker: "Alpha" \(worker_robot_stale: its configuration differs and could not be updated\)\. Open the robot, fix it or deselect it/.test(error.message));
     await assert.rejects(ensureFlowRobots({ provisioner, robots, grant: null }), (error) => error.statusCode === 403);
     assert.deepEqual(await ensureFlowRobots({ provisioner, robots: [], grant: null }), []);
 });

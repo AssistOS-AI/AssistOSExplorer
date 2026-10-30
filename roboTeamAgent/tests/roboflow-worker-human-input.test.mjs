@@ -120,3 +120,94 @@ test('a question the local channel asked is answered locally, with no worker cal
     assert.equal(f.resumed.length, 1);
     assert.equal((await f.service.getFlow(f.flow.id)).humanInput.worker, undefined);
 });
+
+// ---- RoboTeam restarted while the model asked ----
+// The first service starts the flow and goes down with its phase running; the question is recorded at the worker meanwhile.
+async function restarted(t, { events, state = 'human-input', data = { reason: 'human_input', requestId: REQUEST } }) {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-restart-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robots = [{ id: 'default-id', name: 'default', codingAgents: ['codex'] }];
+    const resumed = [];
+    const make = (started, extra = {}) => new RoboFlowService({ robotStore: { list: async () => robots, getByName: async (name) => robots.find((robot) => robot.name === name), get: async (id) => robots.find((robot) => robot.id === id) },
+        runtimeManager: { resolveCwd: async (value) => value, guiBusy: () => false, stopTask() {},
+            startTask(robot, type, request) { started.push(request.runtimeTaskId); return { taskId: request.runtimeTaskId, state: 'queued' }; },
+            resumeTask(robot, taskId, prompt, options = {}) { resumed.push({ taskId, prompt, runtimeTaskId: options.runtimeTaskId }); return { taskId: options.runtimeTaskId, state: 'queued' }; } },
+        databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), random: () => 0.99,
+        discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }),
+        skillsets: { repositoriesClient: { listRepositories: async () => [{ name: 'DocumentationSkills', source: root, origin: 'local' }] }, start: async (robot, input, enqueue) => enqueue(robot) }, ...extra });
+    const first = make([]);
+    await first.initialize(); await first.presetReady;
+    await first.createWorkflow(flowGraph);
+    const flow = await first.startFlow({ workflowTypeId: 'asking', folder: root, objective: 'Work' });
+    const phase = (await first.store.get(flow.id)).instances[0];
+    first.onRuntimeTaskEvent({ kind: 'state', taskId: phase.runtimeTaskId, state: 'running' });
+    while (first.chains.size) await Promise.allSettled(first.chains.values());
+    await first.close();
+    const calls = { control: [], events: [] };
+    const lines = [];
+    const worker = {
+        async lookup() { return { referenceId: REFERENCE, state: 'human-input', originRequestId: 'x' }; },
+        async read() { return { state, result: { status: state, outputText: 'Waiting for the answer.', data } }; },
+        async events(referenceId, window, auth) { calls.events.push({ referenceId, window, auth }); return typeof events === 'function' ? events(window) : events; },
+        async control(referenceId, body, auth) { calls.control.push({ referenceId, body, auth }); return {}; },
+    };
+    const second = make([], { workerMode: true, workerClient: worker, workerReconcileMs: 1, workerSleep: () => new Promise((resolve) => setTimeout(resolve, 1)), log: (line) => lines.push(line) });
+    await second.initialize();
+    t.after(() => second.close());
+    await second.reconciliation;
+    while (second.chains.size) await Promise.allSettled(second.chains.values());
+    return { service: second, flow, phase, resumed, calls, lines };
+}
+const questionRow = { sequence: 4, at: 'x', type: 'human-input-request', data: { requestId: REQUEST, question: 'Which customer?', options: ['Retail', 'Business', 'Enterprise'] } };
+const pageOf = (...rows) => ({ events: rows, nextAfter: rows.at(-1).sequence });
+
+test('a question asked while RoboTeam was down is recovered from the worker\'s events, pending and answerable once', async (t) => {
+    const f = await restarted(t, { events: pageOf({ sequence: 1, type: 'state', data: { state: 'running' } }, questionRow, { sequence: 5, type: 'state', data: { state: 'human-input' } }) });
+    const flow = await f.service.getFlow(f.flow.id);
+    // Recreated exactly as the live path records it.
+    assert.equal(flow.status, 'paused');
+    assert.equal(flow.humanInput.status, 'pending');
+    assert.equal(flow.humanInput.executionEnded, true, 'the phase had ended at the worker, so the question can be answered');
+    assert.equal(flow.humanInput.question, 'Which customer?');
+    assert.deepEqual(flow.humanInput.options, ['Retail', 'Business', 'Enterprise']);
+    assert.deepEqual(flow.humanInput.worker, { referenceId: REFERENCE, requestId: REQUEST });
+    assert.equal(flow.humanInput.runtimeTaskId, f.phase.runtimeTaskId);
+    assert.equal(flow.instances[0].state, 'paused');
+    // Read with the coordinator identity and the flow binding, with no user grant.
+    assert.deepEqual(f.calls.events[0].auth, { bindingId: f.flow.id });
+    assert.ok(f.lines.includes(`[roboflow] reconcile flow=${f.flow.id} phase=${f.phase.id} decision=finished:human-input`));
+    assert.equal(f.resumed.length, 0, 'recovering the question dispatches nothing');
+    // The user answers: the worker gets the answer once with that request's grant, and the phase continues once.
+    const grant = 'h.e30.RECOVERED';
+    await f.service.answerHumanInput(f.flow.id, { requestId: flow.humanInput.id, option: 1 }, 'user-1', { grant });
+    assert.equal(f.calls.control.length, 1);
+    assert.equal(f.calls.control[0].referenceId, REFERENCE);
+    assert.deepEqual(f.calls.control[0].auth, { grant });
+    assert.deepEqual(f.calls.control[0].body.payload, { requestId: REQUEST, answer: 'Business' });
+    assert.equal(f.resumed.length, 1);
+    await assert.rejects(f.service.answerHumanInput(f.flow.id, { requestId: flow.humanInput.id, option: 1 }, 'user-1', { grant }), /no longer waiting/);
+    assert.equal(f.calls.control.length, 1);
+    assert.equal(f.resumed.length, 1);
+});
+
+test('the question is found across event pages, and the one for the attempt\'s request is taken', async (t) => {
+    const other = { sequence: 2, type: 'human-input-request', data: { requestId: 'z'.repeat(20), question: 'Another?', options: ['x', 'y', 'w'] } };
+    const f = await restarted(t, { events: (window) => (window.after === 0 ? { events: [other], nextAfter: 2 } : window.after === 2 ? { events: [questionRow], nextAfter: 4 } : { events: [], nextAfter: window.after }) });
+    const flow = await f.service.getFlow(f.flow.id);
+    assert.equal(flow.humanInput.question, 'Which customer?');
+    assert.equal(f.calls.events.length >= 2, true);
+});
+
+test('events that cannot be read now leave the phase untouched and are asked again; events without the question pause the phase with a reason', async (t) => {
+    let attempts = 0;
+    const f = await restarted(t, { events: () => { attempts += 1; if (attempts === 1) throw new WorkerError('worker_unreachable', 503); return pageOf(questionRow); } });
+    assert.ok(attempts >= 2, 'asked again after the first failure');
+    assert.equal((await f.service.getFlow(f.flow.id)).humanInput.status, 'pending');
+
+    const lost = await restarted(t, { events: { events: [], nextAfter: 0 } });
+    const flow = await lost.service.getFlow(lost.flow.id);
+    assert.equal(flow.humanInput ?? null, null, 'nothing to invent when the worker no longer holds it');
+    assert.equal(flow.instances[0].state, 'paused');
+    assert.match(flow.instances[0].error, /could not be recovered from the worker/);
+    assert.ok(lost.lines.some((line) => line.includes('decision=finished:human-input (question not recovered)')));
+});

@@ -34,7 +34,19 @@ export async function classifyPhase({ client, flow, instance }) {
         return { action: 'finished', originRequestId, referenceId: accepted.referenceId, terminationUnverified: reason === 'termination_unverified',
             event: { kind: 'terminal', taskId, state: 'failed', result: text, error: `Worker execution failed${reason ? ` (${reason})` : ''}.` } };
     }
-    case 'cancelled': case 'interrupted': case 'paused': case 'human-input':
+    case 'human-input': {
+        // The model asked while RoboTeam was down: the question the worker holds is read back from the reference's events, so it is
+        // not lost (plan section 9) and the phase can be answered. `humanInput` is null when the events no longer hold it.
+        let humanInput;
+        try {
+            humanInput = await recoverQuestion({ client, referenceId: accepted.referenceId, auth, requestId: result.data?.requestId });
+        } catch (error) {
+            return { action: 'unknown', originRequestId, code: error?.code || 'worker_coordinator_unavailable' };
+        }
+        return { action: 'finished', originRequestId, referenceId: accepted.referenceId, endState: 'human-input', humanInput,
+            event: { kind: 'terminal', taskId, state: 'paused', result: text, error: humanInput ? null : 'The human-input question could not be recovered from the worker.' } };
+    }
+    case 'cancelled': case 'interrupted': case 'paused':
         return { action: 'finished', originRequestId, referenceId: accepted.referenceId,
             event: { kind: 'terminal', taskId, state: 'paused', result: text, error: `Task ${snapshot.state} on the worker.` } };
     case 'queued': case 'running': case 'stopping':
@@ -42,4 +54,28 @@ export async function classifyPhase({ client, flow, instance }) {
     default:
         return { action: 'unknown', originRequestId, code: 'worker_reply_unknown' };
     }
+}
+
+// The `human-input-request` event of a reference (the one for `requestId`, else the last), as `{question, options, worker}` for
+// RoboFlow's pending-question record, or null when the retained events no longer hold it. Read with the coordinator identity and the
+// flow binding, by cursor; a read that fails throws, so the caller asks again later.
+const EVENT_PAGES = 20;
+
+export async function recoverQuestion({ client, referenceId, auth, requestId }) {
+    let after = 0;
+    let found = null;
+    for (let page = 0; page < EVENT_PAGES; page += 1) {
+        const batch = await client.events(referenceId, { after, limit: 500 }, auth);
+        if (batch.gap) { after = batch.snapshotSequence; continue; }
+        for (const row of batch.events || []) {
+            const kind = row?.kind ?? row?.type;
+            const data = row?.data && typeof row.data === 'object' ? row.data : row;
+            if (kind !== 'human-input-request' || typeof data.requestId !== 'string') continue;
+            if (!requestId || data.requestId === requestId) found = data;
+        }
+        if (!batch.events?.length || batch.nextAfter === after) break;
+        after = batch.nextAfter;
+    }
+    return found && typeof found.question === 'string' && Array.isArray(found.options)
+        ? { question: found.question, options: found.options, worker: { referenceId, requestId: found.requestId } } : null;
 }

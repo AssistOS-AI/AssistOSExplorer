@@ -44,22 +44,53 @@ export async function ensureRobotWithGrant({ provisioner, robot, grant }) {
 }
 
 // Prepares every robot a flow's phases may use on the worker (provision or configure when stale) with the starting request's
-// grant, before the first phase is dispatched: a phase runs on the coordinator identity alone and cannot configure a robot.
-// Each robot is ensured; any that cannot be prepared stops the flow start with a message naming it.
+// grant, before the first phase is dispatched: a phase runs on the coordinator identity alone and cannot configure a robot. Only
+// the robots the phases can actually use are passed in. Every robot is tried; if any cannot be prepared, the flow start is refused
+// with a message naming EVERY such robot, its code and a short reason, so the user can fix or deselect them.
+const REASONS = Object.freeze({
+    worker_robot_not_ready: 'it did not become ready in time',
+    worker_robot_failed: 'its preparation failed on the worker',
+    worker_robot_stale: 'its configuration differs and could not be updated',
+    worker_robot_missing: 'the worker no longer has it',
+    worker_robot_not_provisioned: 'it is not set up on the worker',
+    owner_evidence_unavailable: 'the request carried no grant for it',
+    robot_busy: 'it has running or unsettled work',
+    revision_conflict: 'it changed while being updated',
+    worker_coordinator_unavailable: 'the worker could not be reached',
+    worker_unreachable: 'the worker could not be reached',
+    worker_reply_unknown: 'the worker did not answer',
+    resource_quarantined: 'a resource of it is quarantined',
+    recovery_pending: 'the worker is still recovering',
+    runtime_unavailable: 'the worker runtime is unavailable',
+    forbidden: 'the worker refused the request',
+});
+
 export async function ensureFlowRobots({ provisioner, robots, grant }) {
     if (!robots?.length) return [];
     if (!provisioner) throw Object.assign(new Error('worker_coordinator_unavailable'), { statusCode: 503 });
     if (!grant) throw Object.assign(new Error('owner_evidence_unavailable'), { statusCode: 403 });
     const prepared = [];
+    const failures = [];
     for (const robot of robots) {
         const outcome = await ensureRobotWithGrant({ provisioner, robot, grant });
-        if (!outcome.ready) {
-            throw Object.assign(new Error(`Robot "${robot.name}" could not be prepared on the worker (${outcome.error}). Open the robot, check it, and start the flow again.`),
-                { statusCode: outcome.error === 'owner_evidence_unavailable' ? 403 : 503 });
-        }
-        prepared.push(robot.id);
+        if (outcome.ready) prepared.push(robot.id);
+        else failures.push({ robot, code: outcome.error });
+    }
+    if (failures.length) {
+        const list = failures.map(({ robot, code }) => `"${robot.name}" (${code}${REASONS[code] ? `: ${REASONS[code]}` : ''})`).join('; ');
+        throw Object.assign(new Error(`${failures.length === 1 ? 'This robot' : `These ${failures.length} robots`} could not be prepared on the worker: ${list}. Open the robot${failures.length === 1 ? '' : 's'}, fix ${failures.length === 1 ? 'it' : 'them'} or deselect ${failures.length === 1 ? 'it' : 'them'}, and start the flow again.`),
+            { statusCode: failures.every(({ code }) => code === 'owner_evidence_unavailable') ? 403 : 503, failures: failures.map(({ robot, code }) => ({ robot: robot.name, code })) });
     }
     return prepared;
+}
+
+// What the request that starts a root flow does with its grant before the first phase is dispatched: register the flow's binding,
+// then prepare every robot its phases may use. `roboflow.flowRobots(flow)` names them. A child flow (no binding of its own) needs
+// neither.
+export async function prepareFlowStart({ hop, provisioner, roboflow, flow, grant }) {
+    const registered = await registerRootFlowBinding({ hop, flow, grant });
+    if (registered === null) return { registered: false, robots: [] };
+    return { registered: true, robots: await ensureFlowRobots({ provisioner, robots: await roboflow.flowRobots(flow), grant }) };
 }
 
 // Robot deletion (decision M-29): the worker is asked first, with the deleting request's own administrator grant, and RoboTeam
@@ -75,13 +106,4 @@ export async function removeRobotOnWorker({ provisioner, robot, grant }) {
         const detail = typeof error?.message === 'string' && error.message !== error.code ? error.message : (error?.code || 'worker_coordinator_unavailable');
         throw Object.assign(new Error(detail), { statusCode: error?.status || 503, code: error?.code });
     }
-}
-
-// What the request that starts a root flow does with its grant before the first phase is dispatched: register the flow's binding,
-// then prepare every robot its phases may use. `roboflow.flowRobots(flow)` names them. A child flow (no binding of its own) needs
-// neither.
-export async function prepareFlowStart({ hop, provisioner, roboflow, flow, grant }) {
-    const registered = await registerRootFlowBinding({ hop, flow, grant });
-    if (registered === null) return { registered: false, robots: [] };
-    return { registered: true, robots: await ensureFlowRobots({ provisioner, robots: await roboflow.flowRobots(flow), grant }) };
 }

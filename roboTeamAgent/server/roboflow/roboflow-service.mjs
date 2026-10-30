@@ -159,7 +159,7 @@ export class RoboFlowService {
                 answered = true;
                 // One line for every decision the worker's answer allowed (a running phase once, when it is first seen).
                 if (decision.action !== 'running' || !followed.has(key)) {
-                    this.log(`[roboflow] reconcile flow=${flowId} phase=${instanceId} decision=${decision.action === 'finished' ? `finished:${decision.event.state}${decision.terminationUnverified ? ' (termination_unverified)' : ''}` : decision.action}`);
+                    this.log(`[roboflow] reconcile flow=${flowId} phase=${instanceId} decision=${decision.action === 'finished' ? `finished:${decision.endState || decision.event.state}${decision.terminationUnverified ? ' (termination_unverified)' : ''}${decision.endState === 'human-input' && !decision.humanInput ? ' (question not recovered)' : ''}` : decision.action}`);
                     if (decision.action === 'running') followed.add(key);
                 }
                 if (decision.action === 'running') continue;
@@ -172,7 +172,8 @@ export class RoboFlowService {
                         current.status = deriveFlowStatus(current.instances);
                     }));
                 } else {
-                    await this._serialize(flowId, () => this._completed({ flowId, instanceId }, decision.event));
+                    if (decision.humanInput) await this._recoverHumanInput(flowId, instanceId, decision);
+                    else await this._serialize(flowId, () => this._completed({ flowId, instanceId }, decision.event));
                 }
             }
             delay = answered ? reconcileMs : Math.min(30000, delay * 2);
@@ -400,6 +401,25 @@ export class RoboFlowService {
             alaSessionId: selection?.policyId, ca: 'auto' });
         if (!this.skillsets) return start(robot);
         return this.skillsets.start(robot, { cwd: request.cwd, skillSets, skills, task: request.task, ca: 'auto', workflowCreator, allowsHumanInput }, start);
+    }
+    // The question a phase asked while RoboTeam was down, recreated exactly as the live path records it (pending, with the worker's
+    // reference and request), and then the phase's end, which marks the execution ended so the question can be answered.
+    async _recoverHumanInput(flowId, instanceId, decision) {
+        const instance = (await this.store.get(flowId))?.instances.find(item => item.id === instanceId);
+        if (!instance?.runtimeTaskId) return;
+        const taskId = instance.runtimeTaskId;
+        this.bindings.set(taskId, { flowId, instanceId });
+        try {
+            await this.requestHumanInput(taskId, decision.humanInput);
+        } catch (error) {
+            // RoboFlow will not take the question (the phase may not ask, or a question is already pending): the phase is paused instead.
+            this.bindings.delete(taskId);
+            this.log(`[roboflow] reconcile flow=${flowId} phase=${instanceId} question not recorded: ${error.message}`);
+            await this._serialize(flowId, () => this._completed({ flowId, instanceId }, decision.event));
+            return;
+        }
+        this.onRuntimeTaskEvent({ kind: 'terminal', taskId, state: 'completed', result: decision.event.result });
+        while (this.chains.size) await Promise.allSettled([...this.chains.values()]);
     }
     // A flow cancel, pause or failure ends the worker's execution of a phase too (decision M-12 (c)): a
     // system-initiated stop with the coordinator identity and the flow binding, no user grant. The
