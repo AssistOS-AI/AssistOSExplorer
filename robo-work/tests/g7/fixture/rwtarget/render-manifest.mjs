@@ -4,7 +4,11 @@
 //
 //   node render-manifest.mjs --image <ref@sha256:...> --inventory <inventory.json> --helper <rw-target-helper>
 //        --transport-vectors <transport-v1.json> --common-vectors <contracts-v1.json> --session-vectors <session-fixture-v1.json>
-//        --seccomp-profile <ploinky nested seccomp json> --out <manifest.json>
+//        --seccomp-profile <ploinky nested seccomp json> --keeper-policy <policy.json> --out <manifest.json>
+//
+// --keeper-policy is the apparatus image policy embedded in the image's keeper (first-G1 amendment A1.6; the keeper
+// build's RW_KEEPER_APPARATUS_POLICY_FILE). Every file it pins (by its resolved `source`, the keeper's own "self" entry
+// excepted) must be in the inventory with the pinned digest, so the inventory digest covers the keeper's domain inputs.
 //
 // Digest preimages (proof-fixture definitions, recorded for review; T0 fixes only the Digest format):
 //   helper.executableDigest  SHA-256 of the helper executable bytes (the same file the image carries at the fixed path)
@@ -32,13 +36,18 @@ export const RENDERED_NESTED_PODMAN_ARGS = Object.freeze([
     '--security-opt', 'label=disable',
     '--security-opt', `seccomp=${NESTED_PODMAN_SECCOMP_BOX_PATH}`,
 ]);
+// The keeper and Node sit at the keeper domain policy's fixed paths (keeper/src/domain_policy.rs NODE, KEEPER; bwrap.rs).
+export const KEEPER_PATH = '/usr/local/libexec/robo-work/keeper';
+export const NODE_PATH = '/usr/local/bin/node';
+export const BWRAP_PATH = '/usr/bin/bwrap';
 const REQUIRED_FILES = Object.freeze([
     HELPER_PATH,
-    '/usr/libexec/ploinky-target/keeper',
+    KEEPER_PATH,
+    NODE_PATH,
     '/usr/libexec/ploinky-target/rw-file-server',
     '/usr/libexec/ploinky-target/launch',
     '/usr/libexec/ploinky-target/peer',
-    '/usr/bin/bwrap',
+    BWRAP_PATH,
     '/bin/setpriv',
 ]);
 
@@ -60,10 +69,27 @@ function validInventory(inventory) {
             && (Number.parseInt(file.mode.padStart(4, '0')[0], 8) & 6) === 0);
 }
 
-export function renderManifest({ templateText, image, inventory, helperBytes, transportVectorsBytes, commonVectorsBytes, sessionVectorsBytes, seccompBytes }) {
+/** Every pinned file of the keeper's image policy must be inventoried with its pinned digest; throws otherwise. */
+export function checkKeeperPolicy(policy, inventory) {
+    const executables = [policy?.node, policy?.keeper, policy?.bwrap, ...Object.values(policy?.inventory ?? {})];
+    if (policy?.version !== 1 || executables.some((entry) => !entry || !Array.isArray(entry.runtime))) throw new Error('keeper policy is invalid');
+    if (policy.node.path !== NODE_PATH || policy.keeper.path !== KEEPER_PATH || policy.bwrap.path !== BWRAP_PATH || policy.keeper.sha256 !== 'self') {
+        throw new Error('keeper policy names other fixed paths');
+    }
+    const pinned = [...executables.flatMap((entry) => [entry, ...entry.runtime]), ...Object.values(policy.code ?? {}).flat()];
+    const files = new Map(inventory.files.map((file) => [file.path, file.sha256]));
+    for (const entry of pinned) {
+        if (entry === policy.keeper) continue;
+        const source = entry.source ?? entry.path;
+        if (files.get(source) !== entry.sha256) throw new Error(`keeper policy file ${source} is not inventoried with its pinned digest`);
+    }
+}
+
+export function renderManifest({ templateText, image, inventory, helperBytes, transportVectorsBytes, commonVectorsBytes, sessionVectorsBytes, seccompBytes, keeperPolicy }) {
     if (!sessionVectorsBytes) throw new Error('the session vectors are part of the helper contract (A11.4)');
     if (!/^[^\s@]+@sha256:[0-9a-f]{64}$/.test(image)) throw new Error('image must be an exact digest reference');
     if (!validInventory(inventory)) throw new Error('inventory is invalid or incomplete');
+    if (keeperPolicy !== undefined) checkKeeperPolicy(keeperPolicy, inventory);
     const executableDigest = sha256Hex(helperBytes);
     const helperEntry = inventory.files.find((file) => file.path === HELPER_PATH);
     if (helperEntry.sha256 !== executableDigest) throw new Error('the image helper differs from the given helper executable');
@@ -96,7 +122,7 @@ export function renderManifest({ templateText, image, inventory, helperBytes, tr
 
 function parseArguments(argv) {
     const names = { '--image': 'image', '--inventory': 'inventory', '--helper': 'helper', '--transport-vectors': 'transportVectors',
-        '--common-vectors': 'commonVectors', '--session-vectors': 'sessionVectors', '--seccomp-profile': 'seccompProfile', '--out': 'out' };
+        '--common-vectors': 'commonVectors', '--session-vectors': 'sessionVectors', '--seccomp-profile': 'seccompProfile', '--keeper-policy': 'keeperPolicy', '--out': 'out' };
     const options = {};
     for (let index = 0; index < argv.length; index += 2) {
         const key = names[argv[index]];
@@ -118,6 +144,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         commonVectorsBytes: fs.readFileSync(options.commonVectors),
         sessionVectorsBytes: fs.readFileSync(options.sessionVectors),
         seccompBytes: fs.readFileSync(options.seccompProfile),
+        keeperPolicy: JSON.parse(fs.readFileSync(options.keeperPolicy, 'utf8')),
     });
     fs.writeFileSync(options.out, `${JSON.stringify(manifest, null, 4)}\n`, { flag: 'wx' });
     process.stdout.write(`${JSON.stringify(values)}\n`);

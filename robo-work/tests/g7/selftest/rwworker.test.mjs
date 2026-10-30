@@ -53,8 +53,19 @@ function journalInit(root) {
     return JSON.parse(result.stdout).value.journalStoreIdentity;
 }
 
+// The single-use per-incarnation ticket-secret file Ploinky provisioning writes (v1, mode 0600). With
+// --proof-fixture-session the helper consumes it and verifies with the public fixture key instead.
+function writeHelperSecret(directory, incarnation) {
+    const file = path.join(directory, `helper-secret-${incarnation}`);
+    const secret = crypto.randomBytes(32).toString('base64url');
+    fs.writeFileSync(file, `version=1\nhelperIncarnation=${incarnation}\nkid=hti1.${incarnation}\nsecret=${secret}\n`, { flag: 'wx', mode: 0o600 });
+    fs.chmodSync(file, 0o600);
+    return file;
+}
+
 async function startHelper(t, { root, store, incarnation, mailbox, keeper = true }) {
-    const args = ['serve', '--mailbox', mailbox, '--journal-root', root, '--store-identity', store, '--helper-incarnation', incarnation, '--proof-fixture-session'];
+    const secretFile = writeHelperSecret(path.dirname(mailbox), incarnation);
+    const args = ['serve', '--mailbox', mailbox, '--journal-root', root, '--store-identity', store, '--helper-incarnation', incarnation, '--secret-file', secretFile, '--proof-fixture-session'];
     if (keeper) args.push('--proof-fixture-keeper');
     const child = spawn(HELPER, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const events = [];
@@ -69,6 +80,8 @@ async function startHelper(t, { root, store, incarnation, mailbox, keeper = true
         child.kill('SIGKILL');
     });
     t.after(stop);
+    assert.equal(ready.value.session, 'proof-fixture');
+    assert.equal(fs.existsSync(secretFile), false, 'the helper consumed its secret file before ready');
     return { child, ready, events, stop };
 }
 
@@ -304,7 +317,7 @@ test('A11.6 and A11.4: helper codes are reduced to known spellings; the session 
     assert.equal(knownCode('ticket_binding'), 'ticket_binding');
     assert.equal(knownCode('free text from a helper'), 'refused');
     assert.equal(knownCode({ code: 'x' }), 'refused');
-    const inventory = { version: 1, platform: 'linux/amd64', baseImage: 'synthetic', files: ['/bin/setpriv', '/usr/bin/bwrap', '/usr/libexec/ploinky-target/keeper', '/usr/libexec/ploinky-target/launch', '/usr/libexec/ploinky-target/peer', '/usr/libexec/ploinky-target/rw-file-server', '/usr/libexec/ploinky-target/rw-target-helper'].map((file) => ({ path: file, sha256: file.endsWith('rw-target-helper') ? sha('helper') : sha(file), mode: '555' })) };
+    const inventory = { version: 1, platform: 'linux/amd64', baseImage: 'synthetic', files: ['/bin/setpriv', '/usr/bin/bwrap', '/usr/libexec/ploinky-target/launch', '/usr/libexec/ploinky-target/peer', '/usr/libexec/ploinky-target/rw-file-server', '/usr/libexec/ploinky-target/rw-target-helper', '/usr/local/bin/node', '/usr/local/libexec/robo-work/keeper'].map((file) => ({ path: file, sha256: file.endsWith('rw-target-helper') ? sha('helper') : sha(file), mode: '555' })) };
     const render = (sessionVectorsBytes) => renderManifest({
         templateText: fs.readFileSync(path.join(ROBO_WORK, 'tests', 'g7', 'fixture', 'rwtarget', 'manifest.template.json'), 'utf8'), image: `localhost/rwtarget@sha256:${'a'.repeat(64)}`, inventory,
         helperBytes: Buffer.from('helper'), transportVectorsBytes: Buffer.from('t'), commonVectorsBytes: Buffer.from('c'), sessionVectorsBytes, seccompBytes: Buffer.from('s')
@@ -312,4 +325,30 @@ test('A11.6 and A11.4: helper codes are reduced to known spellings; the session 
     const current = render(fs.readFileSync(path.join(VECTORS, 'session-fixture-v1.json')));
     assert.notEqual(current, render(Buffer.from('another handshake')), 'a handshake change changes the contract digest');
     assert.throws(() => render(undefined), /session vectors/);
+});
+
+test('rwtarget inventory: the keeper and Node sit at the keeper policy paths, and every file the embedded policy pins is inventoried', () => {
+    const files = ['/bin/busybox', '/bin/setpriv', '/lib/ld-musl-x86_64.so.1', '/usr/bin/bwrap', '/usr/libexec/ploinky-target/launch', '/usr/libexec/ploinky-target/peer',
+        '/usr/libexec/ploinky-target/rw-file-server', '/usr/libexec/ploinky-target/rw-target-helper', '/usr/local/bin/node', '/usr/local/libexec/robo-work/keeper',
+        '/opt/robo-work/server/execution/providerEndpointMain.mjs'].sort();
+    const inventory = { version: 1, platform: 'linux/amd64', baseImage: 'synthetic', files: files.map((file) => ({ path: file, sha256: file.endsWith('rw-target-helper') ? sha('helper') : sha(file), mode: '555' })) };
+    const loader = { path: '/lib/ld-musl-x86_64.so.1', sha256: sha('/lib/ld-musl-x86_64.so.1') };
+    const exe = (file, extra = {}) => ({ path: file, sha256: sha(file), closure: 'complete', runtime: [loader], ...extra });
+    const policy = {
+        version: 1, node: exe('/usr/local/bin/node'), bwrap: exe('/usr/bin/bwrap'),
+        keeper: { path: '/usr/local/libexec/robo-work/keeper', sha256: 'self', closure: 'complete', runtime: [] },
+        inventory: { sleep: exe('/usr/bin/sleep', { source: '/bin/busybox', sha256: sha('/bin/busybox') }) },
+        code: { endpoint: [{ path: '/opt/robo-work/server/execution/providerEndpointMain.mjs', sha256: sha('/opt/robo-work/server/execution/providerEndpointMain.mjs') }] },
+        endpointHeapMib: 48, endpointNofile: 256
+    };
+    const render = (keeperPolicy, renderedInventory = inventory) => renderManifest({
+        templateText: fs.readFileSync(path.join(ROBO_WORK, 'tests', 'g7', 'fixture', 'rwtarget', 'manifest.template.json'), 'utf8'), image: `localhost/rwtarget@sha256:${'a'.repeat(64)}`,
+        inventory: renderedInventory, helperBytes: Buffer.from('helper'), transportVectorsBytes: Buffer.from('t'), commonVectorsBytes: Buffer.from('c'),
+        sessionVectorsBytes: Buffer.from('v'), seccompBytes: Buffer.from('s'), keeperPolicy
+    });
+    assert.match(render(policy).values.INVENTORY_DIGEST, /^[0-9a-f]{64}$/);
+    assert.throws(() => render({ ...policy, inventory: { sleep: exe('/usr/bin/sleep', { source: '/bin/busybox', sha256: sha('other') }) } }), /not inventoried/);
+    assert.throws(() => render({ ...policy, node: exe('/usr/bin/node') }), /fixed paths/);
+    const oldKeeperPath = { ...inventory, files: inventory.files.filter((file) => file.path !== '/usr/local/libexec/robo-work/keeper') };
+    assert.throws(() => render(policy, oldKeeperPath), /inventory is invalid or incomplete/);
 });

@@ -15,12 +15,13 @@ use rw_target_helper::{Code, ok_value};
 const USAGE: &str = "usage:
   rw-target-helper journal-init --root <dir>
   rw-target-helper serve --mailbox <socket> --journal-root <dir> --store-identity <Id> --helper-incarnation <Id>
-                         [--proof-fixture-session [--proof-fixture-keeper]]
+                         --secret-file <path> [--proof-fixture-session [--proof-fixture-keeper]]
   rw-target-helper worker-peer --mailbox <socket> (--probe | --session)";
 #[cfg(not(feature = "proof-fixture"))]
 const USAGE: &str = "usage:
   rw-target-helper journal-init --root <dir>
   rw-target-helper serve --mailbox <socket> --journal-root <dir> --store-identity <Id> --helper-incarnation <Id>
+                         --secret-file <path>
   rw-target-helper worker-peer --mailbox <socket> (--probe | --session)";
 
 /// Event and reply lines can carry one receipt and one reply frame.
@@ -32,6 +33,7 @@ struct Options {
     mailbox: Option<PathBuf>,
     store_identity: Option<String>,
     helper_incarnation: Option<String>,
+    secret_file: Option<PathBuf>,
     probe: bool,
     session: bool,
     fixture_session: bool,
@@ -53,6 +55,7 @@ fn parse(arguments: &[String]) -> Result<(String, Options), String> {
             "--mailbox" if options.mailbox.is_none() => options.mailbox = Some(PathBuf::from(value()?)),
             "--store-identity" if options.store_identity.is_none() => options.store_identity = Some(value()?),
             "--helper-incarnation" if options.helper_incarnation.is_none() => options.helper_incarnation = Some(value()?),
+            "--secret-file" if options.secret_file.is_none() => options.secret_file = Some(PathBuf::from(value()?)),
             "--probe" if !options.probe => options.probe = true,
             "--session" if !options.session => options.session = true,
             // The proof-fixture switches exist only in a build with the `proof-fixture` feature.
@@ -66,9 +69,9 @@ fn parse(arguments: &[String]) -> Result<(String, Options), String> {
     }
     let peer_mode = options.probe != options.session;
     let required = match command.as_str() {
-        "journal-init" => options.root.is_some() && options.store_identity.is_none() && options.helper_incarnation.is_none() && options.mailbox.is_none() && !options.probe && !options.session && !options.fixture_session && !options.fixture_keeper,
-        "serve" => options.root.is_some() && options.mailbox.is_some() && options.store_identity.is_some() && options.helper_incarnation.is_some() && !options.probe && !options.session && (options.fixture_session || !options.fixture_keeper),
-        "worker-peer" => options.mailbox.is_some() && peer_mode && options.root.is_none() && !options.fixture_session && !options.fixture_keeper,
+        "journal-init" => options.root.is_some() && options.store_identity.is_none() && options.helper_incarnation.is_none() && options.secret_file.is_none() && options.mailbox.is_none() && !options.probe && !options.session && !options.fixture_session && !options.fixture_keeper,
+        "serve" => options.root.is_some() && options.mailbox.is_some() && options.store_identity.is_some() && options.helper_incarnation.is_some() && options.secret_file.is_some() && !options.probe && !options.session && (options.fixture_session || !options.fixture_keeper),
+        "worker-peer" => options.mailbox.is_some() && peer_mode && options.root.is_none() && options.secret_file.is_none() && !options.fixture_session && !options.fixture_keeper,
         _ => return Err(format!("unknown command {command}")),
     };
     if !required {
@@ -143,6 +146,7 @@ mod roles {
     use rw_target_helper::crypto::b64url_encode;
     use rw_target_helper::journal::{Journal, JournalLimits};
     use rw_target_helper::keeper::{KeeperLauncher, UnavailableUntilG1};
+    use rw_target_helper::launch::consume_ticket_secret;
     use rw_target_helper::mailbox::{Connection, Listener, PeerCredentials, RecvError, RecvLimits, connect_error_code};
     use rw_target_helper::peer::{self, HelperState, SystemClock, WorkerSession};
     use rw_target_helper::service::TargetService;
@@ -162,6 +166,9 @@ mod roles {
         }
     }
 
+    /// `--proof-fixture-session` (feature `proof-fixture` only): the public fixture ticket key replaces the consumed
+    /// per-incarnation secret, because the worker-side fixture minter holds only that key and Ploinky registers no mint
+    /// route yet. The consumed secret is dropped (and wiped) unused.
     #[cfg(feature = "proof-fixture")]
     fn fixture_ticket_key(options: &Options) -> Option<TicketKey> {
         options.fixture_session.then(rw_target_helper::session::proof_fixture::ticket_key)
@@ -172,17 +179,34 @@ mod roles {
         None
     }
 
-    /// The target side: open the provisioned journal (never create it), bind the provisioned mailbox and serve.
+    /// The target side: consume the single-use ticket-secret file, open the provisioned journal (never create it), bind
+    /// the provisioned mailbox and serve.
     ///
-    /// Without a ticket key (every build without the `proof-fixture` feature, and a fixture build without
-    /// `--proof-fixture-session`) no connection can have a session: every received frame is refused as
-    /// `frame_authentication`, its descriptors are closed and the connection is closed. With the proof-fixture ticket key
-    /// each connection runs the A11 handshake (`session`, `peer`). Keeper launch refuses until G1 (`service`) unless
-    /// `--proof-fixture-keeper` selects the fixture launcher, which launches nothing.
+    /// The secret file is read and unlinked before anything else touches the journal or the mailbox; a missing, unsafe,
+    /// malformed or foreign file refuses `invalid_request` with exit 78 and nothing else happens. Every connection runs the
+    /// A11 handshake (`session`, `peer`) with the ticket key of this helper incarnation: the consumed secret (kid
+    /// `hti1.<incarnation>`), or in a `proof-fixture` build with `--proof-fixture-session` the public fixture key. Keeper
+    /// launch refuses until G1 (`service`) unless `--proof-fixture-keeper` selects the fixture launcher, which launches
+    /// nothing.
     pub fn serve(options: &Options) -> i32 {
         let root = options.root.as_deref().unwrap_or(std::path::Path::new(""));
         let store = options.store_identity.as_deref().unwrap_or_default();
         let incarnation = options.helper_incarnation.as_deref().unwrap_or_default();
+        let secret_file = options.secret_file.as_deref().unwrap_or(std::path::Path::new(""));
+        let consumed = match consume_ticket_secret(secret_file, incarnation) {
+            Ok(key) => key,
+            Err(code) => {
+                emit(&code.result_value());
+                return 78;
+            }
+        };
+        let (ticket_key, session_label) = match fixture_ticket_key(options) {
+            Some(fixture) => {
+                drop(consumed);
+                (fixture, "proof-fixture")
+            }
+            None => (consumed, "helper-ticket-secret"),
+        };
         let journal = match Journal::open(root, store, incarnation, JournalLimits::default(), Duration::from_millis(5000)) {
             Ok(journal) => journal,
             Err(code) => {
@@ -190,26 +214,32 @@ mod roles {
                 return if code == Code::JournalUnavailable { 75 } else { 1 };
             }
         };
-        let ticket_key = fixture_ticket_key(options);
-        let journal = match fixture_keeper(options, journal, ticket_key.clone()) {
+        let session = Session { ticket_key, label: session_label };
+        let (journal, session) = match fixture_keeper(options, journal, session) {
             Ok(status) => return status,
-            Err(journal) => journal,
+            Err(unused) => unused,
         };
-        serve_with(options, TargetService::new(journal, UnavailableUntilG1), ticket_key, "unavailable-until-g1")
+        serve_with(options, TargetService::new(journal, UnavailableUntilG1), session, "unavailable-until-g1")
+    }
+
+    /// The ticket key a `serve` process verifies tickets with, and which key it is (reported on the ready line).
+    struct Session {
+        ticket_key: TicketKey,
+        label: &'static str,
     }
 
     /// `--proof-fixture-keeper`: serve with the fixture launcher (launches nothing). Returns the journal otherwise.
     #[cfg(feature = "proof-fixture")]
-    fn fixture_keeper(options: &Options, journal: Journal, ticket_key: Option<TicketKey>) -> Result<i32, Journal> {
-        if options.fixture_keeper { Ok(serve_with(options, TargetService::proof_fixture(journal), ticket_key, "proof-fixture-no-keeper")) } else { Err(journal) }
+    fn fixture_keeper(options: &Options, journal: Journal, session: Session) -> Result<i32, (Journal, Session)> {
+        if options.fixture_keeper { Ok(serve_with(options, TargetService::proof_fixture(journal), session, "proof-fixture-no-keeper")) } else { Err((journal, session)) }
     }
 
     #[cfg(not(feature = "proof-fixture"))]
-    fn fixture_keeper(_options: &Options, journal: Journal, _ticket_key: Option<TicketKey>) -> Result<i32, Journal> {
-        Err(journal)
+    fn fixture_keeper(_options: &Options, journal: Journal, session: Session) -> Result<i32, (Journal, Session)> {
+        Err((journal, session))
     }
 
-    fn serve_with<L: KeeperLauncher>(options: &Options, mut service: TargetService<L>, ticket_key: Option<TicketKey>, launcher: &str) -> i32 {
+    fn serve_with<L: KeeperLauncher>(options: &Options, mut service: TargetService<L>, session: Session, launcher: &str) -> i32 {
         let mailbox = options.mailbox.as_deref().unwrap_or(std::path::Path::new(""));
         let listener = match Listener::bind(mailbox) {
             Ok(listener) => listener,
@@ -218,17 +248,14 @@ mod roles {
                 return 75;
             }
         };
-        let mut fields = vec![
+        emit(&ok_value(obj(vec![
             ("state", s("ready")),
             ("helperIncarnation", s(service.journal().helper_incarnation())),
             ("journalStoreIdentity", s(service.journal().store_identity())),
-        ];
-        if ticket_key.is_some() {
-            fields.push(("session", s("proof-fixture")));
-            fields.push(("keeperLauncher", s(launcher)));
-        }
-        emit(&ok_value(obj(fields)));
-        let mut state = ticket_key.map(|key| HelperState::new(key, service.journal().helper_incarnation(), service.journal().store_identity()));
+            ("session", s(session.label)),
+            ("keeperLauncher", s(launcher)),
+        ])));
+        let mut state = HelperState::new(session.ticket_key, service.journal().helper_incarnation(), service.journal().store_identity());
         let clock = SystemClock::new();
         loop {
             let connection = match listener.accept() {
@@ -242,37 +269,16 @@ mod roles {
                 Ok(credentials) => event("connection", vec![("peer", peer(&credentials))]),
                 Err(_) => event("connection", vec![("peer", Value::Null)]),
             }
-            if let Some(state) = state.as_mut() {
-                peer::serve_session(&connection, state, &mut service, &clock, &mut |name, fields| event(name, fields));
-                drop(connection);
-                continue;
-            }
-            let limits = RecvLimits { idle_timeout: Some(Duration::from_millis(300_000)), ..RecvLimits::default() };
-            match connection.recv_frame(limits) {
-                Ok(frame) => {
-                    // No session key: nothing can authenticate. Dropping the frame closes every received descriptor.
-                    let closed = frame.descriptors.len();
-                    drop(frame);
-                    event("frame_refused", vec![("code", s(Code::FrameAuthentication.as_str())), ("descriptorsClosed", Value::Int(closed as i64))]);
-                }
-                Err(RecvError::Closed) => event("connection_closed", vec![]),
-                Err(error) => {
-                    let code = match error {
-                        RecvError::Ancillary(_) => Code::DescriptorCount.as_str(),
-                        RecvError::Oversize => Code::CapacityExceeded.as_str(),
-                        RecvError::Timeout => "timeout",
-                        RecvError::Truncated => "truncated",
-                        RecvError::Closed | RecvError::Io(_) => "io",
-                    };
-                    event("frame_refused", vec![("code", s(code))]);
-                }
-            }
+            peer::serve_session(&connection, &mut state, &mut service, &clock, &mut |name, fields| event(name, fields));
             drop(connection);
         }
     }
 
     /// The worker side. `--probe`: connect, record the target's kernel credentials (diagnostics only), send one
-    /// unauthenticated probe frame carrying one descriptor and expect the target to refuse and close. `--session`: the
+    /// unauthenticated probe frame carrying one descriptor and expect the target to refuse and close. The target opens
+    /// every connection with its session challenge and answers the probe (which is no bootstrap) with a handshake
+    /// refusal; the probe reads at most those two messages, reports the refusal code (an enumerated spelling or
+    /// `refused`, A11.6) and then requires the close. `--session`: the
     /// worker-side peer of decision B4, driven over stdin/stdout by its worker host (see `worker_session`).
     pub fn worker_peer(options: &Options) -> i32 {
         let mailbox = options.mailbox.as_deref().unwrap_or(std::path::Path::new(""));
@@ -299,9 +305,31 @@ mod roles {
             return 1;
         }
         let limits = RecvLimits { idle_timeout: Some(Duration::from_millis(5000)), ..RecvLimits::default() };
-        let closed = matches!(connection.recv_frame(limits), Err(RecvError::Closed));
+        let mut refused = Value::Null;
+        let mut closed = false;
+        for _ in 0..3 {
+            match connection.recv_frame(limits) {
+                Err(RecvError::Closed) => {
+                    closed = true;
+                    break;
+                }
+                Ok(received) => {
+                    let message = rw_target_helper::session::decode_message(&received.bytes, received.descriptors.len());
+                    match message.as_ref().ok().and_then(|value| value.str_at("kind")) {
+                        Some("challenge") => continue,
+                        Some("refused") => {
+                            let code = message.as_ref().ok().and_then(|value| value.str_at("code")).and_then(Code::from_spelling).map_or("refused", Code::as_str);
+                            refused = s(code);
+                        }
+                        _ => break,
+                    }
+                }
+                Err(_) => break,
+            }
+        }
         emit(&ok_value(obj(vec![
             ("closedByTarget", Value::Bool(closed)),
+            ("refusedCode", refused),
             ("targetPeer", credentials.as_ref().map_or(Value::Null, peer)),
         ])));
         if closed { 0 } else { 1 }

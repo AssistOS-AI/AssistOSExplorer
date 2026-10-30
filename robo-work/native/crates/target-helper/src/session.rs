@@ -46,10 +46,10 @@ pub struct TicketKey {
     pub secret: Secret,
 }
 
-/// PUBLIC SYNTHETIC proof-fixture ticket key (feature `proof-fixture` only). Ploinky does not yet deliver a
-/// per-helper-incarnation ticket secret to the helper (the provisioned launch record carries only the journal store
-/// identity and the incarnation) and registers no mint route, so a proof-fixture run shares this compile-time key between
-/// the fixture helper and the worker-side fixture minter. A worker that holds the signing key departs from the authority
+/// PUBLIC SYNTHETIC proof-fixture ticket key (feature `proof-fixture` only). Ploinky provisioning delivers the
+/// per-helper-incarnation ticket secret to the helper (`crate::launch`), but registers no mint route yet, so a
+/// proof-fixture run (`serve --proof-fixture-session`) shares this compile-time key between the fixture helper and the
+/// worker-side fixture minter instead. A worker that holds the signing key departs from the authority
 /// model (it could mint its own tickets): evidence produced with it is proof-fixture evidence only. The same bytes are in
 /// `tests/vectors/session-fixture-v1.json` (checked by `tests/session_fixture.rs`).
 #[cfg(feature = "proof-fixture")]

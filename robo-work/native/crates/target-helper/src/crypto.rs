@@ -226,23 +226,34 @@ pub fn b64url_decode(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3 + 2);
-    for chunk in bytes.chunks(4) {
-        let mut n = 0u32;
-        for (index, byte) in chunk.iter().enumerate() {
-            n |= symbol(*byte)? << (18 - 6 * index);
+    let decoded = (|| {
+        for chunk in bytes.chunks(4) {
+            let mut n = 0u32;
+            for (index, byte) in chunk.iter().enumerate() {
+                n |= symbol(*byte)? << (18 - 6 * index);
+            }
+            let produced = chunk.len() - 1;
+            let full = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+            // Non-canonical trailing bits (a different string decoding to the same bytes) refuse.
+            let unused_mask = match produced {
+                1 => 0xffff,
+                2 => 0xff,
+                _ => 0,
+            };
+            if n & unused_mask != 0 {
+                return None;
+            }
+            out.extend_from_slice(&full[..produced]);
         }
-        let produced = chunk.len() - 1;
-        let full = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
-        // Non-canonical trailing bits (a different string decoding to the same bytes) refuse.
-        let unused_mask = match produced {
-            1 => 0xffff,
-            2 => 0xff,
-            _ => 0,
-        };
-        if n & unused_mask != 0 {
-            return None;
+        Some(())
+    })();
+    if decoded.is_none() {
+        // The input may be key material: wipe what was decoded before the refusal.
+        for byte in out.iter_mut() {
+            // SAFETY: a valid, aligned pointer to an owned byte; volatile so the wipe is not elided.
+            unsafe { std::ptr::write_volatile(byte, 0) };
         }
-        out.extend_from_slice(&full[..produced]);
+        return None;
     }
     Some(out)
 }

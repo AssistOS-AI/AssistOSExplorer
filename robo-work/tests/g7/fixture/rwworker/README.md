@@ -13,7 +13,7 @@ The worker side of the proof-fixture G7 round trip with the `rwtarget` fixture. 
 
 | Departure | Why | Production replacement |
 | --- | --- | --- |
-| The worker holds the ticket signing key | Ploinky delivers no per-helper-incarnation ticket secret to the helper and registers no mint route | Router mint route plus a secret handle shared only by the Router and the helper |
+| The worker holds the ticket signing key | Ploinky delivers the per-helper-incarnation ticket secret to the helper (consumed by `serve --secret-file`) but registers no mint route, so the fixture helper runs `--proof-fixture-session` with the public key | Router mint route plus a secret handle shared only by the Router and the helper |
 | Session key derived from the ticket secret (`native/crates/target-helper/src/session.rs`) | Recorded departure from T0 section 8 (amendment A11.5) | None: accepted by A11 |
 | The helper runs `--proof-fixture-keeper` (launches nothing) | Keeper launch is G1 | The G1 launcher |
 | The worker reaches the mailbox through an operator `podman run -v <instance mailbox>` inside the Box | Ploinky binds the mailbox only into the target, and refuses manifest volumes outside the workspace inside a Box | A worker-side mailbox bind in Ploinky provisioning |

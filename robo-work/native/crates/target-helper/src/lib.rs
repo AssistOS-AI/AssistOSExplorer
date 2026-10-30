@@ -11,6 +11,7 @@
 //! | `journal` | Management-private durable operation journal (file-backed, flock single writer, atomic unique key) | `journalModel.mjs` (helper side) |
 //! | `mailbox` | Linux AF_UNIX mailbox endpoint: bounded `recvmsg` frame receive with SCM_RIGHTS on the first byte only | T0 section 8 "Native frame" |
 //! | `keeper` | Keeper launch: a stub that refuses until G1 | none |
+//! | `launch` | The single-use per-helper-incarnation ticket-secret file (`serve --secret-file`): checked, read, unlinked, parsed | Ploinky `provisioning.mjs` (shared v1 vector) |
 //! | `service` | Journal operations behind authenticated frames, gated on keeper availability | none |
 //! | `session` | Session handshake per T0 amendment A11 (challenge, ticket, lease-bound session-key possession proofs); the proof-fixture ticket key | none (vectors: `tests/vectors/session-fixture-v1.json`) |
 //! | `peer` | Linux: the helper's authenticated connection handler and the worker-side session (slice P6b) | `transportContract.mjs` `validateTargetFrame` (worker side) |
@@ -23,6 +24,7 @@ pub mod crypto;
 pub mod frame;
 pub mod journal;
 pub mod keeper;
+pub mod launch;
 #[cfg(target_os = "linux")]
 pub mod mailbox;
 #[cfg(target_os = "linux")]

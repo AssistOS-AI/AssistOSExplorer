@@ -227,12 +227,16 @@ fn binary_roles_serve_and_worker_peer() {
     std::fs::create_dir(&journal_root).unwrap();
     let mailbox = dir.join("mailbox.sock");
     let incarnation = "AgICAgICAgICAgICAgICAg";
+    let secret = dir.join("helper-secret");
     let serve_args = |journal: &std::path::Path, store: &str| {
-        vec!["serve".to_string(), "--mailbox".into(), mailbox.display().to_string(), "--journal-root".into(), journal.display().to_string(), "--store-identity".into(), store.into(), "--helper-incarnation".into(), incarnation.into()]
+        // Every serve consumes a fresh single-use secret file.
+        write_secret(&secret, incarnation, &[0x11; 32]);
+        vec!["serve".to_string(), "--mailbox".into(), mailbox.display().to_string(), "--journal-root".into(), journal.display().to_string(), "--store-identity".into(), store.into(), "--helper-incarnation".into(), incarnation.into(), "--secret-file".into(), secret.display().to_string()]
     };
     // serve never creates a journal.
     let missing = Command::new(binary).args(serve_args(&journal_root, "AwMDAwMDAwMDAwMDAwMDAw")).output().unwrap();
     assert_eq!(missing.status.code(), Some(75));
+    assert!(!secret.exists(), "the secret is consumed before the journal is opened");
     assert_eq!(String::from_utf8_lossy(&missing.stdout).trim(), r#"{"error":{"code":"journal_unavailable"},"ok":false}"#);
     assert!(!journal_root.join("journal").exists());
     assert!(!mailbox.exists());
@@ -250,20 +254,97 @@ fn binary_roles_serve_and_worker_peer() {
     let mut server = Command::new(binary).args(serve_args(&journal_root, store)).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut ready = String::new();
     BufReader::new(server.stdout.take().unwrap()).read_line(&mut ready).unwrap();
-    assert_eq!(ready.trim(), format!(r#"{{"ok":true,"value":{{"helperIncarnation":"{incarnation}","journalStoreIdentity":"{store}","state":"ready"}}}}"#));
+    assert_eq!(ready.trim(), format!(r#"{{"ok":true,"value":{{"helperIncarnation":"{incarnation}","journalStoreIdentity":"{store}","keeperLauncher":"unavailable-until-g1","session":"helper-ticket-secret","state":"ready"}}}}"#));
+    assert!(!secret.exists(), "consumed before ready");
     // A second helper incarnation cannot take the same journal while the first holds it.
     let second = Command::new(binary).args(serve_args(&journal_root, store)).output().unwrap();
     assert_eq!(second.status.code(), Some(75));
     let peer = Command::new(binary).args(["worker-peer", "--mailbox", &mailbox.display().to_string(), "--probe"]).output().unwrap();
     let peer_line = String::from_utf8_lossy(&peer.stdout).to_string();
     assert!(peer.status.success(), "{peer_line} {}", String::from_utf8_lossy(&peer.stderr));
-    assert!(peer_line.contains(r#""closedByTarget":true"#) && peer_line.contains(r#""targetPeer":{"gid":"#), "{peer_line}");
+    // The probe is no bootstrap: after the challenge the target refuses the handshake and closes.
+    assert!(peer_line.contains(r#""closedByTarget":true,"refusedCode":"descriptor_count""#) && peer_line.contains(r#""targetPeer":{"gid":"#), "{peer_line}");
     server.kill().unwrap();
     server.wait().unwrap();
     let mut events = String::new();
     server.stderr.take().unwrap().read_to_string(&mut events).unwrap();
     assert!(events.contains(r#"{"event":"connection","peer":{"gid":"#), "{events}");
-    assert!(events.contains(r#"{"code":"frame_authentication","descriptorsClosed":1,"event":"frame_refused"}"#), "{events}");
+    assert!(events.contains(r#"{"code":"descriptor_count","event":"session_refused"}"#), "{events}");
+}
+
+/// Writes a v1 ticket-secret file (mode 0600) as Ploinky provisioning does.
+fn write_secret(path: &std::path::Path, incarnation: &str, secret: &[u8]) {
+    use std::os::unix::fs::PermissionsExt;
+    let text = format!("version=1\nhelperIncarnation={incarnation}\nkid=hti1.{incarnation}\nsecret={}\n", rw_target_helper::crypto::b64url_encode(secret));
+    let _ = std::fs::remove_file(path);
+    std::fs::write(path, text).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+#[test]
+fn binary_serve_consumes_the_secret_before_journal_or_mailbox_and_refuses_unsafe_files_with_78() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = serial();
+    let binary = env!("CARGO_BIN_EXE_rw-target-helper");
+    let dir = common::temp_dir("secret-serve");
+    let incarnation = "AgICAgICAgICAgICAgICAg";
+    let secret_bytes = [0x5au8; 32];
+    let secret_text = rw_target_helper::crypto::b64url_encode(&secret_bytes);
+    let secret_hex: String = secret_bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let journal_root = dir.join("journal-root");
+    std::fs::create_dir(&journal_root).unwrap();
+    let init = Command::new(binary).args(["journal-init", "--root", &journal_root.display().to_string()]).output().unwrap();
+    let parsed = rw_target_helper::canon::parse_canonical(String::from_utf8(init.stdout).unwrap().trim().as_bytes(), 4096).unwrap();
+    let store = parsed.get("value").unwrap().str_at("journalStoreIdentity").unwrap().to_string();
+    let journal_files = || {
+        let mut names: Vec<String> = std::fs::read_dir(journal_root.join("journal")).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().to_string()).collect();
+        names.sort();
+        names
+    };
+    let journal_before = journal_files();
+    let mailbox = dir.join("m.sock");
+    let secret = dir.join("helper-secret");
+    let args = |path: &std::path::Path| {
+        vec!["serve".to_string(), "--mailbox".into(), mailbox.display().to_string(), "--journal-root".into(), journal_root.display().to_string(), "--store-identity".into(), store.clone(), "--helper-incarnation".into(), incarnation.into(), "--secret-file".into(), path.display().to_string()]
+    };
+    let refuse = |label: &str, path: &std::path::Path, stays: bool| {
+        let output = Command::new(binary).args(args(path)).output().unwrap();
+        assert_eq!(output.status.code(), Some(78), "{label}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), r#"{"error":{"code":"invalid_request"},"ok":false}"#, "{label}");
+        let all = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(!all.contains(&secret_text) && !all.contains(&secret_hex) && !all.contains(&path.display().to_string()), "{label}: {all}");
+        assert!(!mailbox.exists(), "{label}: no mailbox socket");
+        assert_eq!(journal_files(), journal_before, "{label}: the journal store is untouched");
+        assert_eq!(std::fs::symlink_metadata(path).is_ok(), stays, "{label}");
+    };
+    refuse("missing", &dir.join("absent"), false);
+    // The secret is checked first: a refused secret with a missing journal is 78, never the journal's 75.
+    let mut no_journal = args(&dir.join("absent"));
+    no_journal[4] = dir.join("no-journal").display().to_string();
+    assert_eq!(Command::new(binary).args(&no_journal).output().unwrap().status.code(), Some(78));
+    write_secret(&secret, incarnation, &secret_bytes);
+    let link = dir.join("link");
+    std::os::unix::fs::symlink(&secret, &link).unwrap();
+    refuse("symlink", &link, true);
+    assert!(secret.exists(), "the link target is never consumed");
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+    refuse("mode 0644", &secret, true);
+    write_secret(&secret, "AwMDAwMDAwMDAwMDAwMDAw", &secret_bytes);
+    refuse("other incarnation", &secret, false);
+    // A valid file: consumed before the ready line, never echoed.
+    write_secret(&secret, incarnation, &secret_bytes);
+    let mut server = Command::new(binary).args(args(&secret)).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut ready = String::new();
+    BufReader::new(server.stdout.take().unwrap()).read_line(&mut ready).unwrap();
+    assert!(ready.contains(r#""session":"helper-ticket-secret","state":"ready""#), "{ready}");
+    assert!(!secret.exists(), "unlinked before ready");
+    assert!(mailbox.exists());
+    server.kill().unwrap();
+    server.wait().unwrap();
+    let mut events = String::new();
+    server.stderr.take().unwrap().read_to_string(&mut events).unwrap();
+    let all = format!("{ready}{events}");
+    assert!(!all.contains(&secret_text) && !all.contains(&secret_hex), "{all}");
 }
 
 #[test]
