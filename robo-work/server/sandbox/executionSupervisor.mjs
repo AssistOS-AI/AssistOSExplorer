@@ -275,7 +275,7 @@ export function createExecutionSupervisor({
         return files;
     }
 
-    // The folders of the request select the grants, with write access only where both the grant and the folder ask for it.
+    // The folders and the cwd of the request select the grants, with write access only where both the grant and the request ask for it.
     function selectGrants(request) {
         const chosen = [];
         // The request's exclusions are virtual paths; each becomes a grant-relative path of the admitted grant that holds it (or the
@@ -285,7 +285,9 @@ export function createExecutionSupervisor({
             const touching = request.folders.filter((folder) => folder.path === grant.path || folder.path.startsWith(`${grant.path}/`));
             const cwdInside = request.cwd === grant.path || request.cwd.startsWith(`${grant.path}/`);
             if (touching.length === 0 && !cwdInside) continue;
-            const wantsWrite = touching.some((folder) => folder.access === 'write');
+            // The working directory is writable (ALA DS006: "a read-only ancestor may contain the writable working directory"),
+            // so a cwd inside a write-admitted grant asks for write like a write folder does.
+            const wantsWrite = cwdInside || touching.some((folder) => folder.access === 'write');
             chosen.push({ name: grant.name, path: grant.hostPath, fd: grant.fd, mode: wantsWrite && grant.access === 'write' ? 'rw' : 'ro', exclusions: exclusionsByGrant.get(grant.name) ?? [] });
         }
         return chosen;

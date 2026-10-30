@@ -480,3 +480,25 @@ test('F6: every workload binds a generated resolv.conf with the firewall\'s name
         servers.close();
     } finally { world.done(); }
 });
+
+// F7 (e2e): ALA sends the working directory as `cwd` with no folder entry for it; DS006 makes the working directory
+// writable, so a cwd inside a write-admitted grant mounts it read-write, and a cwd inside a read grant stays read-only.
+test('workload: a cwd with no folder entry is writable inside a write grant and read-only inside a read grant', async () => {
+    const world = await rig();
+    try {
+        await world.supervisor.create({ kind: 'netns', resourceId: 'n1', locator: { netns: LOCATOR_ID } });
+        const servers = await streamServers(world, ['stdinaaaa', 'stdoutbbbb', 'stderrcccc']);
+        const sandbox = world.supervisor.providerSandbox(fakeLedger(world.supervisor));
+        await sandbox.start({
+            process: 1, request: request({ cwd: '/projects/a/src', folders: [] }),
+            streams: { stdin: '/stream/stdinaaaa', stdout: '/stream/stdoutbbbb', stderr: '/stream/stderrcccc' }
+        });
+        assert.deepEqual(world.launched.at(-1).grants.map((grant) => [grant.name, grant.mode]), [['a', 'rw']]);
+        await sandbox.start({
+            process: 2, request: request({ cwd: '/projects/b', folders: [] }),
+            streams: { stdin: '/stream/stdinaaaa', stdout: '/stream/stdoutbbbb', stderr: '/stream/stderrcccc' }
+        });
+        assert.deepEqual(world.launched.at(-1).grants.map((grant) => [grant.name, grant.mode]), [['b', 'ro']]);
+        servers.close();
+    } finally { world.done(); }
+});
