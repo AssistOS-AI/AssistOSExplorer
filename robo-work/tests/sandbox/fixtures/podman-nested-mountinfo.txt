@@ -1,0 +1,56 @@
+7325 7334 0:7 /fuse /dev/fuse rw,nosuid,noexec master:2 - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7326 7332 0:73 /containers/overlay-containers/007f94b241d49c7d88910f2eac74117b3cfe7b964c7e1dae29c08d3a3872ac6e/userdata/resolv.conf /etc/resolv.conf rw,nosuid,nodev,relatime - tmpfs tmpfs rw,size=3205244k,nr_inodes=801311,mode=700,uid=1000,gid=1000,inode64
+7327 7332 0:73 /containers/overlay-containers/007f94b241d49c7d88910f2eac74117b3cfe7b964c7e1dae29c08d3a3872ac6e/userdata/hosts /etc/hosts rw,nosuid,nodev,relatime - tmpfs tmpfs rw,size=3205244k,nr_inodes=801311,mode=700,uid=1000,gid=1000,inode64
+7328 7334 0:106 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=64000k,uid=1000,gid=1000,inode64
+7329 7332 0:73 /containers/overlay-containers/007f94b241d49c7d88910f2eac74117b3cfe7b964c7e1dae29c08d3a3872ac6e/userdata/.containerenv /run/.containerenv rw,nosuid,nodev,relatime - tmpfs tmpfs rw,size=3205244k,nr_inodes=801311,mode=700,uid=1000,gid=1000,inode64
+7330 7332 0:73 /containers/overlay-containers/007f94b241d49c7d88910f2eac74117b3cfe7b964c7e1dae29c08d3a3872ac6e/userdata/hostname /etc/hostname rw,nosuid,nodev,relatime - tmpfs tmpfs rw,size=3205244k,nr_inodes=801311,mode=700,uid=1000,gid=1000,inode64
+7331 7334 0:7 /net/tun /dev/net/tun rw,nosuid,noexec master:2 - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7332 7261 0:107 / / rw,relatime - overlay overlay rw,lowerdir=/home/skutner/.local/share/containers/storage/overlay/l/JDQVAH7A65LET6F5OIUDQRY3QY:/home/skutner/.local/share/containers/storage/overlay/l/UD5F7AX5IQ22AYXVB4G4XETD6V,upperdir=/home/skutner/.local/share/containers/storage/overlay/8d21b912ee32b7497ce1be57c74d4d06ac6629632dd0a65824e32509b617cdd3/diff,workdir=/home/skutner/.local/share/containers/storage/overlay/8d21b912ee32b7497ce1be57c74d4d06ac6629632dd0a65824e32509b617cdd3/work,redirect_dir=nofollow,uuid=on,fsync=volatile,userxattr
+7333 7332 0:112 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+7334 7332 0:113 / /dev rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,uid=1000,gid=1000,inode64
+7335 7332 0:115 / /sys ro,nosuid,nodev,noexec,relatime - sysfs sysfs rw
+7336 7334 0:116 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=100004,mode=620,ptmxmode=666
+7337 7334 0:111 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw
+7338 7335 0:30 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot,memory_hugetlb_accounting
+7339 7334 0:7 /null /dev/null rw,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7340 7334 0:7 /zero /dev/zero rw,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7341 7334 0:7 /full /dev/full rw,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7342 7334 0:7 /tty /dev/tty rw,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7343 7334 0:7 /random /dev/random rw,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7344 7334 0:7 /urandom /dev/urandom rw,nosuid,noexec - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7345 7333 0:117 / /proc/acpi ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7346 7333 0:7 /null /proc/kcore ro,nosuid master:2 - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7347 7333 0:7 /null /proc/keys ro,nosuid master:2 - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7348 7333 0:7 /null /proc/latency_stats ro,nosuid master:2 - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7349 7333 0:118 / /proc/scsi ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7350 7333 0:7 /null /proc/timer_list ro,nosuid master:2 - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7351 7335 0:119 / /sys/devices/virtual/powercap ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7352 7335 0:120 / /sys/firmware ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7353 7333 0:7 /null /proc/interrupts ro,nosuid master:2 - devtmpfs devtmpfs rw,size=15945728k,nr_inodes=3986432,mode=755,inode64
+7354 7335 0:123 / /sys/devices/system/cpu/cpu0/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7355 7335 0:124 / /sys/devices/system/cpu/cpu1/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7356 7335 0:125 / /sys/devices/system/cpu/cpu10/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7357 7335 0:126 / /sys/devices/system/cpu/cpu11/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7358 7335 0:127 / /sys/devices/system/cpu/cpu12/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7359 7335 0:128 / /sys/devices/system/cpu/cpu13/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7360 7335 0:129 / /sys/devices/system/cpu/cpu14/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7361 7335 0:130 / /sys/devices/system/cpu/cpu15/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7362 7335 0:131 / /sys/devices/system/cpu/cpu16/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7363 7335 0:132 / /sys/devices/system/cpu/cpu17/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7364 7335 0:133 / /sys/devices/system/cpu/cpu18/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7365 7335 0:134 / /sys/devices/system/cpu/cpu19/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7366 7335 0:135 / /sys/devices/system/cpu/cpu2/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7367 7335 0:136 / /sys/devices/system/cpu/cpu3/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7368 7335 0:137 / /sys/devices/system/cpu/cpu4/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7369 7335 0:138 / /sys/devices/system/cpu/cpu5/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7370 7335 0:139 / /sys/devices/system/cpu/cpu6/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7371 7335 0:140 / /sys/devices/system/cpu/cpu7/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7372 7335 0:141 / /sys/devices/system/cpu/cpu8/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7373 7335 0:142 / /sys/devices/system/cpu/cpu9/thermal_throttle ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7374 7351 0:143 / /sys/devices/virtual/powercap ro,relatime - tmpfs tmpfs rw,size=0k,uid=1000,gid=1000,inode64
+7375 7333 0:112 /asound /proc/asound ro,nosuid,nodev,noexec,relatime - proc proc rw
+7376 7333 0:112 /bus /proc/bus ro,nosuid,nodev,noexec,relatime - proc proc rw
+7377 7333 0:112 /fs /proc/fs ro,nosuid,nodev,noexec,relatime - proc proc rw
+7378 7333 0:112 /irq /proc/irq ro,nosuid,nodev,noexec,relatime - proc proc rw
+7379 7333 0:112 /sys /proc/sys ro,nosuid,nodev,noexec,relatime - proc proc rw
+7380 7333 0:112 /sysrq-trigger /proc/sysrq-trigger ro,nosuid,nodev,noexec,relatime - proc proc rw

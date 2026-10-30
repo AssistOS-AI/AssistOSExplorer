@@ -1,37 +1,52 @@
 // Pure builder of the per-role bwrap arguments (plan Revision 10, sections B and G).
 //
 // API
-//   buildBwrapArgs(spec) -> Buffer of NUL-terminated arguments, for `bwrap --args <fd>` (bwrap reads them in place).
-//   bwrapRealArgv({ argsFd, marker }) -> string[] : the REAL argv of the bwrap process (publication barrier):
-//        ['/usr/bin/bwrap', '--unshare-uts', '--hostname', marker, '--args', String(argsFd)]
-//     The marker `rw-<hex>` must be a literal element of the real argv so that recovery can match it with
+//   buildBwrapArgs(spec) -> Buffer of NUL-terminated OPTIONS, for `bwrap --args <fd>` (bwrap reads them in place). The
+//     buffer holds every option, including every environment value (`--setenv`), but NOT the command: bwrap takes the
+//     command only from its real argv (observed with bwrap 0.12.0: a `--` and command inside the --args data are ignored
+//     and bwrap prints its usage).
+//   bwrapCommand(spec) -> string[] : the command, for the real argv after `--`. orchestration and endpoint: spec.argv
+//     (node directly, no shell). workload and terminal: ['/bin/sh', stageScript, 'final', <fd allowlist csv>,
+//     <env names csv>, ...argv]; the environment VALUES are in the buffer and reach the command through stage.sh final.
+//   bwrapRealArgv({ argsFd, marker, command? }) -> string[] : the REAL argv of the bwrap process (publication barrier):
+//        ['/usr/bin/bwrap', '--unshare-uts', '--hostname', marker, '--args', String(argsFd), '--', ...command]
+//     The marker (the S1 reservation id) must be a literal element of the real argv so that recovery can match it with
 //     `cmdline.includes`; it is never put in the --args buffer. `--unshare-uts` precedes `--hostname` because bwrap
-//     requires it; the buffer repeats `--unshare-uts` harmlessly. stage.sh prep execs exactly this argv.
+//     requires it; the buffer repeats `--unshare-uts` harmlessly. stage.sh prep execs this argv.
 //   BWRAP_PATH, ROLES, FIXED_DESTINATIONS
 //
 // spec
 //   role            'orchestration' | 'endpoint' | 'workload' | 'terminal'
-//   marker          'rw-<hex>' (validated; used by bwrapRealArgv and the workload/terminal stage argument)
+//   marker          the S1 reservation id, [A-Za-z0-9_-]{8,64} not starting with '-' (validated; used by bwrapRealArgv and the workload/terminal stage argument)
 //   seccompFd, blockFd, infoFd, jsonStatusFd   control fd numbers, as seen by bwrap
 //   roBinds         [{ source, dest }]  image paths, read-only   (dest within FIXED_DESTINATIONS)
-//   fdBinds         [{ fd, dest, mode: 'ro' | 'rw' }]  anchored `--ro-bind-fd` / `--bind-fd`
+//   binds           [{ source, dest, mode: 'ro' | 'rw' }]  directories of the execution runtime directory (path binds)
+//   stageBinds      [{ name, dest, mode }]  anchored directories bound by prep at <stagingDir>/binds/<name> (orchestration,
+//                   endpoint; workload and terminal always get <stagingDir>/binds/home at /home/robot)
 //   symlinks        [{ target, dest }]  e.g. { target: 'usr/bin', dest: '/bin' }
-//   env             allowlisted environment: orchestration and endpoint get it as `--setenv`; workload and terminal get
-//                   it only as assignments to the final `env -i` in stage.sh
+//   env             allowlisted environment, always as `--setenv` in the buffer (never on a command line). Workload and
+//                   terminal names must be [A-Z_][A-Z0-9_]* and not one the shell itself honours (IFS, BASH_ENV, ENV, LD_*,
+//                   ...), because the values reach stage.sh's shell first; stage.sh final then keeps exactly the names
+//                   listed on its command line
 //   cwd, argv       working directory and the command (argv[0] must be non-empty, not start with '-', contain no '=')
 //   orchestration, endpoint: netMode 'none' (orchestration: --unshare-net) or 'join' (endpoint: joins the execution
 //     netns through nsenter before bwrap, so no --unshare-net); fixed NODE_CHANNEL_FD=3 and
 //     NODE_CHANNEL_SERIALIZATION_MODE=json are set, bwrap execs argv directly (no shell)
-//   workload, terminal: homeFd, stagingDir, channelsDir, stageScript (absolute path of stage.sh), fdAllow (default
+//   workload, terminal: stagingDir, channelsDir, stageScript (absolute path of stage.sh), fdAllow (default
 //     [0,1,2]), grants [{ name, mode: 'ro' | 'rw' }] bound from `<stagingDir>/projects/<name>` to `/projects/<name>`;
-//     bwrap runs `/bin/sh <stageScript> final <fdAllow csv> <KEY=value…> <argv…>`; workload adds --new-session,
+//     bwrap runs `/bin/sh <stageScript> final <fdAllow csv> <env names csv> <argv…>`; workload adds --new-session,
 //     terminal does not. Orchestration also gets --new-session.
 //   grantPaths      optional extra absolute paths that no source may be under
+//   procMasks       [{ path, kind, bwrap }] from procMasks.mjs (the worker container's /proc masks, re-applied after
+//                   `--proc /proc` in every role); each path must be /proc/<name>
+//   tmpDir          workload and terminal only: a runtime directory bound at /tmp over the tmpfs, so that a temporary
+//                   directory made by `tempdir` is shared by every workload of the execution
 //
 // Throws Error with code 'invalid_request' for an unknown role, a destination outside the fixed set, a source under a
 // grant (or under /projects), or malformed fields.
 
 import { isValidComponentName } from '../views/protectedNames.mjs';
+import { procMaskArgs } from './procMasks.mjs';
 
 export const BWRAP_PATH = '/usr/bin/bwrap';
 export const ROLES = Object.freeze(['orchestration', 'endpoint', 'workload', 'terminal']);
@@ -41,7 +56,11 @@ export const FIXED_DESTINATIONS = Object.freeze([
     '/opt/robo-work', '/run/robo-work', '/home/robot', '/session', '/config', '/stream'
 ]);
 
-const MARKER = /^rw-[0-9a-f]{8,48}$/;
+// The marker is the S1 reservation id (base64url, 22 characters): the walker matches `cmdline.includes(marker)`.
+const MARKER = /^[A-Za-z0-9_][A-Za-z0-9_-]{7,63}$/;
+export const STAGE_BIND_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const WORKLOAD_ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+const SHELL_HONOURED = /^(IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|CDPATH|GLOBIGNORE|LD_[A-Z0-9_]*|BASH_FUNC_[A-Z0-9_]*|_)$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const FIXED_NODE_ENV = Object.freeze({ NODE_CHANNEL_FD: '3', NODE_CHANNEL_SERIALIZATION_MODE: 'json' });
 
@@ -104,10 +123,21 @@ function checkArgv(argv) {
     return argv;
 }
 
-export function bwrapRealArgv({ argsFd, marker }) {
+export function bwrapRealArgv({ argsFd, marker, command = [] }) {
     if (!isFd(argsFd)) throw invalid('argsFd must be a file descriptor number');
     if (typeof marker !== 'string' || !MARKER.test(marker)) throw invalid('Invalid marker');
-    return [BWRAP_PATH, '--unshare-uts', '--hostname', marker, '--args', String(argsFd)];
+    if (!Array.isArray(command) || command.some((item) => typeof item !== 'string' || item.includes('\0'))) throw invalid('Invalid command');
+    return [BWRAP_PATH, '--unshare-uts', '--hostname', marker, '--args', String(argsFd), ...(command.length > 0 ? ['--', ...command] : [])];
+}
+
+export function bwrapCommand(spec) {
+    if (spec === null || typeof spec !== 'object' || !ROLES.includes(spec.role)) throw invalid('Unknown role');
+    checkArgv(spec.argv);
+    if (spec.role === 'orchestration' || spec.role === 'endpoint') return [...spec.argv];
+    cleanPath(spec.stageScript, 'stageScript');
+    const fdAllow = spec.fdAllow === undefined ? [0, 1, 2] : spec.fdAllow;
+    if (!Array.isArray(fdAllow) || fdAllow.some((fd) => !Number.isInteger(fd) || fd < 0 || fd > 1023)) throw invalid('Invalid fdAllow');
+    return ['/bin/sh', spec.stageScript, 'final', fdAllow.join(','), Object.keys(spec.env || {}).join(','), ...spec.argv];
 }
 
 export function buildBwrapArgs(spec) {
@@ -127,6 +157,12 @@ export function buildBwrapArgs(spec) {
         '--info-fd', String(spec.infoFd), '--json-status-fd', String(spec.jsonStatusFd)
     ];
 
+    const procMasks = spec.procMasks || [];
+    if (!Array.isArray(procMasks) || procMasks.some((mask) => !mask || typeof mask.path !== 'string' || !/^\/proc\/[A-Za-z0-9_.-]+$/u.test(mask.path))) {
+        throw invalid('Invalid procMasks');
+    }
+    args.push(...procMaskArgs(procMasks));
+
     for (const bind of spec.roBinds || []) {
         args.push('--ro-bind', checkSource(bind.source, spec), checkDestination(bind.dest));
     }
@@ -134,9 +170,18 @@ export function buildBwrapArgs(spec) {
         if (typeof link.target !== 'string' || link.target.includes('\0')) throw invalid('Invalid symlink');
         args.push('--symlink', link.target, checkDestination(link.dest));
     }
-    for (const bind of spec.fdBinds || []) {
-        if (!isFd(bind.fd) || !['ro', 'rw'].includes(bind.mode)) throw invalid('Invalid fd bind');
-        args.push(bind.mode === 'ro' ? '--ro-bind-fd' : '--bind-fd', String(bind.fd), checkDestination(bind.dest));
+    // Directories of the execution's own runtime directory (stream, channels, tmp): plain path binds.
+    for (const bind of spec.binds || []) {
+        if (!['ro', 'rw'].includes(bind.mode)) throw invalid('Invalid bind');
+        args.push(bind.mode === 'ro' ? '--ro-bind' : '--bind', checkSource(bind.source, spec), checkDestination(bind.dest));
+    }
+    // Anchored directories (session storage, config, HOME): prep bound them at <stagingDir>/binds/<name> after verifying
+    // their identity. `--bind-fd` cannot be used: the kernel refuses to bind a mount that belongs to another mount
+    // namespace, and a descriptor opened before `unshare --mount` refers to one (observed: EINVAL "wrong fs type").
+    for (const bind of spec.stageBinds || []) {
+        if (!STAGE_BIND_NAME.test(bind.name) || !['ro', 'rw'].includes(bind.mode)) throw invalid('Invalid stage bind');
+        cleanPath(spec.stagingDir, 'stagingDir');
+        args.push(bind.mode === 'ro' ? '--ro-bind' : '--bind', `${spec.stagingDir}/binds/${bind.name}`, checkDestination(bind.dest));
     }
 
     if (spec.role === 'orchestration' || spec.role === 'endpoint') {
@@ -149,20 +194,20 @@ export function buildBwrapArgs(spec) {
         const fixed = Object.entries(FIXED_NODE_ENV);
         for (const [key] of envEntries) if (key in FIXED_NODE_ENV) throw invalid(`${key} is fixed`);
         for (const [key, value] of [...fixed, ...envEntries]) args.push('--setenv', key, value);
-        args.push('--chdir', spec.cwd, '--', ...spec.argv);
+        args.push('--chdir', spec.cwd);
         return toBuffer(args);
     }
 
     // workload and terminal
-    if (spec.netMode !== 'join') throw invalid(`${spec.role} needs netMode join`);
-    if (!isFd(spec.homeFd)) throw invalid('homeFd must be a file descriptor number');
+    if (spec.netMode !== 'join' && spec.netMode !== 'none') throw invalid(`${spec.role} needs netMode join or none`);
     cleanPath(spec.stagingDir, 'stagingDir');
     checkSource(spec.channelsDir, spec);
     cleanPath(spec.stageScript, 'stageScript');
     const fdAllow = spec.fdAllow === undefined ? [0, 1, 2] : spec.fdAllow;
     if (!Array.isArray(fdAllow) || fdAllow.some((fd) => !Number.isInteger(fd) || fd < 0 || fd > 1023)) throw invalid('Invalid fdAllow');
     if (spec.role === 'workload') args.push('--new-session');
-    args.push('--bind-fd', String(spec.homeFd), '/home/robot');
+    if (spec.netMode === 'none') args.push('--unshare-net'); // network mode "none": loopback only
+    args.push('--bind', `${spec.stagingDir}/binds/home`, '/home/robot');
     const seen = new Set();
     for (const grant of spec.grants || []) {
         if (!grant || !isValidComponentName(grant.name) || !['ro', 'rw'].includes(grant.mode) || seen.has(grant.name)) {
@@ -172,8 +217,12 @@ export function buildBwrapArgs(spec) {
         args.push(grant.mode === 'ro' ? '--ro-bind' : '--bind', `${spec.stagingDir}/projects/${grant.name}`, `/projects/${grant.name}`);
     }
     args.push('--ro-bind', spec.channelsDir, '/run/robo-work/channels');
-    args.push('--chdir', spec.cwd, '--', '/bin/sh', spec.stageScript, 'final', fdAllow.join(','),
-        ...envEntries.map(([key, value]) => `${key}=${value}`), ...spec.argv);
+    if (spec.tmpDir !== undefined) args.push('--bind', checkSource(spec.tmpDir, spec), '/tmp');
+    for (const [key, value] of envEntries) {
+        if (!WORKLOAD_ENV_NAME.test(key) || SHELL_HONOURED.test(key)) throw invalid(`Environment name not allowed: ${key}`);
+        args.push('--setenv', key, value);
+    }
+    args.push('--chdir', spec.cwd);
     return toBuffer(args);
 }
 

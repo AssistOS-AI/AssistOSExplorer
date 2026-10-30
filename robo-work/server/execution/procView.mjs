@@ -133,12 +133,29 @@ export function createProcView({
         return devices ? { fdNs, devs } : { fdNs };
     }
 
+    // State Z with a single thread (read from status; both fields are world-readable).
+    function isDeadZombie(pid) {
+        try {
+            const text = fs.readFileSync(at(pid, 'status'), 'utf8');
+            return /^State:\s*Z\b/mu.test(text) && /^Threads:\s*1\s*$/mu.test(text);
+        } catch { return false; }
+    }
+
     function readProcess(pid) {
         const stat = parseStatLine(guarded(`${pid}/stat`, () => fs.readFileSync(at(pid, 'stat'), 'utf8')));
         if (!stat || stat.pid !== pid) throw new ProcUnreadable(`${pid}/stat`);
         const raw = guarded(`${pid}/cmdline`, () => fs.readFileSync(at(pid, 'cmdline')));
         const cmdline = raw.length === 0 ? [] : raw.toString('utf8').replace(/\0$/u, '').split('\0');
-        const { fdNs } = readFds(pid);
+        let fdNs;
+        try {
+            ({ fdNs } = readFds(pid));
+        } catch (error) {
+            // A zombie's descriptors are unreadable (EACCES on Linux). A zombie group leader with no other thread holds nothing and
+            // runs nothing, and a container whose pid 1 does not reap leaves such zombies behind: it counts as gone. A
+            // leader with live threads still runs, so its unreadable state stays an error.
+            if (error instanceof ProcUnreadable && isDeadZombie(pid)) throw new Vanished(`${pid}/fd`);
+            throw error;
+        }
         return { pid, ppid: stat.ppid, startTime: stat.startTime, cmdline, pidNs: nsLink(pid, 'pid'), netNs: nsLink(pid, 'net'), mntNs: nsLink(pid, 'mnt'), fdNs };
     }
 

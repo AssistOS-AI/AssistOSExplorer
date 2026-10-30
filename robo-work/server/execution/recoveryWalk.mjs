@@ -164,6 +164,9 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
             for (const mount of view.listMounts()) if (mount.mountpoint === blocker.locator.mountpoint) view.unmount({ mountId: mount.mountId, mountpoint: mount.mountpoint });
             return;
         }
+        // An execution network (netns, veth, nft table) is named from the netns locator alone, so a leftover is removed by
+        // that locator whether or not the identity was committed (the namespace inode is held by the /run/netns mount).
+        if (kind === 'netns') { view.remove?.('netns', blocker.locator); return; }
         if (LOCATOR_KINDS.has(kind) && view.exists(kind, blocker.locator)) view.remove(kind, blocker.locator);
     }
 
