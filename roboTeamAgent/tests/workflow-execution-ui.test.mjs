@@ -87,12 +87,15 @@ test('phase controls pause through the phase endpoint and resume through workflo
         flowControlPending: false, selectedInstanceId: null, phasePauseControl,
         document: { querySelector: () => null }, renderHeader() { redraws++; }, renderPhases() {},
         setMessage(message) { this.error = message; },
-        post: async route => { count++; context.route = route; await new Promise(resolve => { complete = resolve; }); }, refresh: async () => {},
+        post: async route => { count++; context.route = route; await new Promise(resolve => { complete = resolve; }); },
+        // A pause is a user stop: it goes through the one exact path that carries the user's own grant to the worker.
+        postJson: async (route, body) => { count++; context.route = route; context.body = body; await new Promise(resolve => { complete = resolve; }); }, refresh: async () => {},
     };
     vm.runInNewContext(handlers, context);
     const pause = context.pausePhase('visit');
     assert.equal(context.flowControlPending, true);
-    assert.equal(context.route, 'api/roboflow/flows/flow_test/instances/visit/pause');
+    assert.equal(context.route, 'api/roboflow/control');
+    assert.deepEqual({ ...context.body }, { flowId: 'flow_test', action: 'pause-instance', instanceId: 'visit' });
     await context.pausePhase('visit'); assert.equal(count, 1);
     complete(); await pause; assert.equal(context.flowControlPending, false);
     context.currentFlow = { status: 'paused', instances: [{ id: 'visit', state: 'paused' }] };

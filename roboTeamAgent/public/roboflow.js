@@ -477,7 +477,7 @@ function renderPhaseComposer(container, instance) {
         status.textContent = running ? 'Sending…' : 'Continuing…';
         try {
             if (running) {
-                const result = await postJson(`api/roboflow/flows/${encodeURIComponent(selected)}/instances/${encodeURIComponent(instance.id)}/message`, { prompt });
+                const result = await postJson('api/roboflow/control', { flowId: selected, action: 'message-instance', instanceId: instance.id, prompt });
                 status.textContent = `Delivered: ${result.delivery || 'sent'}`;
             } else {
                 await postJson(`api/roboflow/flows/${encodeURIComponent(selected)}/instances/${encodeURIComponent(instance.id)}/resume`, { prompt });
@@ -600,14 +600,16 @@ async function toggleFlowPause() {
     if (!selected) return;
     const action = currentFlow?.status === 'paused' ? 'resume' : 'pause';
     if (action === 'resume' && currentFlow?.humanInput?.status === 'pending') return;
-    await changeFlowControl(`api/roboflow/flows/${encodeURIComponent(selected)}/${action}`);
+    // A pause is a user stop: it goes through the one exact path that carries the user's own grant to the worker.
+    if (action === 'pause') await changeFlowControl('api/roboflow/control', { flowId: selected, action: 'pause' });
+    else await changeFlowControl(`api/roboflow/flows/${encodeURIComponent(selected)}/${action}`);
 }
 
 async function pausePhase(instanceId) {
     if (!selected) return;
     const control = phasePauseControl(currentFlow?.instances.find(instance => instance.id === instanceId), currentFlow);
     if (!control || control.action !== 'pause' || control.disabled) return;
-    await changeFlowControl(`api/roboflow/flows/${encodeURIComponent(selected)}/instances/${encodeURIComponent(instanceId)}/pause`);
+    await changeFlowControl('api/roboflow/control', { flowId: selected, action: 'pause-instance', instanceId });
 }
 
 async function resumePhase(instanceId) {
@@ -626,11 +628,16 @@ function renderFlowControls() {
     if (instance && header) renderPhaseHeader(header, instance);
 }
 
-async function changeFlowControl(path) {
+async function changeFlowControl(path, body = null) {
     if (flowControlPending) return;
     flowControlPending = true;
     renderFlowControls();
-    try { await post(path); await refresh(); }
+    try {
+        const result = body ? await postJson(path, body) : await post(path);
+        await refresh();
+        // A stop the worker did not receive is told, never silent.
+        if (result?.workerNotice) setMessage(result.workerNotice, true);
+    }
     catch (error) { setMessage(error.message, true); }
     finally { flowControlPending = false; renderFlowControls(); }
 }
@@ -748,8 +755,9 @@ confirmTerminateButton.onclick = async () => {
     confirmTerminateButton.textContent = 'Terminating…';
     terminateDialogError.hidden = true;
     try {
-        await post(`api/roboflow/flows/${encodeURIComponent(selected)}/terminate`);
+        const result = await postJson('api/roboflow/control', { flowId: selected, action: 'terminate' });
         terminateDialog.close();
+        if (result?.workerNotice) setMessage(result.workerNotice, true);
         await refresh().catch(error => setMessage(error.message, true));
     } catch (error) {
         terminateDialogError.textContent = error.message;

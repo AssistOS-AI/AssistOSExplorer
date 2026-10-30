@@ -574,10 +574,10 @@ export class RuntimeManager {
     // record carries the stopping request's own grant when it has one (decision M-12 (b), M-21): in
     // memory and on stdin only, never persisted. Without a grant the child reports the stop as not
     // confirmed.
-    _stopChild(child, { ownerGrant = null } = {}) {
+    _stopChild(child, { ownerGrant = null, userInitiated = false } = {}) {
         if (!child) return;
         if (!this.workerMode) { child.kill('SIGTERM'); return; }
-        try { child.stdin?.write(`${JSON.stringify({ type: 'stop', ...(typeof ownerGrant === 'string' && ownerGrant ? { ownerGrant } : {}) })}\n`); } catch { /* the backstop below ends it */ }
+        try { child.stdin?.write(`${JSON.stringify({ type: 'stop', ...(userInitiated ? { user: true } : {}), ...(typeof ownerGrant === 'string' && ownerGrant ? { ownerGrant } : {}) })}\n`); } catch { /* the backstop below ends it */ }
         const timer = setTimeout(() => child.kill('SIGTERM'), 30000);
         timer.unref?.();
         child.once?.('close', () => clearTimeout(timer));
@@ -906,14 +906,17 @@ export class RuntimeManager {
         saveTaskExecution(this, { ...task, request: { ...task.request, cwd } });
     }
 
-    async sendTaskMessage(robot, taskId, prompt) {
+    // `ownerGrant` is the messaging request's own grant (decision M-12 (b)); it reaches the task child over stdin only and
+    // authorizes this one worker `message` control. A message without one is rejected by the worker engine, never sent
+    // under another credential.
+    async sendTaskMessage(robot, taskId, prompt, { ownerGrant = null } = {}) {
         const task = this.tasks.get(taskId);
         if (!task || task.robotId !== robot.id || !['queued', 'starting', 'running'].includes(task.state)) {
             throw this._messageFailure('run_ended', 'Task is no longer running; continue it instead.');
         }
         const message = String(prompt || '').trim();
         if (!message || message.length > 32768) throw this._messageFailure('rejected', 'Message must contain 1 to 32768 characters.');
-        const command = { type: 'message', id: crypto.randomUUID(), message };
+        const command = { type: 'message', id: crypto.randomUUID(), message, ...(this.workerMode && typeof ownerGrant === 'string' && ownerGrant ? { ownerGrant } : {}) };
         if (!task.controlReady) {
             if (task.pendingMessages.length >= 100) throw this._messageFailure('rejected', 'Task message queue is full.');
             task.pendingMessages.push(command);
@@ -949,7 +952,7 @@ export class RuntimeManager {
         return id ? this.taskStatus(robotId, id) : null;
     }
 
-    stopTask(robot, expectedType = null, taskId = null, { manualControl = false, ownerGrant = null } = {}) {
+    stopTask(robot, expectedType = null, taskId = null, { manualControl = false, ownerGrant = null, userInitiated = false } = {}) {
         if (!taskId && expectedType === 'simple') {
             const candidates = [...this.tasks.values()].filter((task) => task.robotId === robot.id
                 && task.type === 'simple' && ['queued', 'starting', 'running'].includes(task.state));
@@ -981,7 +984,7 @@ export class RuntimeManager {
                 // only the child's confirmed exit makes it `paused` (an unconfirmed stop makes it `failed`).
                 if (this.workerMode && !neverStarted) internal.state = 'pausing';
                 else { internal.state = 'paused'; internal.completedAt = new Date().toISOString(); }
-                this._stopChild(internal.child, { ownerGrant });
+                this._stopChild(internal.child, { ownerGrant, userInitiated });
                 // A queued attempt never reaches its run's terminal report.
                 if (neverStarted) this._emitTaskTerminal(internal, { state: 'paused', result: internal.result, error: internal.error });
             }
@@ -990,8 +993,8 @@ export class RuntimeManager {
         return { taskId: operation.taskId, state: operation.state };
     }
 
-    takeControl(robot, taskId, { ownerGrant = null } = {}) {
-        return this.stopTask(robot, null, taskId, { manualControl: true, ownerGrant });
+    takeControl(robot, taskId, { ownerGrant = null, userInitiated = false } = {}) {
+        return this.stopTask(robot, null, taskId, { manualControl: true, ownerGrant, userInitiated });
     }
 
     // Every continuation is a new attempt with its own task id. Its owner is the

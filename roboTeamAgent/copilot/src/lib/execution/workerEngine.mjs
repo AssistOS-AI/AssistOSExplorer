@@ -498,7 +498,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             stopSent = true;
             try {
                 await client.control(referenceId, { operationId: stopOperationId(referenceId), op: 'stop' },
-                    controlAuth(authority, reason?.owner?.evidence, { user: authority.mode === 'grant' && user }));
+                    controlAuth(authority, reason?.owner?.evidence, { user: authority.mode === 'grant' || (user && reason?.userInitiated === true) }));
                 stopTimer = setTimeout(() => { if (!terminal) { stopTimedOut = true; streamAbort.abort(); } }, stopWaitMs);
                 stopTimer.unref?.();
             } catch (error) {
@@ -508,15 +508,15 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             }
         };
 
-        // A user's stop pressed in the chat (decision M-12 (b)). It is a control, not an abort: sent to the worker with the stopping
-        // request's own grant when the stop carries one, else with the newest unexpired grant the user's own verified envelopes
-        // supplied (the Router's stop button carries none). The turn stays open until the worker ends the execution, so a stop that
-        // cannot be delivered is reported and the user simply presses stop again; the control is one idempotent operation.
+        // A user's stop pressed in the chat (decisions M-12 (b), M-40). It is a control, not an abort, and it is authorized only by the
+        // grant of its own request (the Router's signed stop envelope). No earlier grant is borrowed: a stop without a usable grant of
+        // its own (an unsigned control from an older Router, or an expired grant) is not delivered, the turn keeps running, and the user
+        // is told to press stop again. The turn stays open until the worker ends the execution; the control is one idempotent operation.
         operation.stop = async (stopOwner = null) => {
-            const evidence = usable(stopOwner?.evidence) ? stopOwner.evidence : (authority.mode === 'grant' ? authority.best() : null);
+            const evidence = usable(stopOwner?.evidence) ? stopOwner.evidence : null;
             try {
                 await client.control(referenceId, { operationId: stopOperationId(referenceId), op: 'stop' },
-                    controlAuth(authority, evidence, { user: authority.mode === 'grant' }));
+                    controlAuth(authority, evidence, { user: true }));
             } catch (error) {
                 const code = error?.code === 'forbidden' || error?.code === 'owner_evidence_unavailable' ? 'worker_stop_not_authorized' : (error?.code || 'worker_stop_undelivered');
                 phase('stop.not_delivered', { code });

@@ -156,6 +156,42 @@ test('a user stop sends its own grant to the child over stdin; the task is pausi
     for (const file of files) assert.equal((await fs.readFile(file, 'utf8').catch(() => '')).includes('STOPSIGNATURE'), false, file);
 });
 
+test('a user-initiated stop is marked so, with or without a grant; a system stop carries neither', async (t) => {
+    const f = await runningTask(t);
+    f.manager.stopTask(f.robot, 'simple', f.accepted.taskId, { ownerGrant: 'h.e30.USERSTOP', userInitiated: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(f.child.lines().find((record) => record.type === 'stop'), { type: 'stop', user: true, ownerGrant: 'h.e30.USERSTOP' });
+    const g = await runningTask(t);
+    g.manager.stopTask(g.robot, 'simple', g.accepted.taskId, { userInitiated: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(g.child.lines().find((record) => record.type === 'stop'), { type: 'stop', user: true }, 'a user stop with no grant says so; the child cannot fall back to the binding');
+    const h = await runningTask(t);
+    h.manager.stopTask(h.robot, 'simple', h.accepted.taskId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(h.child.lines().find((record) => record.type === 'stop'), { type: 'stop' });
+});
+
+test('a live message carries the messaging request\'s own grant to the child over stdin only', async (t) => {
+    const f = await runningTask(t);
+    f.child.child.stderr.write(`@@ALA_EVENT@@${JSON.stringify({ type: 'session-ready' })}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const pending = f.manager.sendTaskMessage(f.robot, f.accepted.taskId, 'more please', { ownerGrant: 'h.e30.MSGSIG' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const record = f.child.lines().find((line) => line.type === 'message');
+    assert.equal(record.message, 'more please');
+    assert.equal(record.ownerGrant, 'h.e30.MSGSIG');
+    assert.equal(JSON.stringify(f.manager.taskStatus(f.robot.id, f.accepted.taskId)).includes('MSGSIG'), false);
+    f.child.child.stderr.write(`@@ALA_EVENT@@${JSON.stringify({ type: 'message-accepted', id: record.id, delivery: 'delivered' })}\n`);
+    assert.equal((await pending).delivery, 'delivered');
+    // Without a grant the record carries none.
+    const next = f.manager.sendTaskMessage(f.robot, f.accepted.taskId, 'again');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const plain = f.child.lines().filter((line) => line.type === 'message').at(-1);
+    assert.equal(Object.hasOwn(plain, 'ownerGrant'), false);
+    f.child.child.stderr.write(`@@ALA_EVENT@@${JSON.stringify({ type: 'message-accepted', id: plain.id, delivery: 'delivered' })}\n`);
+    await next;
+});
+
 test('a stop the worker did not confirm is recorded as stop_not_confirmed, never paused', async (t) => {
     const f = await runningTask(t);
     f.manager.stopTask(f.robot, 'simple', f.accepted.taskId);

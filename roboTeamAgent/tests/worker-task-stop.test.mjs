@@ -8,7 +8,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { RuntimeManager } from '../server/runtime-manager.mjs';
-import { STOP_NOT_CONFIRMED_EXIT, stopReasonFromRecord, taskExitCode } from '../server/worker-coordinator/task-exit.mjs';
+import { STOP_NOT_CONFIRMED_EXIT, messageForEngine, stopReasonFromRecord, taskExitCode } from '../server/worker-coordinator/task-exit.mjs';
 import { WorkerError } from '../server/worker-coordinator/worker-client.mjs';
 import { taskOriginId } from '../server/worker-coordinator/flow-origins.mjs';
 import { createWorkerEngine } from '../copilot/src/lib/execution/workerEngine.mjs';
@@ -165,4 +165,16 @@ test('exit codes: only an aborted outcome that may still run is 75', () => {
     assert.equal(taskExitCode(Object.assign(new Error('x'), { execution: 'finished' }), true), 130);
     assert.equal(taskExitCode(new Error('interrupted'), true), 130);
     assert.equal(taskExitCode(new Error('x'), false), 1);
+});
+
+test('the child turns a stop record into a user-initiated abort, and a message record into one control with its own grant', () => {
+    const user = stopReasonFromRecord({ type: 'stop', user: true, ownerGrant: 'h.e30.G' });
+    assert.equal(user.userInitiated, true);
+    assert.deepEqual(user.owner, { evidence: { ok: true, grant: 'h.e30.G' } });
+    assert.equal(stopReasonFromRecord({ type: 'stop', user: true }).userInitiated, true, 'a user stop with no grant stays a user stop');
+    assert.equal(stopReasonFromRecord({ type: 'stop' }).userInitiated, false, 'a system stop');
+    const message = messageForEngine({ type: 'message', id: 'm1', message: 'hi', ownerGrant: 'h.e30.M' });
+    assert.deepEqual(message, { type: 'message', id: 'm1', message: 'hi', owner: { evidence: { ok: true, grant: 'h.e30.M' } } });
+    assert.equal(Object.hasOwn(message, 'ownerGrant'), false, 'the grant is not kept in the record');
+    assert.deepEqual(messageForEngine({ type: 'message', id: 'm2', message: 'hi' }), { type: 'message', id: 'm2', message: 'hi' });
 });

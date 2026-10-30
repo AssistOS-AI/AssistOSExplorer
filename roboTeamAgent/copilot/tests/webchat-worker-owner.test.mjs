@@ -101,7 +101,7 @@ test('the stop button, the signed stop and Escape each stop the engine\'s turn a
     f.dispatcher.receive(stopControl());
     await settle();
     assert.equal(stops.length, 1);
-    assert.equal(stops[0].owner, null, 'the Router\'s stop control carries no grant; the engine falls back to the user\'s newest unexpired one');
+    assert.equal(stops[0].owner, null, 'an older Router\'s unsigned stop carries no grant, and the engine borrows none (decision M-40)');
     assert.equal(typeof stops[0].turnId, 'string');
     // A signed stop envelope carries the user\'s grant for the worker stop.
     f.dispatcher.receive(JSON.stringify({ __webchatMessage: 1, version: 1, text: '', event: 'stop', sourceTabId: 'tabA', sourcePageInstanceId: 'page1',

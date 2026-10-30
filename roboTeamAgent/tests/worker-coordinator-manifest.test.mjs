@@ -17,9 +17,10 @@ const PROVIDER_ADMISSION = Object.freeze({ key: 'providerAdmission', targetAgent
 
 // The exact set of paths whose routed requests the Router mints `providerAdmission` for (decisions
 // M-13 and M-21, base section 8.2): the worker coordinator API, robot create and update, flow start,
-// schedule run-now, the `/api/control` task start and the human-input answer. `/api/robots/*` is the narrowest grammar for `/api/robots/<id>/coding-agents`
+// schedule run-now, the `/api/control` task start, the human-input answer, the RoboFlow user controls (`/api/roboflow/control`: pause, terminate, a phase's pause and live message) and Live Sessions (`/api/live-sessions/*`: a run's stop and message; the Router's trailing `/*` also matches the list route, which mints a grant it never uses). `/api/robots/*` is the narrowest grammar for `/api/robots/<id>/coding-agents`
 // (a path ends in one `/*`), and the Router's trailing `/*` also matches the bare prefix.
-const MINTING = ['/api/worker/*', '/api/robots/*', '/api/roboflow/flows', '/api/roboflow/schedules/*', '/api/control', '/api/roboflow/human-input/answer'];
+const MINTING = ['/api/worker/*', '/api/robots/*', '/api/roboflow/flows', '/api/roboflow/schedules/*', '/api/control', '/api/roboflow/human-input/answer',
+    '/api/roboflow/control', '/api/live-sessions/*'];
 
 test('E14: the grant-bearing routes are exactly the declared set, each before the broad route, which mints nothing', () => {
     const manifest = readManifest();
@@ -35,7 +36,8 @@ test('E14: the grant-bearing routes are exactly the declared set, each before th
     // The Router's first-match selection: these paths get exactly one grant.
     const minting = ['/api/worker/admissions', '/api/worker/lookup', `/api/worker/references/${'r'.repeat(22)}/control`, '/api/worker/bindings', '/api/worker/robots/ensure',
         '/api/robots', '/api/robots/import-emails', '/api/robots/default-ab12cd/coding-agents',
-        '/api/roboflow/flows', '/api/roboflow/schedules', `/api/roboflow/schedules/cron_${'0f'.repeat(12)}/run-now`, '/api/control', '/api/roboflow/human-input/answer'];
+        '/api/roboflow/flows', '/api/roboflow/schedules', `/api/roboflow/schedules/cron_${'0f'.repeat(12)}/run-now`, '/api/control', '/api/roboflow/human-input/answer',
+        '/api/roboflow/control', `/api/live-sessions/${'a'.repeat(32)}/stop`, `/api/live-sessions/${'a'.repeat(32)}/messages`];
     for (const pathname of minting) {
         const definition = routeDefinition(`${PREFIX}${pathname}`);
         assert.deepEqual(definition.delegations.map((entry) => [entry.key, entry.targetAgentId, entry.tools, entry.scope, entry.ttlSeconds]),
@@ -48,7 +50,7 @@ test('E14: the grant-bearing routes are exactly the declared set, each before th
     // Every other path mints nothing, including the flow endpoints that do not start a flow.
     const silent = ['/api/roboflow/schedules-x', '/api/roboflow/flows/flow_aaaaaaaaaaaaaaaaaaaaaaaa', '/api/roboflow/flows/flow_aaaaaaaaaaaaaaaaaaaaaaaa/pause',
         '/api/roboflow/workflows', '/api/roboflow/generate', '/api/roboflow', '/api/roboflow/validate', '/api/workers', '/api/worker-x/admissions', '/api/robot',
-        '/api/robots-x', '/api/control/', '/api/controls', '/api/control-x', '/api/roboflow/human-input', '/api/roboflow/human-input/answer/x', '/api/live-sessions', '/api/terminal-profiles/resolve', '/status', '/flows', '/'];
+        '/api/robots-x', '/api/control/', '/api/controls', '/api/control-x', '/api/roboflow/human-input', '/api/roboflow/human-input/answer/x', '/api/roboflow/controls', '/api/roboflow/control/x', '/api/live-sessions-x', '/api/terminal-profiles/resolve', '/status', '/flows', '/'];
     for (const pathname of silent) {
         assert.deepEqual(routeDefinition(`${PREFIX}${pathname}`).delegations, [], pathname);
         assert.equal(Object.hasOwn(authInfoOf(routedHeaders({ id: 'alice', roles: ['user'] }, 'GET', pathname)), 'delegations'), false, pathname);

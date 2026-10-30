@@ -421,31 +421,36 @@ export class RoboFlowService {
         this.onRuntimeTaskEvent({ kind: 'terminal', taskId, state: 'completed', result: decision.event.result });
         while (this.chains.size) await Promise.allSettled([...this.chains.values()]);
     }
-    // A flow cancel, pause or failure ends the worker's execution of a phase too (decision M-12 (c)): a
-    // system-initiated stop with the coordinator identity and the flow binding, no user grant. The
-    // operation ID is the one the phase's own child uses, so both are one stop at the worker. Best effort:
-    // a phase the worker never admitted, or already ended, needs none, and a stop the worker refuses is
-    // logged and left to the worker's own end-of-run handling.
-    async _stopWorkerPhase(flow, instance) {
+    // A flow cancel, pause or failure ends the worker's execution of a phase too (decision M-12 (c)). A
+    // system-initiated stop (a flow failure, recovery) uses the coordinator identity and the flow binding. A
+    // user's pause or terminate (`user.grant`, decision M-12 (b), M-40) carries that request's own grant and
+    // never the binding. The operation ID is the one the phase's own child uses, so both are one stop at the
+    // worker. Best effort: a phase the worker never admitted, or already ended, needs none, and a stop the
+    // worker refuses is logged and left to the worker's own end-of-run handling.
+    async _stopWorkerPhase(flow, instance, user = null) {
         if (!this.worker || !instance.runtimeTaskId) return;
         try {
             const origin = phaseOriginId({ flowId: flow.id, instanceId: instance.id, runtimeTaskId: instance.runtimeTaskId });
-            const auth = { bindingId: flow.id };
+            if (user && !user.grant) throw Object.assign(new Error('owner_evidence_unavailable'), { code: 'owner_evidence_unavailable' });
+            const auth = user ? { grant: user.grant } : { bindingId: flow.id };
             const accepted = await this.worker.client.lookup(origin, auth);
             if (!accepted) return;
             await this.worker.client.control(accepted.referenceId, { operationId: stopOperationId(accepted.referenceId), op: 'stop' }, auth);
         } catch (error) {
             console.error(`[roboflow] worker stop of a phase was not delivered (${error?.code || error?.message}); the phase may still run on the worker`);
+            // A user's stop that did not reach the worker is told to that user, never silent.
+            if (user && Array.isArray(user.undelivered)) user.undelivered.push({ instanceId: instance.id, code: error?.code || 'worker_stop_undelivered' });
         }
     }
-    async _fail(id, message, status = 'failed') {
+    // `user` is `{ grant }` for a user's pause (the request's own grant), null for a system-initiated failure.
+    async _fail(id, message, status = 'failed', user = null) {
         const flow = await this.store.get(id);
         if (!flow || flow.status === 'terminated') return;
         const active = flow.instances.filter(instance => !terminal(instance.state));
         if (!active.length) return;
         if (!flow.pauseRequested && active.some(instance => instance.creatorInstanceId)) {
             await this.store.update(id, current => { current.pauseRequested = true; });
-            await this.subflows.pauseChildren(flow);
+            await this.subflows.pauseChildren(flow, user);
         }
         const started = new Map();
         for (const instance of active) if (instance.runtimeTaskId) {
@@ -454,8 +459,8 @@ export class RoboFlowService {
             if (robot) {
                 const runtime = this.runtimeManager.taskStatus?.(robot.id, instance.runtimeTaskId);
                 if (runtime?.startedAt) started.set(instance.id, runtime.startedAt);
-                try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId); } catch { /* Runtime may already be terminal. */ } }
-            await this._stopWorkerPhase(flow, instance);
+                try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId, this._userStop(user)); } catch { /* Runtime may already be terminal. */ } }
+            await this._stopWorkerPhase(flow, instance, user);
         }
         await this.store.update(id, current => {
             current.error = message; current.finishedAt = new Date().toISOString();
@@ -466,18 +471,23 @@ export class RoboFlowService {
             current.status = deriveFlowStatus(current.instances);
         });
     }
-    async pauseFlow(id) {
+    // The stop options of a user-initiated stop: the request's own grant and the mark that a person asked for it, so the phase's
+    // task child uses that grant and never the flow binding. Empty for a system stop.
+    _userStop(user) {
+        return user ? { userInitiated: true, ...(user.grant ? { ownerGrant: user.grant } : {}) } : undefined;
+    }
+    async pauseFlow(id, user = null) {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
             if (['pending', 'completed', 'failed', 'terminated'].includes(flow.status)) return this.getFlow(id);
             await this.store.update(id, current => { current.pauseRequested = true; });
-            await this.subflows.pauseChildren(flow);
-            await this._fail(id, 'Paused by user', 'paused');
+            await this.subflows.pauseChildren(flow, user);
+            await this._fail(id, 'Paused by user', 'paused', user);
             return this.getFlow(id);
         });
     }
-    async terminateFlow(id) {
+    async terminateFlow(id, user = null) {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
@@ -492,26 +502,27 @@ export class RoboFlowService {
                 }
             });
             const children = [...new Set(flow.instances.flatMap(item => item.childFlowIds || []))];
-            const results = await Promise.allSettled(children.map(child => this.terminateFlow(child)));
+            const results = await Promise.allSettled(children.map(child => this.terminateFlow(child, user)));
             for (const visit of flow.instances) if (visit.runtimeTaskId && !['completed', 'failed'].includes(visit.state)) {
                 this.bindings.delete(visit.runtimeTaskId);
                 const robot = await this.robotStore.getByName(visit.robotName);
                 if (robot) results.push(await Promise.resolve().then(() => this.runtimeManager.stopTask(
-                    robot, EXECUTION_TASK_TYPES[visit.executionType], visit.runtimeTaskId))
+                    robot, EXECUTION_TASK_TYPES[visit.executionType], visit.runtimeTaskId, this._userStop(user)))
                     .then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason })));
+                if (user) await this._stopWorkerPhase(flow, visit, user);
             }
             const failures = results.filter(result => result.status === 'rejected');
             if (failures.length) throw new Error(`Workflow terminated, but stopping execution failed: ${failures.map(item => item.reason.message).join('; ')}`);
             return this.getFlow(id);
         });
     }
-    async pauseInstance(id, instanceId) {
+    async pauseInstance(id, instanceId, user = null) {
         const flow = await this.store.get(id);
         if (!flow) throw missing();
         const instance = flow.instances.find(item => item.id === instanceId);
         if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
         if (terminal(instance.state)) return this.getFlow(id);
-        return this.pauseFlow(id);
+        return this.pauseFlow(id, user);
     }
     async resumeFlow(id) {
         return this._serialize(id, async () => {
@@ -532,7 +543,8 @@ export class RoboFlowService {
             return this.getFlow(id);
         });
     }
-    async messageInstance(id, instanceId, prompt) {
+    // `user.grant` is the messaging request's own grant for the worker `message` control (decision M-12 (b)).
+    async messageInstance(id, instanceId, prompt, user = null) {
         const flow = await this.store.get(id);
         if (!flow) throw missing();
         const instance = flow.instances.find(item => item.id === instanceId);
@@ -543,7 +555,7 @@ export class RoboFlowService {
         const message = textField(prompt, 'prompt', 32768, true);
         const robot = await this.robotStore.getByName(instance.robotName);
         if (!robot) throw new Error('Robot is unavailable');
-        const delivery = await this.runtimeManager.sendTaskMessage(robot, instance.runtimeTaskId, message);
+        const delivery = await this.runtimeManager.sendTaskMessage(robot, instance.runtimeTaskId, message, user?.grant ? { ownerGrant: user.grant } : undefined);
         await this.store.writeOutput(id, instanceId, `\n${message.split(/\r?\n/).map(line => `you> ${line}`).join('\n')}\n\n`);
         return { ...delivery, flow: await this.getFlow(id) };
     }

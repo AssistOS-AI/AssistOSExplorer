@@ -151,6 +151,40 @@
         ]
       },
       {
+        "path": "/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/control",
+        "access": "authenticated",
+        "delegations": [
+          {
+            "key": "providerAdmission",
+            "targetAgentId": "agent:./robo-work",
+            "tools": [
+              "__coordinator_admission__"
+            ],
+            "scopes": [
+              "execution:owner"
+            ],
+            "ttlSeconds": 30
+          }
+        ]
+      },
+      {
+        "path": "/base-agent-additional-server/roboTeamAgent/3001/api/live-sessions/*",
+        "access": "authenticated",
+        "delegations": [
+          {
+            "key": "providerAdmission",
+            "targetAgentId": "agent:./robo-work",
+            "tools": [
+              "__coordinator_admission__"
+            ],
+            "scopes": [
+              "execution:owner"
+            ],
+            "ttlSeconds": 30
+          }
+        ]
+      },
+      {
         "path": "/base-agent-additional-server/roboTeamAgent/3001/*",
         "access": "authenticated"
       }

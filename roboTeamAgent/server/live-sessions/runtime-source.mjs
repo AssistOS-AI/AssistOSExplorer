@@ -87,7 +87,7 @@ export class RuntimeLiveSource {
                 kind: phase ? 'workflow-phase' : 'robot-task',
                 title, detail, cwdDisplay: this._cwdDisplay(event.cwd), access: 'rw',
                 ownerState: ownerPrincipal ? 'verified' : 'system', ownerPrincipal, status: 'waiting',
-                controls: { message: (text) => this._message(tracked, text), stop: () => this._stop(tracked) },
+                controls: { message: (text, options) => this._message(tracked, text, options), stop: (options) => this._stop(tracked, options) },
                 transcript: phase || this.readTranscript ? () => this._transcript(tracked) : null,
             }).id;
         } catch (error) {
@@ -104,22 +104,24 @@ export class RuntimeLiveSource {
         return robot;
     }
 
-    async _message(tracked, text) {
+    // `options.user.grant` is the requesting user's own grant (worker mode, decision M-12 (b)); absent otherwise.
+    async _message(tracked, text, options = undefined) {
         if (tracked.phase) {
             try {
-                return delivery(await this.roboflow.messageInstance(tracked.phase.flowId, tracked.phase.instanceId, text));
+                return delivery(await this.roboflow.messageInstance(tracked.phase.flowId, tracked.phase.instanceId, text, options?.user ?? null));
             } catch (error) {
                 if (!error?.liveOutcome && Number.isInteger(error?.statusCode)) error.liveOutcome = error.statusCode === 404 ? 'run_ended' : 'rejected';
                 throw error;
             }
         }
-        return delivery(await this.runtimeManager.sendTaskMessage(await this._robot(tracked), tracked.taskId, text));
+        return delivery(await this.runtimeManager.sendTaskMessage(await this._robot(tracked), tracked.taskId, text, options?.user?.grant ? { ownerGrant: options.user.grant } : undefined));
     }
 
-    async _stop(tracked) {
+    async _stop(tracked, options = undefined) {
         // A workflow phase stop pauses the whole workflow, which stays resumable.
-        if (tracked.phase) return void await this.roboflow.pauseInstance(tracked.phase.flowId, tracked.phase.instanceId);
-        this.runtimeManager.stopTask(await this._robot(tracked), tracked.type, tracked.taskId);
+        if (tracked.phase) return void await this.roboflow.pauseInstance(tracked.phase.flowId, tracked.phase.instanceId, options?.user ?? null);
+        this.runtimeManager.stopTask(await this._robot(tracked), tracked.type, tracked.taskId,
+            options?.user ? { userInitiated: true, ...(options.user.grant ? { ownerGrant: options.user.grant } : {}) } : undefined);
     }
 
     // Transcript text from server-bound metadata: the phase's execution log, or

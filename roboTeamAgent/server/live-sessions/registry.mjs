@@ -286,7 +286,7 @@ export class LiveSessionsRegistry {
 
     // Owner message. Resolves {outcome, detail?} with outcome one of
     // delivered, queued, rejected, run_ended or unknown; it is never retried.
-    async message(id, viewer, message) {
+    async message(id, viewer, message, options = undefined) {
         if (typeof message !== 'string' || message.length < 1 || message.length > MESSAGE_LIMIT) {
             return refusal(400, `message must contain 1 to ${MESSAGE_LIMIT} characters`);
         }
@@ -296,7 +296,7 @@ export class LiveSessionsRegistry {
         let outcome;
         let detail;
         try {
-            outcome = await send(message);
+            outcome = await send(message, options);
         } catch (error) {
             outcome = FAILED_OUTCOMES.has(error?.liveOutcome) ? error.liveOutcome : 'unknown';
             if (outcome === 'rejected') detail = cleanText(error?.message || '', 512) || undefined;
@@ -308,10 +308,10 @@ export class LiveSessionsRegistry {
 
     // Owner or administrator stop. The run ends when its lifecycle reports
     // it, not on this call.
-    async stop(id, viewer) {
+    async stop(id, viewer, options = undefined) {
         const access = this.authorize(id, viewer, 'stop');
         if (!access.ok) return access;
-        await access.run.controls.stop();
+        await access.run.controls.stop(options);
         return { ok: true };
     }
 

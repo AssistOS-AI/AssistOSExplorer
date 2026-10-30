@@ -369,6 +369,33 @@ test('a RoboFlow phase runs on the coordinator identity and its binding: admissi
     assert.equal(open.calls.control[0].body.op, 'stop');
 });
 
+test('a user-initiated stop of a RoboFlow phase carries the stopping request\'s own grant and never the binding; a system stop keeps the binding', async (t) => {
+    const flowId = `flow_${'cd'.repeat(12)}`;
+    const origin = phaseOriginId({ flowId, instanceId: 'inv_2', runtimeTaskId: 'task-9' });
+    const phase = async (reason) => {
+        const open = endsOnStop([state('running', 1), ala(SELECTED, 2)]);
+        open.events = async (referenceId, { after }, auth) => { open.calls.events.push({ referenceId, after, auth }); const page = open.rows.filter((row) => row.seq > after); return { events: page, nextAfter: page.length ? page.at(-1).seq : after }; };
+        const g = await harness(t, { client: open, execution: { worker: { bindingId: flowId, originRequestId: origin } } });
+        const controller = new AbortController();
+        const pending = g.engine.executeTurn({ sessionId: g.sessionId, prompt: 'p', signal: controller.signal }).then((result) => ({ result }), (error) => ({ error }));
+        await tick(30);
+        controller.abort(reason);
+        return { open, outcome: await pending };
+    };
+    const own = freshGrant('pause-own');
+    const withGrant = await phase(stopReason({ owner: { evidence: evidenceOf(own) }, userInitiated: true }));
+    assert.equal(withGrant.outcome.error.name, 'AbortError');
+    assert.deepEqual(withGrant.open.calls.control.map((call) => call.auth), [{ grant: own }], 'the user\'s pause uses its own grant, not the binding');
+    // A user stop with no grant is not delivered under the binding: the phase may still run, and the child reports it.
+    const without = await phase(stopReason({ userInitiated: true }));
+    assert.equal(without.open.calls.control.length, 0);
+    assert.equal(without.outcome.error.code, 'worker_stop_not_authorized');
+    assert.equal(without.outcome.error.execution, 'may_still_run');
+    // A system-initiated stop (flow failure) still uses the coordinator identity and the binding.
+    const system = await phase(stopReason());
+    assert.deepEqual(system.open.calls.control.map((call) => call.auth), [{ bindingId: flowId }]);
+});
+
 test('a lost admission reply is recovered by lookup of the persisted origin with the admission grant', async (t) => {
     const client = scripted(COMPLETE_ROWS());
     client.lookup = async (origin, auth) => { client.calls.lookup.push({ origin, auth }); return { referenceId: REFERENCE, state: 'running', originRequestId: origin }; };
@@ -700,12 +727,20 @@ test('the chat stop sends exactly one stop control with the stopping request\'s 
     assert.equal(stopClient.calls.control[0].body.operationId, stopOperationId(REFERENCE));
 });
 
-test('a stop that carries no grant of its own (the Router\'s stop button) uses the newest unexpired grant of the same user; detaching sends none', async (t) => {
+test('a stop is authorized only by its own grant: an unsigned stop borrows no earlier grant, and detaching sends none', async (t) => {
+    // A later envelope of the same user exists in memory, but the Router's unsigned stop control must not use it (decision M-40).
     const later = freshGrant('later-envelope');
     const { h, stopClient, outcome } = await stoppable(t, { freshest: () => evidenceOf(later) });
-    assert.deepEqual(await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: null }), { delivered: true });
+    const unsigned = await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: null });
+    assert.deepEqual([unsigned.delivered, unsigned.code], [false, 'worker_stop_not_authorized']);
+    assert.equal(stopClient.calls.control.length, 0, 'nothing is sent without the stop\'s own grant, though a recent grant exists');
+    const expiredOwn = { evidence: { ok: true, grant: grantOf(Math.floor(Date.now() / 1000) - 5, 'own-expired'), principal: 'user:alice' } };
+    assert.equal((await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: expiredOwn })).delivered, false, 'an expired own grant is not used either');
+    assert.equal(stopClient.calls.control.length, 0);
+    const own = freshGrant('stop-own');
+    assert.deepEqual(await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: { evidence: evidenceOf(own) } }), { delivered: true });
     await outcome;
-    assert.deepEqual(stopClient.calls.control.map((call) => call.auth), [{ grant: later }]);
+    assert.deepEqual(stopClient.calls.control.map((call) => call.auth), [{ grant: own }]);
 
     const holdClient = scripted([state('running', 1), ala(SELECTED, 2)], { hold: true });
     const detached = await harness(t, { client: holdClient });
@@ -743,11 +778,11 @@ test('a failing stop control is reported and retried only by the user; an accept
     const outcome = h.engine.executeTurn({ sessionId: h.sessionId, turnId: 'turn-stop-1', prompt: 'p', owner: h.owner }).then((result) => ({ result }), (error) => ({ error }));
     while (!failing.calls.subscribe.length) await tick(5);
     await tick(20);
-    const first = await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: null });
+    const first = await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: { evidence: evidenceOf(freshGrant('press')) } });
     assert.deepEqual([first.delivered, first.code], [false, 'worker_unreachable']);
     await tick(30);
     assert.equal(calls, 1, 'RoboTeam does not retry a control by itself');
-    assert.deepEqual(await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: null }), { delivered: true });
+    assert.deepEqual(await h.engine.stopTurn({ turnId: 'turn-stop-1', owner: { evidence: evidenceOf(freshGrant('press')) } }), { delivered: true });
     assert.equal((await outcome).error.name, 'AbortError');
     assert.equal(calls, 2);
 
@@ -757,7 +792,7 @@ test('a failing stop control is reported and retried only by the user; an accept
     const ended = g.engine.executeTurn({ sessionId: g.sessionId, turnId: 'turn-silent', prompt: 'p', owner: g.owner }).then((result) => ({ result }), (error) => ({ error }));
     while (!silent.calls.subscribe.length) await tick(5);
     await tick(20);
-    assert.deepEqual(await g.engine.stopTurn({ turnId: 'turn-silent', owner: null }), { delivered: true });
+    assert.deepEqual(await g.engine.stopTurn({ turnId: 'turn-silent', owner: { evidence: evidenceOf(freshGrant('press')) } }), { delivered: true });
     const unconfirmed = (await ended).error;
     assert.equal(unconfirmed.code, 'worker_stop_unconfirmed');
     assert.equal(unconfirmed.execution, 'may_still_run');

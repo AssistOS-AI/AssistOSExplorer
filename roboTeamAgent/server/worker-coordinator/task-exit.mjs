@@ -10,7 +10,14 @@ export const STOP_NOT_CONFIRMED_EXIT = 75;
 // is the evidence that authorizes the worker stop; it arrived over stdin only and is kept nowhere.
 export function stopReasonFromRecord(message) {
     const grant = typeof message?.ownerGrant === 'string' && message.ownerGrant ? message.ownerGrant : null;
-    return stopReason({ owner: grant ? { evidence: { ok: true, grant } } : null });
+    return stopReason({ owner: grant ? { evidence: { ok: true, grant } } : null, userInitiated: message?.user === true });
+}
+
+// A live `message` record from the parent: the messaging request's own grant, when the record carries one, becomes the owner
+// evidence of this one worker `message` control. It arrived over stdin only and is not kept in the record passed on.
+export function messageForEngine(message) {
+    const { ownerGrant, ...record } = message ?? {};
+    return typeof ownerGrant === 'string' && ownerGrant ? { ...record, owner: { evidence: { ok: true, grant: ownerGrant } } } : record;
 }
 
 // Any requested stop whose outcome is `may_still_run` is not confirmed, whatever failed (the control was refused, the

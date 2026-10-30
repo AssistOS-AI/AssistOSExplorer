@@ -108,11 +108,11 @@ export class Subflows {
                 error: child.error, result: workflowResponseContext(child.result, child.graph, child.instances.at(-1)?.taskId).response };
         }));
     }
-    async pauseChildren(flow) {
+    async pauseChildren(flow, user = null) {
         const ids = flow.instances.filter(item => item.creatorInstanceId).flatMap(item => item.childFlowIds || []);
         await Promise.all(ids.map(async id => {
             const child = await this.service.store.get(id);
-            if (child && child.status !== 'pending' && !finished(child.status)) await this.service.pauseFlow(id);
+            if (child && child.status !== 'pending' && !finished(child.status)) await this.service.pauseFlow(id, user);
         }));
     }
     async resumeChildren(flow) {

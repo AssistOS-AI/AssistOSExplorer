@@ -16,7 +16,8 @@ import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
 import { WEBCHAT_RUNTIME_OPEN_EVENT, createRuntimeWebchatCoordinator } from './webchatCoordinator.mjs';
 import { detachReason, stopReason } from '../execution/abortReasons.mjs';
 
-// The event of a Router-signed stop envelope (the stop button with the user's grant); the Router does not send one yet.
+// The event of a Router-signed stop envelope: the stop button's own envelope, carrying the grant the Router minted for that request
+// (decision M-40). An older Router sends an unsigned control line instead, which carries no grant and so cannot authorize the worker stop.
 const WEBCHAT_STOP_EVENT = 'stop';
 
 function target(context) {

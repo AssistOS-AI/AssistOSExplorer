@@ -388,7 +388,7 @@ async function serveLiveSessionPage(res, publicDir, publicBasePath) {
 
 // Every Live Sessions route. Authority is only the viewer's signed principal
 // and signed administrator decision; forwarded identity is never consulted.
-async function handleLiveSessions({ req, res, pathname, viewer, registry, publicDir, publicBasePath, streamLifetimeMs }) {
+async function handleLiveSessions({ req, res, pathname, viewer, registry, publicDir, publicBasePath, streamLifetimeMs, worker = null }) {
     if (pathname === '/api/live-sessions' && req.method === 'GET') {
         return sendJson(res, 200, { ok: true, version: 1, sessions: registry.list(viewer) });
     }
@@ -422,12 +422,21 @@ async function handleLiveSessions({ req, res, pathname, viewer, registry, public
         if (result.text === null) return sendTranscript(res, 404, 'The transcript is not available yet.');
         return sendTranscript(res, 200, result.text);
     }
+    // With the worker configured, a message or stop is a worker control and carries this request's own grant (decision M-12 (b));
+    // the one pattern `/api/live-sessions/*` mints it, and a request without one is refused before anything changes.
+    const control = () => {
+        if (!worker?.enabled) return { options: undefined };
+        const grant = worker.grant(req);
+        return grant ? { options: { user: { grant, undelivered: [] } } } : { refusal: true };
+    };
     if (name === 'messages' && req.method === 'POST') {
+        const { options, refusal } = control();
+        if (refusal) return sendError(res, 403, 'owner_evidence_unavailable');
         const body = await readJsonBody(req);
         if (Object.keys(body).length !== 1 || typeof body.message !== 'string' || !body.message.trim()) {
             return sendError(res, 400, 'message must contain 1 to 32768 characters');
         }
-        const result = await registry.message(id, viewer, body.message);
+        const result = await registry.message(id, viewer, body.message, options);
         if (!result.ok) return sendError(res, result.status, result.error);
         if (result.outcome === 'delivered' || result.outcome === 'queued') return sendJson(res, 200, { delivery: result.outcome });
         if (result.outcome === 'rejected') return sendJson(res, 409, { error: 'rejected', ...(result.detail ? { detail: result.detail } : {}) });
@@ -435,11 +444,14 @@ async function handleLiveSessions({ req, res, pathname, viewer, registry, public
         return sendJson(res, 504, { error: 'delivery_unknown' });
     }
     if (name === 'stop' && req.method === 'POST') {
+        const { options, refusal } = control();
+        if (refusal) return sendError(res, 403, 'owner_evidence_unavailable');
         const body = await readJsonBody(req);
         if (Object.keys(body).length !== 0) return sendError(res, 400, 'stop takes an empty JSON object');
-        const result = await registry.stop(id, viewer);
+        const result = await registry.stop(id, viewer, options);
         if (!result.ok) return sendError(res, result.status, result.error);
-        return sendJson(res, 200, { ok: true });
+        return sendJson(res, 200, { ok: true, ...(options?.user?.undelivered.length
+            ? { workerNotice: 'Stop not delivered: the worker needs your fresh authorization. The task may still be running; press stop again.' } : {}) });
     }
     return sendError(res, 404, 'not found');
 }
@@ -601,14 +613,45 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         sendJson(res, 200, { ok: true, flow: await roboflow.answerHumanInput(flowId, input, actor.id, { grant: worker?.enabled ? worker.grant(req) : null }) });
         return true;
     }
+    // A user's stop or live message of a running phase is a worker control that needs the request's own grant (decision M-12 (b)).
+    // With the worker configured, only the one exact path below mints it; the per-flow paths carry none and are refused before
+    // anything changes, so a stop never ends locally while the worker keeps running.
+    const userControl = () => {
+        if (!worker?.enabled) return { user: null };
+        const grant = worker.grant(req);
+        return grant ? { user: { grant, undelivered: [] } } : { refusal: true };
+    };
+    const undeliveredNotice = (user) => user?.undelivered?.length
+        ? { workerNotice: 'Stop not delivered: the worker needs your fresh authorization. The task may still be running; press stop again.' } : {};
+    if (pathname === '/api/roboflow/control' && req.method === 'POST') {
+        const { flowId, action, instanceId, prompt } = await readJsonBody(req);
+        if (typeof flowId !== 'string' || !/^flow_[0-9a-f]{24}$/u.test(flowId)) { sendError(res, 400, 'a valid flowId is required'); return true; }
+        if (!['pause', 'terminate', 'pause-instance', 'message-instance'].includes(action)) { sendError(res, 400, 'unsupported flow control'); return true; }
+        if (action.endsWith('-instance') && !/^inv_[0-9a-f]{24}$/u.test(String(instanceId))) { sendError(res, 400, 'a valid instanceId is required'); return true; }
+        const control = userControl();
+        if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        const { user } = control;
+        if (action === 'message-instance') sendJson(res, 200, { ok: true, ...await roboflow.messageInstance(flowId, instanceId, prompt, user) });
+        else {
+            const flow = action === 'pause' ? await roboflow.pauseFlow(flowId, user)
+                : action === 'terminate' ? await roboflow.terminateFlow(flowId, user)
+                    : await roboflow.pauseInstance(flowId, instanceId, user);
+            sendJson(res, 200, { ok: true, flow, ...undeliveredNotice(user) });
+        }
+        return true;
+    }
     const pauseId = pathname.match(new RegExp(`^${FLOW_PATH}/pause$`))?.[1];
     if (pauseId && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, flow: await roboflow.pauseFlow(pauseId) });
+        const control = userControl();
+        if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        sendJson(res, 200, { ok: true, flow: await roboflow.pauseFlow(pauseId, control.user), ...undeliveredNotice(control.user) });
         return true;
     }
     const terminateId = pathname.match(new RegExp(`^${FLOW_PATH}/terminate$`))?.[1];
     if (terminateId && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, flow: await roboflow.terminateFlow(terminateId) });
+        const control = userControl();
+        if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        sendJson(res, 200, { ok: true, flow: await roboflow.terminateFlow(terminateId, control.user), ...undeliveredNotice(control.user) });
         return true;
     }
     const resumeId = pathname.match(new RegExp(`^${FLOW_PATH}/resume$`))?.[1];
@@ -618,13 +661,17 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     }
     const instancePause = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/pause$`));
     if (instancePause && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, flow: await roboflow.pauseInstance(instancePause[1], instancePause[2]) });
+        const control = userControl();
+        if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        sendJson(res, 200, { ok: true, flow: await roboflow.pauseInstance(instancePause[1], instancePause[2], control.user), ...undeliveredNotice(control.user) });
         return true;
     }
     const instanceMessage = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/message$`));
     if (instanceMessage && req.method === 'POST') {
         const body = await readJsonBody(req);
-        sendJson(res, 200, { ok: true, ...await roboflow.messageInstance(instanceMessage[1], instanceMessage[2], body.prompt) });
+        const control = userControl();
+        if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        sendJson(res, 200, { ok: true, ...await roboflow.messageInstance(instanceMessage[1], instanceMessage[2], body.prompt, control.user) });
         return true;
     }
     const instanceResume = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/resume$`));
@@ -839,7 +886,7 @@ export function createRoboTeamServer(options) {
                 if (!live.ok) return sendError(res, live.status, live.error);
                 if (!liveSessions) return sendError(res, 404, 'not found');
                 return await handleLiveSessions({ req, res, pathname, viewer: { principal: live.principal, canAdmin: live.canAdmin },
-                    registry: liveSessions, publicDir, publicBasePath, streamLifetimeMs: liveStreamLifetimeMs });
+                    registry: liveSessions, publicDir, publicBasePath, streamLifetimeMs: liveStreamLifetimeMs, worker });
             }
             if (await handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager })) return;
             const actor = requestActor(req, internalToken);
@@ -1041,12 +1088,12 @@ export function createRoboTeamServer(options) {
                     });
                 }
                 const stopTypes = { 'stop-desktop-task': 'desktop', 'stop-browser-task': 'browser', 'stop-simple-task': 'simple' };
-                if (stopTypes[operation]) return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot, stopTypes[operation], body.taskId, worker.enabled ? { ownerGrant: worker.grant(req) } : undefined) });
+                if (stopTypes[operation]) return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot, stopTypes[operation], body.taskId, worker.enabled ? { ownerGrant: worker.grant(req), userInitiated: true } : undefined) });
                 if (operation === 'take-control') {
                     return sendJson(res, 202, {
                         ok: true,
                         robotName: robot.name,
-                        ...runtimeManager.takeControl(robot, body.taskId, worker.enabled ? { ownerGrant: worker.grant(req) } : undefined),
+                        ...runtimeManager.takeControl(robot, body.taskId, worker.enabled ? { ownerGrant: worker.grant(req), userInitiated: true } : undefined),
                     });
                 }
                 if (operation === 'resume-task') {
@@ -1060,7 +1107,7 @@ export function createRoboTeamServer(options) {
                     });
                 }
                 if (operation === 'message-task') return sendJson(res, 200, {
-                    ok: true, ...await runtimeManager.sendTaskMessage(robot, body.taskId, body.prompt)
+                    ok: true, ...await runtimeManager.sendTaskMessage(robot, body.taskId, body.prompt, worker.enabled ? { ownerGrant: worker.grant(req) } : undefined)
                 });
                 if (operation === 'task-status') return sendJson(res, 200, { ok: true, robotName: robot.name, task: runtimeManager.taskStatus(robot.id, body.taskId) });
                 if (operation === 'desktop-url' || operation === 'browser-url') {
