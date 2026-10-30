@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
-    MODEL_RELAY_PORT, UpstreamError, canonicalModel, createModelChannel, gatewayModelId, isGatewayModel, openCodeGatewayModels, sanitizeUpstreamMessage,
+    ADMISSION, MODEL_RELAY_PORT, UpstreamError, canonicalModel, createModelChannel, gatewayModelId, isGatewayModel, openCodeGatewayModels, sanitizeUpstreamMessage,
     selectGatewayModel, selectGatewayProvider
 } from '../../server/runtime/modelChannel.mjs';
 import { createRobotStore } from '../../server/runtime/robotStore.mjs';
@@ -40,17 +40,20 @@ function fakeUpstream({ catalog = CATALOG, chat = () => ({ ok: true, status: 200
     };
 }
 
+// The M-45 admission limits are tested on their own below; every other test runs with limits it cannot hit.
+const OPEN_ADMISSION = Object.freeze({ maxBodies: 64, burst: 1e9, refillPerSecond: 1e9 });
+
 const directories = [];
 test.after(() => { for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true }); });
 
-async function open({ allowed = 'a', upstream = fakeUpstream(), activity = () => {}, log = () => {}, executionId = 'EXEC', providerId = undefined } = {}) {
+async function open({ allowed = 'a', upstream = fakeUpstream(), activity = () => {}, log = () => {}, executionId = 'EXEC', providerId = undefined, admission = OPEN_ADMISSION, now = undefined } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-mc-'));
     directories.push(root);
     const socketDirectory = path.join(root, 'model');
     const configDirectory = path.join(root, 'channels');
     fs.mkdirSync(socketDirectory, { mode: 0o700 });
     fs.mkdirSync(configDirectory, { mode: 0o700 });
-    const channel = await createModelChannel({ socketDirectory, configDirectory, allowed, upstream, activity, log, executionId, ...(providerId ? { providerId } : {}) });
+    const channel = await createModelChannel({ socketDirectory, configDirectory, allowed, upstream, activity, log, executionId, admission, ...(providerId ? { providerId } : {}), ...(now ? { now } : {}) });
     return { channel, upstream, socketDirectory, configDirectory, socketPath: channel.socketPath, close: () => channel.close() };
 }
 
@@ -251,7 +254,7 @@ test('a Unicode model id works end to end', async () => {
     } finally { await world.close(); }
 });
 
-test('400: bad JSON, an empty body, a non-object, a missing model or messages; 413 one byte above 2 MiB while exactly 2 MiB is served', async () => {
+test('400: bad JSON, an empty body, a non-object, a missing model or messages; 413 for a body above 2 MiB or whose rewrite is above 2 MiB', async () => {
     const world = await open();
     try {
         for (const body of ['{', '', '[]', '"x"', 'null', '{"messages":[]}', '{"model":"a"}', '{"model":1,"messages":[]}', '{"model":"a","messages":"x"}']) {
@@ -265,7 +268,13 @@ test('400: bad JSON, an empty body, a non-object, a missing model or messages; 4
         };
         const limit = 2 * 1024 * 1024;
         assert.equal(exact(limit).length, limit);
-        assert.equal((await send(world.socketPath, { body: exact(limit) })).status, 200, 'exactly 2 MiB');
+        // The channel rewrites the body (model forced, stream:false added) and the transport refuses an upload above 2 MiB: a client body that
+        // fits only before the rewrite gets 413 here, not a 502 from the transport (M-45).
+        const rewriteGrowth = Buffer.byteLength(JSON.stringify({ model: 'a', stream: false, messages: [] })) - Buffer.byteLength(JSON.stringify({ model: 'a', messages: [] }));
+        assert.equal((await send(world.socketPath, { body: exact(limit - rewriteGrowth) })).status, 200, 'the largest body whose rewrite still fits');
+        const rewritten = await send(world.socketPath, { body: exact(limit - rewriteGrowth + 1) });
+        assert.equal(rewritten.status, 413, 'one byte more: the rewrite no longer fits');
+        assert.equal((await send(world.socketPath, { body: exact(limit) })).status, 413, 'exactly 2 MiB');
         const over = await send(world.socketPath, { body: exact(limit + 1) });
         assert.equal(over.status, 413, '2 MiB + 1 byte');
         assert.equal(world.upstream.calls.filter((call) => call.operation === 'chat').length, 1, 'the oversize request never reached the upstream');
@@ -341,7 +350,7 @@ test('the log has model, status and timing only: no prompt, no completion, no up
 test('at most 8 upstream calls at once (the ninth is 429); in-flight calls are aborted by close(), which is safe twice; a request after close is refused', async () => {
     const waiting = [];
     const upstream = fakeUpstream({ chat: (call) => new Promise((resolve, reject) => { waiting.push({ resolve }); call.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))); }) });
-    const world = await open({ upstream });
+    const world = await open({ upstream, admission: { maxBodies: 16, burst: 1e9, refillPerSecond: 1e9 } });
     const pending = Array.from({ length: 8 }, () => send(world.socketPath, { body: chatBody() }).catch((error) => ({ error })));
     while (waiting.length < 8) await new Promise((resolve) => setTimeout(resolve, 5));
     const ninth = await send(world.socketPath, { body: chatBody() });
@@ -458,5 +467,90 @@ test('a 2xx completion with a malformed choice is a 502 before any byte is writt
         const plain = await send(world.socketPath, { body: chatBody() });
         assert.equal(plain.status, 200);
         assert.equal(activity, 2);
+    } finally { await world.close(); }
+});
+
+// ---- M-45: admission before any body byte ----------------------------------------------------------------------------------------------
+
+// A request line and headers with a big Content-Length, then only a slice of the body: the answer must come before the body does.
+function rawPost(socketPath, announced, sent) {
+    return new Promise((resolve) => {
+        const socket = net.connect(socketPath);
+        const chunks = [];
+        let closed = false;
+        socket.on('data', (chunk) => chunks.push(chunk));
+        socket.on('error', () => {});
+        socket.on('close', () => { closed = true; resolve({ text: Buffer.concat(chunks).toString('utf8'), closed }); });
+        socket.on('connect', () => {
+            socket.write(`POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${announced}\r\n\r\n`);
+            socket.write(Buffer.alloc(sent, 0x61));
+        });
+        setTimeout(() => socket.destroy(), 5000).unref();
+    });
+}
+
+test('M-45: at most 2 bodies in flight per execution: the third gets 429 rate_limited and its unread upload is destroyed; the slots come back', async () => {
+    const waiting = [];
+    const upstream = fakeUpstream({ chat: () => new Promise((resolve) => waiting.push(() => resolve({ ok: true, status: 200, json: COMPLETION }))) });
+    const world = await open({ upstream, admission: { maxBodies: 2, burst: 1e9, refillPerSecond: 1e9 } });
+    try {
+        const first = send(world.socketPath, { body: chatBody() });
+        const second = send(world.socketPath, { body: chatBody() });
+        while (waiting.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+        // 2 MiB announced, 64 KiB sent: the 429 arrives and the connection is closed by the channel while the upload is incomplete.
+        const refused = await rawPost(world.socketPath, 2 * 1024 * 1024, 64 * 1024);
+        assert.match(refused.text, /^HTTP\/1\.1 429 /u);
+        assert.match(refused.text, /"message":"rate_limited"/u);
+        assert.equal(refused.closed, true);
+        assert.equal(upstream.calls.filter((call) => call.operation === 'chat').length, 2, 'the refused request never reached the upstream');
+        const normal = await send(world.socketPath, { body: chatBody() });
+        assert.deepEqual([normal.status, normal.json.error.message], [429, 'rate_limited']);
+        waiting.splice(0).forEach((release) => release());
+        assert.deepEqual([(await first).status, (await second).status], [200, 200]);
+        const again = send(world.socketPath, { body: chatBody() });
+        while (waiting.length < 1) await new Promise((resolve) => setTimeout(resolve, 5));
+        waiting.splice(0).forEach((release) => release());
+        assert.equal((await again).status, 200, 'the slots were released');
+    } finally { await world.close(); }
+});
+
+test('M-45: the token bucket allows a burst of 10, refills at 5 per second, and refuses the rest without reading the body', async () => {
+    let clock = 1_000_000;
+    const world = await open({ admission: { ...ADMISSION, maxBodies: 64 }, now: () => clock });
+    try {
+        const statuses = [];
+        for (let index = 0; index < 12; index += 1) statuses.push((await send(world.socketPath, { body: chatBody() })).status);
+        assert.deepEqual(statuses, [...Array(10).fill(200), 429, 429], 'burst 10');
+        const refused = await rawPost(world.socketPath, 2 * 1024 * 1024, 64 * 1024);
+        assert.match(refused.text, /^HTTP\/1\.1 429 /u);
+        assert.equal(refused.closed, true);
+        clock += 400; // two tokens
+        assert.deepEqual([(await send(world.socketPath, { body: chatBody() })).status, (await send(world.socketPath, { body: chatBody() })).status, (await send(world.socketPath, { body: chatBody() })).status], [200, 200, 429]);
+        clock += 60_000; // refilled, but never above the burst
+        const after = [];
+        for (let index = 0; index < 11; index += 1) after.push((await send(world.socketPath, { body: chatBody() })).status);
+        assert.deepEqual(after, [...Array(10).fill(200), 429]);
+        // Only chat requests spend tokens: the model list and a 404 do not.
+        assert.equal((await send(world.socketPath, { method: 'GET', url: '/v1/models' })).status, 200);
+        assert.equal((await send(world.socketPath, { method: 'GET', url: '/nope' })).status, 404);
+        assert.equal(world.upstream.calls.filter((call) => call.operation === 'chat').length, 22, 'refused requests never reached the upstream');
+    } finally { await world.close(); }
+});
+
+test('M-45: the limits are per execution: one flooded channel does not slow or refuse another', async () => {
+    const a = await open({ admission: { ...ADMISSION, burst: 1 }, now: () => 0 });
+    const b = await open({ admission: { ...ADMISSION }, now: () => 0 });
+    try {
+        assert.equal((await send(a.socketPath, { body: chatBody() })).status, 200);
+        assert.equal((await send(a.socketPath, { body: chatBody() })).status, 429);
+        assert.equal((await send(b.socketPath, { body: chatBody() })).status, 200);
+    } finally { await a.close(); await b.close(); }
+});
+
+test('M-45: a transport refusal of an upload above its limit is a 413, not a 502', async () => {
+    const world = await open({ upstream: fakeUpstream({ chat: () => { throw new UpstreamError('PLOINKY_ROUTER_REQUEST_TOO_LARGE'); } }) });
+    try {
+        const answer = await send(world.socketPath, { body: chatBody() });
+        assert.deepEqual([answer.status, answer.json.error.message], [413, 'The request is too large']);
     } finally { await world.close(); }
 });

@@ -39,6 +39,9 @@ import { ExecutionSetupError } from './setupError.mjs';
 //     clients, M-43 (6)).
 //   * An upstream error passes its status through; its message comes ONLY from the transport's redacted `readErrorText()`, then is parsed,
 //     stripped of control characters and cut to 300 characters. The worker's bearer never appears in anything the workload can read.
+//   * Per execution, before any body is read (M-45): at most 2 request bodies in flight and a token bucket of 5 requests per second with a burst
+//     of 10; a request over either gets 429 `rate_limited` and its connection is destroyed unread. The rewritten body is checked against the
+//     transport's 2 MiB upload limit (413, not 502).
 //   * M-33 activity is reported only for a 2xx chat response (M-43 (4)). The last upstream error (status and sanitized message) is kept
 //     so that an `inactive_timeout` can tell the user why (M-43 (a)).
 //   * Never logged: keys, prompts, completions or upstream message text. The log line is `model_request {executionId, model, status, ms}`.
@@ -55,12 +58,19 @@ export const PROVIDER_ID = 'soul-gateway';
 const GATEWAY_PREFIX = /^soul-gateway\//iu;
 const MAX_MODEL_ID = 512;
 const MAX_BODY = 2 * 1024 * 1024;
+// The transport refuses a JSON upload above this size; the REWRITTEN body (model forced, stream:false added, unknown fields dropped) is checked
+// against it so that a client body that fits MAX_BODY but not the rewrite gets 413, not a 502 from the transport.
+const MAX_UPSTREAM_BODY = 2 * 1024 * 1024;
 const CATALOG_TIMEOUT_MS = 15000;
 const UPSTREAM_TOTAL_MS = 510000;
 // OpenCode's own request timeout for this provider must not be shorter than the upstream limit (the call is buffered, so the first byte
 // arrives only after the upstream answered).
 const OPENCODE_PROVIDER_TIMEOUT_MS = 600000;
 const MAX_CONCURRENT = 8;
+// Admission of a chat request, decided from the request line BEFORE any body byte is read (M-45): at most 2 request bodies are in flight per
+// execution (from admission until the answer is written, so at most 2 x 2 MiB are held), and a token bucket of 10 requests refilled at 5 per
+// second. A request over either limit gets 429 `rate_limited` and its connection is destroyed unread. The upstream cap above stays.
+export const ADMISSION = Object.freeze({ maxBodies: 2, burst: 10, refillPerSecond: 5 });
 const MAX_CONNECTIONS = 16;
 const MAX_HEADER_BYTES = 16 * 1024;
 const MESSAGE_MAX = 300;
@@ -325,7 +335,7 @@ function sendCompletion(res, response) {
 // the catalog request badly, and ExecutionSetupError('model_unavailable') when the allowed id is not in its catalog.
 export async function createModelChannel({
     socketDirectory, configDirectory, allowed, upstream, activity = () => {}, log = () => {}, executionId = null,
-    now = Date.now, port = MODEL_RELAY_PORT, providerId = PROVIDER_ID
+    now = Date.now, port = MODEL_RELAY_PORT, providerId = PROVIDER_ID, admission = ADMISSION
 }) {
     const socketPath = path.join(socketDirectory, MODEL_SOCKET_NAME);
     if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX) throw new ExecutionSetupError('model_channel_unavailable');
@@ -350,8 +360,32 @@ export async function createModelChannel({
     let closed = false;
     let lastError = null;
     let inFlight = 0;
+    let bodies = 0;
+    let tokens = admission.burst;
+    let refilledAt = now();
+    // Takes one token of the bucket (refilled by elapsed time, at most `burst`); false when it is empty.
+    const takeToken = () => {
+        const current = now();
+        tokens = Math.min(admission.burst, tokens + ((current - refilledAt) / 1000) * admission.refillPerSecond);
+        refilledAt = current;
+        if (tokens < 1) return false;
+        tokens -= 1;
+        return true;
+    };
 
     const fail = (status, message) => { lastError = { status, message }; };
+
+    // Answers 429 `rate_limited` without having read the body, then destroys the request (and with it the upload).
+    function rateLimited(req, res) {
+        const startedAt = now();
+        if (!res.headersSent) {
+            res.writeHead(429, { 'content-type': 'application/json', 'cache-control': 'no-store', 'retry-after': '1', connection: 'close' });
+            res.end(JSON.stringify({ error: { message: 'rate_limited', type: 'rate_limit_error', code: 'rate_limited' } }));
+        }
+        res.once('finish', () => req.destroy());
+        res.once('close', () => req.destroy());
+        log('model_request', { executionId, model: null, status: 429, ms: now() - startedAt });
+    }
 
     async function chat(req, res) {
         const startedAt = now();
@@ -374,6 +408,7 @@ export async function createModelChannel({
             const streaming = body.stream === true;
             const payload = { model: allowed, stream: false };
             for (const field of CHAT_FIELDS) if (Object.hasOwn(body, field)) payload[field] = body[field];
+            if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > MAX_UPSTREAM_BODY) { refuse(413, 'The request is too large'); return; }
             if (inFlight >= MAX_CONCURRENT) { refuse(429, 'Too many model requests at once', 'rate_limit_error'); return; }
             inFlight += 1;
             const controller = new AbortController();
@@ -400,6 +435,7 @@ export async function createModelChannel({
                 try { activity(); } catch { /* the caller's counter must not break the reply */ }
             } catch (error) {
                 if (controller.signal.aborted || res.destroyed) { status = 499; return; }
+                if (error?.code === 'PLOINKY_ROUTER_REQUEST_TOO_LARGE') { refuse(413, 'The request is too large'); return; }
                 fail(502, 'Soul Gateway could not be reached');
                 log('model_request_failed', { executionId, error: String(error?.code ?? error?.name ?? 'error').slice(0, 64) });
                 refuse(502, 'Soul Gateway request failed', 'upstream_error');
@@ -422,7 +458,10 @@ export async function createModelChannel({
             return;
         }
         if (req.method === 'POST' && req.url === '/v1/chat/completions') {
-            chat(req, res);
+            // Admission before the first body byte: the number of bodies in flight, then the request rate.
+            if (bodies >= admission.maxBodies || !takeToken()) { rateLimited(req, res); return; }
+            bodies += 1;
+            chat(req, res).finally(() => { bodies -= 1; });
             return;
         }
         sendError(res, 404, 'Not found', 'not_found');
