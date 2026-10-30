@@ -1,0 +1,14 @@
+{
+    "pluginCategory": "document",
+    "component": "audio-plugin",
+    "location": [
+        "chapter",
+        "paragraph"
+    ],
+    "tooltip": "Audio Plugin",
+    "icon": "./icon.svg",
+    "presenter": "AudioPlugin",
+    "type": "modal",
+    "autoPin": false,
+    "dependencies": []
+}

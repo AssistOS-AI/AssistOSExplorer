@@ -1,0 +1,14 @@
+{
+    "pluginCategory": "document",
+    "component": "video-plugin",
+    "location": [
+        "chapter",
+        "paragraph"
+    ],
+    "tooltip": "Video Plugin",
+    "icon": "./icon.svg",
+    "presenter": "VideoPlugin",
+    "type": "modal",
+    "autoPin": false,
+    "dependencies": []
+}

@@ -141,6 +141,11 @@ This paragraph contains a command that will be parsed by the system.
                     <p>Plain Markdown changes carry the <a href="wiki.html#definition-automerge">Automerge</a> heads that correspond to the editor's visible text. <a href="wiki.html#definition-explorer">Explorer</a> applies each delta to a fork at those heads and merges it with the current state, so concurrent offsets are never reinterpreted against newer text. This <a href="wiki.html#definition-crdt">CRDT</a> path is distinct from Office collaboration: <code>.docx</code>, <code>.xlsx</code>, and <code>.pptx</code> files use OnlyOffice's co-editing transport and callback-based persistence.</p>
                 </div>
 
+                <div class="doc-section" id="builtin-document-plugins">
+                    <h2>Built-in Advanced Editor plugins</h2>
+                    <p>Explorer includes SCRIPTA Variants and image, audio and video attachments for Markdown documents. They use the existing document and authenticated file services; no SOPLang or multimedia agent installation is required. Existing document metadata is preserved. Other installed agents do not add duplicate icons for these built-in components. Media generation and rendering backends remain separate optional capabilities.</p>
+                </div>
+
                 <div class="doc-section" id="other-files">
                     <h2>Other Files In The Editor</h2>
                     <p><a href="wiki.html#definition-explorer">Explorer</a> still needs to open ordinary files, so the structured document <a href="wiki.html#definition-ui">UI</a> is intentionally not applied to everything. Plain text files, source code, and configuration files remain single editable resources. Markdown source sessions use the generic <a href="wiki.html#definition-crdt">CRDT</a> persistence contract but still expose no chapter controls, paragraph actions, or structured plugin context unless the user enters <a href="wiki.html#definition-soplang">SOPLang</a> tag editing.</p>

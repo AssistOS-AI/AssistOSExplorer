@@ -1,0 +1,42 @@
+scripta-variants {
+    display: block;
+    height: 100%;
+}
+
+dialog.modal.scripta-variants-dialog {
+    width: min(75vw, 1120px);
+    max-width: calc(100vw - 32px);
+    min-width: 0;
+    height: 80vh;
+}
+
+.scripta-variants-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    overflow: auto;
+}
+
+.scripta-variants-modal-body > scripta-variants-view {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.scripta-disabled-notice {
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--warning) 42%, transparent);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+    color: var(--warning);
+}
+
+@media (max-width: 720px) {
+    dialog.modal.scripta-variants-dialog {
+        width: calc(100vw - 18px);
+        height: calc(100vh - 18px);
+    }
+}

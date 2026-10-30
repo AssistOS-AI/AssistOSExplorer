@@ -1,0 +1,18 @@
+{
+    "pluginCategory": "document",
+    "component": "scripta-variants",
+    "location": ["paragraph"],
+    "tooltip": "SCRIPTA Variants",
+    "icon": "./icon.svg",
+    "presenter": "ScriptaVariants",
+    "type": "modal",
+    "autoPin": false,
+    "dependencies": [
+        {
+            "component": "scripta-variants-view",
+            "presenter": "ScriptaVariantsView",
+            "agent": "explorer",
+            "baseUrl": "/explorer/shared/ui/scripta-variants-view/scripta-variants-view"
+        }
+    ]
+}

@@ -676,6 +676,16 @@ export async function aggregateIdePlugins(rootDir) {
     }
   }
 
+  // Explorer owns its built-in document components. An installed agent may
+  // still carry an earlier copy; do not register a second presenter for it.
+  const documentPlugins = aggregated[DOCUMENT_PLUGIN_CATEGORY];
+  const explorerComponents = new Set(Object.values(documentPlugins).flat()
+    .filter(plugin => plugin.agent === 'explorer').map(plugin => plugin.component));
+  for (const [location, plugins] of Object.entries(documentPlugins)) {
+    documentPlugins[location] = plugins.filter(plugin => plugin.agent === 'explorer'
+      || !explorerComponents.has(plugin.component));
+  }
+
   for (const buckets of [aggregated[DOCUMENT_PLUGIN_CATEGORY], aggregated[APPLICATION_PLUGIN_CATEGORY]]) {
     for (const plugins of Object.values(buckets)) {
       plugins.sort((a, b) => {
