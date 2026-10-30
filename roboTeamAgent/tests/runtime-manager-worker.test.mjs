@@ -169,7 +169,7 @@ test('a stop the worker did not confirm is recorded as stop_not_confirmed, never
 });
 
 // ---- how a worker task ends (F8): a precondition failure is shown plainly, and nothing is left `pausing` ----
-const STALE = 'worker_robot_stale: Robot "Stopper"\'s configuration changed; open the robot or start the flow again to update it.';
+const STALE = 'worker_robot_stale: Ask an administrator to open robot "Stopper" to update it.';
 
 test('a child that stopped on a worker precondition leaves that message as the task error, not an opaque ALA exit', async (t) => {
     const f = await runningTask(t);

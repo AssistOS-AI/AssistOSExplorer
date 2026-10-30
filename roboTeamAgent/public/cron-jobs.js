@@ -141,13 +141,16 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
         const card = button.closest('.cron-card'), menuToggle = card.querySelector('.manage-toggle');
         closeMenus(); menuToggle.focus({ preventScroll: true });
         card.querySelectorAll('[data-robot-menu-options] button').forEach(control => { control.disabled = true; });
+        let workerNotice = '';
         try {
             if (operation === 'delete') {
                 await api(`api/roboflow/schedules/${job.id}`, { method: 'DELETE' });
             } else if (operation === 'run-now') {
-                await api(`api/roboflow/schedules/${job.id}/run-now`, { method: 'POST', body: { revision: job.revision } });
+                const started = await api(`api/roboflow/schedules/${job.id}/run-now`, { method: 'POST', body: { revision: job.revision } });
+                workerNotice = started?.workerNotice?.message || '';
             } else await api(`api/roboflow/schedules/${job.id}`, { method: 'PUT', body: { revision: job.revision, enabled: !job.enabled } });
             message.textContent = operation === 'run-now' ? (job.enabled ? 'Workflow started. The next scheduled run has been recalculated.' : 'Workflow started. Automatic scheduling remains disabled.') : '';
+            if (workerNotice) message.textContent = `${message.textContent} ${workerNotice}`.trim();
             message.className = 'message success';
         } catch (error) { message.textContent = error.message; message.className = 'message error'; }
         finally { pendingMutations.delete(job.id); await refresh(true, false); if (!stopped) render(); }

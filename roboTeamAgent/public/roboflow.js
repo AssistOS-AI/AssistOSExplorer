@@ -64,6 +64,17 @@ function setMessage(text, error = false) {
     message.classList.toggle('is-error', Boolean(error));
 }
 
+// The notice a non-administrator's flow start left for this flow (robots that need an administrator): informational, shown once.
+function showStartNotice(flowId) {
+    const key = `roboteam-flow-notice:${flowId}`;
+    const text = sessionStorage.getItem(key);
+    if (!text) return;
+    const notice = document.querySelector('#flowNotice');
+    notice.textContent = text;
+    notice.hidden = false;
+    sessionStorage.removeItem(key);
+}
+
 function terminalStatus(status) {
     return FLOW_TERMINAL.has(status);
 }
@@ -764,6 +775,7 @@ document.addEventListener('keydown', event => {
 });
 
 await render();
+if (selected) showStartNotice(selected);
 function observationError(error) {
     setMessage(error.message, true);
     if ([401, 403, 404].includes(error.statusCode)) liveUpdates?.dispose();

@@ -84,13 +84,37 @@ export async function ensureFlowRobots({ provisioner, robots, grant }) {
     return prepared;
 }
 
-// What the request that starts a root flow does with its grant before the first phase is dispatched: register the flow's binding,
-// then prepare every robot its phases may use. `roboflow.flowRobots(flow)` names them. A child flow (no binding of its own) needs
-// neither.
-export async function prepareFlowStart({ hop, provisioner, roboflow, flow, grant }) {
+// What the request that starts a root flow does with its grant before the first phase is dispatched: register the binding, then
+// prepare the robots its phases may use (`roboflow.flowRobots(flow)`). A child flow (no binding of its own) needs neither.
+//   administrator: every such robot is prepared (provisioned or configured when stale); any that cannot be is a refusal naming each.
+//   anyone else: nothing that needs an administrator is attempted. Robots are only looked at, and the start is never refused for an
+//   administrator-only step; the ones that need one come back in `notice` (informational, not blocking) and their phases fail
+//   promptly with "Ask an administrator to open robot "X" to update it." when they get there.
+export async function prepareFlowStart({ hop, provisioner, roboflow, flow, grant, admin = true }) {
     const registered = await registerRootFlowBinding({ hop, flow, grant });
-    if (registered === null) return { registered: false, robots: [] };
-    return { registered: true, robots: await ensureFlowRobots({ provisioner, robots: await roboflow.flowRobots(flow), grant }) };
+    if (registered === null) return { registered: false, robots: [], notice: null };
+    const robots = await roboflow.flowRobots(flow);
+    if (admin) return { registered: true, robots: await ensureFlowRobots({ provisioner, robots, grant }), notice: null };
+    const needs = [];
+    for (const robot of robots) {
+        let checked;
+        try {
+            checked = await provisioner.inspect(robot, {});
+        } catch {
+            checked = { ready: false, code: 'worker_coordinator_unavailable', reason: 'the worker could not be asked about it' };
+        }
+        if (!checked.ready) needs.push({ robot: robot.name, code: checked.code, reason: checked.reason });
+    }
+    return { registered: true, robots: robots.map((robot) => robot.id), notice: needs.length ? flowStartNotice(needs) : null };
+}
+
+// The informational, non-blocking notice of a non-administrator's flow start.
+export function flowStartNotice(robots) {
+    const list = robots.map(({ robot, code, reason }) => `"${robot}" (${code}: ${reason})`).join('; ');
+    return {
+        robots,
+        message: `The workflow was started, but ${robots.length === 1 ? 'this robot needs' : 'these robots need'} an administrator before its phases can run: ${list}. Ask an administrator to open ${robots.length === 1 ? 'it' : 'each'} to update it; a phase that reaches ${robots.length === 1 ? 'it' : 'one'} first will fail.`,
+    };
 }
 
 // Robot deletion (decision M-29): the worker is asked first, with the deleting request's own administrator grant, and RoboTeam

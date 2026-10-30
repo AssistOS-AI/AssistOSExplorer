@@ -118,8 +118,9 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
         }, auth));
     }
 
-    const staleError = (robot) => userError('worker_robot_stale', 409,
-        `Robot "${robot.name}"'s configuration changed; open the robot or start the flow again to update it.`);
+    // What a phase, or a non-administrator, sees when the robot is not current: only an administrator can set it up or update it.
+    const staleError = (robot) => userError('worker_robot_stale', 409, `Ask an administrator to open robot "${robot.name}" to update it.`);
+    const notProvisionedError = (robot) => userError('worker_robot_not_provisioned', 409, `Ask an administrator to open robot "${robot.name}" to set it up.`);
 
     // Polls robots/get until the worker reports the robot ready with the desired configuration, a
     // failed preparation, or the bound ends. Never provisions or configures again.
@@ -142,6 +143,36 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
         }
     }
 
+    // Provision and configure are administrator steps at the worker. A worker refusal of one for a caller who is not an
+    // administrator is the same "ask an administrator" message, not a bare `forbidden`.
+    async function adminStep(robot, step, refusal) {
+        try {
+            return await step();
+        } catch (error) {
+            if (error instanceof WorkerError && error.code === 'forbidden') throw refusal(robot);
+            throw error;
+        }
+    }
+
+    // Read-only: whether the robot is current on the worker, with no provision or configure attempt (a flow started by someone who
+    // is not an administrator). `{ready: true}`, or `{ready: false, code, reason}`. A robot still being prepared counts as ready: a
+    // phase waits for it.
+    async function inspect(robot, auth = {}) {
+        const workerRobotId = robot.worker?.robotId || null;
+        if (!workerRobotId) return { ready: false, code: 'worker_robot_not_provisioned', reason: 'it is not set up on the worker' };
+        let view;
+        try {
+            view = await client.getRobot(workerRobotId, auth);
+        } catch (error) {
+            if (error instanceof WorkerError && error.code === 'not_found') return { ready: false, code: 'worker_robot_missing', reason: 'the worker no longer knows it' };
+            throw error;
+        }
+        if (view.preparing) return { ready: true };
+        if (view.lifecycle === 'failed') return { ready: false, code: 'worker_robot_failed', reason: 'its preparation failed on the worker' };
+        if (!sameConfiguration(view.configuration, desiredConfiguration(robot))) return { ready: false, code: 'worker_robot_stale', reason: 'its configuration changed and needs an update' };
+        return { ready: true };
+    }
+
     // ensureRobotReady: read the worker robot; provision it when RoboTeam has none recorded and the
     // caller is an administrator; configure it when its configuration is stale; then wait, bounded.
     // `auth` is `{grant}` for an administrator or user (reads work with any evidence, and for the
@@ -150,19 +181,19 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
     async function ensureReady(robot, auth = {}) {
         let workerRobotId = robot.worker?.robotId || null;
         if (!workerRobotId) {
-            if (!auth.grant) throw userError('worker_robot_not_provisioned', 409, `Robot "${robot.name}" is not set up on the worker yet; open the robot or start the flow again to set it up.`);
-            workerRobotId = await provision(robot, auth);
+            if (!auth.grant) throw notProvisionedError(robot);
+            workerRobotId = await adminStep(robot, () => provision(robot, auth), notProvisionedError);
         }
         let view;
         try {
             view = await client.getRobot(workerRobotId, auth);
         } catch (error) {
-            if (error instanceof WorkerError && error.code === 'not_found') throw userError('worker_robot_missing', 409, `Robot "${robot.name}" is no longer known to the worker; ask an administrator to check it.`);
+            if (error instanceof WorkerError && error.code === 'not_found') throw userError('worker_robot_missing', 409, `Ask an administrator to check robot "${robot.name}": the worker no longer knows it.`);
             throw error;
         }
         if (!view.preparing && !sameConfiguration(view.configuration, desiredConfiguration(robot))) {
             if (!auth.grant) throw staleError(robot);
-            await configure(robot, workerRobotId, view, auth);
+            await adminStep(robot, () => configure(robot, workerRobotId, view, auth), staleError);
         }
         return awaitReady(robot, workerRobotId, auth);
     }
@@ -201,5 +232,5 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
         throw new WorkerError('revision_conflict', 409);
     }
 
-    return Object.freeze({ ensureReady, provision, deleteRobot, desiredConfiguration });
+    return Object.freeze({ ensureReady, inspect, provision, deleteRobot, desiredConfiguration });
 }

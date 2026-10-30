@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
-import { ensureFlowRobots, prepareFlowStart } from '../server/worker-coordinator/grant-actions.mjs';
+import { ensureFlowRobots, flowStartNotice, prepareFlowStart } from '../server/worker-coordinator/grant-actions.mjs';
 import { createRobotProvisioner, desiredConfiguration } from '../server/worker-coordinator/robot-provisioning.mjs';
 import { WorkerError } from '../server/worker-coordinator/worker-client.mjs';
 import { bindOperationId } from '../server/worker-coordinator/identities.mjs';
@@ -24,10 +24,10 @@ test('the starting request registers the binding, then prepares each robot the f
     const robots = [{ id: 'a-1', name: 'Alpha' }, { id: 'b-2', name: 'Beta' }];
     const outcome = await prepareFlowStart({ hop, provisioner, roboflow: { flowRobots: async () => robots }, flow: { id: FLOW }, grant: GRANT });
     assert.deepEqual(order, [['hop', 'bindings', GRANT], ['ensure', 'Alpha', GRANT], ['ensure', 'Beta', GRANT]]);
-    assert.deepEqual(outcome, { registered: true, robots: ['a-1', 'b-2'] });
+    assert.deepEqual(outcome, { registered: true, robots: ['a-1', 'b-2'], notice: null });
     // A child flow derives its binding from its parent and needs nothing here.
     order.length = 0;
-    assert.deepEqual(await prepareFlowStart({ hop, provisioner, roboflow: { flowRobots: async () => robots }, flow: { id: FLOW, parentFlowId: `flow_${'cd'.repeat(12)}` }, grant: GRANT }), { registered: false, robots: [] });
+    assert.deepEqual(await prepareFlowStart({ hop, provisioner, roboflow: { flowRobots: async () => robots }, flow: { id: FLOW, parentFlowId: `flow_${'cd'.repeat(12)}` }, grant: GRANT }), { registered: false, robots: [], notice: null });
     assert.deepEqual(order, []);
 });
 
@@ -83,8 +83,109 @@ test('a phase that still finds the robot stale fails with a message for the user
     const client = { async getRobot() { return { robotId: 'AAAAAAAAAAAAAAAAAAAAAA', lifecycle: 'ready', revision: 2, configuration: { backend: 'codex', settings: { codingAgents: ['codex'], model: 'old' } }, preparing: false, ready: true }; } };
     const provisioner = createRobotProvisioner({ client, robotStore: {}, sleep: async () => {} });
     await assert.rejects(provisioner.ensureReady(robot, { bindingId: FLOW }),
-        (error) => error.code === 'worker_robot_stale' && error.message === 'worker_robot_stale: Robot "Helper"\'s configuration changed; open the robot or start the flow again to update it.');
-    await assert.rejects(provisioner.ensureReady({ ...robot, worker: undefined }, { bindingId: FLOW }), (error) => error.code === 'worker_robot_not_provisioned' && /Robot "Helper" is not set up on the worker/.test(error.message));
+        (error) => error.code === 'worker_robot_stale' && error.message === 'worker_robot_stale: Ask an administrator to open robot "Helper" to update it.');
+    await assert.rejects(provisioner.ensureReady({ ...robot, worker: undefined }, { bindingId: FLOW }),
+        (error) => error.code === 'worker_robot_not_provisioned' && error.message === 'worker_robot_not_provisioned: Ask an administrator to open robot "Helper" to set it up.');
+    // A caller with a grant who is not an administrator is refused by the worker; the message is the same, not a bare `forbidden`.
+    const refusing = { ...client, async configure() { throw new WorkerError('forbidden', 403); }, async provision() { throw new WorkerError('forbidden', 403); } };
+    const asUser = createRobotProvisioner({ client: refusing, robotStore: {}, sleep: async () => {} });
+    await assert.rejects(asUser.ensureReady(robot, { grant: GRANT }), (error) => error.message === 'worker_robot_stale: Ask an administrator to open robot "Helper" to update it.');
+    await assert.rejects(asUser.ensureReady({ ...robot, worker: undefined }, { grant: GRANT }), (error) => error.code === 'worker_robot_not_provisioned' && /Ask an administrator to open robot "Helper"/.test(error.message));
+});
+
+// ---- decision M-32: who starts the flow decides what is prepared ----
+function inspecting(views) {
+    const calls = [];
+    const client = {
+        async getRobot(robotId, auth) { calls.push(['getRobot', robotId, auth]); const view = views[robotId]; if (view instanceof Error) throw view; return view; },
+        async configure(body) { calls.push(['configure', body]); return {}; },
+        async provision(body) { calls.push(['provision', body]); return {}; },
+    };
+    return { provisioner: createRobotProvisioner({ client, robotStore: { withRobot: async () => { calls.push(['record']); } }, sleep: async () => {} }), calls };
+}
+const viewFor = (robot, overrides = {}) => ({ robotId: robot.worker.robotId, lifecycle: 'ready', revision: 2, configuration: desiredConfiguration(robot), preparing: false, ready: true, ...overrides });
+
+test('a start by someone who is not an administrator attempts no preparation, succeeds, and returns an informational notice', async () => {
+    const current = { id: 'ok-1', name: 'Fine', codingAgents: ['codex'], worker: { robotId: 'AAAAAAAAAAAAAAAAAAAAAA' } };
+    const stale = { id: 'st-2', name: 'Stale', codingAgents: ['opencode'], worker: { robotId: 'BBBBBBBBBBBBBBBBBBBBBA' } };
+    const fresh = { id: 'nw-3', name: 'Brand new', codingAgents: ['codex'] };
+    const failed = { id: 'fl-4', name: 'Broken', codingAgents: ['codex'], worker: { robotId: 'CCCCCCCCCCCCCCCCCCCCCA' } };
+    const gone = { id: 'gn-5', name: 'Gone', codingAgents: ['codex'], worker: { robotId: 'DDDDDDDDDDDDDDDDDDDDDA' } };
+    const down = { id: 'dn-6', name: 'Unasked', codingAgents: ['codex'], worker: { robotId: 'EEEEEEEEEEEEEEEEEEEEEA' } };
+    const f = inspecting({
+        [current.worker.robotId]: viewFor(current),
+        [stale.worker.robotId]: viewFor(stale, { configuration: { backend: 'opencode', settings: { codingAgents: ['opencode'] } } }),
+        [failed.worker.robotId]: viewFor(failed, { lifecycle: 'failed', ready: false }),
+        [gone.worker.robotId]: new WorkerError('not_found', 404),
+        [down.worker.robotId]: new WorkerError('worker_unreachable', 503),
+    });
+    const hop = { call: async () => response(200, { bindingId: FLOW }) };
+    const outcome = await prepareFlowStart({ hop, provisioner: f.provisioner, roboflow: { flowRobots: async () => [current, stale, fresh, failed, gone, down] }, flow: { id: FLOW }, grant: GRANT, admin: false });
+    // Nothing that needs an administrator was attempted.
+    assert.equal(f.calls.some(([call]) => call === 'configure' || call === 'provision' || call === 'record'), false);
+    assert.equal(outcome.registered, true, 'the start itself went ahead');
+    assert.deepEqual(outcome.notice.robots.map(({ robot, code }) => [robot, code]), [
+        ['Stale', 'worker_robot_stale'], ['Brand new', 'worker_robot_not_provisioned'], ['Broken', 'worker_robot_failed'],
+        ['Gone', 'worker_robot_missing'], ['Unasked', 'worker_coordinator_unavailable']]);
+    assert.match(outcome.notice.message, /^The workflow was started, but these robots need an administrator before its phases can run: /);
+    assert.match(outcome.notice.message, /"Stale" \(worker_robot_stale: its configuration changed and needs an update\)/);
+    assert.match(outcome.notice.message, /Ask an administrator to open each to update it/);
+    assert.equal(outcome.notice.message.includes('Fine'), false, 'a ready robot is not listed');
+    // All ready: no notice at all.
+    const ready = await prepareFlowStart({ hop, provisioner: inspecting({ [current.worker.robotId]: viewFor(current) }).provisioner, roboflow: { flowRobots: async () => [current] }, flow: { id: FLOW }, grant: GRANT, admin: false });
+    assert.equal(ready.notice, null);
+    // A robot still being prepared is not a problem: its phase waits for it.
+    const preparing = await prepareFlowStart({ hop, provisioner: inspecting({ [stale.worker.robotId]: viewFor(stale, { preparing: true, ready: false, configuration: null }) }).provisioner, roboflow: { flowRobots: async () => [stale] }, flow: { id: FLOW }, grant: GRANT, admin: false });
+    assert.equal(preparing.notice, null);
+    assert.equal(flowStartNotice([{ robot: 'Solo', code: 'worker_robot_stale', reason: 'r' }]).message.startsWith('The workflow was started, but this robot needs an administrator'), true);
+});
+
+test('the administrator\'s start is unchanged: every usable robot is prepared and a failure is refused naming each', async () => {
+    const stale = { id: 'st-2', name: 'Stale', codingAgents: ['opencode'], worker: { robotId: 'BBBBBBBBBBBBBBBBBBBBBA' } };
+    let configured = false;
+    const client = {
+        async getRobot() { return configured ? viewFor(stale) : viewFor(stale, { configuration: { backend: 'opencode', settings: { codingAgents: ['opencode'] } } }); },
+        async configure(body, auth) { configured = true; client.last = { body, auth }; return {}; },
+    };
+    const hop = { call: async () => response(200, { bindingId: FLOW }) };
+    const outcome = await prepareFlowStart({ hop, provisioner: createRobotProvisioner({ client, robotStore: {}, sleep: async () => {} }), roboflow: { flowRobots: async () => [stale] }, flow: { id: FLOW }, grant: GRANT, admin: true });
+    assert.deepEqual(outcome, { registered: true, robots: ['st-2'], notice: null });
+    assert.deepEqual(client.last.auth, { grant: GRANT });
+    const omitted = await prepareFlowStart({ hop, provisioner: createRobotProvisioner({ client, robotStore: {}, sleep: async () => {} }), roboflow: { flowRobots: async () => [stale] }, flow: { id: FLOW }, grant: GRANT });
+    assert.equal(omitted.notice, null, 'admin is the default');
+});
+
+test('a phase that reaches an unprepared robot fails the flow with the administrator message, the normal way', async (t) => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-unprepared-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const started = [];
+    const robots = [{ id: 'one-111111', name: 'one', codingAgents: ['codex'] }];
+    const service = new RoboFlowService({ robotStore: { list: async () => robots, getByName: async (name) => robots.find((robot) => robot.name === name), get: async (id) => robots.find((robot) => robot.id === id) },
+        runtimeManager: { resolveCwd: async (value) => value, guiBusy: () => false, stopTask() {}, startTask(robot, type, request) { started.push(request.runtimeTaskId); return { taskId: request.runtimeTaskId, state: 'queued' }; } },
+        databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), random: () => 0.99,
+        discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }),
+        skillsets: { repositoriesClient: { listRepositories: async () => [{ name: 'DocumentationSkills', source: root, origin: 'local' }] }, start: async (robot, input, enqueue) => enqueue(robot) } });
+    await service.initialize(); await service.presetReady;
+    t.after(() => service.close());
+    await service.createWorkflow(linear);
+    const flow = await service.startFlow({ workflowTypeId: 'linear', folder: root, objective: 'Work' });
+    const message = 'worker_robot_stale: Ask an administrator to open robot "one" to update it.';
+    service.onRuntimeTaskEvent({ kind: 'terminal', taskId: started[0], state: 'failed', result: '', error: message });
+    while (service.chains.size) await Promise.allSettled(service.chains.values());
+    const after = await service.getFlow(flow.id);
+    assert.equal(after.status, 'failed');
+    assert.equal(after.instances[0].state, 'failed');
+    assert.equal(after.instances[0].error, message);
+    assert.equal(after.error, message);
+    assert.equal(started.length, 1, 'no successor is dispatched');
+});
+
+test('the RoboFlow pages carry and show the start notice', async () => {
+    const read = (name) => fs.readFile(new URL(`../public/${name}`, import.meta.url), 'utf8');
+    assert.match(await read('app.js'), /workerNotice[\s\S]*sessionStorage\.setItem\(`roboteam-flow-notice:\$\{flow\.id\}`/);
+    assert.match(await read('cron-jobs.js'), /started\?\.workerNotice\?\.message/);
+    assert.match(await read('roboflow.html'), /id="flowNotice"[^>]*hidden/);
+    assert.match(await read('roboflow.js'), /sessionStorage\.getItem\(key\)[\s\S]*if \(selected\) showStartNotice\(selected\)/);
 });
 
 // ---- the real service: robots are prepared before the first dispatch, and only the ones the flow can use ----

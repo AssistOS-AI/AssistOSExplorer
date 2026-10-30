@@ -315,9 +315,11 @@ async function runWorkflowNow(workflow, button, remove, toggle) {
     button.textContent = 'Starting…';
     workflowListMessage.textContent = '';
     try {
-        const { flow } = await api('api/roboflow/flows', {
+        const { flow, workerNotice } = await api('api/roboflow/flows', {
             method: 'POST', body: { workflowTypeId: workflow.id },
         });
+        // A start by someone who is not an administrator may name robots that need one: shown on the flow page, not blocking.
+        if (workerNotice?.message) sessionStorage.setItem(`roboteam-flow-notice:${flow.id}`, workerNotice.message);
         navigation.navigate(endpoint(`flows?flowId=${encodeURIComponent(flow.id)}`));
     } catch (error) {
         workflowListMessage.textContent = error.message;

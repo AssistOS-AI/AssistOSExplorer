@@ -526,7 +526,9 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
         const input = await readJsonBody(req);
         if (worker?.enabled && !worker.grant(req)) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
-        sendJson(res, 200, { ok: true, ...await roboflow.runScheduleNow(runScheduleId, input?.revision, actor.id, { ownerPrincipal: signedOwner(req), ...(worker?.enabled ? { beforeDispatch: worker.beforeDispatch(req) } : {}) }) }); return true;
+        const sink = {};
+        sendJson(res, 200, { ok: true, ...await roboflow.runScheduleNow(runScheduleId, input?.revision, actor.id, { ownerPrincipal: signedOwner(req), ...(worker?.enabled ? { beforeDispatch: worker.beforeDispatch(req, sink) } : {}) }),
+            ...(sink.notice ? { workerNotice: sink.notice } : {}) }); return true;
     }
     const scheduleId = pathname.match(/^\/api\/roboflow\/schedules\/(cron_[0-9a-f]{24})$/)?.[1];
     if (scheduleId && ['PUT', 'DELETE'].includes(req.method)) {
@@ -569,7 +571,9 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         // With the worker configured, the flow's binding is registered with this request's own grant before
         // its first phase is admitted; a request without one is refused before the flow exists.
         if (worker?.enabled && !worker.grant(req)) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
-        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id, ownerPrincipal: signedOwner(req) }, ...(worker?.enabled ? [{ beforeDispatch: worker.beforeDispatch(req) }] : [])) });
+        const sink = {};
+        const flow = await roboflow.startFlow({ ...body, createdBy: actor.id, ownerPrincipal: signedOwner(req) }, ...(worker?.enabled ? [{ beforeDispatch: worker.beforeDispatch(req, sink) }] : []));
+        sendJson(res, 201, { ok: true, flow, ...(sink.notice ? { workerNotice: sink.notice } : {}) });
         return true;
     }
     const eventsId = pathname.match(new RegExp(`^${FLOW_PATH}/events$`))?.[1];
@@ -769,10 +773,13 @@ export function createRoboTeamServer(options) {
             ? removeRobotOnWorker({ provisioner: workerProvisioner, robot, grant: workerGrantFor(req, req[ACCESS]) }) : null),
         ensure: async (req, robot) => (workerEnabled && workerProvisioner
             ? ensureRobotWithGrant({ provisioner: workerProvisioner, robot, grant: workerGrantFor(req, req[ACCESS]) }) : null),
-        // Before the first phase: the binding is registered, and every robot the phases may use is prepared (provisioned or
-        // reconfigured when stale), both with this request's own grant. A phase runs on the coordinator alone and cannot do either.
-        beforeDispatch: (req) => (workerEnabled ? async (flow) => {
-            await prepareFlowStart({ hop: workerHop, provisioner: workerProvisioner, roboflow, flow, grant: workerGrantFor(req, req[ACCESS]) });
+        // Before the first phase: the binding is registered and the robots the phases may use are looked after, with this request's own
+        // grant (decision M-32). An administrator's start prepares every such robot and is refused naming each that cannot be. Anyone
+        // else's start attempts nothing that needs an administrator; the robots that do come back as `sink.notice` (not blocking).
+        beforeDispatch: (req, sink = {}) => (workerEnabled ? async (flow) => {
+            const outcome = await prepareFlowStart({ hop: workerHop, provisioner: workerProvisioner, roboflow, flow,
+                grant: workerGrantFor(req, req[ACCESS]), admin: req[ACCESS]?.canAdmin === true });
+            if (outcome.notice) sink.notice = outcome.notice;
         } : undefined),
     };
     const workerRecords = roboflow ? {
