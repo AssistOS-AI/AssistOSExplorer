@@ -2,17 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { RobotStore } from '../server/robot-store.mjs';
-import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
 import { ToolCache } from '../server/tool-cache.mjs';
 import { robotCodingAgents } from '../server/coding-agents.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
-import { alaTranscript, alaSessionsRoot } from '../copilot/src/lib/execution/alaTranscript.mjs';
 
 test('copilot cache preparation is silent but preparation failures remain visible', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-cache-output-'));
@@ -79,101 +74,36 @@ test('chat history belongs to the project, survives robot deletion and is shared
     await assert.rejects(fs.stat(path.join(store.robotPath((await store.getByName('default')).id), 'copilot')), { code: 'ENOENT' });
 });
 
-test('task runner uses robot home, persists a conversation, and resumes its native session', { timeout: 15000 }, async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-copilot-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const workspace = path.join(root, 'workspace');
-    const dataDir = path.join(root, 'data');
-    const fake = path.join(root, 'ala');
-    const real = await resolveAlaInstallation();
-    await Promise.all([fs.mkdir(workspace), fs.mkdir(path.join(fake, 'src/coding-agents'), { recursive: true })]);
-    await fs.writeFile(path.join(fake, 'package.json'), '{"name":"advanced-language-agent","type":"module"}');
-    const entry = path.join(fake, 'ala.mjs');
-    // The fixture imports RoboTeam modules relatively, so the fake entry loads it in place by URL.
-    await fs.writeFile(entry, `import ${JSON.stringify(new URL('../copilot/tests/fixtures/ala-engine-child.mjs', import.meta.url).href)};\n`);
-    for (const module of ['config.mjs', 'coding-agents/service.mjs']) {
-        await fs.writeFile(path.join(fake, 'src', module), `export * from ${JSON.stringify(pathToFileURL(path.join(real.packageRoot, 'src', module)).href)};`);
-    }
-    await fs.writeFile(path.join(fake, 'src/coding-agents/discovery.mjs'),
-        `export async function discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; }`);
-    // The required human-report skill comes from a local DocumentationSkills repository.
-    const docs = path.join(root, 'DocumentationSkills');
-    await fs.mkdir(path.join(docs, 'skills/human-report'), { recursive: true });
-    await fs.writeFile(path.join(docs, 'skills/human-report/SKILL.md'), '---\nname: human-report\ndescription: Write the final report.\n---\nReport outcomes.\n');
-    const docsReal = await fs.realpath(docs);
-    const clientFile = path.join(root, 'ploinky/Agent/client/RepositoryClient.mjs');
-    await fs.mkdir(path.dirname(clientFile), { recursive: true });
-    await fs.writeFile(clientFile, `import fs from 'node:fs/promises';
-import path from 'node:path';
-export const createRepositoryClient = () => ({
-    listRepositories: async () => [{ name: 'DocumentationSkills', source: ${JSON.stringify(docsReal)}, origin: 'local' }],
-    install: async ({ repos = [], skillRepos }) => {
-        for (const entry of skillRepos) await fs.mkdir(path.join(entry.destination, '.agents/skills'), { recursive: true });
-        // Like the real client, publish each skill as a link to its repository source; reruns keep matching links.
-        for (const entry of repos) {
-            if (entry.repoName !== 'DocumentationSkills') throw new Error('Unknown repository ' + entry.repoName);
-            const target = path.join(${JSON.stringify(docsReal)}, entry.sourcePath);
-            const current = await fs.readlink(entry.destination).catch(() => null);
-            if (current !== target) await fs.symlink(target, entry.destination);
-        }
-        return { conflicts: [] };
-    },
-    remove: async () => ({ conflicts: [] }),
-});`);
-    const store = new RobotStore({ dataDir });
-    const robot = await store.create({ name: 'worker' });
-    const sessionId = randomUUID();
-    const run = async (prompt, resume = false) => {
-        return new Promise((resolve, reject) => {
-            const child = spawn(process.execPath, ['--input-type=module', '-e',
-                `import { runRobotTask } from ${JSON.stringify(new URL('../server/robot-task.mjs', import.meta.url).href)}; await runRobotTask(process.argv.slice(2), ${JSON.stringify({ dataDir, alaCommand: entry })});`,
-                '--', fileURLToPath(import.meta.url), '--robot', robot.name, '--cwd', workspace, '--session-id', sessionId, '--ca', 'codex',
-                ...(resume ? ['--resume-session'] : [])], {
-                env: { ...process.env,
-                    PLOINKY_WORKSPACE_ROOT: root }, stdio: ['pipe', 'pipe', 'pipe'],
-            });
-            // The task prompt is the first record on the runner's stdin.
-            child.stdin.end(`${JSON.stringify({ type: 'prompt', prompt })}\n`);
-            let stdout = ''; let stderr = '';
-            child.stdout.on('data', (chunk) => { stdout += chunk; });
-            child.stderr.on('data', (chunk) => { stderr += chunk; });
-            child.on('error', reject);
-            child.on('close', (code) => {
-                if (code !== 0) reject(new Error(stderr));
-                else resolve({ output: JSON.parse(stdout), stderr });
-            });
-        });
-    };
-    const first = await run('First');
-    assert.equal(first.output.resumed, false);
-    assert.match(first.stderr, /session-ready/);
-    const sessionPath = path.join(workspace, '.roboteam/sessions', sessionId, 'config.json');
-    const firstSession = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
-    assert.equal(firstSession.engine.home, await fs.realpath(path.join(dataDir, 'robots', robot.id, 'home')));
-    assert.equal(firstSession.cwd, workspace);
-    const second = await run('Follow up', true);
-    assert.equal(second.output.resumed, true);
-    assert.equal(second.output.prompt.includes('First'), false);
-    const continued = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
-    // The store composes the conversation from the session metadata turns and ALA's transcript. It falls back to
-    // metadata text when the transcript has none, so the transcript is checked directly for both user prompts.
-    const previousRoot = process.env.PLOINKY_WORKSPACE_ROOT;
+test('the AI task child prepares nothing in RoboTeam\'s old robot home; the terminal REPL and the catalog tool still do', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-task-home-'));
+    const keys = ['ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID', 'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND', 'PLOINKY_WORKSPACE_ROOT'];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    t.after(async () => {
+        for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
+        await fs.rm(root, { recursive: true, force: true });
+    });
     process.env.PLOINKY_WORKSPACE_ROOT = root;
-    let conversation; let transcript;
-    try {
-        conversation = new ConversationSessionStore({ workingDir: workspace }).loadSession(sessionId);
-        transcript = alaTranscript.readSessionSync(alaSessionsRoot(workspace), sessionId);
-    }
-    finally { if (previousRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = previousRoot; }
-    const userTexts = conversation.messages.filter((message) => message.role === 'user').map((message) => message.text);
-    assert.equal(userTexts.length, 2);
-    assert.deepEqual(userTexts, ['First', 'Follow up']);
-    assert.deepEqual(transcript.turns.map((turn) => turn.user), ['First', 'Follow up']);
-    assert.deepEqual(continued.skillSelection, firstSession.skillSelection);
-    // The live skill execution (the required human-report skill) is unchanged by the resumed turn.
-    assert.deepEqual(firstSession.skillExecution.entries.map((entry) => entry.name), ['human-report']);
-    assert.deepEqual(continued.skillExecution.entries, firstSession.skillExecution.entries);
-    await assert.rejects(fs.stat(path.join(workspace, '.data/achilles-cli')), /ENOENT/);
+    delete process.env.ACHILLES_ALA_HOME;
+    const store = new RobotStore({ dataDir: path.join(root, 'data') });
+    const robot = await store.create({ name: 'worker' });
+    const home = path.join(store.robotPath(robot.id), 'home');
+    const listing = async () => (await fs.readdir(home, { recursive: true })).sort();
+    // Robot creation prepares the home for the Terminal and workstations; start from an empty one to see what each call adds.
+    await fs.rm(home, { recursive: true, force: true });
+    await fs.mkdir(home, { mode: 0o700 });
+    const before = await listing();
+    assert.deepEqual(before, []);
+    // Exactly the call server/robot-task.mjs makes.
+    const context = await prepareCopilotContext('worker', { dataDir: store.dataDir, prepareTools: false, holdUsage: true, prepareHome: false });
+    await context.releaseUsage();
+    assert.deepEqual(await listing(), before, 'no shell profile, plugin, agent directory or configuration is created in the old home');
+    assert.equal(process.env.ACHILLES_ALA_HOME, undefined, 'no local ALA home is exported');
+    assert.equal(context.robot.id, robot.id);
+    // The default (terminal REPL, catalog tool) still prepares the robot's own home.
+    await prepareCopilotContext('worker', { dataDir: store.dataDir, prepareTools: false });
+    const prepared = await listing();
+    assert.ok(prepared.length > before.length && prepared.includes('.roboteam-env.sh'), 'the default call prepares the shell home');
+    assert.match(await fs.readFile(new URL('../server/robot-task.mjs', import.meta.url), 'utf8'), /prepareCopilotContext\([^)]*prepareHome: false/u, 'the task child makes that call');
 });
 
 test('catalog listing reuses a valid prepared shell generation without npm lookups and falls back otherwise', async (t) => {

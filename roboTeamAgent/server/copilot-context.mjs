@@ -10,8 +10,10 @@ import { DATA_DIR } from './constants.mjs';
 import { CODING_AGENT_NAMES, robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
 
 // One CLI process owns one robot context; browser input cannot change its home.
+// `prepareHome: false` is the AI task child's call (decision M-5): its robot HOME is the worker's, so RoboTeam's old robot home is
+// neither required nor prepared. The terminal REPL and the catalog tool keep the default, because they use RoboTeam's home.
 export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, usePreparedTools = false, holdUsage = false,
-    dataDir = DATA_DIR, alaCommand, toolCache } = {}) {
+    dataDir = DATA_DIR, alaCommand, toolCache, prepareHome = true } = {}) {
     const workspaceRoot = requireWorkspaceRoot();
     const store = new RobotStore({ dataDir });
     await store.initialize();
@@ -21,15 +23,14 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
     try {
         const robotRoot = store.robotPath(robot.id);
         const home = path.join(robotRoot, 'home');
-        for (const directory of [robotRoot, home]) {
+        for (const directory of prepareHome ? [robotRoot, home] : [robotRoot]) {
             const stat = await fs.lstat(directory);
             if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe robot home.');
         }
         delete process.env.ROBOTEAM_COPILOT_ROOT;
         process.env.ROBOTEAM_COPILOT_ROBOT_ID = robot.id;
         process.env.ROBOTEAM_COPILOT_ROBOT_NAME = robot.name;
-        process.env.ACHILLES_ALA_HOME = await fs.realpath(home);
-        await prepareRobotShell(home);
+        if (prepareHome) await prepareRobotShell(home);
         process.env.ACHILLES_ALA_COMMAND = resolveAlaCommand(alaCommand);
         if (process.env.PLOINKY_AGENTLIB_DIR) {
             process.env.ACHILLES_AGENT_LIB_PATH = process.env.PLOINKY_AGENTLIB_DIR;

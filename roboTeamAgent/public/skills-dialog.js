@@ -346,6 +346,12 @@ export function codingAgentLabel(names) {
     return names.map(name => CODING_AGENT_LABELS[name] || name).join(', ');
 }
 
+// The only model the picker can offer while the worker does not list models (the server answers 409 `model_listing_unavailable`):
+// the robot's configured one. No error is shown for it.
+export function configuredModelCatalog(configured) {
+    return typeof configured === 'string' && configured ? [{ id: configured, label: configured, efforts: [] }] : [];
+}
+
 export function filterCodingModels(models, query) {
     const words = query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
     return models.filter(model => words.every(word => `${model.id} ${model.label}`.toLocaleLowerCase().includes(word)));
@@ -386,7 +392,7 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
     const modelMessage = dialog.querySelector('.coding-model-message'), retry = dialog.querySelector('.coding-model-retry');
     const save = dialog.querySelector('.coding-agent-save'), back = dialog.querySelector('.coding-model-back');
     const lifetime = new AbortController();
-    const catalogs = new Map(), drafts = new Map();
+    const catalogs = new Map(), drafts = new Map(), configuredOnly = new Set();
     let saved = {}, savedEfforts = {}, defaults = {}, pendingModel = null, stage = 'models', ready = false, saving = false, request = null, activeIndex = -1;
     const names = robot.codingAgents || ['codex', 'opencode', 'pi', 'claude'];
     const busy = robot.run.state !== 'stopped' || ['queued', 'starting', 'running', 'pausing'].includes(robot.run.task?.state);
@@ -422,7 +428,8 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
         list.replaceChildren(); activeIndex = -1; search.removeAttribute('aria-activedescendant');
         const models = catalogs.get(agent());
         const rows = [{ id: '', label: 'Default model' }, ...filterCodingModels(models || [], search.value)];
-        if (models) modelMessage.textContent = rows.length === 1 ? (models.length ? 'No matching models.' : 'No models available.') : '';
+        if (models) modelMessage.textContent = configuredOnly.has(agent()) ? 'Model list available after the worker update.'
+            : rows.length === 1 ? (models.length ? 'No matching models.' : 'No models available.') : '';
         for (const [index, model] of rows.entries()) {
             const option = document.createElement('button'); option.type = 'button'; option.tabIndex = -1;
             option.className = 'coding-model-option'; option.id = `coding-model-option-${index}`; option.setAttribute('role', 'option');
@@ -436,6 +443,13 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
     }
     function chooseModel(model) {
         request?.abort();
+        if (configuredOnly.has(agent())) {
+            // No list means no effort choices: the configured model keeps its saved effort (sent as it is saved, which the server
+            // accepts without a list), and the default model has none.
+            const keep = model.id && model.id === saved[agent()];
+            drafts.set(agent(), { model: model.id || null, effort: keep ? savedEfforts[agent()] ?? null : null });
+            closePicker(); trigger.focus(); return;
+        }
         stage = 'efforts'; pendingModel = model.id || null;
         const effectiveModel = model.id || defaults[agent()];
         const entry = catalogs.get(agent())?.find(item => item.id === effectiveModel);
@@ -479,6 +493,10 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
             renderModels();
         } catch (error) {
             if (controller.signal.aborted || lifetime.signal.aborted || agent() !== backend) return;
+            if (error.status === 409 && error.code === 'model_listing_unavailable') {
+                catalogs.set(backend, configuredModelCatalog(saved[backend])); configuredOnly.add(backend); renderModels();
+                return;
+            }
             modelMessage.textContent = error.message; retry.hidden = false;
         } finally { if (request === controller) { request = null; list.removeAttribute('aria-busy'); } }
     }

@@ -16,7 +16,8 @@ import { readControls, workerRobots, workerRobotDirs, channelEvents, singleTaskW
 // RoboWork r10 e2e: worker channels and robot delete on a live deployment (run `node scripts/run-robowork-e2e.mjs specs/10-robowork-interaction.spec.mjs`).
 //   SMOKE_ROBOWORK_HUMAN=1    (D) a phase asks a question through require-human-input; answering continues it as a new admission
 //   SMOKE_ROBOWORK_FAILURE=1  (E) a phase reports a blocked task through report-task-blocked; the phase fails with that message
-//   SMOKE_ROBOWORK_DELETE=1   (F) robot delete: worker store dir removed; a robot with running work is refused and kept
+//   SMOKE_ROBOWORK_DELETE=1   (F) robot delete: worker store dir removed; a robot with running local work is refused and kept (the worker's own robot_busy refusal is
+//                             covered cross-side by roboTeamAgent/tests/robot-delete-cross-side.test.mjs, decision M-49)
 // Model-dependent turns repeat at most 3 times, and only when no execution failed, no protected file changed, no sentinel leaked and the model
 // did not do the asked thing (no question, no failure report, wrong file). A failed execution, a changed host file or a leaked sentinel fails at once.
 const HUMAN = process.env.SMOKE_ROBOWORK_HUMAN === '1';
@@ -338,72 +339,5 @@ test.describe('RoboWork interaction scenarios', () => {
     }
     await finishEvidence(ctx, page);
     await testInfo.attach('robot-delete', { body: JSON.stringify(outcome, null, 2), contentType: 'application/json' });
-  });
-
-  // -------------------------------------------------------------------------------------------------------------- G (worker-busy)
-
-  test('G: a robot with worker work but no local holder is refused by the worker (robot_busy) and kept', async ({ page }, testInfo) => {
-    test.skip(!DELETE, 'Opt in with SMOKE_ROBOWORK_DELETE=1.');
-    test.setTimeout(25 * 60_000);
-    const ctx = context('robot-delete-worker-busy');
-    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(ctx.workspaceRoot, project) }) });
-    const outcome = { steps: [] };
-    const record = (step) => { outcome.steps.push(step); ctx.save('outcome.json', outcome); };
-    const name = `e2e-busy-w-${stamp()}`;
-    const project = ownProject(ctx, `e2e-delete-${stamp()}`);
-    const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
-    const quietDelete = async (target) => {
-      const proof = await target.evaluate(async () => (await (await fetch('/auth/token?mutationRoute=roboTeamAgent', { credentials: 'include', cache: 'no-store' })).json()).browserMutation);
-      const reply = await target.request.post(`${ROBOTEAM_BASE_PATH}api/control`, { headers: { origin: new URL(target.url()).origin, 'x-ploinky-browser-csrf-token': proof.csrfToken, 'content-type': 'application/json', accept: 'application/json' }, data: JSON.stringify({ robotName: name, operation: 'robot-delete' }) });
-      return { status: reply.status(), payload: await reply.json().catch(() => ({})) };
-    };
-    await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
-    let created = false;
-    try {
-      const before = workerRobotDirs(ctx.workspaceRoot);
-      const robot = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name, codingAgents: ['opencode'] } }, [201])).robot;
-      created = true;
-      await applySelectedModel(roboTeamApi, page, robot);
-      const workerId = workerRobots({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir }).find((row) => row.name === name)?.id ?? workerRobotDirs(ctx.workspaceRoot).find((entry) => !before.includes(entry));
-      // Only this robot carries the scenario's skill repository, so a workflow task that names its skill can run on no other robot (no chat, no local holder).
-      const repository = path.join(fixture.root, 'skillrepo');
-      fs.mkdirSync(path.join(repository, 'e2e-marker'), { recursive: true });
-      fs.writeFileSync(path.join(repository, 'e2e-marker/SKILL.md'), '---\nname: e2e-marker\ndescription: Marker skill that only selects the scenario robot.\n---\n\nThis skill carries no instructions.\n');
-      await apiOk(roboTeamApi, page, { method: 'POST', path: `api/robots/${robot.id}/skillsets`, body: { name: 'e2emark', source: repository, description: 'e2e marker repository' } });
-      const listed = (await apiOk(roboTeamApi, page, { path: 'api/robots' })).robots.find((entry) => entry.name === name);
-      const skillId = listed.repositories?.find((entry) => entry.id === 'e2emark') ? path.join(fs.realpathSync(repository), 'e2e-marker') : null;
-      expect(skillId, 'the marker skill id on the robot').toBeTruthy();
-      const body = singleTaskWorkflow({ name: `e2e worker busy ${stamp()}`, prompt: 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: `sleep 70`   Then reply DONE.' });
-      body.tasks[0].skillsets = [skillId];
-      const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body }, [201])).workflow;
-      expect(workflow.coverage.tasks[0].matchingRobotIds, 'only the scenario robot can run the phase').toEqual([robot.id]);
-      startPoller(ctx.containers);
-      try {
-        const flow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/flows', body: { workflowTypeId: workflow.id, folder: fixture.root, objective: `Worker busy e2e ${stamp()}` } }, [201])).flow;
-        flowIds.push(flow.id);
-        await waitFor('the sleep 70 command in the worker', async () => workerProcesses(ctx.containers, 'sleep 70').length > 0, { timeoutMs: 4 * 60_000, intervalMs: 1000, check: guard });
-        const refused = await quietDelete(page);
-        record({ step: 'worker-busy delete refused', robotId: robot.id, workerId, status: refused.status, payload: refused.payload });
-        expect(refused.status, `refused: ${JSON.stringify(refused.payload)}`).toBe(409);
-        expect(JSON.stringify(refused.payload), 'the worker refusal (robot_busy)').toMatch(/running or unsettled work/);
-        expect((await apiOk(roboTeamApi, page, { path: 'api/robots' })).robots.some((entry) => entry.name === name), 'RoboTeam record kept').toBe(true);
-        expect(workerRobotDirs(ctx.workspaceRoot), 'worker directory kept').toContain(workerId);
-        const finished = await waitFor('the flow to finish', async () => { const current = await getFlow(page, flow.id); return flowTerminal(current) ? current : null; }, { timeoutMs: 6 * 60_000, intervalMs: 3000, check: guard });
-        ctx.save('flow-final.json', finished);
-        await apiOk(roboTeamApi, page, { method: 'DELETE', path: `api/roboflow/workflows/${workflow.id}` }, [200, 404]).catch(() => {});
-        const accepted = await waitFor('the robot to be deletable once its work ended', async () => { const reply = await quietDelete(page); return reply.status === 409 ? null : reply; }, { timeoutMs: 3 * 60_000, intervalMs: 5000 });
-        record({ step: 'delete after the phase ended', status: accepted.status, payload: accepted.payload });
-        expect(accepted.status).toBe(200);
-        created = false;
-        await waitFor('the worker directory to be removed', async () => !workerRobotDirs(ctx.workspaceRoot).includes(workerId), { timeoutMs: 90_000, intervalMs: 1000 });
-      } finally { stopPoller(ctx.containers); }
-    } finally {
-      if (created) {
-        const left = await waitFor('the scratch robot to be deleted', async () => { const reply = await quietDelete(page); return reply.status === 200 ? reply : (reply.status === 409 ? null : reply); }, { timeoutMs: 4 * 60_000, intervalMs: 15_000 }).catch((error) => ({ status: 'timeout', error: String(error.message) }));
-        ctx.save('cleanup.json', left);
-      }
-      await finishEvidence(ctx, page);
-    }
-    await testInfo.attach('robot-delete-worker-busy', { body: JSON.stringify(outcome, null, 2), contentType: 'application/json' });
   });
 });

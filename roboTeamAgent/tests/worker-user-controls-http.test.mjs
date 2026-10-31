@@ -26,7 +26,8 @@ async function server(t, { workerMode = true } = {}) {
     const robot = await robotStore.ensureDefaultRobot();
     const seen = [];
     const record = (name, refuse = false) => async (...args) => { seen.push({ name, args }); if (refuse) throw Object.assign(new Error('Stop not delivered: the worker needs your fresh authorization. The task may still be running; press stop again.'), { statusCode: 409 }); return name === 'messageInstance' ? { delivery: 'delivered' } : { id: FLOW, status: 'paused' }; };
-    const roboflow = { pauseFlow: record('pauseFlow'), terminateFlow: record('terminateFlow'), pauseInstance: record('pauseInstance', true), messageInstance: record('messageInstance'),
+    const roboflow = { pauseFlowBySystem: record('pauseFlowBySystem'), pauseFlow: record('pauseFlow'), terminateFlow: record('terminateFlow'), pauseInstance: record('pauseInstance', true), messageInstance: record('messageInstance'),
+        resumeFlow: record('resumeFlow'), resumeInstance: record('resumeInstance'),
         refreshCoverage: async () => {} };
     const runtimeManager = {
         workspaceRoot, status: () => ({ state: 'stopped' }), activePort: () => null, hasUnfinishedTasks: () => false, logs: async () => '',
@@ -59,7 +60,13 @@ async function server(t, { workerMode = true } = {}) {
     };
     // The grant the Router minted for this principal on this path.
     const grantFor = (pathname, text = '{}') => authInfoOf(routedHeaders(ADMIN, 'POST', pathname, text)).delegations?.providerAdmission?.token;
-    return { post, seen, live, robot, grantFor };
+    // Any routed request of the administrator (the Router signs it over the exact method, path and body).
+    const send = async (method, pathname, body) => {
+        const text = body === undefined ? '' : JSON.stringify(body);
+        const response = await fetch(`${base}${pathname}`, { method, headers: { ...(text ? { 'content-type': 'application/json' } : {}), ...routedHeaders(ADMIN, method, pathname, text) }, ...(text ? { body: text } : {}) });
+        return { status: response.status, body: await response.json().catch(() => ({})) };
+    };
+    return { post, send, seen, live, robot, robotStore, grantFor, base };
 }
 const subjectOf = (token) => decodeJwtPayload(token).sub;
 
@@ -92,17 +99,59 @@ test('the exact RoboFlow control path passes the request\'s own grant to a pause
     assert.equal((await f.post('/api/roboflow/control', { flowId: FLOW, action: 'pause-instance' })).status, 400);
 });
 
-test('with the worker configured, the per-flow paths mint no grant and a user stop through them is refused before anything changes', async (t) => {
+test('with the worker configured, the per-flow paths mint no grant and a user stop through them is refused before anything changes, naming POST /api/roboflow/control', async (t) => {
     const f = await server(t);
-    for (const suffix of ['/pause', '/terminate', `/instances/${INSTANCE}/pause`]) {
+    // R-2 (decision M-49): the 403 names the replacement and the action; the flow and phase ids are the caller's own.
+    for (const [suffix, action] of [['/pause', 'pause'], ['/terminate', 'terminate'], [`/instances/${INSTANCE}/pause`, 'pause-instance']]) {
         const result = await f.post(`/api/roboflow/flows/${FLOW}${suffix}`, {}, { plain: true });
         assert.equal(result.status, 403, suffix);
-        assert.equal(result.body.error, 'owner_evidence_unavailable');
+        assert.match(result.body.error, /^owner_evidence_unavailable: .*POST \/api\/roboflow\/control/u, suffix);
+        assert.ok(result.body.error.includes(`"action": "${action}"`), `${suffix} names its action`);
+        assert.deepEqual(result.body.replacement, { method: 'POST', path: '/api/roboflow/control', action }, suffix);
     }
-    assert.equal((await f.post(`/api/roboflow/flows/${FLOW}/instances/${INSTANCE}/message`, { prompt: 'x' }, { plain: true })).status, 403);
+    // The rendered text is the exact request body the caller can send: the JSON example is closed.
+    const pause = await f.post(`/api/roboflow/flows/${FLOW}/pause`, {}, { plain: true });
+    assert.equal(pause.body.error, 'owner_evidence_unavailable: this path carries no authorization for the worker; use POST /api/roboflow/control with {"flowId": "<flow id>", "action": "pause"}.');
+    const pauseInstance = await f.post(`/api/roboflow/flows/${FLOW}/instances/${INSTANCE}/pause`, {}, { plain: true });
+    assert.equal(pauseInstance.body.error, 'owner_evidence_unavailable: this path carries no authorization for the worker; use POST /api/roboflow/control with {"flowId": "<flow id>", "action": "pause-instance", "instanceId": "<phase id>"}.');
+    const message = await f.post(`/api/roboflow/flows/${FLOW}/instances/${INSTANCE}/message`, { prompt: 'x' }, { plain: true });
+    assert.equal(message.status, 403);
+    assert.deepEqual(message.body.replacement, { method: 'POST', path: '/api/roboflow/control', action: 'message-instance' });
+    assert.match(message.body.error, /"instanceId"/u);
     assert.deepEqual(f.seen.filter((entry) => /Flow|Instance/.test(entry.name)), [], 'nothing was paused, terminated or messaged');
-    // The exact path without a minted grant (an old Router) is refused the same way.
-    assert.equal((await f.post('/api/roboflow/control', { flowId: FLOW, action: 'pause' }, { plain: true })).status, 403);
+    // The exact path without a minted grant (an old Router) is refused without naming a replacement: it already is the replacement.
+    const bare = await f.post('/api/roboflow/control', { flowId: FLOW, action: 'pause' }, { plain: true });
+    assert.equal(bare.status, 403);
+    assert.equal(bare.body.error, 'owner_evidence_unavailable');
+    assert.equal(bare.body.replacement, undefined);
+});
+
+test('M-55 (a): the launch task child\'s internal-token pause is a system pause for the user it forwards; a user-less request without the token stays refused', async (t) => {
+    const f = await server(t);
+    const internal = (userHeaders) => fetch(`${f.base}/api/roboflow/flows/${FLOW}/pause`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roboteam-internal-token': 'test-token', ...userHeaders }, body: '{}' });
+    const flowCalls = () => f.seen.filter((entry) => /Flow|Instance/.test(entry.name)).map((entry) => [entry.name, entry.args]);
+    assert.equal((await internal({ 'x-roboteam-user-id': 'admin-v' })).status, 200);
+    assert.deepEqual(flowCalls(), [['pauseFlowBySystem', [FLOW, 'admin-v']]], 'the forwarded user is who the service checks as the flow owner');
+    f.seen.length = 0;
+    // No forwarded user (or an empty one): refused before the service is asked.
+    for (const headers of [{}, { 'x-roboteam-user-id': '' }, { 'x-roboteam-user-id': '   ' }]) {
+        const refused = await internal(headers);
+        assert.equal(refused.status, 403, JSON.stringify(headers));
+    }
+    assert.deepEqual(flowCalls(), []);
+    const plain = await f.post(`/api/roboflow/flows/${FLOW}/pause`, {}, { plain: true });
+    assert.equal(plain.status, 403, 'a signed request with no grant is still refused');
+    assert.deepEqual(flowCalls(), []);
+});
+
+test('per-flow resume and phase resume stay as they are: they dispatch with no grant and no user argument', async (t) => {
+    const f = await server(t);
+    // Resume dispatches through the flow binding (decision M-49), so a request the Router signed without a grant still passes.
+    const resumed = await f.post(`/api/roboflow/flows/${FLOW}/resume`, {}, { plain: true });
+    assert.equal(resumed.status, 200);
+    const phase = await f.post(`/api/roboflow/flows/${FLOW}/instances/${INSTANCE}/resume`, { prompt: 'go on' }, { plain: true });
+    assert.equal(phase.status, 200);
+    assert.deepEqual(f.seen.map((entry) => [entry.name, entry.args]), [['resumeFlow', [FLOW]], ['resumeInstance', [FLOW, INSTANCE, 'go on']]]);
 });
 
 test('without the worker the same paths keep working with no grant', async (t) => {
@@ -142,4 +191,55 @@ test('a Live Sessions stop and message carry the request\'s grant and who asks; 
     assert.equal((await f.post(`/api/live-sessions/${id}/messages`, { message: 'x' }, { plain: true })).status, 403);
     assert.equal(f.live.stop.length, 1);
     assert.equal(f.live.message.length, 1);
+});
+
+// Decision M-56 (monitor condition): the robot settings dialog loads and saves with the worker configured. Only an operation that
+// truly needs the model list is refused (409 model_listing_unavailable), never the whole save.
+test('with the worker configured, the robot settings load and a selection without a model list saves', async (t) => {
+    const f = await server(t);
+    const path = `/api/robots/${f.robot.id}/coding-agents`;
+    const loaded = await f.send('GET', path);
+    assert.equal(loaded.status, 200);
+    assert.equal(loaded.body.codingAgent, f.robot.codingAgents[0]);
+    const saved = await f.send('PATCH', path, { codingAgents: ['claude'] });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.ok(saved.body.worker, 'worker mode ran the worker provisioning step');
+    assert.notEqual(saved.body.worker.error, 'owner_evidence_unavailable', 'the PATCH route carries the administrator\'s grant to the worker step');
+    assert.deepEqual((await f.send('GET', path)).body.codingAgent, 'claude');
+    const withModel = await f.send('PATCH', path, { codingAgents: ['claude'], model: 'sonnet' });
+    assert.equal(withModel.status, 200);
+    assert.deepEqual((await f.send('GET', path)).body.models, { claude: 'sonnet' });
+});
+
+test('with the worker configured, a valid static effort saves, an unknown or malformed one is 400, an unlisted backend\'s new effort is 409', async (t) => {
+    const f = await server(t);
+    const path = `/api/robots/${f.robot.id}/coding-agents`;
+    const claude = { codingAgents: ['claude'], model: 'sonnet' };
+    assert.equal((await f.send('PATCH', path, { ...claude, effort: 'xhigh' })).status, 200);
+    assert.deepEqual((await f.send('GET', path)).body.efforts, { claude: 'xhigh' });
+    assert.equal((await f.send('PATCH', path, { ...claude, effort: 'turbo' })).status, 400, 'not a Claude Code effort');
+    assert.equal((await f.send('PATCH', path, { ...claude, effort: 'bad effort' })).status, 400, 'not a native effort name');
+    assert.deepEqual((await f.send('GET', path)).body.efforts, { claude: 'xhigh' }, 'a refused save changes nothing');
+    assert.equal((await f.send('PATCH', path, { codingAgents: ['pi'], model: 'p/m', effort: 'minimal' })).status, 200);
+    const opencode = { codingAgents: ['opencode'], model: 'provider/model' };
+    const refused = await f.send('PATCH', path, { ...opencode, effort: 'high' });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.code, 'model_listing_unavailable');
+    assert.equal((await f.send('PATCH', path, opencode)).status, 200, 'the model alone needs no list');
+});
+
+test('with the worker configured, saving through the configured-only picker keeps the saved effort', async (t) => {
+    const f = await server(t);
+    const path = `/api/robots/${f.robot.id}/coding-agents`;
+    const opencode = { codingAgents: ['opencode'], model: 'provider/model' };
+    await f.robotStore.setCodingAgents(f.robot.id, ['opencode'], { ...opencode, effort: 'high' });
+    // The dialog sends the agent alone, or the configured model with the saved effort: neither drops the effort.
+    assert.equal((await f.send('PATCH', path, { codingAgents: ['opencode'] })).status, 200);
+    assert.deepEqual((await f.send('GET', path)).body.efforts, { opencode: 'high' });
+    assert.equal((await f.send('PATCH', path, { ...opencode, effort: 'high' })).status, 200, 'the saved effort needs no list');
+    assert.deepEqual((await f.send('GET', path)).body.efforts, { opencode: 'high' });
+    assert.equal((await f.send('PATCH', path, opencode)).status, 200, 'the same model without an effort field omits it');
+    assert.deepEqual((await f.send('GET', path)).body.efforts, { opencode: 'high' });
+    assert.equal((await f.send('PATCH', path, { ...opencode, effort: null })).status, 200, 'null clears it explicitly');
+    assert.deepEqual((await f.send('GET', path)).body.efforts, {});
 });

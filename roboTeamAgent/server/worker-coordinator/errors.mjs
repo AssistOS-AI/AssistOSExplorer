@@ -28,6 +28,16 @@ export class WorkerCoordinatorError extends Error {
     }
 }
 
+// RoboTeam runs every AI task through the worker (decision M-5, R08): there is no local execution path. When the coordinator
+// base is not configured an AI task, turn or model call is refused with this error and nothing is spawned. The status is a 409 so
+// that the HTTP layer shows the message; the code is the stable part.
+export const WORKER_NOT_CONFIGURED = 'worker_not_configured';
+export function workerNotConfiguredError() {
+    return Object.assign(new Error(`${WORKER_NOT_CONFIGURED}: AI execution is unavailable because ROBOTEAM_WORKER_COORDINATOR_BASE is not set. `
+        + 'RoboTeam runs every AI task through the robo-work worker; ask an administrator to configure the worker coordinator.'),
+    { code: WORKER_NOT_CONFIGURED, status: 409, statusCode: 409 });
+}
+
 export function refusal(code, extra = {}) {
     return { status: STATUS[code] || 500, body: { error: code, ...extra } };
 }

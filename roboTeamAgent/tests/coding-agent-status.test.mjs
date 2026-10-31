@@ -18,61 +18,49 @@ async function write(home, file, content) {
     await fs.writeFile(path.join(home, file), typeof content === 'string' ? content : JSON.stringify(content));
 }
 
-const NONE = { codex: false, opencode: false, pi: false, claude: false };
+const UNKNOWN = { codex: 'unknown', opencode: 'unknown', pi: 'unknown', claude: 'unknown' };
 
-test('an empty home has no coding-agent login', async (t) => {
-    assert.deepEqual(await createCodingAgentStatus().logins(await tempHome(t)), NONE);
-});
-
-test('each agent counts as logged in through ALA when its own credential store holds something', async (t) => {
+// Decision M-56: login detection ran ALA against the robot's old home; until it moves to a worker utility execution (T5) every
+// login is 'unknown' and nothing is read from the home for it.
+test('every login is unknown, whatever the old home holds, and the home is not read for it', async (t) => {
     const home = await tempHome(t);
-    await write(home, '.codex/auth.json', { OPENAI_API_KEY: null, tokens: { access_token: 'a', refresh_token: 'r' }, last_refresh: 'x' });
-    await write(home, '.local/share/opencode/auth.json', { deepseek: { type: 'api', key: 'k' } });
-    await write(home, '.pi/agent/auth.json', { anthropic: { type: 'oauth', access: 'a', refresh: 'r', expires: 1 } });
+    await write(home, '.codex/auth.json', { tokens: { access_token: 'a', refresh_token: 'r' } });
     await write(home, '.claude/.credentials.json', { claudeAiOauth: { accessToken: 'a', refreshToken: 'r' } });
-    assert.deepEqual(await createCodingAgentStatus().logins(home), { codex: true, opencode: true, pi: true, claude: true });
-});
-
-test('a changed file is read again and an unchanged one is served from the cache', async (t) => {
-    const home = await tempHome(t);
     const status = createCodingAgentStatus();
-    assert.equal((await status.logins(home)).pi, false);
-    await write(home, '.pi/agent/auth.json', { openai: { type: 'api_key', key: 'k' } });
-    assert.equal((await status.logins(home)).pi, true);
-    await fs.rm(path.join(home, '.pi/agent/auth.json'));
-    assert.equal((await status.logins(home)).pi, false);
-});
-
-test('a credential variable of the server is never a robot login', async (t) => {
-    const home = await tempHome(t);
+    assert.deepEqual(await status.logins(home), UNKNOWN);
+    await fs.rm(path.join(home, '.codex'), { recursive: true });
+    assert.deepEqual(await status.logins(home), UNKNOWN);
     const previous = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = 'sk-server';
     t.after(() => { if (previous === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previous; });
-    assert.deepEqual(await createCodingAgentStatus().logins(home), NONE);
+    assert.deepEqual(await status.logins(await tempHome(t)), UNKNOWN);
 });
 
-test('without a loadable ALA the logins are reported absent and the failure is logged once', async (t) => {
-    const home = await tempHome(t);
-    await write(home, '.claude/.credentials.json', { claudeAiOauth: { accessToken: 'a' } });
-    const lines = [];
-    let attempts = 0;
-    const status = createCodingAgentStatus({ installation: async () => { attempts += 1; throw new Error('ALA is missing'); }, log: line => lines.push(line) });
-    assert.deepEqual(await status.logins(home), NONE);
-    assert.deepEqual(await status.logins(home), NONE);
-    assert.equal(attempts, 2, 'a failed load is retried');
-    assert.deepEqual(lines, ['[roboTeam] coding-agent logins are unavailable: ALA is missing']);
-    const older = createCodingAgentStatus({ installation: async () => ({ loadConfig() {} }), log: line => lines.push(line) });
-    assert.deepEqual(await older.logins(home), NONE);
-    assert.match(lines.at(-1), /this ALA has no coding-agent login detection/);
+test('the module loads no ALA', async () => {
+    const source = await fs.readFile(new URL('../server/coding-agent-status.mjs', import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /alaInstallation|alaEnvironment|detectCodingAgentLogin|codingAgentLoginFiles/u);
 });
 
-test('the agent in use is the configured one when the robot has it enabled', async (t) => {
+// Decision M-10: the robot's agent comes from RoboTeam's record, exactly as RobotModels.config reads it; the robot's old home is
+// never read. A home that holds an ALA config naming another agent, and a home that does not exist, give the same answer.
+test('the agent in use is the first enabled one of the robot record and the old home is never read', async (t) => {
     const home = await tempHome(t);
-    const status = createCodingAgentStatus();
-    assert.equal(await status.activeAgent(home, ['codex', 'opencode']), 'codex');
     await write(home, '.ala/config.json', { codingAgent: 'opencode', models: {}, efforts: {} });
-    assert.equal(await status.activeAgent(home, ['codex', 'opencode']), 'opencode');
-    assert.equal(await status.activeAgent(home, ['claude']), 'claude', 'a disabled configured agent falls back to the first enabled one');
+    const status = createCodingAgentStatus();
+    const reads = [];
+    for (const method of ['lstat', 'readFile', 'stat', 'open', 'readdir']) {
+        const original = fs[method];
+        t.mock.method(fs, method, async (...args) => { reads.push([method, String(args[0])]); return original.apply(fs, args); });
+    }
+    assert.equal(await status.activeAgent({ codingAgents: ['codex', 'opencode'] }), 'codex');
+    assert.equal(await status.activeAgent({ codingAgents: ['claude'] }), 'claude');
+    assert.equal(await status.activeAgent({ codingAgents: [] }), null);
+    assert.equal(await status.activeAgent({}), null);
+    assert.deepEqual(reads, [], 'no file is read for the agent');
+    const { RobotModels } = await import('../server/robot-models.mjs');
+    const robot = { id: 'r', codingAgents: ['codex', 'opencode'] };
+    const models = new RobotModels({ robotStore: { get: async () => robot }, runtimeManager: {} });
+    assert.equal((await models.config(robot)).codingAgent, await status.activeAgent(robot), 'the same answer as the settings');
 });
 
 test('the robot listing names the agent in use and keeps logins from non-administrators', async (t) => {
@@ -84,8 +72,10 @@ test('the robot listing names the agent in use and keeps logins from non-adminis
     t.after(() => { if (previous === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = previous; });
     const robotStore = new RobotStore({ dataDir: path.join(root, 'private') });
     await robotStore.initialize();
-    const robot = await robotStore.create({ name: 'Scout', codingAgents: ['opencode'] });
+    const robot = await robotStore.create({ name: 'Scout', codingAgents: ['opencode', 'claude'] });
     await write(path.join(robotStore.robotPath(robot.id), 'home'), '.claude/.credentials.json', { claudeAiOauth: { accessToken: 'a' } });
+    // The old home names another agent; the listing takes the robot record's.
+    await write(path.join(robotStore.robotPath(robot.id), 'home'), '.ala/config.json', { codingAgent: 'claude', models: {}, efforts: {} });
     const runtimeManager = { workspaceRoot, status: () => ({ state: 'stopped' }), activePort: () => null, hasUnfinishedTasks: () => false };
     const server = createRoboTeamServer({ robotStore, runtimeManager, internalToken: 'test-token', publicBasePath: '/rt/', mcpPort: 65534 });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

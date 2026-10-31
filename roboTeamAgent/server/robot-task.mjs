@@ -3,7 +3,6 @@ import { prepareCopilotContext } from './copilot-context.mjs';
 import { setRobotContext } from '../copilot/src/lib/execution/robotContext.mjs';
 import { createCliRuntime } from '../copilot/src/index.mjs';
 import { messageForEngine, stopReasonFromRecord, taskExitCode } from './worker-coordinator/task-exit.mjs';
-import { workerModeSelected } from '../copilot/src/lib/execution/engineSelection.mjs';
 import { detachReason } from '../copilot/src/lib/execution/abortReasons.mjs';
 
 import { pathToFileURL } from 'node:url';
@@ -16,17 +15,16 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         options[key] = ['--resume-session', '--control-stdin', '--workflow-execution', '--human-input'].includes(key) ? true : argv[++index];
     }
     const controller = new AbortController();
-    // Through the worker a signal only detaches (RoboTeam is shutting down; the worker keeps the
-    // execution); a stop is the explicit `stop` record on stdin.
-    const workerMode = workerModeSelected();
-    const abort = () => controller.abort(workerMode ? detachReason() : undefined);
+    // A signal only detaches (RoboTeam is shutting down; the worker keeps the execution); a stop is
+    // the explicit `stop` record on stdin.
+    const abort = () => controller.abort(detachReason());
     process.once('SIGTERM', abort);
     process.once('SIGINT', abort);
     let runtime;
     let input;
     let releaseUsage;
     try {
-        const context = await prepareCopilotContext(options['--robot'], { ...contextOptions, prepareTools: false, holdUsage: true });
+        const context = await prepareCopilotContext(options['--robot'], { ...contextOptions, prepareTools: false, holdUsage: true, prepareHome: false });
         setRobotContext(context);
         releaseUsage = context.releaseUsage;
         const skillSelection = process.env.ROBOTEAM_TASK_SKILL_SELECTION

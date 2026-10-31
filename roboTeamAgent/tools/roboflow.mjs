@@ -5,6 +5,8 @@ const FLOW_TERMINAL = new Set(['completed', 'failed', 'paused', 'terminated']);
 const lifetime = new AbortController();
 process.once('SIGTERM', () => lifetime.abort());
 const FLOW_ID = /^flow_[0-9a-f]{24}$/;
+const WORKER_MODE = String(process.env.ROBOTEAM_WORKER_COORDINATOR_BASE || '').trim() !== '';
+const PAUSE_REFUSAL = 'Pausing a workflow through this tool is not available while the worker runs it. Use the Pause button on the RoboFlow page.';
 const MONITOR_BASE = String(process.env.ROBOTEAM_MONITOR_BASE || '/base-agent-additional-server/roboTeamAgent/3001/flows');
 
 function monitorUrl(flowId) {
@@ -64,8 +66,15 @@ async function startFlowUntilTerminal({ body, user }) {
     const cancelFlow = () => {
         if (terminating) return;
         terminating = true;
+        // A system stop that follows the user's stop of this native task: the service sends the worker stop with the coordinator identity
+        // and the flow binding and pauses the flow only once the worker accepted it (decision M-55 (a)). A pause the worker did not
+        // accept, or that could not be asked, leaves the flow running and the task's result carries that notice.
         void request(`/api/roboflow/flows/${flowId}/pause`, { method: 'POST', user, ignoreCancellation: true })
-            .catch((error) => process.stderr.write(`Could not pause RoboFlow flow: ${error?.message || error}\n`))
+            .catch((error) => {
+                const notice = `The workflow was not paused: ${String(error?.message || error).replace(/\.$/u, '')}. It is still running; pause it with the Pause button on the RoboFlow page (${monitorUrl(flowId)}).`;
+                process.stderr.write(`${notice}\n`);
+                process.stdout.write(`${JSON.stringify({ outputText: notice, flowId, status: 'running', taskStatus: 'cancelled' })}\n`);
+            })
             .finally(() => process.exit(143));
     };
     process.once('SIGTERM', cancelFlow);
@@ -125,6 +134,8 @@ async function main() {
         return output(await request('/api/roboflow/generate', { method: 'POST', body: input, user, timeoutMs: 3600000 }));
     }
     if (operation === 'pause-flow') {
+        // With the worker configured the tool is not offered (scripts/write-mcp-config.mjs); a call that still arrives is refused.
+        if (WORKER_MODE) throw new Error(PAUSE_REFUSAL);
         if (!FLOW_ID.test(String(input.flowId || ''))) throw new Error('invalid task flow id');
         return output(await request(`/api/roboflow/flows/${input.flowId}/pause`, { method: 'POST', user }));
     }

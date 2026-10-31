@@ -20,6 +20,12 @@ agent_server_script="${ROBOTEAM_AGENT_SERVER_SCRIPT:-/Agent/server/AgentServer.s
 service_main="${ROBOTEAM_SERVICE_MAIN:-/code/server/main.mjs}"
 service_check="${ROBOTEAM_SERVICE_CHECK:-/code/scripts/check-service.mjs}"
 
+# With the worker configured, AgentServer lists the tools a worker deployment offers (no workflow pause tool, decision M-55 (b)).
+mcp_config_file="$(node "${ROBOTEAM_WRITE_MCP_CONFIG:-$(dirname "$0")/write-mcp-config.mjs}")"
+if [ -n "$mcp_config_file" ]; then
+    export MCP_CONFIG_FILE="$mcp_config_file"
+fi
+
 PORT="$ROBOTEAM_MCP_PORT" sh "$agent_server_script" &
 MCP_PID="$!"
 

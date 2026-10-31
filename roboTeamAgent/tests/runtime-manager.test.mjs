@@ -31,7 +31,7 @@ test('runtime initialization awaits the storage initializer before engine checks
     const calls = [];
     let release;
     const pending = new Promise(resolve => { release = resolve; });
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         toolCache: preparedToolCache,
         execFileImpl: async (command, args, options) => {
             calls.push({ command, args, options });
@@ -63,7 +63,7 @@ for (const failure of [
 ]) {
     test(`runtime initialization rejects ${failure.message} before engine access`, async () => {
         const calls = [];
-        const manager = new RuntimeManager({
+        const manager = new RuntimeManager({ workerMode: true,
             toolCache: preparedToolCache,
             execFileImpl: async (command, args) => {
                 calls.push({ command, args });
@@ -142,7 +142,7 @@ test('mounts the opened workspace root once and writable when cwd is the root', 
 
 test('reads only the active GUI container log', async () => {
     const calls = [];
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         execFileImpl: async (_command, args) => {
             calls.push(args);
             return { stdout: 'desktop stdout\n', stderr: 'desktop stderr\n' };
@@ -186,7 +186,7 @@ test('a robot named by an email address is told its identity in browser and desk
         setImmediate(() => { written.push(JSON.parse(text.split('\n')[0])); child.emit('close', 0, null); });
         return child;
     };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, toolCache: preparedToolCache,
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, spawnImpl, toolCache: preparedToolCache,
         execFileImpl: async (_command, args) => ({ stdout: args[0] === 'port' ? `127.0.0.1:${port}\n` : '[]', stderr: '' }) });
     t.after(() => manager.stopAll());
     const run = async (type) => {
@@ -224,7 +224,7 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
         children.push(child);
         return child;
     };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, execFileImpl: async () => ({ stdout: '[]', stderr: '' }), toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, spawnImpl, execFileImpl: async () => ({ stdout: '[]', stderr: '' }), toolCache: preparedToolCache });
     const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', model: 'gpt-test', systemPrompt: 'Route it' });
     const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second', ca: 'codex', mcpServers: 'roboTeamAgent=http://127.0.0.1:7000/mcp' });
     assert.match(first.taskId, /^[0-9a-f-]{36}$/);
@@ -252,52 +252,20 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
     while (manager.taskStatus(robot.id, second.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(firstInvocation.command, process.execPath);
     assert.match(firstInvocation.args[0], /robot-task.mjs$/);
-    assert.equal(firstInvocation.args[3], '--home');
-    assert.equal(firstInvocation.args[4], await fs.realpath(path.join(dataDir, 'robots', robot.id, 'home')));
-    assert.deepEqual(firstInvocation.args.slice(5, 7), ['--cwd', workspace]);
+    // The worker owns HOME and the coding agents: RoboTeam's old robot home is neither passed nor prepared for the task.
+    assert.equal(firstInvocation.args.includes('--home'), false);
+    assert.deepEqual(firstInvocation.args.slice(3, 5), ['--cwd', workspace]);
     // The task prompt is the runner's first stdin record, not a file.
     assert.equal(firstInvocation.args.includes('--taskFile'), false);
     assert.deepEqual(JSON.parse(children[firstIndex].written.split('\n')[0]), { type: 'prompt', prompt: 'Do work', systemPrompt: 'Route it' });
     assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--ca') + 1], 'codex');
     assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--session-id') + 1], first.taskId);
     assert.deepEqual(firstInvocation.args.slice(-2), ['--model', 'gpt-test']);
-    assert.ok(firstInvocation.options.env.PATH.startsWith('/cache/codex/bin:'));
-    assert.equal(firstInvocation.options.env.ALA_EVENT_STREAM, '1');
-    assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.codex'))).isDirectory(), true);
-    assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.config', 'opencode'))).isDirectory(), true);
-    assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.pi', 'agent'))).isDirectory(), true);
-});
-
-test('places the selected OpenCode and Pi caches on the ALA path', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-agent-path-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, 'data');
-    const workspace = path.join(root, 'workspace');
-    const robot = { id: 'agent-path-a1b2c3', name: 'Agent Path' };
-    await Promise.all([
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }),
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'runtime'), { recursive: true }),
-        fs.mkdir(workspace, { recursive: true }),
-    ]);
-    const invocations = [];
-    const manager = new RuntimeManager({
-        dataDir,
-        workspaceRoot: root,
-        toolCache: preparedToolCache,
-        spawnImpl: (_command, args, options) => {
-            invocations.push({ args, options });
-            const child = new EventEmitter();
-            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-            setImmediate(() => child.emit('close', 0, null));
-            return child;
-        },
-    });
-    const opencode = manager.startTask(robot, 'simple', { cwd: workspace, task: 'OpenCode task', ca: 'opencode' });
-    while (manager.taskStatus(robot.id, opencode.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
-    const pi = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Pi task', ca: 'pi' });
-    while (manager.taskStatus(robot.id, pi.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.ok(invocations[0].options.env.PATH.startsWith('/cache/opencode/bin:'));
-    assert.ok(invocations[1].options.env.PATH.startsWith('/cache/pi/bin:'));
+    assert.equal(firstInvocation.options.env.PATH.startsWith('/cache/codex/bin:'), false, 'no local coding-agent tool cache is put on the child path');
+    assert.equal(firstInvocation.options.env.ALA_EVENT_STREAM, undefined, 'no local ALA event stream is requested');
+    for (const state of ['.codex', '.config/opencode', '.pi/agent']) {
+        await assert.rejects(fs.stat(path.join(dataDir, 'robots', robot.id, 'home', state)), { code: 'ENOENT' }, `${state} of the old robot home is not prepared`);
+    }
 });
 
 test('preserves explicit GUI agents and leaves automatic selection to the robot home', async (t) => {
@@ -311,7 +279,7 @@ test('preserves explicit GUI agents and leaves automatic selection to the robot 
     t.after(() => listener.close());
     const port = listener.address().port;
     const invocations = [];
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir,
         workspaceRoot: root,
         publicBasePath: '/rt/',
@@ -340,7 +308,7 @@ test('preserves explicit GUI agents and leaves automatic selection to the robot 
     assert.equal(invocations.length, 1);
     assert.equal(invocations[0].args[invocations[0].args.indexOf('--ca') + 1], 'opencode');
     assert.equal(invocations[0].args[invocations[0].args.indexOf('--MCPServers') + 1], `desktop=http://127.0.0.1:${port}/mcp`);
-    assert.equal(invocations[0].env.OPENCODE_BIN, '/cache/opencode/bin/opencode');
+    assert.equal(invocations[0].env.OPENCODE_BIN, process.env.OPENCODE_BIN, 'the manager adds no local coding-agent binary to the child environment');
 
     const piRobot = { id: 'gui-pi-a1b2c3', name: 'Pi GUI', codingAgents: ['pi'] };
     const inherited = manager._newTask(piRobot, 'browser', { cwd: workspace, task: 'Browse.', ca: 'auto' });
@@ -348,7 +316,7 @@ test('preserves explicit GUI agents and leaves automatic selection to the robot 
     assert.equal(inherited.state, 'completed', inherited.error);
     assert.equal(invocations.length, 2);
     assert.equal(invocations[1].args.includes('--ca'), false);
-    assert.equal(invocations[1].env.PI_BIN, '/cache/pi/bin/pi');
+    assert.equal(invocations[1].env.PI_BIN, process.env.PI_BIN, 'the manager adds no local coding-agent binary to the child environment');
     assert.equal(invocations[1].args[invocations[1].args.indexOf('--MCPServers') + 1], `browser=http://127.0.0.1:${port}/mcp`);
 
     const autoRobot = { id: 'gui-auto-a1b2c3', name: 'Auto GUI', codingAgents: ['codex', 'opencode'] };
@@ -376,7 +344,7 @@ test('automatic MCP tasks expose only the robot selection and cannot prepare a d
     await fs.mkdir(cwd);
     const robot = { id: 'selected-abc123', name: 'Selected', codingAgents: ['opencode'] };
     const invocations = [];
-    const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root,
+    const manager = new RuntimeManager({ workerMode: true, dataDir: root, workspaceRoot: root,
         toolCache: preparedToolCache,
         spawnImpl: (_command, args, options) => {
             invocations.push({ args, env: options.env });
@@ -394,9 +362,7 @@ test('automatic MCP tasks expose only the robot selection and cannot prepare a d
     assert.equal(invocations.length, 1);
     const { args, env } = invocations[0];
     assert.equal(args.includes('--ca'), false);
-    assert.equal(env.OPENCODE_BIN, '/cache/opencode/bin/opencode');
-    assert.equal(env.CODEX_BIN, undefined);
-    assert.equal(env.PI_BIN, undefined);
+    assert.equal(env.OPENCODE_BIN, process.env.OPENCODE_BIN, 'the manager adds no local coding-agent binary to the child environment');
     const disabled = manager._newTask(robot, 'simple', { cwd, task: 'Read the project', ca: 'codex' });
     await manager._runTask(robot, disabled);
     assert.equal(disabled.state, 'failed');
@@ -424,9 +390,14 @@ test('keeps task prompts private and rejects a mismatched stop operation', async
     const spawnImpl = () => {
         const child = new EventEmitter();
         child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => { queueMicrotask(() => child.emit('close', null, 'SIGTERM')); return true; };
+        // The worker protocol: the stop is a record on stdin, and the child ends interrupted (exit 130) once the worker has stopped.
+        child.stdin = new PassThrough();
+        child.stdin.on('data', (chunk) => { if (String(chunk).includes('"type":"stop"')) stopRecords += 1; });
+        spawnedChild = child;
         return child;
     };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, toolCache: preparedToolCache });
+    let spawnedChild; let stopRecords = 0;
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, spawnImpl, toolCache: preparedToolCache });
     let execution;
     const runTask = manager._runTask.bind(manager);
     t.mock.method(manager, '_runTask', (...args) => { execution = runTask(...args); return execution; });
@@ -436,8 +407,11 @@ test('keeps task prompts private and rejects a mismatched stop operation', async
     assert.throws(() => manager.stopTask(robot, 'desktop', manager.taskStatus(robot.id).taskId), /active simple task/);
     manager.stopTask(robot, 'simple');
     await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(manager.taskStatus(robot.id).state, 'pausing', 'a running task is paused only when the worker has stopped it');
+    assert.equal(stopRecords, 1, 'the stop is a record on the child\'s stdin');
+    spawnedChild.emit('close', 130, null); // the child ends interrupted, which is the confirmation
+    await execution;
     assert.equal(manager.taskStatus(robot.id).state, 'paused');
-    await execution; // Finish asynchronous preparation before removing its home.
     await manager.stopAll();
 });
 
@@ -453,13 +427,15 @@ test('can stop one parallel CLI task without interrupting another', async (t) =>
         fs.mkdir(workspace, { recursive: true }),
     ]);
     const children = [];
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir,
         workspaceRoot: root,
         toolCache: preparedToolCache,
         spawnImpl: () => {
             const child = new EventEmitter();
             child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+            child.stdin = new PassThrough();
+            child.stdin.on('data', (chunk) => { if (String(chunk).includes('"type":"stop"')) queueMicrotask(() => child.emit('close', 130, null)); });
             children.push(child);
             return child;
         },
@@ -468,9 +444,8 @@ test('can stop one parallel CLI task without interrupting another', async (t) =>
     const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second' });
     while (children.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
     manager.stopTask(robot, 'simple', second.taskId);
-    await new Promise((resolve) => setImmediate(resolve));
+    while (manager.taskStatus(robot.id, second.taskId).state !== 'paused') await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(manager.taskStatus(robot.id, first.taskId).state, 'running');
-    assert.equal(manager.taskStatus(robot.id, second.taskId).state, 'paused');
     for (const child of children) child.emit('close', 0, null);
     while (manager.taskStatus(robot.id, first.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
     await new Promise((resolve) => setImmediate(resolve));
@@ -480,7 +455,8 @@ test('can stop one parallel CLI task without interrupting another', async (t) =>
 test('holds the robot queue during manual GUI control and resumes the interrupted task first', async () => {
     const robot = { id: 'manual-a1b2c3', name: 'Manual' };
     const killed = [];
-    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const records = [];
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     const interrupted = {
         taskId: '11111111-1111-4111-8111-111111111111',
         alaSessionId: '22222222-2222-4222-8222-222222222222',
@@ -494,7 +470,7 @@ test('holds the robot queue during manual GUI control and resumes the interrupte
         logTruncated: false,
         result: '',
         error: null,
-        child: { kill: (signal) => { killed.push(signal); return true; } },
+        child: { kill: (signal) => { killed.push(signal); return true; }, stdin: { write: (chunk) => { records.push(JSON.parse(chunk)); } } },
         cancelRequested: false,
     };
     const waiting = {
@@ -515,8 +491,11 @@ test('holds the robot queue during manual GUI control and resumes the interrupte
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(manager.manualControl.get(robot.id), interrupted.taskId);
-    assert.deepEqual(killed, ['SIGTERM']);
-    assert.equal(manager.taskStatus(robot.id, interrupted.taskId).state, 'paused');
+    // The stop is the worker protocol's record on stdin; the signal is only the 30 s backstop. The task is paused when the child has ended.
+    assert.deepEqual(records, [{ type: 'stop' }]);
+    assert.deepEqual(killed, []);
+    assert.equal(manager.taskStatus(robot.id, interrupted.taskId).state, 'pausing');
+    interrupted.state = 'paused'; // the child's confirmed exit
     await manager._drainTaskQueue(robot);
     assert.equal(manager.taskStatus(robot.id, waiting.taskId).state, 'queued');
 
@@ -539,11 +518,11 @@ test('restores a completed Simple conversation after restart without repeating i
     const robot = { id: 'resume-a1b2c3', name: 'Resume' };
     const project = path.join(root, 'project');
     await fs.mkdir(project);
-    const first = new RuntimeManager({ dataDir: root, toolCache: preparedToolCache });
+    const first = new RuntimeManager({ workerMode: true, dataDir: root, toolCache: preparedToolCache });
     const taskId = '12345678-1234-4123-8123-123456789abc';
     await first._saveTask({ taskId, robotId: robot.id, type: 'simple', state: 'completed',
         alaSessionId: taskId, request: { cwd: project, task: 'original task', ca: 'pi' } });
-    const second = new RuntimeManager({ dataDir: root, toolCache: preparedToolCache });
+    const second = new RuntimeManager({ workerMode: true, dataDir: root, toolCache: preparedToolCache });
     second._drainTaskQueue = async () => {};
     second.shuttingDown = true;
     const continued = await second.resumeTask(robot, taskId, 'now add tests');
@@ -560,7 +539,7 @@ test('restores a completed Simple conversation after restart without repeating i
 
 test('active message delivery waits for an ALA receipt and starting tasks queue input', async () => {
     const robot = { id: 'message-a1b2c3', name: 'Message' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     const task = { taskId: 'active-id', robotId: robot.id, state: 'starting', pendingMessages: [] };
     manager.tasks.set(task.taskId, task);
     assert.equal((await manager.sendTaskMessage(robot, task.taskId, 'first')).delivery, 'queued');
@@ -582,7 +561,7 @@ test('active message delivery waits for an ALA receipt and starting tasks queue 
 
 test('an explicit GUI stop does not enter manual-control mode', async () => {
     const robot = { id: 'stop-gui-a1b2c3', name: 'Stop GUI' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     const active = {
         taskId: 'explicit-stop-task',
         robotId: robot.id,
@@ -605,7 +584,7 @@ test('an explicit GUI stop does not enter manual-control mode', async () => {
     manager.stopTask(robot, 'browser', active.taskId);
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.equal(manager.taskStatus(robot.id, active.taskId).state, 'paused');
+    assert.equal(manager.taskStatus(robot.id, active.taskId).state, 'pausing', 'paused only once the worker has stopped it');
     assert.equal(manager.manualControl.has(robot.id), false);
 });
 
@@ -630,7 +609,7 @@ test('allows exactly one active mode per robot and removes only its exact contai
         if (args[0] === 'inspect') return { stdout: 'true\n', stderr: '' };
         return { stdout: '', stderr: '' };
     };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, publicBasePath: '/rt/', execFileImpl, toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, publicBasePath: '/rt/', execFileImpl, toolCache: preparedToolCache });
     await manager.initialize();
     const running = await manager.start(robot, 'desktop');
     assert.equal(running.mode, 'desktop');
@@ -683,7 +662,7 @@ test('recreates a reused desktop when an Achilles task requests a different cwd'
         setImmediate(() => child.emit('close', 0, null));
         return child;
     };
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir,
         workspaceRoot,
         publicBasePath: '/rt/',
@@ -720,7 +699,7 @@ test('recreates a reused desktop when an Achilles task requests a different cwd'
 });
 
 test('returns the deterministic live URL with an asynchronous GUI task', async () => {
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir: '/data',
         publicBasePath: '/base-agent-additional-server/roboTeamAgent/3001/',
         workspaceRoot: '/workspace',
@@ -760,7 +739,7 @@ test('replaces the retained GUI container when the next queued task needs anothe
     const port = listener.address().port;
     const podmanCalls = [];
     const children = [];
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir,
         workspaceRoot: root,
         execFileImpl: async (_command, args) => {
@@ -791,7 +770,7 @@ test('replaces the retained GUI container when the next queued task needs anothe
 
 test('new GUI work clears manual control after every previous GUI task was paused', async () => {
     const robot = { id: 'restart-a1b2c3', name: 'Restart' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     const active = manager._newTask(robot, 'browser', { cwd: '/workspace' });
     active.state = 'running';
     active.child = { kill() {} };
@@ -800,6 +779,7 @@ test('new GUI work clears manual control after every previous GUI task was pause
     manager.takeControl(robot, active.taskId);
     manager.stopTask(robot, null, waiting.taskId);
     await new Promise(resolve => setImmediate(resolve));
+    active.state = 'paused'; // the child's confirmed exit
     assert.equal(manager.manualControl.has(robot.id), true);
     // An unrelated CLI conversation must not keep the GUI pause alive.
     manager._newTask(robot, 'simple', {}).state = 'running';
@@ -817,7 +797,7 @@ test('new GUI work clears manual control after every previous GUI task was pause
 
 test('new work keeps manual control while a previous GUI task is still queued', async () => {
     const robot = { id: 'paused-a1b2c3', name: 'Paused' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     manager.manualControl.set(robot.id, 'interrupted');
     const old = manager._newTask(robot, 'desktop', {});
     manager.taskQueues.set(robot.id, [old.taskId]);
@@ -829,50 +809,6 @@ test('new work keeps manual control while a previous GUI task is still queued', 
     manager.shuttingDown = true;
 });
 
-test('workflow callback channel is scoped to each runtime attempt and removed before terminal notification', async t => {
-    const { requireHumanInput } = await import('../copilot/src/skills/require-human-input/scripts/run.mjs');
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-human-'));
-    const robot = { id: 'human-a1b2c3', name: 'Human' };
-    const workspace = path.join(root, 'workspace');
-    const dataDir = path.join(root, 'data');
-    await fs.mkdir(workspace, { recursive: true });
-    await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
-    const children = [];
-    const callbacks = [];
-    const terminal = [];
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
-        execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
-        spawnImpl: (_command, _args, options) => {
-            const child = new EventEmitter();
-            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-            children.push({ child, directory: options.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY });
-            return child;
-        } });
-    manager.requestHumanInput = async (taskId, input) => { callbacks.push({ taskId, input }); return { id: 'question' }; };
-    manager.setTaskObserver(event => { if (event.kind === 'terminal') terminal.push(event); });
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Ask', ca: 'codex', allowsHumanInput: true });
-    for (let i = 0; i < 200 && children.length < 1; i++) await new Promise(resolve => setTimeout(resolve, 5));
-    assert.equal(children.length, 1);
-    const question = { question: 'Q?', options: ['A', 'B', 'C'] };
-    await requireHumanInput(question, { directory: children[0].directory });
-    assert.equal(callbacks[0].taskId, first.taskId);
-    children[0].child.emit('close', 0);
-    for (let i = 0; i < 200 && terminal.length < 1; i++) await new Promise(resolve => setTimeout(resolve, 5));
-    assert.equal(terminal.length, 1);
-    await assert.rejects(fs.stat(children[0].directory), { code: 'ENOENT' });
-    const second = await manager.resumeTask(robot, first.taskId, 'My answer to your question is: A');
-    for (let i = 0; i < 200 && children.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
-    assert.equal(children.length, 2);
-    assert.notEqual(children[1].directory, children[0].directory);
-    await requireHumanInput(question, { directory: children[1].directory });
-    assert.equal(callbacks[1].taskId, second.taskId);
-    children[1].child.emit('close', 0);
-    for (let i = 0; i < 200 && terminal.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
-    assert.equal(terminal.length, 2);
-    await assert.rejects(fs.stat(children[1].directory), { code: 'ENOENT' });
-});
-
 test('reported task failure never publishes completed even when the wrapper exits zero', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-failure-'));
     const robot = { id: 'failure-a1b2c3', name: 'Failure' };
@@ -880,7 +816,7 @@ test('reported task failure never publishes completed even when the wrapper exit
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
     const events = [], launches = [];
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, toolCache: preparedToolCache,
         execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
         spawnImpl: (_command, args) => {
             launches.push(args);
@@ -924,7 +860,7 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
     const port = listener.address().port;
     const calls = [], relays = [], leases = [];
     let upstream = { id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' };
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         proxyPool: { lease: async (...args) => { leases.push(args); return { upstream, locale: { timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' } }; }, release: async () => true },
@@ -986,7 +922,7 @@ test('a proxied desktop keeps its network for other programs and a failed firewa
     t.after(() => listener.close());
     const port = listener.address().port;
     const calls = [], relays = [];
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         proxyPool: { lease: async () => ({ upstream: { id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' },
@@ -1029,7 +965,7 @@ test('an active pool without a free proxy keeps the workstation from starting', 
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-none-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const calls = [];
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         proxyPool: { lease: async () => { throw Object.assign(new Error('No free proxy is available in the shared proxy pool.'), { statusCode: 409 }); } },
@@ -1051,7 +987,7 @@ test('without a proxy lease the workstation connects directly with the service t
     t.after(() => listener.close());
     const port = listener.address().port;
     const calls = [];
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         // What the proxyAgent client answers when the agent is missing, unreachable or has no usable proxy.
@@ -1081,7 +1017,7 @@ test('with Use Proxy off the workstation connects directly without asking for a 
     t.after(() => listener.close());
     const port = listener.address().port;
     const calls = [];
-    const manager = new RuntimeManager({
+    const manager = new RuntimeManager({ workerMode: true,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         proxyPool: { lease: async () => assert.fail('no lease while Use Proxy is off'), release: async () => false },
@@ -1106,7 +1042,7 @@ test('with Use Proxy off the workstation connects directly without asking for a 
 // and phase association, transcript identifiers and typed message outcomes.
 test('queued admission is observed with owner and phase association, without a state event or startedAt', async () => {
     const robot = { id: 'admit-a1b2c3', name: 'Admit' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     manager.shuttingDown = true;
     const events = [];
     manager.setTaskObserver((event) => events.push(event));
@@ -1129,7 +1065,7 @@ test('queued admission is observed with owner and phase association, without a s
 
 test('a queued GUI task cancelled before it runs ends with exactly one terminal event', async () => {
     const robot = { id: 'cancel-a1b2c3', name: 'Cancel' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     const active = manager._newTask(robot, 'browser', { cwd: '/workspace' });
     active.state = 'running';
     active.child = { kill() {} };
@@ -1157,7 +1093,7 @@ test('a CLI task stopped before or after its run starts reports one terminal eve
     const dataDir = path.join(root, 'data');
     await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
     // Run first, then stop: the run's finally reports the pause.
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, toolCache: preparedToolCache,
         execFileImpl: async () => ({ stdout: '[]', stderr: '' }), spawnImpl: () => { throw new Error('never spawned'); } });
     const events = [];
     manager.setTaskObserver((event) => events.push(event));
@@ -1180,7 +1116,7 @@ test('a CLI task stopped before or after its run starts reports one terminal eve
 
 test('shutdown reports queued work once and running work through its own exit', async () => {
     const robot = { id: 'shutdown-a1b2c3', name: 'Shutdown' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache, soulGateway: { close: async () => {} } });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache, soulGateway: { close: async () => {} } });
     manager.shuttingDown = true;
     const events = [];
     manager.setTaskObserver((event) => events.push(event));
@@ -1198,7 +1134,7 @@ test('the first turn-started event binds the task transcript to its own session;
     await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
     const turn = '11111111-2222-4333-8444-555555555555';
     const message = '66666666-7777-4888-8999-aaaaaaaaaaaa';
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, toolCache: preparedToolCache,
         execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
         spawnImpl: () => {
             const child = new EventEmitter();
@@ -1226,7 +1162,7 @@ test('the first turn-started event binds the task transcript to its own session;
 
 test('task message failures carry typed live outcomes and keep their messages', async () => {
     const robot = { id: 'typed-a1b2c3', name: 'Typed' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache, messageTimeoutMs: 20 });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache, messageTimeoutMs: 20 });
     const outcome = async (promise) => { try { await promise; return 'resolved'; } catch (error) { return [error.liveOutcome, error.message]; } };
     assert.deepEqual(await outcome(manager.sendTaskMessage(robot, 'missing', 'x')), ['run_ended', 'Task is no longer running; continue it instead.']);
     const task = { taskId: 'typed-task', robotId: robot.id, state: 'running', pendingMessages: [], controlReady: true };
@@ -1256,7 +1192,7 @@ test('a message pending when the task ends is reported as run_ended', async (t) 
     const dataDir = path.join(root, 'data');
     await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
     let child;
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, toolCache: preparedToolCache,
         execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
         spawnImpl: () => {
             child = new EventEmitter();
@@ -1280,14 +1216,14 @@ test('owner and phase association persist with the execution record and survive 
     await fs.mkdir(project);
     const owned = '12345678-1234-4123-8123-123456789abc';
     const legacy = '12345678-1234-4123-8123-123456789abd';
-    const first = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
+    const first = new RuntimeManager({ workerMode: true, dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
     const task = first._newTask(robot, 'simple', { cwd: project, task: 'original', ca: 'pi', runtimeTaskId: owned, ownerPrincipal: 'user:alice',
         workflowRunId: `flow_${'c'.repeat(24)}`, workflowInstanceId: `inv_${'d'.repeat(24)}` });
     task.state = 'completed';
     await first._saveTask(task);
     await first._saveTask({ taskId: legacy, robotId: robot.id, type: 'simple', state: 'completed', alaSessionId: legacy,
         request: { cwd: project, task: 'old', ca: 'pi', ownerPrincipal: 'user:alice' } });
-    const second = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
+    const second = new RuntimeManager({ workerMode: true, dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
     second.shuttingDown = true;
     const events = [];
     second.setTaskObserver((event) => events.push(event));
@@ -1306,7 +1242,7 @@ test('a persisted owner that was tampered with, moved or written under another b
     const robot = { id: 'tamper-a1b2c3', name: 'Tamper' };
     const project = path.join(root, 'project');
     await fs.mkdir(project);
-    const writer = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
+    const writer = new RuntimeManager({ workerMode: true, dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
     const ids = ['22345678-1234-4123-8123-123456789ab1', '22345678-1234-4123-8123-123456789ab2', '22345678-1234-4123-8123-123456789ab3'];
     for (const id of ids) {
         const task = writer._newTask(robot, 'simple', { cwd: project, task: 'x', ca: 'pi', runtimeTaskId: id, ownerPrincipal: 'user:alice' });
@@ -1321,7 +1257,7 @@ test('a persisted owner that was tampered with, moved or written under another b
     const moved = JSON.parse(await fs.readFile(file(ids[1]), 'utf8'));
     moved.ownerBinding = JSON.parse(await fs.readFile(file(ids[2]), 'utf8')).ownerBinding.replace(/^./u, (c) => (c === 'A' ? 'B' : 'A'));
     await fs.writeFile(file(ids[1]), JSON.stringify(moved));
-    const reader = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
+    const reader = new RuntimeManager({ workerMode: true, dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'boot-secret' });
     reader.shuttingDown = true;
     const events = [];
     reader.setTaskObserver((event) => events.push(event));
@@ -1329,7 +1265,7 @@ test('a persisted owner that was tampered with, moved or written under another b
     await reader.resumeTask(robot, ids[1], 'go');
     await reader.resumeTask(robot, ids[2], 'go');
     assert.deepEqual(events.map((event) => event.ownerPrincipal), [null, null, 'user:alice']);
-    const restarted = new RuntimeManager({ dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'next-boot-secret' });
+    const restarted = new RuntimeManager({ workerMode: true, dataDir: root, workspaceRoot: root, toolCache: preparedToolCache, ownerKey: 'next-boot-secret' });
     restarted.shuttingDown = true;
     const later = [];
     restarted.setTaskObserver((event) => later.push(event));
@@ -1339,7 +1275,7 @@ test('a persisted owner that was tampered with, moved or written under another b
 
 test('an attempt reports at most one terminal event whichever paths reach it', () => {
     const robot = { id: 'once-a1b2c3', name: 'Once' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     const events = [];
     manager.setTaskObserver((event) => events.push(event));
     const task = manager._newTask(robot, 'simple', {});
@@ -1360,7 +1296,7 @@ async function cancellableFixture(t, { gateEnsure = false } = {}) {
     let release, ensured;
     const ensureCalled = new Promise((resolve) => { ensured = resolve; });
     const gate = new Promise((resolve) => { release = resolve; });
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, toolCache: preparedToolCache,
         execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
         skillsets: { policies: { ensure: async () => { ensured(); if (gateEnsure) await gate; } } },
         spawnImpl: () => {
@@ -1416,7 +1352,7 @@ test('each continuation is a new attempt: own id, phase only when RoboFlow resum
     const { LiveSessionsRegistry } = await import('../server/live-sessions/registry.mjs');
     const { RuntimeLiveSource, composeTaskObservers } = await import('../server/live-sessions/runtime-source.mjs');
     const robot = { id: 'attempt-a1b2c3', name: 'Attempt' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     manager.shuttingDown = true;
     const registry = new LiveSessionsRegistry({ log: () => {} });
     const source = new RuntimeLiveSource({ registry, runtimeManager: manager, robotStore: { get: async () => robot }, workspaceRoot: '/workspace' });

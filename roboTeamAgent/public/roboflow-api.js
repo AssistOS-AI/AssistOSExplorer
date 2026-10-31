@@ -30,6 +30,6 @@ export async function api(relativePath, options = {}) {
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(payload.error || `Request failed (${response.status})`), { status: response.status });
+    if (!response.ok) throw Object.assign(new Error(payload.error || `Request failed (${response.status})`), { status: response.status, ...(typeof payload.code === 'string' ? { code: payload.code } : {}) });
     return payload;
 }

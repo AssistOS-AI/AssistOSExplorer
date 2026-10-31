@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { skillCatalogRequest } from '../server/skill-catalog-api.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
-import { createOpenCodeModelCache } from '../server/opencode-model-cache.mjs';
 import { publicSkillsets, publicRepositories } from '../server/robot-skillsets.mjs';
 import { loadAutocompleteCatalog, buildSessionCompletions, buildTaskActionCompletionMap } from '../copilot/src/mcp/list-slash-commands.mjs';
 
@@ -10,7 +9,7 @@ try {
     for await (const chunk of process.stdin) raw += chunk;
     const payload = JSON.parse(raw || '{}');
     const input = payload.input || payload.arguments || payload.params?.arguments || {};
-    const context = await prepareCopilotContext(input.robot || 'default', { prepareTools: !process.argv.includes('--skills') && !process.argv.includes('--set-skill'), usePreparedTools: true });
+    const context = await prepareCopilotContext(input.robot || 'default', { prepareTools: false });
     const sets = publicSkillsets(context.robot);
     const inventory = await skillCatalogRequest({ skillsets: context.skillsets, robot: context.robot, input,
         mutate: process.argv.includes('--set-skill') });
@@ -20,7 +19,6 @@ try {
         : await loadAutocompleteCatalog({ dir: workingDir, skillCatalog: catalog,
             sessionId: input.sessionId, freshSession: true, signal: AbortSignal.timeout(20000),
             execution: { robotId: context.robot.id },
-            modelCache: createOpenCodeModelCache({ root: context.store.dataDir, robotId: context.robot.id }),
             sessionCompletions: buildSessionCompletions(workingDir),
             taskCompletions: buildTaskActionCompletionMap(workingDir) });
     if (result.commands) {

@@ -30,6 +30,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // This spec is blocked on SET-2 phase6 credential preflight and independently verified B+C setup.
 // This gate deliberately submits exactly seven native turns. A failed completion is never retried.
 test.describe('Deployed Copilot live skills', () => {
+    // The gate reads and drives the in-container ALA engine, which RoboTeam no longer has.
+    test.skip(true, 'local ALA engine removed (M-5)');
     test.skip(!enabled, 'Opt in with SMOKE_COPILOT_LIVE_SKILLS=1 and exact host/release pins.');
     test.beforeAll(() => assertLiveSkillsLivePreflight());
     test('one native conversation consumes local edits, additions, disable, re-enable and deletion', async ({ page }, testInfo) => {

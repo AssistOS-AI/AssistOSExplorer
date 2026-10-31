@@ -62,7 +62,7 @@ Lifecycle messages (claims, releases, run starts and ends) are queued separately
 
 ### Copilot turns
 
-`alaEngine.executeTurn` publishes a turn after the conversation lease, preparation and `beginTurn` succeeded, before ALA starts. A same-session overlap is still refused at the lease and publishes nothing; its claim is released. The run carries the turn's claim, a title from the first line of the user's message, the working directory, the robot and `transcriptUrl = webchatTurnLogUrl(base, sessionId, assistantMessageId)`, so a failed or stopped turn still links its recorded output. The run ends on every exit path: `finished` with code 0, `stopped` after an interruption, or `failed` with the error's first line and exit code. The end is sent after the turn's task notification channel has drained, so delegated tasks of the turn start before the turn ends.
+The worker engine's `executeTurn` (the only execution engine; RoboTeam has no local ALA engine) publishes a turn after the conversation lease, preparation and `beginTurn` succeeded, before the turn is admitted to the worker. A same-session overlap is still refused at the lease and publishes nothing; its claim is released. The run carries the turn's claim, a title from the first line of the user's message, the working directory, the robot and `transcriptUrl = webchatTurnLogUrl(base, sessionId, assistantMessageId)`, so a failed or stopped turn still links its recorded output. The run ends on every exit path: `finished` with code 0, `stopped` after an interruption, or `failed` with the error's first line and exit code. The end is sent after the turn's delegated-task notifications have drained, so delegated tasks of the turn start before the turn ends.
 
 | ALA event | Rendered as |
 | --- | --- |

@@ -115,8 +115,8 @@ test('a bundled skill folder is granted by its managed-repository workspace path
     assert.equal(await workspaceCodePath(root, { workspaceRoot: workspace, env, codeRoot: code, stat: same }), null, 'neither in the workspace nor in the code root');
 });
 
-// ---- the manager: the question from the child goes to RoboFlow; the local channel is not created ----
-async function workerTask(t, { requestHumanInput, workerMode = true }) {
+// ---- the manager: the question from the child goes to RoboFlow; the worker hosts the channel ----
+async function workerTask(t, { requestHumanInput }) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-hi-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, 'data');
@@ -130,7 +130,7 @@ async function workerTask(t, { requestHumanInput, workerMode = true }) {
         spawned.push({ child, args, env: options.env });
         return child;
     };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, workerMode, toolCache, execFileImpl: async () => ({ stdout: '[]', stderr: '' }) });
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, workerMode: true, toolCache, execFileImpl: async () => ({ stdout: '[]', stderr: '' }) });
     manager.requestHumanInput = requestHumanInput;
     t.after(() => manager.stopAll());
     const accepted = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', allowsHumanInput: true });
@@ -160,16 +160,4 @@ test('a question RoboFlow refuses fails the task, because the model was told it 
     const status = await f.settled();
     assert.equal(status.state, 'failed');
     assert.match(status.error, /not allowed/);
-});
-
-test('local mode is unchanged: a local channel directory, no --human-input flag, and the child\'s events are not forwarded', async (t) => {
-    const asked = [];
-    const f = await workerTask(t, { workerMode: false, requestHumanInput: async (taskId, input) => { asked.push(input); return { id: 'x' }; } });
-    assert.equal(f.child.args.includes('--human-input'), false);
-    assert.match(f.child.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, /rt-human-/);
-    f.child.child.stderr.write(event(QUESTION));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.deepEqual(asked, [], 'only the local channel asks, never the event');
-    f.child.child.emit('close', 0, null);
-    await f.settled();
 });

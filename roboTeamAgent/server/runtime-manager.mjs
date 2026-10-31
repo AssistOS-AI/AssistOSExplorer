@@ -1,4 +1,3 @@
-import { createHumanInputChannel } from './human-input-channel.mjs';
 import { registerProject, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
 import { requireWorkspaceRoot } from './workspace-root.mjs';
 import { workspaceDataPath } from './workspace-paths.mjs';
@@ -20,12 +19,13 @@ import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
 import { emailInstructions, robotEmailAddress } from './robot-email.mjs';
 import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
-import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
+import { robotCodingAgents, openCodeVersion } from './coding-agents.mjs';
 import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { taskOriginId, workerBindingFor } from './worker-coordinator/flow-origins.mjs';
 import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
+import { workerNotConfiguredError } from './worker-coordinator/errors.mjs';
 import { STOP_NOT_CONFIRMED_EXIT } from './worker-coordinator/task-exit.mjs';
 import { STOP_MESSAGE_LINE } from './worker-coordinator/stop-reasons.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
@@ -96,7 +96,7 @@ function createAlaProgressParser(onText, onEvent = () => {}) {
 
 // A child that stopped on a worker precondition prints `<code>: <message for the user>` (robot-provisioning.mjs, workerEngine.mjs).
 // That line is the task's error as it is, not wrapped in an opaque "ALA exited with" message.
-const WORKER_USER_ERROR = /^((?:worker_robot_stale|worker_robot_not_provisioned|worker_robot_missing|model_unavailable_in_worker|workspace_root_not_granted)): (.+)$/mu;
+const WORKER_USER_ERROR = /^((?:worker_robot_stale|worker_robot_not_provisioned|worker_robot_missing|model_unavailable_in_worker|workspace_root_not_granted|worker_not_configured)): (.+)$/mu;
 
 function alaFailureMessage(exit, output) {
     const normalized = String(output || '').replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '').trim();
@@ -255,9 +255,9 @@ export class RuntimeManager {
         this.createRelay = options.createRelay || ((upstream) => new ProxyRelay(upstream, {
             log: (line) => console.warn(`[roboTeamAgent] proxy relay: ${line}`),
         }));
-        // With the worker coordinator configured the robot-task child runs through the worker engine: a
-        // stop reaches it as an explicit stdin record (a SIGTERM only detaches), and flow phases pass their
-        // binding and deterministic origin on its command line.
+        // Every AI task runs through the worker (decision M-5): the robot-task child is the worker engine's host, a stop reaches
+        // it as an explicit stdin record (a SIGTERM only detaches), and flow phases pass their binding and deterministic origin on
+        // its command line. There is no local execution path: without the coordinator base an AI task is refused at admission.
         this.workerMode = options.workerMode ?? String(process.env[COORDINATOR_BASE_ENV] || '').trim() !== '';
         this.execFileImpl = options.execFileImpl || execFileAsync;
         this.spawnImpl = options.spawnImpl || spawn;
@@ -569,14 +569,13 @@ export class RuntimeManager {
         return session ? this.stopContainer(robotId, session.mode) : Promise.resolve({ state: 'stopped' });
     }
 
-    // A user stop of a task child. Through the worker the stop is an explicit record the child sends
-    // to the worker as a control (SIGTERM would only detach it); the signal remains the backstop. The
+    // A user stop of a task child. The stop is an explicit record the child sends to the worker as a
+    // control (SIGTERM would only detach it); the signal remains the backstop. The
     // record carries the stopping request's own grant when it has one (decision M-12 (b), M-21): in
     // memory and on stdin only, never persisted. Without a grant the child reports the stop as not
     // confirmed.
     _stopChild(child, { ownerGrant = null, userInitiated = false } = {}) {
         if (!child) return;
-        if (!this.workerMode) { child.kill('SIGTERM'); return; }
         try { child.stdin?.write(`${JSON.stringify({ type: 'stop', ...(userInitiated ? { user: true } : {}), ...(typeof ownerGrant === 'string' && ownerGrant ? { ownerGrant } : {}) })}\n`); } catch { /* the backstop below ends it */ }
         const timer = setTimeout(() => child.kill('SIGTERM'), 30000);
         timer.unref?.();
@@ -603,6 +602,8 @@ export class RuntimeManager {
 
     _enqueueTask(robot, type, request, { first = false } = {}) {
         if (this.deletedRobots.has(robot.id)) throw new Error('robot was deleted');
+        // No local execution path: an AI task is refused here, before any task record exists and before anything is spawned.
+        if (!this.workerMode) throw workerNotConfiguredError();
         // The request's own Router-minted grant is held apart from the request, which is persisted.
         const { ownerGrant, ...persistable } = request;
         request = structuredClone(persistable);
@@ -618,7 +619,7 @@ export class RuntimeManager {
             this.manualControl.delete(robot.id);
         }
         const task = this._newTask(robot, type, request);
-        if (this.workerMode && typeof ownerGrant === 'string' && ownerGrant) this.taskGrants.set(task.taskId, ownerGrant);
+        if (typeof ownerGrant === 'string' && ownerGrant) this.taskGrants.set(task.taskId, ownerGrant);
         this._emitTaskEvent({ kind: 'admitted', robotId: robot.id, robotName: robot.name, taskId: task.taskId, type, state: 'queued',
             cwd: typeof request.cwd === 'string' ? request.cwd : null, ownerPrincipal: request.ownerPrincipal || null,
             workflowRunId: typeof request.workflowRunId === 'string' && request.workflowRunId ? request.workflowRunId : null,
@@ -684,7 +685,7 @@ export class RuntimeManager {
 
     async _runTask(robot, task) {
         if (task.cancelRequested || task.state !== 'queued') return;
-        let humanInputChannel, forcedFailure;
+        let forcedFailure;
         const appendProgress = (chunk, output = {}) => {
             const previousLength = task.logTail.length;
             task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
@@ -711,28 +712,18 @@ export class RuntimeManager {
                 throw new Error(`Coding agent ${requestedAgent} is not enabled for this robot`);
             }
             const codingAgent = requestedAgent;
-            const codingAgentsPromise = this.toolCache.prepareCodingAgents(codingAgent === 'auto' ? selectedAgents : [codingAgent]);
+            // The robot's HOME and coding agents are the worker's: nothing of RoboTeam's old robot home or tool cache is prepared for
+            // the task. Only a Browser or Desktop task needs RoboTeam's own container, which prepares what it mounts.
             let mcpAddress = null;
             if (GUI_MODES.has(task.type)) {
-                const [, session] = await Promise.all([
-                    codingAgentsPromise,
-                    this.ensureContainer(robot, task.type, cwd, { taskId: task.taskId }),
-                ]);
+                const session = await this.ensureContainer(robot, task.type, cwd, { taskId: task.taskId });
                 mcpAddress = `${task.type}=http://127.0.0.1:${session.mcpPort}/mcp`;
-            } else {
-                await codingAgentsPromise;
             }
             if (task.cancelRequested) throw new Error('task was paused');
             await fs.mkdir(cwd, { recursive: true });
-            const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
-            await this._prepareRobotAgentState(originalHome);
-            await this.prepareOpenCode(robot.id, { prepare: (codingAgent === 'auto' ? selectedAgents : [codingAgent]).includes('opencode') });
-            const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
-            await this._prepareRobotAgentState(robotHome);
-            await prepareRobotShell(robotHome);
             await this._saveTask(task);
             if (task.cancelRequested) throw new Error('task was paused');
-            const args = ['--home', robotHome, '--cwd', cwd];
+            const args = ['--cwd', cwd];
             if (codingAgent !== 'auto') args.push('--ca', codingAgent);
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
@@ -756,24 +747,14 @@ export class RuntimeManager {
             if (mcpServers) args.push('--MCPServers', mcpServers);
             task.state = 'running';
             this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'running' });
-            const codingAgents = await codingAgentsPromise;
-            const childEnv = {
-                ...codingAgentEnvironment(codingAgents, process.env, this.toolCache.root),
-                ALA_EVENT_STREAM: '1',
-            };
+            // A stop requested by an observer of the running transition lands (in a microtask) before the child is spawned.
+            await Promise.resolve();
+            const childEnv = { ...process.env };
             delete childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
-            // Through the worker the human-input channel is the worker's (decision M-14): the child asks for it with
-            // `--human-input` and its question comes back as a `human-input-request` event.
-            const workerHumanInput = this.workerMode && task.request.allowsHumanInput === true;
+            // The human-input channel is the worker's (decision M-14): the child asks for it with `--human-input` and its
+            // question comes back as a `human-input-request` event.
+            const workerHumanInput = task.request.allowsHumanInput === true;
             if (workerHumanInput && !this.requestHumanInput) throw new Error('Workflow human-input handler is unavailable');
-            if (task.request.allowsHumanInput && !workerHumanInput) {
-                if (!this.requestHumanInput) throw new Error('Workflow human-input handler is unavailable');
-                humanInputChannel = await createHumanInputChannel({
-                    request: input => this.requestHumanInput(task.taskId, input),
-                    stop: () => this.stopTask(robot, task.type, task.taskId),
-                });
-                childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY = humanInputChannel.directory;
-            }
             delete childEnv.ROBOTEAM_INTERNAL_TOKEN;
             delete childEnv.ROBOTEAM_TASK_SKILL_SELECTION;
             // Only Browser and Desktop tasks work in the robot's Chromium, where its mailbox is signed in.
@@ -782,8 +763,8 @@ export class RuntimeManager {
             // The grant leaves this map here and goes to the child over its stdin alone: never argv, env or a file.
             const ownerGrant = this.taskGrants.get(task.taskId) || null;
             this.taskGrants.delete(task.taskId);
-            const worker = this.workerMode ? workerBindingFor(task.request, task.taskId) : null;
-            const origin = this.workerMode && !worker && ownerGrant ? taskOriginId(task.taskId) : null;
+            const worker = workerBindingFor(task.request, task.taskId);
+            const origin = !worker && ownerGrant ? taskOriginId(task.taskId) : null;
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
                 '--robot', robot.name, ...args,
                 ...(worker ? ['--worker-binding', worker.bindingId, '--worker-origin', worker.originRequestId] : []),
@@ -807,8 +788,8 @@ export class RuntimeManager {
             });
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
                 if (event.type === 'task-failed' && typeof event.message === 'string') forcedFailure ||= new Error(event.message);
-                // The worker recorded the question; RoboFlow pauses the phase on it exactly as for the local channel. A phase
-                // that may not ask (or a refusal) fails the task, because the model was told its question was delivered.
+                // The worker recorded the question; RoboFlow pauses the phase on it. A phase that may not ask (or a refusal)
+                // fails the task, because the model was told its question was delivered.
                 if (event.type === 'human-input-request' && workerHumanInput) {
                     Promise.resolve(this.requestHumanInput(task.taskId, { question: event.question, options: event.options,
                         worker: { referenceId: event.referenceId, requestId: event.requestId } }))
@@ -871,7 +852,6 @@ export class RuntimeManager {
                 task.state = 'failed'; task.error = String(error?.message || error); task.completedAt = new Date().toISOString();
             }
         } finally {
-            await humanInputChannel?.close().catch(() => {});
             this.taskGrants.delete(task.taskId);
             task.child = null;
             task.controlReady = false;
@@ -916,7 +896,7 @@ export class RuntimeManager {
         }
         const message = String(prompt || '').trim();
         if (!message || message.length > 32768) throw this._messageFailure('rejected', 'Message must contain 1 to 32768 characters.');
-        const command = { type: 'message', id: crypto.randomUUID(), message, ...(this.workerMode && typeof ownerGrant === 'string' && ownerGrant ? { ownerGrant } : {}) };
+        const command = { type: 'message', id: crypto.randomUUID(), message, ...(typeof ownerGrant === 'string' && ownerGrant ? { ownerGrant } : {}) };
         if (!task.controlReady) {
             if (task.pendingMessages.length >= 100) throw this._messageFailure('rejected', 'Task message queue is full.');
             task.pendingMessages.push(command);
@@ -974,15 +954,15 @@ export class RuntimeManager {
                     this.manualControl.set(robot.id, internal.taskId);
                 }
                 const neverStarted = internal.state === 'queued';
-                // Through the worker a finished task has nothing left to stop; marking it `pausing` would leave it so forever.
-                if (this.workerMode && ['completed', 'failed', 'paused'].includes(internal.state)) {
+                // A finished task has nothing left to stop; marking it `pausing` would leave it so forever.
+                if (['completed', 'failed', 'paused'].includes(internal.state)) {
                     operation.state = 'completed'; operation.completedAt = new Date().toISOString();
                     return;
                 }
                 internal.cancelRequested = true;
-                // Through the worker a running task is not stopped until the worker says so: it is `pausing`, and
-                // only the child's confirmed exit makes it `paused` (an unconfirmed stop makes it `failed`).
-                if (this.workerMode && !neverStarted) internal.state = 'pausing';
+                // A running task is not stopped until the worker says so: it is `pausing`, and only the child's confirmed
+                // exit makes it `paused` (an unconfirmed stop makes it `failed`).
+                if (!neverStarted) internal.state = 'pausing';
                 else { internal.state = 'paused'; internal.completedAt = new Date().toISOString(); }
                 this._stopChild(internal.child, { ownerGrant, userInitiated });
                 // A queued attempt never reaches its run's terminal report.
@@ -1028,6 +1008,8 @@ export class RuntimeManager {
         if (this.manualControl.has(robot.id) && this.manualControl.get(robot.id) !== taskId) {
             throw new Error('Resume the task currently under manual control before continuing another task.');
         }
+        // _enqueueTask refuses without a worker; check that first so a refused resume has saved nothing.
+        if (!this.workerMode) throw workerNotConfiguredError();
         if (this.skillsets) {
             const policyId = internal.request.skillPolicyRef || internal.alaSessionId;
             // A current conversation policy always wins over a terminal task's old request.

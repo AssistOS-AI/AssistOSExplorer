@@ -465,7 +465,7 @@ export class RoboFlowService {
         if (!this.worker || !instance.runtimeTaskId) return;
         try {
             const origin = phaseOriginId({ flowId: flow.id, instanceId: instance.id, runtimeTaskId: instance.runtimeTaskId });
-            if (user && !user.grant) throw Object.assign(new Error('owner_evidence_unavailable'), { code: 'owner_evidence_unavailable' });
+            if (user && !user.grant && !user.system) throw Object.assign(new Error('owner_evidence_unavailable'), { code: 'owner_evidence_unavailable' });
             const binding = { bindingId: flow.id };
             const accepted = await this.worker.client.lookup(origin, binding);
             if (!accepted) {
@@ -478,7 +478,7 @@ export class RoboFlowService {
                 }
                 return;
             }
-            await this.worker.client.control(accepted.referenceId, { operationId: stopOperationId(accepted.referenceId), op: 'stop' }, user ? { grant: user.grant } : binding);
+            await this.worker.client.control(accepted.referenceId, { operationId: stopOperationId(accepted.referenceId), op: 'stop' }, user && !user.system ? { grant: user.grant } : binding);
             // The worker accepted a user's stop of this phase (M-42 (ii): a partial delivery names the phases it did reach).
             if (user && Array.isArray(user.delivered)) user.delivered.push({ instanceId: instance.id });
         } catch (error) {
@@ -525,7 +525,7 @@ export class RoboFlowService {
     // of them was not accepted, the request ends 409 with the notice and the flow is left exactly as it was, still followed.
     async _confirmUserStops(flow, user) {
         if (!this.worker || !user || user.confirmed) return;
-        this._assertMayControl(flow, user);
+        if (!user.system) this._assertMayControl(flow, user);
         const undelivered = [];
         const delivered = [];
         const seen = new Set();
@@ -559,7 +559,22 @@ export class RoboFlowService {
     // The stop options of a user-initiated stop: the request's own grant and the mark that a person asked for it, so the phase's
     // task child uses that grant and never the flow binding. Empty for a system stop.
     _userStop(user) {
-        return user ? { userInitiated: true, ...(user.grant ? { ownerGrant: user.grant } : {}) } : undefined;
+        return user && !user.system ? { userInitiated: true, ...(user.grant ? { ownerGrant: user.grant } : {}) } : undefined;
+    }
+    // A system stop that follows a user's stop of the native task that launched the flow (decision M-55 (a)): the task child pauses its
+    // flow with the coordinator identity and the flow binding, the way a failed flow stops its phases (M-12/M-40: system stops keep the
+    // binding). Unlike a failure, the local pause is recorded only after the worker accepted every started phase's stop (decision
+    // 18e21fae: an unconfirmed stop is not shown as paused); otherwise the request ends 409 and the flow stays as it was.
+    // The internal token proves the caller is the launching task child, not which user it ran for: the user it forwards must be the
+    // flow's recorded owner, so the token alone cannot pause another user's flow (defense in depth).
+    async pauseFlowBySystem(id, requestedBy) {
+        const flow = await this.store.get(id);
+        if (!flow) throw missing();
+        const owner = ownerPrincipalOf(flow.ownerPrincipal);
+        if (!owner || typeof requestedBy !== 'string' || !requestedBy || owner !== `user:${requestedBy}`) {
+            throw Object.assign(new Error('Only the flow owner may do this'), { statusCode: 403 });
+        }
+        return this.pauseFlow(id, { system: true, undelivered: [], delivered: [] });
     }
     async pauseFlow(id, user = null) {
         return this._serialize(id, async () => {

@@ -14,7 +14,6 @@ import { ROBOFLOW_ENTITLEMENT_ERROR, ROBOTEAM_ENTITLEMENT_ERROR, authorizeRobotL
 import { projectRobotView } from './robot-projection.mjs';
 import { importEmailRobots } from './robot-import.mjs';
 import { createCodingAgentStatus } from './coding-agent-status.mjs';
-import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
 import { listTerminalProfiles, resolveTerminalProfile, robotTerminalDirectory, terminalProfileAccess } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
@@ -623,6 +622,14 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         // with the notice and leaves the flow as it was.
         return grant ? { user: { grant, principal: signedOwner(req), admin: req[ACCESS]?.canAdmin === true, undelivered: [] } } : { refusal: true };
     };
+    // A per-flow route carries no grant in worker mode (the Router mints only for the exact control path), so its refusal names the
+    // replacement: `POST /api/roboflow/control` with the action (decision M-49 R-2). Resume stays on its per-flow routes.
+    const refuseThroughControl = (action) => {
+        const replacement = { method: 'POST', path: '/api/roboflow/control', action };
+        sendJson(res, 403, { ok: false, replacement,
+            error: `owner_evidence_unavailable: this path carries no authorization for the worker; use POST /api/roboflow/control with {"flowId": "<flow id>", "action": "${action}"${action.endsWith('-instance') ? ', "instanceId": "<phase id>"' : ''}${action === 'message-instance' ? ', "prompt": "<text>"' : ''}}.` });
+        return true;
+    };
     if (pathname === '/api/roboflow/control' && req.method === 'POST') {
         const { flowId, action, instanceId, prompt } = await readJsonBody(req);
         if (typeof flowId !== 'string' || !/^flow_[0-9a-f]{24}$/u.test(flowId)) { sendError(res, 400, 'a valid flowId is required'); return true; }
@@ -642,15 +649,23 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     }
     const pauseId = pathname.match(new RegExp(`^${FLOW_PATH}/pause$`))?.[1];
     if (pauseId && req.method === 'POST') {
+        // The launching task child's pause after a user stopped the native task (decision M-55 (a)): it carries the internal token and
+        // no grant, so the worker stop goes with the coordinator identity and the flow binding, and the flow pauses only once it accepted.
+        if (worker?.enabled && actor.internal) {
+            // For the user the task child forwards, who must own the flow (the service checks); none forwarded is refused here.
+            if (!actor.id) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+            sendJson(res, 200, { ok: true, flow: await roboflow.pauseFlowBySystem(pauseId, actor.id) });
+            return true;
+        }
         const control = userControl();
-        if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        if (control.refusal) return refuseThroughControl('pause');
         sendJson(res, 200, { ok: true, flow: await roboflow.pauseFlow(pauseId, control.user) });
         return true;
     }
     const terminateId = pathname.match(new RegExp(`^${FLOW_PATH}/terminate$`))?.[1];
     if (terminateId && req.method === 'POST') {
         const control = userControl();
-        if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        if (control.refusal) return refuseThroughControl('terminate');
         sendJson(res, 200, { ok: true, flow: await roboflow.terminateFlow(terminateId, control.user) });
         return true;
     }
@@ -662,7 +677,7 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     const instancePause = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/pause$`));
     if (instancePause && req.method === 'POST') {
         const control = userControl();
-        if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        if (control.refusal) return refuseThroughControl('pause-instance');
         sendJson(res, 200, { ok: true, flow: await roboflow.pauseInstance(instancePause[1], instancePause[2], control.user) });
         return true;
     }
@@ -670,7 +685,7 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     if (instanceMessage && req.method === 'POST') {
         const body = await readJsonBody(req);
         const control = userControl();
-        if (control.refusal) { sendError(res, 403, 'owner_evidence_unavailable'); return true; }
+        if (control.refusal) return refuseThroughControl('message-instance');
         sendJson(res, 200, { ok: true, ...await roboflow.messageInstance(instanceMessage[1], instanceMessage[2], body.prompt, control.user) });
         return true;
     }
@@ -794,9 +809,7 @@ export function createRoboTeamServer(options) {
     const routeKey = String(options.routeKey || 'roboTeamAgent');
     const publicDir = path.resolve(options.publicDir || DEFAULT_PUBLIC_DIR);
     const mcpPort = Number(options.mcpPort) || 7000;
-    const codingAgentStatus = options.codingAgentStatus || createCodingAgentStatus({
-        installation: () => resolveAlaInstallation({ env: { ...process.env, ACHILLES_ALA_COMMAND: runtimeManager.alaCommand || '' } }),
-    });
+    const codingAgentStatus = options.codingAgentStatus || createCodingAgentStatus();
     const liveSessions = options.liveSessions || null;
     const liveStreamLifetimeMs = Number.isSafeInteger(options.liveSessionsStreamLifetimeMs) && options.liveSessionsStreamLifetimeMs > 0
         ? options.liveSessionsStreamLifetimeMs : LIVE_STREAM_LIFETIME_MS;
@@ -857,10 +870,9 @@ export function createRoboTeamServer(options) {
                 const robots = await robotStore.list();
                 const views = await Promise.all(robots.map(async (robot) => {
                     const view = publicRobot(robot, runtimeManager.status(robot.id), { privileged: listing.canAdmin, workspaceRoot: runtimeManager.workspaceRoot });
-                    const home = path.join(robotStore.robotPath(robot.id), 'home');
                     // Logins name the outer accounts a robot holds, so only administrators see them.
-                    return { ...view, codingAgent: await codingAgentStatus.activeAgent(home, view.codingAgents),
-                        ...(listing.canAdmin ? { codingAgentLogins: await codingAgentStatus.logins(home) } : {}) };
+                    return { ...view, codingAgent: await codingAgentStatus.activeAgent(robot),
+                        ...(listing.canAdmin ? { codingAgentLogins: await codingAgentStatus.logins(robot.id) } : {}) };
                 }));
                 return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: views });
             }
@@ -1003,14 +1015,9 @@ export function createRoboTeamServer(options) {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const robot = await robotStore.get(modelsId);
                 if (!robot) return sendError(res, 404, 'robot not found');
-                const controller = new AbortController();
-                const abort = () => controller.abort(new Error('Model request closed'));
-                const timeout = setTimeout(() => controller.abort(new Error('Model catalog timed out; try again.')), 90000);
-                res.once('close', abort);
-                try {
-                    const result = await robotModels.list(robot, url.searchParams.get('agent'), { signal: controller.signal });
-                    return sendJson(res, 200, { ok: true, ...result });
-                } finally { clearTimeout(timeout); res.removeListener('close', abort); }
+                // Listing is refused with a plain 409 until it moves to a worker utility execution (decision M-56).
+                const result = await robotModels.list(robot, url.searchParams.get('agent'));
+                return sendJson(res, 200, { ok: true, ...result });
             }
             const codingAgentsId = matchRobotPath(pathname, '/coding-agents');
             if (codingAgentsId && req.method === 'GET') {
@@ -1165,7 +1172,8 @@ export function createRoboTeamServer(options) {
             } else {
                 console.warn(`[roboTeamAgent] ${req.method} ${req.url} rejected (${status}): ${message}`);
             }
-            sendError(res, status, status < 500 ? message : 'request failed');
+            if (status < 500 && typeof error?.publicCode === 'string') sendJson(res, status, { ok: false, error: message, code: error.publicCode });
+            else sendError(res, status, status < 500 ? message : 'request failed');
         }
     });
 

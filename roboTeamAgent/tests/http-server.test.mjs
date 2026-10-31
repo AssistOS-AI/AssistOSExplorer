@@ -304,6 +304,27 @@ test('robot model settings load lazily, enforce administrator access and save th
 });
 
 
+test('M-56: model listing and effort validation answer a plain 409 with a code, settings come from the robot record, logins are unknown', async t => {
+    const fixture = await startFixture();
+    t.after(fixture.close);
+    const robot = await fixture.robotStore.create({ name: 'No Listing', codingAgents: ['opencode'] });
+    const base = `${fixture.baseUrl}/api/robots/${robot.id}`;
+    const headers = { 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('admin', ['admin']) };
+    const models = await fetch(`${base}/models?agent=opencode`, { headers });
+    assert.equal(models.status, 409);
+    assert.deepEqual(await models.json(), { ok: false, error: 'Model listing is available after the worker model-listing update.', code: 'model_listing_unavailable' });
+    const patch = body => fetch(`${base}/coding-agents`, { method: 'PATCH', headers, body: JSON.stringify(body) });
+    const refused = await patch({ codingAgents: ['opencode'], model: 'provider/model', effort: 'high' });
+    assert.equal(refused.status, 409);
+    assert.equal((await refused.json()).code, 'model_listing_unavailable');
+    assert.equal((await patch({ codingAgents: ['opencode'], model: 'provider/model', effort: 'bad effort' })).status, 400);
+    assert.equal((await patch({ codingAgents: ['opencode'], model: 'provider/model' })).status, 200, 'a model without an effort needs no listing');
+    const settings = await (await fetch(`${base}/coding-agents`, { headers })).json();
+    assert.deepEqual([settings.codingAgent, settings.models], ['opencode', { opencode: 'provider/model' }]);
+    const listing = await (await fetch(`${fixture.baseUrl}/api/robots`, { headers })).json();
+    assert.deepEqual(listing.robots.find(entry => entry.id === robot.id).codingAgentLogins, { codex: 'unknown', opencode: 'unknown', pi: 'unknown', claude: 'unknown' });
+});
+
 test('robot default effort is validated and saved with its model', async t => {
     const fixture = await startFixture({ robotModels: {
         validateEffort: async (robot, agent, model, effort) => {

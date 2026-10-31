@@ -1,5 +1,6 @@
 import { emitTaskDiagnostic } from './webchatDiagnostics.mjs';
-import { workflowIdForTask, readWorkflowTask } from './webchatWorkflowStatus.mjs';
+import { workflowIdForTask, readWorkflowTask, WORKFLOW_PAUSE_UNAVAILABLE } from './webchatWorkflowStatus.mjs';
+import { workerModeSelected } from '../execution/engineSelection.mjs';
 import crypto from 'node:crypto';
 import { normalizeTaskLiveSession } from '../tasks/taskLiveSession.mjs';
 import { normalizeTaskDetails } from '../tasks/taskDetails.mjs';
@@ -155,7 +156,10 @@ function presentTask(task, taskModelCatalogs = new Map()) {
             },
         ]
         : [];
-    return { ...task, commands };
+    // A workflow card cannot pause through the worker yet. This field names where to pause for a client that reads it; Ploinky's
+    // task view (outside this repository) does not read it yet and still shows its Pause, whose press is answered with this message.
+    const pauseUnavailable = workflowIdForTask(task) && workerModeSelected() ? { pauseUnavailable: WORKFLOW_PAUSE_UNAVAILABLE } : {};
+    return { ...task, commands, ...pauseUnavailable };
 }
 
 export async function createWebchatBackgroundTaskManager({
@@ -586,6 +590,7 @@ export async function createWebchatBackgroundTaskManager({
             if (!task) throw new Error('task_not_found');
             if (task.status !== 'ongoing') throw new Error('task_not_running');
             if (workflowIdForTask(task)) {
+                if (workerModeSelected()) throw new Error(WORKFLOW_PAUSE_UNAVAILABLE);
                 await syncWorkflow(active.get(taskId) || task, { pause: true });
                 return getTask(workingDir, taskId);
             }

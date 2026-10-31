@@ -55,3 +55,9 @@ test('every module the dashboard imports has a static route', async () => {
     }
     for (const name of seen) assert.ok(server.includes(`'/${name}'`), `${name} is imported by the dashboard but not served`);
 });
+
+test('unknown logins (the worker reports none yet) neither filter robots out nor produce a summary', () => {
+    const unknown = { id: 'u-aaaaaa', name: 'Unknown', codingAgent: 'codex', codingAgentLogins: { codex: 'unknown', opencode: 'unknown', pi: 'unknown', claude: 'unknown' } };
+    for (const login of ['any', 'none', 'codex']) assert.deepEqual(names(filterRobots([unknown], filters({ login }))), ['Unknown'], login);
+    assert.equal(loginSummary(unknown), null);
+});

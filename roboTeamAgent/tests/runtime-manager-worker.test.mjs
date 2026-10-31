@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { RuntimeManager } from '../server/runtime-manager.mjs';
+import { RuntimeManager, runtimeManagerInternals } from '../server/runtime-manager.mjs';
 import { taskOriginId } from '../server/worker-coordinator/flow-origins.mjs';
 import { isOriginId } from '../server/worker-coordinator/identities.mjs';
 import { STOP_NOT_CONFIRMED_EXIT } from '../server/worker-coordinator/task-exit.mjs';
@@ -29,12 +29,8 @@ test('with the worker a stop is the stdin record and the signal is only a delaye
     c.child.emit('close');
 });
 
-test('without the worker a stop is SIGTERM as before', () => {
-    const c = child();
-    RuntimeManager.prototype._stopChild.call({ workerMode: false }, c.child);
-    assert.deepEqual(c.signals, ['SIGTERM']);
-    assert.deepEqual(c.written, []);
-    RuntimeManager.prototype._stopChild.call({ workerMode: true }, null);
+test('a stop of no child is a no-op', () => {
+    RuntimeManager.prototype._stopChild.call({}, null);
 });
 
 const toolCache = {
@@ -87,28 +83,49 @@ test('the request grant of a started task goes to its child over stdin only and 
     assert.equal(manager.tasks.get(accepted.taskId).request.ownerGrant, undefined);
 });
 
-test('without the worker a grant is neither kept nor sent', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-nogrant-'));
+test('without the coordinator base an AI task is refused at admission, naming the configuration, and nothing is spawned or kept', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-nobase-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, 'data');
     const workspace = path.join(root, 'workspace');
     const robot = { id: 'plain-a1b2c3', name: 'Plain' };
     await Promise.all([fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }), fs.mkdir(workspace, { recursive: true })]);
-    const texts = [];
-    const spawnImpl = () => {
-        const child = new EventEmitter();
-        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true; child.stdin = new PassThrough();
-        let text = '';
-        child.stdin.on('data', (chunk) => { text += chunk; });
-        setImmediate(() => { texts.push(text); child.emit('close', 0, null); });
-        return child;
-    };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, workerMode: false, toolCache, execFileImpl: async () => ({ stdout: '[]', stderr: '' }) });
+    const spawned = [];
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl: (...args) => { spawned.push(args); throw new Error('spawned'); }, workerMode: false, toolCache,
+        execFileImpl: async () => ({ stdout: '[]', stderr: '' }) });
     t.after(() => manager.stopAll());
-    const accepted = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', ownerGrant: 'h.e30.SECRETSIGNATURE' });
-    while (!['completed', 'failed'].includes(manager.taskStatus(robot.id, accepted.taskId).state)) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(manager.taskGrants.size, 0);
-    assert.equal(texts.join('').includes('SECRETSIGNATURE'), false);
+    const refusal = (error) => error.code === 'worker_not_configured' && error.statusCode === 409
+        && /ROBOTEAM_WORKER_COORDINATOR_BASE is not set/.test(error.message) && /^worker_not_configured: /.test(error.message);
+    for (const type of ['simple', 'browser', 'desktop']) {
+        assert.throws(() => manager.startTask(robot, type, { cwd: workspace, task: 'Do work', ca: 'codex', ownerGrant: 'h.e30.SECRETSIGNATURE' }), refusal, type);
+    }
+    assert.deepEqual(spawned, []);
+    assert.equal(manager.tasks.size, 0, 'no task record exists');
+    assert.equal(manager.taskGrants.size, 0, 'no grant was kept');
+});
+
+test('without the coordinator base a resume is refused before it rewrites or saves the task record', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-nobase-resume-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'plain-a1b2c3', name: 'Plain' };
+    const manager = new RuntimeManager({ dataDir: path.join(root, 'data'), workspaceRoot: root, workerMode: false, toolCache,
+        spawnImpl: () => { throw new Error('spawned'); }, execFileImpl: async () => ({ stdout: '[]', stderr: '' }) });
+    t.after(() => manager.stopAll());
+    const taskId = '11111111-1111-4111-8111-111111111111';
+    const saved = [];
+    manager._saveTask = async (task) => { saved.push(task.taskId); };
+    manager.skillsets = { policies: { ensure: async () => {} } };
+    const internal = { taskId, robotId: robot.id, type: 'simple', state: 'failed', alaSessionId: '22222222-2222-4222-8222-222222222222',
+        request: { task: 'x', skillSelection: ['bash'] } };
+    manager.tasks.set(taskId, internal);
+    await assert.rejects(manager.resumeTask(robot, taskId, 'again'), (error) => error.code === 'worker_not_configured');
+    assert.deepEqual(saved, [], 'nothing was saved');
+    assert.deepEqual(internal.request, { task: 'x', skillSelection: ['bash'] }, 'the record was not rewritten');
+});
+
+test('a child that stopped on the missing configuration leaves that line as the task error, not an opaque ALA exit', () => {
+    const line = 'worker_not_configured: AI execution is unavailable because ROBOTEAM_WORKER_COORDINATOR_BASE is not set. RoboTeam runs every AI task through the robo-work worker.';
+    assert.equal(runtimeManagerInternals.alaFailureMessage(1, `noise\n${line}\n`), line);
 });
 
 // A running worker task that a user stops: the stop record carries the stopping request's own grant over stdin, the task is

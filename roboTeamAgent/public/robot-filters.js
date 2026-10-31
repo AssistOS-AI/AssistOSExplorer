@@ -52,7 +52,8 @@ export function filterRobots(robots, filters) {
         const haystack = `${robot.name} ${robot.id}`.toLocaleLowerCase();
         if (!words.every(word => haystack.includes(word))) return false;
         if (filters.agent && robot.codingAgent !== filters.agent) return false;
-        if (!filters.login || !robot.codingAgentLogins) return true;
+        // Logins are 'unknown' until the worker reports them: nothing to filter on, so the robot stays listed.
+        if (!filters.login || !robot.codingAgentLogins || !Object.values(robot.codingAgentLogins).some(value => typeof value === 'boolean')) return true;
         const logged = loggedInAgents(robot).length;
         if (filters.login === 'any') return logged > 0;
         if (filters.login === 'none') return logged === 0;

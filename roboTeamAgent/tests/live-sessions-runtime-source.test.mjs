@@ -166,7 +166,7 @@ test('composed observers run RoboFlow first, isolate Live Sessions and keep Robo
 
 test('with the real runtime, a queued GUI task cancelled before it runs ends its row once as stopped', async () => {
     const registry = new LiveSessionsRegistry({ log: () => {} });
-    const manager = new RuntimeManager({ toolCache: { root: '/cache' } });
+    const manager = new RuntimeManager({ workerMode: true, toolCache: { root: '/cache' } });
     const source = new RuntimeLiveSource({ registry, runtimeManager: manager, robotStore: { get: async () => ROBOT }, workspaceRoot: '/workspace' });
     const ends = [];
     const end = registry.end.bind(registry);

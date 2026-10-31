@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createExecutionEngine, workerModeSelected } from '../src/lib/execution/engineSelection.mjs';
+import { createExecutionEngine, createUnconfiguredEngine, workerModeSelected } from '../src/lib/execution/engineSelection.mjs';
 import { createWorkerEngine } from '../src/lib/execution/workerEngine.mjs';
 import { COORDINATOR_BASE_ENV } from '../../server/worker-coordinator/hop.mjs';
 import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
@@ -14,30 +14,38 @@ import { ConversationSessionStore } from '../src/lib/storage/conversationSession
 const BASE = '/base-agent-additional-server/robo-work/7311';
 const read = (relative) => fs.readFile(new URL(relative, import.meta.url), 'utf8');
 
-test('the base variable selects the worker engine and never constructs the local one', () => {
+test('the base variable selects the worker engine; without it every turn and model call is refused with worker_not_configured and nothing is constructed', async () => {
     assert.equal(workerModeSelected({}), false);
     assert.equal(workerModeSelected({ [COORDINATOR_BASE_ENV]: '  ' }), false);
     assert.equal(workerModeSelected({ [COORDINATOR_BASE_ENV]: BASE }), true);
     const created = [];
-    const local = (options) => { created.push(['local', options]); return { which: 'local' }; };
-    const worker = (options) => { created.push(['worker', options]); return { which: 'worker' }; };
+    const worker = (options) => { created.push(options); return { which: 'worker' }; };
     const robotStore = { get: async () => ({ id: 'robo' }) };
     const workerOptions = { workingDir: '/w', robotStore, robotId: 'robo', execution: { robotId: 'robo' } };
-    assert.equal(createExecutionEngine({ env: { [COORDINATOR_BASE_ENV]: BASE }, localOptions: { x: 1 }, workerOptions, hop: { call: async () => ({}) },
-        createLocal: local, createWorker: worker }).which, 'worker');
-    assert.deepEqual(created.map(([kind]) => kind), ['worker'], 'no local engine in worker mode');
-    const options = created[0][1];
-    for (const name of ['client', 'provisioner', 'getRobot']) assert.ok(options[name], name);
-    assert.equal(Object.hasOwn(options, 'robotStore'), false);
+    assert.equal(createExecutionEngine({ env: { [COORDINATOR_BASE_ENV]: BASE }, workerOptions, hop: { call: async () => ({}) }, createWorker: worker }).which, 'worker');
+    assert.equal(created.length, 1);
+    for (const name of ['client', 'provisioner', 'getRobot']) assert.ok(created[0][name], name);
+    assert.equal(Object.hasOwn(created[0], 'robotStore'), false);
+    // Unset (or blank): no worker engine, no hop, and a clear configuration error on every call; no local engine exists to fall back to.
     created.length = 0;
-    assert.equal(createExecutionEngine({ env: {}, localOptions: { x: 1 }, workerOptions, createLocal: local, createWorker: worker }).which, 'local');
-    assert.deepEqual(created, [['local', { x: 1 }]], 'unset keeps the local ALA path');
+    for (const env of [{}, { [COORDINATOR_BASE_ENV]: '   ' }]) {
+        const engine = createExecutionEngine({ env, workerOptions, createWorker: worker });
+        for (const call of [() => engine.executeTurn({ sessionId: 's', prompt: 'p' }), () => engine.getModel({ sessionId: 's' }),
+            () => engine.setModel({ sessionId: 's' }), () => engine.listModels({})]) {
+            await assert.rejects(call(), (error) => error.code === 'worker_not_configured' && error.statusCode === 409
+                && /^worker_not_configured: .*ROBOTEAM_WORKER_COORDINATOR_BASE is not set/u.test(error.message));
+        }
+        assert.deepEqual(await engine.stopTurn({ turnId: 't' }), { delivered: false, code: 'not_running', message: 'Nothing is running to stop.' });
+        await engine.close();
+    }
+    assert.deepEqual(created, [], 'the worker engine is not constructed either');
+    assert.equal(typeof createUnconfiguredEngine().executeTurn, 'function');
+    // No local engine module remains.
+    await assert.rejects(fs.access(new URL('../src/lib/execution/alaEngine.mjs', import.meta.url)), { code: 'ENOENT' });
 });
 
 test('worker mode without the RoboTeam robot context is an error, not a local engine', () => {
-    const create = () => assert.fail('the local engine must not be created');
-    assert.throws(() => createExecutionEngine({ env: { [COORDINATOR_BASE_ENV]: BASE }, localOptions: {}, workerOptions: { workingDir: '/w' },
-        createLocal: create }), /robot context/);
+    assert.throws(() => createExecutionEngine({ env: { [COORDINATOR_BASE_ENV]: BASE }, workerOptions: { workingDir: '/w' } }), /robot context/);
 });
 
 test('with the base set, a failing coordinator fails the turn explicitly and nothing is spawned', async (t) => {
@@ -53,10 +61,8 @@ test('with the base set, a failing coordinator fails the turn explicitly and not
     const calls = [];
     // Every coordinator operation is refused: the worker is unreachable.
     const hop = { call: async (operation, body) => { calls.push(operation); return { outcome: 'unsent' }; } };
-    let localCreated = 0;
     const engine = createExecutionEngine({
         env: { [COORDINATOR_BASE_ENV]: BASE }, hop,
-        createLocal: () => { localCreated += 1; return {}; },
         workerOptions: { workingDir, sessionStore: store, skillCatalog: { async refresh() { return { skills: [] }; } },
             settings: { readAchillesSettings: () => ({}), getPermissionMode: () => 'full-access' }, execution: { robotId: 'robo' },
             robotStore: { get: async () => ({ id: 'robo', name: 'default', codingAgents: ['codex'], worker: { robotId: 'AAAAAAAAAAAAAAAAAAAAAA' } }) }, robotId: 'robo' },
@@ -64,7 +70,7 @@ test('with the base set, a failing coordinator fails the turn explicitly and not
     t.after(() => engine.close());
     const binding = { bindingId: `flow_${'cd'.repeat(12)}`, originRequestId: 'BBBBBBBBBBBBBBBBBBBBBA' };
     const withBinding = createExecutionEngine({
-        env: { [COORDINATOR_BASE_ENV]: BASE }, hop, createLocal: () => { localCreated += 1; return {}; },
+        env: { [COORDINATOR_BASE_ENV]: BASE }, hop,
         workerOptions: { workingDir, sessionStore: store, skillCatalog: { async refresh() { return { skills: [] }; } },
             settings: { readAchillesSettings: () => ({}), getPermissionMode: () => 'full-access' }, execution: { robotId: 'robo', worker: binding },
             robotStore: { get: async () => ({ id: 'robo', name: 'default', codingAgents: ['codex'], worker: { robotId: 'AAAAAAAAAAAAAAAAAAAAAA' } }) }, robotId: 'robo' },
@@ -73,7 +79,6 @@ test('with the base set, a failing coordinator fails the turn explicitly and not
     await assert.rejects(withBinding.executeTurn({ sessionId: session.sessionId, prompt: 'p' }),
         (error) => error.code === 'worker_unreachable' && error.status === 503);
     assert.deepEqual(calls, ['robots/get'], 'the worker was asked, and the failure ended the turn');
-    assert.equal(localCreated, 0);
     // Without owner evidence the turn is refused before any worker call.
     calls.length = 0;
     await assert.rejects(engine.executeTurn({ sessionId: session.sessionId, prompt: 'p' }), (error) => error.code === 'owner_evidence_unavailable');
@@ -81,11 +86,11 @@ test('with the base set, a failing coordinator fails the turn explicitly and not
     assert.equal(typeof createWorkerEngine, 'function');
 });
 
-test('the runtime entry points use the seam: createCliRuntime builds the engine through it and resolves no local ALA in worker mode', async () => {
+test('the runtime entry points use the seam: createCliRuntime builds the engine through it and resolves no local ALA', async () => {
     const index = await read('../src/index.mjs');
     assert.match(index, /createExecutionEngine\(\{/u);
-    assert.match(index, /workerModeSelected\(\) \? null : await resolveAlaInstallation\(\)/u);
-    assert.doesNotMatch(index, /createAlaEngine\(/u, 'no direct local engine construction in createCliRuntime');
+    assert.doesNotMatch(index, /resolveAlaInstallation|createAlaEngine/u, 'no local ALA installation or engine in createCliRuntime');
     const listing = await read('../src/mcp/list-slash-commands.mjs');
     assert.match(listing, /worker \? \{ listModels/u, 'the slash-command catalog builds no local engine in worker mode');
+    assert.doesNotMatch(listing, /createAlaEngine|resolveAlaInstallation/u);
 });

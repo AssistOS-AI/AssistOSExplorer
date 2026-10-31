@@ -629,6 +629,58 @@ test('background task polling publishes and persists a declared details link', a
     }
 });
 
+// Decision M-59 (interim): with the worker configured, the workflow card's Pause cannot reach the worker (the MCP pause tool is not
+// offered), so it says where to pause and never answers `workflow_status_unavailable`.
+async function workflowPauseFixture(t, { workerBase }) {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-workflow-pause-'));
+    const flowId = 'flow_603070ca4a29b08bff4a3141';
+    const url = `/base-agent-additional-server/roboTeamAgent/3001/roboflow?flowId=${flowId}`;
+    const previous = process.env.ROBOTEAM_WORKER_COORDINATOR_BASE;
+    if (workerBase) process.env.ROBOTEAM_WORKER_COORDINATOR_BASE = workerBase; else delete process.env.ROBOTEAM_WORKER_COORDINATOR_BASE;
+    let observer = null;
+    const published = [];
+    const tools = [];
+    const status = async () => ({ id: 'remote-flow', status: 'running', logSeq: 1, logTail: 'x\n', details: { url, label: 'Open workflow page' } });
+    const manager = await createWebchatBackgroundTaskManager({
+        workingDir: workspace, emitProtocol: false, onPublish: (event) => published.push(event),
+        agentClientModule: {
+            setAgentTaskObserver(callback) { observer = callback; return () => { observer = null; }; },
+            async createAgentClient() {
+                return { async ensureAgentRunning() {}, getTaskStatus: status,
+                    async callTool(name) {
+                        tools.push(name);
+                        if (name === 'roboflow_pause_flow') return { isError: true, content: [{ type: 'text', text: 'unknown tool' }] };
+                        return { content: [{ type: 'text', text: JSON.stringify({ flow: { id: flowId, status: 'running', updatedAt: 'now', createdAt: new Date().toISOString() } }) }] };
+                    } };
+            },
+        },
+    });
+    t.after(() => {
+        manager.close();
+        if (previous === undefined) delete process.env.ROBOTEAM_WORKER_COORDINATOR_BASE; else process.env.ROBOTEAM_WORKER_COORDINATOR_BASE = previous;
+        fs.rmSync(workspace, { recursive: true, force: true });
+    });
+    const record = await observer({ agentName: 'roboTeamAgent', taskId: 'remote-flow', toolName: 'roboflow_start_flow',
+        arguments: { objective: 'Work' }, metadata: { status: 'running', createdAt: new Date().toISOString() }, getTaskStatus: status });
+    const deadline = Date.now() + 1000;
+    while (!published.some((event) => event.task?.details) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    return { manager, record, published, tools };
+}
+
+test('with the worker configured the workflow card has no Pause: it points to the RoboFlow page and calls no pause tool', async (t) => {
+    const f = await workflowPauseFixture(t, { workerBase: 'http://127.0.0.1:1/coordinator' });
+    assert.equal(f.published.find((event) => event.task?.details).task.pauseUnavailable, 'Pause from the RoboFlow page');
+    await assert.rejects(f.manager.pauseTask(f.record.id), (error) => error.message === 'Pause from the RoboFlow page');
+    assert.equal(f.tools.includes('roboflow_pause_flow'), false);
+});
+
+test('without the worker the workflow card still pauses through the pause tool and offers no notice', async (t) => {
+    const f = await workflowPauseFixture(t, { workerBase: '' });
+    assert.equal('pauseUnavailable' in f.published.find((event) => event.task?.details).task, false);
+    await f.manager.pauseTask(f.record.id).catch(() => {});
+    assert.equal(f.tools.includes('roboflow_pause_flow'), true);
+});
+
 test('ambiguous remote continuation remains visible and cannot be automatically retried', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-task-uncertain-'));
     const taskId = 'task_555555555555555555555555';

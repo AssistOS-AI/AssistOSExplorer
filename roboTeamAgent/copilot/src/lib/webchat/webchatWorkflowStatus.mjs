@@ -1,5 +1,9 @@
 import { executionTiming } from '../../../../shared/execution-timing.mjs';
 
+// With the worker configured the MCP pause tool is not offered (decision M-55 (b)), so the workflow card's Pause cannot act until the
+// card pauses through a user control with the user's own grant (decision M-59). Until then it says where to pause.
+export const WORKFLOW_PAUSE_UNAVAILABLE = 'Pause from the RoboFlow page';
+
 export function workflowIdForTask(task) {
     if (task?.targetAgent !== 'roboTeamAgent' || task.toolName !== 'roboflow_start_flow') return null;
     try {

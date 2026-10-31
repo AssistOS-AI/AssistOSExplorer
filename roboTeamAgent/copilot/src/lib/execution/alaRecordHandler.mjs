@@ -1,6 +1,5 @@
-// The handling of one ALA event record, shared by every execution engine. alaEngine feeds it the
-// records ALA prints on its own stderr; workerEngine feeds it the records the worker relays as
-// reference events. Both therefore emit identical streaming events.
+// The handling of one ALA event record. workerEngine feeds it the records the worker relays as
+// reference events (RoboTeam runs no local ALA, decision M-5).
 
 export const ALA_BACKENDS = Object.freeze(['codex', 'opencode', 'pi', 'claude']);
 

@@ -282,3 +282,52 @@ test('M-42: notDeliveredMessage composes the notices', async () => {
     const many = Array.from({ length: 8 }, (_, index) => ({ code: 'worker_unreachable', phase: `p${index}` }));
     assert.match(notDeliveredMessage({ undelivered: many, delivered: [{ phase: 'ok' }] }), /but not to p0, p1, p2, p3, p4 and 3 more: not delivered \(worker_unreachable\)/u);
 });
+
+// Decision M-55 (a): the pause that follows a user's stop of the native launch-workflow task is a system stop. It keeps the coordinator
+// identity and the flow binding, and the flow is recorded paused only once the worker accepted the stop.
+test('a system pause stops the phase with the binding and records the pause only after the worker accepted', async (t) => {
+    let flowAtControl = null;
+    const f = await fixture(t, { control: async () => { flowAtControl = (await f.service.getFlow((await f.service.store.list())[0].id)).status; } });
+    const { flow } = await f.start();
+    const paused = await f.service.pauseFlowBySystem(flow.id, 'alice');
+    assert.equal(paused.status, 'paused');
+    assert.notEqual(flowAtControl, 'paused', 'the flow was not yet paused when the worker was asked');
+    assert.deepEqual(authsOf(f.calls), [[{ bindingId: flow.id }], [{ bindingId: flow.id }]], 'found and stopped with the coordinator identity and the binding, no grant');
+    assert.equal(f.calls.control[0].body.op, 'stop');
+    assert.equal(f.calls.control[0].body.operationId, stopOperationId(REFERENCE));
+    assert.equal(f.stops[0].options, undefined, 'the phase child gets a system stop, not a user stop');
+});
+
+// Defense in depth: the internal-token pause names the user the launching task ran for, and only that flow owner's flow pauses.
+test('a system pause is refused unless the named user owns the flow, before anything is asked of the worker', async (t) => {
+    const f = await fixture(t);
+    const { flow } = await f.start();
+    for (const requestedBy of ['bob', '', undefined, null, 'user:alice', 'alice ']) {
+        await assert.rejects(f.service.pauseFlowBySystem(flow.id, requestedBy), (error) => error.statusCode === 403, String(requestedBy));
+    }
+    assert.notEqual((await f.service.getFlow(flow.id)).status, 'paused');
+    assert.equal(f.stops.length, 0, 'the phase child was not stopped');
+    assert.equal(f.calls.control.length, 0, 'the worker was not asked');
+    await assert.rejects(f.service.pauseFlowBySystem(`flow_${'0'.repeat(24)}`, 'alice'), (error) => error.statusCode === 404);
+    const ownerless = await f.service.startFlow({ workflowTypeId: 'stopping', folder: (await f.service.store.get(flow.id)).folder, objective: 'Work' });
+    await assert.rejects(f.service.pauseFlowBySystem(ownerless.id, 'alice'), (error) => error.statusCode === 403, 'a flow with no recorded owner is not paused by a named user');
+    assert.equal((await f.service.pauseFlowBySystem(flow.id, 'alice')).status, 'paused');
+});
+
+test('a system pause the worker does not accept leaves the flow as it was and reports why', async (t) => {
+    const refused = await fixture(t, { control: async () => { throw Object.assign(new Error('forbidden'), { code: 'forbidden' }); } });
+    const { flow, instance } = await refused.start();
+    await assert.rejects(refused.service.pauseFlowBySystem(flow.id, 'alice'), (error) => error.statusCode === 409 && error.code === 'worker_stop_not_delivered' && /Stop not delivered/.test(error.message));
+    const after = await refused.service.getFlow(flow.id);
+    assert.notEqual(after.status, 'paused');
+    assert.equal(after.instances[0].state, instance.state, 'the phase is exactly as it was');
+    assert.equal(refused.stops.length, 0, 'the phase child was not stopped either');
+
+    // The worker cannot be reached at all.
+    const unreachable = await fixture(t, { lookup: async () => { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'worker_unreachable' }); } });
+    const started = await unreachable.start();
+    await unreachable.service.store.update(started.flow.id, (current) => { current.instances[0].startedAt = new Date().toISOString(); });
+    await assert.rejects(unreachable.service.pauseFlowBySystem(started.flow.id, 'alice'), (error) => error.statusCode === 409 && error.undelivered[0].code === 'worker_unreachable');
+    assert.notEqual((await unreachable.service.getFlow(started.flow.id)).status, 'paused');
+    assert.equal(unreachable.stops.length, 0);
+});

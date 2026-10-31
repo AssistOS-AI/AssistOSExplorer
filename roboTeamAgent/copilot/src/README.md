@@ -11,7 +11,7 @@ export ACHILLES_ALA_COMMAND=/absolute/path/to/AdvancedLanguageAgent/bin/ala.mjs
 node src/cli.mjs --dir /absolute/path/to/project
 ```
 
-Run this command from `achilles-cli/`. Under RoboTeam, `ACHILLES_ALA_HOME` is the robot home, mounted writable and shared by every conversation so credentials and coding-agent state stay with the robot. The ALA home holds `.ala/config.json`, which names the robot's coding agent and one model and effort per agent, and the coding agents' own state; conversations are not stored there. A standalone run without `ACHILLES_ALA_HOME` uses the user's home directory; `ACHILLES_ALA_HOME` may select an existing administrator-provisioned home. Configure native login there rather than copying credentials from another user or robot.
+Run this command from `achilles-cli/`. Under RoboTeam the worker owns ALA and the robot home, so conversations run there and RoboTeam exports no ALA home. Configure native login in the worker's robot home rather than copying credentials from another user or robot.
 
 ## Commands
 
@@ -60,7 +60,7 @@ Delegated workers retain their own credentials and native sessions. The parent o
 | Path | Responsibility |
 | --- | --- |
 | `cli.mjs`, `index.mjs` | Trusted startup and surface selection. |
-| `lib/execution/alaEngine.mjs` | Owned ALA execution, continuation, native events and transcript outcome. |
+| `lib/execution/engineSelection.mjs`, `lib/execution/workerEngine.mjs` | The only execution engine: every turn runs through the RoboWork worker (continuation, native events and outcome come from the worker's reference). Without `ROBOTEAM_WORKER_COORDINATOR_BASE` every turn and model call is refused with `worker_not_configured`; there is no local ALA engine. |
 | `lib/skills/anthropicSkillCatalog.mjs` | Deterministic parser-backed catalog and enablement snapshot. |
 | `lib/ploinky/ploinkyTaskContext.mjs`, skill-local `scripts/ploinkyInvocation.mjs` | Prepared read-only Ploinky runtime, direct SDK calls and acknowledged Unix-socket task notifications for chat observation. |
 | `lib/storage/workspaceStateLock.mjs` | Short interprocess transactions and execution leases. |

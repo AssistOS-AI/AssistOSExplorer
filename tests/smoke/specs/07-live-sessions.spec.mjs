@@ -382,6 +382,7 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
     // A first provider refusal or feature failure must never launch another
     // native turn from the second case. A skipped remainder cannot pass ledger.
     test.describe.configure({ mode: 'serial' });
+    test.skip(true, 'local ALA engine removed (M-5)');
     test.skip(process.env.SMOKE_LIVE_SESSIONS !== '1', 'Requires the fresh-live-sessions profile and real native provider.');
     test.setTimeout(600_000);
 

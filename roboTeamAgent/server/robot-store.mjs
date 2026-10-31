@@ -273,8 +273,12 @@ export class RobotStore {
             await ensureAgentConfig(path.join(this.robotPath(robotId), 'home'), { codingAgents: selected, codingAgent: selected[0], model, effort });
             // The model and effort chosen for a one-agent robot, kept as desired state for the worker.
             const unchanged = JSON.stringify(robot.codingAgents) === JSON.stringify(selected);
+            const chosen = typeof model === 'string' ? model.trim() : '';
+            // No effort field keeps the saved effort of the same model (as ALA does); null clears it.
+            const keptEffort = unchanged && robot.selection?.model === chosen ? robot.selection.effort : undefined;
+            const kept = effort === undefined ? keptEffort : effort;
             const selection = model === undefined ? (unchanged ? robot.selection : undefined)
-                : (typeof model === 'string' && model.trim() ? { model: model.trim(), ...(effort ? { effort } : {}) } : undefined);
+                : (chosen ? { model: chosen, ...(kept ? { effort: kept } : {}) } : undefined);
             const { selection: previous, ...rest } = robot;
             void previous;
             const next = { ...rest, codingAgents: selected, ...(selection ? { selection } : {}) };

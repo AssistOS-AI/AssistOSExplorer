@@ -1,20 +1,30 @@
-import { createAlaEngine } from './alaEngine.mjs';
 import { createWorkerEngine } from './workerEngine.mjs';
 import { COORDINATOR_BASE_ENV, createWorkerCoordinatorHop } from '../../../../server/worker-coordinator/hop.mjs';
+import { workerNotConfiguredError } from '../../../../server/worker-coordinator/errors.mjs';
 import { createWorkerClient } from '../../../../server/worker-coordinator/worker-client.mjs';
 import { createRobotProvisioner } from '../../../../server/worker-coordinator/robot-provisioning.mjs';
 
-// The one cutover seam (RoboWork r10 decision M-5). When ROBOTEAM_WORKER_COORDINATOR_BASE is set the
-// execution engine is the worker engine, and a worker failure is an explicit error: there is no
-// fallback to a local ALA run. The local ALA engine exists only for the unset case, until the
-// AI-task end-to-end gate passes.
+// The execution seam (RoboWork r10 decision M-5, R08). The worker engine is the only engine: RoboTeam has no local ALA execution
+// path and no fallback to one. When ROBOTEAM_WORKER_COORDINATOR_BASE is not set, the engine that is returned refuses every turn and
+// model call with the `worker_not_configured` error, so a misconfigured deployment fails explicitly and never runs anything locally.
 export const workerModeSelected = (env = process.env) => String(env[COORDINATOR_BASE_ENV] || '').trim() !== '';
 
-// `localOptions` are alaEngine's options, `workerOptions` workerEngine's plus `robotStore` and
-// `robotId`. The factories and the hop are test injections.
-export function createExecutionEngine({ env = process.env, localOptions, workerOptions, hop = null,
-    createLocal = createAlaEngine, createWorker = createWorkerEngine } = {}) {
-    if (!workerModeSelected(env)) return createLocal(localOptions);
+// The engine of an unconfigured deployment: the same interface as the worker engine, starting nothing.
+export function createUnconfiguredEngine() {
+    const refuse = async () => { throw workerNotConfiguredError(); };
+    return Object.freeze({
+        executeTurn: refuse,
+        getModel: refuse,
+        setModel: refuse,
+        listModels: refuse,
+        async stopTurn() { return { delivered: false, code: 'not_running', message: 'Nothing is running to stop.' }; },
+        async close() {},
+    });
+}
+
+// `workerOptions` are workerEngine's plus `robotStore` and `robotId`. `createWorker` and the hop are test injections.
+export function createExecutionEngine({ env = process.env, workerOptions, hop = null, createWorker = createWorkerEngine } = {}) {
+    if (!workerModeSelected(env)) return createUnconfiguredEngine();
     const { robotStore, robotId, ...engineOptions } = workerOptions || {};
     if (!robotStore || !robotId) throw new Error('Worker execution requires the RoboTeam robot context.');
     const client = createWorkerClient({ hop: hop || createWorkerCoordinatorHop({ env }) });

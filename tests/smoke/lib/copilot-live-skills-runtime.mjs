@@ -23,7 +23,7 @@ const CONTRACT_FILES = Object.freeze([
     'server/copilot-context.mjs', 'server/constants.mjs', 'server/robot-store.mjs',
     'server/live-skill-catalog.mjs', 'server/live-skill-install.mjs', 'server/skill-catalog-api.mjs',
     'copilot/src/lib/storage/conversationSessionStore.mjs', 'copilot/src/lib/skills/robotSkillCatalog.mjs',
-    'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/execution/alaSkillMounts.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
+    'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/execution/alaSkillMounts.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
 ]);
 
 export { CONTRACT_FILES as LIVE_SKILLS_CONTRACT_FILES };
