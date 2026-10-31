@@ -49,7 +49,7 @@ import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
-import { createObservationLog, measureFixture, processKey, readIdentity, validateHeld } from './ptyLeakMeasurement.mjs';
+import { captureOpacityDiagnostic, createObservationLog, measureFixture, processKey, readIdentity, validateHeld } from './ptyLeakMeasurement.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const argv = process.argv.slice(2);
@@ -61,6 +61,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const O_CLOEXEC = 0o2000000;
 const LEAK_FD = 40;
 const fdErrors = new Map();
+let lastFdFailure = null;
 const ROLE_ALLOW = { orchestration: [0, 1, 2, 3], endpoint: [0, 1, 2, 3, 4], workload: [0, 1, 2], terminal: [0, 1, 2] };
 const NODE_INTERNAL = new Set(['anon_inode:[eventpoll]', 'anon_inode:[eventfd]', 'anon_inode:[io_uring]', '/dev/null']);
 
@@ -73,7 +74,10 @@ const listPids = () => { try { return fs.readdirSync('/proc').filter((name) => /
 // [{ fd, target, dev, ino, flags, ttyIndex }] of a process; entries that vanish while reading are skipped
 function fdsOf(pid) {
     let names = [];
-    try { names = fs.readdirSync(`/proc/${pid}/fd`); fdErrors.delete(pid); } catch (error) { fdErrors.set(pid, error.code); return null; }
+    const failed = (error, syscall, relativePath) => { fdErrors.set(pid, error.code); lastFdFailure = { pid, failure: { syscall, relativePath, errno: error.code } }; };
+    lastFdFailure = null;
+    try { names = fs.readdirSync(`/proc/${pid}/fd`); fdErrors.delete(pid); }
+    catch (error) { failed(error, 'readdir', `${pid}/fd`); return null; }
     const out = [];
     for (const name of names) {
         try {
@@ -83,7 +87,7 @@ function fdsOf(pid) {
             try { const st = fs.statSync(`/proc/${pid}/fd/${name}`, { bigint: true }); dev = String(st.dev); ino = String(st.ino); } catch { /* gone */ }
             out.push({ fd: Number(name), target, dev, ino, flags: parseInt(/^flags:\s*([0-7]+)/mu.exec(info)?.[1] ?? 'NaN', 8), ttyIndex: /^tty-index:/mu.test(info) });
         } catch (error) {
-            if (!['ENOENT', 'ESRCH'].includes(error.code)) { fdErrors.set(pid, error.code); return null; }
+            if (!['ENOENT', 'ESRCH'].includes(error.code)) { failed(error, 'readlink', `${pid}/fd/${name}`); return null; }
         }
     }
     return out;
@@ -115,6 +119,10 @@ export function createSampler({ supervisorPid, masters, readers = {} }) {
     const vanished = Object.fromEntries(Object.keys(seen).map((kind) => [kind, 0]));
     const observations = createObservationLog();
     const lastUnreadable = observations.failures;
+    const opacityDiagnostics = new Map();
+    const diagnosticLimit = 20;
+    const diagnosticNow = readers.diagnosticNow ?? (() => process.hrtime.bigint());
+    const diagnosticCapture = readers.captureOpacityDiagnostic ?? captureOpacityDiagnostic;
     const members = new Map();
     let samples = 0;
     // the role of a sandbox member: the real argv tail (after `--`) of its nearest bwrap ancestor
@@ -144,6 +152,29 @@ export function createSampler({ supervisorPid, masters, readers = {} }) {
         }
         return null;
     }
+    function retainDiagnostic({ pid, before, after, immediateBefore, sampleTime, info, failure }) {
+        const key = before ? processKey(before) : `unknown:${after?.pid ?? 'pid'}`;
+        if (!lastUnreadable.has(key) || opacityDiagnostics.has(key) || opacityDiagnostics.size >= diagnosticLimit) return;
+        // Reuse classification observations without emitting argv or reading arbitrary ancestor content.
+        const ancestry = [];
+        for (let at = pid, hops = 0; at > 1 && hops <= 16; at = info.get(at)?.ppid ?? 0, hops += 1) {
+            const ancestor = info.get(at);
+            if (!ancestor) { ancestry.push({ pid: at, incomplete: true }); break; }
+            const isRoleAncestor = path.basename(ancestor.cmd[0] ?? '') === 'bwrap';
+            const markerAt = ancestor.cmd.indexOf('--unsetenv');
+            const marker = isRoleAncestor && markerAt >= 0 ? ancestor.cmd[markerAt + 1] : null;
+            ancestry.push({ pid: at, ppid: ancestor.ppid, identity: ancestor.identity, roleAncestor: isRoleAncestor,
+                marker: /^[A-Za-z0-9_-]{8,64}$/u.test(marker ?? '') ? marker : null });
+        }
+        try {
+            opacityDiagnostics.set(key, diagnosticCapture({ pid, sampleTime, before: immediateBefore, after, scanIdentity: before,
+                failure, ancestry }));
+        } catch (error) {
+            // Diagnostic collection must never alter the measurement outcome or stop its existing sampling loop.
+            opacityDiagnostics.set(key, { sampleTimeNs: String(sampleTime), before: immediateBefore, after, scanIdentity: before,
+                failure, incomplete: true, reason: 'diagnostic-collection-failed', errno: error.code ?? 'UNKNOWN' });
+        }
+    }
     function sample() {
         samples += 1;
         const pids = processes();
@@ -165,6 +196,9 @@ export function createSampler({ supervisorPid, masters, readers = {} }) {
             else if (['setpriv', 'nsenter', 'unshare'].includes(base)) kind = 'window';
             if (kind === null) continue;
             const before = info.get(pid).identity;
+            // Extra diagnostic-only stat and timestamp; verdict inputs below remain the original scan identity and after.
+            const immediateBefore = identity(pid);
+            const sampleTime = diagnosticNow();
             const table = readFds(pid);
             const after = identity(pid);
             if (kind === 'window') {
@@ -175,9 +209,16 @@ export function createSampler({ supervisorPid, masters, readers = {} }) {
                 if (['ENOENT', 'ESRCH'].includes(fdError(pid)) && after === null) vanished[kind] += 1;
                 else unreadable[kind] += 1;
                 observations.record({ before, after, kind, table, errno: fdError(pid) });
+                retainDiagnostic({ pid, before, after, immediateBefore, sampleTime, info,
+                    failure: readers.fdFailure?.(pid) ?? (lastFdFailure?.pid === pid ? lastFdFailure.failure : null)
+                        ?? { errno: fdError(pid), incomplete: true, reason: 'failure-location-unavailable' } });
                 continue;
             }
-            if (!observations.record({ before, after, kind, table })) continue;
+            if (!observations.record({ before, after, kind, table })) {
+                retainDiagnostic({ pid, before, after, immediateBefore, sampleTime, info,
+                    failure: { reason: 'process identity unreadable or changed' } });
+                continue;
+            }
             const key = processKey(before);
             seen[kind].add(key);
             members.set(key, { ...before, kind, marker: markerOf(pid, info) });
@@ -190,7 +231,7 @@ export function createSampler({ supervisorPid, masters, readers = {} }) {
             }
         }
     }
-    return { sample, seen, violations, window, unreadable, vanished, lastUnreadable, members, get samples() { return samples; } };
+    return { sample, seen, violations, window, unreadable, vanished, lastUnreadable, opacityDiagnostics, diagnosticLimit, members, get samples() { return samples; } };
 }
 
 export function validateWatchFinish(sampler, monitors, readers = {}) {
@@ -338,8 +379,13 @@ function report(sampler) {
     evidence.counts.unreadable = sampler.unreadable;
     evidence.counts.vanished = sampler.vanished;
     check('L1 no prep, bwrap or sandbox process of B holds A\'s PTY master (nor a PTY master of unknown identity)', sampler.violations.length === 0, { violations: sampler.violations.slice(0, 20) });
-    const blind = [...sampler.lastUnreadable.values()];
-    check('L1 no unreadable or changed-identity observation during measurement', blind.length === 0, { unreadable: blind.slice(0, 20), count: blind.length });
+    const blind = [...sampler.lastUnreadable.entries()];
+    check('L1 no unreadable or changed-identity observation during measurement', blind.length === 0, {
+        unreadable: blind.slice(0, 20).map(([key, entry]) => ({ ...entry, diagnostic: sampler.opacityDiagnostics.get(key)
+            ?? { incomplete: true, reason: 'diagnostic-identity-limit-or-unavailable' } })),
+        count: blind.length, diagnosticLimit: sampler.diagnosticLimit, diagnosticsRetained: sampler.opacityDiagnostics.size,
+        omittedFailures: Math.max(0, blind.length - 20),
+    });
     for (const kind of ['prep', 'bwrap', 'orchestration', 'endpoint', 'workload']) {
         if (evidence.mode === 'watch' && sampler.seen[kind].size === 0) { evidence.pending.push(`${kind}: no process sampled during the watch`); continue; }
         if (evidence.mode !== 'watch') check(`C at least one ${kind} process was sampled`, sampler.seen[kind].size > 0, { count: sampler.seen[kind].size });

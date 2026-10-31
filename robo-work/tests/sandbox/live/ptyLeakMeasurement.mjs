@@ -30,6 +30,80 @@ export function readIdentity(pid, procRoot = '/proc') {
 
 export const processKey = ({ pid, startTime }) => `${pid}:${startTime}`;
 
+// Evidence only: never use readable threads to clear the leader's failed observation. The deadline is cooperative;
+// synchronous proc operations can overrun it. Entry/read limits bound work even when the clock has not advanced.
+export function captureOpacityDiagnostic({ pid, sampleTime, before, after, scanIdentity, failure, ancestry = [],
+    procRoot = '/proc', io = fs, now = () => process.hrtime.bigint(), limits = {} }) {
+    const caps = { tids: 8, fds: 16, ancestry: 16, reads: 128, elapsedNs: 10000000, ...limits };
+    const started = now();
+    const result = { sampleTimeNs: String(sampleTime), before, after, scanIdentity, failure,
+        ancestry: ancestry.slice(0, caps.ancestry), tids: [], limits: caps, reads: 0, incomplete: false, truncated: [] };
+    const truncate = (reason) => { result.incomplete = true; if (!result.truncated.includes(reason)) result.truncated.push(reason); };
+    if (ancestry.length > caps.ancestry) truncate('ancestry-limit');
+    if (ancestry.some((entry) => entry.incomplete || !entry.identity)) result.incomplete = true;
+    result.identityBracket = !before || !after ? 'unreadable' : processKey(before) === processKey(after) ? 'same' : 'changed';
+    if (result.identityBracket !== 'same') result.incomplete = true;
+    const operation = (syscall, relativePath, run) => {
+        if (result.reads >= caps.reads || now() - started >= BigInt(caps.elapsedNs)) {
+            truncate(result.reads >= caps.reads ? 'read-limit' : 'cooperative-time-limit');
+            return { ok: false, syscall, relativePath, incomplete: true };
+        }
+        result.reads += 1;
+        try { return { ok: true, value: run(`${procRoot}/${relativePath}`) }; }
+        catch (error) { result.incomplete = true; return { ok: false, syscall, relativePath, errno: error.code ?? 'UNKNOWN' }; }
+    };
+    const stat = (relativePath, tid) => {
+        const read = operation('readFile', relativePath, (file) => io.readFileSync(file, 'utf8'));
+        if (!read.ok) return read;
+        const fields = read.value.slice(read.value.lastIndexOf(')') + 2).trim().split(/\s+/u);
+        if (!/^\d+$/u.test(fields[19] ?? '')) { result.incomplete = true; return { ok: false, relativePath, reason: 'invalid-stat' }; }
+        return { ok: true, identity: { pid: tid, startTime: fields[19], state: fields[0], threads: Number(fields[17]) } };
+    };
+    const entries = (relativePath, cap, label) => {
+        const opened = operation('opendir', relativePath, (file) => io.opendirSync(file, { bufferSize: 1 }));
+        if (!opened.ok) return { outcome: opened, names: [] };
+        const names = [];
+        let complete = false;
+        try {
+            for (let index = 0; index <= cap; index += 1) {
+                const read = operation('readdir', relativePath, () => opened.value.readSync());
+                if (!read.ok) return { outcome: read, names };
+                if (read.value === null) { complete = true; break; }
+                if (index === cap) { truncate(label); break; }
+                if (/^\d+$/u.test(read.value.name)) names.push(read.value.name);
+            }
+        } finally { opened.value.closeSync(); }
+        return { outcome: { ok: true, complete, entries: names.length }, names };
+    };
+    const tasks = entries(`${pid}/task`, caps.tids, 'tid-limit');
+    result.taskRead = tasks.outcome;
+    if (tasks.names.length === 0) { result.incomplete = true; result.threadIdentityOutcome = 'no-thread-identities'; }
+    for (const tid of tasks.names) {
+        const root = `${pid}/task/${tid}`;
+        const thread = { tid: Number(tid), before: stat(`${root}/stat`, Number(tid)), fds: [] };
+        result.tids.push(thread);
+        const descriptors = entries(`${root}/fd`, caps.fds, 'fd-limit');
+        thread.fdRead = descriptors.outcome;
+        for (const fd of descriptors.names) {
+            const relativePath = `${root}/fd/${fd}`;
+            const link = operation('readlink', relativePath, (file) => io.readlinkSync(file));
+            const entry = { fd: Number(fd), link: link.ok ? { ok: true, ptyMaster: /(^|\/)ptmx$/u.test(link.value) } : link };
+            if (entry.link.ptyMaster) {
+                const node = operation('stat', relativePath, (file) => io.statSync(file, { bigint: true }));
+                entry.ptyIdentity = node.ok ? { ok: true, dev: String(node.value.dev), ino: String(node.value.ino) } : node;
+            }
+            thread.fds.push(entry);
+        }
+        thread.after = stat(`${root}/stat`, Number(tid));
+        if (thread.before.ok && thread.after.ok && processKey(thread.before.identity) !== processKey(thread.after.identity)) {
+            thread.identityChanged = true;
+            result.incomplete = true;
+        }
+    }
+    result.elapsedNs = String(now() - started);
+    return result;
+}
+
 export function createObservationLog() {
     const failures = new Map();
     const readable = new Map();

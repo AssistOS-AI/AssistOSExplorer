@@ -81,6 +81,67 @@ async function setup(page, label) {
     return ctx;
 }
 
+function stageCurrentPtyProbe(ctx) {
+    const git = (args) => execFileSync('git', ['-C', smokeConfig.repoRoot, ...args], { cwd: '/', encoding: 'utf8' });
+    assert.equal(git(['status', '--porcelain']).trim(), '', 'The measured probe must come from a clean committed candidate.');
+    const sourceHead = git(['rev-parse', 'HEAD']).trim();
+    const files = Object.fromEntries(['ptyleak.mjs', 'ptyLeakMeasurement.mjs'].map((name) => [name,
+        git(['show', `${sourceHead}:robo-work/tests/sandbox/live/${name}`])]));
+    const hashes = Object.fromEntries(Object.entries(files).map(([name, source]) => [name, crypto.createHash('sha256').update(source).digest('hex')]));
+    const directory = `/tmp/r10-ptywatch-${ctx.name}`;
+    assert.match(directory, /^\/tmp\/r10-ptywatch-e2e-term-[0-9a-f]{12}$/u);
+    ctx.ptyProbe = { directory, hashes, sourceHead, deployedHead: process.env.SMOKE_EXPECT_EXPLORER_COMMIT || null };
+    ctx.save('ptyleak-source.json', ctx.ptyProbe);
+    // Watch mode needs these two existing modules only. Do not run the stale deployed test copy or replace product source.
+    const result = nested(ctx.containers, ctx.containers.worker, ['node', '--input-type=module', '-e', String.raw`
+        import fs from 'node:fs'; import crypto from 'node:crypto';
+        const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+        if (!/^\/tmp\/r10-ptywatch-e2e-term-[0-9a-f]{12}$/.test(input.directory)
+            || Object.keys(input.files).sort().join(',') !== 'ptyLeakMeasurement.mjs,ptyleak.mjs') throw Error('Invalid probe bundle.');
+        fs.mkdirSync(input.directory, { mode: 0o700 });
+        const hashes = {};
+        for (const [name, source] of Object.entries(input.files)) {
+            const file = input.directory + '/' + name;
+            fs.writeFileSync(file, source, { flag: 'wx', mode: 0o400 });
+            hashes[name] = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+        }
+        fs.chmodSync(input.directory, 0o500);
+        const stat = fs.lstatSync(input.directory, { bigint: true });
+        console.log(JSON.stringify({ hashes, directoryIdentity: { dev: String(stat.dev), ino: String(stat.ino) } }));
+    `], { input: JSON.stringify({ directory, files }) });
+    const staged = JSON.parse(result);
+    assert.deepEqual(staged.hashes, hashes, 'The worker executes the exact committed probe bytes.');
+    ctx.ptyProbe.directoryIdentity = staged.directoryIdentity;
+    ctx.save('ptyleak-source.json', ctx.ptyProbe);
+    return `${directory}/ptyleak.mjs`;
+}
+
+function removeStagedPtyProbe(ctx) {
+    if (!ctx.ptyProbe) return;
+    const result = nested(ctx.containers, ctx.containers.worker, ['node', '--input-type=module', '-e', String.raw`
+        import fs from 'node:fs'; import crypto from 'node:crypto';
+        const { directory, hashes, directoryIdentity } = JSON.parse(fs.readFileSync(0, 'utf8'));
+        if (!/^\/tmp\/r10-ptywatch-e2e-term-[0-9a-f]{12}$/.test(directory)) throw Error('Invalid probe cleanup path.');
+        let stat;
+        try { stat = fs.lstatSync(directory, { bigint: true }); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; console.log('absent'); process.exit(0); }
+        if (!stat.isDirectory() || stat.isSymbolicLink() || String(stat.dev) !== directoryIdentity?.dev
+            || String(stat.ino) !== directoryIdentity?.ino) throw Error('Probe directory changed identity.');
+        const names = fs.readdirSync(directory).sort();
+        if (names.join(',') !== Object.keys(hashes).sort().join(',')) throw Error('Unexpected probe files.');
+        for (const name of names) {
+            const file = directory + '/' + name;
+            if (!fs.lstatSync(file).isFile() || fs.lstatSync(file).isSymbolicLink()
+                || crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== hashes[name]) throw Error('Probe bytes changed.');
+        }
+        fs.chmodSync(directory, 0o700);
+        fs.rmSync(directory, { recursive: true });
+        console.log('removed');
+    `], { input: JSON.stringify(ctx.ptyProbe) });
+    assert.ok(['removed', 'absent'].includes(result.trim()));
+    ctx.save('ptyleak-source-cleanup.json', { ...ctx.ptyProbe, result: result.trim() });
+}
+
 async function cleanup(ctx, page) {
     const failures = [];
     await stopChatTurn(page);
@@ -438,9 +499,10 @@ test.describe('RoboWork robot terminals', () => {
             const b = await ctx.createRobot('-b');
             const first = await ctx.launch(a);
             const workerPid = workerMainPid(ctx.containers);
+            const probePath = stageCurrentPtyProbe(ctx);
             // The probe has its own inherited-master positive control and rejects unreadable live fd tables.
             watcher = spawn('podman', ['exec', '-i', ctx.containers.box, 'podman', 'exec', '-i', '-e', 'PTYLEAK_TERMINAL_ARGV=/bin/bash', ctx.containers.worker,
-                'node', '/code/tests/sandbox/live/ptyleak.mjs', '--watch', '180', '--controlled', '--worker-pid', String(workerPid)], { stdio: ['pipe', 'pipe', 'pipe'] });
+                'node', probePath, '--watch', '180', '--controlled', '--worker-pid', String(workerPid)], { stdio: ['pipe', 'pipe', 'pipe'] });
             watcher.stdin.on('error', () => {}); // A closed control pipe is reported by watchResult/exit, never as success.
             watcher.stdout.on('data', (chunk) => { stdout += chunk; });
             watcher.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -577,6 +639,10 @@ test.describe('RoboWork robot terminals', () => {
             // Abort this measurement before product cleanup, even when setup or finish validation failed.
             await clean(() => { if (watcher && watcher.exitCode === null && !watcher.stdin.writableEnded) watcher.stdin.end('{"type":"abort"}\n'); });
             if (watcher) await clean(() => waitFor('controlled fd watcher closes after abort', () => { if (watchFailure) throw watchFailure; return watchOutcome; }, { timeoutMs: 10_000, intervalMs: 100 }));
+            await clean(() => {
+                assert.ok(!watcher || watcher.exitCode !== null || watchOutcome, 'Keep staged source while the probe is still active.');
+                removeStagedPtyProbe(ctx);
+            });
             await clean(() => ctx.save('ptyleak.json', stdout));
             await clean(() => ctx.save('ptyleak-stderr.txt', stderr));
             // End owned terminals only after the measurement has finished/aborted, freeing browser slots before WebChat controls.

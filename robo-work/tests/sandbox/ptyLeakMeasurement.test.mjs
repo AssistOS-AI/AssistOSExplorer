@@ -6,10 +6,109 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { createObservationLog, heldRoleArgv, measureFixture, validateHeld } from './live/ptyLeakMeasurement.mjs';
+import { captureOpacityDiagnostic, createObservationLog, heldRoleArgv, measureFixture, validateHeld } from './live/ptyLeakMeasurement.mjs';
 import { createSampler, nodePtyPreload, validateWatchFinish } from './live/ptyleak.mjs';
 
 const identity = (pid, startTime = '1') => ({ pid, startTime, state: 'S', threads: 1 });
+
+test('first opacity diagnostics retain bounded thread identity and fd outcomes without private paths or file contents', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-opacity-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const stat = (tid, state) => `${tid} (private command) ${[state, ...Array(16).fill('0'), '2', '0', '123'].join(' ')}\n`;
+    for (const [tid, state] of [[20, 'Z'], [21, 'S']]) {
+        const dir = path.join(root, '20/task', String(tid));
+        fs.mkdirSync(path.join(dir, 'fd'), { recursive: true });
+        fs.writeFileSync(path.join(dir, 'stat'), stat(tid, state));
+        fs.symlinkSync('/private/credential-path', path.join(dir, 'fd/3'));
+        fs.symlinkSync('/dev/pts/ptmx', path.join(dir, 'fd/4'));
+    }
+    const options = { pid: 20, sampleTime: 77n, before: identity(20), after: identity(20), scanIdentity: identity(20),
+        failure: { syscall: 'readdir', relativePath: '20/fd', errno: 'EACCES' }, procRoot: root, now: () => 100n };
+    const diagnostic = captureOpacityDiagnostic(options);
+    assert.equal(diagnostic.sampleTimeNs, '77');
+    assert.deepEqual(diagnostic.failure, options.failure);
+    assert.deepEqual(diagnostic.tids.map((entry) => entry.before.identity.state).sort(), ['S', 'Z']);
+    assert.ok(diagnostic.tids.every((entry) => entry.before.identity.startTime === '123' && entry.after.identity.threads === 2));
+    assert.ok(diagnostic.tids.every((entry) => entry.fdRead.complete && entry.fds.length === 2));
+    assert.equal(diagnostic.tids[0].fds.find((entry) => entry.fd === 3).link.ptyMaster, false);
+    assert.ok(diagnostic.tids[0].fds.find((entry) => entry.fd === 4).ptyIdentity);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /credential|private command|\/private\//u);
+    const limited = captureOpacityDiagnostic({ ...options, limits: { tids: 1, fds: 1 } });
+    assert.equal(limited.incomplete, true);
+    assert.ok(limited.truncated.includes('tid-limit'));
+    assert.ok(limited.truncated.includes('fd-limit'));
+    assert.equal(limited.tids.length, 1);
+    assert.equal(limited.tids[0].fds.length, 1);
+    const readBound = captureOpacityDiagnostic({ ...options, limits: { reads: 2 } });
+    assert.equal(readBound.reads, 2);
+    assert.ok(readBound.truncated.includes('read-limit'));
+    let tick = 0n;
+    const timed = captureOpacityDiagnostic({ ...options, now: () => tick++, limits: { elapsedNs: 1 } });
+    assert.equal(timed.reads, 0);
+    assert.ok(timed.truncated.includes('cooperative-time-limit'));
+    const vanished = captureOpacityDiagnostic({ ...options, pid: 999 });
+    assert.deepEqual(vanished.taskRead, { ok: false, syscall: 'opendir', relativePath: '999/task', errno: 'ENOENT' });
+    assert.equal(vanished.incomplete, true);
+});
+
+test('sampler captures opacity once per identity without giving readable diagnostic threads coverage or clearing failures', () => {
+    let table = null;
+    let current = { ...identity(21), state: 'Z', threads: 2 };
+    let captures = 0;
+    const inputs = [];
+    let pidIdentityReads = 0;
+    const sampler = createSampler({ supervisorPid: 10, masters: [], readers: {
+        listPids: () => [10, 20, 21], ppidOf: (pid) => pid === 21 ? 20 : 10,
+        cmdlineOf: (pid) => pid === 20 ? ['bwrap', '--unsetenv', 'reservation0001', '--', 'role-orchestration'] : ['node'],
+        pidNsOf: () => 'diagnostic-fixture-namespace',
+        identity: (pid) => { if (pid === 21) pidIdentityReads += 1; return pid === 21 ? current : identity(pid); },
+        fdsOf: (pid) => pid === 21 ? table : [], fdError: () => current === null ? 'ENOENT' : 'EACCES', diagnosticNow: () => 123n,
+        fdFailure: () => ({ syscall: 'readdir', relativePath: '21/fd', errno: 'EACCES' }),
+        captureOpacityDiagnostic: (input) => {
+            captures += 1;
+            inputs.push(input);
+            return { ...input, sampleTime: String(input.sampleTime), tids: [{ fdRead: { ok: true } }] };
+        },
+    } });
+    sampler.sample();
+    assert.equal(inputs[0].before.state, 'Z');
+    assert.equal(inputs[0].after.threads, 2);
+    assert.equal(inputs[0].sampleTime, 123n);
+    assert.ok(inputs[0].ancestry.some((entry) => entry.marker === 'reservation0001' && entry.identity.pid === 20));
+    assert.equal(pidIdentityReads, 3, 'scan identity plus immediate diagnostic bracket');
+    assert.equal(sampler.seen.orchestration.has('21:1'), false, 'readable threads are diagnostic only');
+    sampler.sample();
+    assert.equal(captures, 1);
+    const first = sampler.opacityDiagnostics.get('21:1');
+    table = []; sampler.sample();
+    current = null; table = null; sampler.sample();
+    current = identity(21, '2'); table = []; sampler.sample();
+    assert.equal(sampler.lastUnreadable.has('21:1'), true);
+    assert.equal(sampler.opacityDiagnostics.get('21:1'), first);
+    assert.equal(captures, 1);
+    table = null;
+    sampler.sample();
+    assert.equal(captures, 2);
+    assert.equal(sampler.lastUnreadable.size, 2);
+});
+
+test('diagnostic collector errors and identity cap cannot remove failures or add coverage', () => {
+    let startTime = 0;
+    let captures = 0;
+    const sampler = createSampler({ supervisorPid: 10, masters: [], readers: {
+        listPids: () => [10, 20], ppidOf: () => 10, cmdlineOf: () => ['node', 'sandboxPrep.mjs'],
+        pidNsOf: () => 'diagnostic-fixture-namespace', identity: (pid) => identity(pid, String(startTime)),
+        fdsOf: () => null, fdError: () => 'EACCES',
+        captureOpacityDiagnostic: () => { captures += 1; throw Object.assign(new Error('private failure detail'), { code: 'EIO' }); },
+    } });
+    for (startTime = 1; startTime <= 25; startTime += 1) sampler.sample();
+    assert.equal(sampler.lastUnreadable.size, 25);
+    assert.equal(sampler.opacityDiagnostics.size, 20);
+    assert.equal(captures, 20);
+    assert.ok(Object.values(sampler.seen).every((seen) => seen.size === 0));
+    assert.deepEqual([...sampler.opacityDiagnostics.values()].map((entry) => entry.reason), Array(20).fill('diagnostic-collection-failed'));
+    assert.doesNotMatch(JSON.stringify([...sampler.opacityDiagnostics.values()]), /private failure detail/u);
+});
 
 test('actual node-pty data-URL preload loads an absolute CommonJS package and invokes its spawn', (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rw-pty-loader ' "));
