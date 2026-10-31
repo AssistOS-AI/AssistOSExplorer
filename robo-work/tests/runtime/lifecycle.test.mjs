@@ -222,10 +222,10 @@ test('M-29 robotStore.remove: a link in place of the robot directory is unlinked
 
 function attestStub(failWith) {
     const calls = [];
-    const state = { failWith };
+    const state = { failWith, updatedAt: 1 };
     const store = {
         listPendingCompletions: () => [], completePreparation() {}, completeDelete() {},
-        listUnattestedRobots: () => [{ robotId: 'R1', ownerId: 'O', configuration: {} }],
+        listUnattestedRobots: () => [{ robotId: 'R1', ownerId: 'O', configuration: {}, updatedAt: state.updatedAt }],
         attestReadiness: () => { calls.push(clock.t); if (state.failWith) throw Object.assign(new Error('x'), { code: state.failWith }); }
     };
     const clock = { t: 0 };
@@ -261,4 +261,20 @@ test('M-47: a different failure is a state change and is logged; the recovery is
     clock.t = 65000; await driver.tick();
     assert.equal(calls.length, 6, 'attempts at 0, 5, 15, 35, 60 and (base delay again) 65 seconds');
     assert.equal(logs.at(-1).event, 'attest_failed');
+});
+
+test('M-48: an operator clearing a quarantine (the robot row changes) restarts the attest backoff at once; without a change the delay stays', async () => {
+    const { driver, clock, calls, logs, state } = attestStub('resource_quarantined');
+    for (const seconds of [0, 5, 15, 35]) { clock.t = seconds * 1000; await driver.tick(); }
+    assert.equal(calls.length, 4);
+    clock.t = 36000; await driver.tick();
+    assert.equal(calls.length, 4, 'still inside the 40 s delay');
+    state.updatedAt = 2; // clearQuarantine rewrote the row
+    clock.t = 37000; await driver.tick();
+    assert.equal(calls.length, 5, 'attested at once after the clear');
+    clock.t = 41000; await driver.tick();
+    assert.equal(calls.length, 5);
+    clock.t = 42000; await driver.tick();
+    assert.equal(calls.length, 6, 'the delay started again from the base 5 s');
+    assert.equal(logs.filter((entry) => entry.event === 'attest_failed').length, 2, 'the new state is logged once more');
 });

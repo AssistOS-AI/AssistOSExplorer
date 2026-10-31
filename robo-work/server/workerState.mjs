@@ -1518,11 +1518,12 @@ class WorkerState {
     }
 
     // Ready robots of the current generation that lack a readiness attestation (after a restart): the driver verifies
-    // each one and calls attestReadiness. `ownerId` is the robot owner that the attesting context must carry.
+    // each one and calls attestReadiness. `ownerId` is the robot owner that the attesting context must carry. `updatedAt` changes when an
+    // operator clears a quarantine (clearQuarantine rewrites the row): the driver restarts its retry backoff then.
     listUnattestedRobots() {
-        return this.#state.snapshot((db) => db.prepare(`SELECT id, owner_id, configuration FROM robot WHERE lifecycle = 'ready' AND uncertain = 0
+        return this.#state.snapshot((db) => db.prepare(`SELECT id, owner_id, configuration, updated_at FROM robot WHERE lifecycle = 'ready' AND uncertain = 0
             AND (attested_generation IS NULL OR attested_generation != ?) AND id NOT IN (SELECT robot_id FROM preparation) ORDER BY rowid`)
-            .all(this.#generationId).map((row) => ({ robotId: row.id, ownerId: row.owner_id, configuration: JSON.parse(row.configuration) })));
+            .all(this.#generationId).map((row) => ({ robotId: row.id, ownerId: row.owner_id, configuration: JSON.parse(row.configuration), updatedAt: row.updated_at })));
     }
 
     // Step 1 of ending an attempt: durably records the internal classification and the

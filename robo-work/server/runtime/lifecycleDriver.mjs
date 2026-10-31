@@ -57,20 +57,22 @@ export function createLifecycleDriver({ store, robots, workspaceId, intervalMs =
     }
 
     async function reattest(entry) {
-        const previous = attestedAt.get(entry.robotId);
+        let previous = attestedAt.get(entry.robotId);
+        // The robot row changed since the last attempt (an operator cleared its quarantine): the old backoff no longer describes it.
+        if (previous !== undefined && entry.updatedAt !== undefined && entry.updatedAt !== previous.updatedAt) { attestedAt.delete(entry.robotId); previous = undefined; }
         if (previous !== undefined && now() - previous.at < previous.delay) return;
         const at = now();
         try {
             robots.prepare(entry.robotId, entry.configuration);
             store.attestReadiness(contextFor('worker:reattest', entry.ownerId), { robotId: entry.robotId });
             if (previous !== undefined && previous.error !== null) log('attest_recovered', { robotId: entry.robotId, after: previous.error, attempts: previous.attempts });
-            attestedAt.set(entry.robotId, { at, delay: retryMs, error: null, attempts: 0 });
+            attestedAt.set(entry.robotId, { at, delay: retryMs, error: null, attempts: 0, updatedAt: entry.updatedAt });
         } catch (error) {
             const code = describe(error);
             const failing = previous !== undefined && previous.error !== null;
             if (!failing || previous.error !== code) log('attest_failed', { robotId: entry.robotId, error: code, retryInMs: failing ? Math.min(previous.delay * 2, maxRetryMs) : retryMs });
             attestedAt.set(entry.robotId, {
-                at, error: code, attempts: (failing ? previous.attempts : 0) + 1,
+                at, updatedAt: entry.updatedAt, error: code, attempts: (failing ? previous.attempts : 0) + 1,
                 delay: failing ? Math.min(Math.max(previous.delay * 2, retryMs), maxRetryMs) : retryMs
             });
         }

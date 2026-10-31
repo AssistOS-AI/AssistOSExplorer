@@ -269,3 +269,78 @@ test('M-47: a prep child (mount, umount) carries no marker, but descends from th
     assert.deepEqual(walkerWith([prep, mountChild], { record }).prove(netnsBlocker(inode), true).holders.map((holder) => holder.pid).sort(), [300, 301]);
     assert.equal(walkerWith([stray], { record }).prove(netnsBlocker(inode), true).absent, true);
 });
+
+// ---- M-48: production order. recoverGeneration settles the keeper, endpoint and process trees BEFORE it reaches the netns, and the store lists only
+// reserved/committed rows as unsettled, so the settled (or quarantined) rows are gone from sandboxRecordFor(..).siblings by then. The walker is
+// given the records from before any settle. The fake store below drops every settled row exactly like listUnsettledResources.
+function productionOrder({ members }) {
+    const NS = '4026540001';
+    const rows = [
+        { resourceId: 'K', attemptId: 'A', kind: 'keeper', generationId: 'G1', locator: { marker: 'KMARK0123456789abcdef' }, identity: { pid: 5, startTime: '5' }, state: 'committed' },
+        { resourceId: 'T', attemptId: 'A', kind: 'process-tree', generationId: 'G1', locator: { marker: 'TMARK0123456789abcdef', keeper: 'K' }, identity: { pid: 70, startTime: '70', pidNs: '4026540002', mntNs: '4026540003', netNs: NS, init: { pid: 71, startTime: '71' } }, state: 'committed' },
+        { resourceId: 'E', attemptId: 'A', kind: 'endpoint', generationId: 'G1', locator: { marker: 'EMARK0123456789abcdef', keeper: 'K' }, identity: { pid: 50, startTime: '50', pidNs: '4026540004', mntNs: '4026540005', netNs: NS, init: { pid: 51, startTime: '51' } }, state: 'committed' },
+        { resourceId: 'N', attemptId: 'A', kind: 'netns', generationId: 'G1', locator: { netns: LOCAL, keeper: 'K' }, identity: { netNs: NS }, state: 'committed' }
+    ];
+    const seenSiblings = [];
+    const store = {
+        generationId: 'G2',
+        getResource: ({ resourceId }) => rows.find((row) => row.resourceId === resourceId),
+        // the real listUnsettledResources: only reserved/committed
+        listUnsettledResources: () => rows.filter((row) => row.state === 'committed' || row.state === 'reserved'),
+        beginGenerationRecovery: () => ({ generationId: 'G2', priorGenerationId: 'G1', unsettledBlockers: rows.filter((row) => row.state === 'committed').map((row) => ({ ...row })) }),
+        settleResource: ({ resourceId, outcome }) => { rows.find((row) => row.resourceId === resourceId).state = outcome; },
+        completeGenerationRecovery: () => ({ recovered: true })
+    };
+    return { rows, store, seenSiblings, NS };
+}
+
+test('M-48: recoverGeneration in production order: a quarantined process tree whose members hold the recorded netns keeps the netns quarantined', async () => {
+    const { recoverGeneration } = await import('../../server/execution/recoveryWalk.mjs');
+    const { sandboxRecordFor } = await import('../../server/sandbox/executionSupervisor.mjs');
+    const { store, seenSiblings, NS } = productionOrder({});
+    // the tree's init (71) and a member (72) live in the tree's own pid namespace and the recorded netns; nothing can kill them. The endpoint is gone.
+    const processes = [
+        worker(1), worker(21, { ppid: 1 }),
+        proc(71, { ppid: 1, pidNs: '4026540002', mntNs: '4026540003', netNs: NS, cmdline: ['sleep'] }),
+        proc(72, { ppid: 71, pidNs: '4026540002', mntNs: '4026540003', netNs: NS, cmdline: ['sleep'] })
+    ];
+    const view = { listProcesses: () => processes, listMounts: () => [], exists: () => false, remove: () => true, kill: () => false, unmount: () => false, selfNamespaces: () => OWN, isPinned: () => false };
+    const sandboxRecord = sandboxRecordFor(() => store);
+    const spy = (blocker) => {
+        const record = sandboxRecord(blocker);
+        if (blocker.kind === 'netns') seenSiblings.push((record.siblings ?? []).map((entry) => entry.resourceId));
+        return record;
+    };
+    const walker = createWalker({ view, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: spy });
+    const result = await recoverGeneration({ state: store, walker });
+    const outcome = (id) => result.outcomes.find((entry) => entry.resourceId === id).outcome;
+    assert.equal(outcome('T'), 'quarantined');
+    assert.equal(outcome('N'), 'quarantined', 'the netns is held by the quarantined tree');
+    // the order really is the production one: when the netns was walked, the tree and the endpoint were no longer listed as siblings
+    assert.ok(seenSiblings.length > 0 && seenSiblings.every((ids) => !ids.includes('T') && !ids.includes('E')), JSON.stringify(seenSiblings));
+});
+
+test('M-48: recoverGeneration in production order: when the tree and endpoint are really gone, every blocker is released', async () => {
+    const { recoverGeneration } = await import('../../server/execution/recoveryWalk.mjs');
+    const { sandboxRecordFor } = await import('../../server/sandbox/executionSupervisor.mjs');
+    const { store, NS } = productionOrder({});
+    const processes = [worker(1), worker(21, { ppid: 1 })];
+    const view = { listProcesses: () => processes, listMounts: () => [], exists: () => false, remove: () => true, kill: () => true, unmount: () => false, selfNamespaces: () => OWN, isPinned: () => false };
+    const walker = createWalker({ view, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: sandboxRecordFor(() => store) });
+    const result = await recoverGeneration({ state: store, walker });
+    assert.deepEqual(result.outcomes.map((entry) => entry.outcome), ['released', 'released', 'released', 'released']);
+});
+
+test('M-48: runtime/recovery recoverWorkerGeneration passes the same pre-settle records', async () => {
+    const { recoverWorkerGeneration } = await import('../../server/runtime/recovery.mjs');
+    const { sandboxRecordFor } = await import('../../server/sandbox/executionSupervisor.mjs');
+    const { store, NS } = productionOrder({});
+    const processes = [
+        worker(1),
+        proc(71, { ppid: 1, pidNs: '4026540002', mntNs: '4026540003', netNs: NS, cmdline: ['sleep'] })
+    ];
+    const view = { listProcesses: () => processes, listMounts: () => [], exists: () => false, remove: () => true, kill: () => false, unmount: () => false, selfNamespaces: () => OWN, isPinned: () => false };
+    const walker = createWalker({ view, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: sandboxRecordFor(() => store) });
+    const result = await recoverWorkerGeneration({ state: store, walker });
+    assert.equal(result.outcomes.find((entry) => entry.resourceId === 'N').outcome, 'quarantined');
+});

@@ -125,14 +125,31 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
     // RECOVERY ONLY (decision M-47): these rules apply when a restarted supervisor walks the blockers of an earlier generation (no pins exist).
     // The normal end path keeps the pin rule of M-36: the supervisor pins the recorded namespaces until the blocker settles, so the number
     // cannot have been reused and every process that names it is a holder.
-    function holderScope(blocker, field, inode, processes, recovery) {
+    //
+    // The execution's records are the union of two sources. sandboxRecord(blocker).siblings lists the attempt's STILL-UNSETTLED rows, which is
+    // all there is at normal end-path time. In a recovery the walk settles the process trees and the endpoint (released, or quarantined) before
+    // it reaches the netns, and a settled row is no longer listed as unsettled: so the recovery passes `executionRecords`, the blockers as
+    // they were BEFORE any settle (state.beginGenerationRecovery().unsettledBlockers), and the records of the same attempt are taken from
+    // there too. Without that, a quarantined tree whose members still hold the recorded netns would have no record left to attribute them.
+    function holderScope(blocker, field, inode, processes, recovery, executionRecords) {
         if (!recovery) return { attributed: false, inScope: () => true };
         let self = null;
         try { self = view.selfNamespaces?.() ?? null; } catch { self = null; }
         if (self && self[field] === inode) return { reused: true };
         let record = null;
         if (blocker.locator?.keeper) { try { record = sandboxRecord(blocker); } catch { record = null; } }
-        const siblings = Array.isArray(record?.siblings) ? record.siblings : null;
+        const listed = Array.isArray(record?.siblings) ? record.siblings : null;
+        const attemptId = record?.attemptId ?? blocker.attemptId;
+        // The snapshot only completes a record source that attributes at all (one that lists the execution's rows); a sandboxRecord that cannot
+        // list them leaves attribution off, which keeps the larger (fail-closed) holder set.
+        const snapshot = listed !== null && Array.isArray(executionRecords) && attemptId !== undefined && attemptId !== null
+            ? executionRecords.filter((entry) => entry && typeof entry === 'object' && entry.attemptId === attemptId && entry.resourceId !== record?.resourceId)
+            : [];
+        const siblings = listed === null ? null : [...listed];
+        if (siblings !== null) {
+            const seen = new Set(siblings.map((entry) => entry?.resourceId));
+            for (const entry of snapshot) if (!seen.has(entry.resourceId)) siblings.push(entry);
+        }
         if (siblings === null) {
             return { attributed: false, inScope: (entry) => self === null || entry.pidNs !== self.pidNs };
         }
@@ -173,15 +190,15 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
 
     // Absence as the supervisor can see it right now. A /proc read that fails (a process mid-exit that cannot be read) is not an
     // answer: absence is NOT proven, and the walk reads again until the deadline, then quarantines. It never throws out of the walk.
-    function prove(blocker, recovery = false) {
+    function prove(blocker, recovery = false, executionRecords = undefined) {
         try {
-            return proveOnce(blocker, recovery);
+            return proveOnce(blocker, recovery, executionRecords);
         } catch (error) {
             return { absent: false, holders: [{ via: 'proc-unreadable', code: error?.code ?? null }] };
         }
     }
 
-    function proveOnce(blocker, recovery) {
+    function proveOnce(blocker, recovery, executionRecords) {
         const processes = view.listProcesses();
         const mounts = view.listMounts();
         const { kind } = blocker;
@@ -206,7 +223,7 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
                 return { absent: sandboxTree.length === 0 && objectsLeft.length === 0, holders: [...sandboxTree.map((entry) => ({ pid: entry.pid })), ...objectsLeft] };
             }
             const inode = blocker.identity[field];
-            const holders = namespaceHolders(inode, field, processes, mounts, holderScope(blocker, field, inode, processes, recovery));
+            const holders = namespaceHolders(inode, field, processes, mounts, holderScope(blocker, field, inode, processes, recovery, executionRecords));
             if (kind === 'mount') {
                 const mountsLeft = mounts.filter((mount) => mount.mountId === blocker.identity.mountId && mount.mountpoint === blocker.identity.mountpoint);
                 for (const mount of mountsLeft) holders.push({ via: 'mountinfo', mountId: mount.mountId });
@@ -263,7 +280,7 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
         const deadline = (options.since ?? clock.now()) + releaseDeadlineMs;
         for (;;) {
             await force(blocker);
-            if (prove(blocker, options.recovery === true).absent) return RELEASED;
+            if (prove(blocker, options.recovery === true, options.executionRecords).absent) return RELEASED;
             if (clock.now() >= deadline) return QUARANTINED;
             await clock.sleep(pollMs);
         }
@@ -273,7 +290,7 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
     // quarantined). Used where the caller can leave the blocker unsettled for the end path.
     async function attempt(blocker, options = {}) {
         await force(blocker);
-        return prove(blocker, options.recovery === true).absent ? RELEASED : null; // prove() never throws: an unreadable /proc is "undecided"
+        return prove(blocker, options.recovery === true, options.executionRecords).absent ? RELEASED : null; // prove() never throws: an unreadable /proc is "undecided"
     }
 
     return { prove, force, walk, attempt };
@@ -286,8 +303,10 @@ export async function recoverGeneration({ state, walker }) {
     const started = state.beginGenerationRecovery(state.generationId);
     const outcomes = [];
     const pending = walkOrder(started.unsettledBlockers);
+    // The execution records as they were before the first settle (see holderScope): a settled row drops out of the unsettled listing.
+    const executionRecords = [...started.unsettledBlockers];
     for (const blocker of pending) {
-        const outcome = await walker.walk(blocker, { recovery: true });
+        const outcome = await walker.walk(blocker, { recovery: true, executionRecords });
         state.settleResource({ resourceId: blocker.resourceId, generationId: blocker.generationId, outcome });
         outcomes.push({ resourceId: blocker.resourceId, kind: blocker.kind, outcome });
     }
