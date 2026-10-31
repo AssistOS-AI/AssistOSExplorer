@@ -225,6 +225,9 @@ export function createExecutionFactory({
             const fds = [];
             const grants = [];
             const lost = deferred();
+            // `lost` preserves its first event for existing callers. Infrastructure loss must also remain observable when
+            // ordinary endpoint EOF won that promise first (short utilities may accept EOF while draining a successful exit).
+            const infrastructureLost = deferred();
             const closeAll = async () => {
                 for (const fd of fds.splice(0)) { try { make.closeFd(fd); } catch { /* closed */ } }
                 for (const grant of grants.splice(0)) { try { await grant.close(); } catch { /* closed */ } }
@@ -296,7 +299,10 @@ export function createExecutionFactory({
                 const supervisor = make.supervisor({
                     launcher, view, admission, roles, home: { path: where.home, fd: homeFd }, grants: resolved, skills, activityWalk: sharedActivityWalk,
                     modelChannel: gatewayModel === null ? null : { directory: MODEL_DIRECTORY_VIEW, configPath: OPENCODE_CONFIG_VIEW },
-                    onInfrastructureLoss: (reason) => lost.resolve(`infrastructure_lost:${reason}`)
+                    onInfrastructureLoss: (reason) => {
+                        infrastructureLost.resolve();
+                        lost.resolve(`infrastructure_lost:${reason}`);
+                    }
                 });
                 // referenceId stays null: the ledger would read the reference back with the adapter context, which the store (rightly) does
                 // not let see an owner's reference (scope and 'read' operation), and the dispatcher does not use that read.
@@ -305,7 +311,7 @@ export function createExecutionFactory({
                     state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
                     referenceId: null, layout, sandbox: supervisor, walker, clock
                 });
-                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels, activity, gatewayModel, gatewayProvider, executionId: item.executionId, writeGrants: projectGrants.filter((grant) => grant.access === 'write') });
+                return buildExecution({ supervisor, ledger, admission, closeAll, lost, infrastructureLost, channels, activity, gatewayModel, gatewayProvider, executionId: item.executionId, writeGrants: projectGrants.filter((grant) => grant.access === 'write') });
             } catch (error) {
                 await closeAll();
                 throw error;
@@ -350,7 +356,7 @@ export function createExecutionFactory({
         };
     }
 
-    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels, activity, gatewayModel, gatewayProvider, executionId, writeGrants = [] }) {
+    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, infrastructureLost, channels, activity, gatewayModel, gatewayProvider, executionId, writeGrants = [] }) {
         let endpointServer = null;
         let hosted = null;
         let model = null;
@@ -364,6 +370,7 @@ export function createExecutionFactory({
         return {
             exited,
             lost: lostRef.promise,
+            infrastructureLost: infrastructureLost.promise,
             // M-67 Q2: resolves with `source_activated` when a writable grant of this attempt now overlaps an active runtime source; the
             // dispatcher then ends the attempt through its normal stop path.
             revoked: revokedControl.promise,

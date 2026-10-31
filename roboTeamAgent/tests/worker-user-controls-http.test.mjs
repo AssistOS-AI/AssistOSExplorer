@@ -15,7 +15,7 @@ const ADMIN = { id: 'admin-v', roles: ['admin'] };
 const FLOW = `flow_${'ab'.repeat(12)}`;
 const INSTANCE = `inv_${'cd'.repeat(12)}`;
 
-async function server(t, { workerMode = true } = {}) {
+async function server(t, { workerMode = true, robotModels = undefined } = {}) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'worker-controls-')));
     const workspaceRoot = path.join(root, 'workspace');
     await fs.mkdir(workspaceRoot);
@@ -42,7 +42,7 @@ async function server(t, { workerMode = true } = {}) {
         async message(id, viewer, text, options) { live.message.push({ id, text, options }); return { ok: true, outcome: 'delivered' }; },
     };
     const http = createRoboTeamServer({ robotStore, runtimeManager, roboflow, liveSessions, internalToken: 'test-token', publicBasePath: '/rt/', mcpPort: 65534,
-        workerCoordinator: { hop: { call: async () => ({ outcome: 'response', status: 200, json: {}, refusal: null }) } }, workerMode });
+        robotModels, workerCoordinator: { hop: { call: async () => ({ outcome: 'response', status: 200, json: {}, refusal: null }) } }, workerMode });
     await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
     t.after(async () => {
         await new Promise((resolve) => http.close(resolve));
@@ -242,4 +242,14 @@ test('with the worker configured, saving through the configured-only picker keep
     assert.deepEqual((await f.send('GET', path)).body.efforts, { opencode: 'high' });
     assert.equal((await f.send('PATCH', path, { ...opencode, effort: null })).status, 200, 'null clears it explicitly');
     assert.deepEqual((await f.send('GET', path)).body.efforts, {});
+});
+
+test('worker model unavailability preserves HTTP 503 without exposing backend error details', async (t) => {
+    const f = await server(t, { robotModels: { list: async () => {
+        throw Object.assign(new Error('unpublished backend detail'), { statusCode: 503, publicCode: 'runtime_unavailable' });
+    } } });
+    const result = await f.send('GET', `/api/robots/${f.robot.id}/models?agent=opencode`);
+    assert.equal(result.status, 503);
+    assert.equal(result.body.error, 'request failed');
+    assert.equal(JSON.stringify(result.body).includes('unpublished'), false);
 });

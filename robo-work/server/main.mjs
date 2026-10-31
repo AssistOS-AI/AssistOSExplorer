@@ -285,7 +285,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
             modelUpstream
         });
     }
-    utilityRunner = createRobotUtilities({ store, factory, modelUpstream, workspaceId: config.workspaceId });
+    utilityRunner = createRobotUtilities({ store, factory, modelUpstream, workspaceId: config.workspaceId, log });
     const dispatcher = factory
         ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, options: { maxConcurrent: config.maxConcurrent, inactivityTimeoutMs: config.inactivityTimeoutMs, maxAttemptMs: config.maxAttemptMs, approvalTimeoutMs: config.approvalTimeoutMs }, log })
         : null;

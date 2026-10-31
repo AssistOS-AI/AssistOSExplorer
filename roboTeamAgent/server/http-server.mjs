@@ -1125,7 +1125,7 @@ export function createRoboTeamServer(options) {
             const message = String(error?.message || '');
             const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop/.test(message);
             const conflict = /already running|active robot limit|occupied|active task|different cwd|stop the|interrupted GUI/.test(message);
-            const explicit = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode < 500;
+            const explicit = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode < 600;
             const status = explicit ? error.statusCode : badRequest ? 400 : conflict ? 409 : 500;
             if (status >= 500) {
                 console.error(`[roboTeamAgent] ${req.method} ${req.url} failed:`, error?.stack || message);

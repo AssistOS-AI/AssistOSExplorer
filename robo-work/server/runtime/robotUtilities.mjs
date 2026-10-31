@@ -32,7 +32,7 @@ function projectStatus(value) {
 }
 
 // Called only after the coordinator's robots/get authorization. Cache contains sanitized projections, never HOME bytes.
-export function createRobotUtilities({ store, factory, modelUpstream = null, workspaceId, options = {}, now = Date.now }) {
+export function createRobotUtilities({ store, factory, modelUpstream = null, workspaceId, options = {}, now = Date.now, log = () => {} }) {
     const limits = { ...UTILITY_DEFAULTS, ...options };
     const context = createVerifiedServiceContext({ workspaceId, scope: 'worker:utilities', ownerId: 'worker:utilities', robotOwnerId: 'worker:utilities', operations: ['adapter_complete'] });
     const cache = new Map();
@@ -45,7 +45,7 @@ export function createRobotUtilities({ store, factory, modelUpstream = null, wor
         let state = 'queued';
         let timer;
         let finish;
-        const interrupted = new Promise((_, reject) => { finish = () => reject(new Error('utility_closed')); });
+        const interrupted = new Promise((_, reject) => { finish = (code = 'utility_closed') => reject(new Error(code)); });
         let settled;
         const record = { stop: finish, done: new Promise((resolve) => { settled = resolve; }) };
         active.set(item.executionId, record);
@@ -53,6 +53,9 @@ export function createRobotUtilities({ store, factory, modelUpstream = null, wor
         let setup = null;
         let starting = null;
         let abandoned = false;
+        let stage = 'open';
+        let exitCode = null;
+        let failureCode = null;
         const catalogController = new AbortController();
         try {
             const work = (async () => {
@@ -60,13 +63,23 @@ export function createRobotUtilities({ store, factory, modelUpstream = null, wor
                     ? factory.open({ item, plan: modelUtilityPlan(agent), context })
                     : factory.openTerminal({ item, context, utility: true });
                 execution = await setup;
-                execution.lost?.then(finish, finish);
+                // ALA closes its provider before bwrap reports its exit. As in dispatcher, endpoint closure is not a failure
+                // when the native process then exits successfully and its bounded streams drain. The overall deadline still applies;
+                // anchor/infrastructure loss remains an immediate refusal.
+                execution.lost?.then((reason) => {
+                    if (reason !== 'endpoint_ended:endpoint_lost') finish('utility_infrastructure_lost');
+                }, () => finish('utility_infrastructure_lost'));
+                // The public first-loss promise may already hold ordinary EOF; this independent factory latch cannot be
+                // consumed by that event and still refuses a later anchor loss before native exit or drain.
+                execution.infrastructureLost?.then(() => finish('utility_infrastructure_lost'), () => finish('utility_infrastructure_lost'));
                 if (abandoned) throw new Error('utility_ended');
+                stage = 'start';
                 starting = execution.start({});
                 const streams = await starting;
                 if (abandoned) throw new Error('utility_ended');
                 store.transitionAttempt({ executionId: item.executionId, attemptId: item.attemptId, expectedState: 'queued', nextState: 'running' });
                 state = 'running';
+                stage = 'native';
                 let size = 0;
                 const chunks = [];
                 const read = async (stream, keep) => {
@@ -79,13 +92,18 @@ export function createRobotUtilities({ store, factory, modelUpstream = null, wor
                 };
                 streams.stdin?.end();
                 const [exit] = await Promise.all([execution.exited, read(streams.stdout, true), read(streams.stderr, false)]);
+                if (abandoned) throw new Error('utility_ended');
+                exitCode = Number.isInteger(exit.exitCode) ? exit.exitCode : null;
                 if (exit.exitCode !== 0 || exit.signal) throw new Error('utility_failed');
+                stage = 'parse';
                 const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+                stage = 'projection';
                 if (operation !== 'models') return projectStatus(parsed);
                 // Native HOME plugins cannot widen or retain the worker's permitted gateway catalog. Only the worker-owned
                 // upstream supplies these entries (M84), for OpenCode only. The inference channel still allows one selected model.
                 const models = projectModels(parsed).filter((entry) => !isGatewayModel(entry.id));
                 if (agent === 'opencode') {
+                    stage = 'catalog';
                     if (!modelUpstream) fail('runtime_unavailable');
                     const answer = await modelUpstream.request({ operation: 'models', signal: catalogController.signal, totalTimeoutMs: limits.deadlineMs });
                     if (!answer.ok) fail('runtime_unavailable');
@@ -97,6 +115,7 @@ export function createRobotUtilities({ store, factory, modelUpstream = null, wor
                     }
                     models.push(...projected);
                 }
+                stage = 'projection';
                 if (models.length > 4096 || Buffer.byteLength(JSON.stringify(models)) > limits.outputBytes) fail('runtime_unavailable');
                 return { agent, models };
             })();
@@ -112,6 +131,9 @@ export function createRobotUtilities({ store, factory, modelUpstream = null, wor
             }
         } catch (error) {
             failure = error;
+            const internal = ['utility_closed', 'utility_ended', 'utility_stream_missing', 'utility_output_limit', 'utility_failed', 'utility_timeout', 'utility_infrastructure_lost'];
+            failureCode = internal.includes(error?.message) ? error.message : error instanceof SyntaxError ? 'utility_invalid_json' : `${stage}_failed`;
+            try { log('utility_failed', { robotId: item.robotId, executionId: item.executionId, operation, agent: agent ?? null, stage, code: failureCode, exitCode }); } catch { /* diagnostics cannot change cleanup */ }
             fail('runtime_unavailable');
         } finally {
             abandoned = true;
@@ -119,7 +141,8 @@ export function createRobotUtilities({ store, factory, modelUpstream = null, wor
             clearTimeout(timer);
             if (setup) { try { execution = await setup; } catch { /* no execution */ } }
             if (starting) await starting.catch(() => {});
-            const outcome = { classification: failure ? 'failed' : 'completed', outputText: '', data: { utility: operation }, expectedState: state };
+            const outcome = { classification: failure ? 'failed' : 'completed', outputText: '', data: { utility: operation,
+                ...(failureCode ? { stage, code: failureCode, exitCode } : {}) }, expectedState: state };
             try {
                 if (execution) {
                     const ended = await execution.end(outcome);
