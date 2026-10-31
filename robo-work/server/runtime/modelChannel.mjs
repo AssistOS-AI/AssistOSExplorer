@@ -39,8 +39,9 @@ import { ExecutionSetupError } from './setupError.mjs';
 //     clients, M-43 (6)).
 //   * An upstream error passes its status through; its message comes ONLY from the transport's redacted `readErrorText()`, then is parsed,
 //     stripped of control characters and cut to 300 characters. The worker's bearer never appears in anything the workload can read.
-//   * Per execution, before any body is read (M-45): at most 2 request bodies in flight and a token bucket of 5 requests per second with a burst
-//     of 10; a request over either gets 429 `rate_limited` and its connection is destroyed unread. The rewritten body is checked against the
+//   * Per execution, before any body is read (M-45): at most 2 request bodies being read and parsed (the slot is released once the body is
+//     parsed; the 8-call upstream cap bounds the wait) and a token bucket of 5 requests per second with a burst
+//     of 10; a request over either gets 429 `rate_limited`, its upload is discarded unread (bounded) and then its socket is destroyed. The rewritten body is checked against the
 //     transport's 2 MiB upload limit (413, not 502).
 //   * M-33 activity is reported only for a 2xx chat response (M-43 (4)). The last upstream error (status and sanitized message) is kept
 //     so that an `inactive_timeout` can tell the user why (M-43 (a)).
@@ -67,11 +68,19 @@ const UPSTREAM_TOTAL_MS = 510000;
 // arrives only after the upstream answered).
 const OPENCODE_PROVIDER_TIMEOUT_MS = 600000;
 const MAX_CONCURRENT = 8;
-// Admission of a chat request, decided from the request line BEFORE any body byte is read (M-45): at most 2 request bodies are in flight per
-// execution (from admission until the answer is written, so at most 2 x 2 MiB are held), and a token bucket of 10 requests refilled at 5 per
-// second. A request over either limit gets 429 `rate_limited` and its connection is destroyed unread. The upstream cap above stays.
+// Admission of a chat request, decided from the request line BEFORE any body byte is read (M-45): at most 2 request bodies are being read and
+// parsed per execution (a slot is held from admission until the body is fully read and parsed, or the request ends, so at most 2 x 2 MiB are
+// being buffered; it is NOT held across the upstream wait, which the cap above bounds), and a token bucket of 10 requests refilled at 5 per
+// second. A request over either limit gets 429 `rate_limited` and its upload is not read (see rateLimited).
 export const ADMISSION = Object.freeze({ maxBodies: 2, burst: 10, refillPerSecond: 5 });
 const MAX_CONNECTIONS = 16;
+// After a refusal the unread upload is discarded (never buffered, never parsed) and the connection is kept OPEN until the announced upload (at
+// least REFUSAL_DRAIN_BYTES, at most MAX_BODY) has been discarded, or REFUSAL_DRAIN_MS has passed; only then is the socket destroyed. Two
+// earlier closings were measured through the endpoint's TCP relay with tests/sandbox/live/modelFlood.mjs (80 serial 2 MiB clients): closing
+// after 64 KiB, and answering then half-closing at once (a Node client treats the FIN as the end of the connection and fails its still-pending
+// upload with EPIPE before it has parsed the 429): 60 of 80 clients saw an error and no answer. Keeping the connection open: 80 of 80 answered, no error.
+const REFUSAL_DRAIN_BYTES = 64 * 1024;
+const REFUSAL_DRAIN_MS = 1000;
 const MAX_HEADER_BYTES = 16 * 1024;
 const MESSAGE_MAX = 300;
 const SOCKET_PATH_MAX = 100;
@@ -335,7 +344,7 @@ function sendCompletion(res, response) {
 // the catalog request badly, and ExecutionSetupError('model_unavailable') when the allowed id is not in its catalog.
 export async function createModelChannel({
     socketDirectory, configDirectory, allowed, upstream, activity = () => {}, log = () => {}, executionId = null,
-    now = Date.now, port = MODEL_RELAY_PORT, providerId = PROVIDER_ID, admission = ADMISSION
+    now = Date.now, monotonic = () => performance.now(), port = MODEL_RELAY_PORT, providerId = PROVIDER_ID, admission = ADMISSION
 }) {
     const socketPath = path.join(socketDirectory, MODEL_SOCKET_NAME);
     if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX) throw new ExecutionSetupError('model_channel_unavailable');
@@ -362,10 +371,11 @@ export async function createModelChannel({
     let inFlight = 0;
     let bodies = 0;
     let tokens = admission.burst;
-    let refilledAt = now();
+    // The bucket refills on a MONOTONIC clock (performance.now): a wall-clock step back or forward cannot drain or refill it. `now` is for log durations only.
+    let refilledAt = monotonic();
     // Takes one token of the bucket (refilled by elapsed time, at most `burst`); false when it is empty.
     const takeToken = () => {
-        const current = now();
+        const current = monotonic();
         tokens = Math.min(admission.burst, tokens + ((current - refilledAt) / 1000) * admission.refillPerSecond);
         refilledAt = current;
         if (tokens < 1) return false;
@@ -375,21 +385,37 @@ export async function createModelChannel({
 
     const fail = (status, message) => { lastError = { status, message }; };
 
-    // Answers 429 `rate_limited` without having read the body, then destroys the request (and with it the upload).
+    // Answers 429 `rate_limited` without reading the body, reliably observable by the client: the response says `connection: close`, but the socket
+    // is neither ended nor destroyed when the response is flushed (Node's own destroySoon for a closing connection would do that at once, and
+    // closing a socket with unread data resets the peer, possibly before it has read the 429); the upload is discarded for a bounded time and size
+    // (REFUSAL_*) and then the socket is destroyed.
     function rateLimited(req, res) {
         const startedAt = now();
+        const socket = req.socket;
         if (!res.headersSent) {
+            socket.destroySoon = () => {}; // closed by `finish` below, once the upload has been discarded
             res.writeHead(429, { 'content-type': 'application/json', 'cache-control': 'no-store', 'retry-after': '1', connection: 'close' });
             res.end(JSON.stringify({ error: { message: 'rate_limited', type: 'rate_limit_error', code: 'rate_limited' } }));
         }
-        res.once('finish', () => req.destroy());
-        res.once('close', () => req.destroy());
+        let drained = 0;
+        const announced = Number(req.headers['content-length']);
+        const bound = Number.isSafeInteger(announced) && announced > 0 ? Math.min(Math.max(announced, REFUSAL_DRAIN_BYTES), MAX_BODY) : REFUSAL_DRAIN_BYTES;
+        const finish = () => { clearTimeout(timer); req.removeListener('data', discard); socket.destroy(); };
+        const discard = (chunk) => { drained += chunk.length; if (drained >= bound) finish(); };
+        const timer = setTimeout(finish, REFUSAL_DRAIN_MS);
+        timer.unref?.();
+        req.on('data', discard);
+        req.on('error', finish);
+        socket.once('close', () => { clearTimeout(timer); });
         log('model_request', { executionId, model: null, status: 429, ms: now() - startedAt });
     }
 
     async function chat(req, res) {
         const startedAt = now();
         let status = 0;
+        // The body slot (admission.maxBodies) is released once the body is read and parsed, and in any case when the request ends.
+        let slotHeld = true;
+        const releaseSlot = () => { if (slotHeld) { slotHeld = false; bodies -= 1; } };
         let loggedModel = null;
         const reply = (code, value) => { status = code; sendJson(res, code, value); };
         const refuse = (code, message, type) => reply(code, { error: { message, type: type ?? 'invalid_request_error' } });
@@ -409,6 +435,7 @@ export async function createModelChannel({
             const payload = { model: allowed, stream: false };
             for (const field of CHAT_FIELDS) if (Object.hasOwn(body, field)) payload[field] = body[field];
             if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > MAX_UPSTREAM_BODY) { refuse(413, 'The request is too large'); return; }
+            releaseSlot();
             if (inFlight >= MAX_CONCURRENT) { refuse(429, 'Too many model requests at once', 'rate_limit_error'); return; }
             inFlight += 1;
             const controller = new AbortController();
@@ -446,6 +473,7 @@ export async function createModelChannel({
         } catch {
             if (!res.headersSent) refuse(500, 'The request could not be served', 'server_error');
         } finally {
+            releaseSlot();
             log('model_request', { executionId, model: loggedModel, status, ms: now() - startedAt });
         }
     }
@@ -461,7 +489,7 @@ export async function createModelChannel({
             // Admission before the first body byte: the number of bodies in flight, then the request rate.
             if (bodies >= admission.maxBodies || !takeToken()) { rateLimited(req, res); return; }
             bodies += 1;
-            chat(req, res).finally(() => { bodies -= 1; });
+            chat(req, res);
             return;
         }
         sendError(res, 404, 'Not found', 'not_found');

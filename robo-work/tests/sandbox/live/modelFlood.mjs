@@ -15,6 +15,9 @@
 //
 // Recorded (perf_hooks monitorEventLoopDelay at a 10 ms resolution plus process.cpuUsage, per phase): the supervisor process's maximum, p99 and
 // mean event-loop delay, B's turn times and request latencies with and without the flood, and what A's flood got back (status counts).
+// After the flood A sends 80 requests one at a time: each must be answered (429 for the refused ones) and NONE may see a reset or any error.
+// (During the flood itself, connections beyond the channel's and the relay's connection limits are dropped at accept: those errors come without an
+// answer and are reported, but only an error AFTER an answer fails the probe.)
 // Pass (exit 0) when every B request is 200 in both phases, the flood met the limits (429 `rate_limited` seen, and no more non-429 answers than
 // the bucket allows), B's slowest flooded turn is at most 2 s longer than its slowest baseline turn, and the flood's maximum event-loop delay
 // stays under 1000 ms. The numbers are printed whatever the verdict, as ONE JSON document on stdout; progress goes to stderr.
@@ -55,27 +58,33 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const ALA_STUB = 'setInterval(() => {}, 1e6);\n';
 
-// A: floods its relay with 2 MiB bodies of a foreign model, PARALLEL loops without a pause, until the deadline.
+// A: floods its relay with 2 MiB bodies of a foreign model, PARALLEL loops without a pause, until the deadline (or MAX requests: the serial phase).
 const FLOOD = String.raw`
 const http = require('http'); const fs = require('fs');
 const config = JSON.parse(process.env.PROBE_CONFIG);
 const LIMIT = 2 * 1024 * 1024;
 const frame = JSON.stringify({ model: config.foreign, messages: [{ role: 'user', content: '' }] });
 const body = Buffer.from(JSON.stringify({ model: config.foreign, messages: [{ role: 'user', content: 'p'.repeat(LIMIT - Buffer.byteLength(frame)) }] }));
-const out = { bodyBytes: body.length, sent: 0, statuses: {}, errors: {}, uploadedBytes: 0 };
+const out = { bodyBytes: body.length, sent: 0, statuses: {}, errors: {}, errorsAfterResponse: 0, errorsWithoutResponse: 0 };
 const deadline = Date.now() + config.seconds * 1000;
 const once = () => new Promise((resolve) => {
     out.sent += 1;
+    let answered = false;
     const req = http.request({ host: '127.0.0.1', port: config.port, method: 'POST', path: '/v1/chat/completions', agent: false, headers: { 'content-type': 'application/json', 'content-length': String(body.length) } }, (res) => {
+        answered = true;
         const chunks = []; res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () => { out.statuses[res.statusCode] = (out.statuses[res.statusCode] ?? 0) + 1; resolve(); });
         res.on('error', () => resolve());
     });
-    req.on('error', (error) => { out.errors[error.code ?? 'ERR'] = (out.errors[error.code ?? 'ERR'] ?? 0) + 1; resolve(); });
+    req.on('error', (error) => {
+        out.errors[error.code ?? 'ERR'] = (out.errors[error.code ?? 'ERR'] ?? 0) + 1;
+        if (answered) out.errorsAfterResponse += 1; else out.errorsWithoutResponse += 1;
+        resolve();
+    });
     req.setTimeout(30000, () => req.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })));
     req.end(body);
 });
-const loop = async () => { while (Date.now() < deadline) await once(); };
+const loop = async () => { while (Date.now() < deadline && out.sent < (config.max ?? Infinity)) await once(); };
 Promise.all(Array.from({ length: config.parallel }, loop)).then(() => { fs.writeFileSync('/home/robot/' + config.result, JSON.stringify(out)); });
 `;
 
@@ -250,15 +259,27 @@ try {
     ]));
     evidence.flooded = summarize(floodedTurns);
     const f = flood.result ?? { sent: 0, statuses: {}, errors: {} };
-    evidence.flood = { exit: flood.exit, bodyBytes: f.bodyBytes, sent: f.sent, statuses: f.statuses, errors: f.errors };
+    evidence.flood = { exit: flood.exit, bodyBytes: f.bodyBytes, sent: f.sent, statuses: f.statuses, errors: f.errors, errorsAfterResponse: f.errorsAfterResponse, errorsWithoutResponse: f.errorsWithoutResponse };
+
+    // Refusals are observable (M-45 review): one client, one request at a time, 2 MiB bodies, right after the flood so that the bucket is empty.
+    // Every request must get an answer and none may see a reset, an EPIPE or any other error, through the endpoint's TCP relay.
+    progress('serial refusals: one request at a time, none may see a reset');
+    await sleep(Number(process.env.MODEL_FLOOD_SETTLE_MS ?? 3000));
+    const serial = await runWorkload(a, FLOOD, { foreign: foreignId, seconds: 120, parallel: 1, max: 80, result: 'serial.json' }, 180000);
+    const sr = serial.result ?? { sent: 0, statuses: {}, errors: {}, errorsAfterResponse: 0, errorsWithoutResponse: 0 };
+    evidence.serial = { exit: serial.exit, sent: sr.sent, statuses: sr.statuses, errors: sr.errors, errorsAfterResponse: sr.errorsAfterResponse, errorsWithoutResponse: sr.errorsWithoutResponse };
 
     // ---- the verdict
     const answered = Object.values(f.statuses).reduce((sum, count) => sum + count, 0);
     const limited = f.statuses[429] ?? 0;
     const allowance = ADMISSION.burst + ADMISSION.refillPerSecond * (FLOOD_SECONDS + 5);
-    check('A flood ran and was answered', flood.result !== null && f.sent > 0 && answered + Object.values(f.errors).reduce((sum, count) => sum + count, 0) === f.sent, { sent: f.sent, answered });
+    check('A flood ran and every request ended in an answer or an error', flood.result !== null && f.sent > 0 && answered + Object.values(f.errors).reduce((sum, count) => sum + count, 0) === f.sent, { sent: f.sent, answered });
     check('the flood met the limits: 429 rate_limited was returned', limited > 0, { limited });
     check('no more bodies were admitted than the bucket allows (burst + rate x time)', answered - limited <= allowance, { admitted: answered - limited, allowance });
+    check('serial refusals: 429 rate_limited was answered to at least 20 of 80 requests', serial.result !== null && (sr.statuses[429] ?? 0) >= 20, { statuses: sr.statuses });
+    check('serial refusals: no client saw a connection reset or any error, before or after the 429', serial.result !== null && Object.keys(sr.errors).length === 0 && sr.errorsAfterResponse === 0 && sr.errorsWithoutResponse === 0
+        && Object.values(sr.statuses).reduce((sum, count) => sum + count, 0) === sr.sent, { sent: sr.sent, errors: sr.errors });
+    check('flood: no client saw an error AFTER having received its answer', f.errorsAfterResponse === 0, { errorsAfterResponse: f.errorsAfterResponse, errorsWithoutResponse: f.errorsWithoutResponse, errors: f.errors });
     check('B completed every request with 200 without the flood', evidence.baseline?.allOk === true, { baseline: evidence.baseline });
     check('B completed every request with 200 during the flood', evidence.flooded?.allOk === true, { flooded: evidence.flooded });
     check('B\'s slowest flooded turn is at most 2 s longer than its slowest baseline turn', evidence.baseline && evidence.flooded && evidence.flooded.turnMaxMs <= evidence.baseline.turnMaxMs + 2000,
