@@ -614,7 +614,8 @@ test.describe('RoboWork robot terminals', () => {
                 ...bRows.filter((row) => row.kind === 'terminal').map((row) => ({ ...row, group: 'terminal-b' })), { ...ai, group: 'ai' }]
                 .filter((row) => row.state === 'running').flatMap((row) => row.blockers
                 .filter((blocker) => ['endpoint', 'process-tree'].includes(blocker.kind) && blocker.identity && blocker.settled_at === null)
-                .map((blocker) => ({ ...JSON.parse(blocker.identity), marker: markerOf(blocker), group: row.group })));
+                .map((blocker) => ({ ...JSON.parse(blocker.identity), marker: markerOf(blocker), group: row.group,
+                    resourceKind: blocker.kind, retirementEligible: row.group === 'ai' && blocker.kind === 'process-tree' })));
             expect(monitors.length).toBeGreaterThan(0);
             expect(monitors.some((monitor) => monitor.group === 'ai'), 'Finish evidence contains actual AI process identities').toBe(true);
             ctx.save('measurement-finish.json', { monitors, aRows, bRows });

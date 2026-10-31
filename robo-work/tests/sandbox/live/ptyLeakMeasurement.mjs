@@ -30,6 +30,21 @@ export function readIdentity(pid, procRoot = '/proc') {
 
 export const processKey = ({ pid, startTime }) => `${pid}:${startTime}`;
 
+// Unlike readIdentity, this proof reader never conflates an opaque/invalid stat with absence.
+export function readIdentityObservation(pid, procRoot = '/proc', io = fs) {
+    try {
+        const stat = io.readFileSync(`${procRoot}/${pid}/stat`, 'utf8');
+        const close = stat.lastIndexOf(')');
+        const fields = stat.slice(close + 2).trim().split(/\s+/u);
+        if (stat.length > 8192 || !stat.startsWith(`${pid} (`) || close < 0 || !/^[A-Za-z]$/u.test(fields[0] ?? '')
+            || !/^\d+$/u.test(fields[19] ?? '')) return { outcome: 'unknown', reason: 'invalid-stat' };
+        return { outcome: 'present', identity: { pid, startTime: fields[19], state: fields[0] } };
+    } catch (error) {
+        return ['ENOENT', 'ESRCH'].includes(error.code) ? { outcome: 'absent', errno: error.code }
+            : { outcome: 'unknown', errno: error.code ?? 'UNKNOWN' };
+    }
+}
+
 // Evidence only: never use readable threads to clear the leader's failed observation. The deadline is cooperative;
 // synchronous proc operations can overrun it. Entry/read limits bound work even when the clock has not advanced.
 export function captureOpacityDiagnostic({ pid, sampleTime, before, after, scanIdentity, failure, ancestry = [],
@@ -57,7 +72,27 @@ export function captureOpacityDiagnostic({ pid, sampleTime, before, after, scanI
         if (!read.ok) return read;
         const fields = read.value.slice(read.value.lastIndexOf(')') + 2).trim().split(/\s+/u);
         if (!/^\d+$/u.test(fields[19] ?? '')) { result.incomplete = true; return { ok: false, relativePath, reason: 'invalid-stat' }; }
-        return { ok: true, identity: { pid: tid, startTime: fields[19], state: fields[0], threads: Number(fields[17]) } };
+        const flags = /^\d+$/u.test(fields[6] ?? '') && Number.isSafeInteger(Number(fields[6])) ? Number(fields[6]) : null;
+        if (flags === null) result.incomplete = true;
+        const comm = read.value.slice(read.value.indexOf('(') + 1, read.value.lastIndexOf(')'));
+        return { ok: true, identity: { pid: tid, startTime: fields[19], state: fields[0], threads: Number(fields[17]) },
+            flags, ioWorkerComm: /^iou-wrk-[0-9]+$/u.test(comm) };
+    };
+    const status = (relativePath) => {
+        const read = operation('readFile', relativePath, (file) => io.readFileSync(file, 'utf8'));
+        if (!read.ok) return read;
+        const values = {};
+        for (const name of ['FDSize', 'Tgid', 'Uid']) {
+            const matches = read.value.split('\n').filter((line) => line.startsWith(`${name}:`));
+            const tokens = matches[0]?.slice(name.length + 1).trim().split(/\s+/u) ?? [];
+            if (read.value.length > 8192 || matches.length !== 1 || tokens.length !== (name === 'Uid' ? 4 : 1)
+                || tokens.some((value) => !/^\d+$/u.test(value) || !Number.isSafeInteger(Number(value)))) {
+                result.incomplete = true;
+                return { ok: false, relativePath, reason: 'invalid-status' };
+            }
+            values[name] = name === 'Uid' ? tokens.map(Number) : Number(tokens[0]);
+        }
+        return { ok: true, ...values };
     };
     const entries = (relativePath, cap, label) => {
         const opened = operation('opendir', relativePath, (file) => io.opendirSync(file, { bufferSize: 1 }));
@@ -82,6 +117,7 @@ export function captureOpacityDiagnostic({ pid, sampleTime, before, after, scanI
         const root = `${pid}/task/${tid}`;
         const thread = { tid: Number(tid), before: stat(`${root}/stat`, Number(tid)), fds: [] };
         result.tids.push(thread);
+        thread.statusBefore = status(`${root}/status`);
         const descriptors = entries(`${root}/fd`, caps.fds, 'fd-limit');
         thread.fdRead = descriptors.outcome;
         for (const fd of descriptors.names) {
@@ -94,6 +130,7 @@ export function captureOpacityDiagnostic({ pid, sampleTime, before, after, scanI
             }
             thread.fds.push(entry);
         }
+        thread.statusAfter = status(`${root}/status`);
         thread.after = stat(`${root}/stat`, Number(tid));
         if (thread.before.ok && thread.after.ok && processKey(thread.before.identity) !== processKey(thread.after.identity)) {
             thread.identityChanged = true;

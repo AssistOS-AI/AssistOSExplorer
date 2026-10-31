@@ -1,0 +1,22 @@
+# Test dependency exception
+
+Existing worker runtime prerequisites are documented in [README.md](README.md#storage), [confinement](README.md#confinement), and [runtime wiring](README.md#wiring-r10). This record covers only the additional environment prerequisite for `tests/sandbox/execWindow.test.mjs`. That Node test adds no npm package, compiler, vendored source, or production dependency.
+
+## Python thread fixture
+
+The test requires Linux procfs, `/dev/ptmx`, and CPython 3.8 or later with the standard-library `ctypes`, `threading`, and `signal` modules. It calls the system `pthread_exit` symbol through `ctypes.CDLL(None)` to hold a zombie main thread while a live sibling retains an inherited PTY master. The sibling then execs the same interpreter or exits. The test asserts that later readability or disappearance cannot erase an earlier failed observation. It does not establish the cause of any live probe's opacity.
+
+This test-only Python exception was explicitly authorized for the bounded thread/exec counterexample. Node built-ins cannot terminate only the main thread, and an actual Node 24.22.2 worker call to `process.execve` returned `ERR_WORKER_UNSUPPORTED_OPERATION`. A C helper would require a compiler. The embedded Python helper uses the existing interpreter and its system libraries, with no installation, third-party Python module, local Python modification, or bundled binary.
+
+| Dependency | Scope and resolution | Verified version | Source and license |
+| --- | --- | --- | --- |
+| Node.js | Existing test runner prerequisite; `node --test` | 24.22.2 on the Linux apparatus | Existing worker runtime, see README |
+| CPython and its standard library | Required only by this Linux test; `python3` on `PATH`, or executable selected by `ROBO_WORK_TEST_PYTHON` | CPython 3.14.4, Ubuntu package `3.14.4-1ubuntu0.2` | [CPython source](https://github.com/python/cpython/tree/v3.14.4), [PSF License Version 2 and historical notices](https://github.com/python/cpython/blob/v3.14.4/LICENSE) |
+| System libc/pthreads | Required by the helper through `ctypes.CDLL(None)`; no library filename is hardcoded | glibc 2.43, Ubuntu `libc6` package `2.43-2ubuntu2.4` | [glibc source](https://sourceware.org/glibc/), [LGPL 2.1](https://github.com/bminor/glibc/blob/master/COPYING.LESSERv2); installed package declares LGPL-2.1-or-later and additional component notices |
+| System libffi used by CPython `_ctypes` | Transitive interpreter prerequisite, supplied by the Python/OS installation | Ubuntu `libffi8` package `3.5.2-4` | [libffi 3.5.2 source](https://github.com/libffi/libffi/tree/v3.5.2), [MIT license](https://github.com/libffi/libffi/blob/v3.5.2/LICENSE) |
+
+These are installed environment dependencies, not repository pins or redistributed copies. Their licenses and notices remain with the Python/OS packages, including `/usr/share/doc/python3.14/copyright`, `/usr/share/doc/libc6/copyright`, and `/usr/share/doc/libffi8/copyright` on the verified Ubuntu host. Retain the corresponding licenses, copyright notices, and any required library source/replacement provisions if distributing those runtimes. The repository ships only its own embedded fixture.
+
+Before opening a PTY or launching the fixture, the test runs a bounded Python capability check. The check, fixture, and replacement interpreter all use `-I -S` to disable user/environment imports and site initialization. Missing Python, missing `ctypes`/pthreads, or an incompatible interpreter fails with a message naming CPython, `ROBO_WORK_TEST_PYTHON`, and this record. It does not install anything or skip an unavailable Linux prerequisite. Other platforms skip the Linux procfs cases. A supported host which fails to produce the held zombie state fails the test; the negative control explicitly checks this behavior.
+
+Use the operating system's supported Python 3 package and its ctypes/pthread support, or set `ROBO_WORK_TEST_PYTHON` to an existing compatible interpreter. On Ubuntu, install the `python3` package through normal administrator package management if it is absent. Update Python and its native libraries through that same OS channel, then rerun `node --test robo-work/tests/sandbox/execWindow.test.mjs`; the test reports the observed Python/libc versions. Review the linked source and license notices when changing interpreter or system packages. This test needs no Python build step. Its exception can be removed when Node can safely produce the same held main-thread-exit state without a native helper, or when this counterexample test is retired.

@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { captureOpacityDiagnostic, createObservationLog, heldRoleArgv, measureFixture, validateHeld } from './live/ptyLeakMeasurement.mjs';
+import { captureOpacityDiagnostic, createObservationLog, heldRoleArgv, measureFixture, readIdentityObservation, validateHeld } from './live/ptyLeakMeasurement.mjs';
 import { createSampler, nodePtyPreload, validateWatchFinish } from './live/ptyleak.mjs';
 
 const identity = (pid, startTime = '1') => ({ pid, startTime, state: 'S', threads: 1 });
@@ -14,11 +14,16 @@ const identity = (pid, startTime = '1') => ({ pid, startTime, state: 'S', thread
 test('first opacity diagnostics retain bounded thread identity and fd outcomes without private paths or file contents', (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-opacity-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const stat = (tid, state) => `${tid} (private command) ${[state, ...Array(16).fill('0'), '2', '0', '123'].join(' ')}\n`;
+    const stat = (tid, state) => {
+        const fields = [state, ...Array(16).fill('0'), '2', '0', '123'];
+        fields[6] = '4194368';
+        return `${tid} (${tid === 21 ? 'iou-wrk-21' : 'private command'}) ${fields.join(' ')}\n`;
+    };
     for (const [tid, state] of [[20, 'Z'], [21, 'S']]) {
         const dir = path.join(root, '20/task', String(tid));
         fs.mkdirSync(path.join(dir, 'fd'), { recursive: true });
         fs.writeFileSync(path.join(dir, 'stat'), stat(tid, state));
+        fs.writeFileSync(path.join(dir, 'status'), 'Name:\tprivate command\nFDSize:\t64\nTgid:\t20\nUid:\t1000\t1000\t1000\t1000\nPrivate:\tcredential\n');
         fs.symlinkSync('/private/credential-path', path.join(dir, 'fd/3'));
         fs.symlinkSync('/dev/pts/ptmx', path.join(dir, 'fd/4'));
     }
@@ -29,6 +34,10 @@ test('first opacity diagnostics retain bounded thread identity and fd outcomes w
     assert.deepEqual(diagnostic.failure, options.failure);
     assert.deepEqual(diagnostic.tids.map((entry) => entry.before.identity.state).sort(), ['S', 'Z']);
     assert.ok(diagnostic.tids.every((entry) => entry.before.identity.startTime === '123' && entry.after.identity.threads === 2));
+    assert.ok(diagnostic.tids.every((entry) => entry.before.flags === 4194368 && entry.after.flags === 4194368));
+    assert.deepEqual(diagnostic.tids.map((entry) => [entry.tid, entry.before.ioWorkerComm]).sort(), [[20, false], [21, true]]);
+    assert.ok(diagnostic.tids.every((entry) => JSON.stringify(entry.statusBefore) === JSON.stringify({ ok: true, FDSize: 64, Tgid: 20, Uid: [1000, 1000, 1000, 1000] })
+        && JSON.stringify(entry.statusBefore) === JSON.stringify(entry.statusAfter)));
     assert.ok(diagnostic.tids.every((entry) => entry.fdRead.complete && entry.fds.length === 2));
     assert.equal(diagnostic.tids[0].fds.find((entry) => entry.fd === 3).link.ptyMaster, false);
     assert.ok(diagnostic.tids[0].fds.find((entry) => entry.fd === 4).ptyIdentity);
@@ -234,6 +243,94 @@ test('controlled real watch requires exact ledger monitor identities plus every 
     sampler.members.set('23', { ...identity(23), kind: 'workload', marker: 'backgroundutility' });
     assert.ok(validateWatchFinish(sampler, monitors, readers).failures.some((entry) => entry.group === 'ai' && entry.kind === 'workload'), 'another robot or utility cannot supply B coverage');
     assert.ok(validateWatchFinish(sampler, [], readers).failures.length > 0);
+});
+
+function historicalFinishFixture() {
+    const entries = ['bwrap', 'orchestration', 'endpoint', 'workload'].map((kind, index) => ({ ...identity(20 + index), kind, marker: 'reservation0001' }));
+    entries.push({ ...identity(30), kind: 'bwrap', marker: 'terminalmarkerA' }, { ...identity(31), kind: 'terminal', marker: 'terminalmarkerA' },
+        { ...identity(40), kind: 'bwrap', marker: 'terminalmarkerB' }, { ...identity(41), kind: 'terminal', marker: 'terminalmarkerB' },
+        { ...identity(50), kind: 'bwrap', marker: 'historicalmarker' }, { ...identity(52), kind: 'workload', marker: 'historicalmarker' });
+    const historical = { ...identity(50), init: identity(51), marker: 'historicalmarker', group: 'ai', resourceKind: 'process-tree', retirementEligible: true };
+    const monitors = [{ ...identity(20), marker: 'reservation0001', group: 'ai', resourceKind: 'endpoint', retirementEligible: false },
+        { ...identity(30), marker: 'terminalmarkerA', group: 'terminal-a' }, { ...identity(40), marker: 'terminalmarkerB', group: 'terminal-b' }, historical];
+    const sampler = { members: new Map(entries.map((entry) => [String(entry.pid), entry])), lastUnreadable: new Map(), violations: [], seen: { workload: new Set(['23:1', '52:1']) } };
+    const readers = { identity: (pid) => pid >= 50 ? null : identity(pid), descriptors: () => [],
+        identityObservation: () => ({ outcome: 'absent', errno: 'ENOENT' }) };
+    return { sampler, monitors, readers, historical };
+}
+
+test('finish retires only positively bracketed eligible AI history while requiring every current live group', () => {
+    const { sampler, monitors, readers, historical } = historicalFinishFixture();
+    const verdict = validateWatchFinish(sampler, monitors, readers);
+    assert.deepEqual(verdict.failures, []);
+    assert.equal(verdict.retired.length, 1);
+    assert.equal(verdict.retired[0].monitor, historical);
+    assert.deepEqual(verdict.retired[0].before.map((entry) => entry.expected.pid), [50, 51, 50, 52]);
+    assert.ok([...verdict.retired[0].before, ...verdict.retired[0].after].every((entry) => entry.outcome === 'absent' && entry.errno === 'ENOENT'));
+    const reused = validateWatchFinish(sampler, monitors, { ...readers,
+        identityObservation: (pid) => ({ outcome: 'present', identity: identity(pid, '2') }) });
+    assert.deepEqual(reused.failures, []);
+    assert.ok(reused.retired[0].after.every((entry) => entry.identity.startTime === '2'));
+    const liveTree = { ...monitors[0], resourceKind: 'process-tree', retirementEligible: true, init: identity(21) };
+    const mixed = validateWatchFinish(sampler, [...monitors, liveTree], { ...readers,
+        identityObservation: (pid) => pid < 50 ? { outcome: 'present', identity: identity(pid) } : readers.identityObservation() });
+    assert.deepEqual(mixed.failures, []);
+    assert.equal(mixed.retired.length, 1, 'a current eligible process tree stays subject to strict held checks');
+    assert.ok(validateWatchFinish(sampler, monitors, { ...readers, descriptors: (pid) => pid === 21 ? null : [] }).failures.length > 0);
+    assert.ok(validateWatchFinish(sampler, [historical], readers).failures.some((entry) => entry.kind === 'endpoint'));
+    sampler.members.delete('23');
+    assert.ok(validateWatchFinish(sampler, monitors, readers).failures.some((entry) => entry.group === 'ai' && entry.kind === 'workload'));
+    sampler.members.delete('31');
+    assert.ok(validateWatchFinish(sampler, monitors, readers).failures.some((entry) => entry.group === 'terminal-a'));
+});
+
+test('historical retirement refuses unknown metadata, partial death, unproved PID reuse and endpoint or terminal eligibility', () => {
+    const { sampler, monitors, readers, historical } = historicalFinishFixture();
+    const refuse = (candidate, proof = readers.identityObservation) => {
+        const verdict = validateWatchFinish(sampler, candidate, { ...readers, identityObservation: proof });
+        assert.ok(verdict.failures.length > 0);
+        assert.equal(verdict.retired?.length ?? 0, 0);
+    };
+    for (const outcome of [null, { outcome: 'unknown', errno: 'EACCES' }, { outcome: 'absent' },
+        { outcome: 'absent', errno: 'EACCES' }, { outcome: 'present', identity: { pid: 50 } }]) refuse(monitors, () => outcome);
+    for (const alive of [50, 51, 52]) refuse(monitors, (pid) => pid === alive ? { outcome: 'present', identity: identity(pid) } : readers.identityObservation());
+    let reads = 0;
+    refuse(monitors, (pid) => ++reads <= 4 ? { outcome: 'present', identity: identity(pid, '2') } : { outcome: 'unknown' });
+    for (const changed of [{ retirementEligible: false }, { init: null }, { init: { pid: 51 } }, { resourceKind: 'endpoint' },
+        { group: 'terminal-a' }, { retirementEligible: 'true' }]) refuse([...monitors.slice(0, -1), { ...historical, ...changed }]);
+    for (const errno of ['ENOENT', 'ESRCH', 'EACCES', 'EIO']) {
+        const observed = readIdentityObservation(50, '/fake', { readFileSync: () => { throw Object.assign(new Error('private'), { code: errno }); } });
+        assert.equal(observed.outcome, ['ENOENT', 'ESRCH'].includes(errno) ? 'absent' : 'unknown');
+        assert.doesNotMatch(JSON.stringify(observed), /private/u);
+    }
+    assert.equal(readIdentityObservation(50, '/fake', { readFileSync: () => 'malformed' }).outcome, 'unknown');
+    const stat = `50 (private) ${['S', ...Array(18).fill('0'), '2'].join(' ')}`;
+    assert.equal(readIdentityObservation(50, '/fake', { readFileSync: () => stat }).identity.startTime, '2');
+    for (const kind of ['orchestration', 'endpoint']) {
+        sampler.members.set('53', { ...identity(53), kind, marker: historical.marker });
+        refuse(monitors);
+    }
+    sampler.members.delete('53');
+    sampler.members.set('52', { ...identity(52), kind: 'sandboxOther', marker: historical.marker });
+    refuse(monitors);
+    sampler.members.delete('52');
+    refuse(monitors);
+    const oversized = new Map(Array.from({ length: 513 }, (_, index) => [String(index), { ...identity(100 + index), marker: historical.marker }]));
+    sampler.members = oversized;
+    assert.ok(validateWatchFinish(sampler, monitors, readers).failures.some((entry) => /bound/u.test(entry.reason)));
+});
+
+test('historical receipts cannot clear opaque evidence, leaks, sampled members or clean coverage', () => {
+    const { sampler, monitors, readers } = historicalFinishFixture();
+    sampler.lastUnreadable.set('52:1', { ...identity(52), kind: 'workload', errno: 'EACCES' });
+    sampler.violations.push({ pid: 52, kind: 'workload', fds: [40] });
+    const before = JSON.stringify({ members: [...sampler.members], failures: [...sampler.lastUnreadable], violations: sampler.violations, seen: [...sampler.seen.workload] });
+    const verdict = validateWatchFinish(sampler, monitors, readers);
+    assert.deepEqual(verdict.failures, [], 'only finish liveness passes');
+    assert.equal(verdict.retired.length, 1);
+    assert.equal(JSON.stringify({ members: [...sampler.members], failures: [...sampler.lastUnreadable], violations: sampler.violations, seen: [...sampler.seen.workload] }), before);
+    assert.equal(sampler.lastUnreadable.size, 1);
+    assert.deepEqual(sampler.violations[0].fds, [40]);
 });
 
 test('real inherited-master positive control still detects fd40', () => {

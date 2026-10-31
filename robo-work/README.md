@@ -163,6 +163,8 @@ A failed provision leaves the robot `failed` at revision 0; it is repaired with 
 
 From the repository root: `node --test 'robo-work/tests/*.test.mjs'`. Tests use isolated temporary directories and synthetic children (`tests/helpers/stateChild.mjs`); native durability and routed authorization are not proven by them.
 
+`node --test robo-work/tests/sandbox/execWindow.test.mjs` runs the held zombie-leader PTY counterexample on Linux. It requires CPython with stdlib ctypes and system pthreads, checked before fixture launch; see [the test dependency exception](dependencies.md). It proves that later exec/readability or disappearance cannot clear earlier opacity, and includes an absent-window negative control. It does not identify the cause of a live probe's failures or change the measurement gate.
+
 The r10 acceptance run (AC3) needs three variables. Without them some suites fail on a missing sibling checkout instead of testing anything:
 
 | Variable | Value |

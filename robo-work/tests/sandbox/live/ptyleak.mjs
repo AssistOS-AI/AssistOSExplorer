@@ -49,7 +49,7 @@ import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
-import { captureOpacityDiagnostic, createObservationLog, measureFixture, processKey, readIdentity, validateHeld } from './ptyLeakMeasurement.mjs';
+import { captureOpacityDiagnostic, createObservationLog, measureFixture, processKey, readIdentity, readIdentityObservation, validateHeld } from './ptyLeakMeasurement.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const argv = process.argv.slice(2);
@@ -235,11 +235,52 @@ export function createSampler({ supervisorPid, masters, readers = {} }) {
 }
 
 export function validateWatchFinish(sampler, monitors, readers = {}) {
+    const validIdentity = (entry) => entry && Number.isSafeInteger(entry.pid) && entry.pid >= 2 && /^\d+$/u.test(entry.startTime ?? '');
     if (!Array.isArray(monitors) || monitors.length === 0 || monitors.some((entry) => !entry || !Number.isSafeInteger(entry.pid) || entry.pid < 2
         || !/^\d+$/u.test(entry.startTime ?? '') || typeof entry.marker !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/u.test(entry.marker)
-        || !['ai', 'terminal-a', 'terminal-b'].includes(entry.group))) {
+        || !['ai', 'terminal-a', 'terminal-b'].includes(entry.group)
+        || (entry.retirementEligible !== undefined && typeof entry.retirementEligible !== 'boolean')
+        || (entry.retirementEligible === true && (entry.group !== 'ai' || entry.resourceKind !== 'process-tree' || !validIdentity(entry.init))))) {
         return { held: [], failures: [{ reason: 'finish requires ledger reservation markers' }] };
     }
+    const retired = [];
+    const retirementFailures = [];
+    const observe = readers.identityObservation ?? readIdentityObservation;
+    const snapshot = (expected) => {
+        let observation;
+        try { observation = observe(expected.pid); } catch { observation = null; }
+        if (observation?.outcome === 'absent' && ['ENOENT', 'ESRCH'].includes(observation.errno)) return { expected, ...observation };
+        if (observation?.outcome === 'present' && validIdentity(observation.identity) && observation.identity.pid === expected.pid
+            && /^[A-Za-z]$/u.test(observation.identity.state ?? '')) {
+            return { expected, ...observation };
+        }
+        return { expected, outcome: 'unknown' };
+    };
+    const ended = (observation) => observation.outcome === 'absent'
+        || (observation.outcome === 'present' && processKey(observation.identity) !== processKey(observation.expected));
+    // Bound proof work; exceeding the budget preserves the original strict finish verdict.
+    let proofReads = 0;
+    monitors = monitors.filter((monitor) => {
+        if (monitor.retirementEligible !== true) return true;
+        const known = [...sampler.members.values()].filter((entry) => entry.marker === monitor.marker);
+        const expected = [monitor, monitor.init, ...known];
+        if (expected.some((entry) => !validIdentity(entry)) || proofReads + 2 * expected.length > 1024) {
+            retirementFailures.push({ ...monitor, reason: 'historical identity proof invalid or exceeds bound' });
+            return true;
+        }
+        proofReads += 2 * expected.length;
+        const before = expected.map(snapshot);
+        const after = expected.map(snapshot);
+        if ([...before, ...after].some((entry) => entry.outcome === 'unknown')) {
+            retirementFailures.push({ ...monitor, reason: 'historical identity proof unreadable or invalid' });
+            return true;
+        }
+        if (![...before, ...after].every(ended)) return true;
+        // Only observed auxiliary workload history may retire; ended controllers keep the strict finish requirement.
+        if (!known.some((entry) => entry.kind === 'workload') || known.some((entry) => ['orchestration', 'endpoint'].includes(entry.kind))) return true;
+        retired.push({ monitor, before, after, reason: 'recorded monitor, init and known marker members absent or reused in both snapshots' });
+        return false;
+    });
     const markers = monitors.map(({ marker }) => marker);
     const identity = readers.identity ?? readIdentity;
     const descriptors = readers.descriptors ?? fdsOf;
@@ -248,6 +289,7 @@ export function validateWatchFinish(sampler, monitors, readers = {}) {
         return markers.includes(entry.marker) && current && processKey(current) === processKey(entry) && !['Z', 'X', 'x'].includes(current.state);
     });
     const failures = validateHeld(held, { identity, descriptors });
+    failures.push(...retirementFailures);
     failures.push(...validateHeld(monitors, { identity, descriptors }));
     for (const monitor of monitors) {
         if (!held.some((entry) => entry.marker === monitor.marker && entry.kind === 'bwrap' && processKey(entry) === processKey(monitor))) {
@@ -258,7 +300,7 @@ export function validateWatchFinish(sampler, monitors, readers = {}) {
         const ownMarkers = new Set(monitors.filter((entry) => entry.group === group).map((entry) => entry.marker));
         for (const kind of kinds) if (!held.some((entry) => entry.kind === kind && ownMarkers.has(entry.marker))) failures.push({ group, kind, reason: 'required ledger-bound role not alive at finish' });
     }
-    return { held, failures };
+    return { held, failures, retired };
 }
 
 // fds >= 3 outside the allowlist in a smoke.mjs probe snapshot ("n->target"), Node's own shapes excepted
