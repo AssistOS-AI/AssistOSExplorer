@@ -134,15 +134,23 @@ test.describe('RoboWork admitted skills', () => {
                 save('ledger.json', ledger);
                 save('answer.txt', answer);
                 const execution = scopedSkillTurn(ledger, { sinceMs: turnStartedMs, cwd: withProject ? project : '', sessionId });
+                const outputs = toolOutputs(execution);
+                save('tool-outputs.json', outputs);
                 if (!withProject) assertNoProjectGrant(execution);
                 assertAdmittedMarker(execution, { name: skillName, path: fs.realpathSync(path.join(repository, skillName)) });
                 expect(answer, 'Only marker.txt supplied this nonce').toContain(nonce);
-                const outputs = toolOutputs(execution);
-                save('tool-outputs.json', outputs);
                 expect(outputs.map(({ text }) => text).join(''), 'Raw ALA tool outputs identify the skill view read immediately followed by its marker contents').toContain(`READ_PATH=/run/robo-work/skills/nonce-marker\n${nonce}`);
             } catch (error) { primaryError = error; }
             const cleanupErrors = [];
             const cleanup = async (action) => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
+            await cleanup(() => save('primary-error.json', primaryError ? { name: primaryError.name, message: primaryError.message } : null));
+            if (robot) await cleanup(() => {
+                const ledger = readLedger({ workspaceRoot, scratchDir: evidenceDir, robotName: run });
+                save('ledger-before-cleanup.json', ledger);
+                save('tool-outputs-before-cleanup.json', ledger.executions
+                    .filter((row) => row.created_at >= turnStartedMs && row.specification.sessionId === sessionId)
+                    .map((row) => ({ executionId: row.execution_id, state: row.state, outputs: toolOutputs(row) })));
+            });
             await cleanup(() => stopChatTurn(page));
             await cleanup(() => {
                 const after = projectManifest(project, { ignoreRootRuntime: true });
