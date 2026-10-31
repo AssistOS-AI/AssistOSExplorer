@@ -65,6 +65,13 @@ function modelRefusal(model, backend) {
     return error;
 }
 
+// The refusal of a working folder one of whose components became a symlink after it was chosen (decision M-58).
+function cwdSymlinkedRefusal() {
+    const error = new WorkerError('cwd_symlinked', 400);
+    error.message = 'cwd_symlinked: a folder in this conversation\'s working folder path was replaced by a link. Pick the working folder again.';
+    return error;
+}
+
 // The refusal of a workspace-root working folder, with the message the user sees.
 function rootRefusal() {
     const error = new WorkerError('workspace_root_not_granted', 400);
@@ -264,7 +271,15 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             if (session.engine?.robotId && session.engine.robotId !== execution.robotId) {
                 throw new Error('This conversation uses another robot. Open it with that robot, or create a new session.');
             }
-            const cwd = await fs.realpath(session.engine?.cwd || session.cwd || workingDir);
+            // The stored cwd is sent as written (lexically normalized), never resolved: a session that can write the project
+            // could swap one of its components for a symlink to another project, and a resolved path would reach the worker
+            // already free of links. Unresolved, the worker's anchored walk refuses it (`symlink_in_path`), decision M-58.
+            // A stored cwd is always saved as a real path, so a difference from its resolution means a component was swapped
+            // for a symlink since: refused here, before the session binding (which would store the resolved path for the next
+            // turn) and before admission.
+            const cwd = path.resolve(session.engine?.cwd || session.cwd || workingDir);
+            const realCwd = await fs.realpath(cwd);
+            if (realCwd !== cwd) throw cwdSymlinkedRefusal();
             const workspaceRoot = resolveAchillesWorkspaceRoot(cwd, env);
             // The workspace root is never granted (base section 4.1): the worker refuses a grant equal to it. A
             // conversation that never picked a project folder runs with no project grant (the worker starts in

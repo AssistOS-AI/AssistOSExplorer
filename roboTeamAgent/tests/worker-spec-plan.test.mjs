@@ -19,7 +19,7 @@ const REFERENCE = 'r'.repeat(22);
 
 // Builds one turn's specification with the real engine over fakes for the worker, then returns it with the
 // canonical workspace root. `project` is the conversation's folder below the root, or null for the root itself.
-async function buildSpecification(t, { project = null, explicit = false, withSkills = false, channels = false } = {}) {
+async function buildSpecification(t, { project = null, explicit = false, withSkills = false, channels = false, link = null } = {}) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'worker-plan-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const workingDir = project ? path.join(root, project) : root;
@@ -33,6 +33,19 @@ async function buildSpecification(t, { project = null, explicit = false, withSki
     t.after(() => { if (old === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = old; });
     const store = new ConversationSessionStore({ workingDir });
     const session = await store.createSession();
+    // `link` ({ at, to }, root-relative): after the conversation recorded its folder (`project`, at or below `at`), a writer
+    // of the parent project replaces `at` with a symlink to `to`.
+    const swap = async () => {
+        const moved = path.join(root, link.to, path.relative(link.at, project));
+        await fs.mkdir(path.dirname(moved), { recursive: true });
+        await fs.rename(workingDir, moved);
+        await fs.rm(path.join(root, link.at), { recursive: true, force: true });
+        await fs.symlink(path.join(root, link.to), path.join(root, link.at));
+    };
+    // By default the swap lands before the turn; `link.during` swaps inside the turn's preflight (the first catalog refresh),
+    // after RoboTeam checked the cwd and before it binds the session.
+    if (link && !link.during) await swap();
+    let swapped = false;
     const admitted = [];
     const coordinator = { async admitTurn(evidence, request) { admitted.push(request); return { status: 200, body: { taskRef: { id: REFERENCE }, state: 'queued', originRequestId: 'x' } }; } };
     const rows = [{ seq: 1, kind: 'state', state: 'completed' }];
@@ -44,6 +57,7 @@ async function buildSpecification(t, { project = null, explicit = false, withSki
     const engine = createWorkerEngine({ workingDir, sessionStore: store, client, getRobot: async () => ({ id: 'robo', codingAgents: ['codex'], worker: { robotId: 'AAAAAAAAAAAAAAAAAAAAAA' } }),
         provisioner: { ensureReady: async () => ({ robotId: 'AAAAAAAAAAAAAAAAAAAAAA', configRevision: 1, configuration: { backend: 'codex', settings: { codingAgents: ['codex'] } } }), desiredConfiguration: () => ({}) },
         skillCatalog: { async refresh() {
+            if (link?.during && !swapped) { swapped = true; await swap(); }
             // The real snapshot shape: the private session overlay is `skillsDirectory`; each mount names a skill source.
             return { skills: channels ? channelSkills : [], taskRepositories: [], ...(withSkills ? { skillsDirectory: overlay, mounts: [
                 { source: path.join(root, 'skills', 'docs'), target: path.join(workingDir, '.agents', 'skills', 'docs') },
@@ -55,7 +69,7 @@ async function buildSpecification(t, { project = null, explicit = false, withSki
     t.after(() => engine.close());
     const owner = { coordinator, evidence: { ok: true, principal: 'user:alice', grant: GRANT } };
     const outcome = await engine.executeTurn({ sessionId: session.sessionId, prompt: 'Do the work', owner }).then(() => null, (error) => error);
-    return { root, workingDir, specification: admitted[0]?.specification ?? null, error: outcome, admitted };
+    return { root, workingDir, specification: admitted[0]?.specification ?? null, error: outcome, admitted, engine, sessionId: session.sessionId, store, owner };
 }
 
 // The grant requests executionFactory.mjs makes (role 'project', the plan's access and workspace-relative path), resolved by the
@@ -130,4 +144,49 @@ test('the worker resolves a managed skill source requested with the factory\'s r
     await fs.writeFile(path.join(built.root, '.ploinky', 'repos', 'AchillesIDE', 'SKILL.md'), 'root skill');
     const [root] = await resolveLikeTheFactory(built.root, [{ path: path.join(built.root, '.ploinky', 'repos', 'AchillesIDE'), access: 'read' }]);
     assert.deepEqual(root, { relativePath: '.ploinky/repos/AchillesIDE', ok: false, code: 'managed_source_not_project' });
+});
+
+test('a stored cwd whose intermediate component became a symlink is refused before the binding and admission, on every turn (M-58)', async (t) => {
+    const { root, workingDir, admitted, error, engine, sessionId, store, owner } = await buildSpecification(t, { project: 'proj/sub/deeper', link: { at: 'proj/sub', to: 'victim' } });
+    assert.equal(admitted.length, 0);
+    assert.match(String(error?.message), /^cwd_symlinked/);
+    // The binding was not written with the resolved victim path, so a second turn is refused the same way.
+    assert.notEqual(store.loadSession(sessionId).engine?.cwd, path.join(root, 'victim', 'deeper'));
+    const second = await engine.executeTurn({ sessionId, prompt: 'again', owner }).then(() => null, (failure) => failure);
+    assert.equal(admitted.length, 0);
+    assert.match(String(second?.message), /^cwd_symlinked/);
+    // Had the lexical path reached the worker, its resolver would refuse it as well.
+    const [outcome] = await resolveLikeTheFactory(root, [{ path: workingDir, access: 'write' }]);
+    assert.equal(outcome.code, 'symlink_in_path');
+});
+
+test('a stored cwd that is itself a symlink is refused before admission (M-58)', async (t) => {
+    const { admitted, error } = await buildSpecification(t, { project: 'proj/sub', link: { at: 'proj/sub', to: 'victim' } });
+    assert.equal(admitted.length, 0);
+    assert.ok(error);
+});
+
+test('a plain stored cwd is unchanged and resolves as the writable project grant (M-58)', async (t) => {
+    const { root, workingDir, specification } = await buildSpecification(t, { project: 'proj' });
+    assert.equal(specification.cwd, workingDir);
+    const [outcome] = await resolveLikeTheFactory(root, [{ path: specification.cwd, access: 'write' }]);
+    assert.equal(outcome.ok, true);
+});
+
+test('a stored cwd through a symlink to the workspace root is refused before admission (M-58)', async (t) => {
+    const { admitted, error } = await buildSpecification(t, { project: 'proj/up', link: { at: 'proj', to: '.' } });
+    assert.equal(admitted.length, 0);
+    assert.match(String(error?.message), /^cwd_symlinked/);
+});
+
+test('a swap inside the turn, after the cwd check and before the session binding, is refused and never stored (M-58)', async (t) => {
+    const { root, admitted, error, engine, sessionId, store, owner } = await buildSpecification(t, { project: 'proj/sub/deeper', link: { at: 'proj/sub', to: 'victim', during: true } });
+    assert.equal(admitted.length, 0);
+    assert.match(String(error?.message), /cwd_symlinked/);
+    assert.equal(store.loadSession(sessionId).engine?.cwd, undefined);
+    const second = await engine.executeTurn({ sessionId, prompt: 'again', owner }).then(() => null, (failure) => failure);
+    assert.equal(admitted.length, 0, 'the next turn is not handed the victim path');
+    assert.match(String(second?.message), /cwd_symlinked/);
+    assert.equal(Object.hasOwn(store.loadSession(sessionId).engine || {}, 'cwd'), false);
+    assert.ok(root);
 });

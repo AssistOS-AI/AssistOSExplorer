@@ -396,9 +396,20 @@ export class ConversationSessionStore {
             if (!fs.statSync(real).isDirectory()) throw new Error('invalid_engine_directory');
             return real;
         };
+        // The working folder is stored as given, never as a resolution of it: one that resolves elsewhere (a component swapped for a
+        // symlink, possibly after the caller checked it) is refused, so a later turn can never be handed a link-free path into
+        // another project (decision M-58).
+        const exactDirectory = (directory) => {
+            const real = canonicalDirectory(directory);
+            if (real !== directory) {
+                throw Object.assign(new Error('cwd_symlinked: a folder in this conversation\'s working folder path was replaced by a link. Pick the working folder again.'),
+                    { code: 'cwd_symlinked', statusCode: 400 });
+            }
+            return directory;
+        };
         const engine = normalizeEngine({
             type: 'ala', version: 1, sessionId,
-            home: canonicalDirectory(home), cwd: canonicalDirectory(cwd), backend, ...(robotId ? { robotId } : {}),
+            home: canonicalDirectory(home), cwd: exactDirectory(cwd), backend, ...(robotId ? { robotId } : {}),
         }, assertSessionId(sessionId));
         return this.#updateMetadata(sessionId, (metadata) => {
             if (metadata.engine) {
