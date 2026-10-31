@@ -21,7 +21,9 @@
 //      /proc/<pid>/fd/<n> (mount(8) is a child of this process), so a swap after the identity check changes nothing.
 //   4. for each grant: scan it, bind the empty read-only mask directory or file over each protected entry, and
 //      verify the masks through a fresh descriptor of the staging bind (an anchored rescan: every protected entry must
-//      carry the mask's device and inode).
+//      carry the mask's device and inode). A grant under a reserved skill stage name (bwrapArgs.mjs SKILL_STAGE_NAME; the
+//      M-22 skills view, T2) must then also hold a regular file SKILL.md at its root, read through that fresh descriptor
+//      without following a link (a SKILL.md swapped for a link or anything else since admission is mask_unverified).
 //
 // Exit 0 only after every mask is verified. Never execs. On failure it prints one JSON line to stderr
 // ({"error":code,"detail":...}, no file names) and exits with PREP_EXIT[code].
@@ -32,6 +34,7 @@ import { pathToFileURL } from 'node:url';
 
 import { isValidComponentName } from '../views/protectedNames.mjs';
 import { isMarker } from './marker.mjs';
+import { SKILL_STAGE_NAME } from './bwrapArgs.mjs';
 import { checkRelativeExclusion, dropCovered, resolveExclusions, verifyExclusionMasks } from './exclusions.mjs';
 import { classifyProcMasks } from './procMasks.mjs';
 import { DEFAULT_SCAN_LIMITS, scanProtected, verifyMasks } from './protectedScan.mjs';
@@ -173,6 +176,11 @@ export function runPrep(marker, spec, deps = {}) {
             try {
                 verify(fresh, entries, maskIds, spec.limits);
                 verifyExclusions(fresh, extra, maskIds);
+                if (SKILL_STAGE_NAME.test(grant.name)) {
+                    let skillFile = null;
+                    try { skillFile = lstat(`/proc/self/fd/${fresh}/SKILL.md`); } catch { skillFile = null; }
+                    if (!skillFile || !skillFile.isFile()) throw sandboxError('mask_unverified', 'a skill has no regular SKILL.md');
+                }
             } finally {
                 closeFd(fresh);
             }

@@ -16,8 +16,11 @@ import { OBLIGATION_SCHEMA_SQL } from './stateObligations.mjs';
 // session, obligation and outbox tables, observation references and the binding fence
 // columns, all in this one bump, then once more for the S6 review fixes under delta K-1 (6):
 // the open-continuation index keyed per coordinator and the obligation acceptance sequence.
-// There are no deployed stores to migrate (R18).
-export const SCHEMA_VERSION = 8;
+// There are no deployed stores to migrate (R18). Schema 9 is ONE bump shared by two r10 tracks (M-52 #3, M-51 Q4): T2's approval relay
+// (the `approval` table, the `approval-request` and `approval-resolved` event types, the final `rejected` and `ended` control deliveries) and
+// T1's robot terminals (the stored admission and logical kind `terminal` and the reference kind `terminal`). A store of any other version,
+// a version-8 store included, is refused at open with state_corrupt / schema_version_mismatch before anything is written.
+export const SCHEMA_VERSION = 9;
 export const STORE_DIRECTORY = 'execution-store';
 export const STORE_FILE = 'worker-state.sqlite';
 
@@ -25,7 +28,7 @@ const REQUIRED_TABLES = [
     'metadata', 'generation', 'robot', 'receipt', 'completion', 'preparation',
     'admission', 'origin', 'reference', 'resource_blocker', 'quarantine_audit',
     'binding', 'reference_event', 'reference_cursor', 'reference_control', 'token_replay',
-    'session', 'obligation', 'outbox_revision'
+    'session', 'obligation', 'outbox_revision', 'approval'
 ];
 
 const SCHEMA_SQL = `
@@ -87,12 +90,12 @@ CREATE TABLE admission (
     execution_id TEXT PRIMARY KEY,
     attempt_id TEXT NOT NULL UNIQUE,
     logical_id TEXT NOT NULL,
-    logical_kind TEXT NOT NULL CHECK (logical_kind IN ('task', 'session', 'flow')),
+    logical_kind TEXT NOT NULL CHECK (logical_kind IN ('task', 'session', 'flow', 'terminal')),
     generation_id TEXT NOT NULL REFERENCES generation(id),
     robot_id TEXT NOT NULL REFERENCES robot(id),
     config_revision INTEGER NOT NULL,
     configuration TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('task', 'continuation', 'turn')),
+    kind TEXT NOT NULL CHECK (kind IN ('task', 'continuation', 'turn', 'terminal')),
     specification TEXT NOT NULL,
     scope TEXT NOT NULL,
     owner_id TEXT NOT NULL,
@@ -103,7 +106,8 @@ CREATE TABLE admission (
     result TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    CHECK ((kind = 'turn') = (logical_kind = 'session'))
+    CHECK ((kind = 'turn') = (logical_kind = 'session')),
+    CHECK ((kind = 'terminal') = (logical_kind = 'terminal'))
 );
 CREATE INDEX admission_logical ON admission(logical_id);
 CREATE INDEX admission_robot_state ON admission(robot_id, state);
@@ -128,16 +132,16 @@ CREATE TABLE reference (
     namespace TEXT NOT NULL,
     origin_key TEXT NOT NULL,
     origin_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('execution', 'observation')),
+    kind TEXT NOT NULL CHECK (kind IN ('execution', 'observation', 'terminal')),
     logical_id TEXT,
     attempt_id TEXT UNIQUE,
     execution_id TEXT REFERENCES admission(execution_id),
     obligation_id TEXT UNIQUE REFERENCES obligation(obligation_id),
     scope TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    CHECK ((kind = 'execution') = (execution_id IS NOT NULL)),
-    CHECK ((kind = 'execution') = (attempt_id IS NOT NULL)),
-    CHECK ((kind = 'execution') = (logical_id IS NOT NULL)),
+    CHECK ((kind IN ('execution', 'terminal')) = (execution_id IS NOT NULL)),
+    CHECK ((kind IN ('execution', 'terminal')) = (attempt_id IS NOT NULL)),
+    CHECK ((kind IN ('execution', 'terminal')) = (logical_id IS NOT NULL)),
     CHECK ((kind = 'observation') = (obligation_id IS NOT NULL))
 );
 CREATE TRIGGER receipt_immutable BEFORE UPDATE ON receipt BEGIN SELECT RAISE(ABORT, 'immutable'); END;
@@ -336,7 +340,8 @@ const REQUIRED_COLUMNS = {
     obligation: ['accepted_seq'],
     reference: ['origin_key', 'kind', 'obligation_id'],
     binding: ['fence_revision'],
-    reference_control: ['source']
+    reference_control: ['source'],
+    approval: ['reference_id', 'request_id', 'state', 'reason', 'option_id', 'options', 'answer_actor', 'answer_operation_id']
 };
 
 // A store written by an older layout is refused here, cleanly, instead of failing later.
@@ -351,11 +356,12 @@ function verifyLayout(db) {
 
 function verifyMetadata(db, workspaceId, provider) {
     const names = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
+    // The version is decided first, so a store of another schema version (a version-8 store lacks the `approval` table) names its reason.
+    const meta = names.has('metadata') ? new Map(db.prepare('SELECT key, value FROM metadata').all().map((row) => [row.key, row.value])) : new Map();
+    if (meta.get('schema_version') !== String(SCHEMA_VERSION)) fail('state_corrupt', 'schema_version_mismatch');
     for (const table of REQUIRED_TABLES) {
         if (!names.has(table)) fail('state_corrupt');
     }
-    const meta = new Map(db.prepare('SELECT key, value FROM metadata').all().map((row) => [row.key, row.value]));
-    if (meta.get('schema_version') !== String(SCHEMA_VERSION)) fail('state_corrupt');
     verifyLayout(db);
     if (meta.get('workspace_id') !== workspaceId || meta.get('provider') !== provider) fail('state_corrupt');
     const active = db.prepare("SELECT id FROM generation WHERE state = 'active'").all();

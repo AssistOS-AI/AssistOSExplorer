@@ -1,5 +1,5 @@
 import {
-    ACTIVE_STATES, LOGICAL_KINDS, PROCESS_TREE_KIND, REFERENCE_VERSION, TERMINAL_STATES, WorkerStateError, byteLength, canonicalJson,
+    ACTIVE_STATES, LOGICAL_KINDS, PROCESS_TREE_KIND, REFERENCE_VERSION, TERMINAL_KIND, TERMINAL_STATES, WorkerStateError, byteLength, canonicalJson,
     isPublicReferenceId, deriveFlowLogicalId, deriveOperationId, digest, exactObject, fail, hasOriginRow, isOriginId, randomId, requireContext,
     refuseEnvironmentSelection, robotOwnerOf,
     validateAdmissionRequest, validateAttemptOutcome, validateConfiguration, validateInternalId, validateLimits, validateName,
@@ -17,8 +17,10 @@ import {
     isActiveBinding, isBindingId, isOwnerKey, moveBinding
 } from './stateBindings.mjs';
 import {
-    ANSWER_MAX_CHARS, CONTROL_OPS, EVENTS_MAX_LIMIT, CHANNEL_EVENT_TYPES, appendChannelEvent, appendOutputEvents, findChannelEvent, appendStateEvent, countControls, getControl, hasPendingStop, insertControl, insertFenceStop,
-    listEvents, listPendingControls, markControlApplied, readCursor, referenceForExecution
+    ANSWER_MAX_CHARS, APPROVAL_FIELD_MAX, APPROVAL_LIMIT_FLOOR, CONTROL_OPS, EVENTS_MAX_LIMIT, CHANNEL_EVENT_TYPES, appendChannelEvent, appendOutputEvents,
+    approvalRequestData, endApprovals, findChannelEvent, appendStateEvent, countControls, getApproval, getControl, hasPendingStop, insertControl, insertFenceStop,
+    isApprovalRequestId, listEvents, listPendingControls, markControlApplied, markControlFinal, readCursor, recordApprovalRequest, referenceForExecution, rejectApprovalAnswer,
+    resolveApprovalRow
 } from './stateObservation.mjs';
 import {
     CANCELLED_RESULT, COORDINATOR_REASON_PREFIX, EXPIRED_RESULT, FENCE_CHANGED, OBLIGATION_KINDS, OUTBOX_KINDS, PAUSED_RESULT, REJECTED_RESULT,
@@ -52,6 +54,11 @@ function isBindingRow(context) {
 
 function taskRefOfRow(reference) {
     return { version: reference.version, provider: reference.provider, id: reference.id };
+}
+
+// The human-input variant of an `answer` payload carries `answer`; the approval variant never does.
+function isAnswerPayload(payload) {
+    return payload !== null && typeof payload === 'object' && !Array.isArray(payload) && Object.hasOwn(payload, 'answer');
 }
 
 function nonEmptyString(value) {
@@ -136,7 +143,10 @@ class WorkerState {
     }
 
     #checkCapacity(db, table, limit) {
-        const count = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count;
+        // Terminal admissions (schema 9, M-8) have their own cap in the terminal path and never take an AI admission's place.
+        const count = table === 'admission'
+            ? db.prepare(`SELECT COUNT(*) AS count FROM admission WHERE kind != '${TERMINAL_KIND}'`).get().count
+            : db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count;
         if (count >= limit) fail('capacity_exceeded');
     }
 
@@ -634,7 +644,8 @@ class WorkerState {
     // owner or an administrator, so such a caller gets forbidden there.
     #visibleReference(db, context, referenceId) {
         const reference = db.prepare('SELECT * FROM reference WHERE id = ?').get(referenceId);
-        if (!reference) fail('not_found');
+        // A terminal's internal reference (schema 9) is never a task reference: no coordinator reads, lists or controls it.
+        if (!reference || reference.kind === TERMINAL_KIND) fail('not_found');
         const bindingRow = coordinatorOf(context.originNamespace) !== null && context.originKey.startsWith('binding:');
         if (reference.kind === 'observation') {
             const obligation = getObligation(db, reference.obligation_id);
@@ -747,6 +758,7 @@ class WorkerState {
         if (!CONTROL_OPS.includes(request.op)) fail('invalid_request');
         const attemptId = request.attemptId === undefined ? null : validateInternalId(request.attemptId);
         let payload = null;
+        let approval = false;
         if (request.op === 'message') {
             // The message is written to the orchestration domain as {type: 'message', id?, message, displayText?}.
             exactObject(request.payload, ['message'], ['displayText', 'id']);
@@ -759,13 +771,30 @@ class WorkerState {
             if (request.payload.id !== undefined) payload.id = request.payload.id;
             // The persisted canonical JSON is bounded by requestBytes before persistence.
             if (byteLength(payload) > this.#limits.requestBytes) fail('invalid_request');
-        } else if (request.op === 'answer') {
+        } else if (request.op === 'answer' && isAnswerPayload(request.payload)) {
             // M-14: the answer to a human-input question, `{requestId, answer}`.
             exactObject(request.payload, ['requestId', 'answer']);
             if (typeof request.payload.requestId !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/u.test(request.payload.requestId)) fail('invalid_request');
             if (typeof request.payload.answer !== 'string' || request.payload.answer.trim().length === 0 || request.payload.answer.length > ANSWER_MAX_CHARS) fail('invalid_request');
             payload = { requestId: request.payload.requestId, answer: request.payload.answer };
             if (byteLength(payload) > this.#limits.requestBytes) fail('invalid_request');
+        } else if (request.op === 'answer') {
+            // T2 (M-30): the owner's answer to an approval request, exactly `{requestId, optionId}` or `{requestId, cancelled: true}`. Any
+            // other key is refused here, so nothing but these two fields can ever reach the stdin record built from it.
+            exactObject(request.payload, ['requestId'], ['optionId', 'cancelled']);
+            if (!isApprovalRequestId(request.payload.requestId)) fail('invalid_request');
+            const hasOption = Object.hasOwn(request.payload, 'optionId');
+            if (hasOption === Object.hasOwn(request.payload, 'cancelled')) fail('invalid_request');
+            if (hasOption) {
+                const { optionId } = request.payload;
+                // eslint-disable-next-line no-control-regex
+                if (typeof optionId !== 'string' || optionId.length === 0 || optionId.length > APPROVAL_FIELD_MAX.optionId || /[\u0000-\u001f\u007f-\u009f]/u.test(optionId)) fail('invalid_request');
+                payload = { requestId: request.payload.requestId, optionId };
+            } else {
+                if (request.payload.cancelled !== true) fail('invalid_request');
+                payload = { requestId: request.payload.requestId, cancelled: true };
+            }
+            approval = true;
         } else if (request.payload !== undefined) {
             fail('invalid_request');
         }
@@ -780,7 +809,10 @@ class WorkerState {
             // `pause` applies only to an observation reference (Part D); on an execution
             // reference it is invalid_request, decided after visibility.
             if (op === 'pause') fail('invalid_request');
-            if (op === 'answer') return this.#answerHumanInput(db, context, { admission, owner, referenceId, operationId, payload, requestDigest, attemptId });
+            if (op === 'answer') {
+                const answer = { admission, owner, referenceId, operationId, payload, requestDigest, attemptId };
+                return approval ? this.#answerApproval(db, context, answer) : this.#answerHumanInput(db, context, answer);
+            }
             // M-12: stop is owner-or-administrator, message owner-only. A background row (the coordinator plus the persisted flow
             // binding the reference was admitted under) may also stop its own flow work (cancel, timeout, reconciliation); it is
             // visible only for references admitted under that very binding, so an interactive reference is `not_found` to it.
@@ -848,6 +880,8 @@ class WorkerState {
             const origin = db.prepare('SELECT * FROM origin WHERE namespace = ? AND origin_key = ? AND origin_id = ?')
                 .get(context.originNamespace, context.originKey, request.originRequestId);
             if (!origin || origin.scope !== context.scope) fail('not_found');
+            const originReference = db.prepare('SELECT kind FROM reference WHERE id = ?').get(origin.reference_id);
+            if (!originReference || originReference.kind === TERMINAL_KIND) fail('not_found');
             if (origin.obligation_id !== null) {
                 const reference = db.prepare('SELECT * FROM reference WHERE id = ?').get(origin.reference_id);
                 return {
@@ -1392,8 +1426,9 @@ class WorkerState {
     // them. The specification and configuration are returned parsed.
     listQueuedAdmissions({ limit = 16 } = {}) {
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) fail('invalid_request');
+        // Terminal admissions (schema 9) are started by the terminal path, never by the dispatcher.
         return this.#state.snapshot((db) => db.prepare(`SELECT a.*, r.id AS reference_id FROM admission a JOIN reference r ON r.execution_id = a.execution_id
-            WHERE a.state = 'queued' AND a.generation_id = ? ORDER BY a.rowid LIMIT ?`).all(this.#generationId, limit).map((row) => ({
+            WHERE a.state = 'queued' AND a.generation_id = ? AND a.kind != '${TERMINAL_KIND}' ORDER BY a.rowid LIMIT ?`).all(this.#generationId, limit).map((row) => ({
             executionId: row.execution_id, attemptId: row.attempt_id, referenceId: row.reference_id, robotId: row.robot_id,
             configRevision: row.config_revision, configuration: row.configuration === null ? null : JSON.parse(row.configuration),
             kind: row.kind, logicalId: row.logical_id, logicalKind: row.logical_kind, specification: JSON.parse(row.specification),
@@ -1405,7 +1440,7 @@ class WorkerState {
     // a running attempt of an earlier generation was interrupted by the rollover.
     listRunningAdmissions() {
         return this.#state.snapshot((db) => db.prepare(`SELECT a.execution_id, a.attempt_id, r.id AS reference_id FROM admission a JOIN reference r ON r.execution_id = a.execution_id
-            WHERE a.state = 'running' AND a.generation_id = ? ORDER BY a.rowid`).all(this.#generationId)
+            WHERE a.state = 'running' AND a.generation_id = ? AND a.kind != '${TERMINAL_KIND}' ORDER BY a.rowid`).all(this.#generationId)
             .map((row) => ({ executionId: row.execution_id, attemptId: row.attempt_id, referenceId: row.reference_id })));
     }
 
@@ -1422,7 +1457,7 @@ class WorkerState {
             if (!row) fail('not_found');
             if (row.generation_id !== generation.id) fail('stale_generation');
             if (row.state !== 'running' && row.state !== 'stopping') fail('operation_conflict');
-            return appendOutputEvents(db, referenceForExecution(db, row.execution_id).id, request.events, this.#now());
+            return appendOutputEvents(db, referenceForExecution(db, row.execution_id).id, request.events, this.#now(), { approvalFloor: this.#approvalFloor(row) });
         });
     }
 
@@ -1451,6 +1486,109 @@ class WorkerState {
         insertControl(db, { referenceId, actorKey: context.scope, operationId, op: 'answer', payload, digest: requestDigest, response, delivery: 'applied', now });
         appendChannelEvent(db, referenceId, 'human-input-answered', { requestId: payload.requestId, answer: payload.answer }, now);
         return JSON.parse(canonicalJson(response));
+    }
+
+    // The owner's answer to an approval request (T2, decision M-30, SPEC deltas M4): owner-only with the request's own fresh grant (the
+    // context is built from that grant; a background row, an administrator who is not the owner and another user are all forbidden),
+    // accepted only while the attempt runs, for an open request of this reference and one of its advertised options. ONE transaction
+    // records the control `pending` (the dispatcher writes the single stdin record from it, then acknowledges it) and resolves the request
+    // (`answered` with the option, or `cancelled`) with its `approval-resolved` event, so the answer is durable before anything reaches ALA
+    // and the first of answer, expiry, end and ALA's own resolution wins. The same answer again returns the first receipt; any other is
+    // operation_conflict; an unknown request is not_found.
+    #answerApproval(db, context, { admission, owner, referenceId, operationId, payload, requestDigest, attemptId }) {
+        if (!owner) fail('forbidden');
+        const recorded = getControl(db, referenceId, context.scope, operationId);
+        if (recorded) {
+            if (recorded.digest !== requestDigest || recorded.op !== 'answer') fail('operation_conflict');
+            return JSON.parse(recorded.response);
+        }
+        if (attemptId !== null && attemptId !== admission.attempt_id) fail('operation_conflict');
+        if (admission.state !== 'running') fail('operation_conflict');
+        const approvalRow = getApproval(db, referenceId, payload.requestId);
+        if (!approvalRow) fail('not_found');
+        const choice = payload.cancelled === true ? null : payload.optionId;
+        if (choice !== null && !approvalRow.options.includes(choice)) fail('invalid_request');
+        if (approvalRow.state !== 'open') {
+            const sameAnswer = approvalRow.answer_operation_id !== null
+                && (choice === null ? approvalRow.reason === 'cancelled' : approvalRow.reason === 'answered' && approvalRow.option_id === choice);
+            if (!sameAnswer) fail('operation_conflict');
+            const first = getControl(db, referenceId, approvalRow.answer_actor, approvalRow.answer_operation_id);
+            if (!first) fail('state_corrupt');
+            return JSON.parse(first.response);
+        }
+        if (countControls(db) >= this.#extensionLimit('controls')) fail('capacity_exceeded');
+        const now = this.#now();
+        const response = { operationId, op: 'answer', outcome: 'accepted', delivery: 'pending', state: admission.state, requestId: payload.requestId };
+        insertControl(db, { referenceId, actorKey: context.scope, operationId, op: 'answer', payload, digest: requestDigest, response, delivery: 'pending', now });
+        resolveApprovalRow(db, referenceId, payload.requestId, {
+            reason: choice === null ? 'cancelled' : 'answered', optionId: choice, answerActor: context.scope, answerOperationId: operationId
+        }, now);
+        return JSON.parse(canonicalJson(response));
+    }
+
+    // An attempt admitted with `ask-for-approval` keeps the approval floor of its event total free of `ala` events (stateObservation.mjs).
+    #approvalFloor(row) {
+        try { return JSON.parse(row.specification)?.permissions === 'ask-for-approval' ? APPROVAL_LIMIT_FLOOR : 0; } catch { return 0; }
+    }
+
+    #runningAttempt(db, generation, request) {
+        const row = db.prepare('SELECT * FROM admission WHERE execution_id = ? AND attempt_id = ?').get(request.executionId, request.attemptId);
+        if (!row) fail('not_found');
+        if (row.generation_id !== generation.id) fail('stale_generation');
+        return row;
+    }
+
+    // Trusted adapter (the dispatcher): ALA's `coding-agent-request` record of a running attempt. The store derives the bounded, plain
+    // `approval-request` data itself (approvalRequestData) and records the request once (stateObservation.recordApprovalRequest). Returns
+    // {outcome, requestId?, data?}: `open` (recorded, now waiting for the owner), `limit` (recorded resolved `limit`; the caller cancels it
+    // in ALA), `duplicate` (already recorded; `state` says whether it is still open), `unrecorded` (no room for even a row; the caller
+    // cancels it), `not_running` (the attempt is ending: its requests are ended), or `invalid` (no usable request id: nothing to answer).
+    recordApprovalRequest(request) {
+        exactObject(request, ['executionId', 'attemptId', 'record']);
+        validateInternalId(request.executionId);
+        validateInternalId(request.attemptId);
+        const record = request.record;
+        const data = approvalRequestData(record);
+        const requestId = data?.requestId ?? (isApprovalRequestId(record?.id) ? record.id : null);
+        if (requestId === null) return { outcome: 'invalid' };
+        return this.#mutate('recordApprovalRequest', (db, generation) => {
+            const row = this.#runningAttempt(db, generation, request);
+            if (row.state !== 'running') return { outcome: 'not_running', requestId };
+            const referenceId = referenceForExecution(db, row.execution_id).id;
+            const now = this.#now();
+            // A request that cannot be relayed as it is (for example more than eight options) is cancelled `limit`, never shown cut.
+            const result = recordApprovalRequest(db, referenceId, data ?? { requestId, options: [] }, now, { approvalFloor: this.#approvalFloor(row), forceLimit: data === null });
+            return { ...result, requestId, ...(result.outcome === 'open' ? { data } : {}) };
+        });
+    }
+
+    // Trusted adapter: a resolution that did not come from the owner: the worker's deadline (`expired`) or ALA's own resolution of the
+    // request (`cancelled`, `expired`; ALA's `backend-resolved` is recorded `cancelled`). Returns {resolved}: true only when THIS call
+    // resolved an open request (the caller then cancels it in ALA if the worker decided it); false when something else already won.
+    resolveApproval(request) {
+        exactObject(request, ['executionId', 'attemptId', 'requestId', 'reason']);
+        validateInternalId(request.executionId);
+        validateInternalId(request.attemptId);
+        if (!isApprovalRequestId(request.requestId)) fail('invalid_request');
+        if (request.reason !== 'expired' && request.reason !== 'cancelled') fail('invalid_request');
+        return this.#mutate('resolveApproval', (db, generation) => {
+            const row = this.#runningAttempt(db, generation, request);
+            if (row.state !== 'running') return { resolved: false };
+            const referenceId = referenceForExecution(db, row.execution_id).id;
+            return { resolved: resolveApprovalRow(db, referenceId, request.requestId, { reason: request.reason }, this.#now()) };
+        });
+    }
+
+    // Trusted adapter: ALA's `interaction-response-rejected` for an answer that was written: the answer's control is final `rejected`.
+    rejectApprovalAnswer(request) {
+        exactObject(request, ['executionId', 'attemptId', 'requestId']);
+        validateInternalId(request.executionId);
+        validateInternalId(request.attemptId);
+        if (!isApprovalRequestId(request.requestId)) fail('invalid_request');
+        return this.#mutate('rejectApprovalAnswer', (db, generation) => {
+            const row = this.#runningAttempt(db, generation, request);
+            return { rejected: rejectApprovalAnswer(db, referenceForExecution(db, row.execution_id).id, request.requestId) };
+        });
     }
 
     // Records a channel event of a running attempt (M-14) before the channel replies: `task-failed` {message} or
@@ -1507,6 +1645,21 @@ class WorkerState {
         });
     }
 
+    // Trusted adapter: a pending control the engine will never write (T2): final `ended` (ALA resolved the approval request before the
+    // owner's answer could be delivered) or `rejected` (malformed). Idempotent: false when it was not pending.
+    finalizeControl(request) {
+        exactObject(request, ['executionId', 'attemptId', 'actorKey', 'operationId', 'delivery']);
+        validateInternalId(request.executionId);
+        validateInternalId(request.attemptId);
+        validateOperationId(request.operationId);
+        nonEmptyString(request.actorKey);
+        if (request.delivery !== 'ended' && request.delivery !== 'rejected') fail('invalid_request');
+        return this.#mutate('finalizeControl', (db, generation) => {
+            const row = this.#runningAttempt(db, generation, request);
+            return markControlFinal(db, referenceForExecution(db, row.execution_id).id, request.actorKey, request.operationId, request.delivery) > 0;
+        });
+    }
+
     // Lifecycle work for the trusted preparation driver: completions still `pending`, with the scope and robot owner
     // that a completing context must carry, and the candidate configuration of a provision or configure.
     listPendingCompletions() {
@@ -1553,7 +1706,11 @@ class WorkerState {
     #endAttempt(db, executionId, classification, payload, now) {
         db.prepare("UPDATE admission SET state = 'stopping', end_classification = ?, end_payload = ?, updated_at = ? WHERE execution_id = ?")
             .run(classification, canonicalJson(payload), now, executionId);
-        appendStateEvent(db, referenceForExecution(db, executionId).id, { state: 'stopping', cleanup: 'pending' }, now);
+        const referenceId = referenceForExecution(db, executionId).id;
+        // T2 (M4): in this same transaction every open approval request resolves `ended` (its event takes the place it held) and an
+        // answer still waiting for delivery is final `ended`. Every end path (beginAttemptEnd, a queued stop, generation recovery) comes here.
+        endApprovals(db, referenceId, now);
+        appendStateEvent(db, referenceId, { state: 'stopping', cleanup: 'pending' }, now);
         this.#settleAttempt(db, executionId);
         return db.prepare('SELECT state FROM admission WHERE execution_id = ?').get(executionId).state;
     }

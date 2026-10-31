@@ -67,6 +67,25 @@ export function readManagedConfig(file, { read = (target) => fs.readFileSync(tar
 export const TOOL_INVENTORY = Object.freeze(['codex', 'claude', 'opencode', 'pi'].map((name) => Object.freeze({ name })));
 const STREAM_DIRECTORY = '/stream';
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
+// A skill's descriptor is opened below the skill's own anchored descriptor, never by path: O_NOFOLLOW refuses a symlinked SKILL.md and
+// O_NONBLOCK keeps a FIFO of that name from blocking the worker.
+const SKILL_FILE_FLAGS = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
+
+// True when the skill folder held open as `fd` has a regular file SKILL.md at its root (anchored open, no link followed).
+export function hasRegularSkillFile(fd, { open = (target, flags) => fs.openSync(target, flags), fstat = (handle) => fs.fstatSync(handle), close = (handle) => fs.closeSync(handle) } = {}) {
+    let handle;
+    try {
+        handle = open(`/proc/self/fd/${fd}/SKILL.md`, SKILL_FILE_FLAGS);
+        return fstat(handle).isFile();
+    } catch {
+        return false;
+    } finally {
+        if (handle !== undefined) { try { close(handle); } catch { /* closed */ } }
+    }
+}
+
+// The staged name of skill i (bwrapArgs.mjs SKILL_STAGE_NAME): skills are staged like grants, never under a project grant name.
+export const skillStageName = (index) => `s${index}`;
 const OPT = '/opt/robo-work';
 const TOOLS = '/opt/robo-work-tools';
 
@@ -115,6 +134,7 @@ export function createExecutionFactory({
         channels: deps.createExecutionChannels ?? createExecutionChannels,
         modelChannel: deps.createModelChannel ?? createModelChannel,
         managedConfig: deps.readManagedConfig ?? readManagedConfig,
+        skillFile: deps.hasRegularSkillFile ?? hasRegularSkillFile,
         activityWalk: deps.createWorkloadActivityWalk ?? createWorkloadActivityWalk,
         timers: deps.timers ?? { setInterval, clearInterval }
     };
@@ -158,6 +178,25 @@ export function createExecutionFactory({
                     grants.push(result.grant);
                     resolved.push({ name: entry.name, path: entry.path, hostPath: entry.hostPath, access: entry.access, fd: result.grant.fd });
                 }
+                // M-22 skills (T2): each admitted skill folder is resolved read-only by the same anchored resolver (a managed source below
+                // .ploinky/repos as `skill-source` at depth >= 4, any other as a read-only `project` folder), and must hold a regular SKILL.md
+                // at its root. Every refusal fails the attempt with nothing started: a required skill with skill_required_unavailable, any
+                // other with its grant code or skill_not_a_skill (fail closed: no skill is silently dropped).
+                const skills = [];
+                for (const [index, skill] of (plan.skills ?? []).entries()) {
+                    const result = await make.grant({ role: grantRoleFor({ relativePath: skill.relativePath, access: 'read' }), access: 'read', relativePath: skill.relativePath },
+                        { workspaceRoot, protectedLocations: [{ label: 'the worker store', path: robots.root }] });
+                    if (!result.ok) {
+                        log('skill_refused', { executionId: item.executionId, skill: skill.name, code: String(result.code).slice(0, 40), required: skill.required });
+                        throw new ExecutionSetupError(skill.required ? 'skill_required_unavailable' : `grant_${String(result.code).replace(/[^a-z_]/gu, '').slice(0, 40)}`);
+                    }
+                    grants.push(result.grant);
+                    if (!make.skillFile(result.grant.fd)) {
+                        log('skill_refused', { executionId: item.executionId, skill: skill.name, code: 'skill_not_a_skill', required: skill.required });
+                        throw new ExecutionSetupError(skill.required ? 'skill_required_unavailable' : 'skill_not_a_skill');
+                    }
+                    skills.push({ name: skill.name, stageName: skillStageName(index), path: skill.hostPath, fd: result.grant.fd, exclusions: [...(skill.exclusions ?? [])] });
+                }
                 const admission = createAdmission({
                     grants: plan.grants.map((entry) => ({ path: entry.path, access: entry.access })),
                     inventory: TOOL_INVENTORY, streamDirectory: STREAM_DIRECTORY
@@ -180,7 +219,7 @@ export function createExecutionFactory({
                     workload: { roBinds: [...image.roBinds, ...(image.toolBinds ?? [])], symlinks: image.symlinks }
                 };
                 const supervisor = make.supervisor({
-                    launcher, view, admission, roles, home: { path: where.home, fd: homeFd }, grants: resolved, activityWalk: sharedActivityWalk,
+                    launcher, view, admission, roles, home: { path: where.home, fd: homeFd }, grants: resolved, skills, activityWalk: sharedActivityWalk,
                     modelChannel: gatewayModel === null ? null : { directory: MODEL_DIRECTORY_VIEW, configPath: OPENCODE_CONFIG_VIEW },
                     onInfrastructureLoss: (reason) => lost.resolve(`infrastructure_lost:${reason}`)
                 });

@@ -64,6 +64,10 @@ import { createRobotStore } from './runtime/robotStore.mjs';
 //                                     They bound task attempts only, run while the attempt is starting or running, and are suspended
 //                                     while a human-input question is waiting. The end is the normal stop path; if the stop cannot be
 //                                     verified the result is `termination_unverified`. No retry and no replacement attempt.
+//   ROBO_WORK_APPROVAL_TIMEOUT_MS     an approval request of a coding agent (ask-for-approval, T2) that the owner has not answered for this
+//                                     long is cancelled in ALA and recorded `approval-resolved` / `expired`, default 900000 (15 minutes;
+//                                     the same integer range). While a request is open the inactivity bound is paused; the maximum keeps
+//                                     counting.
 
 export const DEFAULT_LIMITS = Object.freeze({
     requestBytes: 4 * 1024 * 1024, robots: 256, receipts: 100000, admissions: 100000, resultBytes: 512 * 1024 - 1024,
@@ -119,7 +123,8 @@ export function readConfig(env = process.env) {
         alaRoot: String(env.ROBO_WORK_ALA_ROOT || '/Agent/linked/AdvancedLanguageAgent').trim(),
         maxConcurrent: integerPort(env.ROBO_WORK_MAX_CONCURRENT, 4),
         inactivityTimeoutMs: boundedMs(env, 'ROBO_WORK_INACTIVITY_TIMEOUT_MS', 20 * 60 * 1000),
-        maxAttemptMs: boundedMs(env, 'ROBO_WORK_MAX_ATTEMPT_MS', 4 * 60 * 60 * 1000)
+        maxAttemptMs: boundedMs(env, 'ROBO_WORK_MAX_ATTEMPT_MS', 4 * 60 * 60 * 1000),
+        approvalTimeoutMs: boundedMs(env, 'ROBO_WORK_APPROVAL_TIMEOUT_MS', 15 * 60 * 1000)
     };
 }
 
@@ -242,7 +247,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
         });
     }
     const dispatcher = factory
-        ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, options: { maxConcurrent: config.maxConcurrent, inactivityTimeoutMs: config.inactivityTimeoutMs, maxAttemptMs: config.maxAttemptMs }, log })
+        ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, options: { maxConcurrent: config.maxConcurrent, inactivityTimeoutMs: config.inactivityTimeoutMs, maxAttemptMs: config.maxAttemptMs, approvalTimeoutMs: config.approvalTimeoutMs }, log })
         : null;
 
     const coordinatorServer = http.createServer(coordinatorHandler);

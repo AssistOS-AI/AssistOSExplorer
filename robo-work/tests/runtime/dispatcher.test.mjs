@@ -134,11 +134,12 @@ test('failures: a nonzero exit, an empty result, a control-stream violation and 
     const { dispatcher, runs, admit, view, logs } = rig(t, { maxConcurrent: 4 });
     const failed = admit();
     const empty = admit(spec({ sessionId: '1f8c2f1e-3b53-4a56-9b0f-6b1f0d5e9a11' }));
-    const refused = admit(spec({ permissions: 'ask-for-approval' }));
+    // T2: ask-for-approval is planned now; a folder placement modifier is still a refused plan.
+    const refused = admit(spec({ folders: [{ path: '/ws/s', access: 'read', as: 'skills' }] }));
     const hostile = admit(spec({ sessionId: '2f8c2f1e-3b53-4a56-9b0f-6b1f0d5e9a11' }));
     dispatcher.start();
     await wait(() => view(refused).state === 'failed', 'refused plan');
-    assert.equal(view(refused).result.data.reason, 'approval_unsupported');
+    assert.equal(view(refused).result.data.reason, 'folder_modifier_unsupported');
     assert.equal(runs.length <= 3, true, 'the refused plan never reached the factory');
     await wait(() => runs.length === 3 || (runs.length === 2 && view(failed).state === 'running'), 'runs');
     await wait(() => runs.length >= 2, 'two runs');

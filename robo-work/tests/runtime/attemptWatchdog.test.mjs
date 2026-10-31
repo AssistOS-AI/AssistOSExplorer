@@ -115,3 +115,48 @@ test('provider requests and workload exits are activity of the attempt', () => {
     sandbox.handler(1, 0, null);
     assert.deepEqual([touches, exits], [5, 1]);
 });
+
+// ---- T2 (SPEC delta M3): holdInactivity / releaseInactivity ----------------------------------------------------------------------
+
+test('M3: two pending requests, one answered, idle far past the bound: no timeout until the last is released, then the bound restarts', () => {
+    const { clock, fired, watchdog } = watch();
+    clock.advance(5 * MIN);
+    watchdog.holdInactivity();
+    watchdog.holdInactivity();
+    clock.advance(30 * MIN);
+    watchdog.releaseInactivity();
+    assert.equal(watchdog.held, 1);
+    clock.advance(60 * MIN);
+    assert.deepEqual(fired, [], 'one request is still open: idle time does not count');
+    watchdog.releaseInactivity();
+    assert.equal(watchdog.held, 0);
+    clock.advance(20 * MIN - 1);
+    assert.deepEqual(fired, [], 'the release reset the last activity');
+    clock.advance(1);
+    assert.deepEqual(fired.map(([reason]) => reason), ['inactive_timeout']);
+    watchdog.releaseInactivity();
+    assert.equal(watchdog.held, 0, 'a release without a hold does nothing');
+});
+
+test('M3: the maximum duration keeps counting while a request is pending', () => {
+    const { clock, fired, watchdog } = watch();
+    clock.advance(10 * MIN);
+    watchdog.holdInactivity();
+    clock.advance(230 * MIN - 1);
+    assert.deepEqual(fired, []);
+    clock.advance(1);
+    assert.deepEqual(fired.map(([reason, runningMs]) => [reason, runningMs]), [['deadline_exceeded', 240 * MIN]]);
+});
+
+test('M3: a hold does not touch a human-input suspension, and suspension still stops both bounds', () => {
+    const { clock, fired, watchdog } = watch();
+    watchdog.holdInactivity();
+    watchdog.suspend();
+    clock.advance(500 * MIN);
+    watchdog.releaseInactivity();
+    clock.advance(100 * MIN);
+    assert.deepEqual(fired, [], 'suspended: neither bound runs');
+    watchdog.resume();
+    clock.advance(20 * MIN);
+    assert.deepEqual(fired.map(([reason]) => reason), ['inactive_timeout']);
+});

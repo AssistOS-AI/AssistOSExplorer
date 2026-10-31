@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { isWebchatMessageEnvelope, normalizeWebchatMessage, shouldEmitWebchatOutput, webchatSignedArgs } from './webchatEnvelope.mjs';
+import { WEBCHAT_INTERACTION_RESPONSE_EVENT, isWebchatMessageEnvelope, normalizeWebchatMessage, shouldEmitWebchatOutput, webchatSignedArgs } from './webchatEnvelope.mjs';
 import { materializeWebchatContext } from './webchatResources.mjs';
 import { formatWebchatError } from './webchatError.mjs';
 import { createWebchatWorkspaceFileIndex } from './webchatWorkspaceFiles.mjs';
@@ -228,9 +228,11 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
         receive(raw) {
             const response = parseWebchatInteractionResponse(raw);
             if (response) {
+                // An unsigned Router line. Only its source tab and page are taken: it can never claim a verified owner, so an
+                // interaction that needs a signed answer (a worker approval, T2) asks again instead of using it.
                 let source = {};
                 try { source = JSON.parse(raw); } catch { /* Legacy parser accepts only JSON responses. */ }
-                runtime.webchatController.resolve(response, source);
+                runtime.webchatController.resolve(response, { sourceTabId: source?.sourceTabId, sourcePageInstanceId: source?.sourcePageInstanceId });
                 return;
             }
             let control;
@@ -266,6 +268,21 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                     for (const [operationId, operation] of matchingOperations(message)) stopOperation(operationId, operation, ownerOf(message));
                     return;
                 }
+                // A Router-signed interaction response (T2): verified, so the response and its owner's fresh grant answer the interaction.
+                if (seen.event === WEBCHAT_INTERACTION_RESPONSE_EVENT && message.interaction) {
+                    const owner = ownerOf(message);
+                    const { id, ...answer } = message.interaction;
+                    runtime.webchatController?.resolve({ id, ...answer },
+                        { sourceTabId: message.sourceTabId, sourcePageInstanceId: message.sourcePageInstanceId, ...(owner?.evidence?.ok === true ? { verified: true, owner } : {}) });
+                    return;
+                }
+            }
+            // An interaction response that did not verify (no usable signature or grant): it answers nothing and never starts a turn; the
+            // question is asked again under a new interaction id.
+            if (message.event === WEBCHAT_INTERACTION_RESPONSE_EVENT) {
+                const id = message.interaction?.id;
+                if (typeof id === 'string') runtime.webchatController?.reaskUnverified?.(id, { sourceTabId: message.sourceTabId, sourcePageInstanceId: message.sourcePageInstanceId });
+                return;
             }
             // An envelope that claims to be a stop but did not verify (no usable signature or grant). With the worker engine it stops nothing
             // and the user is told, never a silent drop. A local engine holds its work in this process, so the stop is the local abort as

@@ -34,8 +34,13 @@ export function createNativeInteractions({ webchatController = null, selector, o
     const pending = new Map();
     let disposed = false;
 
-    async function request(event, { context = {}, signal, turnId } = {}) {
+    // `requireSigned` (T2, worker approval relay): only an answer that came in a Router-signed response counts. It resolves to
+    // {optionId, owner} (optionId null: the owner's own cancel), or null when nothing was answered. Unsigned or unverified responses
+    // are not answers: the WebChat controller asks again under a new interaction id. A terminal has no signed path (CLI approvals stay
+    // refused, decision D1), so it answers nothing.
+    async function request(event, { context = {}, signal, turnId, requireSigned = false } = {}) {
         if (disposed || signal?.aborted) return null;
+        if (requireSigned && !webchatController) return null;
         const snapshot = snapshotRequest(event);
         if (pending.has(snapshot.id)) throw new Error(`Duplicate native request: ${snapshot.id}`);
         const controller = new AbortController();
@@ -56,10 +61,16 @@ export function createNativeInteractions({ webchatController = null, selector, o
                     })),
                     targetTabId: context.sourceTabId || '',
                     targetPageInstanceId: context.sourcePageInstanceId || '',
-                }, { signal: controller.signal })
+                }, { signal: controller.signal, requireSigned })
                 : terminal.select(snapshot, { signal: controller.signal });
-            const optionId = await selection;
+            const selected = await selection;
             if (controller.signal.aborted || pending.get(snapshot.id) !== entry) return null;
+            if (requireSigned) {
+                if (!selected || typeof selected !== 'object' || !selected.owner) return null;
+                if (selected.cancelled === true) return { optionId: null, owner: selected.owner };
+                return snapshot.options.some((option) => option.id === selected.value) ? { optionId: selected.value, owner: selected.owner } : null;
+            }
+            const optionId = selected;
             return snapshot.options.some((option) => option.id === optionId) ? optionId : null;
         } catch (error) {
             if (controller.signal.aborted || /^interaction_(cancelled|expired|controller_closed)$/.test(error.message)) {

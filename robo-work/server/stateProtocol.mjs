@@ -33,8 +33,11 @@ const PUBLIC_MESSAGES = Object.freeze({
 // neither a flow nor a generation (a schedule binding only parents derived flows).
 // `binding_not_paused` and `binding_cancelled` (S6 Part D): a flow continuation of a binding
 // that is active or cancelled (operation_conflict).
+// `schema_version_mismatch` (schema 9): a store written by another schema version (for example a version-8 store) is refused at
+// open with state_corrupt and this reason, before anything is written (never half-opened; M-51 Q4, R18: a fresh deploy is needed).
 export const ERROR_REASONS = Object.freeze([
-    'pragma_journal_mode', 'pragma_synchronous', 'pragma_foreign_keys', 'token_replayed', 'binding_kind', 'binding_not_paused', 'binding_cancelled'
+    'pragma_journal_mode', 'pragma_synchronous', 'pragma_foreign_keys', 'token_replayed', 'binding_kind', 'binding_not_paused', 'binding_cancelled',
+    'schema_version_mismatch'
 ]);
 
 export class WorkerStateError extends Error {
@@ -62,9 +65,16 @@ export const COORDINATOR_OPERATIONS = Object.freeze(['decide', 'reconcile']);
 export const SERVICE_OPERATIONS = Object.freeze(['provision', 'configure', 'delete', 'read', 'adapter_complete', 'attest']);
 export const REFERENCE_VERSION = 1;
 export const END_CLASSIFICATIONS = Object.freeze(['completed', 'failed', 'paused', 'human-input', 'cancelled', 'interrupted']);
-// Admission request kinds and the logical kind recorded at admission (S6 source-only subset).
+// Admission request kinds and the logical kind recorded at admission (S6 source-only subset). These are the kinds a coordinator may
+// REQUEST: an admit with any other kind (`terminal` included) is invalid_request before any state access.
 export const ADMISSION_KINDS = Object.freeze(['task', 'continuation', 'turn']);
 export const LOGICAL_KINDS = Object.freeze(['task', 'session', 'flow']);
+// Schema 9 (M-8 robot terminals, plan-review B-1 and delta note 1): the STORED kinds add `terminal`, created only by the worker's own
+// terminal path, never by a coordinator admit. A terminal admission has its own logical kind `terminal` (a fresh logical id each time)
+// and an internal reference row of kind `terminal`, which no coordinator read lists or reveals (not_found).
+export const TERMINAL_KIND = 'terminal';
+export const STORED_ADMISSION_KINDS = Object.freeze([...ADMISSION_KINDS, TERMINAL_KIND]);
+export const STORED_LOGICAL_KINDS = Object.freeze([...LOGICAL_KINDS, TERMINAL_KIND]);
 export const TERMINAL_STATES = END_CLASSIFICATIONS;
 export const ACTIVE_STATES = Object.freeze(['queued', 'running']);
 export const PROCESS_TREE_KIND = 'process-tree';
@@ -413,6 +423,12 @@ export const SPEC_V2_PROMPT_MAX_BYTES = 1024 * 1024;
 export const SPEC_V2_DISPLAY_MAX_BYTES = 256 * 1024;
 export const SPEC_V2_MAX_FOLDERS = 32;
 export const SPEC_V2_MAX_IGNORE = 64;
+// M-22 skills view (T2): at most 64 skills, each {name, path, required?}, names unique. `path` is an absolute workspace path the worker
+// resolves itself through the anchored grant resolver (never a RoboTeam resolution of it); `name` is the folder name the skill gets in the
+// read-only view at /run/robo-work/skills/<name>. `skillsDigest` (present exactly when `skills` is) is the selection digest recorded with the
+// admission: the SHA-256 hex of the canonical JSON of the `skills` array as sent, checked here so a mismatch is refused.
+export const SPEC_V2_MAX_SKILLS = 64;
+export const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 // sessionId and turnId are safe opaque strings (ALA validates what it needs; a UUID is one such string).
 const SPEC_OPAQUE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
 const SPEC_ALIAS = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
@@ -433,7 +449,7 @@ function specBytesBetween(value, min, max) {
 
 export function validateSpecificationV2(value, limits) {
     exactObject(value, ['version', 'prompt', 'displayText', 'sessionId', 'turnId', 'permissions'],
-        ['cwd', 'model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution', 'humanInput', 'environment']);
+        ['cwd', 'model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution', 'humanInput', 'environment', 'skills', 'skillsDigest']);
     if (value.version !== SPECIFICATION_VERSION_2) fail('invalid_request');
     if (!specBytesBetween(value.prompt, 1, SPEC_V2_PROMPT_MAX_BYTES)) fail('invalid_request');
     if (!specBytesBetween(value.displayText, 0, SPEC_V2_DISPLAY_MAX_BYTES)) fail('invalid_request');
@@ -468,10 +484,34 @@ export function validateSpecificationV2(value, limits) {
     if (value.ignore !== undefined) {
         if (!Array.isArray(value.ignore) || value.ignore.length > SPEC_V2_MAX_IGNORE || !value.ignore.every(isSpecAbsolutePath)) fail('invalid_request');
     }
+    validateSpecSkills(value);
     // eslint-disable-next-line no-control-regex
     if (value.mcpServers !== undefined && (typeof value.mcpServers !== 'string' || value.mcpServers.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.mcpServers))) fail('invalid_request');
     assertWithinBytes(value, limits.requestBytes);
     return value;
+}
+
+// The digest of a skills selection: SHA-256 hex over its canonical JSON (keys sorted, order kept).
+export function skillsSelectionDigest(skills) {
+    return crypto.createHash('sha256').update(canonicalJson(skills)).digest('hex');
+}
+
+function validateSpecSkills(value) {
+    if (value.skills === undefined) {
+        if (value.skillsDigest !== undefined) fail('invalid_request');
+        return;
+    }
+    if (!Array.isArray(value.skills) || value.skills.length > SPEC_V2_MAX_SKILLS) fail('invalid_request');
+    const names = new Set();
+    for (const skill of value.skills) {
+        exactObject(skill, ['name', 'path'], ['required']);
+        if (typeof skill.name !== 'string' || !SKILL_NAME.test(skill.name) || names.has(skill.name)) fail('invalid_request');
+        names.add(skill.name);
+        // Absolute, normalized, never the filesystem root; the worker also refuses the workspace root and anything outside it.
+        if (!isSpecAbsolutePath(skill.path) || skill.path === '/') fail('invalid_request');
+        if (skill.required !== undefined && typeof skill.required !== 'boolean') fail('invalid_request');
+    }
+    if (typeof value.skillsDigest !== 'string' || value.skillsDigest !== skillsSelectionDigest(value.skills)) fail('invalid_request');
 }
 
 // Turn specification version 1 (provisional; interface note 2.3 (9)): exactly

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createWorkerEngine, normalizeEventRow, SPEC_VERSION } from '../src/lib/execution/workerEngine.mjs';
+import { createWorkerEngine, normalizeEventRow, SPEC_VERSION, WEBCHAT_APPROVAL_RELAY_ENABLED } from '../src/lib/execution/workerEngine.mjs';
 import { detachReason, stopReason } from '../src/lib/execution/abortReasons.mjs';
 import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
 import { ACHILLES_PRIVATE_DIRECTORY_NAME } from '../src/lib/storage/privateDataRoot.mjs';
@@ -327,10 +327,26 @@ test('a worker failure at any step is an explicit error; nothing runs locally', 
     await failing.close();
 });
 
-test('ask-for-approval and a missing owner are refused before anything is admitted', async (t) => {
-    const approval = await harness(t, { permission: 'ask-for-approval' });
-    await assert.rejects(approval.engine.executeTurn({ sessionId: approval.sessionId, prompt: 'p', owner: approval.owner }), (error) => error.code === 'worker_permissions_unsupported');
-    assert.equal(approval.admitted.length, 0);
+test('M-69 Q1: TODAY ask-for-approval is refused for a WebChat turn before anything is admitted (the relay is dormant until the Router signs responses)', async (t) => {
+    assert.equal(WEBCHAT_APPROVAL_RELAY_ENABLED, false, 'flipped only by the Ploinky interaction-response signing slice');
+    const today = await harness(t, { permission: 'ask-for-approval' });
+    await assert.rejects(today.engine.executeTurn({ sessionId: today.sessionId, prompt: 'p', owner: today.owner }), (error) => error.code === 'worker_permissions_unsupported' && error.status === 400);
+    assert.equal(today.admitted.length, 0);
+    assert.equal(today.ensured.length, 0);
+});
+
+test('T2 (dormant relay enabled): ask-for-approval runs for a user-owned WebChat turn; work with no user to answer (a RoboFlow phase, a task child) and a missing owner are refused before admission', async (t) => {
+    const approval = await harness(t, { permission: 'ask-for-approval', engineOptions: { engine: { approvalRelay: true } }, rows: [state('running', 1), ala({ ...SELECTED, permissionMode: 'ask-for-approval' }, 2), ala(FINAL('Final answer'), 3), state('completed', 4)] });
+    const result = await approval.engine.executeTurn({ sessionId: approval.sessionId, prompt: 'p', owner: approval.owner });
+    assert.equal(result.outputText, 'Final answer');
+    assert.equal(approval.admitted[0].request.specification.permissions, 'ask-for-approval');
+    const flowId = `flow_${'cd'.repeat(12)}`;
+    const phase = await harness(t, { permission: 'ask-for-approval', engineOptions: { engine: { approvalRelay: true } }, execution: { worker: { bindingId: flowId, originRequestId: phaseOriginId({ flowId, instanceId: 'i', runtimeTaskId: 't' }) } } });
+    await assert.rejects(phase.engine.executeTurn({ sessionId: phase.sessionId, prompt: 'p' }), (error) => error.code === 'worker_permissions_unsupported');
+    assert.equal(phase.client.calls.admit.length, 0);
+    const child = await harness(t, { permission: 'ask-for-approval', engineOptions: { engine: { approvalRelay: true } }, execution: { worker: { originRequestId: ORIGIN } } });
+    await assert.rejects(child.engine.executeTurn({ sessionId: child.sessionId, prompt: 'p', owner: { evidence: { ok: true, grant: freshGrant('child') } } }), (error) => error.code === 'worker_permissions_unsupported');
+    assert.equal(child.client.calls.admit.length, 0);
     const none = await harness(t);
     await assert.rejects(none.engine.executeTurn({ sessionId: none.sessionId, prompt: 'p' }), (error) => error.code === 'owner_evidence_unavailable' && error.status === 403);
     assert.equal(none.admitted.length, 0);
@@ -522,9 +538,10 @@ test('the workspace root is never granted: a project folder is the writable gran
     const root = path.dirname(await fs.realpath(withSkills.workingDir));
     assert.equal(spec.cwd, await fs.realpath(withSkills.workingDir));
     assert.equal(Object.hasOwn(spec, 'folders'), false, 'a skill mount source is not granted');
-    assert.equal(Object.hasOwn(spec, 'skills'), false);
-    assert.ok(skillEvents.some((event) => event.type === 'diagnostic' && /selected skills are not available through the worker/.test(event.message)),
-        'selected skills are reported, never dropped silently');
+    // T2: the policy skill is sent in skills[] (its declared workspace path, unresolved); the mount source appears nowhere.
+    assert.deepEqual(spec.skills.map((skill) => skill.name), ['bash']);
+    assert.equal(JSON.stringify(spec).includes(path.join(root, 'skill-src')), false);
+    assert.ok(root);
 
     // No project selected (the conversation sits at the workspace root): no project grant at all.
     const none = await harness(t, { atRoot: true });
@@ -632,7 +649,7 @@ async function channelSkills(root) {
         { name: 'require-human-input', skillDir: path.join(base, 'require-human-input'), enabled: true }];
 }
 
-test('a project .agents/skills symlink to another project, a managed repository root or / yields no folder grant; the channel skills still do', async (t) => {
+test('B1 cross-side: a project .agents/skills symlink to another project, a managed repository root or / yields no folder and no skills entry; the channel skills are skills[] entries', async (t) => {
     const targets = [
         ['another project', (root) => path.join(root, 'other-project')],
         ['a .ploinky/repos repository root', (root) => path.join(root, '.ploinky', 'repos', 'Victim')],
@@ -647,19 +664,22 @@ test('a project .agents/skills symlink to another project, a managed repository 
             const root = await fs.realpath(built.workingDir);
             source = sourceOf(root);
             if (source !== '/') await fs.mkdir(source, { recursive: true });
+            // The project's own .agents/skills holds a link named like a skill to the victim; it is never in the catalog's entries.
+            await fs.mkdir(path.join(root, 'proj', '.agents', 'skills'), { recursive: true });
+            await fs.symlink(source, path.join(root, 'proj', '.agents', 'skills', 'x'));
             list = await channelSkills(root);
             await built.engine.executeTurn({ sessionId: built.sessionId, prompt: 'p', owner: built.owner });
             const spec = built.admitted[0].request.specification;
-            const granted = (spec.folders || []).map((folder) => folder.path);
-            assert.equal(granted.some((granted_) => granted_ === source || (source !== '/' && granted_.startsWith(`${source}${path.sep}`)) || granted_ === '/'), false, `${label}: the mount source is not granted`);
-            assert.equal(Object.hasOwn(spec, 'skills'), false);
-            if (channels) assert.deepEqual(granted.map((entry) => path.basename(entry)), ['report-task-blocked', 'require-human-input'], `${label}: channel skills remain`);
-            else assert.equal(Object.hasOwn(spec, 'folders'), false, `${label}: no folders at all`);
+            assert.equal(Object.hasOwn(spec, 'folders'), false, `${label}: no folders at all`);
+            const sent = (spec.skills || []).map((skill) => skill.path);
+            assert.equal(sent.some((entry) => entry === source || entry === '/' || (source !== '/' && entry.startsWith(`${source}${path.sep}`)) || entry.includes('.agents')), false, `${label}: no skills entry for the link`);
+            if (channels) assert.deepEqual((spec.skills || []).map((skill) => skill.name), ['report-task-blocked', 'require-human-input'], `${label}: channel skills remain, as skills`);
+            else assert.equal(Object.hasOwn(spec, 'skills'), false, `${label}: no skills at all`);
         }
     }
 });
 
-test('the channel skills are read-only grants, the prompt names their granted path and the worker channel, and humanInput is set only where asked', async (t) => {
+test('the channel skills are skills[] entries in the read-only view; the prompt names /run/robo-work/skills/<name> and the worker channel; humanInput is set only where asked', async (t) => {
     const withChannelSkills = async (options) => {
         let list;
         const built = await harness(t, { atRoot: true, ...options, skills: () => list });
@@ -669,15 +689,18 @@ test('the channel skills are read-only grants, the prompt names their granted pa
     const h = await withChannelSkills({ execution: { workflowExecution: true, humanInput: true } });
     await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Do the phase', owner: h.owner });
     const spec = h.admitted[0].request.specification;
+    const root = await fs.realpath(h.workingDir);
     assert.equal(spec.workflowExecution, true);
     assert.equal(spec.humanInput, true);
-    assert.deepEqual(spec.folders.map((folder) => folder.access), ['read', 'read']);
-    assert.deepEqual(spec.folders.map((folder) => path.basename(folder.path)), ['report-task-blocked', 'require-human-input']);
-    // No project: the folders are g0 and g1; the prompt names those paths and the worker's channel directories.
-    assert.match(spec.prompt, /Read \/projects\/g0\/SKILL\.md\. Use this required skill if missing resources/);
+    assert.equal(Object.hasOwn(spec, 'folders'), false, 'no skill is a folder grant');
+    assert.deepEqual(spec.skills, ['report-task-blocked', 'require-human-input'].map((name) => ({ name, path: path.join(root, '.ploinky', 'repos', 'AchillesIDE', 'roboTeamAgent', 'copilot', 'src', 'skills', name) })));
+    assert.match(spec.skillsDigest, /^[0-9a-f]{64}$/u);
+    assert.match(spec.prompt, /Read \/run\/robo-work\/skills\/report-task-blocked\/SKILL\.md\. Use this required skill if missing resources/);
     assert.match(spec.prompt, /--directory \/run\/robo-work\/channels\/task-failure/);
-    assert.match(spec.prompt, /Read \/projects\/g1\/SKILL\.md\. Use this required skill to ask the user/);
+    assert.match(spec.prompt, /Read \/run\/robo-work\/skills\/require-human-input\/SKILL\.md\. Use this required skill to ask the user/);
     assert.match(spec.prompt, /--directory \/run\/robo-work\/channels\/human-input/);
+    assert.match(spec.prompt, /Read and apply \/run\/robo-work\/skills\/human-report\/SKILL\.md/, 'the report skill is read from the view');
+    assert.equal(spec.prompt.includes('/projects/g'), false, 'no granted-folder path');
     assert.equal(spec.prompt.includes('/workspace/'), false, 'no local-mode path');
 
     // A plain turn offers neither skill and sets neither flag.
@@ -686,14 +709,14 @@ test('the channel skills are read-only grants, the prompt names their granted pa
     const bare = plain.admitted[0].request.specification;
     assert.equal(Object.hasOwn(bare, 'humanInput'), false);
     assert.equal(Object.hasOwn(bare, 'workflowExecution'), false);
-    assert.equal(bare.prompt.includes('/projects/g'), false);
+    assert.equal(Object.hasOwn(bare, 'skills'), false);
 
     // A workflow phase without human input offers only the failure skill.
     const failureOnly = await withChannelSkills({ execution: { workflowExecution: true } });
     await failureOnly.engine.executeTurn({ sessionId: failureOnly.sessionId, prompt: 'p', owner: failureOnly.owner });
     const only = failureOnly.admitted[0].request.specification;
     assert.equal(Object.hasOwn(only, 'humanInput'), false);
-    assert.equal(only.folders.length, 1);
+    assert.deepEqual(only.skills.map((skill) => skill.name), ['report-task-blocked']);
 });
 
 test('a blocked-task report is the same task-failed event and failure as the local engine', async (t) => {
@@ -852,4 +875,92 @@ test('a failing stop control is reported and retried only by the user; an accept
     assert.equal(silent.calls.control.length, 1);
     // A turn that is not running cannot be stopped.
     assert.equal((await g.engine.stopTurn({ turnId: 'nothing' })).code, 'not_running');
+});
+
+// ---- T2: the approval relay (decision M-30; M-52 addition 2) ----
+const APPROVAL_ID = '00000000-0000-4000-8000-0000000000a1';
+const approvalRow = (sequence, overrides = {}) => ({ seq: sequence, at: new Date().toISOString(), kind: 'approval-request', data: {
+    requestId: APPROVAL_ID, agent: 'codex', tool: 'edit', title: '<b>Write</b> a.txt', message: 'Allow?', options: [{ id: 'once', label: 'Allow once' }, { id: 'reject', label: 'Reject' }], ...overrides } });
+const resolvedRow = (sequence, reason = 'answered') => ({ seq: sequence, at: new Date().toISOString(), kind: 'approval-resolved', data: { requestId: APPROVAL_ID, reason } });
+const ASK_SELECTED = { ...SELECTED, permissionMode: 'ask-for-approval' };
+
+async function approvalTurn(t, answer, { controlFails = 0 } = {}) {
+    const rows = [state('running', 1), ala(ASK_SELECTED, 2), approvalRow(3)];
+    const client = scripted(rows, { hold: true });
+    if (controlFails > 0) {
+        const control = client.control;
+        let failures = controlFails;
+        client.control = async (referenceId, body, auth) => {
+            if (body.op === 'answer' && failures > 0) { failures -= 1; client.calls.control.push({ referenceId, body, auth, failed: true }); throw new WorkerError('worker_unreachable', 503); }
+            return control(referenceId, body, auth);
+        };
+    }
+    const asked = [];
+    const resolved = [];
+    const interactions = {
+        cancelTurn() {}, resolve: (id, reason) => resolved.push([id, reason]),
+        request: async (event, options) => { asked.push({ event, options }); return typeof answer === 'function' ? answer() : answer; },
+    };
+    const otherGrant = freshGrant('another-envelope');
+    const h = await harness(t, { permission: 'ask-for-approval', client, freshest: () => evidenceOf(otherGrant), engineOptions: { engine: { interactions, approvalRelay: true } } });
+    const events = [];
+    const turn = h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'p', owner: h.owner, onEvent: (event) => events.push(event) });
+    for (let i = 0; i < 400 && asked.length === 0; i += 1) await tick(2);
+    for (let i = 0; i < 50; i += 1) await tick(2);
+    rows.push(resolvedRow(4), ala(FINAL('Final answer'), 5), state('completed', 6));
+    const result = await turn;
+    return { h, client, asked, resolved, events, result, otherGrant };
+}
+
+test('A2 (RoboTeam): the approval is asked through the native interaction path with requireSigned; the answer is the worker `answer` control under the response\'s OWN grant', async (t) => {
+    const answerGrant = freshGrant('signed-response');
+    const { h, client, asked, resolved, result, otherGrant } = await approvalTurn(t, { optionId: 'once', owner: { evidence: evidenceOf(answerGrant) } });
+    assert.equal(result.outputText, 'Final answer');
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0].options.requireSigned, true);
+    assert.deepEqual({ ...asked[0].event, type: asked[0].event.type }, {
+        type: 'coding-agent-request', id: APPROVAL_ID, agent: 'codex', kind: 'permission', method: 'edit', title: '<b>Write</b> a.txt', message: 'Allow?',
+        options: [{ id: 'once', label: 'Allow once' }, { id: 'reject', label: 'Reject' }]
+    }, 'the plain-text fields reach the WebChat card unchanged (never interpreted)');
+    const answers = client.calls.control.filter((call) => call.body.op === 'answer');
+    assert.equal(answers.length, 1);
+    assert.deepEqual(answers[0].body.payload, { requestId: APPROVAL_ID, optionId: 'once' });
+    assert.deepEqual(answers[0].auth, { grant: answerGrant }, 'the response\'s own grant');
+    assert.notDeepEqual(answers[0].auth, { grant: h.grant }, 'never the admission grant');
+    assert.notDeepEqual(answers[0].auth, { grant: otherGrant }, 'never a borrowed newer grant');
+    assert.deepEqual(resolved, [[APPROVAL_ID, 'answered']]);
+});
+
+test('A2 (RoboTeam): the owner\'s signed cancel is `cancelled: true`; a timed-out card or a response with no usable grant sends nothing', async (t) => {
+    const cancelGrant = freshGrant('cancel');
+    const cancelled = await approvalTurn(t, { optionId: null, owner: { evidence: evidenceOf(cancelGrant) } });
+    const sent = cancelled.client.calls.control.filter((call) => call.body.op === 'answer');
+    assert.deepEqual(sent.map((call) => [call.body.payload, call.auth]), [[{ requestId: APPROVAL_ID, cancelled: true }, { grant: cancelGrant }]]);
+    const timedOut = await approvalTurn(t, null);
+    assert.equal(timedOut.client.calls.control.filter((call) => call.body.op === 'answer').length, 0, 'the worker deadline decides, not the card timeout');
+    // A response with no usable grant sends nothing; the question is asked again (a new card) while the request is pending.
+    const once = (first) => { let used = false; return () => { if (used) return null; used = true; return first; }; };
+    const expired = await approvalTurn(t, once({ optionId: 'once', owner: { evidence: evidenceOf(grantOf(Math.floor(Date.now() / 1000) - 60)) } }));
+    assert.equal(expired.client.calls.control.filter((call) => call.body.op === 'answer').length, 0);
+    assert.equal(expired.asked.length, 2, 'asked again');
+    assert.ok(expired.events.some((event) => event.type === 'diagnostic' && /approval answer was not sent/.test(event.message)));
+    const unowned = await approvalTurn(t, once({ optionId: 'once', owner: null }));
+    assert.equal(unowned.client.calls.control.filter((call) => call.body.op === 'answer').length, 0);
+    assert.equal(unowned.asked.length, 2);
+});
+
+test('A2 (RoboTeam): an answer that does not reach the worker is asked again and the next signed answer is sent under its own grant', async (t) => {
+    const grants = [freshGrant('first-response'), freshGrant('second-response')];
+    let call = 0;
+    const turn = await approvalTurn(t, () => (call < 2 ? { optionId: 'once', owner: { evidence: evidenceOf(grants[call++]) } } : null), { controlFails: 1 });
+    const answers = turn.client.calls.control.filter((entry) => entry.body.op === 'answer');
+    assert.deepEqual(answers.map((entry) => [entry.failed === true, entry.auth.grant]), [[true, grants[0]], [false, grants[1]]]);
+    assert.notEqual(answers[0].body.operationId, answers[1].body.operationId);
+    assert.equal(turn.asked.length, 2);
+});
+
+test('normalizeEventRow maps the approval events', () => {
+    assert.deepEqual(normalizeEventRow(approvalRow(7)), { sequence: 7, kind: 'approval-request', requestId: APPROVAL_ID, agent: 'codex', tool: 'edit', title: '<b>Write</b> a.txt',
+        message: 'Allow?', detail: undefined, options: [{ id: 'once', label: 'Allow once' }, { id: 'reject', label: 'Reject' }] });
+    assert.deepEqual(normalizeEventRow(resolvedRow(8, 'expired')), { sequence: 8, kind: 'approval-resolved', requestId: APPROVAL_ID, reason: 'expired', optionId: undefined });
 });

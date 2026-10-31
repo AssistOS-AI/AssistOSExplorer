@@ -482,3 +482,47 @@ test('F1 reattach starvation: an unknown row newer than 17 running admitted rows
     assert.equal(lookups.length, 1, 'F1: the unknown row is looked up');
     assert.equal(lookups[0].body.originRequestId, unknown.origin_request_id);
 });
+
+// T2 (M-52 Q1, delta M6): the signed interaction-response contract RoboTeam verifies, minted here with Ploinky's real invocation minter over
+// exactly the arguments RoboTeam rebuilds (the Router side of this event is a later Ploinky slice). A tampered option, an added cancel, an
+// altered free text, a removed response or a changed interaction id fails verification with zero hops.
+test('T2: a signed interaction-response verifies with the response in the signed args; tampering with the option, cancel, text or id does not', async (t) => {
+    const { coordinator, hop } = await coordinatorFor(t);
+    const { buildInvocationContextForProviderCall } = await load('cli/server/mcp-proxy/index.js');
+    const signResponse = (interaction, user = U) => {
+        const payload = { __webchatMessage: 1, version: 1, text: '', attachments: [], presentation: { visible: false }, sourceTabId: 'tab_u', sourcePageInstanceId: 'page_u',
+            event: 'interaction-response', interaction };
+        const invocation = buildInvocationContextForProviderCall({ req: requestFor(user), agentName: 'roboTeamAgent', toolName: '__webchat_message__', toolArgs: webchatSignedArgs(payload, { runtimeScope: 'principal' }) });
+        payload.invocation = { token: invocation.token };
+        return JSON.stringify(payload);
+    };
+    const option = signResponse({ id: 'task_control_1', optionId: 'choice_0' });
+    const genuine = coordinator.evidenceFor(normalizeWebchatMessage(option));
+    assert.equal(genuine.ok, true);
+    assert.equal(genuine.event, 'interaction-response');
+    assert.equal(genuine.principal, 'user:user-alice');
+    assert.deepEqual(normalizeWebchatMessage(option).interaction, { id: 'task_control_1', optionId: 'choice_0' });
+    const text = signResponse({ id: 'task_control_2', response: 'a free-text answer' });
+    assert.equal(coordinator.evidenceFor(normalizeWebchatMessage(text)).ok, true);
+    // Each tampered line is cut from its OWN freshly minted, never-verified envelope, so a refusal can only come from the signature over
+    // the response (not from the replay guard of an already verified token).
+    const freshOption = () => signResponse({ id: 'task_control_1', optionId: 'choice_0' });
+    const freshText = () => signResponse({ id: 'task_control_2', response: 'a free-text answer' });
+    const tampered = {
+        'optionId altered': edit(freshOption(), (p) => { p.interaction.optionId = 'choice_1'; }),
+        'cancel added': edit(freshOption(), (p) => { delete p.interaction.optionId; p.interaction.cancelled = true; }),
+        'interaction id altered': edit(freshOption(), (p) => { p.interaction.id = 'task_control_9'; }),
+        'response removed': edit(freshOption(), (p) => { delete p.interaction; }),
+        'free text altered': edit(freshText(), (p) => { p.interaction.response = 'something else'; }),
+        'event removed': edit(freshOption(), (p) => { delete p.event; }),
+    };
+    // Control: an untampered fresh envelope of the same kind still verifies (so the refusals below are the tampering's).
+    assert.equal(coordinator.evidenceFor(normalizeWebchatMessage(freshOption())).ok, true);
+    for (const [name, line] of Object.entries(tampered)) {
+        assert.equal(coordinator.evidenceFor(normalizeWebchatMessage(line)).ok, false, name);
+        const seen = coordinator.onEnvelope(normalizeWebchatMessage(line));
+        assert.equal(seen.event, '', name);
+        await seen.done;
+    }
+    assert.equal(hop.calls.length, 0, 'no tampered response made a hop');
+});

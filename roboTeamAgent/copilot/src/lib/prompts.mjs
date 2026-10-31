@@ -1,4 +1,19 @@
+// Where the coding agent finds the robot's skills. A local run reads them from the project's `.agents/skills`; in worker mode the robot's
+// admitted skills are the read-only view `/run/robo-work/skills` (T2, decision M-22) and nothing is written into the project.
+export const DEFAULT_SKILLS_ROOT = '.agents/skills';
+
 export const INITIAL_SKILL_INSTRUCTIONS = 'Read the SKILL.md headers in .agents/skills and use those skills when needed.';
+
+// The skill-discovery instruction for `skillsRoot`. With the worker's view, the project's own `.agents/skills` stays readable inside the
+// project, and a robot skill wins a name collision with a project skill.
+export function initialSkillInstructions(skillsRoot = DEFAULT_SKILLS_ROOT) {
+    if (skillsRoot === DEFAULT_SKILLS_ROOT) return INITIAL_SKILL_INSTRUCTIONS;
+    return `Read the SKILL.md headers of the robot's skills in ${skillsRoot} (one folder per skill, read-only) and of any project skills in .agents/skills, and use those skills when needed. When a robot skill and a project skill have the same name, use the robot skill in ${skillsRoot}.`;
+}
+
+export function humanReportInstructions(skillsRoot = DEFAULT_SKILLS_ROOT) {
+    return HUMAN_REPORT_INSTRUCTIONS.replace('.agents/skills/human-report/SKILL.md', `${skillsRoot}/human-report/SKILL.md`);
+}
 
 export const HUMAN_REPORT_INSTRUCTIONS = 'Read and apply .agents/skills/human-report/SKILL.md after every user prompt, including questions, small changes and continuations. Write one final response containing exactly one human report between two identical <<human-report>> markers, each on its own line. In ordinary chat and tasks without an explicit machine-readable output contract, this report is the entire final response. When the caller explicitly requires workflow execution, routing, child delegation or graph-generation output, put the plain-language report first, then the required structured payload after the closing marker in the same final response. Keep technical control fields outside the report. Use the markers only to delimit the actual report; do not repeat them in progress messages, formatting explanations or draft examples. Follow the skill for clear language and accurate outcomes.';
 
@@ -9,10 +24,10 @@ const WORKFLOW_HANDOFF_INSTRUCTIONS = 'Every workflow execution task, including 
 // The caller's system instructions, the report rule and the skill instruction
 // open a coding-agent session once; a resumed session already holds them, so
 // later turns carry only the user's message.
-export function buildNativePrompt({ prompt, resume = false, selectedSkillName, systemPrompt = '' }) {
-    const parts = resume ? [] : [systemPrompt, HUMAN_REPORT_INSTRUCTIONS, INITIAL_SKILL_INSTRUCTIONS];
+export function buildNativePrompt({ prompt, resume = false, selectedSkillName, systemPrompt = '', skillsRoot = DEFAULT_SKILLS_ROOT }) {
+    const parts = resume ? [] : [systemPrompt, humanReportInstructions(skillsRoot), initialSkillInstructions(skillsRoot)];
     parts.push(prompt);
-    if (selectedSkillName) parts.push(`Use the selected skill at .agents/skills/${selectedSkillName}/SKILL.md.`);
+    if (selectedSkillName) parts.push(`Use the selected skill at ${skillsRoot}/${selectedSkillName}/SKILL.md.`);
     return parts.filter(Boolean).join('\n\n');
 }
 
@@ -31,8 +46,8 @@ export function buildWorkflowTaskPrompt({ objective, currentTaskId, graph, previ
     });
 }
 
-export function buildTaskPrompt({ task, systemPrompt }) {
-    return [systemPrompt, HUMAN_REPORT_INSTRUCTIONS, task].filter(Boolean).join('\n\n');
+export function buildTaskPrompt({ task, systemPrompt, skillsRoot = DEFAULT_SKILLS_ROOT }) {
+    return [systemPrompt, humanReportInstructions(skillsRoot), task].filter(Boolean).join('\n\n');
 }
 
 export function routingPrompt(graph, taskId) {

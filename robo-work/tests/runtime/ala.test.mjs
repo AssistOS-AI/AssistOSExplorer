@@ -53,7 +53,9 @@ test('plan: refusals are bounded reasons', () => {
         return assert.fail('expected a refusal');
     };
     assert.equal(reason({ version: 1 }), 'unsupported_specification');
-    assert.equal(reason({ permissions: 'ask-for-approval' }), 'approval_unsupported');
+    // T2: ask-for-approval is planned (the worker relays the requests); an unknown mode is still refused, and flow work (no owner to
+    // answer) is refused below.
+    assert.equal(reason({ permissions: 'ask' }), 'approval_unsupported');
     assert.equal(reason({ cwd: '/ws' }), 'workspace_root_not_granted');
     assert.equal(reason({ cwd: '/other/proj' }), 'path_outside_workspace');
     assert.equal(reason({ cwd: '/wsx/proj' }), 'path_outside_workspace');

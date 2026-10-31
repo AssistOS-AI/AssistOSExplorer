@@ -6,6 +6,7 @@ import { PlanError, planAlaExecution } from './alaPlan.mjs';
 import { openAlaStreams } from './alaStreams.mjs';
 import { createEventRelay } from './eventRelay.mjs';
 import { createAttemptWatchdog } from './attemptWatchdog.mjs';
+import { isApprovalRequestId } from '../stateObservation.mjs';
 
 // The execution dispatcher (RoboWork r10 wiring). It picks queued attempts, runs ALA for each one through an execution
 // (the sandbox supervisor, ledger and provider endpoint; see executionFactory.mjs), relays ALA's records as bounded
@@ -21,7 +22,7 @@ import { createAttemptWatchdog } from './attemptWatchdog.mjs';
 //
 // A failure before an execution exists ends the attempt directly through beginAttemptEnd.
 
-export const DISPATCHER_DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 10000, failureAbortMs: 100, humanInputGraceMs: 10000, inactivityTimeoutMs: 20 * 60 * 1000, maxAttemptMs: 4 * 60 * 60 * 1000, resultBytes: 512 * 1024 - 1024 });
+export const DISPATCHER_DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 10000, failureAbortMs: 100, humanInputGraceMs: 10000, inactivityTimeoutMs: 20 * 60 * 1000, maxAttemptMs: 4 * 60 * 60 * 1000, approvalTimeoutMs: 15 * 60 * 1000, resultBytes: 512 * 1024 - 1024 });
 const FATAL_READER_ENDS = new Set(['control_stream_violation', 'control_stall', 'stdin_stall', 'stdin_overflow', 'stdout_error']);
 const SKIPPED_TRANSITION = new Set(['robot_busy', 'operation_conflict', 'stale_generation', 'not_found']);
 
@@ -50,7 +51,8 @@ export function alaDiagnostics(tail) {
 export function createDispatcher({
     store, workspaceId, workspaceRoot, factory, controlLimits, options = {}, log = () => {}, timers = { setInterval, clearInterval, setTimeout, clearTimeout }
 }) {
-    for (const method of ['listQueuedAdmissions', 'transitionAttempt', 'beginAttemptEnd', 'recordReferenceEvents', 'takePendingControls', 'ackControl']) {
+    for (const method of ['listQueuedAdmissions', 'transitionAttempt', 'beginAttemptEnd', 'recordReferenceEvents', 'takePendingControls', 'ackControl',
+        'recordApprovalRequest', 'resolveApproval', 'rejectApprovalAnswer', 'finalizeControl']) {
         if (!store || typeof store[method] !== 'function') throw new TypeError(`The store lacks ${method}`);
     }
     if (!factory || typeof factory.open !== 'function') throw new TypeError('An execution factory is required');
@@ -78,7 +80,7 @@ export function createDispatcher({
     async function run(item, shutdownRef) {
         let plan;
         try {
-            plan = planAlaExecution({ specification: item.specification, workspaceRoot });
+            plan = planAlaExecution({ specification: item.specification, workspaceRoot, logicalKind: item.logicalKind ?? null });
         } catch (error) {
             endDirect(item, 'queued', { classification: 'failed', data: { reason: error instanceof PlanError ? error.reason : 'invalid_specification' } });
             return;
@@ -185,11 +187,100 @@ export function createDispatcher({
                 return { id: requestId };
             } : null
         };
+        // ---- The approval relay (T2, decision M-30, SPEC deltas M3/M4/M5) ----
+        // ALA's `coding-agent-request` (a coding agent's native permission request) is recorded by the store as an `approval-request`
+        // event, never relayed as an `ala` event. While it is open the inactivity bound is held (M3) and its deadline runs; the owner answers
+        // with the `answer` control (recorded durably first), which deliverPass writes to ALA's stdin exactly once. Whoever resolves the
+        // request first wins in the store; ONLY the winner of a worker-side resolution (deadline, limit) writes the cancel record. ALA's own
+        // `coding-agent-request-resolved` and `interaction-response-rejected` records are recorded and not relayed either.
+        const openApprovals = new Map(); // requestId -> deadline timer
+        const responded = new Set(); // request ids whose one stdin response was written (or that ALA resolved itself)
+        const settleApproval = (requestId) => {
+            const timer = openApprovals.get(requestId);
+            if (timer === undefined) return;
+            timers.clearTimeout(timer);
+            openApprovals.delete(requestId);
+            watchdog.releaseInactivity();
+        };
+        // The worker's own cancel of a request it resolved (deadline, limit, no room): one stdin record, never a second response.
+        const cancelInAla = (requestId) => {
+            if (responded.has(requestId) || streams === null) return;
+            responded.add(requestId);
+            streams.reader.writeControl({ type: 'interaction-response', id: requestId, cancelled: true })
+                .then((written) => { if (!written) log('approval_cancel_not_written', { executionId: item.executionId, requestId }); })
+                .catch(() => log('approval_cancel_not_written', { executionId: item.executionId, requestId }));
+        };
+        const expireApproval = (requestId) => {
+            if (finishing !== null) return;
+            let result;
+            try { result = store.resolveApproval({ executionId: item.executionId, attemptId: item.attemptId, requestId, reason: 'expired' }); } catch (error) {
+                log('approval_expiry_failed', { executionId: item.executionId, error: describe(error) });
+                return;
+            }
+            // Something else (the owner's answer, ALA) resolved it first: that path settles it.
+            if (!result.resolved) return;
+            settleApproval(requestId);
+            cancelInAla(requestId);
+        };
+        const onApprovalRequest = (record) => {
+            if (finishing !== null) return;
+            let result;
+            try { result = store.recordApprovalRequest({ executionId: item.executionId, attemptId: item.attemptId, record }); } catch (error) {
+                log('approval_record_failed', { executionId: item.executionId, error: describe(error) });
+                result = { outcome: 'unrecorded', requestId: isApprovalRequestId(record?.id) ? record.id : null };
+            }
+            const { requestId } = result;
+            if (result.outcome === 'open') {
+                if (openApprovals.has(requestId)) return;
+                watchdog.holdInactivity();
+                const timer = timers.setTimeout(() => expireApproval(requestId), settings.approvalTimeoutMs);
+                timer.unref?.();
+                openApprovals.set(requestId, timer);
+                log('approval_requested', { executionId: item.executionId, requestId });
+            } else if (result.outcome === 'limit' || result.outcome === 'unrecorded') {
+                log('approval_limit', { executionId: item.executionId, requestId, outcome: result.outcome });
+                if (requestId) cancelInAla(requestId);
+            } else if (result.outcome === 'invalid') {
+                log('approval_invalid', { executionId: item.executionId });
+            }
+        };
+        const onApprovalResolved = (record) => {
+            if (!isApprovalRequestId(record.id)) return;
+            responded.add(record.id);
+            if (record.reason !== 'answered') {
+                try {
+                    store.resolveApproval({ executionId: item.executionId, attemptId: item.attemptId, requestId: record.id, reason: record.reason === 'expired' ? 'expired' : 'cancelled' });
+                } catch (error) { log('approval_resolve_failed', { executionId: item.executionId, error: describe(error) }); }
+            }
+            settleApproval(record.id);
+        };
+        const onApprovalRejected = (record) => {
+            if (!isApprovalRequestId(record.id)) return;
+            try { store.rejectApprovalAnswer({ executionId: item.executionId, attemptId: item.attemptId, requestId: record.id }); } catch (error) {
+                log('approval_reject_failed', { executionId: item.executionId, error: describe(error) });
+            }
+            log('approval_answer_rejected', { executionId: item.executionId, requestId: record.id });
+        };
+        // True when the record belongs to the approval relay (and so is not relayed as an `ala` event). The records are handled in order,
+        // each after the relay flushed the ALA records queued before it, so an approval event never takes a sequence number ahead of
+        // records ALA wrote earlier (and a resolution is never handled before its request was recorded).
+        const APPROVAL_HANDLERS = { 'coding-agent-request': onApprovalRequest, 'coding-agent-request-resolved': onApprovalResolved, 'interaction-response-rejected': onApprovalRejected };
+        let approvalChain = Promise.resolve();
+        const approvalRecord = (record) => {
+            const handler = Object.hasOwn(APPROVAL_HANDLERS, record?.type) ? APPROVAL_HANDLERS[record.type] : null;
+            if (handler === null) return false;
+            approvalChain = approvalChain.then(() => relay?.flush()).then(() => handler(record))
+                .catch((error) => log('approval_record_failed', { executionId: item.executionId, error: describe(error) }));
+            return true;
+        };
+
         // The one end of this attempt, whoever asks first (exit, stop, a fatal stream error, shutdown).
         const finish = (outcome) => {
             if (finishing === null) signalEnded();
             finishing ??= (async () => {
                 watchdog.stop();
+                for (const timer of openApprovals.values()) timers.clearTimeout(timer);
+                openApprovals.clear();
                 if (controlTimer !== null) { timers.clearInterval(controlTimer); controlTimer = null; }
                 if (channelTimer !== null) { timers.clearTimeout(channelTimer); channelTimer = null; }
                 streams?.reader.end('ended_by_dispatcher');
@@ -240,8 +331,38 @@ export function createDispatcher({
                     finish({ classification: 'cancelled', outputText: partialText(), data: { reason: 'stopped' } }).catch((error) => log('end_failed', { error: describe(error) }));
                     return;
                 }
-                if (control.op !== 'message') { ack(); continue; }
                 const key = `${control.actorKey}|${control.operationId}`;
+                if (control.op === 'answer') {
+                    // The owner's approval answer, recorded (and its request resolved) before this pass took it. The stdin record is built
+                    // from the validated fields only: exactly {type, id, optionId} or {type, id, cancelled: true}.
+                    const answer = control.payload;
+                    const valid = answer && isApprovalRequestId(answer.requestId)
+                        && ((typeof answer.optionId === 'string' && answer.cancelled === undefined) || (answer.cancelled === true && answer.optionId === undefined));
+                    if (writtenControls.has(key)) { ack(); continue; }
+                    if (!valid || responded.has(answer.requestId)) {
+                        // Never written, so never `applied`: a malformed one is final `rejected`; one whose request ALA (or the deadline)
+                        // resolved first is final `ended`.
+                        if (!valid) log('approval_answer_malformed', { executionId: item.executionId });
+                        else settleApproval(answer.requestId);
+                        try {
+                            store.finalizeControl({ executionId: item.executionId, attemptId: item.attemptId, actorKey: control.actorKey, operationId: control.operationId, delivery: valid ? 'ended' : 'rejected' });
+                        } catch (error) { log('control_finalize_failed', { error: describe(error) }); }
+                        continue;
+                    }
+                    const record = answer.cancelled === true
+                        ? { type: 'interaction-response', id: answer.requestId, cancelled: true }
+                        : { type: 'interaction-response', id: answer.requestId, optionId: answer.optionId };
+                    let written = false;
+                    try { written = await streams.reader.writeControl(record); } catch { written = false; }
+                    if (!written) return;
+                    writtenControls.add(key);
+                    responded.add(answer.requestId);
+                    settleApproval(answer.requestId);
+                    watchdog.touch();
+                    ack();
+                    continue;
+                }
+                if (control.op !== 'message') { ack(); continue; }
                 if (writtenControls.has(key)) { ack(); continue; }
                 const record = { type: 'message', id: control.payload.id ?? control.operationId, message: control.payload.message };
                 if (control.payload.displayText !== undefined) record.displayText = control.payload.displayText;
@@ -267,7 +388,7 @@ export function createDispatcher({
             readerEnded = new Promise((resolve) => {
                 streams = openAlaStreams({
                     ...opened, limits: streamLimits,
-                    onRecord: (record, bytes) => { watchdog.touch(); relay.push(record, bytes); },
+                    onRecord: (record, bytes) => { watchdog.touch(); if (!approvalRecord(record)) relay.push(record, bytes); },
                     onActivity: () => watchdog.touch(),
                     onEnd: (reason, detail) => {
                         resolve();

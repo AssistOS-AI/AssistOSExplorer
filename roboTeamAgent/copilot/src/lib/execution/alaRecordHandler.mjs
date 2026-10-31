@@ -6,8 +6,12 @@ export const ALA_BACKENDS = Object.freeze(['codex', 'opencode', 'pi', 'claude'])
 // `backend` is the coding agent the turn must run on, or null when it is only known from ALA's
 // own selection (the worker decides it from the robot configuration); then any known agent is
 // accepted once and fixed for the rest of the turn.
-// `bindEngine(agent)` records the selection in the conversation. `reply(id, optionId)` answers a
-// native permission request (`optionId` null cancels). `fail(error)` ends the turn with an error.
+// `bindEngine(agent)` records the selection in the conversation. `reply(id, optionId, owner)` answers a
+// native permission request (`optionId` null is the owner's cancel) with the verified owner of the signed
+// response that carried the answer (T2: the worker's `answer` control needs that response's own grant).
+// `interactions.request` resolves to `{optionId, owner}` for an answer, or null when nothing was answered
+// (the turn ended, the request was resolved elsewhere, or the WebChat card timed out): then nothing is
+// sent, and the worker's own deadline decides. `fail(error)` ends the turn with an error.
 export function createAlaRecordHandler({ backend, permissionMode, efforts = {}, skillExecution = null, sessionId,
     sanitize, emit, interactions, context, signal, turnId, bindEngine, reply, fail }) {
     let expected = backend || null;
@@ -45,11 +49,19 @@ export function createAlaRecordHandler({ backend, permissionMode, efforts = {}, 
             }
             if (pendingRequests.has(event.id)) throw new Error('Duplicate native permission request ID.');
             pendingRequests.add(event.id);
-            Promise.resolve().then(() => interactions?.request(sanitize(event), { context, signal, turnId }) ?? null)
-                .then((optionId) => {
+            // `reply` may answer {retry: true} when the answer did not reach the worker (no usable grant, a refused or failed control
+            // other than "already resolved"): the card is closed by then, so the question is asked again, under a new interaction id,
+            // while the request is still pending. Each retry waits for the user, so this cannot spin.
+            const ask = () => Promise.resolve().then(() => interactions?.request(sanitize(event), { context, signal, turnId, requireSigned: true }) ?? null)
+                .then(async (answer) => {
+                    if (answer === null || answer === undefined) return;
+                    const { optionId = null, owner = null } = typeof answer === 'object' ? answer : { optionId: answer };
                     if (optionId !== null && !event.options.some((option) => option.id === optionId)) throw new Error('Unadvertised native permission response.');
-                    reply(event.id, optionId);
-                }).catch(fail);
+                    if (!pendingRequests.has(event.id)) return;
+                    const outcome = await reply(event.id, optionId, owner);
+                    if (outcome?.retry === true && pendingRequests.has(event.id) && !signal?.aborted) await ask();
+                });
+            ask().catch(fail);
         } else if (event.type === 'coding-agent-request-resolved') {
             pendingRequests.delete(event.id);
             interactions?.resolve(event.id, event.reason);

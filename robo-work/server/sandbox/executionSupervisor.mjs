@@ -51,14 +51,28 @@ const STREAM_BASENAME = /^[a-z0-9]{8,64}$/u;
 const TOOL_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const WORKLOAD_PATH = '/usr/local/bin:/usr/bin:/bin';
 // The anchor script is fixed text; the marker arrives as $1 so that it is a literal argv element of the shell.
-const ANCHOR_SCRIPT = 'IFS= read -r _ || exit 0; exec sleep 2147483647';
+// M-65: the anchor is spawned outside the launcher's chain, and a descriptor the worker holds without close-on-exec (node-pty's PTY master
+// of a robot terminal) would otherwise stay open in it for the whole execution. Before anything else the script closes every descriptor
+// >= 3 it inherited (listed from /proc/self/fd), as stage.sh does: `N>&-` redirections applied to the shell itself by `exec`. dash parses
+// only a single-digit descriptor in a redirection, so when one >= 10 must be closed and the shell is not bash, the same fixed text is
+// re-run under /bin/bash (the marker stays the positional after `rw-anchor`); without bash it fails closed (exit 72: the anchor never
+// commits). The worker image's /bin/sh is bash. The core text holds no single quote, so it can be quoted for the re-exec as it is.
+const ANCHOR_CORE = [
+    'redirs=; big=0',
+    'for f in /proc/self/fd/*; do fd=${f##*/}; case $fd in ""|*[!0-9]*) continue;; esac; [ "$fd" -ge 3 ] || continue; [ "$fd" -ge 10 ] && big=1; redirs="$redirs $fd>&-"; done',
+    'if [ "$big" = 1 ] && [ -z "${BASH_VERSION:-}" ]; then [ -x /bin/bash ] && exec /bin/bash -c "$ANCHOR_REEXEC" rw-anchor "$1"; exit 72; fi',
+    '[ -z "$redirs" ] || eval "exec$redirs"',
+    'IFS= read -r _ || exit 0',
+    'exec sleep 2147483647'
+].join('\n');
+export const ANCHOR_SCRIPT = `ANCHOR_REEXEC='${ANCHOR_CORE.replace('$ANCHOR_REEXEC', '')}'\n${ANCHOR_CORE}`;
 
 const defer = () => { const d = {}; d.promise = new Promise((resolve, reject) => { d.resolve = resolve; d.reject = reject; }); return d; };
 const decimal = (value) => String(value);
 
 export function createExecutionSupervisor({
     launcher, view, createNetwork = createExecutionNetwork, spawnImpl = spawn, fsImpl = fs, netImpl = net, clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
-    admission, roles, home = null, grants = [], workloadPath = WORKLOAD_PATH, onInfrastructureLoss = () => {}, modelChannel = null,
+    admission, roles, home = null, grants = [], skills = [], workloadPath = WORKLOAD_PATH, onInfrastructureLoss = () => {}, modelChannel = null,
     limits = {}, supervisorPid = process.pid, pairSocketPathLimit = 100, activityWalk = null, now = Date.now
 } = {}) {
     if (!launcher || typeof launcher.launch !== 'function') throw new TypeError('A launcher is required');
@@ -300,6 +314,12 @@ export function createExecutionSupervisor({
         return chosen;
     }
 
+    // M-22 skills view (T2): every workload sees every admitted skill read-only at /run/robo-work/skills/<name>, whatever the request's
+    // folders (they do not depend on selectGrants). Each is staged by prep like a grant (anchored re-open with the recorded identity, scan,
+    // mask, rescan, verify, then a regular SKILL.md through the staged view) under its reserved stage name; bwrapArgs binds it into the view.
+    // A skill's exclusions (the specification's ignore paths inside its folder, folder-relative) are masked by prep like a grant's.
+    const skillEntries = () => skills.map((skill) => ({ name: skill.stageName, path: skill.path, fd: skill.fd, mode: 'ro', skill: skill.name, exclusions: [...(skill.exclusions ?? [])] }));
+
     async function createWorkload({ resourceId, marker, spec }) {
         requireRuntime();
         if (!home || !Number.isInteger(home.fd) || typeof home.path !== 'string') throw sandboxError('setup_failed', 'no HOME directory');
@@ -324,7 +344,7 @@ export function createExecutionSupervisor({
                 // OPENCODE_CONFIG is provider-owned (the validator refuses it from ALA): it comes after request.env and only for an execution
                 // admitted for the model channel (M-26). The file holds no secret.
                 env: { HOME: request.home, PATH: workloadPath, TMPDIR: '/tmp', ...request.env, ...(modelChannel ? { OPENCODE_CONFIG: modelChannel.configPath } : {}) },
-                cwd: request.cwd, argv: [request.executable, ...request.args], home: { path: home.path, fd: home.fd }, grants: chosenGrants,
+                cwd: request.cwd, argv: [request.executable, ...request.args], home: { path: home.path, fd: home.fd }, grants: [...chosenGrants, ...skillEntries()],
                 channelsDir: rt('channels'), tmpDir: rt('tmp'), stdio, scanLimits: roles.workload.scanLimits
             });
             return asCreation(resourceId, sandbox, { tree: true });

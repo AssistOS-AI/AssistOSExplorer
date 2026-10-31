@@ -53,7 +53,7 @@ test('the bundled skill scripts reach the worker\'s channel layout by --director
     assert.match(local.stderr, /not available for this execution/);
 });
 
-test('the granted skill path in the prompt is the worker plan\'s own virtual path, with a project and without', async (t) => {
+test('the skill path in the prompt is the worker plan\'s own skills-view path, with a project and without', async (t) => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'worker-channel-plan-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const skillsBase = path.join(root, '.ploinky', 'repos', 'AchillesIDE', 'roboTeamAgent', 'copilot', 'src', 'skills');
@@ -83,11 +83,12 @@ test('the granted skill path in the prompt is the worker plan\'s own virtual pat
         const plan = planAlaExecution({ specification: spec, workspaceRoot: root });
         assert.equal(plan.cwd, project ? '/projects/g0' : '/home/robot');
         for (const [skill, label] of [['report-task-blocked', 'task-failure'], ['require-human-input', 'human-input']]) {
-            const [, virtual] = new RegExp(`Read (/projects/g\\d+)/SKILL\\.md\\.[^\\n]*channels/${label}`).exec(spec.prompt) ?? [];
+            const [, virtual] = new RegExp(`Read (/run/robo-work/skills/[^/]+)/SKILL\\.md\\.[^\\n]*channels/${label}`).exec(spec.prompt) ?? [];
             assert.ok(virtual, `${label} skill path is in the prompt`);
-            const grantEntry = plan.grants.find((entry) => entry.path === virtual);
-            assert.equal(grantEntry.hostPath, path.join(skillsBase, skill), `${virtual} is the ${skill} folder in the worker's plan (project: ${project})`);
-            assert.equal(grantEntry.access, 'read');
+            // T2: the skill is in the worker plan's skills view, never a grant.
+            const planned = plan.skills.find((entry) => entry.path === virtual);
+            assert.equal(planned.hostPath, path.join(skillsBase, skill), `${virtual} is the ${skill} folder in the worker's plan (project: ${project})`);
+            assert.equal(plan.grants.some((entry) => entry.hostPath === planned.hostPath), false);
         }
     }
 });

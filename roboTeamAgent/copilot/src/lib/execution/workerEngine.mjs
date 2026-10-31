@@ -37,6 +37,10 @@ import { plainStopMessage } from '../../../../server/worker-coordinator/stop-rea
 // events and system-initiated stop, with no user grant.
 
 export const SPEC_VERSION = 2;
+// Decision M-69 Q1: the approval relay is DORMANT until the Ploinky Router signs WebChat interaction-response envelopes (the Ploinky
+// interaction-response signing slice flips this to true). Until then every answer would arrive unsigned and could never be used, so an
+// ask-for-approval turn is refused before admission, as before. The worker-side relay and RoboTeam's answer and receive code stay in place.
+export const WEBCHAT_APPROVAL_RELAY_ENABLED = false;
 const EVENTS_PAGE = 500;
 const POLL_MIN_MS = 200;
 const POLL_MAX_MS = 2000;
@@ -53,6 +57,25 @@ const EVIDENCE_WAIT_MS = 60000;
 const WORKER_SESSION_HOME = '/';
 // Where every workload sees the worker-hosted channels of its execution (read-only).
 const CHANNELS_ROOT = '/run/robo-work/channels';
+// Where every workload sees the robot's admitted skills, one read-only folder per skill (T2, decision M-22). The worker stages exactly the
+// `skills[]` of the admission there; nothing is written into the project and no skill is a folder grant.
+export const SKILLS_ROOT = '/run/robo-work/skills';
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
+const MAX_SKILLS = 64;
+// The two channel skills: each is sent only when its channel is admitted for this attempt (deltas B1, M-53 Q2).
+const CHANNEL_SKILLS = Object.freeze({ 'report-task-blocked': 'task-failure', 'require-human-input': 'human-input' });
+
+// The selection digest the worker records with the admission (stateProtocol.skillsSelectionDigest): SHA-256 hex of the canonical JSON of
+// `skills`, whose entries are {name, path, required?} in that key order, so JSON.stringify is the canonical text.
+export function skillsDigest(skills) {
+    return crypto.createHash('sha256').update(JSON.stringify(skills)).digest('hex');
+}
+
+function skillRequiredRefusal(name) {
+    const error = new WorkerError('skill_required_unavailable', 400);
+    error.message = `skill_required_unavailable: the required skill "${name}" is not available through the worker (its folder is not in the shared workspace).`;
+    return error;
+}
 
 // Soul Gateway models (`soul-gateway/<id>`, matched case-insensitively) run in the worker only on OpenCode: the worker hosts a model channel
 // for them (decision M-26; robo-work/server/runtime/modelChannel.mjs) with its own Soul Gateway identity, and nothing is written to the robot
@@ -115,12 +138,18 @@ export function normalizeEventRow(row) {
     if (kind === 'task-failed') return { sequence, kind, message: row.message ?? data.message };
     if (kind === 'human-input-request') return { sequence, kind, requestId: row.requestId ?? data.requestId, question: row.question ?? data.question, options: row.options ?? data.options };
     if (kind === 'human-input-answered') return { sequence, kind, requestId: row.requestId ?? data.requestId };
+    // Approval relay events (T2, decision M-30): the worker's bounded, plain-text copy of the coding agent's request, and its one resolution.
+    if (kind === 'approval-request') {
+        return { sequence, kind, requestId: data.requestId, agent: data.agent, tool: data.tool, title: data.title, message: data.message, detail: data.detail, options: data.options };
+    }
+    if (kind === 'approval-resolved') return { sequence, kind, requestId: data.requestId, reason: data.reason, optionId: data.optionId };
     return { sequence, kind: 'unknown' };
 }
 
 export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, settings = workspaceSettings, interactions, execution = {},
     webchatLogsBase = '', livePublisher = null, client, provisioner, getRobot, sleep = delay, evidenceWaitMs = EVIDENCE_WAIT_MS,
-    stopWaitMs = STOP_WAIT_MS, transientWaitMs = TRANSIENT_WAIT_MS, pollMinMs = POLL_MIN_MS, pollMaxMs = POLL_MAX_MS } = {}) {
+    stopWaitMs = STOP_WAIT_MS, transientWaitMs = TRANSIENT_WAIT_MS, pollMinMs = POLL_MIN_MS, pollMaxMs = POLL_MAX_MS,
+    approvalRelay = WEBCHAT_APPROVAL_RELAY_ENABLED } = {}) {
     if (!sessionStore || !skillCatalog) throw new TypeError('The worker engine requires a session store and Anthropic skill catalog.');
     if (!client || !provisioner || typeof getRobot !== 'function') throw new TypeError('The worker engine requires a worker client, a robot provisioner and a robot reader.');
     const active = new Set();
@@ -290,8 +319,13 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             const stored = settings.readAchillesSettings?.(cwd) || {};
             const permissionMode = execution.permissions || settings.getPermissionMode?.(cwd) || stored.permissionMode || 'full-access';
             if (!['ask-for-approval', 'full-access'].includes(permissionMode)) throw new Error('Invalid native permission mode.');
-            // The worker has no control that answers a native permission request yet.
-            if (permissionMode === 'ask-for-approval') throw new WorkerError('worker_permissions_unsupported', 400);
+            // T2 (decision M-30): once the relay is enabled (M-69 Q1, WEBCHAT_APPROVAL_RELAY_ENABLED), a user-owned turn relays the coding
+            // agent's approval requests and the owner answers each one with the signed response's own fresh grant. Until then every
+            // ask-for-approval turn is refused here. Work with no user to answer stays refused either way: a RoboFlow phase (binding row;
+            // robot-task forces full-access there anyway) and a task child that holds only its parent's single grant.
+            if (permissionMode === 'ask-for-approval' && (approvalRelay !== true || authority.mode === 'binding' || authority.direct === true)) {
+                throw new WorkerError('worker_permissions_unsupported', 400);
+            }
 
             const ready = await provisioner.ensureReady(await getRobot(), await grantFor(authority, { signal: controller.signal }));
             const resume = Boolean(session.engine?.backend) && (session.messages || []).some((message) => message.role === 'assistant'
@@ -343,49 +377,52 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             // no path of the RoboTeam robot home is sent. The task-script context is a RoboTeam-local
             // resource outside the shared workspace and is not sent; the task-failure and human-input
             // channels are the worker's own (below).
-            const nativePrompt = buildNativePrompt({ prompt, resume, selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
-            // Extra folders are explicit read-only grants strictly below the workspace root, never the root and never
-            // the project itself: the channel skills only. The session skills overlay
-            // (`<project>/.roboteam/sessions/<id>/skills`) is private storage the worker refuses at open, so it is
-            // never sent, and neither is any path with a protected component (a managed `.ploinky/repos/<repo>`
-            // skill source excepted, which the worker resolves as a skill source). The placement modifiers (`as`,
-            // `at`, `expose`) cannot run in the worker, so a source is granted at its own path.
-            const candidates = [];
-            // Skill mount sources (`snapshot.mounts`) are deliberately never granted: a robot controls the symlinks under its
-            // writable project's `.agents/skills`, so a mount source can be another project, a managed repository root or `/`.
-            // The worker hosts the task-failure and human-input channels (decision M-14): their skills are ordinary
-            // read-only grants (RoboTeam's bundled skills by their managed-repository workspace path) and the prompt
-            // names the granted path and the channel directory, which are the same in every workload.
-            if (snapshot.mounts?.length) {
-                await emit({ type: 'diagnostic', message: 'The selected skills are not available through the worker yet; this turn runs without them.' });
-            }
-            const channelSkills = [];
-            for (const [skillName, channel, wanted] of [['report-task-blocked', 'task-failure', execution.workflowExecution === true],
-                ['require-human-input', 'human-input', execution.humanInput === true]]) {
-                if (!wanted) continue;
-                const skill = skills.find((entry) => entry.name === skillName);
-                const hostPath = skill ? await workspaceCodePath(skill.skillDir, { workspaceRoot, env, codeRoot: execution.codeRoot }).catch(() => null) : null;
-                if (!hostPath || !isGrantableFolder(workspaceRoot, hostPath)) {
-                    await emit({ type: 'diagnostic', message: `The ${skillName} skill is not available through the worker (its folder is not in the shared workspace).` });
+            const nativePrompt = buildNativePrompt({ prompt, resume, selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt, skillsRoot: SKILLS_ROOT });
+            // The robot's skills (T2, decision M-22, deltas B1/M2, M-53 Q1/Q2): the enabled entries of the robot's admitted skill policy,
+            // its required skills and each channel skill only when its channel is admitted for this attempt, sent as `skills[]`
+            // {name, path, required?}. The worker resolves each path itself (anchored, no-follow) and stages exactly these folders
+            // read-only at /run/robo-work/skills/<name>; a skill is never an ALA folder or a project grant. Paths are never resolved
+            // here, by trust class: a workspace path is walked without following a link and sent as written (a link yields no path),
+            // and RoboTeam's own bundle is sent by its managed-repository projection (workspaceCodePath). The project's own
+            // `.agents/skills` entries are never sent: they stay readable only inside the project grant. Skill mount sources
+            // (`snapshot.mounts`) are never granted either (a robot controls the links under its writable project).
+            const skillEntries = [];
+            const unavailable = [];
+            for (const entry of skills) {
+                const channel = CHANNEL_SKILLS[entry.name];
+                if (channel !== undefined) {
+                    const admitted = channel === 'task-failure' ? execution.workflowExecution === true : execution.humanInput === true;
+                    if (!admitted) continue;
+                } else if (entry.executionOnly === true) {
+                    // An execution-only skill appears only with its admitted channel (M-53 Q2); there is no other execution-only kind.
                     continue;
                 }
-                candidates.push(hostPath);
-                channelSkills.push({ skillName, channel, hostPath });
+                const hostPath = SKILL_NAME.test(entry.name)
+                    ? await workspaceCodePath(entry.skillDir, { workspaceRoot, env, codeRoot: execution.codeRoot }).catch(() => null) : null;
+                if (!hostPath || !isGrantableFolder(workspaceRoot, hostPath)) {
+                    if (entry.required === true) throw skillRequiredRefusal(entry.name);
+                    unavailable.push(entry.name);
+                    continue;
+                }
+                if (skillEntries.some((skill) => skill.name === entry.name)) continue;
+                skillEntries.push({ name: entry.name, path: hostPath, ...(entry.required === true ? { required: true } : {}), channel });
             }
-            const folders = [];
-            let skipped = 0;
-            for (const candidate of [...new Set(candidates)]) {
-                if (!isGrantableFolder(workspaceRoot, candidate)) { skipped += 1; continue; }
-                if (projectCwd && (candidate === projectCwd || candidate.startsWith(`${projectCwd}${path.sep}`))) continue;
-                folders.push({ path: candidate, access: 'read' });
-            }
-            if (skipped) await emit({ type: 'diagnostic', message: `${skipped} folder(s) outside the shared workspace or in private storage are not available through the worker.` });
+            if (unavailable.length) await emit({ type: 'diagnostic', category: 'skill-catalog', message: `Not available through the worker (the folder is not in the shared workspace): ${unavailable.join(', ')}. This turn runs without them.` });
+            // At most 64 (the worker refuses more): required skills first, a cut is reported, never silent.
+            const ordered = [...skillEntries.filter((skill) => skill.required), ...skillEntries.filter((skill) => !skill.required)];
+            if (ordered.length > MAX_SKILLS) await emit({ type: 'diagnostic', category: 'skill-catalog', message: `Only ${MAX_SKILLS} skills can be used in one turn; ${ordered.length - MAX_SKILLS} were left out: ${ordered.slice(MAX_SKILLS).map((skill) => skill.name).join(', ')}.` });
+            const admittedSkills = ordered.slice(0, MAX_SKILLS);
+            const skillsList = admittedSkills.map(({ name, path: skillPath, required }) => ({ name, path: skillPath, ...(required ? { required: true } : {}) }));
             const ignore = projectCwd ? [path.resolve(projectCwd, ACHILLES_PRIVATE_DIRECTORY_NAME)] : [];
-            // Grant i is `/projects/g<i>` in the worker's plan: the project (when there is one) first, then the folders in order.
-            const virtualOf = (hostPath) => `/projects/g${(projectCwd ? 1 : 0) + folders.findIndex((folder) => folder.path === hostPath)}`;
-            const channelPrompt = channelSkills.filter((entry) => folders.some((folder) => folder.path === entry.hostPath)).map((entry) => (entry.channel === 'task-failure'
-                ? `\n\nRead ${virtualOf(entry.hostPath)}/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan. Its channel here is ${CHANNELS_ROOT}/task-failure: run the script from the skill directory as \`node scripts/run.mjs --directory ${CHANNELS_ROOT}/task-failure --input '<json>'\`.`
-                : `\n\nRead ${virtualOf(entry.hostPath)}/SKILL.md. Use this required skill to ask the user for a business decision. Its channel here is ${CHANNELS_ROOT}/human-input: run the script from the skill directory as \`node scripts/run.mjs --directory ${CHANNELS_ROOT}/human-input --input '<json>'\`.`)).join('');
+            // The channel skills' prompts name their folder in the skills view and their worker-hosted channel directory.
+            const channelPrompt = admittedSkills.filter((skill) => skill.channel !== undefined).map((skill) => (skill.channel === 'task-failure'
+                ? `\n\nRead ${SKILLS_ROOT}/${skill.name}/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan. Its channel here is ${CHANNELS_ROOT}/task-failure: run the script from the skill directory (${SKILLS_ROOT}/${skill.name}) as \`node scripts/run.mjs --directory ${CHANNELS_ROOT}/task-failure --input '<json>'\`.`
+                : `\n\nRead ${SKILLS_ROOT}/${skill.name}/SKILL.md. Use this required skill to ask the user for a business decision. Its channel here is ${CHANNELS_ROOT}/human-input: run the script from the skill directory (${SKILLS_ROOT}/${skill.name}) as \`node scripts/run.mjs --directory ${CHANNELS_ROOT}/human-input --input '<json>'\`.`)).join('');
+            for (const [skillName, channel, wanted] of [['report-task-blocked', 'task-failure', execution.workflowExecution === true], ['require-human-input', 'human-input', execution.humanInput === true]]) {
+                if (wanted && !admittedSkills.some((skill) => skill.name === skillName)) {
+                    await emit({ type: 'diagnostic', message: `The ${skillName} skill is not available through the worker (its folder is not in the shared workspace); the ${channel} channel has no skill this turn.` });
+                }
+            }
             const overridden = Boolean(session.modelOverride || execution.model);
             const specification = {
                 version: SPEC_VERSION,
@@ -395,7 +432,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 ...(overridden && backend && models[backend] ? { model: models[backend], effort: efforts[backend] || 'default' } : {}),
                 ...(!resume && requestedBackend ? { codingAgent: requestedBackend } : {}),
                 ...(resume ? { resume: true } : {}),
-                ...(folders.length ? { folders } : {}),
+                ...(skillsList.length ? { skills: skillsList, skillsDigest: skillsDigest(skillsList) } : {}),
                 ...(ignore.length ? { ignore } : {}),
                 ...(execution.mcpServers ? { mcpServers: execution.mcpServers } : {}),
                 ...(execution.workflowExecution ? { workflowExecution: true } : {}),
@@ -412,12 +449,38 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             phase('admitted', { referenceId });
 
             let failure = null;
+            // Returns {retry: true} when the answer did not reach the worker and the request may still be open: the record handler then
+            // asks again (a new card). An answer the worker refuses because the request is already resolved, or unknown, is final.
+            let answerAttempt = 0;
+            const answerApproval = async (requestId, optionId, owner) => {
+                const payload = optionId === null ? { requestId, cancelled: true } : { requestId, optionId };
+                let auth;
+                try { auth = controlAuth({ mode: 'grant' }, owner?.evidence); } catch {
+                    await emit({ type: 'diagnostic', category: 'approval', message: 'The approval answer was not sent: it carried no valid sign-in. Answer again.' }).catch(() => {});
+                    phase('approval.not_sent', { code: 'owner_evidence_unavailable' });
+                    return { retry: true };
+                }
+                try {
+                    // A retried answer is a new operation (a refused one recorded nothing, a lost reply is replayed by the same digest).
+                    answerAttempt += 1;
+                    await client.control(referenceId, { operationId: controlOperationId('answer', referenceId, requestId, String(answerAttempt)), op: 'answer', payload }, auth);
+                    phase('approval.answered', { referenceId });
+                    return { retry: false };
+                } catch (error) {
+                    const code = error?.code || 'worker_control_failed';
+                    phase('approval.not_delivered', { code });
+                    await emit({ type: 'diagnostic', category: 'approval', message: `The approval answer was not accepted (${code}).` }).catch(() => {});
+                    return { retry: code !== 'operation_conflict' && code !== 'not_found' };
+                }
+            };
             const records = createAlaRecordHandler({ backend, permissionMode, efforts, sessionId, sanitize, emit, interactions,
                 context: { ...context, workingDir: cwd, sessionId, turnId, assistantMessageId: turn.assistantMessageId, signal: controller.signal },
                 skillExecution: snapshot.revision ? { revision: snapshot.revision, catalogId: snapshot.catalogId } : null,
                 signal: controller.signal, turnId,
-                // A native permission request cannot be answered through the worker (refused above).
-                reply: () => {},
+                // The owner's answer to an approval request (T2): the worker's `answer` control, authorized ONLY by the grant of the
+                // signed response that carried it (`owner.evidence`), never by the turn's or another envelope's grant. `optionId` null is
+                // the owner's own cancel. A response without usable evidence is not sent (the worker's deadline then decides).
+                reply: (id, optionId, owner) => answerApproval(id, optionId, owner),
                 fail: (error) => { failure ||= error; },
                 bindEngine: (agent) => sessionStore.bindEngine(sessionId, { home: WORKER_SESSION_HOME, cwd, backend: agent, robotId: execution.robotId }) });
 
@@ -427,7 +490,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             const writeControl = (message) => {
                 if (message?.type !== 'message' || typeof message.message !== 'string' || controller.signal.aborted) return false;
                 const id = typeof message.id === 'string' && message.id ? message.id : randomUUID();
-                const payload = { message: buildTaskPrompt({ task: message.message }), displayText: message.message, id };
+                const payload = { message: buildTaskPrompt({ task: message.message, skillsRoot: SKILLS_ROOT }), displayText: message.message, id };
                 void (async () => {
                     try {
                         await client.control(referenceId, { operationId: controlOperationId('message', referenceId, id), op: 'message', payload },
@@ -573,6 +636,14 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 await emit({ type: 'task-failed', message });
             } else if (row.kind === 'human-input-request') {
                 await emit({ type: 'human-input-request', requestId: row.requestId, question: row.question, options: row.options, referenceId });
+            } else if (row.kind === 'approval-request') {
+                // The worker's bounded copy of the coding agent's permission request, asked through the same native interaction path.
+                await records.handle({
+                    type: 'coding-agent-request', id: row.requestId, agent: row.agent, kind: 'permission', method: row.tool, title: row.title,
+                    message: row.message, ...(typeof row.detail === 'string' ? { detail: row.detail } : {}), options: Array.isArray(row.options) ? row.options : []
+                });
+            } else if (row.kind === 'approval-resolved') {
+                await records.handle({ type: 'coding-agent-request-resolved', id: row.requestId, reason: row.reason });
             } else if (row.kind === 'state') {
                 if (TERMINAL_STATES.includes(row.state)) { terminal = true; terminalRow = row; }
             } else if (row.kind === 'ala') {

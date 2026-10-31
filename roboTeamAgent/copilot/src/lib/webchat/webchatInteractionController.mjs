@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { createWebchatInteractionResolved } from '../../permissions/protocol.mjs';
 
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+// The longest free-text answer (decision M-30 / M-53 Q3): the Router refuses a longer one before signing; RoboTeam checks it again.
+export const ANSWER_MAX_CHARS = 32000;
+// The plain messages of a re-ask (T2). A re-ask closes the card and shows the same question under a new interaction id.
+export const UNVERIFIED_ANSWER_NOTICE = 'This answer could not be verified, so it was not used. Choose again.';
+export const ANSWER_TOO_LONG_NOTICE = 'The answer is too long; shorten it and send again.';
 
 function interactionId() {
     return `task_control_${randomUUID().replaceAll('-', '_')}`;
@@ -79,14 +84,17 @@ export function createWebchatInteractionController({ stdout = process.stdout, ti
         }
     }
 
-    function request(envelope, { signal, values = null } = {}) {
+    // `requireSigned` (T2): only a response that arrived in a Router-signed, verified envelope settles this interaction, and it settles
+    // with the verified owner: `{value, owner}` (or `{cancelled: true, owner}` for the owner's cancel). Any other response is not used
+    // and the question is asked again under a new interaction id, with a plain notice.
+    function request(envelope, { signal, values = null, requireSigned = false } = {}) {
         if (disposed) return Promise.reject(new Error('interaction_controller_closed'));
         if (signal?.aborted) return Promise.reject(new Error('interaction_cancelled'));
         const id = interactionId();
         const surface = JSON.stringify([envelope.targetTabId || '', envelope.targetPageInstanceId || '']);
         return new Promise((resolve, reject) => {
             const current = {
-                id, surface, envelope, resolve, reject, values, signal,
+                id, surface, envelope, resolve, reject, values, signal, requireSigned: requireSigned === true,
                 active: false, timer: null, input: envelope.input || null,
             };
             current.abort = () => settle(current, {
@@ -171,6 +179,25 @@ export function createWebchatInteractionController({ stdout = process.stdout, ti
         }, requestOptions);
     }
 
+    // Closes the shown card and asks the same question again under a new interaction id (the Router forgets an id once it has forwarded
+    // a response for it), keeping the original deadline. `notice` is a plain line shown above the question.
+    function reask(current, notice) {
+        if (!current.active || pending.get(current.id) !== current) return false;
+        const { targetTaskId, targetTabId, targetPageInstanceId } = current.envelope;
+        const targets = { ...(targetTaskId ? { targetTaskId } : {}), ...(targetTabId ? { targetTabId } : {}), ...(targetPageInstanceId ? { targetPageInstanceId } : {}) };
+        emit({ ...createWebchatInteractionResolved({ id: current.id, status: 'cancelled', optionId: null }), ...targets });
+        pending.delete(current.id);
+        current.id = interactionId();
+        pending.set(current.id, current);
+        const message = current.envelope.message ? `${notice}\n\n${current.envelope.message}` : notice;
+        try {
+            emit({ __webchatInteraction: 1, version: 1, id: current.id, ...current.envelope, message });
+        } catch (error) {
+            settle(current, { status: 'cancelled', error });
+        }
+        return true;
+    }
+
     function matchesSource(current, context) {
         if (!context) return true;
         const { targetTabId, targetPageInstanceId } = current.envelope;
@@ -178,22 +205,46 @@ export function createWebchatInteractionController({ stdout = process.stdout, ti
             && (!targetPageInstanceId || context.sourcePageInstanceId === targetPageInstanceId);
     }
 
+    // `context` carries the response's source tab and page; a Router-signed, verified envelope adds `verified: true` and `owner` (the
+    // verified owner evidence). Unsigned legacy lines never carry them.
     function resolve(response, context) {
         const current = pending.get(response?.id);
         if (!current?.active || !matchesSource(current, context)) return false;
+        const owner = context?.verified === true && context.owner ? context.owner : null;
+        if (current.requireSigned && !owner) {
+            reask(current, UNVERIFIED_ANSWER_NOTICE);
+            return false;
+        }
+        const answer = (value) => (current.requireSigned ? { value, owner } : value);
         if (response.cancelled === true) {
             if (response.optionId !== undefined || response.response !== undefined) return false;
+            if (current.requireSigned) {
+                settle(current, { status: 'cancelled', value: { cancelled: true, owner } });
+                return true;
+            }
             return cancel(current.id, context);
         }
         if (current.input) {
-            if (response.optionId !== undefined || typeof response.response !== 'string'
-                || response.response.length > current.input.maxLength) return false;
-            settle(current, { value: response.response });
+            if (response.optionId !== undefined || typeof response.response !== 'string') return false;
+            // Too long for the answer bound: not used, and never dropped silently: the user is told and asked again.
+            if (response.response.length > Math.min(current.input.maxLength, ANSWER_MAX_CHARS)) {
+                reask(current, ANSWER_TOO_LONG_NOTICE);
+                return false;
+            }
+            settle(current, { value: answer(response.response) });
             return true;
         }
         if (response.response !== undefined || !current.values?.has(response?.optionId)) return false;
-        settle(current, { value: current.values.get(response.optionId), optionId: response.optionId });
+        settle(current, { value: answer(current.values.get(response.optionId)), optionId: response.optionId });
         return true;
+    }
+
+    // A response envelope that claimed a Router signature but did not verify (T2): it answers nothing, whatever the interaction, and the
+    // question is asked again under a new interaction id. Never a turn.
+    function reaskUnverified(id, context) {
+        const current = pending.get(id);
+        if (!current?.active || !matchesSource(current, context)) return false;
+        return reask(current, UNVERIFIED_ANSWER_NOTICE);
     }
 
     function cancel(id, context) {
@@ -214,6 +265,7 @@ export function createWebchatInteractionController({ stdout = process.stdout, ti
         select,
         input,
         resolve,
+        reaskUnverified,
         cancel,
         dispose,
         get pendingId() {

@@ -54,10 +54,18 @@ function relativeToWorkspace(workspaceRoot, absolute) {
     return absolute.slice(workspaceRoot.length + 1);
 }
 
+// The read-only skills view every workload sees (M-22, T2). Each admitted skill is the folder /run/robo-work/skills/<name>.
+export const VIRTUAL_SKILLS = '/run/robo-work/skills';
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
+export const PERMISSIONS = Object.freeze(['full-access', 'ask-for-approval']);
+
 // `workspaceRoot`: the canonical absolute workspace path (no trailing slash). Throws PlanError with a bounded reason.
-export function planAlaExecution({ specification, workspaceRoot }) {
+// `logicalKind` (the admission's recorded logical kind): flow work (RoboFlow, the background row) has no owner to answer an approval
+// request, so `ask-for-approval` is refused for it (approval_unsupported); RoboTeam already forces full-access there (robot-task.mjs).
+export function planAlaExecution({ specification, workspaceRoot, logicalKind = null }) {
     if (specification?.version !== 2) throw new PlanError('unsupported_specification');
-    if (specification.permissions !== 'full-access') throw new PlanError('approval_unsupported');
+    if (!PERMISSIONS.includes(specification.permissions)) throw new PlanError('approval_unsupported');
+    if (specification.permissions === 'ask-for-approval' && logicalKind === 'flow') throw new PlanError('approval_unsupported');
     if (typeof workspaceRoot !== 'string' || !path.posix.isAbsolute(workspaceRoot) || workspaceRoot === '/') throw new PlanError('workspace_unavailable');
     const root = workspaceRoot.replace(/\/+$/u, '');
 
@@ -99,6 +107,34 @@ export function planAlaExecution({ specification, workspaceRoot }) {
         return owner ? (absolute === owner.hostPath ? owner.path : `${owner.path}${absolute.slice(owner.hostPath.length)}`) : null;
     };
 
+    // M-22 skills (T2): each admitted skill is resolved by the worker from its declared workspace path (anchored, no-follow; a managed
+    // source under .ploinky/repos needs depth >= 4) and staged read-only into the skills view. A skill is never a `--folder` of ALA and
+    // never a project grant. A required skill that cannot be planned refuses the attempt with skill_required_unavailable.
+    const skills = (specification.skills ?? []).map((skill) => {
+        if (!SKILL_NAME.test(skill.name)) throw new PlanError(skill.required === true ? 'skill_required_unavailable' : 'skill_name_invalid');
+        let relativePath;
+        try {
+            relativePath = relativeToWorkspace(root, skill.path);
+        } catch (error) {
+            throw new PlanError(skill.required === true ? 'skill_required_unavailable' : `skill_${error.reason}`);
+        }
+        // M-22 / M-70: masks and exclusions apply inside a skill too. Each `ignore` path below the skill folder becomes a folder-relative
+        // exclusion that prep masks in the staged view exactly like a grant exclusion (whether or not a grant also holds it). An ignore path
+        // equal to the skill folder or above it cannot be a mask inside the folder: that one skill is refused (skill_folder_ignored, or
+        // skill_required_unavailable for a required skill) rather than shown unmasked.
+        const exclusions = [];
+        for (const absolute of specification.ignore ?? []) {
+            if (absolute === skill.path || within(skill.path, absolute)) {
+                throw new PlanError(skill.required === true ? 'skill_required_unavailable' : 'skill_folder_ignored');
+            }
+            if (within(absolute, skill.path)) {
+                const rel = absolute.slice(skill.path.length + 1);
+                if (!exclusions.includes(rel)) exclusions.push(rel);
+            }
+        }
+        return Object.freeze({ name: skill.name, hostPath: skill.path, relativePath, required: skill.required === true, path: `${VIRTUAL_SKILLS}/${skill.name}`, exclusions: Object.freeze(exclusions) });
+    });
+
     const ignore = [];
     for (const absolute of specification.ignore ?? []) {
         // A path outside every grant is not in the view, so there is nothing to mask.
@@ -125,6 +161,7 @@ export function planAlaExecution({ specification, workspaceRoot }) {
 
     return Object.freeze({
         grants: Object.freeze(grants.map((grant) => Object.freeze({ ...grant }))),
+        skills: Object.freeze(skills),
         cwd: cwd === null ? VIRTUAL_HOME : cwd.path,
         argv: Object.freeze(argv),
         // HOME is the virtual robot HOME, as `--home` says: ALA evaluates os.homedir() eagerly (config.mjs:11), which throws ENOENT in a

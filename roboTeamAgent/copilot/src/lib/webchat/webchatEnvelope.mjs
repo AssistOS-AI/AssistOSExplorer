@@ -87,6 +87,20 @@ export function normalizeWebchatOrigin(rawOrigin) {
 // RoboTeam's manifest, never from the envelope. A Router-written `event` is
 // copied whenever the envelope has one, so an added, removed or altered event
 // fails verification.
+// The event of a Router-signed WebChat interaction response (T2; Ploinky slice M-52 Q1 / delta M6). The Router mints the grant only
+// after its own pending, target-tab and advertised-option checks, and signs the response itself in the arguments as `interaction`:
+// exactly `{id, optionId}`, `{id, cancelled: true}` or `{id, response}` (free text, at most 32,000 characters). The envelope carries the
+// same object as `interaction`; both sides are reduced to that canonical form here, so what RoboTeam uses is exactly what was verified.
+export const WEBCHAT_INTERACTION_RESPONSE_EVENT = 'interaction-response';
+
+export function canonicalInteractionResponse(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string') return null;
+    if (value.cancelled === true) return { id: value.id, cancelled: true };
+    if (typeof value.optionId === 'string') return { id: value.id, optionId: value.optionId };
+    if (typeof value.response === 'string') return { id: value.id, response: value.response };
+    return null;
+}
+
 export function webchatSignedArgs(parsed, { runtimeScope = MANIFEST_RUNTIME_SCOPE } = {}) {
     const args = {
         surface: 'webchat',
@@ -99,6 +113,8 @@ export function webchatSignedArgs(parsed, { runtimeScope = MANIFEST_RUNTIME_SCOP
     };
     if (runtimeScope === 'principal') args.runtimeScope = 'principal';
     if (parsed && typeof parsed === 'object' && Object.hasOwn(parsed, 'event')) args.event = parsed.event;
+    // An interaction response signs the response itself (canonical form; null when the envelope carries none, which then cannot verify).
+    if (args.event === WEBCHAT_INTERACTION_RESPONSE_EVENT) args.interaction = canonicalInteractionResponse(parsed.interaction);
     return args;
 }
 
@@ -190,6 +206,7 @@ export function normalizeWebchatMessage(raw) {
             sourceTabId,
             sourcePageInstanceId,
             event: typeof parsed.event === 'string' ? parsed.event : '',
+            ...(parsed.event === WEBCHAT_INTERACTION_RESPONSE_EVENT ? { interaction: canonicalInteractionResponse(parsed.interaction) } : {}),
             signedArgs: webchatSignedArgs(parsed),
         };
     } catch {

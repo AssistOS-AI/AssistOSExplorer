@@ -72,6 +72,19 @@ for (const rel of ['.env', '.data', 'x.secrets', 'sub/.env', 'sub/.data', '.robo
     out.protected[rel] = r;
 }
 try { fs.writeFileSync(root + '/created-by-workload.txt', 'ok'); out.projectWrite = 'ok'; } catch (e) { out.projectWrite = e.code; }
+const view = '/run/robo-work/skills';
+out.skills = { names: (() => { try { return fs.readdirSync(view).sort(); } catch (e) { return e.code; } })(),
+    writeRoot: (() => { try { fs.writeFileSync(view + '/x', 'x'); return 'WROTE'; } catch (e) { return e.code; } })(),
+    mkdirRoot: (() => { try { fs.mkdirSync(view + '/y'); return 'MADE'; } catch (e) { return e.code; } })(),
+    writeInside: (() => { try { fs.writeFileSync(view + '/alpha/x', 'x'); return 'WROTE'; } catch (e) { return e.code; } })(),
+    unlinkInside: (() => { try { fs.unlinkSync(view + '/alpha/SKILL.md'); return 'REMOVED'; } catch (e) { return e.code; } })(),
+    skillMd: sizeOrCode(view + '/alpha/SKILL.md'), plantedEnv: sizeOrCode(view + '/alpha/.env'), ignored: sizeOrCode(view + '/alpha/ignored.txt'), unselected: sizeOrCode(view + '/unselected/SKILL.md') };
+// M-69 Q2: nothing can be created or renamed outside the binds (the root and /run/robo-work are read-only); the binds still work.
+const attempt = (fn) => { try { fn(); return 'DONE'; } catch (e) { return e.code; } };
+out.readOnlyRoot = { touchRunRoboWork: attempt(() => fs.writeFileSync('/run/robo-work/x', 'x')), mvRunRoboWork: attempt(() => fs.renameSync('/run/robo-work', '/run/moved')),
+    touchRun: attempt(() => fs.writeFileSync('/run/x', 'x')), touchRoot: attempt(() => fs.writeFileSync('/x', 'x')), mkdirRoot: attempt(() => fs.mkdirSync('/newdir')),
+    tmp: attempt(() => fs.writeFileSync('/tmp/rw-probe', 'x')), home: attempt(() => fs.writeFileSync('/home/robot/rw-probe', 'x')),
+    channels: (() => { try { return fs.readdirSync('/run/robo-work/channels').length >= 0 ? 'DONE' : 'x'; } catch (e) { return e.code; } })() };
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500);
 out.lateEnv = sizeOrCode(root + '/late/.env');
 out.tmpShared = (() => { try { return fs.readdirSync('/tmp').length; } catch (e) { return e.code; } })();
@@ -106,6 +119,12 @@ const home = path.join(root, 'home');
 const runtimeRoot = path.join(root, 'runtime');
 for (const dir of [project, home, runtimeRoot, path.join(project, 'sub', '.data'), path.join(project, '.data'), path.join(project, '.roboteam'), path.join(project, 'late')]) fs.mkdirSync(dir, { recursive: true });
 for (const [file, text] of [['.env', 'SECRET=1'], ['x.secrets', 's'], ['sub/.env', 'SECRET=2'], ['README.md', 'hello'], ['.data/k', 'k'], ['sub/.data/k', 'k'], ['private-notes.txt', 'private'], ['docs/hidden/a.txt', 'h']]) { fs.mkdirSync(path.dirname(path.join(project, file)), { recursive: true }); fs.writeFileSync(path.join(project, file), text); }
+// S2 (T2 skills view): two admitted skills (one with a planted .env) and an unselected sibling that must not appear in the view.
+const skillsRoot = path.join(root, 'skills');
+for (const [name, files] of [['alpha', { 'SKILL.md': '---\nname: alpha\n---\nmarker-alpha', '.env': 'SKILL_SECRET=1', 'ignored.txt': 'IGNORED' }], ['beta', { 'SKILL.md': '---\nname: beta\n---\n' }], ['unselected', { 'SKILL.md': 'no' }]]) {
+    fs.mkdirSync(path.join(skillsRoot, name), { recursive: true });
+    for (const [file, text] of Object.entries(files)) fs.writeFileSync(path.join(skillsRoot, name, file), text);
+}
 
 let supervisor;
 let view;
@@ -146,6 +165,7 @@ async function publish(kind, spec = null) {
 }
 
 const projectFd = fs.openSync(project, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+const skillFds = Object.fromEntries(['alpha', 'beta'].map((name) => [name, fs.openSync(path.join(skillsRoot, name), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY)]));
 const homeFd = fs.openSync(home, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
 view = createProcView({ runtimeRoot });
 const launcher = createSandboxLauncher({
@@ -164,6 +184,8 @@ supervisor = createExecutionSupervisor({
         workload: { ...image }
     },
     home: { path: home, fd: homeFd }, grants: [{ name: 'p', path: '/projects/p', hostPath: project, access: 'write', fd: projectFd }],
+    // `exclusions`: a specification ignore path inside the skill folder (M-22 / M-70), masked in the view like a grant exclusion.
+    skills: [{ name: 'alpha', stageName: 's0', path: path.join(skillsRoot, 'alpha'), fd: skillFds.alpha, exclusions: ['ignored.txt'] }, { name: 'beta', stageName: 's1', path: path.join(skillsRoot, 'beta'), fd: skillFds.beta }],
     onInfrastructureLoss: (reason) => evidence.errors.push({ step: 'infrastructure', message: reason }), limits: { stopGraceMs: 1500 }
 });
 
@@ -293,6 +315,23 @@ await step('workload (probe)', async () => {
     for (const server of servers) server.close();
 });
 service.close();
+await step('skills view verdict (S2)', async () => {
+    const k = evidence.roles.workload?.skills ?? {};
+    const problems = [];
+    if (JSON.stringify(k.names) !== JSON.stringify(['alpha', 'beta'])) problems.push(`names ${JSON.stringify(k.names)}`);
+    for (const key of ['writeRoot', 'mkdirRoot', 'writeInside', 'unlinkInside']) if (k[key] !== 'EROFS') problems.push(`${key}=${k[key]}`);
+    if (!(k.skillMd > 0)) problems.push(`SKILL.md=${k.skillMd}`);
+    if (k.plantedEnv !== 0) problems.push(`.env=${k.plantedEnv}`);
+    if (k.ignored !== 0) problems.push(`ignored exclusion=${k.ignored}`);
+    const r = evidence.roles.workload?.readOnlyRoot ?? {};
+    for (const key of ['touchRunRoboWork', 'touchRun', 'touchRoot', 'mkdirRoot']) if (r[key] !== 'EROFS') problems.push(`${key}=${r[key]}`);
+    if (!['EROFS', 'EBUSY'].includes(r.mvRunRoboWork)) problems.push(`mvRunRoboWork=${r.mvRunRoboWork}`);
+    for (const key of ['tmp', 'home', 'channels']) if (r[key] !== 'DONE') problems.push(`${key}=${r[key]}`);
+    if (k.unselected !== 'ENOENT') problems.push(`unselected=${k.unselected}`);
+    if (fs.readFileSync(path.join(skillsRoot, 'alpha', '.env'), 'utf8') !== 'SKILL_SECRET=1') problems.push('the host .env changed');
+    if (problems.length > 0) throw new Error(`skills view: ${problems.join(', ')}`);
+    return k;
+});
 await step('ac13 verdict', async () => {
     const w = evidence.roles.workload ?? {};
     const reached = w.net ?? {};

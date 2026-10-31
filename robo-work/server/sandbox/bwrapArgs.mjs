@@ -35,7 +35,11 @@
 //     netns through nsenter before bwrap, so no --unshare-net); fixed NODE_CHANNEL_FD=3 and
 //     NODE_CHANNEL_SERIALIZATION_MODE=json are set, bwrap execs argv directly (no shell)
 //   workload, terminal: stagingDir, channelsDir, stageScript (absolute path of stage.sh), fdAllow (default
-//     [0,1,2]), grants [{ name, mode: 'ro' | 'rw' }] bound from `<stagingDir>/projects/<name>` to `/projects/<name>`;
+//     [0,1,2]), grants [{ name, mode: 'ro' | 'rw', skill? }] bound from `<stagingDir>/projects/<name>` to `/projects/<name>`;
+//     an entry with `skill` (workload only; M-22 skills view, T2) is a skill staged by prep like a grant under a reserved stage
+//     name (SKILL_STAGE_NAME, never a project grant name) and is bound read-only at `/run/robo-work/skills/<skill>` instead. Every
+//     workload gets the view: `--perms 0555 --tmpfs /run/robo-work/skills`, one `--ro-bind` per skill, then `--remount-ro` of the
+//     tmpfs, so the view and every skill in it are read-only (EROFS) and nothing but the admitted skills is in it (empty when none);
 //     bwrap runs `/bin/sh <stageScript> final <fdAllow csv> <env names csv> <argv…>`; workload adds --new-session,
 //     terminal does not. Orchestration also gets --new-session.
 //   grantPaths      optional extra absolute paths that no source may be under
@@ -60,6 +64,12 @@ export const FIXED_DESTINATIONS = Object.freeze([
 ]);
 
 export const STAGE_BIND_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+// Skills view (T2). A reserved stage name is ONLY ever a skill's and a skill always has one, in both directions, so a skill can never be
+// mounted as a project grant and a project grant never into the view (whatever a caller passes through).
+export const SKILL_STAGE_NAME = /^s[0-9]{1,2}$/u;
+export const SKILLS_VIEW = '/run/robo-work/skills';
+export const RUN_ROBO_WORK = '/run/robo-work';
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 const WORKLOAD_ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const SHELL_HONOURED = /^(IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|CDPATH|GLOBIGNORE|LD_[A-Z0-9_]*|BASH_FUNC_[A-Z0-9_]*|_)$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -216,15 +226,41 @@ export function buildBwrapArgs(spec) {
     if (spec.netMode === 'none') args.push('--unshare-net'); // network mode "none": loopback only
     args.push('--bind', `${spec.stagingDir}/binds/home`, '/home/robot');
     const seen = new Set();
+    const skills = [];
+    const skillNames = new Set();
     for (const grant of spec.grants || []) {
         if (!grant || !isValidComponentName(grant.name) || !['ro', 'rw'].includes(grant.mode) || seen.has(grant.name)) {
             throw invalid('Invalid grant');
         }
         seen.add(grant.name);
+        const isSkill = grant.skill !== undefined;
+        if (isSkill !== SKILL_STAGE_NAME.test(grant.name)) throw invalid('A skill needs a reserved stage name and only a skill has one');
+        if (isSkill) {
+            if (spec.role !== 'workload' || grant.mode !== 'ro' || typeof grant.skill !== 'string' || !SKILL_NAME.test(grant.skill) || skillNames.has(grant.skill)) {
+                throw invalid('Invalid skill');
+            }
+            skillNames.add(grant.skill);
+            skills.push(grant);
+            continue;
+        }
         args.push(grant.mode === 'ro' ? '--ro-bind' : '--bind', `${spec.stagingDir}/projects/${grant.name}`, `/projects/${grant.name}`);
     }
+    const workload = spec.role === 'workload';
+    // M-69 Q2 (workload): /run/robo-work is its own read-only tmpfs holding only the channel bind and the skills view, so nothing can be
+    // created there or beside them.
+    if (workload) args.push('--perms', '0555', '--tmpfs', RUN_ROBO_WORK);
+    if (workload) {
+        args.push('--perms', '0555', '--tmpfs', SKILLS_VIEW);
+        for (const skill of skills) args.push('--ro-bind', `${spec.stagingDir}/projects/${skill.name}`, checkDestination(`${SKILLS_VIEW}/${skill.skill}`));
+        args.push('--remount-ro', SKILLS_VIEW);
+    }
     args.push('--ro-bind', spec.channelsDir, '/run/robo-work/channels');
+    if (workload) args.push('--remount-ro', RUN_ROBO_WORK);
     if (spec.tmpDir !== undefined) args.push('--bind', checkSource(spec.tmpDir, spec), '/tmp');
+    // M-69 Q2 (workload): the sandbox root (bwrap's own tmpfs) is remounted read-only once every mount exists, so a workload can neither
+    // create nor rename anything outside its binds (`mv /run/robo-work /run/moved` is EROFS). Every path a workload writes is its own
+    // mount: HOME, the project grants, /tmp (the execution's tmp bind), /dev/shm and /dev. The remount is not recursive.
+    if (workload) args.push('--remount-ro', '/');
     for (const [key, value] of envEntries) {
         if (!WORKLOAD_ENV_NAME.test(key) || SHELL_HONOURED.test(key)) throw invalid(`Environment name not allowed: ${key}`);
         args.push('--setenv', key, value);

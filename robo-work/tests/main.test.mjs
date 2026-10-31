@@ -369,7 +369,10 @@ test('M-33 configuration: the attempt time bounds default to 20 minutes and 4 ho
     const set = readConfig({ ...base, ROBO_WORK_INACTIVITY_TIMEOUT_MS: '60000', ROBO_WORK_MAX_ATTEMPT_MS: '7200000' });
     assert.deepEqual([set.inactivityTimeoutMs, set.maxAttemptMs], [60000, 7200000]);
     assert.equal(readConfig({ ...base, ROBO_WORK_MAX_ATTEMPT_MS: '' }).maxAttemptMs, 4 * 60 * 60 * 1000, 'empty means the default');
-    for (const name of ['ROBO_WORK_INACTIVITY_TIMEOUT_MS', 'ROBO_WORK_MAX_ATTEMPT_MS']) {
+    // T2: the approval deadline defaults to 15 minutes, with the same validation.
+    assert.equal(readConfig(base).approvalTimeoutMs, 15 * 60 * 1000);
+    assert.equal(readConfig({ ...base, ROBO_WORK_APPROVAL_TIMEOUT_MS: '120000' }).approvalTimeoutMs, 120000);
+    for (const name of ['ROBO_WORK_INACTIVITY_TIMEOUT_MS', 'ROBO_WORK_MAX_ATTEMPT_MS', 'ROBO_WORK_APPROVAL_TIMEOUT_MS']) {
         for (const bad of ['0', '999', '-5', '1.5', 'soon', '1e6', '604800001', '12 min']) {
             assert.throws(() => readConfig({ ...base, [name]: bad }), new RegExp(name, 'u'), `${name}=${bad}`);
         }
