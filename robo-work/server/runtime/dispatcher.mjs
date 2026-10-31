@@ -18,6 +18,9 @@ import { isApprovalRequestId } from '../stateObservation.mjs';
 //   execution.exited   -> Promise<{ exitCode, signal }>        of the orchestration process
 //   execution.lost     -> Promise<string>  (optional)           resolves when the endpoint or the anchor is lost before the end
 //   execution.lastModelError() -> { status, message } | null  (optional)  the last upstream error of the Soul Gateway model channel (M-43 (a))
+//   execution.revoked  -> Promise<string>  (optional)           resolves with `source_activated` when a writable grant of the attempt now
+//                                                                overlaps an active runtime source (M-63, M-67 Q2); the attempt is ended
+//                                                                `failed` with that reason through the same stop path as a time bound
 //   execution.end({ classification, outputText, data }) -> Promise   the section 5.5 end path; step 1 is beginAttemptEnd
 //
 // A failure before an execution exists ends the attempt directly through beginAttemptEnd.
@@ -274,8 +277,9 @@ export function createDispatcher({
             return true;
         };
 
-        // The one end of this attempt, whoever asks first (exit, stop, a fatal stream error, shutdown).
-        const finish = (outcome) => {
+        // The one end of this attempt, whoever asks first (exit, stop, a fatal stream error, shutdown). `final` keeps the outcome as given:
+        // a revoke (source_activated) is never relabelled human-input or task_blocked by `normalize`.
+        const finish = (outcome, { final = false } = {}) => {
             if (finishing === null) signalEnded();
             finishing ??= (async () => {
                 watchdog.stop();
@@ -285,7 +289,7 @@ export function createDispatcher({
                 if (channelTimer !== null) { timers.clearTimeout(channelTimer); channelTimer = null; }
                 streams?.reader.end('ended_by_dispatcher');
                 if (relay) await relay.close().catch(() => {});
-                const fitted = fitOutcome(normalize(outcome), settings.resultBytes);
+                const fitted = fitOutcome(final ? outcome : normalize(outcome), settings.resultBytes);
                 if (streams && fitted.classification !== 'completed' && fitted.classification !== 'cancelled') {
                     const text = alaDiagnostics(streams.reader.stderrTail());
                     if (text) log('ala_stderr_tail', { executionId: item.executionId, attemptId: item.attemptId, text });
@@ -300,6 +304,19 @@ export function createDispatcher({
         shutdownRef.shutdown = async () => {
             if (starting !== null) await starting.catch(() => {});
             return finish({ classification: 'interrupted', outputText: partialText(), data: { reason: 'worker_shutdown' } });
+        };
+        // M-67 Q2: the execution withdrew the attempt's writable grant (an active runtime source now overlaps it). The M-33 stop path, as at a
+        // time bound: an attempt still being published is ended once that is over; a stop that cannot be verified is termination_unverified.
+        // The end is final: a pending question or a recorded task failure does not turn it into human-input or task_blocked, so the user
+        // reads the source_activated message and is never offered an answer that could no longer run.
+        const revoke = (reason) => {
+            const bounded = typeof reason === 'string' && /^[a-z0-9_]{1,48}$/u.test(reason) ? reason : 'source_activated';
+            log('attempt_revoked', { executionId: item.executionId, attemptId: item.attemptId, reason: bounded });
+            (async () => {
+                if (starting !== null) await starting.catch(() => {});
+                if (finishing !== null) return;
+                await finish({ classification: 'failed', outputText: partialText(), data: { reason: bounded } }, { final: true });
+            })().catch((error) => log('end_failed', { error: describe(error) }));
         };
 
         // One delivery pass at a time per attempt, and a control that was written is never written again, whatever the stdin
@@ -379,6 +396,7 @@ export function createDispatcher({
         try {
             starting = (async () => {
                 execution = await factory.open({ item, plan, context, channels, activity: () => watchdog.touch() });
+                if (typeof execution.revoked?.then === 'function') execution.revoked.then(revoke, () => {});
                 return execution.start();
             })();
             const opened = await starting;

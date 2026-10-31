@@ -3,12 +3,15 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { ExecutionSetupError, createExecutionFactory, codeBinds, imageBinds, readManagedConfig } from '../../server/runtime/executionFactory.mjs';
+import { resolveExecutionGrants } from '../../server/runtime/executionGrants.mjs';
 import { MODEL_RELAY_PORT } from '../../server/runtime/modelChannel.mjs';
 import { planAlaExecution } from '../../server/runtime/alaPlan.mjs';
 
 // The production execution factory over FAKE supervisor, ledger, endpoint server and grant resolver: the publication order,
 // what ALA is started with, descriptor custody and the end path. The real supervisor, ledger and endpoint server have their
-// own tests (tests/sandbox, tests/execution); nothing here starts a process.
+// own tests (tests/sandbox, tests/execution); nothing here starts a process. The paths here (/ws/proj) do not exist, so the rig replaces
+// the factory's grant helper as a unit with the REAL resolveExecutionGrants over a fake leaf resolver and an empty source list; the
+// M-63 source rule itself is tested through the real helper AND the real resolver on a real tree (executionGrants.sources.test.mjs).
 
 const SESSION = '0f8c2f1e-3b53-4a56-9b0f-6b1f0d5e9a11';
 const spec = (overrides = {}) => ({
@@ -16,7 +19,7 @@ const spec = (overrides = {}) => ({
     folders: [{ path: '/ws/skills', access: 'read' }], ...overrides
 });
 
-function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadActivity = undefined, timers = undefined, activityTickMs = undefined, managed = {}, modelUpstream = null, modelChannel = undefined } = {}) {
+function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadActivity = undefined, timers = undefined, activityTickMs = undefined, managed = {}, modelUpstream = null, modelChannel = undefined, runtimeSources = { locations: async () => ({ ok: true, locations: [], authorizationGeneration: 'g', counts: {}, outsideWorkspace: 0, localRoots: 0 }) } } = {}) {
     const calls = [];
     const closedFds = [];
     const closedGrants = [];
@@ -28,11 +31,14 @@ function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadAc
     const deps = {
         openDirectory: (target) => { calls.push(['open', target]); return nextFd++; },
         closeFd: (fd) => closedFds.push(fd),
-        resolveGrant: async (request, context) => {
-            calls.push(['grant', request, context.workspaceRoot]);
-            if (grantRefusal) return { ok: false, code: grantRefusal };
-            return { ok: true, grant: { fd: nextFd++, close: async () => { closedGrants.push(request.relativePath); } } };
-        },
+        resolveExecutionGrants: (entries, options) => resolveExecutionGrants(entries, {
+            ...options,
+            resolve: async (request, context) => {
+                calls.push(['grant', request, context.workspaceRoot]);
+                if (grantRefusal) return { ok: false, code: grantRefusal };
+                return { ok: true, grant: { fd: nextFd++, access: request.access, close: async () => { closedGrants.push(request.relativePath); } } };
+            }
+        }),
         createExecutionSupervisor: (options) => {
             supervisorOptions = options;
             return {
@@ -67,7 +73,7 @@ function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadAc
     const factory = createExecutionFactory({
         store: {}, robots: { root: '/store', paths: (id) => ({ home: `/store/robots/${id}/home`, sessions: `/store/robots/${id}/sessions`, configDir: `/store/robots/${id}/config` }) },
         launcher: { fake: 'launcher' }, view: { fake: 'view' }, walker: { fake: 'walker' }, clock: { fake: 'clock' }, workspaceRoot: '/ws', runtimeDir: '/store/runtime',
-        serverDir: '/code/server', alaRoot: '/Agent/linked/AdvancedLanguageAgent', nodePath: '/usr/local/bin/node', deps,
+        serverDir: '/code/server', alaRoot: '/Agent/linked/AdvancedLanguageAgent', nodePath: '/usr/local/bin/node', deps, runtimeSources,
         ...(activityTickMs ? { activityTickMs } : {}), ...(modelUpstream ? { modelUpstream } : {})
     });
     const item = { robotId: 'ROBOT', executionId: 'EXEC', attemptId: 'ATT', referenceId: 'REF', specification: spec() };
@@ -316,4 +322,120 @@ test('readManagedConfig: the managed ALA configuration, or {} when it is missing
     assert.deepEqual(readManagedConfig('/x', { read: () => '{"codingAgent":"opencode","models":{"opencode":"soul-gateway/a"}}' }), { codingAgent: 'opencode', models: { opencode: 'soul-gateway/a' } });
     for (const text of ['', '{', '[]', '"x"', 'null', 'x'.repeat(70000)]) assert.deepEqual(readManagedConfig('/x', { read: () => text }), {}, text.slice(0, 10));
     assert.deepEqual(readManagedConfig('/x', { read: () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); } }), {});
+});
+
+// --- M-63 through the REAL grant helper and the REAL anchored resolver on a real tree (no grant seam) ------------------------------
+
+async function realRig(t, { sources = [], answer = undefined, skills = [], cwd = 'proj', folders = [] } = {}) {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { createRuntimeSourceProvider } = await import('../../server/runtime/executionGrants.mjs');
+    const { skillsSelectionDigest } = await import('../../server/stateProtocol.mjs');
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rw-factory-sources-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    for (const directory of ['proj', 'AchillesIDE/roboTeamAgent/copilot/src/skills/x', 'store']) fs.mkdirSync(path.join(root, directory), { recursive: true });
+    fs.writeFileSync(path.join(root, 'AchillesIDE/roboTeamAgent/copilot/src/skills/x/SKILL.md'), '---\nname: x\n---\n');
+    const counter = { fetches: 0, supervisors: 0 };
+    const runtimeSources = createRuntimeSourceProvider({
+        workspaceRoot: root, timeoutMs: 50,
+        fetch: async () => {
+            counter.fetches += 1;
+            if (answer !== undefined) return typeof answer === 'function' ? answer() : answer;
+            return { schemaVersion: 1, authorizationGeneration: `sha256:${'c'.repeat(64)}`, activationId: SESSION, sources: counter.sources ?? sources, outsideWorkspace: 0 };
+        }
+    });
+    const intervals = [];
+    const timers = { setInterval: (fn, ms) => { const handle = { fn, ms, unref() {} }; intervals.push(handle); return handle; }, clearInterval: (handle) => { handle.cleared = true; } };
+    let nextFd = 500;
+    const factory = createExecutionFactory({
+        store: {}, robots: { root: path.join(root, 'store'), paths: (id) => ({ home: `/store/${id}/home`, sessions: `/store/${id}/sessions`, configDir: `/store/${id}/config` }) },
+        launcher: {}, view: {}, walker: {}, clock: {}, workspaceRoot: root, runtimeDir: '/store/runtime', serverDir: '/code/server', alaRoot: '/ala', nodePath: '/usr/local/bin/node',
+        runtimeSources,
+        deps: {
+            openDirectory: () => nextFd++, closeFd: () => {}, timers,
+            createExecutionSupervisor: () => {
+                counter.supervisors += 1;
+                return { endpointSocket: {}, controlStreams: { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() }, providerSandbox: () => ({}), exit: async () => {} };
+            },
+            createExecutionLedger: () => ({ startKeeper: async () => {}, publish: async ({ kind }) => ({ handle: kind === 'process-tree' ? { wait: () => new Promise(() => {}) } : null }), endExecution: async () => ({}) }),
+            createSupervisorEndpointServer: () => ({ end: () => {} }),
+            imageBinds: () => ({ roBinds: [], symlinks: [] }),
+            readManagedConfig: () => ({})
+        }
+    });
+    const skillList = skills.map((rel) => ({ name: rel.split('/').pop(), path: path.join(root, rel) }));
+    const specification = {
+        version: 2, prompt: 'p', displayText: 'd', sessionId: SESSION, turnId: 't', permissions: 'full-access',
+        ...(cwd ? { cwd: path.join(root, cwd) } : {}),
+        ...(folders.length ? { folders: folders.map(([rel, access]) => ({ path: path.join(root, rel), access })) } : {}),
+        ...(skillList.length ? { skills: skillList, skillsDigest: skillsSelectionDigest(skillList) } : {})
+    };
+    const plan = planAlaExecution({ specification, workspaceRoot: root });
+    const item = { robotId: 'R', executionId: 'E', attemptId: 'A', specification };
+    return { factory, plan, item, counter, intervals, root };
+}
+
+const SKILL_REL = 'AchillesIDE/roboTeamAgent/copilot/src/skills/x';
+const AGENT_REPO_SOURCE = { kind: 'agent-repository', relativePath: 'AchillesIDE' };
+
+test('M-63 F4: a write entry on a listed source is refused for open with grant_inside_active_source, and no supervisor is created', async (t) => {
+    const world = await realRig(t, { cwd: 'AchillesIDE/roboTeamAgent', sources: [AGENT_REPO_SOURCE] });
+    await assert.rejects(world.factory.open({ item: world.item, plan: world.plan, context: {} }),
+        (error) => error instanceof ExecutionSetupError && error.reason === 'grant_inside_active_source');
+    assert.equal(world.counter.supervisors, 0);
+    assert.equal(world.counter.fetches, 1);
+});
+
+test('M-63 AC4: sources unavailable: a writable launch is refused runtime_sources_unavailable and createExecutionSupervisor is called 0 times', async (t) => {
+    for (const answer of [() => { throw new Error('router down'); }, { schemaVersion: 1 }, () => new Promise(() => {})]) {
+        const world = await realRig(t, { answer });
+        await assert.rejects(world.factory.open({ item: world.item, plan: world.plan, context: {} }),
+            (error) => error instanceof ExecutionSetupError && error.reason === 'runtime_sources_unavailable');
+        assert.equal(world.counter.supervisors, 0);
+    }
+    // Read-only work does not need the list: a skill-only launch opens with 0 fetches even while the list is unavailable.
+    const readOnly = await realRig(t, { answer: () => { throw new Error('router down'); }, cwd: null, skills: [SKILL_REL] });
+    const execution = await readOnly.factory.open({ item: readOnly.item, plan: readOnly.plan, context: {} });
+    assert.equal(readOnly.counter.fetches, 0);
+    assert.equal(readOnly.counter.supervisors, 1);
+    await execution.end({ classification: 'completed' });
+});
+
+test('M-63: a write project plus a read-only skill view of an active source opens with exactly one fetch per launch', async (t) => {
+    const world = await realRig(t, { sources: [AGENT_REPO_SOURCE], skills: [SKILL_REL], folders: [['AchillesIDE/roboTeamAgent', 'read']] });
+    const execution = await world.factory.open({ item: world.item, plan: world.plan, context: {} });
+    assert.equal(world.counter.fetches, 1);
+    assert.equal(world.counter.supervisors, 1);
+    await execution.end({ classification: 'completed' });
+});
+
+test('M-67 Q2: on the shared tick a running writable attempt whose grant now lies in an active source is revoked with source_activated; the end stops the tick', async (t) => {
+    const world = await realRig(t, { cwd: 'AchillesIDE/roboTeamAgent', sources: [] });
+    const execution = await world.factory.open({ item: world.item, plan: world.plan, context: {} });
+    let revoked = null;
+    execution.revoked.then((reason) => { revoked = reason; });
+    assert.equal(world.intervals.length, 0, 'nothing ticks before the attempt starts');
+    await execution.start();
+    const tick = world.intervals.find((handle) => handle.ms === 60 * 1000 && !handle.cleared);
+    assert.ok(tick, 'the 60 s recheck tick runs while the writable attempt runs');
+    tick.fn();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(revoked, null, 'nothing active: nothing happens');
+    world.counter.sources = [AGENT_REPO_SOURCE];
+    tick.fn();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(revoked, 'source_activated');
+    assert.equal(world.counter.fetches, 3, 'the launch fetch plus one per tick');
+    await execution.end({ classification: 'failed', data: { reason: 'source_activated' } });
+    assert.ok(world.intervals.every((handle) => handle.cleared), 'no tick is left after the end');
+});
+
+test('M-67 Q2: a read-only attempt starts no recheck tick and makes no fetch', async (t) => {
+    const world = await realRig(t, { cwd: null, skills: [SKILL_REL] });
+    const execution = await world.factory.open({ item: world.item, plan: world.plan, context: {} });
+    await execution.start();
+    assert.equal(world.intervals.length, 0);
+    assert.equal(world.counter.fetches, 0);
+    await execution.end({ classification: 'completed' });
 });

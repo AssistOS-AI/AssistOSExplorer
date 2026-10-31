@@ -7,10 +7,9 @@ import { createAdmission } from '../execution/supervisorRequestValidator.mjs';
 import { resolveEndpointLimits } from '../execution/executionLimits.mjs';
 import { createExecutionSupervisor } from '../sandbox/executionSupervisor.mjs';
 import { WATCHDOG_TICK_MS, createWorkloadActivityWalk } from '../sandbox/workloadActivity.mjs';
-import { foldPathName } from '../views/protectedNames.mjs';
-import { resolveGrant } from '../views/grantResolver.mjs';
 import { VIRTUAL_CONFIG, VIRTUAL_SESSIONS } from './alaPlan.mjs';
 import { createExecutionChannels } from './channels.mjs';
+import { createSourceWatch, grantRoleFor, resolveExecutionGrants } from './executionGrants.mjs';
 import {
     MODEL_DIRECTORY_VIEW, MODEL_RELAY_PORT, MODEL_SOCKET_VIEW, OPENCODE_CONFIG_VIEW, createModelChannel, selectGatewayModel, selectGatewayProvider
 } from './modelChannel.mjs';
@@ -28,13 +27,8 @@ function deferred() {
     return control;
 }
 
-// The grant role of a plan grant. A read-only folder below `.ploinky/repos/<repo>/` is a skill source (the resolver's only exemption
-// for a managed source, never writable); every other grant, and every writable one (the cwd is always writable), is a project.
-export function grantRoleFor(entry) {
-    const segments = String(entry.relativePath).split('/');
-    const managed = segments.length >= 4 && foldPathName(segments[0]) === '.ploinky' && segments[1] === 'repos';
-    return managed && entry.access === 'read' ? 'skill-source' : 'project';
-}
+// The grant role of a plan grant (runtime/executionGrants.mjs, the one module that resolves production grants).
+export { grantRoleFor };
 
 // Every request ALA makes to the provider (inventory, tempdir, a workload start or stop) and every workload exit is activity of the attempt
 // (M-33). This is the only view of the workloads the worker has without a change to the stream sockets: the bytes a workload writes go to
@@ -119,15 +113,19 @@ export function codeBinds({ serverDir, alaRoot, nodePath = process.execPath }) {
     return { roBinds, alaBinds: [{ source: alaRoot, dest: `${OPT}/ala` }], node };
 }
 
+// `runtimeSources` is the active-source provider (executionGrants.mjs createRuntimeSourceProvider, decision M-63): asked once per launch
+// that has a writable grant, and on the shared recheck tick while a writable attempt runs. Without it a writable launch is refused
+// `runtime_sources_unavailable` (fail closed); a launch without a writable grant does not need it.
 export function createExecutionFactory({
     store, robots, launcher, view, walker, clock, workspaceRoot, runtimeDir, serverDir, alaRoot, nodePath = process.execPath,
-    log = () => {}, activityTickMs = WATCHDOG_TICK_MS, modelUpstream = null, deps = {}
+    log = () => {}, activityTickMs = WATCHDOG_TICK_MS, modelUpstream = null, runtimeSources = null, deps = {}
 }) {
     const make = {
         supervisor: deps.createExecutionSupervisor ?? createExecutionSupervisor,
         ledger: deps.createExecutionLedger ?? createExecutionLedger,
         endpointServer: deps.createSupervisorEndpointServer ?? createSupervisorEndpointServer,
-        grant: deps.resolveGrant ?? resolveGrant,
+        // The whole grant helper (tests over fake paths replace it as a unit; tests of the source rule run the real one).
+        executionGrants: deps.resolveExecutionGrants ?? resolveExecutionGrants,
         openDirectory: deps.openDirectory ?? ((target) => fs.openSync(target, DIRECTORY_FLAGS)),
         closeFd: deps.closeFd ?? ((fd) => fs.closeSync(fd)),
         image: deps.imageBinds ?? imageBinds,
@@ -142,6 +140,9 @@ export function createExecutionFactory({
     const endpointLimits = resolveEndpointLimits();
     // M-35: ONE /proc walk shared by the activity ticks of every execution of this worker.
     const sharedActivityWalk = typeof view?.listProcesses === 'function' ? make.activityWalk({ view }) : null;
+    // M-67 Q2: ONE active-source recheck per worker on the watchdog tick, running only while a writable attempt is registered.
+    const sourceWatch = createSourceWatch({ provider: runtimeSources, tickMs: activityTickMs, timers: make.timers, log });
+    const grantOptions = { workspaceRoot, workerStore: robots.root, sourceProvider: runtimeSources, log };
 
     return Object.freeze({
         async open({ item, plan, context, channels = {}, activity = () => {} }) {
@@ -169,33 +170,31 @@ export function createExecutionFactory({
                 const managedConfig = make.managedConfig(where.config);
                 const gatewayModel = selectGatewayModel({ specification: item.specification, managed: managedConfig });
                 const gatewayProvider = selectGatewayProvider({ specification: item.specification, managed: managedConfig });
-                // Anchored, no-follow resolution: the resolver refuses protected names and anything outside the workspace.
-                const resolved = [];
-                for (const entry of plan.grants) {
-                    const result = await make.grant({ role: grantRoleFor(entry), access: entry.access, relativePath: entry.relativePath },
-                        { workspaceRoot, protectedLocations: [{ label: 'the worker store', path: robots.root }] });
-                    if (!result.ok) throw new ExecutionSetupError(`grant_${String(result.code).replace(/[^a-z_]/gu, '').slice(0, 40)}`);
-                    grants.push(result.grant);
-                    resolved.push({ name: entry.name, path: entry.path, hostPath: entry.hostPath, access: entry.access, fd: result.grant.fd });
-                }
+                // Anchored, no-follow resolution: the resolver refuses protected names, anything outside the workspace and (M-63) a writable
+                // grant inside, containing or aliasing an active runtime source; the list is fetched once, only when a grant is writable.
+                const projectGrants = await make.executionGrants(plan.grants.map((entry) => ({ role: grantRoleFor(entry), access: entry.access, relativePath: entry.relativePath })), grantOptions);
+                grants.push(...projectGrants);
+                const resolved = plan.grants.map((entry, index) => ({ name: entry.name, path: entry.path, hostPath: entry.hostPath, access: entry.access, fd: projectGrants[index].fd }));
                 // M-22 skills (T2): each admitted skill folder is resolved read-only by the same anchored resolver (a managed source below
                 // .ploinky/repos as `skill-source` at depth >= 4, any other as a read-only `project` folder), and must hold a regular SKILL.md
                 // at its root. Every refusal fails the attempt with nothing started: a required skill with skill_required_unavailable, any
                 // other with its grant code or skill_not_a_skill (fail closed: no skill is silently dropped).
                 const skills = [];
                 for (const [index, skill] of (plan.skills ?? []).entries()) {
-                    const result = await make.grant({ role: grantRoleFor({ relativePath: skill.relativePath, access: 'read' }), access: 'read', relativePath: skill.relativePath },
-                        { workspaceRoot, protectedLocations: [{ label: 'the worker store', path: robots.root }] });
-                    if (!result.ok) {
-                        log('skill_refused', { executionId: item.executionId, skill: skill.name, code: String(result.code).slice(0, 40), required: skill.required });
-                        throw new ExecutionSetupError(skill.required ? 'skill_required_unavailable' : `grant_${String(result.code).replace(/[^a-z_]/gu, '').slice(0, 40)}`);
-                    }
-                    grants.push(result.grant);
-                    if (!make.skillFile(result.grant.fd)) {
+                    // A skill is a read entry, so it never needs the source list (read-only views of an active source stay permitted).
+                    const [grant] = await make.executionGrants([{ role: grantRoleFor({ relativePath: skill.relativePath, access: 'read' }), access: 'read', relativePath: skill.relativePath }], {
+                        ...grantOptions,
+                        onRefused: (_entry, code) => {
+                            log('skill_refused', { executionId: item.executionId, skill: skill.name, code: String(code).slice(0, 40), required: skill.required });
+                            return skill.required ? 'skill_required_unavailable' : `grant_${String(code).replace(/[^a-z_]/gu, '').slice(0, 40)}`;
+                        }
+                    });
+                    grants.push(grant);
+                    if (!make.skillFile(grant.fd)) {
                         log('skill_refused', { executionId: item.executionId, skill: skill.name, code: 'skill_not_a_skill', required: skill.required });
                         throw new ExecutionSetupError(skill.required ? 'skill_required_unavailable' : 'skill_not_a_skill');
                     }
-                    skills.push({ name: skill.name, stageName: skillStageName(index), path: skill.hostPath, fd: result.grant.fd, exclusions: [...(skill.exclusions ?? [])] });
+                    skills.push({ name: skill.name, stageName: skillStageName(index), path: skill.hostPath, fd: grant.fd, exclusions: [...(skill.exclusions ?? [])] });
                 }
                 const admission = createAdmission({
                     grants: plan.grants.map((entry) => ({ path: entry.path, access: entry.access })),
@@ -230,7 +229,7 @@ export function createExecutionFactory({
                     state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
                     referenceId: null, layout, sandbox: supervisor, walker, clock
                 });
-                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels, activity, gatewayModel, gatewayProvider, executionId: item.executionId });
+                return buildExecution({ supervisor, ledger, admission, closeAll, lost, channels, activity, gatewayModel, gatewayProvider, executionId: item.executionId, writeGrants: projectGrants.filter((grant) => grant.access === 'write') });
             } catch (error) {
                 await closeAll();
                 throw error;
@@ -238,21 +237,27 @@ export function createExecutionFactory({
         }
     });
 
-    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels, activity, gatewayModel, gatewayProvider, executionId }) {
+    function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels, activity, gatewayModel, gatewayProvider, executionId, writeGrants = [] }) {
         let endpointServer = null;
         let hosted = null;
         let model = null;
         let tree = null;
         let ended = null;
         let activityTicker = null;
+        let unwatch = null;
         const exitedControl = deferred();
         const exited = exitedControl.promise;
+        const revokedControl = deferred();
         return {
             exited,
             lost: lostRef.promise,
+            // M-67 Q2: resolves with `source_activated` when a writable grant of this attempt now overlaps an active runtime source; the
+            // dispatcher then ends the attempt through its normal stop path.
+            revoked: revokedControl.promise,
             // M-43 (a): the last upstream error the model channel saw ({ status, message }), or null.
             lastModelError: () => model?.lastError() ?? null,
             async start() {
+                if (ended === null && unwatch === null) unwatch = sourceWatch.register({ executionId, grants: writeGrants, onOverlap: (reason) => revokedControl.resolve(reason) });
                 await ledger.startKeeper();
                 await ledger.publish({ kind: 'runtime-dir' });
                 // The admitted channels live in the channels directory of the runtime directory (read-only in every workload).
@@ -292,6 +297,7 @@ export function createExecutionFactory({
             end(outcome) {
                 ended ??= (async () => {
                     if (activityTicker !== null) { make.timers.clearInterval(activityTicker); activityTicker = null; }
+                    if (unwatch !== null) { unwatch(); unwatch = null; }
                     try {
                         endpointServer?.end('execution_ended');
                         // In-flight model requests are aborted, then the channel is closed, before the process trees are ended.

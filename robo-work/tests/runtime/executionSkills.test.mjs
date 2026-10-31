@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { createExecutionFactory, hasRegularSkillFile } from '../../server/runtime/executionFactory.mjs';
+import { resolveExecutionGrants } from '../../server/runtime/executionGrants.mjs';
 import { PlanError, VIRTUAL_SKILLS, planAlaExecution } from '../../server/runtime/alaPlan.mjs';
 import { skillsSelectionDigest } from '../../server/stateProtocol.mjs';
 
@@ -39,13 +40,11 @@ function rig(root) {
     const deps = {
         openDirectory: () => nextFd++,
         closeFd: () => {},
-        // The real resolver, wrapped only to count the descriptors it hands out and their release.
-        resolveGrant: async (request, context) => {
-            const { resolveGrant } = await import('../../server/views/grantResolver.mjs');
-            const result = await resolveGrant(request, context);
-            if (!result.ok) return result;
-            const close = result.grant.close.bind(result.grant);
-            return { ok: true, grant: { ...result.grant, fd: result.grant.fd, close: async () => { closedGrants.push(request.relativePath); await close(); } } };
+        // The real grant helper and the real resolver, wrapped only to count the descriptors they hand out and their release (each skill is
+        // resolved by its own call, so a refused call has opened nothing).
+        resolveExecutionGrants: async (entries, options) => {
+            const grants = await resolveExecutionGrants(entries, options);
+            return grants.map((grant, index) => ({ ...grant, fd: grant.fd, close: async () => { closedGrants.push(entries[index].relativePath); await grant.close(); } }));
         },
         createExecutionSupervisor: (options) => {
             supervisorOptions = options;

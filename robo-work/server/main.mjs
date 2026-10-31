@@ -16,6 +16,7 @@ import { createSandboxLauncher } from './sandbox/sandboxLauncher.mjs';
 import { createRecoveryView, sandboxRecordFor } from './sandbox/executionSupervisor.mjs';
 import { createDispatcher } from './runtime/dispatcher.mjs';
 import { createExecutionFactory } from './runtime/executionFactory.mjs';
+import { createRuntimeSourceProvider, defaultRuntimeSourcesFetch } from './runtime/executionGrants.mjs';
 import { createSoulGatewayUpstream } from './runtime/modelChannel.mjs';
 import { createLifecycleDriver } from './runtime/lifecycleDriver.mjs';
 import { runSandboxPreflight } from './runtime/preflight.mjs';
@@ -46,6 +47,10 @@ import { createRobotStore } from './runtime/robotStore.mjs';
 //   PORT, ROBO_WORK_COORDINATOR_HOST, ROBO_WORK_PROVIDER_PORT, ROBO_WORK_PROVIDER_HOST
 //   ROBO_WORK_ALA_ROOT                the AdvancedLanguageAgent checkout, default /Agent/linked/AdvancedLanguageAgent
 //   ROBO_WORK_MAX_CONCURRENT          concurrent executions, default 4
+//   ROBO_WORK_PLOINKY_AGENT_DIR       the Ploinky Agent library directory, default /Agent: its lib/runtimeSources.mjs reads the active
+//                                     runtime sources from the Router (decision M-63) for every launch with a writable grant and on the
+//                                     60 s recheck while a writable attempt runs; it signs with the worker's own Ploinky identity
+//                                     (PLOINKY_AGENT_PRIVATE_SECRET, PLOINKY_AGENT_INSTANCE_ID, the enable generation, the Router descriptor)
 //   PLOINKY_AGENT_API_KEY, PLOINKY_ROUTER_DESCRIPTOR_FILE, PLOINKY_AGENTLIB_DIR
 //                                     the worker's own Soul Gateway identity for the model channel (M-26): an OpenCode robot whose model is
 //                                     `soul-gateway/<id>` is served through a per-execution channel (runtime/modelChannel.mjs). Read only here, by
@@ -241,6 +246,8 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
         factory = createExecutionFactory({
             store, robots, launcher, view, walker, clock, workspaceRoot: config.workspaceRoot, runtimeDir: path.join(config.dataDir, 'runtime'),
             serverDir: SERVER_DIRECTORY, alaRoot, log,
+            // M-63: the active runtime sources, fresh for every writable launch (no cache); the worker's own ALA checkout is always one.
+            runtimeSources: createRuntimeSourceProvider({ workspaceRoot: config.workspaceRoot, localRoots: [alaRoot], fetch: defaultRuntimeSourcesFetch({ env }) }),
             // M-26: the worker's own Soul Gateway identity (PLOINKY_AGENT_API_KEY, PLOINKY_ROUTER_DESCRIPTOR_FILE, PLOINKY_AGENTLIB_DIR), loaded
             // lazily by the first execution that needs the model channel. It never leaves this process: sandboxes get a clean environment.
             modelUpstream: createSoulGatewayUpstream({ env })

@@ -284,6 +284,96 @@ test('a managed-source skill grant is not refused because controller state elsew
     await result.grant.close();
 });
 
+// --- active runtime sources (M-63): writable grants only ------------------------------------------------------------------
+
+test('M-63 AC5: a source location refuses a write grant (inside, contains) and is ignored for a read grant; the worker store is refused in both modes', async (t) => {
+    const root = workspace(t);
+    fs.mkdirSync(path.join(root, 'checkout/agent/skills'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'store/worker'), { recursive: true });
+    const sourceLocations = [{ label: 'active source (agent-repository)', path: path.join(root, 'checkout') }];
+    const protectedLocations = [{ label: 'worker store', path: path.join(root, 'store/worker') }];
+    for (const [relativePath, access, expected] of [
+        ['checkout', 'write', 'inside_active_source'],
+        ['checkout/agent', 'write', 'inside_active_source'],
+        ['checkout/agent', 'read', 'ok'],
+        ['checkout/agent/skills', 'read', 'ok'],
+        ['checkout', 'read', 'ok'],
+        ['store/worker', 'read', 'inside_protected_location'],
+        ['store/worker', 'write', 'inside_protected_location'],
+        ['store', 'read', 'contains_protected_location'],
+        ['proj', 'write', 'ok']
+    ]) {
+        const before = openFdCount();
+        const result = await resolve(root, project(relativePath, access), { protectedLocations, sourceLocations });
+        assert.equal(result.ok ? 'ok' : result.code, expected, `${access} ${relativePath}`);
+        if (result.ok) await result.grant.close();
+        assert.equal(openFdCount(), before, `${access} ${relativePath}`);
+    }
+    // A grant that contains a source refuses with the contains code; a source hidden in the view by a protected name does not count.
+    fs.mkdirSync(path.join(root, 'group/ploinky'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'proj/.ploinky/linked'), { recursive: true });
+    const contains = await resolve(root, project('group'), { sourceLocations: [{ label: 'active source (agent-library)', path: path.join(root, 'group/ploinky') }] });
+    assert.equal(contains.code, 'contains_active_source');
+    const masked = await resolve(root, project('proj'), { sourceLocations: [{ label: 'active source (linked-repository)', path: path.join(root, 'proj/.ploinky/linked') }] });
+    assert.equal(masked.ok, true, JSON.stringify(masked));
+    await masked.grant.close();
+});
+
+test('M-63 AC3: a grant component that shares its identity with a source under another spelling is inside_active_source (aliasing file system)', async (t) => {
+    const root = workspace(t);
+    fs.mkdirSync(path.join(root, 'Checkout/sub'), { recursive: true });
+    // `checkout` resolves to `Checkout`, as a case-insensitive file system would; the path comparison alone cannot see it.
+    const fsApi = aliasingFs(root, { checkout: path.join(root, 'Checkout') });
+    const sourceLocations = [{ label: 'active source (agent-repository)', path: path.join(root, 'Checkout') }];
+    for (const relativePath of ['checkout', 'checkout/sub']) {
+        const result = await resolve(root, project(relativePath), { fsApi, strategy: STRATEGIES.DARWIN, sourceLocations });
+        assert.equal(result.ok ? 'ok' : result.code, 'inside_active_source', relativePath);
+    }
+    const readOnly = await resolve(root, project('checkout/sub', 'read'), { fsApi, strategy: STRATEGIES.DARWIN, sourceLocations });
+    assert.equal(readOnly.ok, true, JSON.stringify(readOnly));
+    await readOnly.grant.close();
+});
+
+test('M-67 Q2: sourceOverlap judges a held write grant against a later list with the same rule, opens nothing, and is null for a read grant', async (t) => {
+    const root = workspace(t);
+    fs.mkdirSync(path.join(root, 'checkout/agent'), { recursive: true });
+    const writeGrant = (await resolve(root, project('checkout/agent'))).grant;
+    const readGrant = (await resolve(root, project('checkout/agent', 'read'))).grant;
+    const containing = (await resolve(root, project('a'))).grant;
+    const before = openFdCount();
+    assert.equal(await writeGrant.sourceOverlap([]), null);
+    assert.equal((await writeGrant.sourceOverlap([{ label: 'active source (agent-repository)', path: path.join(root, 'checkout') }])).code, 'inside_active_source');
+    assert.equal((await containing.sourceOverlap([{ label: 'active source (agent-library)', path: path.join(root, 'a/b') }])).code, 'contains_active_source');
+    assert.equal(await readGrant.sourceOverlap([{ label: 'active source (agent-repository)', path: path.join(root, 'checkout') }]), null);
+    assert.equal(openFdCount(), before, 'no descriptor opened by the check');
+    for (const grant of [writeGrant, readGrant, containing]) await grant.close();
+    assert.equal(await writeGrant.sourceOverlap([{ label: 'x', path: path.join(root, 'checkout') }]), null, 'a closed grant is no longer checked');
+});
+
+test('review fix 4: a source reported through a symlink inside a write grant is judged by its reported path too, at resolution and at the recheck', async (t) => {
+    const root = workspace(t);
+    fs.mkdirSync(path.join(root, 'elsewhere/code'), { recursive: true });
+    // `proj/link` is a symlink to `<ws>/elsewhere/code`; the Router reports the source under the spelling `proj/link`.
+    fs.symlinkSync(path.join(root, 'elsewhere/code'), path.join(root, 'proj/link'));
+    const sourceLocations = [{ label: 'active source (linked-repository)', path: path.join(root, 'proj/link') }];
+    const refused = await resolve(root, project('proj'), { sourceLocations });
+    assert.equal(refused.ok ? 'ok' : refused.code, 'contains_active_source', 'the write grant contains the reported spelling');
+    const held = (await resolve(root, project('proj'))).grant;
+    assert.equal((await held.sourceOverlap(sourceLocations))?.code, 'contains_active_source', 'the recheck sees it too');
+    await held.close();
+    // The target itself is still judged by identity and path, and an unrelated sibling grant is unaffected.
+    assert.equal((await resolve(root, project('elsewhere/code'), { sourceLocations })).code, 'inside_active_source');
+    const other = await resolve(root, project('other'), { sourceLocations });
+    assert.equal(other.ok, true, JSON.stringify(other));
+    await other.grant.close();
+    // A reported spelling below a protected name in the grant stays hidden by the view, as for the resolved path.
+    fs.mkdirSync(path.join(root, 'proj/.ploinky'), { recursive: true });
+    fs.symlinkSync(path.join(root, 'elsewhere/code'), path.join(root, 'proj/.ploinky/linked'));
+    const masked = await resolve(root, project('proj'), { sourceLocations: [{ label: 'x', path: path.join(root, 'proj/.ploinky/linked') }] });
+    assert.equal(masked.ok, true, JSON.stringify(masked));
+    await masked.grant.close();
+});
+
 // --- deterministic races ---------------------------------------------------------------------------------------------------
 
 test('race: a component swapped for a symlink between two steps is refused and leaves no descriptor', async (t) => {
@@ -564,7 +654,7 @@ test('a replaced directory has a different identity, so a continuation can refus
 // Linux-only file grantResolver.linux-procfd.mjs; the Box file system is G4/G6 work.
 
 const GRANT_KEYS = ['access', 'anchorIdentityKey', 'close', 'componentIdentities', 'fd', 'handle', 'identity', 'identityKey',
-    'managedSource', 'role', 'segments', 'strategy', 'verifyBinding'];
+    'managedSource', 'role', 'segments', 'sourceOverlap', 'strategy', 'verifyBinding'];
 
 async function grantFor(root, relativePath, access = 'write', role = 'project', extra = {}) {
     const result = await resolve(root, project(relativePath, access, role), extra);

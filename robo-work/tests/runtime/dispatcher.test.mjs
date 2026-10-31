@@ -52,6 +52,7 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
             });
             run.exited = new Promise((resolve) => { run.exitedControl.resolve = resolve; });
             run.lost = new Promise((resolve) => { run.lose = resolve; });
+            run.revoked = new Promise((resolve) => { run.revoke = resolve; });
             run.event = (event) => run.stderr.write(`${EVENT_PREFIX.toString()}${JSON.stringify(event)}\n`);
             run.finishWith = (text, exitCode = 0) => {
                 if (text !== null) run.stdout.write(text);
@@ -61,7 +62,7 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
             };
             runs.push(run);
             return {
-                exited: run.exited, lost: run.lost, lastModelError: () => run.lastModelError ?? null,
+                exited: run.exited, lost: run.lost, revoked: run.revoked, lastModelError: () => run.lastModelError ?? null,
                 async start() { if (startFails) throw startFails; return { stdin: run.stdin, stdout: run.stdout, stderr: run.stderr }; },
                 async end(outcome) {
                     run.ended.push(outcome);
@@ -537,4 +538,68 @@ test('an unverified stop wins: the result is termination_unverified, with the ti
     const result = view(admitted).result;
     assert.deepEqual([result.status, result.reason, result.classification, result.cleanup], ['failed', 'termination_unverified', 'failed', 'quarantined']);
     assert.equal(result.data.reason, 'inactive_timeout');
+});
+
+// M-63 / M-67 Q2: the execution withdraws a writable grant that now overlaps an active runtime source; the dispatcher ends the attempt through the
+// same stop path as a time bound (one end, the output so far kept, no retry), and a stop that cannot be verified still wins.
+test('M-67 Q2: a revoked execution (source_activated) ends the attempt failed with that reason through the normal end path, once', async (t) => {
+    const { dispatcher, runs, admit, view, logs } = rig(t);
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    runs[0].stdout.write('partial work');
+    runs[0].revoke('source_activated');
+    await wait(() => view(admitted).state === 'failed', 'failed by source_activated');
+    assert.deepEqual(view(admitted).result.data, { reason: 'source_activated' });
+    assert.equal(view(admitted).result.outputText, 'partial work');
+    assert.equal(runs[0].ended.length, 1, 'one normal end path');
+    const entry = logs.find((line) => line.event === 'attempt_revoked');
+    assert.deepEqual([entry.executionId, entry.attemptId, entry.reason], [admitted.executionId, admitted.attemptId, 'source_activated']);
+    runs[0].revoke('source_activated');
+    await pause(150);
+    assert.equal(runs[0].ended.length, 1, 'still one end');
+    assert.equal(runs.length, 1, 'no automatic retry or replacement');
+});
+
+test('M-67 Q2: a revoke whose stop cannot be verified is termination_unverified, with source_activated kept in the data', async (t) => {
+    const { dispatcher, runs, admit, view } = rig(t, { quarantineOnEnd: true });
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    runs[0].revoke('source_activated');
+    await wait(() => view(admitted).state === 'failed', 'failed');
+    const result = view(admitted).result;
+    assert.deepEqual([result.status, result.reason, result.classification, result.cleanup], ['failed', 'termination_unverified', 'failed', 'quarantined']);
+    assert.equal(result.data.reason, 'source_activated');
+});
+
+// Review fix 1: a revoke is final. It is never relabelled human-input (an answer would be bound to fail) or task_blocked by a question or a
+// recorded task failure that is still waiting for its own end.
+test('M-67 Q2: a revoke during the human-input grace ends the attempt failed / source_activated, not human-input', async (t) => {
+    const { dispatcher, runs, admit, view } = rig(t, { timeouts: { humanInputGraceMs: 2000 } });
+    const admitted = admit(spec({ humanInput: true }));
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    await runs[0].channels.humanInput({ question: 'Ship it?', options: ['yes', 'no'] });
+    runs[0].stdout.write('partial work');
+    runs[0].revoke('source_activated');
+    await wait(() => view(admitted).state !== 'running', 'ended');
+    assert.equal(view(admitted).state, 'failed');
+    assert.deepEqual(view(admitted).result.data, { reason: 'source_activated' });
+    assert.equal(runs[0].ended.length, 1);
+    await pause(100);
+    assert.equal(runs[0].ended.length, 1, 'the grace timer does not end it again');
+});
+
+test('M-67 Q2: a revoke after a recorded task failure (before its own end) ends the attempt failed / source_activated, not task_blocked', async (t) => {
+    const { dispatcher, runs, admit, view } = rig(t, { timeouts: { failureAbortMs: 2000 } });
+    const admitted = admit(spec({ workflowExecution: true }));
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    await runs[0].channels.taskFailure({ message: 'Missing access to the database' });
+    runs[0].revoke('source_activated');
+    await wait(() => view(admitted).state !== 'running', 'ended');
+    assert.equal(view(admitted).state, 'failed');
+    assert.deepEqual(view(admitted).result.data, { reason: 'source_activated' });
+    assert.equal(runs[0].ended.length, 1);
 });

@@ -261,20 +261,39 @@ async function ancestorIdentities(fsApi, target) {
     }
 }
 
-async function locationRefusal({ fsApi, location, grantPath, ids, finalId }) {
+const PROTECTED_CODES = Object.freeze({ inside: 'inside_protected_location', contains: 'contains_protected_location' });
+// Sources are also compared by the spelling they were reported under (`lexical`): a source reported through a symlink that lies inside a
+// writable grant is refused even though its resolved target is elsewhere (the robot could replace the link).
+const SOURCE_CODES = Object.freeze({ inside: 'inside_active_source', contains: 'contains_active_source', lexical: true });
+
+const isInside = (child, parent) => child === parent || child.startsWith(`${parent}/`);
+
+// `codes` names the refusal of each direction: the protected locations (every access mode) and the active runtime sources (M-63, writable
+// grants only) share this one check.
+async function locationRefusal({ fsApi, location, grantPath, ids, finalId, codes }) {
     const real = await canonicalLocation(fsApi, location.path);
+    const reported = codes.lexical && path.resolve(location.path) !== real ? path.resolve(location.path) : null;
     const ownId = await lstatIdentity(fsApi, real);
     // The grant is the location, or lies inside it.
-    if ((ownId !== null && ids.includes(ownId)) || grantPath === real || grantPath.startsWith(`${real}/`)) {
-        return refuse('inside_protected_location', `The grant lies inside ${location.label}`);
+    if ((ownId !== null && ids.includes(ownId)) || isInside(grantPath, real) || (reported !== null && isInside(grantPath, reported))) {
+        return refuse(codes.inside, `The grant lies inside ${location.label}`);
     }
     // The grant contains the location: refused unless the view would hide it by name.
+    const hiddenBelowGrant = (target) => firstProtectedComponent(target.slice(grantPath.length + 1).split('/')) !== null;
     const ancestors = await ancestorIdentities(fsApi, path.dirname(real));
     const containsByIdentity = ancestors.has(finalId);
     const containsByPath = real.startsWith(`${grantPath}/`);
-    if (containsByIdentity || containsByPath) {
-        if (containsByPath && firstProtectedComponent(real.slice(grantPath.length + 1).split('/')) !== null) return null;
-        return refuse('contains_protected_location', `The grant contains ${location.label}`);
+    const containsReported = reported !== null && reported.startsWith(`${grantPath}/`) && !hiddenBelowGrant(reported);
+    if (containsReported || ((containsByIdentity || containsByPath) && !(containsByPath && hiddenBelowGrant(real)))) {
+        return refuse(codes.contains, `The grant contains ${location.label}`);
+    }
+    return null;
+}
+
+async function firstLocationRefusal({ fsApi, locations, grantPath, ids, finalId, codes }) {
+    for (const location of locations ?? []) {
+        const refusal = await locationRefusal({ fsApi, location, grantPath, ids, finalId, codes });
+        if (refusal) return refusal;
     }
     return null;
 }
@@ -282,12 +301,16 @@ async function locationRefusal({ fsApi, location, grantPath, ids, finalId }) {
 // --- the resolver ----------------------------------------------------------------------------------------------------
 
 // request:  { role: 'project' | 'skill-source', access: 'read' | 'write', relativePath }
-// context:  { workspaceRoot, protectedLocations?: [{ label, path }], limits?, strategy?, fsApi? }
+// context:  { workspaceRoot, protectedLocations?: [{ label, path }], sourceLocations?: [{ label, path }], limits?, strategy?, fsApi? }
+//           protectedLocations are refused for every access mode (inside_protected_location / contains_protected_location).
+//           sourceLocations (M-63, the folders that RoboTeam, the worker or Ploinky run code from) are checked for a `write` request
+//           only, with the same inside / contains / identity logic (inside_active_source / contains_active_source); a `read`
+//           request ignores them, so an explicit read-only skill view of an active source stays permitted.
 // hooks:    { afterComponent(index, name), beforeVerify(), beforeBracketComponent(index) } injection points for
 //           deterministic race tests (beforeBracketComponent is used by the Linux strategy's bracket only).
 // Returns { ok: false, code, message } or { ok: true, grant } where grant = { handle, fd, identity: { dev, ino },
 // identityKey, componentIdentities, anchorIdentityKey, segments, access, role, managedSource, strategy, verifyBinding(),
-// close() }. The caller closes the grant when done; every refusal closes everything the resolver opened.
+// sourceOverlap(locations), close() }. The caller closes the grant when done; every refusal closes everything the resolver opened.
 export async function resolveGrant(request, context, hooks = {}) {
     const limits = resolveViewLimits(context.limits ?? {});
     const fsApi = context.fsApi ?? fs.promises;
@@ -334,9 +357,11 @@ export async function resolveGrant(request, context, hooks = {}) {
     }
 
     const grantPath = path.join(rootReal, ...segments);
-    for (const location of context.protectedLocations ?? []) {
-        const refusal = await locationRefusal({ fsApi, location, grantPath, ids, finalId });
-        if (refusal) return refuseAndClose(refusal);
+    const protectedRefusal = await firstLocationRefusal({ fsApi, locations: context.protectedLocations, grantPath, ids, finalId, codes: PROTECTED_CODES });
+    if (protectedRefusal) return refuseAndClose(protectedRefusal);
+    if (request.access === 'write') {
+        const sourceRefusal = await firstLocationRefusal({ fsApi, locations: context.sourceLocations, grantPath, ids, finalId, codes: SOURCE_CODES });
+        if (sourceRefusal) return refuseAndClose(sourceRefusal);
     }
 
     // Keep the grant root AND the walk chain (D-S5-6): the chain is what verifyBinding re-resolves from. It never leaves
@@ -425,13 +450,20 @@ export async function resolveGrant(request, context, hooks = {}) {
         return running;
     }
 
+    // M-63 recheck (decision M-67 Q2): whether this writable grant now lies inside, contains or aliases one of `locations`, judged from its
+    // admission path and identities (the same check as at resolution; no descriptor is opened). Null when it does not, or for a read grant.
+    async function sourceOverlap(locations) {
+        if (request.access !== 'write' || closed) return null;
+        return firstLocationRefusal({ fsApi, locations, grantPath, ids, finalId, codes: SOURCE_CODES });
+    }
+
     return {
         ok: true,
         grant: Object.freeze({
             handle, fd: handle.fd, identity: Object.freeze(splitIdentity(finalId)), identityKey: finalId,
             componentIdentities: Object.freeze([...ids]), anchorIdentityKey: ids[0], segments: recorded,
             access: request.access, role: request.role, managedSource: classified.managedSource, strategy,
-            verifyBinding,
+            verifyBinding, sourceOverlap,
             close() {
                 if (closing) return closing;
                 closed = true;
