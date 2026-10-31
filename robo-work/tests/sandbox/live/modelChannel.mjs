@@ -30,7 +30,9 @@
 //          runtime directory and the files the stub and workloads wrote; in the ledger database and any MODEL_PROBE_SCAN path; and in the
 //          log lines this run produced. Only counts are printed. The processes of THIS run are the stub and a thin ledger stand-in; real ALA
 //          and the real ledger rows are covered by `--watch` during a real turn. The scan counters (processes in sandbox PID namespaces, files) must be
-//          positive, so a zero cannot come from scanning nothing.
+//          positive, so a zero cannot come from scanning nothing. Scope: processes in a PID namespace other than the worker's own plus the
+//          prep and stage processes (stage.sh, sandboxPrep.mjs on their command line); the worker container's own processes are skipped
+//          and counted. The number of sandbox processes sampled is printed and must be > 0.
 //   AC-M7  a workload of B (default model, running at the same time as A) connects to 127.0.0.1:<relay port> with node (not curl) and
 //          gets a connection error, not a status; its channels directory has no model.sock and /run/robo-work/model does not exist.
 //   AC-M8  in A's workload: a POST with another model id returns 403; GET /v1/models lists exactly the one model; `?x=1`,
@@ -211,9 +213,18 @@ function sampleProcesses(tally = processTally, only = null) {
         let cmdline = null;
         try { cmdline = fs.readFileSync(`/proc/${name}/cmdline`); } catch { continue; }
         if (only === null && cmdline.includes('server/main.mjs')) { workerPids.add(pid); continue; }
+        // AC-M6 scope (M-43(b), M-47): the processes that could hold or receive the worker's key are the SANDBOX processes (a pid namespace
+        // other than the worker's own: endpoint, ALA, workloads) and the marker-carrying PREP and STAGE processes of every launch (setpriv,
+        // nsenter, unshare, stage.sh, node sandboxPrep.mjs; they run in the worker's pid namespace). The worker container's own processes
+        // (podman-init, the entrypoint, RuntimeHttpRelay, the main process's children) are not the subject and are not counted, so they can
+        // neither hide a leak behind a large number nor create a false match. A positive control (`only`) is always scanned.
+        let sandbox = false;
+        try { sandbox = fs.readlinkSync(`/proc/${name}/ns/pid`) !== selfNs; } catch { continue; /* gone */ }
+        const prepOrStage = cmdline.includes('stage.sh') || cmdline.includes('sandboxPrep.mjs');
+        if (only === null && !sandbox && !prepOrStage) { tally.skippedContainerLevel = (tally.skippedContainerLevel ?? 0) + 1; continue; }
         tally.pids.add(pid);
-        if (cmdline.includes('stage.sh')) tally.stagePids.add(pid);
-        try { if (fs.readlinkSync(`/proc/${name}/ns/pid`) !== selfNs) tally.sandboxPids.add(pid); } catch { /* gone */ }
+        if (prepOrStage) tally.stagePids.add(pid);
+        if (sandbox) tally.sandboxPids.add(pid);
         const noteMatch = () => { tally.matchedPids.add(pid); try { tally.matchedComms.add(fs.readFileSync(`/proc/${name}/comm`, 'utf8').trim().slice(0, 24)); } catch { /* gone */ } };
         const found = countIn(cmdline);
         if (found) { tally.cmdlineMatches += found; noteMatch(); }
@@ -257,7 +268,8 @@ if (WATCH_SECONDS !== null) {
     watchEvidence.scan = {
         samples: processTally.samples, processesScanned: processTally.pids.size, sandboxProcessesScanned: processTally.sandboxPids.size, stagePrepProcessesScanned: processTally.stagePids.size,
         processEnvironMatches: processTally.environMatches, processCmdlineMatches: processTally.cmdlineMatches, matchedProcesses: processTally.matchedPids.size,
-        matchedProcessNames: [...processTally.matchedComms], filesScanned: stored.files, fileMatches: stored.matches, workerMainProcessesExcluded: workerPids.size
+        matchedProcessNames: [...processTally.matchedComms], filesScanned: stored.files, fileMatches: stored.matches, workerMainProcessesExcluded: workerPids.size,
+        containerLevelProcessSamplesSkipped: processTally.skippedContainerLevel ?? 0
     };
     watchCheck('M6 no process environ or cmdline held the key during the watch', processTally.environMatches === 0 && processTally.cmdlineMatches === 0 && processTally.sandboxPids.size > 0,
         { sandboxProcessesScanned: processTally.sandboxPids.size });
@@ -474,7 +486,8 @@ evidence.scan = {
     samples: processTally.samples, processesScanned: processTally.pids.size, sandboxProcessesScanned: processTally.sandboxPids.size, stagePrepProcessesScanned: processTally.stagePids.size,
     processEnvironMatches: processTally.environMatches, processCmdlineMatches: processTally.cmdlineMatches, matchedProcesses: processTally.matchedPids.size, matchedProcessNames: [...processTally.matchedComms],
     storeFilesScanned: files.files, storeFileMatches: files.matches, extraFilesScanned: extraTally.files, extraFileMatches: extraTally.matches,
-    extraTargets: extra.length, logLines: logLines.length, logMatches, workerMainProcessesExcluded: workerPids.size
+    extraTargets: extra.length, logLines: logLines.length, logMatches, workerMainProcessesExcluded: workerPids.size,
+    containerLevelProcessSamplesSkipped: processTally.skippedContainerLevel ?? 0
 };
 check('M6 no process environ or cmdline holds the key (endpoint, ALA stub, workloads, prep and stage processes of every launch)',
     processTally.environMatches === 0 && processTally.cmdlineMatches === 0 && processTally.sandboxPids.size >= 6, { sandboxProcessesScanned: processTally.sandboxPids.size });

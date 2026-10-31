@@ -10,7 +10,7 @@ export async function recoverWorkerGeneration({ state, walker }) {
     const started = state.beginGenerationRecovery(state.generationId);
     const outcomes = [];
     for (const blocker of walkOrder(started.unsettledBlockers)) {
-        const outcome = blocker.kind === 'preparation' ? 'released' : await walker.walk(blocker);
+        const outcome = blocker.kind === 'preparation' ? 'released' : await walker.walk(blocker, { recovery: true });
         state.settleResource({ resourceId: blocker.resourceId, generationId: blocker.generationId, outcome });
         outcomes.push({ resourceId: blocker.resourceId, kind: blocker.kind, outcome });
     }

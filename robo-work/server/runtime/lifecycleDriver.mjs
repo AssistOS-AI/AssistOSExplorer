@@ -11,15 +11,16 @@ import { WorkerStateError, createVerifiedServiceContext } from '../stateProtocol
 //                        re-prepared (idempotent) and attested again, otherwise every admission would be refused.
 //
 // One `tick()` handles all pending work and never throws; `start()` runs it on an interval.
-export function createLifecycleDriver({ store, robots, workspaceId, intervalMs = 250, retryMs = 5000, now = Date.now, log = () => {}, setTimer = setInterval, clearTimer = clearInterval }) {
+export function createLifecycleDriver({ store, robots, workspaceId, intervalMs = 250, retryMs = 5000, maxRetryMs = 300000, now = Date.now, log = () => {}, setTimer = setInterval, clearTimer = clearInterval }) {
     for (const method of ['listPendingCompletions', 'listUnattestedRobots', 'completePreparation', 'completeDelete', 'attestReadiness']) {
         if (!store || typeof store[method] !== 'function') throw new TypeError(`The store lacks ${method}`);
     }
     let timer = null;
     let running = false;
-    // A robot whose re-attestation failed (for example a quarantined resource) is retried after retryMs, not every tick.
-    const attestedAt = new Map();
-
+    // A robot whose re-attestation failed (for example a quarantined resource) is retried after retryMs, then after twice that, and so on up to
+    // maxRetryMs: a robot that stays nonready (`resource_quarantined`) must not be attested and logged every few seconds for as long as it stays so.
+    // The failure is LOGGED once per state change (a different error, or the recovery), not once per attempt.
+    const attestedAt = new Map(); // robotId -> { at, delay, error }
     const contextFor = (scope, ownerId) => createVerifiedServiceContext({
         workspaceId, scope, ownerId, robotOwnerId: ownerId, operations: ['adapter_complete', 'attest', 'read']
     });
@@ -56,14 +57,22 @@ export function createLifecycleDriver({ store, robots, workspaceId, intervalMs =
     }
 
     async function reattest(entry) {
-        const last = attestedAt.get(entry.robotId);
-        if (last !== undefined && now() - last < retryMs) return;
-        attestedAt.set(entry.robotId, now());
+        const previous = attestedAt.get(entry.robotId);
+        if (previous !== undefined && now() - previous.at < previous.delay) return;
+        const at = now();
         try {
             robots.prepare(entry.robotId, entry.configuration);
             store.attestReadiness(contextFor('worker:reattest', entry.ownerId), { robotId: entry.robotId });
+            if (previous !== undefined && previous.error !== null) log('attest_recovered', { robotId: entry.robotId, after: previous.error, attempts: previous.attempts });
+            attestedAt.set(entry.robotId, { at, delay: retryMs, error: null, attempts: 0 });
         } catch (error) {
-            log('attest_failed', { robotId: entry.robotId, error: describe(error) });
+            const code = describe(error);
+            const failing = previous !== undefined && previous.error !== null;
+            if (!failing || previous.error !== code) log('attest_failed', { robotId: entry.robotId, error: code, retryInMs: failing ? Math.min(previous.delay * 2, maxRetryMs) : retryMs });
+            attestedAt.set(entry.robotId, {
+                at, error: code, attempts: (failing ? previous.attempts : 0) + 1,
+                delay: failing ? Math.min(Math.max(previous.delay * 2, retryMs), maxRetryMs) : retryMs
+            });
         }
     }
 

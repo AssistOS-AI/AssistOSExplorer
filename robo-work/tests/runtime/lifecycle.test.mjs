@@ -217,3 +217,48 @@ test('M-29 robotStore.remove: a link in place of the robot directory is unlinked
     robots.remove(id);
     assert.throws(() => robots.remove('../escape'), TypeError);
 });
+
+// ---- M-47: a robot that stays nonready backs off and is logged once per state change --------------------------------------------------------------------
+
+function attestStub(failWith) {
+    const calls = [];
+    const state = { failWith };
+    const store = {
+        listPendingCompletions: () => [], completePreparation() {}, completeDelete() {},
+        listUnattestedRobots: () => [{ robotId: 'R1', ownerId: 'O', configuration: {} }],
+        attestReadiness: () => { calls.push(clock.t); if (state.failWith) throw Object.assign(new Error('x'), { code: state.failWith }); }
+    };
+    const clock = { t: 0 };
+    const logs = [];
+    const driver = createLifecycleDriver({ store, robots: { prepare() {} }, workspaceId: WORKSPACE, now: () => clock.t, log: (event, fields) => logs.push({ event, ...fields }), retryMs: 5000, maxRetryMs: 40000 });
+    return { driver, clock, calls, logs, state };
+}
+
+test('M-47: a robot in resource_quarantined is re-attested after 5 s, then 10 s, 20 s, 40 s, 40 s (not every 5 s), and the failure is logged ONCE', async () => {
+    const { driver, clock, calls, logs } = attestStub('resource_quarantined');
+    for (let seconds = 0; seconds <= 200; seconds += 1) { clock.t = seconds * 1000; await driver.tick(); }
+    assert.deepEqual(calls.map((at) => at / 1000), [0, 5, 15, 35, 75, 115, 155, 195], 'delays 5, 10, 20, 40, 40, 40, 40 seconds');
+    assert.equal(logs.filter((entry) => entry.event === 'attest_failed').length, 1, 'one log line for the state, not one per attempt');
+    assert.equal(logs[0].error, 'resource_quarantined');
+    assert.equal(logs[0].retryInMs, 5000);
+});
+
+test('M-47: a different failure is a state change and is logged; the recovery is logged once and resets the delay', async () => {
+    const { driver, clock, calls, logs, state } = attestStub('resource_quarantined');
+    await driver.tick();
+    clock.t = 5000; await driver.tick();
+    state.failWith = 'robot_busy';
+    clock.t = 15000; await driver.tick();
+    assert.deepEqual(logs.map((entry) => [entry.event, entry.error ?? entry.after]), [['attest_failed', 'resource_quarantined'], ['attest_failed', 'robot_busy']]);
+    state.failWith = null;
+    clock.t = 15000 + 20000; await driver.tick();
+    assert.deepEqual(logs.at(-1), { event: 'attest_recovered', robotId: 'R1', after: 'robot_busy', attempts: 3 });
+    assert.equal(logs.length, 3);
+    // a later failure starts again from the base delay
+    state.failWith = 'resource_quarantined';
+    clock.t = 60000; await driver.tick();
+    clock.t = 64000; await driver.tick();
+    clock.t = 65000; await driver.tick();
+    assert.equal(calls.length, 6, 'attempts at 0, 5, 15, 35, 60 and (base delay again) 65 seconds');
+    assert.equal(logs.at(-1).event, 'attest_failed');
+});

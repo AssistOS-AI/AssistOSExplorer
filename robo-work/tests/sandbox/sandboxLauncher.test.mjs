@@ -576,3 +576,20 @@ test('reportMasks: the launcher hands back what prep recorded (evidence only), a
         assert.ok(!fs.existsSync(`${world.dir}/stage/rw-ReportMasks0123456789ab`));
     } finally { world.done(); }
 });
+
+test('M-47: the reservation marker is on the argv of EVERY exec stage of the pre-commit chain (setpriv, nsenter, unshare, sh stage.sh), so no prep process in the worker\'s pid namespace escapes attribution', async () => {
+    for (const netMode of ['join', 'none']) {
+        const world = rig();
+        try {
+            await world.launcher.launch(workloadSpec(world, netMode === 'none' ? { netMode: 'none', netns: undefined } : {}));
+            const chain = ['setpriv', ...world.spawned[0].args];
+            // Each tool execs the next in place, so the argv of the process at each stage is the tail of the command line from that tool on.
+            const stages = [];
+            for (let at = 0; at < chain.length; at += 1) if (['setpriv', 'nsenter', 'unshare'].includes(chain[at]) && (at === 0 || chain[at - 1] === '--')) stages.push(chain.slice(at));
+            const shell = chain.indexOf('/bin/sh');
+            stages.push(chain.slice(shell));
+            assert.deepEqual(stages.map((argv) => argv[0]), netMode === 'join' ? ['setpriv', 'nsenter', 'unshare', '/bin/sh'] : ['setpriv', 'unshare', '/bin/sh']);
+            for (const argv of stages) assert.ok(argv.includes(MARKER), `${argv[0]} stage lacks the marker`);
+        } finally { world.done(); }
+    }
+});

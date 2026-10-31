@@ -107,12 +107,53 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
         return descend ? withDescendants(seed, processes) : seed;
     }
 
-    // Who holds a namespace inode: a process whose link (or whose thread's link: setns is per thread) or descriptor names it, an nsfs
-    // mount, and a process that cannot be read at all and is ATTRIBUTABLE to it. An unreadable (opaque) process is a holder only when
-    // some ancestor of it holds the inode through a readable link (it descends from a process of that namespace). One that cannot be
-    // attributed is nobody's: a robot can leave an opaque zombie leader running on purpose (M-36), and it must not delay or
-    // quarantine another execution's release.
-    function namespaceHolders(inode, field, processes, mounts) {
+    // Who holds a namespace inode that was RECORDED for an execution that is now over. Inode numbers are reused by the kernel (observed: the
+    // net namespace of a killed worker's execution became the network namespace of the replacement worker container itself, held by its
+    // pid 1, 2, 11 and 21; F-Q1, which quarantined the interrupted execution's netns blocker and left the robot nonready). After a crash there
+    // are no pins, so the number alone proves nothing. The rules, all fail-closed in the direction that a holder must be PROVEN to belong to
+    // the recorded execution before it can keep the blocker:
+    //   1. a recorded inode equal to the supervisor's OWN current namespace of that type can never be that execution's namespace (an execution
+    //      has namespaces of its own): it was reused, nothing holds the recorded one;
+    //   2. a holder counts only if it is attributable to the execution: it carries one of the execution's reservation markers, it is (or descends
+    //      from) a process recorded for it (pid + start time of a monitor or init), or it sits in a pid namespace that one of its recorded
+    //      trees proves it still owns. The execution's records come from sandboxRecord(blocker).siblings;
+    //   3. without those records, only processes in a pid namespace other than the supervisor's own can be sandbox members: container-level
+    //      processes share the supervisor's pid namespace and hold the container's own namespaces;
+    //   4. an unreadable (opaque) process is a holder only if it descends from a process that readably holds the inode;
+    //   5. nsfs mounts are not counted when the holders are attributed: the netns file is proven absent BY NAME (the view's exists()).
+    //
+    // RECOVERY ONLY (decision M-47): these rules apply when a restarted supervisor walks the blockers of an earlier generation (no pins exist).
+    // The normal end path keeps the pin rule of M-36: the supervisor pins the recorded namespaces until the blocker settles, so the number
+    // cannot have been reused and every process that names it is a holder.
+    function holderScope(blocker, field, inode, processes, recovery) {
+        if (!recovery) return { attributed: false, inScope: () => true };
+        let self = null;
+        try { self = view.selfNamespaces?.() ?? null; } catch { self = null; }
+        if (self && self[field] === inode) return { reused: true };
+        let record = null;
+        if (blocker.locator?.keeper) { try { record = sandboxRecord(blocker); } catch { record = null; } }
+        const siblings = Array.isArray(record?.siblings) ? record.siblings : null;
+        if (siblings === null) {
+            return { attributed: false, inScope: (entry) => self === null || entry.pidNs !== self.pidNs };
+        }
+        const records = [record, ...siblings].filter((entry) => entry && typeof entry === 'object');
+        const markers = new Set(records.map((entry) => entry.locator?.marker).filter((marker) => typeof marker === 'string'));
+        const roots = records.flatMap((entry) => (entry.identity && entry.identity.pid !== undefined ? [entry.identity, ...(entry.identity.init ? [entry.identity.init] : [])] : []));
+        const ownedPidNs = new Set(records.filter((entry) => entry.identity?.pidNs !== undefined && pidNamespaceProven(entry.identity, processes)).map((entry) => entry.identity.pidNs));
+        const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
+        const mine = (entry) => entry.cmdline.some((arg) => markers.has(arg)) || roots.some((root) => identityMatches(entry, root));
+        return {
+            attributed: true,
+            inScope(entry) {
+                if (ownedPidNs.has(entry.pidNs)) return true;
+                for (let depth = 0, at = entry; at && depth < 64; depth += 1, at = byPid.get(at.ppid)) if (mine(at)) return true;
+                return false;
+            }
+        };
+    }
+
+    function namespaceHolders(inode, field, processes, mounts, scope) {
+        if (scope.reused) return [];
         const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
         const names = (entry) => entry[field] === inode || entry.threadNs?.[field]?.includes(inode) === true;
         const attributable = (entry) => {
@@ -121,25 +162,26 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
         };
         const holders = [];
         for (const entry of processes) {
+            if (!scope.inScope(entry)) continue;
             if (names(entry)) holders.push({ via: 'ns-link', pid: entry.pid });
             if (entry.fdNs.includes(inode)) holders.push({ via: 'fd-link', pid: entry.pid });
             if (entry.opaque === true && !names(entry) && attributable(entry)) holders.push({ via: 'opaque', pid: entry.pid });
         }
-        for (const mount of mounts) if (mount.fstype === 'nsfs' && mount.nsInode === inode) holders.push({ via: 'nsfs-mount', mountId: mount.mountId });
+        if (!scope.attributed) for (const mount of mounts) if (mount.fstype === 'nsfs' && mount.nsInode === inode) holders.push({ via: 'nsfs-mount', mountId: mount.mountId });
         return holders;
     }
 
     // Absence as the supervisor can see it right now. A /proc read that fails (a process mid-exit that cannot be read) is not an
     // answer: absence is NOT proven, and the walk reads again until the deadline, then quarantines. It never throws out of the walk.
-    function prove(blocker) {
+    function prove(blocker, recovery = false) {
         try {
-            return proveOnce(blocker);
+            return proveOnce(blocker, recovery);
         } catch (error) {
             return { absent: false, holders: [{ via: 'proc-unreadable', code: error?.code ?? null }] };
         }
     }
 
-    function proveOnce(blocker) {
+    function proveOnce(blocker, recovery) {
         const processes = view.listProcesses();
         const mounts = view.listMounts();
         const { kind } = blocker;
@@ -164,7 +206,7 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
                 return { absent: sandboxTree.length === 0 && objectsLeft.length === 0, holders: [...sandboxTree.map((entry) => ({ pid: entry.pid })), ...objectsLeft] };
             }
             const inode = blocker.identity[field];
-            const holders = namespaceHolders(inode, field, processes, mounts);
+            const holders = namespaceHolders(inode, field, processes, mounts, holderScope(blocker, field, inode, processes, recovery));
             if (kind === 'mount') {
                 const mountsLeft = mounts.filter((mount) => mount.mountId === blocker.identity.mountId && mount.mountpoint === blocker.identity.mountpoint);
                 for (const mount of mountsLeft) holders.push({ via: 'mountinfo', mountId: mount.mountId });
@@ -221,7 +263,7 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
         const deadline = (options.since ?? clock.now()) + releaseDeadlineMs;
         for (;;) {
             await force(blocker);
-            if (prove(blocker).absent) return RELEASED;
+            if (prove(blocker, options.recovery === true).absent) return RELEASED;
             if (clock.now() >= deadline) return QUARANTINED;
             await clock.sleep(pollMs);
         }
@@ -229,9 +271,9 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
 
     // One pass, no waiting: `released` if absence can be proven now after forcing, otherwise null (undecided, not
     // quarantined). Used where the caller can leave the blocker unsettled for the end path.
-    async function attempt(blocker) {
+    async function attempt(blocker, options = {}) {
         await force(blocker);
-        return prove(blocker).absent ? RELEASED : null; // prove() never throws: an unreadable /proc is "undecided"
+        return prove(blocker, options.recovery === true).absent ? RELEASED : null; // prove() never throws: an unreadable /proc is "undecided"
     }
 
     return { prove, force, walk, attempt };
@@ -245,7 +287,7 @@ export async function recoverGeneration({ state, walker }) {
     const outcomes = [];
     const pending = walkOrder(started.unsettledBlockers);
     for (const blocker of pending) {
-        const outcome = await walker.walk(blocker);
+        const outcome = await walker.walk(blocker, { recovery: true });
         state.settleResource({ resourceId: blocker.resourceId, generationId: blocker.generationId, outcome });
         outcomes.push({ resourceId: blocker.resourceId, kind: blocker.kind, outcome });
     }

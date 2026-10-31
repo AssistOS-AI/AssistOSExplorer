@@ -476,7 +476,19 @@ export function createExecutionSupervisor({
 
 // recoveryWalk.createWalker's `sandboxRecord`: the anchor's own S1 record (any release state) for a blocker whose locator
 // names it. `getState` returns the current WorkerState handle (it changes when recovery reopens the store).
-export const sandboxRecordFor = (getState) => (blocker) => getState().getResource({ resourceId: blocker.locator.keeper });
+// The record also carries `siblings`: the execution's other unsettled blockers (their markers and recorded process identities), which is what the
+// walker needs to attribute a holder of a recorded namespace inode to the execution. Absent when the store cannot list them.
+export const sandboxRecordFor = (getState) => (blocker) => {
+    const state = getState();
+    const record = state.getResource({ resourceId: blocker.locator.keeper });
+    let siblings;
+    try {
+        if (typeof state.listUnsettledResources === 'function' && record?.attemptId !== undefined) {
+            siblings = state.listUnsettledResources().filter((entry) => entry.attemptId === record.attemptId && entry.resourceId !== record.resourceId);
+        }
+    } catch { siblings = undefined; }
+    return siblings === undefined ? record : { ...record, siblings };
+};
 
 // Processes whose argv carries the reservation marker as a literal element (every pre-commit stage, and bwrap itself).
 export const findMarkerProcesses = (view, marker) => view.listProcesses().filter((entry) => entry.cmdline.includes(marker));

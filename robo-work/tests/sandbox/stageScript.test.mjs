@@ -121,3 +121,17 @@ test('prep: malformed arguments are refused', () => {
     assert.equal(run(['prep', MARKER, '1', '3', '4', SPEC, '--']).status, 64, 'a command is required');
     assert.equal(run(['prep', 'a'.repeat(65), '1', '3', '4', SPEC, '--', '/bin/true']).status, 64, 'too long');
 });
+
+test('M-47: the setpriv that starts node prep, and node prep itself, carry the marker on their argv; so does the final exec of bwrap', () => tmp((dir) => {
+    const stage = prepFixture(dir, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(path.join(dir, 'prep.argv'))}, JSON.stringify(process.argv));`, '#!/bin/sh\necho "$@"\n');
+    // a setpriv that records its argv and then runs the rest of the command line, as the real one does
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'setpriv'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(path.join(dir, 'setpriv.argv'))}\nshift 3\nexec "$@"\n`, { mode: 0o755 });
+    const dashed = '-qZ9_prepMarker0123456789';
+    const r = spawnSync('/bin/sh', [stage, 'prep', dashed, String(process.pid), '', '4', SPEC, '--', '/bin/cmd'], { encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}` } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(fs.readFileSync(path.join(dir, 'setpriv.argv'), 'utf8').split('\n').includes(dashed), 'setpriv');
+    assert.ok(JSON.parse(fs.readFileSync(path.join(dir, 'prep.argv'), 'utf8')).includes(dashed), 'node sandboxPrep.mjs');
+    assert.ok(r.stdout.split(' ').includes(dashed), 'bwrap');
+}));

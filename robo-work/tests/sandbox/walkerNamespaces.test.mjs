@@ -137,3 +137,135 @@ test('M-36: robot A\'s long-lived opaque process cannot make execution B\'s netn
     // A's own network IS held by the opaque leader that descends from A's init (which readably holds it)
     assert.equal(walker.prove({ kind: 'netns', identity: { netNs: '4026539100' }, locator: { netns: 'a'.repeat(32), keeper: 'ka' } }).absent, false);
 });
+
+// ---- F-Q1: crash recovery with no pins must not act on a namespace inode alone ----------------------------------------------------------------------
+// Observed: the net namespace recorded for an execution of a killed worker became the network namespace of the REPLACEMENT worker container itself
+// (inode 4026532922, held by its pid 1, 2, 11 and 21). The holders were "live", the by-name proofs said everything was gone, and the interrupted
+// execution's netns blocker was quarantined, leaving the robot nonready.
+
+const OWN = { pidNs: '4026531836', mntNs: '4026531840', netNs: '4026532922' };
+const LOCAL = '0123456789abcdef0123456789abcdef';
+const netnsBlocker = (netNs = '4026532922') => ({ kind: 'netns', identity: { netNs, name: 'rwaaaaaaaaaaaaaaaa', host: 'rwaaaaaaaaah', peer: 'rwaaaaaaaaan', table: 'rw_aaaaaaaaaaaaaaaa' }, locator: { netns: LOCAL, keeper: 'K' } });
+const worker = (pid, extra = {}) => proc(pid, { ppid: pid === 1 ? 0 : 1, pidNs: OWN.pidNs, netNs: OWN.netNs, mntNs: OWN.mntNs, ...extra });
+
+function walkerWith(processes, { record = null, named = false, mounts = [], self = OWN } = {}) {
+    const view = {
+        listProcesses: () => processes, listMounts: () => mounts, exists: (kind) => (kind === 'netns' ? named : false), remove: () => true, kill: () => false, unmount: () => false,
+        selfNamespaces: () => self, isPinned: () => false
+    };
+    return createWalker({ view, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: () => record });
+}
+
+test('F-Q1: a recorded netns inode equal to the supervisor\'s OWN network namespace was reused by the worker container: its processes are not holders and the blocker is released', async () => {
+    const containerLevel = [worker(1), worker(2, { ppid: 1 }), worker(11, { ppid: 2 }), worker(21, { ppid: 2 })];
+    const walker = walkerWith(containerLevel, { record: { identity: { pid: 5, startTime: '5' }, locator: { marker: 'K' } } });
+    const verdict = walker.prove(netnsBlocker(), true);
+    assert.deepEqual(verdict, { absent: true, holders: [] });
+    assert.equal(await walker.walk(netnsBlocker(), { recovery: true }), 'released');
+    // also when the store gave no execution records at all
+    assert.equal(await walkerWith(containerLevel).walk(netnsBlocker(), { recovery: true }), 'released');
+    // and an nsfs mount of that same (own) namespace does not hold it either
+    assert.equal(walkerWith(containerLevel, { mounts: [{ mountId: 1, mountpoint: '/run/netns/x', mntNs: OWN.mntNs, fstype: 'nsfs', nsInode: '4026532922' }] }).prove(netnsBlocker(), true).absent, true);
+});
+
+test('F-Q1: the same for a recorded mount namespace equal to the supervisor\'s own', async () => {
+    const containerLevel = [worker(1), worker(21, { ppid: 1 })];
+    const mount = { kind: 'mount', identity: { mntNs: OWN.mntNs, mountId: 7, mountpoint: '/stage' }, locator: { mount: 'm', keeper: 'K' } };
+    assert.equal(await walkerWith(containerLevel).walk(mount, { recovery: true }), 'released');
+});
+
+test('F-Q1: without the execution\'s records, only processes in a pid namespace other than the supervisor\'s can be holders (a sandbox member is; a container process is not)', async () => {
+    const reusedByOther = '4026539999';
+    const container = worker(30, { netNs: reusedByOther }); // a container-level process in some namespace that happens to carry the number
+    assert.equal(walkerWith([container]).prove(netnsBlocker(reusedByOther), true).absent, true);
+    const member = proc(900, { ppid: 899, pidNs: '4026534100', netNs: reusedByOther, mntNs: '1' });
+    assert.equal(walkerWith([member]).prove(netnsBlocker(reusedByOther), true).absent, false, 'a sandbox member in the recorded namespace is a holder');
+});
+
+test('F-Q1: with the execution\'s records, a holder must be attributable to it: marker, a recorded monitor/init (or a descendant), or a pid namespace its tree still owns', async () => {
+    const inode = '4026539999';
+    const record = {
+        identity: { pid: 5, startTime: '5' }, locator: { marker: 'KEEPERMARKER0123456789' },
+        siblings: [{ kind: 'process-tree', locator: { marker: 'TREEMARKER0123456789ab' }, identity: { pid: 100, startTime: '100', pidNs: '4026534500', init: { pid: 101, startTime: '101' } } }]
+    };
+    const theirs = (extra) => proc(extra.pid, { ppid: 1, pidNs: '4026534999', netNs: inode, mntNs: '1', ...extra });
+    // a member of ANOTHER live execution that was handed the reused number: not this execution's
+    assert.equal(walkerWith([theirs({ pid: 700 })], { record }).prove(netnsBlocker(inode), true).absent, true);
+    // carrying this execution's marker
+    assert.equal(walkerWith([theirs({ pid: 701, cmdline: ['/usr/bin/bwrap', 'TREEMARKER0123456789ab'] })], { record }).prove(netnsBlocker(inode), true).absent, false);
+    // the recorded init itself (pid + start time), and a descendant of it (a double-forked member re-parented under the sandbox init)
+    assert.equal(walkerWith([theirs({ pid: 101, startTime: '101' })], { record }).prove(netnsBlocker(inode), true).absent, false);
+    assert.equal(walkerWith([theirs({ pid: 101, startTime: '101' }), theirs({ pid: 705, ppid: 101 })]).prove(netnsBlocker(inode), true).absent, false, 'without records the foreign pid namespace counts');
+    assert.equal(walkerWith([theirs({ pid: 101, startTime: '101' }), theirs({ pid: 705, ppid: 101, pidNs: '4026534999' })], { record }).prove(netnsBlocker(inode), true).holders.length, 2);
+    // the same pid with ANOTHER start time is a different process
+    assert.equal(walkerWith([theirs({ pid: 101, startTime: '999' })], { record }).prove(netnsBlocker(inode), true).absent, true);
+    // in a pid namespace one of its recorded trees proves it still owns (its init is alive in it)
+    const init = proc(101, { startTime: '101', ppid: 1, pidNs: '4026534500', netNs: '1', mntNs: '1' });
+    assert.equal(walkerWith([init, theirs({ pid: 702, pidNs: '4026534500' })], { record }).prove(netnsBlocker(inode), true).absent, false);
+    // the number of the tree's pid namespace alone, init gone and unpinned, is a reused number: not a holder
+    assert.equal(walkerWith([theirs({ pid: 703, pidNs: '4026534500' })], { record }).prove(netnsBlocker(inode), true).absent, true);
+});
+
+test('F-Q1: the by-name proofs still decide: a netns file, veth or table left behind keeps the blocker even with no holder, and a real attributable holder keeps it even when everything by name is gone', async () => {
+    const processes = [worker(1), worker(21, { ppid: 1 })];
+    assert.equal(walkerWith(processes, { named: true }).prove(netnsBlocker(), true).absent, false);
+    assert.deepEqual(walkerWith(processes, { named: true }).prove(netnsBlocker(), true).holders, [{ via: 'locator' }]);
+    const record = { identity: { pid: 5, startTime: '5' }, locator: { marker: 'KEEPERMARKER0123456789' }, siblings: [{ kind: 'endpoint', locator: { marker: 'EPMARKER0123456789abcd' }, identity: { pid: 50, startTime: '50', pidNs: '4026534600', init: { pid: 51, startTime: '51' } } }] };
+    const live = proc(60, { ppid: 51, pidNs: '4026534600', netNs: '4026539001', mntNs: '1' });
+    const init = proc(51, { startTime: '51', ppid: 1, pidNs: '4026534600', netNs: '4026539001', mntNs: '1' });
+    assert.equal(walkerWith([...processes, init, live], { record }).prove(netnsBlocker('4026539001'), true).absent, false, 'a real member of the recorded endpoint tree holds the recorded network');
+    assert.equal(await walkerWith([...processes, init, live], { record }).walk(netnsBlocker('4026539001'), { recovery: true }), 'quarantined');
+});
+
+test('F-Q1: sandboxRecordFor adds the execution\'s other unsettled blockers as `siblings` (same attempt only), and degrades to the bare record when the store cannot list them', async () => {
+    const { sandboxRecordFor } = await import('../../server/sandbox/executionSupervisor.mjs');
+    const keeper = { resourceId: 'K', attemptId: 'A1', kind: 'keeper', locator: { marker: 'K' }, identity: { pid: 5, startTime: '5' } };
+    const state = {
+        getResource: ({ resourceId }) => (resourceId === 'K' ? keeper : null),
+        listUnsettledResources: () => [keeper, { resourceId: 'T', attemptId: 'A1', kind: 'process-tree' }, { resourceId: 'O', attemptId: 'A2', kind: 'process-tree' }]
+    };
+    const record = sandboxRecordFor(() => state)({ locator: { keeper: 'K' } });
+    assert.deepEqual(record.siblings.map((entry) => entry.resourceId), ['T']);
+    assert.equal(record.locator.marker, 'K');
+    assert.equal('siblings' in sandboxRecordFor(() => ({ getResource: () => keeper }))({ locator: { keeper: 'K' } }), false);
+    assert.equal('siblings' in sandboxRecordFor(() => ({ getResource: () => keeper, listUnsettledResources: () => { throw new Error('closed'); } }))({ locator: { keeper: 'K' } }), false);
+});
+
+test('M-47: the attribution rules are for RECOVERY only; the normal end path keeps the pin rule (every process naming the recorded inode is a holder)', async () => {
+    const containerLevel = [worker(1), worker(21, { ppid: 1 })];
+    const normal = walkerWith(containerLevel);
+    assert.equal(normal.prove(netnsBlocker()).absent, false, 'end path: the supervisor pins its namespaces, so a process naming the inode is a real holder');
+    assert.ok(normal.prove(netnsBlocker()).holders.some((holder) => holder.via === 'ns-link'));
+    assert.equal(normal.prove(netnsBlocker(), true).absent, true, 'recovery: no pins, the same picture is a reused inode');
+    assert.equal(await normal.walk(netnsBlocker()), 'quarantined');
+    assert.equal(await normal.walk(netnsBlocker(), { recovery: true }), 'released');
+    assert.equal(await normal.attempt(netnsBlocker()), null);
+    assert.equal(await normal.attempt(netnsBlocker(), { recovery: true }), 'released');
+});
+
+test('M-47: generation recovery (recoverGeneration) walks with the recovery rules', async () => {
+    const { recoverGeneration } = await import('../../server/execution/recoveryWalk.mjs');
+    const containerLevel = [worker(1), worker(21, { ppid: 1 })];
+    const walker = walkerWith(containerLevel, { record: { identity: { pid: 5, startTime: '5' }, locator: { marker: 'K' }, siblings: [] } });
+    const blocker = { ...netnsBlocker(), resourceId: 'R1', generationId: 'G1' };
+    const settled = [];
+    const state = {
+        generationId: 'G2',
+        beginGenerationRecovery: () => ({ generationId: 'G2', priorGenerationId: 'G1', unsettledBlockers: [blocker] }),
+        settleResource: (request) => settled.push(request), completeGenerationRecovery: () => ({ recovered: true })
+    };
+    const result = await recoverGeneration({ state, walker });
+    assert.deepEqual(settled.map((request) => request.outcome), ['released']);
+    assert.equal(result.completed.recovered, true);
+});
+
+test('M-47: a prep child (mount, umount) carries no marker, but descends from the marker-bearing prep: it is attributable; a stray process elsewhere is not', () => {
+    const inode = '4026539999';
+    const record = { identity: { pid: 5, startTime: '5' }, locator: { marker: 'KEEPERMARKER0123456789' }, siblings: [{ kind: 'process-tree', locator: { marker: 'TREEMARKER0123456789ab' }, identity: null }] };
+    const prep = proc(300, { ppid: 21, pidNs: OWN.pidNs, netNs: inode, mntNs: '1', cmdline: ['node', '/opt/robo-work/sandboxPrep.mjs', 'TREEMARKER0123456789ab', '{}'] });
+    const mountChild = proc(301, { ppid: 300, pidNs: OWN.pidNs, netNs: inode, mntNs: '1', cmdline: ['mount', '--bind', 'a', 'b'] });
+    const stray = proc(302, { ppid: 21, pidNs: OWN.pidNs, netNs: inode, mntNs: '1', cmdline: ['mount', '--bind', 'x', 'y'] });
+    assert.equal(walkerWith([prep, mountChild], { record }).prove(netnsBlocker(inode), true).absent, false);
+    assert.deepEqual(walkerWith([prep, mountChild], { record }).prove(netnsBlocker(inode), true).holders.map((holder) => holder.pid).sort(), [300, 301]);
+    assert.equal(walkerWith([stray], { record }).prove(netnsBlocker(inode), true).absent, true);
+});
