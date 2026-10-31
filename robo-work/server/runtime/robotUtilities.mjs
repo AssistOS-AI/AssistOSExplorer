@@ -1,5 +1,6 @@
 import { createVerifiedServiceContext, fail } from '../stateProtocol.mjs';
 import { VIRTUAL_HOME } from './alaPlan.mjs';
+import { isGatewayModel, openCodeGatewayModels, PROVIDER_ID } from './modelChannel.mjs';
 
 export const UTILITY_DEFAULTS = Object.freeze({ maxPerRobot: 1, maxTotal: 4, deadlineMs: 12000, outputBytes: 512 * 1024, cacheMs: 15000, cacheEntries: 128 });
 const AGENTS = ['codex', 'opencode', 'pi', 'claude'];
@@ -31,7 +32,7 @@ function projectStatus(value) {
 }
 
 // Called only after the coordinator's robots/get authorization. Cache contains sanitized projections, never HOME bytes.
-export function createRobotUtilities({ store, factory, workspaceId, options = {}, now = Date.now }) {
+export function createRobotUtilities({ store, factory, modelUpstream = null, workspaceId, options = {}, now = Date.now }) {
     const limits = { ...UTILITY_DEFAULTS, ...options };
     const context = createVerifiedServiceContext({ workspaceId, scope: 'worker:utilities', ownerId: 'worker:utilities', robotOwnerId: 'worker:utilities', operations: ['adapter_complete'] });
     const cache = new Map();
@@ -52,6 +53,7 @@ export function createRobotUtilities({ store, factory, workspaceId, options = {}
         let setup = null;
         let starting = null;
         let abandoned = false;
+        const catalogController = new AbortController();
         try {
             const work = (async () => {
                 setup = operation === 'models'
@@ -79,7 +81,24 @@ export function createRobotUtilities({ store, factory, workspaceId, options = {}
                 const [exit] = await Promise.all([execution.exited, read(streams.stdout, true), read(streams.stderr, false)]);
                 if (exit.exitCode !== 0 || exit.signal) throw new Error('utility_failed');
                 const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-                return operation === 'models' ? { agent, models: projectModels(parsed) } : projectStatus(parsed);
+                if (operation !== 'models') return projectStatus(parsed);
+                // Native HOME plugins cannot widen or retain the worker's permitted gateway catalog. Only the worker-owned
+                // upstream supplies these entries (M84), for OpenCode only. The inference channel still allows one selected model.
+                const models = projectModels(parsed).filter((entry) => !isGatewayModel(entry.id));
+                if (agent === 'opencode') {
+                    if (!modelUpstream) fail('runtime_unavailable');
+                    const answer = await modelUpstream.request({ operation: 'models', signal: catalogController.signal, totalTimeoutMs: limits.deadlineMs });
+                    if (!answer.ok) fail('runtime_unavailable');
+                    const gateway = openCodeGatewayModels(answer.json);
+                    const projected = projectModels([...gateway.keys()].map((id) => ({ id: `${PROVIDER_ID}/${id}`, efforts: [] })));
+                    for (const entry of projected) {
+                        const label = gateway.get(entry.id.slice(PROVIDER_ID.length + 1)).name;
+                        if (typeof label === 'string' && label.length > 0 && label.length <= 512 && !/[\u0000-\u001f\u007f]/u.test(label)) entry.label = label;
+                    }
+                    models.push(...projected);
+                }
+                if (models.length > 4096 || Buffer.byteLength(JSON.stringify(models)) > limits.outputBytes) fail('runtime_unavailable');
+                return { agent, models };
             })();
             // Opening and publication are included in the deadline. Wait for setup before ending its ledger, so resources cannot publish
             // after cleanup. Launch operations themselves have the existing sandbox setup deadlines.
@@ -96,6 +115,7 @@ export function createRobotUtilities({ store, factory, workspaceId, options = {}
             fail('runtime_unavailable');
         } finally {
             abandoned = true;
+            catalogController.abort();
             clearTimeout(timer);
             if (setup) { try { execution = await setup; } catch { /* no execution */ } }
             if (starting) await starting.catch(() => {});

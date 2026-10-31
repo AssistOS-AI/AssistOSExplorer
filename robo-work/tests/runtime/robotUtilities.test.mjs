@@ -4,7 +4,7 @@ import { PassThrough, Readable } from 'node:stream';
 import { createRobotUtilities, modelUtilityPlan } from '../../server/runtime/robotUtilities.mjs';
 import { WORKSPACE, S6_LIMITS, makeTempDir, openStore, readyRobot, syntheticContext, rawDb, expectCode } from '../helpers/synthetic.mjs';
 
-function rig(t, { output = '[{"id":"p/m","efforts":["high"]}]', hanging = false, delayOpen = 0, outputBytes = 1024, historyLimit = S6_LIMITS.admissions } = {}) {
+function rig(t, { output = '[{"id":"p/m","efforts":["high"]}]', hanging = false, delayOpen = 0, outputBytes = 1024, historyLimit = S6_LIMITS.admissions, modelUpstream = null } = {}) {
     const dir = makeTempDir(t);
     const store = openStore(dir, { limits: { ...S6_LIMITS, admissions: historyLimit } });
     t.after(() => store.close());
@@ -34,7 +34,7 @@ function rig(t, { output = '[{"id":"p/m","efforts":["high"]}]', hanging = false,
         },
         openTerminal(options) { calls.push(['status', options]); return this.open(options); },
     };
-    const utilities = createRobotUtilities({ store, factory, workspaceId: WORKSPACE, now: () => now, options: { deadlineMs: 10, outputBytes, cacheMs: 20, cacheEntries: 1 } });
+    const utilities = createRobotUtilities({ store, factory, modelUpstream, workspaceId: WORKSPACE, now: () => now, options: { deadlineMs: 10, outputBytes, cacheMs: 20, cacheEntries: 1 } });
     t.after(() => utilities.close());
     return { dir, store, robot, utilities, calls, advance: () => { now += 21; } };
 }
@@ -103,4 +103,67 @@ test('worker shutdown ends an active utility before close resolves', async (t) =
     await utilities.close();
     await refused;
     assert.equal(calls.filter(([name]) => name === 'end').length, 1);
+});
+
+test('M84 OpenCode picker merges all permitted worker gateway models and replaces native gateway entries without inventing efforts', async (t) => {
+    const requests = [];
+    let permitted = [{ id: 'allowed-a', name: 'Allowed A' }, { id: 'allowed-b' }];
+    const modelUpstream = { request: async (request) => { requests.push(request); return { ok: true, json: { data: permitted } }; } };
+    const { robot, utilities, advance } = rig(t, { modelUpstream, output: JSON.stringify([
+        { id: 'opencode/native', efforts: ['high'] }, { id: 'Soul-Gateway/stale-or-forbidden', efforts: ['max'] },
+        { id: 'soul-gateway/allowed-a', efforts: ['invented'] },
+    ]) });
+    const expected = [
+        { id: 'opencode/native', label: 'opencode/native', efforts: ['high'] },
+        { id: 'soul-gateway/allowed-a', label: 'Allowed A', efforts: [] },
+        { id: 'soul-gateway/allowed-b', label: 'allowed-b', efforts: [] },
+    ];
+    assert.deepEqual((await utilities.read(robot, 'models', 'opencode')).models, expected);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].operation, 'models');
+    assert.ok(requests[0].signal instanceof AbortSignal);
+    assert.equal(requests[0].totalTimeoutMs, 10);
+    permitted = [{ id: 'newly-permitted' }];
+    assert.deepEqual((await utilities.read(robot, 'models', 'opencode')).models, expected, 'same bounded cache window');
+    assert.equal(requests.length, 1);
+    advance();
+    assert.deepEqual((await utilities.read(robot, 'models', 'opencode')).models.map((entry) => entry.id), ['opencode/native', 'soul-gateway/newly-permitted']);
+    assert.equal(requests.length, 2);
+});
+
+test('M84 other backends never request or advertise gateway models', async (t) => {
+    const modelUpstream = { request: async () => assert.fail('no gateway request for another backend') };
+    const { robot, utilities } = rig(t, { modelUpstream, output: '[{"id":"native","efforts":[]},{"id":"soul-gateway/forbidden","efforts":[]}]' });
+    for (const agent of ['codex', 'claude', 'pi']) assert.deepEqual((await utilities.read(robot, 'models', agent)).models.map((entry) => entry.id), ['native']);
+});
+
+for (const [name, first] of [['refused', { ok: false, status: 403 }], ['malformed', { ok: true, json: { data: [{ id: '\ninvalid' }] } }]]) {
+    test(`M84 ${name} gateway catalog refuses the whole listing and is not cached`, async (t) => {
+        let count = 0;
+        const modelUpstream = { request: async () => ++count === 1 ? first : { ok: true, json: { data: [{ id: 'available' }] } } };
+        const { robot, utilities, calls } = rig(t, { modelUpstream });
+        await assert.rejects(utilities.read(robot, 'models', 'opencode'), (error) => error.code === 'runtime_unavailable');
+        assert.deepEqual((await utilities.read(robot, 'models', 'opencode')).models.map((entry) => entry.id), ['p/m', 'soul-gateway/available']);
+        assert.equal(count, 2);
+        assert.equal(calls.filter(([name]) => name === 'end').length, 2);
+    });
+}
+
+test('M84 catalog timeout aborts its upstream request and ends the admitted utility', async (t) => {
+    let aborted = false;
+    const modelUpstream = { request: ({ signal }) => new Promise((_, reject) => {
+        signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); }, { once: true });
+    }) };
+    const { robot, utilities, calls } = rig(t, { modelUpstream });
+    await assert.rejects(utilities.read(robot, 'models', 'opencode'), (error) => error.code === 'runtime_unavailable');
+    assert.equal(aborted, true);
+    assert.equal(calls.filter(([name]) => name === 'end').length, 1);
+});
+
+test('M84 gateway projection remains bounded and strips untrusted label controls', async (t) => {
+    const catalog = { data: [{ id: 'a', name: 'unsafe\nlabel' }] };
+    const { robot, utilities } = rig(t, { modelUpstream: { request: async () => ({ ok: true, json: catalog }) } });
+    assert.equal((await utilities.read(robot, 'models', 'opencode')).models[1].label, 'soul-gateway/a');
+    const limited = rig(t, { outputBytes: 100, modelUpstream: { request: async () => ({ ok: true, json: { data: [{ id: 'x'.repeat(100) }] } }) } });
+    await assert.rejects(limited.utilities.read(limited.robot, 'models', 'opencode'), (error) => error.code === 'runtime_unavailable');
 });

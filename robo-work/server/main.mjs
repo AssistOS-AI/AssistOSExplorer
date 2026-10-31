@@ -272,6 +272,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     };
 
     const lifecycle = createLifecycleDriver({ store, robots, workspaceId: config.workspaceId, log });
+    const modelUpstream = overrides.modelUpstream ?? createSoulGatewayUpstream({ env });
     let factory = overrides.factory ?? null;
     if (factory === null && launcher && alaRoot) {
         factory = createExecutionFactory({
@@ -281,10 +282,10 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
             runtimeSources: createRuntimeSourceProvider({ workspaceRoot: config.workspaceRoot, localRoots: [alaRoot], fetch: defaultRuntimeSourcesFetch({ env }) }),
             // M-26: the worker's own Soul Gateway identity (PLOINKY_AGENT_API_KEY, PLOINKY_ROUTER_DESCRIPTOR_FILE, PLOINKY_AGENTLIB_DIR), loaded
             // lazily by the first execution that needs the model channel. It never leaves this process: sandboxes get a clean environment.
-            modelUpstream: createSoulGatewayUpstream({ env })
+            modelUpstream
         });
     }
-    utilityRunner = createRobotUtilities({ store, factory, workspaceId: config.workspaceId });
+    utilityRunner = createRobotUtilities({ store, factory, modelUpstream, workspaceId: config.workspaceId });
     const dispatcher = factory
         ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, options: { maxConcurrent: config.maxConcurrent, inactivityTimeoutMs: config.inactivityTimeoutMs, maxAttemptMs: config.maxAttemptMs, approvalTimeoutMs: config.approvalTimeoutMs }, log })
         : null;
