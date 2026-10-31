@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 
-import { createDispatcher, fitOutcome } from '../../server/runtime/dispatcher.mjs';
+import { DISPATCHER_DEFAULTS, createDispatcher, fitOutcome } from '../../server/runtime/dispatcher.mjs';
 import { EVENT_PREFIX } from '../../server/runtime/alaStreams.mjs';
 import { LIMITS, WORKSPACE, admitRequest, makeTempDir, newId, openStore, readyRobot, syntheticContext } from '../helpers/synthetic.mjs';
 
@@ -290,7 +290,8 @@ test('a lost execution whose ALA never exits keeps the loss as the reason', asyn
 });
 
 test('F-R1: a clean ALA finish whose tree exit arrives about 1 s after the endpoint loss completes under the default exit grace', async (t) => {
-    const { dispatcher, runs, admit, view } = rig(t, { timeouts: { exitGraceMs: 10000 } });
+    assert.ok(DISPATCHER_DEFAULTS.exitGraceMs >= 10000, 'the default grace outlasts a trailing tree exit');
+    const { dispatcher, runs, admit, view } = rig(t, { timeouts: { exitGraceMs: DISPATCHER_DEFAULTS.exitGraceMs } });
     const admitted = admit();
     dispatcher.start();
     await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');

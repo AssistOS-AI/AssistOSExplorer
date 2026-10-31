@@ -21,7 +21,7 @@ import { createAttemptWatchdog } from './attemptWatchdog.mjs';
 //
 // A failure before an execution exists ends the attempt directly through beginAttemptEnd.
 
-const DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 10000, failureAbortMs: 100, humanInputGraceMs: 10000, inactivityTimeoutMs: 20 * 60 * 1000, maxAttemptMs: 4 * 60 * 60 * 1000, resultBytes: 512 * 1024 - 1024 });
+export const DISPATCHER_DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 10000, failureAbortMs: 100, humanInputGraceMs: 10000, inactivityTimeoutMs: 20 * 60 * 1000, maxAttemptMs: 4 * 60 * 60 * 1000, resultBytes: 512 * 1024 - 1024 });
 const FATAL_READER_ENDS = new Set(['control_stream_violation', 'control_stall', 'stdin_stall', 'stdin_overflow', 'stdout_error']);
 const SKIPPED_TRANSITION = new Set(['robot_busy', 'operation_conflict', 'stale_generation', 'not_found']);
 
@@ -54,7 +54,7 @@ export function createDispatcher({
         if (!store || typeof store[method] !== 'function') throw new TypeError(`The store lacks ${method}`);
     }
     if (!factory || typeof factory.open !== 'function') throw new TypeError('An execution factory is required');
-    const settings = { ...DEFAULTS, ...options };
+    const settings = { ...DISPATCHER_DEFAULTS, ...options };
     const streamLimits = resolveControlStreamLimits({ maxRecordBytes: 4 * 1024 * 1024, maxBufferedBytes: 16 * 1024 * 1024, maxPendingStdinBytes: 8 * 1024 * 1024, ...controlLimits });
     const context = createVerifiedServiceContext({
         workspaceId, scope: 'worker:adapter', ownerId: 'worker:adapter', robotOwnerId: 'worker:adapter', operations: ['adapter_complete']
