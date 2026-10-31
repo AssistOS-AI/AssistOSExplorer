@@ -388,12 +388,14 @@ test('unreachable uncovered nodes warn but do not prevent successful execution',
     assert.equal(f.started.length, 1);
 });
 
-test('generation without a project uses managed scratch and the visit cap is configurable', async t => {
+test('generation without a project selects no project (workspace root, no grant) and the visit cap is configurable', async t => {
     const f = await fixture(t, { maxVisits: 1 });
     f.service.runtimeManager.resolveCwd = async value => { assert.ok(path.isAbsolute(value), 'runtime needs an explicit cwd'); return value; };
     const pending = f.service.generateWorkflow({ description: 'Draft' });
     while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
-    assert.equal(f.started[0].request.cwd, path.join(f.root, '.roboteam', 'roboflow-generation'));
+    // M-60 (ii): a scratch folder below `.roboteam` is a protected component the worker refuses as a project grant.
+    assert.equal(f.started[0].request.cwd, f.root);
+    assert.equal(f.started[0].request.noProject, true);
     await f.finish(0, JSON.stringify(graph())); await pending;
     await f.service.createWorkflow({ ...graph(), edges: [edge('a', 'a')] });
     const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work', folder: f.root });

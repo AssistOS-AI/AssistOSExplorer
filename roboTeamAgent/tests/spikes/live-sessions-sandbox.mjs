@@ -142,7 +142,7 @@ export function verifySandboxRecord({ plan, observed, socketDevices }, serviceMo
 
 export async function runAlaCapture() {
     assert.equal(process.platform, 'linux', 'Real sandbox spike requires Linux');
-    const { resolveAlaInstallation } = await import('../../copilot/src/lib/execution/alaInstallation.mjs');
+    const { resolveAlaInstallation } = await import('../helpers/ala-installation.mjs');
     const installation = await resolveAlaInstallation();
     const cwdIndex = process.argv.indexOf('--cwd');
     assert.ok(cwdIndex > 0);
@@ -196,7 +196,7 @@ export async function runSandboxProbe(robotName, workingDir, { listener = 'diagn
         human = await createHumanInputChannel({ request() { throw new Error('Diagnostic callback must not be called'); }, stop() {} });
         process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY = human.directory;
         process.env.CLAUDE_BIN = fileURLToPath(new URL('./live-sessions-probe-claude.mjs', import.meta.url));
-        const { resolveAlaInstallation } = await import('../../copilot/src/lib/execution/alaInstallation.mjs');
+        const { resolveAlaInstallation } = await import('../helpers/ala-installation.mjs');
         const { ConversationSessionStore } = await import('../../copilot/src/lib/storage/conversationSessionStore.mjs');
         const { createRobotSkillCatalog } = await import('../../copilot/src/lib/skills/robotSkillCatalog.mjs');
         const { createAlaEngine } = await import('../../copilot/src/lib/execution/alaEngine.mjs');

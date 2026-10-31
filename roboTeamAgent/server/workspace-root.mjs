@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+// The workspace root is the one resolved anchor (decision M-60): the operator configures PLOINKY_WORKSPACE_ROOT, a workload cannot
+// write it, and every other path that can reach a worker admission field is validated below it without following links.
 export function requireWorkspaceRoot(env = process.env) {
     const value = env?.PLOINKY_WORKSPACE_ROOT;
     if (typeof value !== 'string' || !value.trim()) {

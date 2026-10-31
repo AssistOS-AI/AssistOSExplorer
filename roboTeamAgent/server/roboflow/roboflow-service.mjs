@@ -901,16 +901,11 @@ export class RoboFlowService {
             throw error;
         }
     }
+    // Without a folder a generation selects no project: it runs at the workspace root with no project grant (`noProject`, decision
+    // M-20), in the robot HOME. A scratch folder under `.roboteam` cannot be a project: the worker refuses any grant with a protected
+    // component (`.roboteam`), so that task could never start (decision M-60, open item ii).
     async generationCwd(folder) {
-        if (folder) return this.runtimeManager.resolveCwd(folder);
-        let directory = await this.runtimeManager.resolveCwd(this.workspaceRoot);
-        for (const segment of ['.roboteam', 'roboflow-generation']) {
-            directory = path.join(directory, segment);
-            await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
-            const stat = await fs.lstat(directory);
-            if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe graph generation directory');
-        }
-        return this.runtimeManager.resolveCwd(directory);
+        return this.runtimeManager.resolveCwd(folder || this.workspaceRoot);
     }
     async generateWorkflow(input, { signal } = {}) {
         const description = textField(input.description, 'description', 32768, true);
@@ -927,7 +922,7 @@ export class RoboFlowService {
         signal?.addEventListener('abort', abort, { once: true });
         try {
             signal?.throwIfAborted();
-            await this._startTask(robot, { cwd, task: description, runtimeTaskId, skillSets: [], systemPrompt: generationPrompt(catalog) });
+            await this._startTask(robot, { cwd, task: description, runtimeTaskId, skillSets: [], systemPrompt: generationPrompt(catalog), ...(input.folder ? {} : { noProject: true }) });
             const graph = normalizeWorkflow({ ...parseWorkflowResponse(await completed, { generation: true }), defaultObjective: description });
             const known = new Set(catalog.skillsets.map(set => set.id));
             if (graph.tasks.some(task => task.skillsets.some(id => !known.has(id)))) throw invalid('Generated graph contains an unknown skillset');
@@ -944,7 +939,7 @@ export class RoboFlowService {
         if (!robot) throw new Error('Default robot is unavailable');
         const cwd = await this.generationCwd(input.folder);
         const record = { id: crypto.randomUUID(), runtimeTaskId: crypto.randomUUID(), robotId: robot.id,
-            status: 'running', graph: null, error: null, startedAt: new Date().toISOString(), catalog };
+            status: 'running', graph: null, error: null, startedAt: new Date().toISOString(), catalog, noProject: !input.folder };
         this.generationTasks.set(record.id, record);
         void this._runGeneration(record, robot, cwd, description).catch(() => {});
         return { id: record.id };
@@ -956,7 +951,7 @@ export class RoboFlowService {
         this.generations.set(record.runtimeTaskId, { resolve, reject });
         try {
             await this._startTask(robot, { cwd, task: description, runtimeTaskId: record.runtimeTaskId, skillSets: [],
-                systemPrompt: generationPrompt(record.catalog) });
+                systemPrompt: generationPrompt(record.catalog), ...(record.noProject ? { noProject: true } : {}) });
             const parsed = parseWorkflowResponse(await completed, { generation: true });
             if (record.status === 'cancelled') return;
             const graph = normalizeWorkflow({ ...parsed, defaultObjective: description });

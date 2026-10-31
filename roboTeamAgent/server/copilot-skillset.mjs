@@ -6,6 +6,10 @@ import { skillError } from './skill-files.mjs';
 export const copilotSkillsRoot = path.resolve(fileURLToPath(new URL('../copilot/src/skills/', import.meta.url)));
 // Bundled skills RoboTeam mounts itself; they are never selectable in a skillset.
 export const WEBCHAT_WORKFLOW_SKILLS = Object.freeze(['list-workflows', 'launch-workflow']);
+// The names of the task-failure and human-input channel skills (decision M-14). The catalog provides them itself from RoboTeam's
+// bundle, and a robot's own skill of either name is neither registered nor ever enabled (decision M-60), so a folder grant for a
+// channel skill can only be the bundled one.
+export const RESERVED_CHANNEL_SKILLS = Object.freeze(['report-task-blocked', 'require-human-input']);
 const REQUIRED_ONLY_SKILLS = new Set(['report-task-blocked', 'workflow-creator', 'require-human-input', ...WEBCHAT_WORKFLOW_SKILLS]);
 
 export function copilotSkillset() {

@@ -23,8 +23,12 @@ export class WorkerError extends Error {
 }
 
 function fromMapped(mapped) {
-    const { error, ...extra } = mapped.body || {};
-    return new WorkerError(typeof error === 'string' ? error : 'worker_reply_unknown', mapped.status, extra);
+    const { error, message, ...extra } = mapped.body || {};
+    const code = typeof error === 'string' ? error : 'worker_reply_unknown';
+    const failure = new WorkerError(code, mapped.status, extra);
+    // A plain message for the code (errors.mjs PLAIN_MESSAGES) reads `<code>: <message>`, as the other user-facing worker errors do.
+    if (typeof message === 'string' && message) failure.message = `${code}: ${message}`;
+    return failure;
 }
 
 function fromThrown(error) {

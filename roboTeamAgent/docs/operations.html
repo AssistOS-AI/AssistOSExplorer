@@ -95,7 +95,7 @@
       <tr><td><code>roboflow_create_workflow</code></td><td>Creates a graph with tasks, directed edges, entryTaskId and layout. Administrator only.</td></tr>
       <tr><td><code>roboflow_update_workflow</code></td><td>Replaces a graph using its current revision counter; stale saves fail. Default is read-only. Administrator only.</td></tr>
       <tr><td><code>roboflow_delete_workflow</code></td><td>Deletes a graph definition while preserving run snapshots. Default cannot be deleted. Administrator only.</td></tr>
-      <tr><td><code>roboflow_start_flow</code></td><td>Runs a saved graph for a working folder and either an explicit objective or its saved default. Generic default and code-development require explicit objectives; only default requires executionType. Returns immediately through a native asynchronous task and publishes the flow-page link on the task log.</td></tr>
+      <tr><td><code>roboflow_start_flow</code></td><td>Runs a saved graph for a working folder and either an explicit objective or its saved default. With the worker configured the tool is not offered and a call that arrives is refused (start workflows from the RoboFlow page). Generic default and code-development require explicit objectives; only default requires executionType. Returns immediately through a native asynchronous task and publishes the flow-page link on the task log.</td></tr>
       <tr><td><code>roboflow_flow_state</code></td><td>Returns captured graph, run state and distinct task visits, including final responses.</td></tr>
       <tr><td><code>roboflow_pause_flow</code></td><td>Pauses a graph run, halts its active task instance and prevents further traversal until it is resumed.</td></tr>
     </tbody>
@@ -173,7 +173,6 @@ Continue with the tests.</code></pre>
       <tr><td><code>locks/</code></td><td>RoboTeam</td><td>Coordination between processes using the same folder, such as two WebChat tabs, the terminal CLI, a robot task and the RoboTeam server. <code>mutation.lock</code> is held for each short write to the files above; a process waits at most five seconds for it. <code>execution-&lt;hash&gt;.lock</code> is held for a whole execution, so only one turn runs in a conversation at a time and a task is continued once. Each lock records its process; a lock left by a process that no longer exists is taken over automatically. The directory is empty when nothing runs.</td></tr>
       <tr><td><code>repos/&lt;name&gt;/</code></td><td>RoboTeam</td><td>Skill repositories cloned for this folder; their skills join the folder's skill catalog.</td></tr>
       <tr><td><code>roboflow/&lt;runId&gt;/&lt;instanceId&gt;.log</code> and <code>.result</code></td><td>RoboFlow</td><td>For each phase of a workflow run in this folder, the robot's live output and its final response. The final responses are passed to later phases, and the flow page reads both for its phase logs and human reports. Run state itself stays in RoboFlow's SQLite database.</td></tr>
-      <tr><td><code>roboflow-generation/</code></td><td>RoboFlow</td><td>Scratch working folder used when a workflow graph is generated without a selected folder. It exists only in the workspace root.</td></tr>
     </tbody>
   </table>
 

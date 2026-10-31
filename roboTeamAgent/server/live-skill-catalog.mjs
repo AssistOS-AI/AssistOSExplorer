@@ -3,7 +3,9 @@ import { projectDirectories } from './project-storage.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector, WEBCHAT_WORKFLOW_SKILLS } from './copilot-skillset.mjs';
+import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector, RESERVED_CHANNEL_SKILLS, WEBCHAT_WORKFLOW_SKILLS } from './copilot-skillset.mjs';
+import { assertNoSymlinks } from './no-follow-path.mjs';
+import { workerConfigured } from './mcp-tool-list.mjs';
 import { inspectSkill, explicitSkillDirectories } from './workspace-skill-source.mjs';
 import { atomicJson, inside, hashValue, readSkillTree, treeFingerprint, writeSkillTree, catalogDigest, skillError } from './skill-files.mjs';
 
@@ -53,7 +55,10 @@ export class LiveSkillCatalog {
         const workspace = await fs.realpath(this.service.workspaceRoot);
         const scope = await fs.realpath(policy.scopeRoot);
         if (scope !== path.resolve(policy.scopeRoot) || !inside(workspace, scope)) throw skillError('saved skill scope is outside the workspace');
-        cwd = await fs.realpath(cwd || scope);
+        // The execution cwd is recorded in the catalog and is the folder the turn runs in: it is checked, never replaced by its
+        // resolution (decision M-60); one that resolves elsewhere is refused.
+        cwd = path.resolve(cwd || scope);
+        if (await fs.realpath(cwd) !== cwd) throw skillError('execution cwd contains a link; pick the working folder again');
         if (!inside(workspace, cwd)) throw skillError('execution cwd is outside the workspace');
         // RoboTeam resolves skills only from the bundled catalog and from
         // repositories registered through the Ploinky marketplace endpoint. It
@@ -92,15 +97,21 @@ export class LiveSkillCatalog {
             try {
                 const source = set.builtin ? set.source : await this.service.resolveLiveRepository(set.source);
                 const local = !set.builtin && path.isAbsolute(source);
-                const root = await fs.realpath(set.builtin ? copilotSkillsRoot : local ? source
-                    : path.join(this.service.robotStore.robotPath(robot.id), 'skillsets', set.generation));
-                if (local && (root !== path.resolve(source) || !inside(scope, root) || inside(this.service.robotStore.dataDir, root))) {
+                // A registered local source is workload-writable ground: it is validated below the workspace root without following
+                // links and kept as declared (decision M-60), and a link in its path reads as "the original path changed". The
+                // bundled skills and the robot's own skillset generations are RoboTeam-owned ([R]): their resolution is trusted.
+                const root = set.builtin ? await fs.realpath(copilotSkillsRoot)
+                    : local ? await assertNoSymlinks(workspace, path.resolve(source), { label: 'skillset source', code: 'skill_path_symlinked' })
+                        .catch(error => { if (['skill_path_symlinked', 'ENOTWORKSPACE'].includes(error.code)) return null; throw error; })
+                    : await fs.realpath(path.join(this.service.robotStore.robotPath(robot.id), 'skillsets', set.generation));
+                if (local && (!root || !inside(scope, root) || inside(this.service.robotStore.dataDir, root))) {
                     if (needed) throw skillError(`local skillset ${set.name} is outside launch scope or its original path changed`);
                     continue;
                 }
                 const records = local ? (await explicitSkillDirectories(root)).map(directoryPath => importedRecord(set, policy, root, directoryPath)) : set.skills.map((skill) => ({ ...skill, directoryPath: path.resolve(root, skill.directory) }));
                 for (const record of records) {
-                    const sourcePath = await fs.realpath(record.directoryPath);
+                    const sourcePath = local ? await assertNoSymlinks(root, record.directoryPath, { label: 'skill folder', code: 'skill_path_symlinked' })
+                        : await fs.realpath(record.directoryPath);
                     if (!inside(root, sourcePath)) throw skillError('invalid stored skill path');
                     const base = { identity: `${set.name}/${record.name}`, source: set.name, sourceId: set.name,
                         sourcePath, owner: root, name: record.name, description: record.description, type: 'anthropic', builtin: Boolean(set.builtin),
@@ -160,7 +171,13 @@ export class LiveSkillCatalog {
         }
         entries.push(required);
         for (const name of [workflowExecution && 'report-task-blocked', policy.workflowCreator && 'workflow-creator', policy.allowsHumanInput && 'require-human-input',
-            ...(workflowSkills ? WEBCHAT_WORKFLOW_SKILLS : [])].filter(Boolean)) {
+            // With the worker configured `launch-workflow` is not offered, like the start tool it calls (decision M-61): the tool is
+            // hidden and a call is refused, so the skill could only fail. `list-workflows` stays.
+            ...(workflowSkills ? WEBCHAT_WORKFLOW_SKILLS.filter(name => !(name === 'launch-workflow' && workerConfigured())) : [])].filter(Boolean)) {
+            // RoboTeam's own bundle ([R]): the resolution of this source is trusted. It is the bundle, not a workspace path: the install
+            // step may swap it for a managed-repository copy only when that copy is the same folder (device and inode, never a
+            // resolution of a workspace path), and the folder grant for a channel skill comes from workspaceCodePath, which walks a
+            // workspace path without following links or accepts the `/code` projection by the same identity check.
             const root = await fs.realpath(copilotSkillsRoot);
             const sourcePath = await fs.realpath(path.join(root, name));
             if (!inside(root, sourcePath)) throw skillError(`Required ${name} skill is outside its repository`);
@@ -174,6 +191,13 @@ export class LiveSkillCatalog {
                 ...(name === 'report-task-blocked' ? { executionOnly: true } : {}),
                 ...(name === 'report-task-blocked' || WEBCHAT_WORKFLOW_SKILLS.includes(name) ? { builtin: true } : {}),
                 enabled: true, explicit: true, state: 'selected' });
+        }
+        // A skill of a channel name that the catalog did not provide itself is never enabled: a folder grant for a channel skill is
+        // only ever the bundled one, whatever a local skillset gained after its registration (decision M-60).
+        for (const entry of entries) {
+            if (entry.required || !RESERVED_CHANNEL_SKILLS.includes(entry.name)) continue;
+            entry.enabled = false; entry.readOnly = true; entry.state = 'shadowed';
+            entry.reason = 'Reserved for the RoboFlow channels';
         }
         const groups = new Map();
         for (const entry of entries.filter((item) => item.enabled)) {

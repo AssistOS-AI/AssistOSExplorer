@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { assertNoSymlinksSync, rebaseOnRoot } from '../../../../server/no-follow-path.mjs';
 
 import { getDisabledSkills } from '../config/achillesSettings.mjs';
 import {
@@ -13,7 +14,10 @@ function isInside(candidate, root) {
     return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-function assertRealPath(candidate, root, type) {
+// The walk from `root` refuses every link. With `anchored` (root is the resolved workspace root) the candidate is therefore its own
+// resolution and is returned as declared (decision M-60); otherwise the root is a RoboTeam-owned location ([R]: the bundled skills,
+// ALA's install, DocumentationSkills) whose own ancestors may be links, and the resolved path is returned as before.
+function assertRealPath(candidate, root, type, anchored = false) {
     if (!isInside(candidate, root)) throw new Error(`Skill path escapes its approved root: ${candidate}`);
     let cursor = root;
     const segments = path.relative(root, candidate).split(path.sep).filter(Boolean);
@@ -27,7 +31,7 @@ function assertRealPath(candidate, root, type) {
     }
     const canonical = fs.realpathSync(candidate);
     if (!isInside(canonical, fs.realpathSync(root))) throw new Error(`Skill path escapes its approved root: ${candidate}`);
-    return canonical;
+    return anchored ? candidate : canonical;
 }
 
 /** The caller supplies RoboTeam's SKILL.md discovery implementation. */
@@ -37,7 +41,10 @@ export async function createAnthropicSkillCatalog({ workingDir, roots, discoverT
     }
     if (!Array.isArray(roots)) throw new TypeError('Ordered skill roots must be an array.');
     const workspaceRoot = resolveAchillesWorkspaceRoot(workingDir);
-    const selectedWorkingDir = fs.realpathSync(workingDir || process.cwd());
+    // The working folder is kept as given, never resolved: a link in its path is refused (decision M-60).
+    const requestedWorkingDir = rebaseOnRoot(workspaceRoot, workingDir || process.cwd(), [process.env.PLOINKY_WORKSPACE_ROOT ? path.resolve(process.env.PLOINKY_WORKSPACE_ROOT) : null]);
+    if (!requestedWorkingDir) throw new Error('The selected AchillesCLI directory is outside PLOINKY_WORKSPACE_ROOT.');
+    const selectedWorkingDir = assertNoSymlinksSync(workspaceRoot, requestedWorkingDir, { label: 'working folder', type: 'directory' });
     const privateRoot = resolveAchillesPrivateDataRoot(selectedWorkingDir);
     let configuredRoots = roots.map((value) => {
         const root = typeof value === 'string' ? { path: value } : value;
@@ -54,7 +61,8 @@ export async function createAnthropicSkillCatalog({ workingDir, roots, discoverT
                 label: 'Skill repository', type: 'directory',
             });
         }
-        return assertRealPath(rootPath, isInside(rootPath, workspaceRoot) ? workspaceRoot : rootPath, 'directory');
+        const inWorkspace = isInside(rootPath, workspaceRoot);
+        return assertRealPath(rootPath, inWorkspace ? workspaceRoot : rootPath, 'directory', inWorkspace);
     }
 
     function safeRecord(record) {

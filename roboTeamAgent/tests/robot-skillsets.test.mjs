@@ -131,19 +131,21 @@ test('imports allowed catalogs and publishes only skill names and frontmatter de
     await assert.rejects(skillsets.add(robot.id, { name: 'documents', source }), /already exists/);
 });
 
-test('registration rejects duplicate names and canonical local sources without publishing generations', async t => {
+test('registration rejects duplicate names, linked sources and canonical local sources without publishing generations', async t => {
     const f = await fixture(t);
     const alias = path.join(f.source, '..', 'alias');
     const second = path.join(f.source, '..', 'second');
     await fs.symlink(f.source, alias);
     await fs.cp(f.source, second, { recursive: true });
-    const original = await f.skillsets.add(f.robot.id, { name: 'documents', source: alias });
+    // M-60: a source reached through a link is refused instead of being resolved to its canonical path.
+    await assert.rejects(f.skillsets.add(f.robot.id, { name: 'documents', source: alias }), { statusCode: 400, message: /link/ });
+    const original = await f.skillsets.add(f.robot.id, { name: 'documents', source: f.source });
     assert.equal(original.source, f.source);
     for (const input of [
         { name: 'documents', source: second },
-        { name: 'alias-again', source: alias },
         { name: 'canonical-again', source: `${f.source}/` },
     ]) await assert.rejects(f.skillsets.add(f.robot.id, input), /already exists/);
+    await assert.rejects(f.skillsets.add(f.robot.id, { name: 'alias-again', source: alias }), { statusCode: 400, message: /link/ });
     assert.deepEqual((await f.store.get(f.robot.id)).skillsets, [original]);
     assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')).catch(error => { if (error.code === 'ENOENT') return []; throw error; }), []);
     assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')).catch(error => { if (error.code === 'ENOENT') return []; throw error; }), []);

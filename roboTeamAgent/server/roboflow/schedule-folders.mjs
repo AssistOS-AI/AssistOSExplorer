@@ -15,6 +15,9 @@ function segments(value) {
 // The browser sends workspace-relative navigation keys, never arbitrary host paths.
 export class ScheduleFolders {
     constructor(workspaceRoot) { this.workspaceRoot = workspaceRoot; }
+    // The workspace root is the one anchor and is resolved once (the operator configures it). Every folder below it is checked
+    // component by component with lstat and returned as the lexical path, never as a resolution of it (decision M-60): the run
+    // folder becomes a task working folder, and the worker's anchored resolver is the only one that resolves.
     async root() { return fs.realpath(this.workspaceRoot); }
     async directory(key = '') {
         const parts = segments(key), root = await this.root();
@@ -26,9 +29,7 @@ export class ScheduleFolders {
             catch (error) { if (error.code === 'ENOENT') throw fail('Folder not found', 404); throw error; }
             if (!stat.isDirectory() || stat.isSymbolicLink()) throw fail('Choose an ordinary workspace folder');
         }
-        const canonical = await fs.realpath(directory);
-        if (canonical !== root && !canonical.startsWith(root + path.sep)) throw fail('Folder is outside the workspace', 403);
-        return canonical;
+        return directory;
     }
     async list(key = '') {
         const folder = await this.directory(key), root = await this.root();

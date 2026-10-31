@@ -12,7 +12,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
 
     for (let index = 0; index < argv.length; index++) {
         const key = argv[index];
-        options[key] = ['--resume-session', '--control-stdin', '--workflow-execution', '--human-input'].includes(key) ? true : argv[++index];
+        options[key] = ['--resume-session', '--control-stdin', '--workflow-execution', '--human-input', '--no-project'].includes(key) ? true : argv[++index];
     }
     const controller = new AbortController();
     // A signal only detaches (RoboTeam is shutting down; the worker keeps the execution); a stop is
@@ -59,7 +59,9 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
                 model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access',
                 ...(options['--worker-origin']
                     ? { worker: { ...(options['--worker-binding'] ? { bindingId: options['--worker-binding'] } : {}), originRequestId: options['--worker-origin'] } } : {}),
-                cwdExplicit: true,
+                // A task that selected no project runs at the workspace root with no project grant (decision M-20); every other task
+                // names its folder, and the root is then refused.
+                cwdExplicit: options['--no-project'] !== true,
                 ...(task.systemPrompt ? { systemPrompt: task.systemPrompt } : {}) } }, { reattachExistingTasks: false });
         const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt: task.prompt,
             signal: controller.signal, context: { workingDir: options['--cwd'], rawText: task.prompt },

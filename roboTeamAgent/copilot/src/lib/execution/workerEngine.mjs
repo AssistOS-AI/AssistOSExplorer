@@ -17,11 +17,11 @@ import { TERMINAL_STATES, WorkerError, stopOperationId } from '../../../../serve
 import { isOriginId } from '../../../../server/worker-coordinator/identities.mjs';
 import { plainStopMessage } from '../../../../server/worker-coordinator/stop-reasons.mjs';
 
-// The worker cutover seam (RoboWork r10 decision M-5). `createWorkerEngine` has alaEngine's public
-// interface (`executeTurn`, `getModel`, `setModel`, `listModels`, `close`) but starts no process:
-// it builds the same native prompt and ALA inputs, admits them to the worker as a version-2
-// admission specification, follows the reference's events and feeds the relayed ALA records
-// through the same record handler alaEngine uses, so the streaming events are identical.
+// The worker execution engine (RoboWork r10 decision M-5), the only engine. `createWorkerEngine` offers
+// `executeTurn`, `getModel`, `setModel`, `listModels` and `close` and starts no process: it builds the
+// native prompt and ALA inputs, admits them to the worker as a version-2 admission specification,
+// follows the reference's events and feeds the relayed ALA records through the record handler
+// (alaRecordHandler.mjs), which produces the streaming events.
 //
 // A worker failure is an explicit error. There is no fallback to a local ALA run.
 //
@@ -304,7 +304,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             if (session.modelOverride && backend && session.modelOverride.backend !== backend) {
                 throw new Error('The session model belongs to another coding agent; reset /model or create a new session.');
             }
-            // The conversation's own model choice (`/model`) wins over the robot's configured one, as in alaEngine.
+            // The conversation's own model choice (`/model`) wins over the robot's configured one.
             if (session.modelOverride && backend) {
                 models[backend] = session.modelOverride.model;
                 if (session.modelOverride.effort) efforts[backend] = session.modelOverride.effort; else delete efforts[backend];
@@ -339,7 +339,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             controller.signal.throwIfAborted();
             await sessionStore.bindEngine(sessionId, { home: WORKER_SESSION_HOME, cwd, backend, robotId: execution.robotId });
 
-            // The same native prompt and ALA inputs alaEngine builds. The ALA home is the worker's and
+            // The native prompt and ALA inputs. The ALA home is the worker's and
             // no path of the RoboTeam robot home is sent. The task-script context is a RoboTeam-local
             // resource outside the shared workspace and is not sent; the task-failure and human-input
             // channels are the worker's own (below).
@@ -421,7 +421,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 fail: (error) => { failure ||= error; },
                 bindEngine: (agent) => sessionStore.bindEngine(sessionId, { home: WORKER_SESSION_HOME, cwd, backend: agent, robotId: execution.robotId }) });
 
-            // Message controls: the same record alaEngine writes to ALA stdin, as the worker's `message`
+            // Message controls: the record ALA reads on stdin, sent as the worker's `message`
             // control. A user control carries the grant of its own request (`message.owner.evidence`); a
             // message with none is rejected, never sent under another credential.
             const writeControl = (message) => {
@@ -548,9 +548,9 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             return { delivered: true };
         };
 
-        // A protocol or handler failure ends the turn, and the execution with it: alaEngine kills its child
-        // here. Best effort, once, with the best credential available; when the stop is not accepted the
-        // error says the execution may still run.
+        // A protocol or handler failure ends the turn, and the execution with it: the engine stops the worker
+        // execution here. Best effort, once, with the best credential available; when the stop is not accepted
+        // the error says the execution may still run.
         const fatal = async (error) => {
             if (!stopSent) {
                 stopSent = true;

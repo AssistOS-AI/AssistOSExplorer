@@ -1,4 +1,5 @@
 import { registerProject, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
+import { assertNoSymlinks, rebaseOnRoot } from './no-follow-path.mjs';
 import { requireWorkspaceRoot } from './workspace-root.mjs';
 import { workspaceDataPath } from './workspace-paths.mjs';
 import { execFile, spawn } from 'node:child_process';
@@ -96,7 +97,7 @@ function createAlaProgressParser(onText, onEvent = () => {}) {
 
 // A child that stopped on a worker precondition prints `<code>: <message for the user>` (robot-provisioning.mjs, workerEngine.mjs).
 // That line is the task's error as it is, not wrapped in an opaque "ALA exited with" message.
-const WORKER_USER_ERROR = /^((?:worker_robot_stale|worker_robot_not_provisioned|worker_robot_missing|model_unavailable_in_worker|workspace_root_not_granted|worker_not_configured)): (.+)$/mu;
+const WORKER_USER_ERROR = /^((?:worker_robot_stale|worker_robot_not_provisioned|worker_robot_missing|model_unavailable_in_worker|workspace_root_not_granted|worker_not_configured|environment_unavailable)): (.+)$/mu;
 
 function alaFailureMessage(exit, output) {
     const normalized = String(output || '').replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '').trim();
@@ -444,18 +445,17 @@ export class RuntimeManager {
         return current.finally(() => { if (this.pending.get(robotId) === current) this.pending.delete(robotId); });
     }
 
+    // The task working folder is the first admission field the workload can influence (the project can hold a link), so it is
+    // never resolved (decision M-60): the path is validated below the workspace root component by component, a link is
+    // refused, and the lexical path is returned. The root is the one anchor and is resolved once (the operator configures it).
+    // A path spelled with the host's workspace root, or with the unresolved configured root, is rebased onto it lexically.
     async resolveCwd(value) {
         const requested = String(value || '').trim();
         if (!requested || !path.isAbsolute(requested)) throw new Error('cwd must be an absolute workspace path');
-        let candidate = path.resolve(requested);
-        try { candidate = await fs.realpath(candidate); } catch (error) {
-            if (!this.hostWorkspaceRoot || !candidate.startsWith(`${this.hostWorkspaceRoot}${path.sep}`)) throw error;
-            candidate = await fs.realpath(path.join(this.workspaceRoot, path.relative(this.hostWorkspaceRoot, candidate)));
-        }
         const root = await fs.realpath(this.workspaceRoot);
-        if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) throw new Error('cwd must stay inside the enabled Ploinky workspace');
-        if (!(await fs.stat(candidate)).isDirectory()) throw new Error('cwd must reference a directory');
-        return candidate;
+        const candidate = rebaseOnRoot(root, requested, [path.resolve(this.workspaceRoot), this.hostWorkspaceRoot]);
+        if (!candidate) throw new Error('cwd must stay inside the enabled Ploinky workspace');
+        return assertNoSymlinks(root, candidate, { label: 'working folder', type: 'directory' });
     }
 
     status(robotId) {
@@ -728,6 +728,7 @@ export class RuntimeManager {
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
             if (task.request.workflowRunId) args.push('--workflow-execution');
+            if (task.request.noProject === true) args.push('--no-project');
             // Catalog capture belongs to the wrapper's actual execution boundary after queue/cache wait.
             if (this.skillsets) {
                 const policyId = task.request.skillPolicyRef || task.alaSessionId;

@@ -68,7 +68,7 @@ export async function collectToolCache({ mountinfo, mountNamespace, toolCache, r
     if (!runtimeMounts) {
         // Same ALA resolution as the sandbox harness through prepareCopilotContext.
         const { resolveAlaCommand } = await import('../../server/ala-command.mjs');
-        const { resolveAlaInstallation } = await import('../../copilot/src/lib/execution/alaInstallation.mjs');
+        const { resolveAlaInstallation } = await import('../helpers/ala-installation.mjs');
         const installation = await resolveAlaInstallation({ env: { ...process.env, ACHILLES_ALA_COMMAND: resolveAlaCommand() } });
         const sandbox = path.join(installation.packageRoot, 'src', 'coding-agents', 'sandbox.mjs');
         runtimeMounts = (await import(pathToFileURL(sandbox).href)).collectAgentRuntimeMounts;

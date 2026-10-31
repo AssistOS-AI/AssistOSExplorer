@@ -54,8 +54,17 @@ async function skillRecord(filePath, repositoryPath, { validate = true } = {}) {
     };
 }
 
+// Decision M-60: the repository path is a skill source that can reach a worker admission field, so it is never resolved. The
+// caller has validated it below the workspace root without following links; here the repository itself must not be a link and
+// the records keep the declared path. Discovery follows no link below it (a Dirent of a link is neither a file nor a directory).
+async function declaredRepository(repositoryPath) {
+    const root = path.resolve(repositoryPath);
+    if ((await fs.lstat(root)).isSymbolicLink()) throw new Error(`Skill repository must not be a symbolic link: ${root}`);
+    return root;
+}
+
 export async function discoverAnthropicSkills(repositoryPath, options = {}) {
-    const root = await fs.realpath(repositoryPath);
+    const root = await declaredRepository(repositoryPath);
     const queue = [root];
     const records = [];
     while (queue.length > 0) {
@@ -71,12 +80,12 @@ export async function discoverAnthropicSkills(repositoryPath, options = {}) {
 }
 
 export async function validateTaskRepository(repositoryPath) {
-    const canonicalPath = await fs.realpath(repositoryPath);
-    const skills = await discoverAnthropicSkills(canonicalPath);
+    const declaredPath = await declaredRepository(repositoryPath);
+    const skills = await discoverAnthropicSkills(declaredPath);
     if (skills.length === 0) {
-        throw new Error(`Task repository contains no Anthropic SKILL.md descriptors: ${canonicalPath}`);
+        throw new Error(`Task repository contains no Anthropic SKILL.md descriptors: ${declaredPath}`);
     }
-    return { repositoryPath: canonicalPath, skills, descriptorCount: skills.length };
+    return { repositoryPath: declaredPath, skills, descriptorCount: skills.length };
 }
 
 export async function discoverTaskSkills(repositoryPaths) {

@@ -37,7 +37,8 @@ async function cancelled(t, pauseResponse) {
     const polledPromise = new Promise((resolve) => { polled = resolve; });
     const pausedPromise = new Promise((resolve) => { paused = resolve; });
     const seen = [];
-    const f = await run(t, 'start-flow', { env: WORKER_ENV, handler: (req, res) => {
+    // The start tool is refused in worker mode (decision M-61), so the cancellation path is exercised without the worker variable.
+    const f = await run(t, 'start-flow', { handler: (req, res) => {
         seen.push(`${req.method} ${req.url}`);
         if (req.url === `/api/roboflow/flows/${ID}/pause`) { paused(); return pauseResponse(res); }
         if (req.url.includes('?logs=')) polled();
@@ -99,7 +100,8 @@ test('M-55 (b): the tool list omits roboflow_pause_flow only in worker mode', as
     assert.deepEqual(toolConfigFor(config, { workerMode: false }), config);
     const worker = toolConfigFor(config, { workerMode: true });
     assert.equal(names(worker).includes('roboflow_pause_flow'), false);
-    assert.deepEqual(names(worker), names(config).filter((name) => name !== 'roboflow_pause_flow'), 'every other tool stays, in order');
+    // Decision M-61 also hides roboflow_start_flow in worker mode (tests/m61-start-flow-hidden.test.mjs).
+    assert.deepEqual(names(worker), names(config).filter((name) => !['roboflow_pause_flow', 'roboflow_start_flow'].includes(name)), 'every other tool stays, in order');
     // The launcher script writes exactly that list for AgentServer when the worker is configured and writes nothing otherwise.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-list-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true }));

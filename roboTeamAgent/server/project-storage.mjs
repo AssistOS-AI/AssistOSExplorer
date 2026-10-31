@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { assertNoSymlinksSync, rebaseOnRoot } from './no-follow-path.mjs';
+import { requireWorkspaceRoot } from './workspace-root.mjs';
 import { assertSafeAchillesPrivatePath, ensureSafeAchillesPrivateDirectory } from '../copilot/src/lib/storage/privateDataRoot.mjs';
 
 // This registry contains project locations only. History and execution records
@@ -19,8 +21,13 @@ export function projectOptions({ workspaceRoot }) {
     return { env: { PLOINKY_WORKSPACE_ROOT: workspaceRoot } };
 }
 
+// The project folder is stored as given: it is validated below the workspace root without following links and never replaced by
+// its resolution (decision M-60). Callers pass the folder resolveCwd already validated, or the one the task child was started in.
 export function registerProject(options, cwd) {
-    cwd = fs.realpathSync(cwd);
+    const root = fs.realpathSync(options.workspaceRoot || requireWorkspaceRoot());
+    const lexical = rebaseOnRoot(root, cwd, [path.resolve(options.workspaceRoot || root)]);
+    if (!lexical) throw new Error('The selected AchillesCLI directory is outside PLOINKY_WORKSPACE_ROOT.');
+    cwd = assertNoSymlinksSync(root, lexical, { label: 'working folder', type: 'directory' });
     ensureSafeAchillesPrivateDirectory(cwd, 'tasks', projectOptions(options));
     const directory = registry(options, true);
     const id = crypto.createHash('sha256').update(cwd).digest('hex');

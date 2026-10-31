@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { repositoryClient } from './repository-client.mjs';
+import { assertNoSymlinks, rebaseOnRoot } from './no-follow-path.mjs';
 import { sessionDirectory } from '../copilot/src/lib/storage/sessionPaths.mjs';
 import { assertSafeAchillesPrivatePath } from '../copilot/src/lib/storage/privateDataRoot.mjs';
 
@@ -20,9 +21,28 @@ async function legacyRobotLinks(cwd) {
     } catch (error) { if (error.code === 'ENOENT') return new Map(); throw error; }
 }
 
+// The managed AchillesIDE checkout holds the same bundled skills as RoboTeam's own bundle, and the worker can only reach the former.
+// A workspace checkout (`origin: 'workspace'`) is a project a workload can write, so its copy is used only when it is the bundle
+// itself: the path is walked below the workspace root without following a link and never resolved, and its device and inode must
+// equal those of the bundled folder (the identity check workspaceCodePath makes for `/code`). Otherwise the bundled source is kept,
+// and the caller reports the channel skill unavailable when the worker cannot reach it. Never a resolved workspace path.
+async function workspaceBundleCopy({ service, repositories, entry, bundled, stat }) {
+    const repository = repositories.find(repo => repo.name === 'AchillesIDE' && repo.origin !== 'remote');
+    if (!repository || !service.workspaceRoot) return bundled;
+    try {
+        const root = await fs.realpath(service.workspaceRoot);
+        const copy = path.join(repository.source, 'roboTeamAgent/copilot/src/skills', path.relative(entry.owner || copilotSkillsRoot, bundled));
+        const lexical = rebaseOnRoot(root, copy, [path.resolve(service.workspaceRoot)]);
+        if (!lexical) return bundled;
+        await assertNoSymlinks(root, lexical, { label: 'skill folder', code: 'skill_path_symlinked' });
+        const [actual, visible] = await Promise.all([stat(bundled), stat(lexical)]);
+        return visible.isDirectory() && actual.dev === visible.dev && actual.ino === visible.ino ? lexical : bundled;
+    } catch { return bundled; }
+}
+
 // The execution lease serializes publication for one session. Different sessions
 // publish into different directories and never change the project's skill links.
-export async function installLiveSkills({ service, robot, policyId, sessionId, cwd, client, workflowSkills = false, workflowExecution = false }) {
+export async function installLiveSkills({ service, robot, policyId, sessionId, cwd, client, workflowSkills = false, workflowExecution = false, stat = fs.stat }) {
     client ||= service.repositoriesClient || await repositoryClient();
     const policy = await service.policies.read(robot.id, policyId);
     if (!policy) throw new Error('Missing conversation skill policy');
@@ -52,11 +72,17 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
     // A robot's explicit selection wins a name collision in its own session only.
     for (const entry of entries) {
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(entry.name)) throw new Error('Invalid robot skill name');
-        let source = await fs.realpath(entry.sourcePath);
-        if (entry.builtin) {
-            const repository = repositories.find(repo => repo.name === 'AchillesIDE' && repo.origin !== 'remote');
-            if (repository) source = await fs.realpath(path.join(repository.source, 'roboTeamAgent/copilot/src/skills',
-                path.relative(entry.owner || copilotSkillsRoot, source)));
+        let source;
+        if (entry.builtin || entry.required) {
+            // RoboTeam's own bundle and the required DocumentationSkills ([R]): the resolution of the entry's own source is trusted
+            // (decision M-60).
+            source = await fs.realpath(entry.sourcePath);
+            if (entry.builtin) source = await workspaceBundleCopy({ service, repositories, entry, bundled: source, stat });
+        } else {
+            // A robot-registered or marketplace source is kept as the catalog declared it (decision M-60): validated below its
+            // owner without following links, never replaced by a resolution of it.
+            const anchor = entry.owner || await fs.realpath(service.workspaceRoot);
+            source = await assertNoSymlinks(anchor, entry.sourcePath, { label: 'skill folder', code: 'skill_path_symlinked' });
         }
         if (!(await fs.stat(source)).isDirectory()) throw new Error(`Skill source is not a directory: ${entry.name}`);
         entry.sourcePath = source;

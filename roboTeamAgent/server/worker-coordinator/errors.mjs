@@ -17,6 +17,13 @@ export const STATUS = Object.freeze({
     worker_reply_unknown: 503,
     worker_auth_failed: 502,
     forbidden: 403,
+    // The worker refuses a phase's Environment selection at admission (existing-agent environments are not available yet).
+    environment_unavailable: 400,
+});
+
+// A plain, RoboTeam-authored sentence for a worker code the user can act on. It is fixed text for the code, never a worker reason.
+export const PLAIN_MESSAGES = Object.freeze({
+    environment_unavailable: 'Existing-agent environments are not available.',
 });
 
 export class WorkerCoordinatorError extends Error {
@@ -39,7 +46,7 @@ export function workerNotConfiguredError() {
 }
 
 export function refusal(code, extra = {}) {
-    return { status: STATUS[code] || 500, body: { error: code, ...extra } };
+    return { status: STATUS[code] || 500, body: { error: code, ...(PLAIN_MESSAGES[code] ? { message: PLAIN_MESSAGES[code] } : {}), ...extra } };
 }
 
 export function errorResult(error) {
@@ -74,6 +81,7 @@ export function mapHopOutcome(outcome) {
     if (status === 403) return refusal('forbidden');
     if (status === 400 || status === 404 || status === 409 || status === 500 || status === 503) {
         const body = { error: workerCode(json, status) };
+        if (PLAIN_MESSAGES[body.error]) body.message = PLAIN_MESSAGES[body.error];
         if (Number.isSafeInteger(json?.snapshotSequence)) body.snapshotSequence = json.snapshotSequence;
         return { status, body };
     }

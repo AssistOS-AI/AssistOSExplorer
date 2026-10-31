@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { sessionConfigPath, sessionDirectory } from './sessionPaths.mjs';
 import { withoutSummaryMarkers } from '../../../../shared/impact-summary.mjs';
+import { symlinkedPath } from '../../../../server/no-follow-path.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -219,7 +220,12 @@ export class ConversationSessionStore {
     #pendingUserText = new Map();
 
     constructor({ workingDir = process.cwd() } = {}) {
-        this.workingDir = fs.realpathSync(path.resolve(workingDir));
+        // The working folder becomes every session's `cwd`, which is admission data. It is kept as given and never replaced by a
+        // resolution of it: a folder that resolves elsewhere (a component swapped for a link, possibly after the caller checked
+        // it) is refused, as bindEngine refuses one (decisions M-58 and M-60).
+        const lexical = path.resolve(workingDir);
+        if (fs.realpathSync(lexical) !== lexical) throw symlinkedPath('working folder');
+        this.workingDir = lexical;
         this.sessionsDirectory = this.#validateDirectory();
         this.currentSessionId = null;
         this.startupSelectionRead = false;

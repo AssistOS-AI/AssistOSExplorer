@@ -6,6 +6,7 @@ const lifetime = new AbortController();
 process.once('SIGTERM', () => lifetime.abort());
 const FLOW_ID = /^flow_[0-9a-f]{24}$/;
 const WORKER_MODE = String(process.env.ROBOTEAM_WORKER_COORDINATOR_BASE || '').trim() !== '';
+const START_REFUSAL = 'Start workflows from the RoboFlow page.';
 const PAUSE_REFUSAL = 'Pausing a workflow through this tool is not available while the worker runs it. Use the Pause button on the RoboFlow page.';
 const MONITOR_BASE = String(process.env.ROBOTEAM_MONITOR_BASE || '/base-agent-additional-server/roboTeamAgent/3001/flows');
 
@@ -123,6 +124,9 @@ async function main() {
     if (operation === 'update-workflow') return output(await request(`/api/roboflow/workflows/${encodeURIComponent(String(input.workflowId || ''))}`, { method: 'PUT', body: input, user }));
     if (operation === 'delete-workflow') return output(await request(`/api/roboflow/workflows/${encodeURIComponent(String(input.workflowId || ''))}`, { method: 'DELETE', user }));
     if (operation === 'start-flow') {
+        // With the worker configured the tool is not offered (scripts/write-mcp-config.mjs, decision M-61); a call that still arrives
+        // is refused before any request.
+        if (WORKER_MODE) throw new Error(START_REFUSAL);
         const result = await startFlowUntilTerminal({ body: { workflowTypeId: input.workflowTypeId, objective: input.objective, folder: input.folder, executionType: input.executionType }, user });
         return output(result);
     }

@@ -4,7 +4,8 @@ import { discoverTaskSkills } from './skill-descriptor.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector } from './copilot-skillset.mjs';
+import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector, RESERVED_CHANNEL_SKILLS } from './copilot-skillset.mjs';
+import { assertNoSymlinks, rebaseOnRoot } from './no-follow-path.mjs';
 import { skillsetMDParser } from './skillsetMDParser.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { SkillPolicies, selectorNames } from './skill-policy.mjs';
@@ -57,7 +58,7 @@ export class RobotSkillsets {
 
     async add(robotId, input) {
         const name = input.name === undefined ? `repo-${crypto.randomUUID()}` : selectionNames([input.name])[0];
-        if (!NAME.test(name) || name === 'copilot') throw invalid('invalid or reserved skill source name');
+        if (!NAME.test(name) || name === 'copilot' || RESERVED_CHANNEL_SKILLS.includes(name)) throw invalid('invalid or reserved skill source name');
         const description = String(input.description || '').trim();
         const requestedSource = String(input.source || '').trim();
         const source = requestedSource;
@@ -70,6 +71,7 @@ export class RobotSkillsets {
         await readSkillTree(local, { skipDependencies: true });
         const records = await this.discover(local);
         if (!records.length || records.length > 100) throw invalid('skillset must contain 1 to 100 skills');
+        if (records.some(skill => RESERVED_CHANNEL_SKILLS.includes(skill.name))) throw invalid(`skill name is reserved: ${RESERVED_CHANNEL_SKILLS.find(name => records.some(skill => skill.name === name))}`);
         const skills = records.map(skill => ({ name: skill.name, description: skill.description,
             directory: path.relative(local, skill.directoryPath) }));
         const definitions = await readSkillsetDefinitions(local, skills);
@@ -87,15 +89,26 @@ export class RobotSkillsets {
         });
     }
 
+    // A skillset source is workload-writable ground and its path can reach a worker admission field, so it is validated below the
+    // workspace root without following links and kept as declared (decision M-60); the workspace root is the one resolved anchor.
+    // A source outside the workspace, or one that holds a link in its path, is refused.
+    async lexicalSource(source) {
+        const root = await fs.realpath(this.workspaceRoot);
+        const lexical = rebaseOnRoot(root, source, [path.resolve(this.workspaceRoot)]);
+        if (!lexical) throw invalid('skillset source must be inside the workspace');
+        try { return await assertNoSymlinks(root, lexical, { label: 'skillset source', code: 'skill_path_symlinked' }); }
+        catch (error) { if (error.code === 'skill_path_symlinked') throw invalid(error.message); throw error; }
+    }
+
     async resolveLiveRepository(source) {
         if (path.isAbsolute(source)) {
             if (path.dirname(source) === path.join(this.workspaceRoot, '.ploinky', 'repos')) {
                 const client = this.repositoriesClient || await repositoryClient();
                 const repo = (await client.listRepositories()).find(entry => entry.name === path.basename(source));
                 if (!repo || repo.origin === 'remote') throw invalid('repository is unavailable');
-                return fs.realpath(repo.source);
+                return this.lexicalSource(repo.source);
             }
-            return fs.realpath(source);
+            return this.lexicalSource(source);
         }
         const url = new URL(source);
         if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) throw invalid('use a credential-free HTTPS Git URL');
@@ -108,7 +121,7 @@ export class RobotSkillsets {
             repo = repositories.find(matches);
         }
         if (!repo || repo.origin === 'remote') throw invalid('repository is unavailable');
-        return fs.realpath(repo.source);
+        return this.lexicalSource(repo.source);
     }
 
     // A mixed repository (agents plus a root skills/ folder, as Ploinky classifies it) contributes only that

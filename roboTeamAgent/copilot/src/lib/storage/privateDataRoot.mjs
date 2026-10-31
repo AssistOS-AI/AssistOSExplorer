@@ -1,4 +1,5 @@
 import { requireWorkspaceRoot } from '../../../../server/workspace-root.mjs';
+import { assertNoSymlinksSync, rebaseOnRoot } from '../../../../server/no-follow-path.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -44,22 +45,28 @@ export function resolveAchillesWorkspaceRoot(workingDir = process.cwd(), env = p
     return workspaceRoot;
 }
 
+// The working folder is the admission `cwd` of every turn, so it is never replaced by a resolution of it (decision M-60): it is
+// checked below the workspace root component by component, a link is refused, a missing tail is created, and the lexical path
+// is returned. The worker's anchored resolver is the only one that resolves.
 export function ensureAchillesWorkingDirectory(workingDir, env = process.env) {
     const selectedPath = path.resolve(workingDir);
     const workspaceRoot = resolveAchillesWorkspaceRoot(selectedPath, env);
-    let ancestor = selectedPath;
-    let realAncestor = realDirectory(ancestor, 'Selected AchillesCLI directory');
-    while (!realAncestor) {
-        ancestor = path.dirname(ancestor);
-        realAncestor = realDirectory(ancestor, 'Selected AchillesCLI parent directory');
+    // A path whose existing part resolves outside the workspace is reported as outside (the resolution is only compared, never used).
+    let existing = selectedPath;
+    for (;;) {
+        try { fs.lstatSync(existing); break; } catch (error) {
+            if (error?.code !== 'ENOENT' || path.dirname(existing) === existing) throw error;
+            existing = path.dirname(existing);
+        }
     }
-    const destination = path.resolve(realAncestor, path.relative(ancestor, selectedPath));
-    if (!isInside(workspaceRoot, destination)) {
+    if (!isInside(workspaceRoot, path.resolve(fs.realpathSync(existing), path.relative(existing, selectedPath)))) {
         throw new Error('The selected AchillesCLI directory is outside PLOINKY_WORKSPACE_ROOT.');
     }
+    const destination = rebaseOnRoot(workspaceRoot, selectedPath, [env?.PLOINKY_WORKSPACE_ROOT ? path.resolve(env.PLOINKY_WORKSPACE_ROOT) : null]);
+    if (!destination) throw new Error('The selected AchillesCLI directory is outside PLOINKY_WORKSPACE_ROOT.');
+    assertNoSymlinksSync(workspaceRoot, destination, { label: 'working folder', type: 'directory', allowMissing: true });
     fs.mkdirSync(destination, { recursive: true });
-    resolveAchillesWorkspaceRoot(destination, env);
-    return realDirectory(destination, 'Selected AchillesCLI directory');
+    return assertNoSymlinksSync(workspaceRoot, destination, { label: 'working folder', type: 'directory' });
 }
 
 export function resolveAchillesPrivateDataRoot(workingDir = process.cwd(), options = {}) {

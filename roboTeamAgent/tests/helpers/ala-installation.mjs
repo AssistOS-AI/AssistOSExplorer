@@ -1,9 +1,11 @@
+// Test-only: resolves the installed ALA package for tests that read ALA's own modules. RoboTeam's runtime no longer imports ALA
+// (the worker hosts it), so this is no longer part of the production tree (decision M-61).
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { resolveAlaCommand } from '../../../../server/ala-command.mjs';
+import { resolveAlaCommand } from '../../server/ala-command.mjs';
 
 async function executableOnPath(name, env) {
     for (const directory of String(env.PATH || '').split(path.delimiter).filter(Boolean)) {
