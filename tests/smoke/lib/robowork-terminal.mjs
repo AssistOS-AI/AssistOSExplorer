@@ -8,6 +8,9 @@ import { smokeConfig } from './config.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from './conversation-skills.mjs';
 import { readLedger, nested } from './robowork-e2e.mjs';
 import { waitFor, markerOf, workerProcesses } from './robowork-scenarios.mjs';
+import { observeTerminalStream } from './robowork-terminal-stream.mjs';
+
+const terminalStreams = new WeakMap();
 
 // Gate selection requires explicit opt-ins, including destructive restart cases; never infer authorization from GATE alone.
 export function requireRoboWorkGateFlags(env, flags) {
@@ -107,6 +110,7 @@ export async function launchTerminal(page, target, { directory = '', onCreated =
     if (reply.status !== 201) return { ...reply, startedMs, latencyMs };
     const terminal = { ...reply.payload, startedMs, latencyMs };
     onCreated(terminal); // Register before attaching or checking the response, so failure still closes the session.
+    terminalStreams.set(terminal, observeTerminalStream(page, { id: terminal.session.id, view: terminal.view.id, baseURL: page.url() }));
     await page.evaluate(({ id, view }) => {
         window.__roboworkTerminals ??= {};
         const record = { output: '', outputChars: 0, exits: [], errors: 0, gaps: 0 };
@@ -122,7 +126,8 @@ export async function launchTerminal(page, target, { directory = '', onCreated =
         source.onerror = () => { record.errors += 1; };
         window.__roboworkTerminals[id] = record;
     }, { id: terminal.session.id, view: terminal.view.id });
-    return { status: 201, ...terminal };
+    terminal.status = 201;
+    return terminal;
 }
 
 export const terminalSnapshot = (page, terminal) => page.evaluate((id) => {
@@ -152,9 +157,14 @@ export async function terminalCommand(page, terminal, command, { timeoutMs = 30_
 }
 
 export async function closeTerminal(page, terminal) {
-    const reply = await webttyRequest(page, `/webtty/sessions/${terminal.session.id}`, { method: 'DELETE' });
-    assert.ok([200, 404].includes(reply.status), `Terminal close returned ${reply.status}`);
-    await page.evaluate((id) => window.__roboworkTerminals?.[id]?.source.close(), terminal.session.id);
+    const close = async () => {
+        const reply = await webttyRequest(page, `/webtty/sessions/${terminal.session.id}`, { method: 'DELETE' });
+        assert.ok([200, 404].includes(reply.status), `Terminal close returned ${reply.status}`);
+        await page.evaluate((id) => window.__roboworkTerminals?.[id]?.source.close(), terminal.session.id);
+    };
+    const observer = terminalStreams.get(terminal);
+    try { if (observer) await observer.close(close); else await close(); }
+    finally { terminalStreams.delete(terminal); }
 }
 
 export async function settledTerminals({ workspaceRoot, scratchDir, robotName, executionIds, containers, timeoutMs = 20_000 }) {
