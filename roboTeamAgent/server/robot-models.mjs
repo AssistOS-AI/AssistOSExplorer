@@ -1,10 +1,7 @@
 import { CODING_AGENT_NAMES } from './coding-agents.mjs';
 import { DEFAULT_OPENCODE_MODEL } from './agent-model-config.mjs';
 
-// RoboTeam runs no ALA and no coding-agent CLI (decision M-5), so it neither lists models nor validates an effort against a listing
-// until those move to worker utility executions (T5, decision M-56). Until then a listing is refused with a plain 409 the model
-// picker degrades on, and the saved selection is read from RoboTeam's own record of the robot. Saving a selection never needs the
-// list: only an effort of an agent whose efforts are not known here (and that is not the one already saved) does.
+// Model discovery is a worker utility. RoboTeam keeps only desired selections and forwards catalog reads.
 export const MODEL_LISTING_UNAVAILABLE = 'model_listing_unavailable';
 export const MODEL_LISTING_MESSAGE = 'Model listing is available after the worker model-listing update.';
 
@@ -27,9 +24,10 @@ export function modelListingUnavailable() {
 }
 
 export class RobotModels {
-    constructor({ robotStore, runtimeManager } = {}) {
+    constructor({ robotStore, runtimeManager, workerClient = null } = {}) {
         this.store = robotStore;
         this.runtime = runtimeManager;
+        this.worker = workerClient;
     }
     // The robot's configured selection from RoboTeam's record (the one-agent robot's model and effort kept as desired state for the
     // worker); nothing is loaded from ALA or from the robot's old home.
@@ -44,13 +42,21 @@ export class RobotModels {
     }
     async list(robot, agent) {
         if (!CODING_AGENT_NAMES.includes(agent)) throw Object.assign(new Error('Unknown coding agent'), { statusCode: 400 });
-        throw modelListingUnavailable();
+        if (!this.worker || !robot.worker?.robotId) throw modelListingUnavailable();
+        try { return await this.worker.models(robot.worker.robotId, agent); } catch (error) {
+            throw Object.assign(new Error(error.message), { statusCode: error.status ?? 503, publicCode: error.code });
+        }
     }
-    // An effort is checked against the agent's static levels where they are known, and the effort already saved for the same agent
-    // and model needs no check. Anything else needs the model's advertised efforts, which only a listing provides: the same 409.
+    // Bound robots use exact worker metadata even for saved efforts. Static levels support settings before a worker binding exists.
     async validateEffort(robot, agent, model, effort) {
         if (typeof effort !== 'string' || !/^[a-zA-Z0-9_-]+$/u.test(effort)) {
             throw Object.assign(new Error('Invalid effort'), { statusCode: 400 });
+        }
+        if (this.worker && robot.worker?.robotId) {
+            const catalog = await this.list(robot, agent);
+            const selected = catalog.models.find((entry) => entry.id === model);
+            if (!selected || !selected.efforts.includes(effort)) throw Object.assign(new Error(`Unsupported effort for ${agent}`), { statusCode: 400 });
+            return;
         }
         const levels = STATIC_EFFORTS[agent];
         if (levels) {

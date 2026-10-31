@@ -1098,3 +1098,25 @@ test('AC14: a nonempty Environment admission is refused environment_unavailable 
     for (let waited = 0; spawns.length === 0 && waited < 2000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(spawns.length, 1, 'the counter moves for the ordinary backend');
 });
+
+test('T5 models and agent-status authorize exactly as robots/get before touching the utility cache', async (t) => {
+    const dir = makeTempDir(t);
+    const store = openExtended(dir);
+    t.after(() => store.close());
+    const robotId = readyRobot(store, syntheticContext({ robotOwnerId: ROBOTS, scope: 'robots' }));
+    const { secret } = rig(store);
+    const reads = [];
+    const verifier = createVerifierConfig({ secret, audience: PROVIDER_PRINCIPAL, coordinators: [COORDINATOR], replayCache: createReplayCache() });
+    const adapter = createCoordinatorAdapter({ store, workspaceId: WORKSPACE, verifier, utilities: { read: (...args) => { reads.push(args); return { cached: true }; } } });
+    for (const [method, suffix, extra] of [['models', 'models', { agent: 'codex' }], ['agentStatus', 'agent-status', {}]]) {
+        const path = `${BASE}/robots/${suffix}`;
+        const request = hop(secret, { robotId, ...extra }, { path });
+        assert.deepEqual(await adapter[method](request), { cached: true });
+        const before = reads.length;
+        assert.throws(() => adapter[method](request), (error) => error.code === 'unauthorized');
+        assert.throws(() => adapter[method](hop(secret, { robotId, ...extra }, { path, claims: OTHER_CALLER })), (error) => error.code === 'forbidden');
+        assert.throws(() => adapter[method](hop(secret, { robotId: newId(), ...extra }, { path })), (error) => error.code === 'not_found');
+        assert.throws(() => adapter[method](hop(secret, { robotId, ...extra, ownerId: 'user:injected' }, { path })), (error) => error.code === 'invalid_request');
+        assert.equal(reads.length, before);
+    }
+});

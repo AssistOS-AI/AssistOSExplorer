@@ -863,6 +863,10 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
         async setModel({ sessionId, backend, model, effort = null } = {}) {
             const current = await modelState(sessionId);
             if (backend !== current.backend) throw new Error('The conversation backend changed; reload /model.');
+            if (effort !== null && model !== null) {
+                const catalog = await this.listModels({ sessionId });
+                if (!catalog.models.some((entry) => entry.id === model && entry.efforts.includes(effort))) throw new Error('Unsupported effort for this model.');
+            }
             await sessionStore.updateSession(sessionId, (session) => {
                 if (model === null) delete session.modelOverride;
                 else session.modelOverride = { backend, model, effort };
@@ -870,8 +874,17 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             return this.getModel({ sessionId });
         },
         // The model catalog needs the coding-agent binaries and the robot HOME, both the worker's.
-        async listModels() {
-            throw new WorkerError('worker_model_listing_unavailable', 501);
+        async listModels({ sessionId, signal } = {}) {
+            if (closed) throw new Error('The worker engine is closed.');
+            signal?.throwIfAborted();
+            const robot = await getRobot();
+            if (!robot.worker?.robotId) throw new WorkerError('worker_robot_not_provisioned', 409);
+            const backend = sessionId ? (await modelState(sessionId)).backend
+                : seedModels((await client.getRobot(robot.worker.robotId, {})).configuration).configured;
+            if (!backend) throw new WorkerError('worker_model_listing_unavailable', 409);
+            const result = await client.models(robot.worker.robotId, backend, {});
+            signal?.throwIfAborted();
+            return { backend, models: result.models };
         },
         async close() {
             closed = true;

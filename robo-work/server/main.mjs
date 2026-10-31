@@ -14,6 +14,7 @@ import { createProcView } from './execution/procView.mjs';
 import { createWalker } from './execution/recoveryWalk.mjs';
 import { createSandboxLauncher } from './sandbox/sandboxLauncher.mjs';
 import { createRecoveryView, sandboxRecordFor } from './sandbox/executionSupervisor.mjs';
+import { createRobotUtilities } from './runtime/robotUtilities.mjs';
 import { createDispatcher } from './runtime/dispatcher.mjs';
 import { createExecutionFactory } from './runtime/executionFactory.mjs';
 import { createRuntimeSourceProvider, defaultRuntimeSourcesFetch } from './runtime/executionGrants.mjs';
@@ -250,9 +251,11 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     const onRefusal = ({ route, code, reason, method, path: requestPath }) => log('refusal', { route, code, reason, method, path: requestPath });
     // M-54 Close terminals reaches the terminal server, which is built after the factory below.
     let terminalServer = null;
+    let utilityRunner = null;
+    const utilities = { read: (...args) => utilityRunner ? utilityRunner.read(...args) : Promise.reject(new Error('utility_unavailable')) };
     const terminals = { closeRobot: (robotId) => (terminalServer ? terminalServer.closeRobot(robotId) : Promise.resolve({ closed: 0, unverified: 0 })) };
     const coordinatorHandler = createCoordinatorHttpHandler({
-        adapter: createCoordinatorAdapter({ store, workspaceId: config.workspaceId, verifier, terminals }), limits: httpLimits, onRefusal
+        adapter: createCoordinatorAdapter({ store, workspaceId: config.workspaceId, verifier, terminals, utilities }), limits: httpLimits, onRefusal
     });
     const taskReferenceHandler = createTaskReferenceHttpHandler({
         adapter: createTaskReferenceAdapter({ store, workspaceId: config.workspaceId, verifier, basePath: TASK_REFERENCES_PATH }),
@@ -281,6 +284,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
             modelUpstream: createSoulGatewayUpstream({ env })
         });
     }
+    utilityRunner = createRobotUtilities({ store, factory, workspaceId: config.workspaceId });
     const dispatcher = factory
         ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, options: { maxConcurrent: config.maxConcurrent, inactivityTimeoutMs: config.inactivityTimeoutMs, maxAttemptMs: config.maxAttemptMs, approvalTimeoutMs: config.approvalTimeoutMs }, log })
         : null;
@@ -319,6 +323,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
                 await terminalServer.close().catch(() => {});
                 await Promise.allSettled([closeServer(coordinatorServer), closeServer(providerServer)]);
                 lifecycle.stop();
+                await utilityRunner?.close();
                 await dispatcher?.close();
                 store.close();
             })();

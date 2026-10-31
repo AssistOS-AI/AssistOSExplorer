@@ -17,7 +17,7 @@ function probe() {
 
 test('the robot and operation operations pass the allowlist', async () => {
     const { hop, calls } = probe();
-    for (const operation of ['robots/provision', 'robots/configure', 'robots/get', 'robots/delete', 'operations/get',
+    for (const operation of ['robots/provision', 'robots/configure', 'robots/get', 'robots/models', 'robots/agent-status', 'robots/delete', 'operations/get',
         'admissions', 'lookup', 'bindings', `references/${REFERENCE}/read`, `references/${REFERENCE}/events`, `references/${REFERENCE}/control`]) {
         await assert.rejects(hop.call(operation, {}), (error) => error instanceof WorkerCoordinatorError
             && error.code === 'worker_coordinator_unavailable', operation);
@@ -28,7 +28,7 @@ test('the robot and operation operations pass the allowlist', async () => {
 test('every other robots/* or unknown operation is refused before any I/O', async () => {
     const { hop, calls } = probe();
     const refused = ['robots/list', 'robots/delete/', 'robots/delete/extra', 'robots/Delete', 'robots/remove', 'robots', 'robots/', 'robots/get/extra', 'robots/provision/', 'robots/Get', 'robots/../admissions',
-        'robots/get?x=1', 'robots/get#x', '/robots/get', 'operations', 'operations/list', 'operations/get/x', 'operations/delete',
+        'robots/models/extra', 'robots/agent-status/extra', 'robots/models?agent=codex', 'robots/agent-status/', 'robots/get?x=1', 'robots/get#x', '/robots/get', 'operations', 'operations/list', 'operations/get/x', 'operations/delete',
         'obligations', 'obligations/list', `obligations/${REFERENCE}/accept`, `obligations/${REFERENCE}/outbox`, 'terminals', 'admin/robots/get',
         `references/${REFERENCE}/delete`, `references/${REFERENCE}`, 'references/short/read', '', ' lookup', 'lookup ', 'lookup\n', 'robots/get\n',
         '../lookup', 'LOOKUP', undefined, null, 7, {}];

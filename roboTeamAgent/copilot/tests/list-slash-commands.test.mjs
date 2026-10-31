@@ -96,3 +96,23 @@ test('session completions expose shared sessions without changing the startup se
     assert.deepEqual(new Set(completions.map((entry) => entry.value)), new Set([first.sessionId, second.sessionId]));
     assert.equal((await store.ensureCurrentSession()).sessionId, second.sessionId);
 });
+
+test('T5 fresh worker catalog reads native model utilities without creating a conversation or loading local ALA', async (t) => {
+    const { workingDir } = await createCatalogFixture(t);
+    const before = process.env.ROBOTEAM_WORKER_COORDINATOR_BASE;
+    process.env.ROBOTEAM_WORKER_COORDINATOR_BASE = '/worker';
+    t.after(() => { if (before === undefined) delete process.env.ROBOTEAM_WORKER_COORDINATOR_BASE; else process.env.ROBOTEAM_WORKER_COORDINATOR_BASE = before; });
+    const calls = [];
+    const result = await loadAutocompleteCatalog({ dir: workingDir, freshSession: true, skillCatalog: { getSkills: () => [] },
+        robotId: 'local', robotStore: { get: async () => ({ id: 'local', codingAgents: ['codex'], worker: { robotId: 'worker-id' } }) },
+        workerHop: { call: async (operation, body) => {
+            calls.push([operation, body]);
+            return { outcome: 'response', status: 200, json: operation === 'robots/get' ? { configuration: { backend: 'codex' } }
+                : { agent: 'codex', models: [{ id: 'model-a', efforts: ['high'] }] } };
+        } },
+    });
+    assert.equal(result.modelError, undefined);
+    assert.deepEqual(calls, [['robots/get', { robotId: 'worker-id' }], ['robots/models', { robotId: 'worker-id', agent: 'codex' }]]);
+    assert.deepEqual(result.commands.find((command) => command.name === '/model').subCommands.map((entry) => entry.name), ['default', 'model-a']);
+    assert.equal(new ConversationSessionStore({ workingDir }).listSessions().sessions.length, 0);
+});

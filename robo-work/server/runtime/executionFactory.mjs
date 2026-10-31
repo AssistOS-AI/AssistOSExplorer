@@ -167,7 +167,8 @@ export function createExecutionFactory({
         // nothing opened or started. Returns { cwd, start({ slave }), exited, revoked, lost, end(outcome) }: start publishes the anchor, the
         // runtime directory, the execution network (the workload firewall) and the terminal process tree, in that order; no endpoint, no
         // ALA and no activity watchdog (the Router's WebTTY limits govern idle time, M-51 Q2).
-        async openTerminal({ item, project = null, context }) {
+        async openTerminal({ item, project = null, context, utility = false }) {
+            if (utility && project !== null) throw new ExecutionSetupError('utility_project_forbidden');
             const fds = [];
             const grants = [];
             const closeAll = async () => {
@@ -195,12 +196,17 @@ export function createExecutionFactory({
                     cwd = `/projects/${name}`;
                 }
                 const image = make.image();
+                const helperBinds = utility ? [...code.roBinds.filter((bind) => bind.dest === `${OPT}/node`), ...code.alaBinds,
+                    { source: path.join(serverDir, 'runtime', 'agentStatusHelper.mjs'), dest: `${OPT}/agentStatusHelper.mjs` }] : [];
                 const roles = {
-                    terminal: { roBinds: [...image.roBinds, ...(image.toolBinds ?? [])], symlinks: image.symlinks, env: { ...TERMINAL_ENV }, argv: [...TERMINAL_ARGV] }
+                    terminal: {
+                        roBinds: [...image.roBinds, ...(image.toolBinds ?? []), ...helperBinds], symlinks: image.symlinks,
+                        env: { ...TERMINAL_ENV }, argv: utility ? [code.node, `${OPT}/agentStatusHelper.mjs`] : [...TERMINAL_ARGV],
+                    },
                 };
                 const lost = deferred();
                 const supervisor = make.supervisor({
-                    launcher, view, roles, home: { path: where.home, fd: homeFd }, grants: resolved, mode: 'terminal',
+                    launcher, view, roles, home: { path: where.home, fd: homeFd }, grants: resolved, mode: utility ? 'utility' : 'terminal',
                     onInfrastructureLoss: (reason) => lost.resolve(`infrastructure_lost:${reason}`)
                 });
                 const layout = { runtimeDir, cgroupSubtree: path.join(runtimeDir, 'cgroup') };
@@ -238,7 +244,7 @@ export function createExecutionFactory({
                 }
                 // M-26: the one Soul Gateway model this execution may use, or null (no model channel, no OPENCODE_CONFIG).
                 const managedConfig = make.managedConfig(where.config);
-                const gatewayModel = selectGatewayModel({ specification: item.specification, managed: managedConfig });
+                const gatewayModel = item.kind === 'utility' ? null : selectGatewayModel({ specification: item.specification, managed: managedConfig });
                 const gatewayProvider = selectGatewayProvider({ specification: item.specification, managed: managedConfig });
                 // Anchored, no-follow resolution: the resolver refuses protected names, anything outside the workspace and (M-63) a writable
                 // grant inside, containing or aliasing an active runtime source; the list is fetched once, only when a grant is writable.
@@ -326,6 +332,7 @@ export function createExecutionFactory({
                 await ledger.publish({ kind: 'netns' });
                 const published = await ledger.publish({ kind: 'process-tree', spec: { role: 'terminal', slave, cwd } });
                 published.handle.wait().then(({ exitCode, signal }) => exitedControl.resolve({ exitCode, signal }), (error) => exitedControl.reject(error));
+                return { stdin: published.handle.stdio?.[0], stdout: published.handle.stdio?.[1], stderr: published.handle.stdio?.[2] };
             },
             // The section 5.5 end path (beginAttemptEnd first), then the local cleanup. Resolves with the ledger's { releaseLog }.
             end(outcome) {

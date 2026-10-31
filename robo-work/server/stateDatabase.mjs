@@ -20,7 +20,8 @@ import { OBLIGATION_SCHEMA_SQL } from './stateObligations.mjs';
 // (the `approval` table, the `approval-request` and `approval-resolved` event types, the final `rejected` and `ended` control deliveries) and
 // T1's robot terminals (the stored admission and logical kind `terminal` and the reference kind `terminal`). A store of any other version,
 // a version-8 store included, is refused at open with state_corrupt / schema_version_mismatch before anything is written.
-export const SCHEMA_VERSION = 9;
+// Schema 10 adds worker-internal utility admissions; earlier stores are refused without writes.
+export const SCHEMA_VERSION = 10;
 export const STORE_DIRECTORY = 'execution-store';
 export const STORE_FILE = 'worker-state.sqlite';
 
@@ -90,12 +91,12 @@ CREATE TABLE admission (
     execution_id TEXT PRIMARY KEY,
     attempt_id TEXT NOT NULL UNIQUE,
     logical_id TEXT NOT NULL,
-    logical_kind TEXT NOT NULL CHECK (logical_kind IN ('task', 'session', 'flow', 'terminal')),
+    logical_kind TEXT NOT NULL CHECK (logical_kind IN ('task', 'session', 'flow', 'terminal', 'utility')),
     generation_id TEXT NOT NULL REFERENCES generation(id),
     robot_id TEXT NOT NULL REFERENCES robot(id),
     config_revision INTEGER NOT NULL,
     configuration TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('task', 'continuation', 'turn', 'terminal')),
+    kind TEXT NOT NULL CHECK (kind IN ('task', 'continuation', 'turn', 'terminal', 'utility')),
     specification TEXT NOT NULL,
     scope TEXT NOT NULL,
     owner_id TEXT NOT NULL,
@@ -107,7 +108,8 @@ CREATE TABLE admission (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     CHECK ((kind = 'turn') = (logical_kind = 'session')),
-    CHECK ((kind = 'terminal') = (logical_kind = 'terminal'))
+    CHECK ((kind = 'terminal') = (logical_kind = 'terminal')),
+    CHECK ((kind = 'utility') = (logical_kind = 'utility'))
 );
 CREATE INDEX admission_logical ON admission(logical_id);
 CREATE INDEX admission_robot_state ON admission(robot_id, state);
@@ -132,16 +134,16 @@ CREATE TABLE reference (
     namespace TEXT NOT NULL,
     origin_key TEXT NOT NULL,
     origin_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('execution', 'observation', 'terminal')),
+    kind TEXT NOT NULL CHECK (kind IN ('execution', 'observation', 'terminal', 'utility')),
     logical_id TEXT,
     attempt_id TEXT UNIQUE,
     execution_id TEXT REFERENCES admission(execution_id),
     obligation_id TEXT UNIQUE REFERENCES obligation(obligation_id),
     scope TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    CHECK ((kind IN ('execution', 'terminal')) = (execution_id IS NOT NULL)),
-    CHECK ((kind IN ('execution', 'terminal')) = (attempt_id IS NOT NULL)),
-    CHECK ((kind IN ('execution', 'terminal')) = (logical_id IS NOT NULL)),
+    CHECK ((kind IN ('execution', 'terminal', 'utility')) = (execution_id IS NOT NULL)),
+    CHECK ((kind IN ('execution', 'terminal', 'utility')) = (attempt_id IS NOT NULL)),
+    CHECK ((kind IN ('execution', 'terminal', 'utility')) = (logical_id IS NOT NULL)),
     CHECK ((kind = 'observation') = (obligation_id IS NOT NULL))
 );
 CREATE TRIGGER receipt_immutable BEFORE UPDATE ON receipt BEGIN SELECT RAISE(ABORT, 'immutable'); END;

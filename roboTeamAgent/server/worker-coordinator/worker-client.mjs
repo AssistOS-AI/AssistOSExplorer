@@ -137,6 +137,8 @@ export function createWorkerClient({ hop } = {}) {
             const body = { operationId, op, ...(attemptId !== undefined ? { attemptId } : {}), ...(payload !== undefined ? { payload } : {}) };
             return call(`references/${referenceId}/control`, withBinding(body, auth), auth);
         },
+        models: (robotId, agent, auth) => call('robots/models', { robotId, agent }, auth),
+        agentStatus: (robotId, auth) => call('robots/agent-status', { robotId }, auth),
         getRobot: (robotId, auth) => call('robots/get', { robotId }, auth),
         getOperation: (operationId, auth) => call('operations/get', { operationId }, auth),
         provision: (body, auth) => call('robots/provision', body, auth),

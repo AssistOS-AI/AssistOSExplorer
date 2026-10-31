@@ -87,3 +87,12 @@ test('the robot listing names the agent in use and keeps logins from non-adminis
     assert.equal(listed.codingAgent, 'opencode');
     assert.equal('codingAgentLogins' in listed, false);
 });
+
+test('worker login projection uses the worker robot id and unavailable status stays unknown', async () => {
+    const calls = [];
+    const status = createCodingAgentStatus({ robotStore: { get: async () => ({ worker: { robotId: 'worker-id' } }) }, workerClient: {
+        agentStatus: async (id) => { calls.push(id); return { agents: [{ name: 'codex', loggedIn: true }, { name: 'claude', loggedIn: false }] }; },
+    } });
+    assert.deepEqual(await status.logins('local-id'), { codex: true, claude: false, opencode: 'unknown', pi: 'unknown' });
+    assert.deepEqual(calls, ['worker-id']);
+});

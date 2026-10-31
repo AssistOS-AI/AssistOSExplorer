@@ -65,6 +65,7 @@ function scripted(rows, { snapshot = DONE, hold = false } = {}) {
         async admit(body, auth) { calls.admit.push({ body, auth }); return { referenceId: REFERENCE, state: 'queued', originRequestId: body.originRequestId }; },
         async lookup(origin, auth) { calls.lookup.push({ origin, auth }); return null; },
         async getRobot() { calls.getRobot += 1; return { configuration: CONFIGURATION }; },
+        async models() { return { agent: 'codex', models: [{ id: 'gpt-x', efforts: ['high'] }] }; },
     };
     return client;
 }
@@ -492,7 +493,8 @@ test('model reads come from the worker robot, never from a RoboTeam home', async
     assert.equal(info.client.calls.getRobot, 1, 'read from robots/get');
     const set = await info.engine.setModel({ sessionId: info.sessionId, backend: 'codex', model: 'gpt-x', effort: 'high' });
     assert.deepEqual(set, { backend: 'codex', model: 'gpt-x', effort: 'high', modelSource: 'selected' });
-    await assert.rejects(info.engine.listModels({ sessionId: info.sessionId }), (error) => error.code === 'worker_model_listing_unavailable');
+    assert.deepEqual(await info.engine.listModels({ sessionId: info.sessionId }), { backend: 'codex', models: [{ id: 'gpt-x', efforts: ['high'] }] });
+    await assert.rejects(info.engine.setModel({ sessionId: info.sessionId, backend: 'codex', model: 'gpt-x', effort: 'max' }), /Unsupported effort/u);
     await assert.rejects(info.engine.setModel({ sessionId: info.sessionId, backend: 'opencode', model: 'x' }), /backend changed/);
 });
 

@@ -75,8 +75,8 @@ export const LOGICAL_KINDS = Object.freeze(['task', 'session', 'flow']);
 // terminal path, never by a coordinator admit. A terminal admission has its own logical kind `terminal` (a fresh logical id each time)
 // and an internal reference row of kind `terminal`, which no coordinator read lists or reveals (not_found).
 export const TERMINAL_KIND = 'terminal';
-export const STORED_ADMISSION_KINDS = Object.freeze([...ADMISSION_KINDS, TERMINAL_KIND]);
-export const STORED_LOGICAL_KINDS = Object.freeze([...LOGICAL_KINDS, TERMINAL_KIND]);
+export const STORED_ADMISSION_KINDS = Object.freeze([...ADMISSION_KINDS, TERMINAL_KIND, 'utility']);
+export const STORED_LOGICAL_KINDS = Object.freeze([...LOGICAL_KINDS, TERMINAL_KIND, 'utility']);
 export const TERMINAL_STATES = END_CLASSIFICATIONS;
 export const ACTIVE_STATES = Object.freeze(['queued', 'running']);
 export const PROCESS_TREE_KIND = 'process-tree';

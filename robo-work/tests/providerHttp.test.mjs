@@ -57,7 +57,7 @@ function recordingAdapter(names, result = { ok: true }) {
     return { adapter, calls };
 }
 
-const COORDINATOR_METHODS = ['admit', 'lookup', 'bind', 'readReference', 'referenceEvents', 'controlReference', 'provision', 'configure', 'delete', 'listRobots', 'getRobot', 'getOperation',
+const COORDINATOR_METHODS = ['admit', 'lookup', 'bind', 'readReference', 'referenceEvents', 'controlReference', 'provision', 'configure', 'delete', 'listRobots', 'getRobot', 'models', 'agentStatus', 'getOperation',
     'admitObligation', 'listObligations', 'acceptObligation', 'rejectObligation', 'applyOutbox'];
 const TASK_METHODS = ['read', 'events', 'control', 'lookup'];
 
@@ -69,7 +69,7 @@ test('coordinator route table: every route dispatches exactly; unknown paths and
         [`/v1/coordinator/references/${REF}/read`, 'readReference'], [`/v1/coordinator/references/${REF}/events`, 'referenceEvents'],
         [`/v1/coordinator/references/${REF}/control`, 'controlReference'], ['/v1/coordinator/robots/provision', 'provision'],
         ['/v1/coordinator/robots/configure', 'configure'], ['/v1/coordinator/robots/delete', 'delete'], ['/v1/coordinator/robots/list', 'listRobots'],
-        ['/v1/coordinator/robots/get', 'getRobot'], ['/v1/coordinator/operations/get', 'getOperation'],
+        ['/v1/coordinator/robots/get', 'getRobot'], ['/v1/coordinator/robots/models', 'models'], ['/v1/coordinator/robots/agent-status', 'agentStatus'], ['/v1/coordinator/operations/get', 'getOperation'],
         ['/v1/coordinator/obligations', 'admitObligation'], ['/v1/coordinator/obligations/list', 'listObligations'],
         [`/v1/coordinator/obligations/${REF}/accept`, 'acceptObligation'], [`/v1/coordinator/obligations/${REF}/reject`, 'rejectObligation'],
         [`/v1/coordinator/obligations/${REF}/outbox`, 'applyOutbox']
@@ -182,7 +182,7 @@ test('bounds: an oversize body is 400 without an adapter call; a missing auth-in
 function stubStoreForAuthOnly() {
     const store = {};
     for (const name of ['admit', 'lookupOrigin', 'registerBinding', 'readBindingOwner', 'observeReference', 'listReferenceEvents', 'controlReference',
-        'consumeTokenIds', 'beginProvision', 'configure', 'beginDelete', 'listRobots', 'getRobot', 'getOperationOutcome',
+        'consumeTokenIds', 'beginProvision', 'configure', 'beginDelete', 'listRobots', 'getRobot', 'models', 'agentStatus', 'getOperationOutcome',
         'admitObligation', 'acceptObligation', 'rejectObligation', 'listObligations', 'applyOutbox']) {
         store[name] = () => { throw new Error(`store.${name} must not be called`); };
     }

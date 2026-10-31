@@ -84,9 +84,10 @@ export function createExecutionSupervisor({
 } = {}) {
     if (!launcher || typeof launcher.launch !== 'function') throw new TypeError('A launcher is required');
     if (!view || typeof view.process !== 'function') throw new TypeError('A procView is required');
-    if (mode !== 'execution' && mode !== 'terminal') throw new TypeError('mode is execution or terminal');
+    if (!['execution', 'terminal', 'utility'].includes(mode)) throw new TypeError('mode is execution or terminal');
     // Terminal mode (M-8): only roles.terminal; no ALA, no endpoint, no workload, no admission inventory.
-    const terminalMode = mode === 'terminal';
+    const utilityMode = mode === 'utility';
+    const terminalMode = mode === 'terminal' || utilityMode;
     if (terminalMode) {
         if (!roles?.terminal || !Array.isArray(roles.terminal.argv) || roles.terminal.argv.length === 0) throw new TypeError('roles.terminal is required in terminal mode');
         if (roles.orchestration || roles.endpoint || roles.workload) throw new TypeError('terminal mode takes roles.terminal only');
@@ -374,17 +375,17 @@ export function createExecutionSupervisor({
         requireRuntime();
         if (!home || !Number.isInteger(home.fd) || typeof home.path !== 'string') throw sandboxError('setup_failed', 'no HOME directory');
         if (!network) throw sandboxError('setup_failed', 'the execution network does not exist yet');
-        if (!Number.isInteger(spec?.slave) || spec.slave < 0) throw sandboxError('invalid_request', 'pty slave');
+        if (!utilityMode && (!Number.isInteger(spec?.slave) || spec.slave < 0)) throw sandboxError('invalid_request', 'pty slave');
         if (typeof spec.cwd !== 'string' || !(spec.cwd === '/home/robot' || grants.some((grant) => spec.cwd === grant.path))) throw sandboxError('invalid_request', 'cwd');
         const etc = ensureEtcFiles();
         const sandbox = await launcher.launch({
-            role: 'terminal', marker, runtimeDir: runtime.path, netMode: 'join', netns: network.nsPath, netnsInode: network.nsInode(),
+            role: utilityMode ? 'workload' : 'terminal', marker, runtimeDir: runtime.path, netMode: 'join', netns: network.nsPath, netnsInode: network.nsInode(),
             roBinds: roles.terminal.roBinds, symlinks: roles.terminal.symlinks,
             roFiles: [{ source: etc.resolvJoin, dest: '/etc/resolv.conf' }, { source: etc.hosts, dest: '/etc/hosts' }],
             env: { ...(roles.terminal.env ?? {}) }, cwd: spec.cwd, argv: [...roles.terminal.argv],
             home: { path: home.path, fd: home.fd },
             grants: grants.map((grant) => ({ name: grant.name, path: grant.hostPath, fd: grant.fd, mode: grant.access === 'write' ? 'rw' : 'ro', exclusions: [] })),
-            channelsDir: rt('channels'), tmpDir: rt('tmp'), stdio: [spec.slave, spec.slave, spec.slave], scanLimits: roles.terminal.scanLimits
+            channelsDir: rt('channels'), tmpDir: rt('tmp'), stdio: utilityMode ? ['pipe', 'pipe', 'pipe'] : [spec.slave, spec.slave, spec.slave], scanLimits: roles.terminal.scanLimits
         });
         return asCreation(resourceId, sandbox, { tree: true });
     }

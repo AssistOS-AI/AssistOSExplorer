@@ -746,7 +746,8 @@ export function createRoboTeamServer(options) {
     const runtimeManager = options.runtimeManager;
     const roboflow = options.roboflow || null;
     const proxyPool = options.proxyPool || runtimeManager.proxyPool || null;
-    const robotModels = options.robotModels || new RobotModels({ robotStore, runtimeManager });
+    const utilityClient = options.workerCoordinator?.hop ? createWorkerClient({ hop: options.workerCoordinator.hop }) : null;
+    const robotModels = options.robotModels || new RobotModels({ robotStore, runtimeManager, workerClient: utilityClient });
     const skillsets = options.skillsets || runtimeManager.skillsets || new RobotSkillsets({ robotStore,
         workspaceRoot: runtimeManager.workspaceRoot, alaCommand: runtimeManager.alaCommand });
     runtimeManager.skillsets = skillsets;
@@ -755,7 +756,7 @@ export function createRoboTeamServer(options) {
     const routeKey = String(options.routeKey || 'roboTeamAgent');
     const publicDir = path.resolve(options.publicDir || DEFAULT_PUBLIC_DIR);
     const mcpPort = Number(options.mcpPort) || 7000;
-    const codingAgentStatus = options.codingAgentStatus || createCodingAgentStatus();
+    const codingAgentStatus = options.codingAgentStatus || createCodingAgentStatus({ workerClient: utilityClient, robotStore });
     const liveSessions = options.liveSessions || null;
     const liveStreamLifetimeMs = Number.isSafeInteger(options.liveSessionsStreamLifetimeMs) && options.liveSessionsStreamLifetimeMs > 0
         ? options.liveSessionsStreamLifetimeMs : LIVE_STREAM_LIFETIME_MS;
@@ -972,7 +973,7 @@ export function createRoboTeamServer(options) {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const robot = await robotStore.get(modelsId);
                 if (!robot) return sendError(res, 404, 'robot not found');
-                // Listing is refused with a plain 409 until it moves to a worker utility execution (decision M-56).
+                // Models come from a robot-scoped admitted worker utility (M-56).
                 const result = await robotModels.list(robot, url.searchParams.get('agent'));
                 return sendJson(res, 200, { ok: true, ...result });
             }

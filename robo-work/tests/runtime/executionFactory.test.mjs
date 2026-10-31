@@ -439,3 +439,19 @@ test('M-67 Q2: a read-only attempt starts no recheck tick and makes no fetch', a
     assert.equal(world.counter.fetches, 0);
     await execution.end({ classification: 'completed' });
 });
+
+test('T5 status utility opens only worker HOME and a fixed workload helper, without ALA endpoint or project grants', async () => {
+    const { factory, item, context, calls, closedFds, options } = rig();
+    const execution = await factory.openTerminal({ item: { ...item, kind: 'utility' }, context, utility: true });
+    const { supervisorOptions } = options();
+    assert.equal(supervisorOptions.mode, 'utility');
+    assert.deepEqual(calls.filter(([name]) => name === 'open').map(([, target]) => target), ['/store/robots/ROBOT/home']);
+    assert.deepEqual(supervisorOptions.grants, []);
+    assert.deepEqual(Object.keys(supervisorOptions.roles), ['terminal']);
+    assert.deepEqual(supervisorOptions.roles.terminal.argv, ['/usr/local/bin/node', '/opt/robo-work/agentStatusHelper.mjs']);
+    assert.ok(supervisorOptions.roles.terminal.roBinds.some((bind) => bind.dest === '/opt/robo-work/ala'));
+    await execution.start({});
+    assert.deepEqual(calls.filter(([name]) => name === 'publish').map(([, kind]) => kind), ['keeper', 'runtime-dir', 'netns', 'process-tree']);
+    await execution.end({ classification: 'completed' });
+    assert.deepEqual(closedFds, [20]);
+});

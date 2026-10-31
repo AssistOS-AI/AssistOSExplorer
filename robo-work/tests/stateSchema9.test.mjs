@@ -50,11 +50,11 @@ function insertTerminal(dir, store, robotId, { state = 'queued', withOrigin = fa
     }
 }
 
-test('schema 9: the version constant, the stored kinds and the coordinator request kinds', () => {
-    assert.equal(SCHEMA_VERSION, 9);
+test('schema 10: the version constant, the stored kinds and the coordinator request kinds', () => {
+    assert.equal(SCHEMA_VERSION, 10);
     assert.deepEqual(ADMISSION_KINDS, ['task', 'continuation', 'turn']);
-    assert.deepEqual(STORED_ADMISSION_KINDS, ['task', 'continuation', 'turn', 'terminal']);
-    assert.deepEqual(STORED_LOGICAL_KINDS, ['task', 'session', 'flow', 'terminal']);
+    assert.deepEqual(STORED_ADMISSION_KINDS, ['task', 'continuation', 'turn', 'terminal', 'utility']);
+    assert.deepEqual(STORED_LOGICAL_KINDS, ['task', 'session', 'flow', 'terminal', 'utility']);
 });
 
 test('M-51 Q4: a version-8 store refuses to open with a clear reason, is never half-opened and is left byte-identical', (t) => {
@@ -123,7 +123,7 @@ test('delta note 2: the reference CHECKs: kind `terminal` carries execution, att
         VALUES (?, 1, 'p', 'n', 'k', ?, 'terminal', NULL, NULL, NULL, NULL, 's', ?)`).run(newId(), newOriginId(), now), /CHECK/u);
     // kind terminal with another logical kind, and logical kind terminal with another kind, are refused.
     const robot = db.prepare('SELECT configuration, revision FROM robot WHERE id = ?').get(robotId);
-    for (const [kind, logicalKind] of [['terminal', 'task'], ['task', 'terminal'], ['turn', 'terminal']]) {
+    for (const [kind, logicalKind] of [['terminal', 'task'], ['task', 'terminal'], ['turn', 'terminal', 'utility']]) {
         assert.throws(() => db.prepare(`INSERT INTO admission (execution_id, attempt_id, logical_id, logical_kind, generation_id, robot_id, config_revision, configuration, kind, specification, scope, owner_id, operation_id, state, result, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 's', 'o', ?, 'queued', NULL, ?, ?)`).run(newId(), newId(), newId(), logicalKind, store.generationId, robotId, robot.revision, robot.configuration, kind, newId(), now, now), /CHECK/u, `${kind}/${logicalKind}`);
     }
@@ -185,4 +185,16 @@ test('B-1: a terminal attempt ends through the unchanged end path, by beginAttem
     const db = rawDb(dir, { readOnly: true });
     t.after(() => db.close());
     assert.equal(db.prepare('SELECT state FROM admission WHERE execution_id = ?').get(recovered.executionId).state, 'interrupted');
+});
+
+test('T5 schema10 refuses a schema9 store without migration or byte changes', (t) => {
+    const dir = makeTempDir(t);
+    openStore(dir).close();
+    const db = rawDb(dir);
+    db.exec("UPDATE metadata SET value = '9' WHERE key = 'schema_version'");
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    db.close();
+    const before = sha(storeFile(dir));
+    for (const create of [false, true]) assert.throws(() => openStore(dir, { create }), (error) => error.code === 'state_corrupt' && error.reason === 'schema_version_mismatch');
+    assert.equal(sha(storeFile(dir)), before);
 });

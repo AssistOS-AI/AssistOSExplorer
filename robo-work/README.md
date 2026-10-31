@@ -19,6 +19,12 @@ Internal worker-state library for the RoboWork execution provider. It is a bound
 | `server/terminal/` | Robot terminals (M-8): `terminalServer.mjs` (the WebSocket endpoint, ownership session, leases, replay, ends), `terminalProtocol.mjs` (the frame schema, a copy of Ploinky's), `wsCodec.mjs` (bounded RFC 6455 server codec), `terminalAuth.mjs` (Router-service tokens through Ploinky's Agent library), `terminalExecutions.mjs` (admit, launch, end, caps), `ptyHost.mjs` (node-pty `open()`, master kept in the worker) |
 | `server/stateObligations.mjs` | S6 source-only subset: obligation and outbox tables, row helpers and the observation-state mapping (Part D) |
 
+## Robot utilities
+
+The coordinator exposes `POST /v1/coordinator/robots/models` with `{robotId, agent}` and `POST /v1/coordinator/robots/agent-status` with `{robotId}`. Both authorize through the `robots/get` rule before reading the worker cache. Native catalogs use protocol-mode ALA with no project grant. Agent status uses a fixed helper in a workload sandbox with the worker robot HOME, no project grant and no provider endpoint. Only model IDs and effort metadata, or agent availability, login booleans and sanitized version tokens, leave those executions.
+
+Utilities use an internal `utility` admission, the resource ledger and the normal recovery path. They have a 12-second deadline, a combined 512 KiB stdout/stderr limit, and atomic caps of one open utility per robot and four per worker. Sanitized successful projections have a 15-second cache, keyed by robot revision, limited to 128 entries. Schema 10 records the utility kind. Earlier stores, including schema 9, are refused unchanged; there is no migration or automatic deletion.
+
 ## Storage
 
 `openWorkerState({dataDir, workspaceId, provider, limits, now, create, runtime, faults})` uses built-in `node:sqlite` (Node 24 or newer, no npm dependency). The store is `<dataDir>/execution-store/worker-state.sqlite`. First creation requires `create: true`; a missing store without it is `not_found`. Symbolic links and non-directory or non-regular state components are refused with `state_corrupt`, as are corrupt files and workspace, provider or schema-version mismatches. A corrupt or empty file is never replaced or initialized without `create`. The database uses foreign keys, WAL, `busy_timeout=5000`, `synchronous=FULL` and synchronous `BEGIN IMMEDIATE` transactions. These checks assume supervisor-exclusive storage and are not a confined-filesystem boundary.

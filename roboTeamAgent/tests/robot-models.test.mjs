@@ -84,3 +84,15 @@ test('neither module imports the ALA installation loader or the native environme
         assert.doesNotMatch(source, /alaInstallation|alaEnvironment|resolveAlaInstallation|detectCodingAgentLogin|discoverCodingAgents/u, file);
     }
 });
+
+test('worker model metadata validates exact efforts, including saved and static-agent choices', async () => {
+    const calls = [];
+    const robot = { id: 'robot', worker: { robotId: 'worker-robot' }, codingAgents: ['claude'], selection: { model: 'sonnet', effort: 'max' } };
+    const models = new RobotModels({ robotStore: { get: async () => robot }, workerClient: { models: async (...args) => {
+        calls.push(args); return { agent: 'claude', models: [{ id: 'sonnet', efforts: ['high'] }] };
+    } } });
+    await models.validateEffort(robot, 'claude', 'sonnet', 'high');
+    await assert.rejects(models.validateEffort(robot, 'claude', 'sonnet', 'max'), (error) => error.statusCode === 400);
+    await assert.rejects(models.validateEffort(robot, 'claude', 'missing', 'high'), (error) => error.statusCode === 400);
+    assert.deepEqual(calls, Array(3).fill(['worker-robot', 'claude']));
+});

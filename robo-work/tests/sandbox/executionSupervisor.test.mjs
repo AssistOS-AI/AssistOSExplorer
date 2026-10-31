@@ -573,3 +573,27 @@ test('M-26: without the channel there is no model bind and no OPENCODE_CONFIG; A
     // The allowed OpenCode additions of ALA stay admitted.
     assert.equal(admitStartRequest(request({ executable: 'opencode', env: { OPENCODE_CONFIG_CONTENT: '{}' }, folders: [{ path: '/projects/a', access: 'write' }] }), admission), null);
 });
+
+test('T5 utility helper uses workload sandbox, worker HOME, pipe-only stdio and no provider endpoint', async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-utility-sup-'));
+    const homeFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+    t.after(() => { fs.closeSync(homeFd); fs.rmSync(dir, { recursive: true, force: true }); });
+    const launched = [];
+    const supervisor = createExecutionSupervisor({
+        launcher: { launch: async (spec) => { launched.push(spec); return fakeSandbox(spec.role); } },
+        view: createFakeView(), createNetwork: fakeNetwork, mode: 'utility', home: { path: dir, fd: homeFd }, grants: [],
+        roles: { terminal: { roBinds: [], env: { HOME: '/home/robot' }, argv: ['/usr/bin/node', '/fixed-helper.mjs'] } },
+    });
+    await supervisor.create({ kind: 'runtime-dir', resourceId: 'runtime', locator: { path: `${dir}/runtime` } });
+    await supervisor.create({ kind: 'netns', resourceId: 'network', locator: { netns: LOCATOR_ID } });
+    const created = await supervisor.create({ kind: 'process-tree', resourceId: 'helper', marker: MARKER, spec: { role: 'terminal', cwd: '/home/robot' } });
+    assert.equal(launched.length, 1);
+    assert.equal(launched[0].role, 'workload');
+    assert.deepEqual(launched[0].stdio, ['pipe', 'pipe', 'pipe']);
+    assert.deepEqual(launched[0].grants, []);
+    assert.deepEqual(launched[0].argv, ['/usr/bin/node', '/fixed-helper.mjs']);
+    assert.equal(launched[0].home.fd, homeFd);
+    await assert.rejects(supervisor.create({ kind: 'endpoint', resourceId: 'forbidden', spec: {} }), /unsupported resource/u);
+    assert.ok(created.handle.stdio[1]);
+    await supervisor.exit();
+});

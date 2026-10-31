@@ -147,7 +147,7 @@ class WorkerState {
     #checkCapacity(db, table, limit) {
         // Terminal admissions (schema 9, M-8) have their own cap in the terminal path and never take an AI admission's place.
         const count = table === 'admission'
-            ? db.prepare(`SELECT COUNT(*) AS count FROM admission WHERE kind != '${TERMINAL_KIND}'`).get().count
+            ? db.prepare(`SELECT COUNT(*) AS count FROM admission WHERE kind NOT IN ('${TERMINAL_KIND}', 'utility')`).get().count
             : db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count;
         if (count >= limit) fail('capacity_exceeded');
     }
@@ -668,7 +668,7 @@ class WorkerState {
     #visibleReference(db, context, referenceId) {
         const reference = db.prepare('SELECT * FROM reference WHERE id = ?').get(referenceId);
         // A terminal's internal reference (schema 9) is never a task reference: no coordinator reads, lists or controls it.
-        if (!reference || reference.kind === TERMINAL_KIND) fail('not_found');
+        if (!reference || [TERMINAL_KIND, 'utility'].includes(reference.kind)) fail('not_found');
         const bindingRow = coordinatorOf(context.originNamespace) !== null && context.originKey.startsWith('binding:');
         if (reference.kind === 'observation') {
             const obligation = getObligation(db, reference.obligation_id);
@@ -904,7 +904,7 @@ class WorkerState {
                 .get(context.originNamespace, context.originKey, request.originRequestId);
             if (!origin || origin.scope !== context.scope) fail('not_found');
             const originReference = db.prepare('SELECT kind FROM reference WHERE id = ?').get(origin.reference_id);
-            if (!originReference || originReference.kind === TERMINAL_KIND) fail('not_found');
+            if (!originReference || [TERMINAL_KIND, 'utility'].includes(originReference.kind)) fail('not_found');
             if (origin.obligation_id !== null) {
                 const reference = db.prepare('SELECT * FROM reference WHERE id = ?').get(origin.reference_id);
                 return {
@@ -1489,6 +1489,39 @@ class WorkerState {
         });
     }
 
+    // Internal robot utilities: same readiness and recovery contract as terminals, separate atomic caps.
+    admitUtility(request) {
+        exactObject(request, ['robotId', 'maxPerRobot', 'maxTotal']);
+        const robotId = validateInternalId(request.robotId);
+        for (const key of ['maxPerRobot', 'maxTotal']) if (!Number.isSafeInteger(request[key]) || request[key] < 1 || request[key] > 1024) fail('invalid_request');
+        return this.#mutate('admitUtility', (db, generation) => {
+            if (generation.recovery_pending) fail('recovery_pending');
+            const robot = db.prepare('SELECT * FROM robot WHERE id = ?').get(robotId);
+            if (!robot || robot.owner_id !== `workspace:${this.#workspaceId}` || robot.lifecycle === 'deleted') fail('not_found');
+            if (robot.lifecycle === 'deleting' || robot.lifecycle === 'provisioning' || this.#hasPreparation(db, robotId)) fail('robot_busy');
+            this.#refuseQuarantinedRobot(db, robotId);
+            if (this.#adapter(() => this.#runtime.admissionReady({ generationId: generation.id, robotId })) !== true) fail('runtime_unavailable');
+            if (!this.#isReady(db, robot, generation, false)) fail('runtime_unavailable');
+            if (db.prepare("SELECT COUNT(*) AS count FROM admission WHERE kind = 'utility'").get().count >= this.#limits.admissions) fail('capacity_exceeded');
+            const count = (id) => db.prepare("SELECT COUNT(*) AS count FROM admission WHERE kind = 'utility' AND state IN ('queued', 'running', 'stopping') AND (? IS NULL OR robot_id = ?)").get(id, id).count;
+            if (count(robotId) >= request.maxPerRobot || count(null) >= request.maxTotal) fail('capacity_exceeded');
+            const executionId = randomId();
+            const attemptId = randomId();
+            const logicalId = randomId();
+            const referenceId = randomId();
+            const now = this.#now();
+            db.prepare(`INSERT INTO admission (execution_id, attempt_id, logical_id, logical_kind, generation_id, robot_id, config_revision, configuration, kind, specification, scope, owner_id, operation_id, state, result, created_at, updated_at)
+                VALUES (?, ?, ?, 'utility', ?, ?, ?, ?, 'utility', ?, ?, ?, ?, 'queued', NULL, ?, ?)`)
+                .run(executionId, attemptId, logicalId, generation.id, robotId, robot.revision, robot.configuration, canonicalJson({ version: 1 }),
+                    'provider:utilities', 'worker:utilities', randomId(), now, now);
+            db.prepare(`INSERT INTO reference (id, version, provider, namespace, origin_key, origin_id, kind, logical_id, attempt_id, execution_id, obligation_id, scope, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'utility', ?, ?, ?, NULL, ?, ?)`)
+                .run(referenceId, PROVIDER_REFERENCE_VERSION, this.#provider, 'provider:utilities', 'worker:utilities', randomId(), logicalId, attemptId, executionId, 'provider:utilities', now);
+            appendStateEvent(db, referenceId, { state: 'queued' }, now);
+            return { executionId, attemptId, robotId, configRevision: robot.revision };
+        });
+    }
+
     // The number of open (queued, running or stopping) robot terminals of one robot, or of the whole worker when `robotId` is absent.
     countOpenTerminals({ robotId } = {}) {
         if (robotId !== undefined) validateInternalId(robotId);
@@ -1501,7 +1534,7 @@ class WorkerState {
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) fail('invalid_request');
         // Terminal admissions (schema 9) are started by the terminal path, never by the dispatcher.
         return this.#state.snapshot((db) => db.prepare(`SELECT a.*, r.id AS reference_id FROM admission a JOIN reference r ON r.execution_id = a.execution_id
-            WHERE a.state = 'queued' AND a.generation_id = ? AND a.kind != '${TERMINAL_KIND}' ORDER BY a.rowid LIMIT ?`).all(this.#generationId, limit).map((row) => ({
+            WHERE a.state = 'queued' AND a.generation_id = ? AND a.kind NOT IN ('${TERMINAL_KIND}', 'utility') ORDER BY a.rowid LIMIT ?`).all(this.#generationId, limit).map((row) => ({
             executionId: row.execution_id, attemptId: row.attempt_id, referenceId: row.reference_id, robotId: row.robot_id,
             configRevision: row.config_revision, configuration: row.configuration === null ? null : JSON.parse(row.configuration),
             kind: row.kind, logicalId: row.logical_id, logicalKind: row.logical_kind, specification: JSON.parse(row.specification),
@@ -1513,7 +1546,7 @@ class WorkerState {
     // a running attempt of an earlier generation was interrupted by the rollover.
     listRunningAdmissions() {
         return this.#state.snapshot((db) => db.prepare(`SELECT a.execution_id, a.attempt_id, r.id AS reference_id FROM admission a JOIN reference r ON r.execution_id = a.execution_id
-            WHERE a.state = 'running' AND a.generation_id = ? AND a.kind != '${TERMINAL_KIND}' ORDER BY a.rowid`).all(this.#generationId)
+            WHERE a.state = 'running' AND a.generation_id = ? AND a.kind NOT IN ('${TERMINAL_KIND}', 'utility') ORDER BY a.rowid`).all(this.#generationId)
             .map((row) => ({ executionId: row.execution_id, attemptId: row.attempt_id, referenceId: row.reference_id })));
     }
 

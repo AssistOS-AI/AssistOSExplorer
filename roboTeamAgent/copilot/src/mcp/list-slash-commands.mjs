@@ -7,7 +7,7 @@ import { buildSlashCommandCatalog } from '../repl/SlashCommandHandler.mjs';
 import { createAnthropicSkillCatalog } from '../lib/skills/anthropicSkillCatalog.mjs';
 import { resolveSkillCatalogRoots } from '../lib/skills/cliSkillRoots.mjs';
 import { discoverTaskSkills } from '../../../server/skill-descriptor.mjs';
-import { createUnconfiguredEngine, workerModeSelected } from '../lib/execution/engineSelection.mjs';
+import { createExecutionEngine, createUnconfiguredEngine, workerModeSelected } from '../lib/execution/engineSelection.mjs';
 import { ConversationSessionStore } from '../lib/storage/conversationSessionStore.mjs';
 import { buildTaskCompletions, readWorkspaceTasks } from '../lib/tasks/workspaceTasks.mjs';
 
@@ -88,11 +88,13 @@ export async function loadAutocompleteCatalog(options = {}) {
         ? { sessionId: randomUUID(), cwd: workingDir, messages: [] } : null;
     const modelSubCommands = [{ name: 'default', description: 'Use the native backend default', argCompletions: [] }];
     let modelError;
-    const engine = options.engine || (worker ? { listModels: async () => { throw new Error('Model listing is not available through the worker.'); }, close: async () => {} } : createUnconfiguredEngine());
+    const engine = options.engine || (worker && options.robotStore && options.robotId
+        ? createExecutionEngine({ workerOptions: { workingDir, sessionStore: storedSessions, skillCatalog, robotStore: options.robotStore, robotId: options.robotId }, hop: options.workerHop })
+        : createUnconfiguredEngine());
     try {
         const current = options.sessionId ? storedSessions.loadSession(options.sessionId)
             : preview || await storedSessions.ensureCurrentSession();
-        const { models } = await engine.listModels({ sessionId: current.sessionId, signal: options.signal });
+        const { models } = await engine.listModels({ sessionId: preview ? undefined : current.sessionId, signal: options.signal });
         modelSubCommands.push(...models.map((model) => ({
             name: typeof model === 'string' ? model : model.id || model.name || model.key,
             description: model.description || '',
