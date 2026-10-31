@@ -405,31 +405,37 @@ test.describe('RoboWork robot terminals', () => {
         const chatPage = await context.newPage();
         let watcher;
         let watchResult;
+        let task;
         try {
             const a = await ctx.createRobot('-a');
             const b = await ctx.createRobot('-b');
             const first = await ctx.launch(a);
             const workerPid = workerMainPid(ctx.containers);
             // The probe has its own inherited-master positive control and rejects unreadable live fd tables.
-            watcher = spawn('podman', ['exec', ctx.containers.box, 'podman', 'exec', '-e', 'PTYLEAK_TERMINAL_ARGV=/bin/bash', ctx.containers.worker,
-                'node', '/code/tests/sandbox/live/ptyleak.mjs', '--watch', '180', '--worker-pid', String(workerPid)], { stdio: ['ignore', 'pipe', 'pipe'] });
+            watcher = spawn('podman', ['exec', '-i', ctx.containers.box, 'podman', 'exec', '-i', '-e', 'PTYLEAK_TERMINAL_ARGV=/bin/bash', ctx.containers.worker,
+                'node', '/code/tests/sandbox/live/ptyleak.mjs', '--watch', '180', '--controlled', '--worker-pid', String(workerPid)], { stdio: ['pipe', 'pipe', 'pipe'] });
             let stdout = ''; let stderr = '';
+            watcher.stdin.on('error', () => {}); // A closed control pipe is reported by watchResult/exit, never as success.
             watcher.stdout.on('data', (chunk) => { stdout += chunk; });
             watcher.stderr.on('data', (chunk) => { stderr += chunk; });
             watchResult = new Promise((resolve, reject) => {
                 watcher.on('error', reject);
-                watcher.on('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
+                watcher.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
             });
-            // Allow the positive control to finish and the watch to begin before launching B.
-            await page.waitForTimeout(1000);
+            watchResult.catch(() => {});
+            // Explicit readiness follows the inherited-master positive control and the first sampler observation.
+            await waitFor('fd watch measurement started', () => {
+                if (watcher.exitCode !== null) throw new Error(`fd watcher exited ${watcher.exitCode}`);
+                return stderr.includes('MEASUREMENT_READY');
+            });
             const second = await ctx.launch(b);
-            const task = chatTurn(chatPage, { robot: b.name, project: '', prompt: 'Use a shell command to run sleep 15, then printf TASK_B_DONE. Reply TASK_B_DONE.', timeoutMs: 5 * 60_000 });
+            task = chatTurn(chatPage, { robot: b.name, project: '', prompt: 'Use one shell command to run sleep 90, then printf TASK_B_DONE. Do not end or stop the command early. Reply TASK_B_DONE after it finishes.', timeoutMs: 5 * 60_000 });
+            task.catch(() => {});
             await waitFor('B AI admission running while both robot terminals remain open', () => {
                 const rows = readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: b.name }).executions;
                 return rows.some((row) => row.kind !== 'terminal' && row.state === 'running') && rows.some((row) => row.kind === 'terminal' && row.state === 'running');
             });
             expect((await terminalSnapshot(page, first)).exits).toEqual([]);
-            expect(await terminalCommand(page, second, 'echo TERMINAL_B_OK; ls -l /proc/$$/fd')).toContain('TERMINAL_B_OK');
             // Four terminals on A coexist with its task capacity; the fifth refuses without a fifth running admission.
             for (let index = 1; index < 4; index += 1) await ctx.launch(a);
             const capTarget = await robotTarget(page, a);
@@ -437,7 +443,28 @@ test.describe('RoboWork robot terminals', () => {
             expect(refusal.status).toBeGreaterThanOrEqual(400);
             expect(JSON.stringify(refusal.payload)).toContain('terminal_limit');
             expect(readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: a.name }).executions.filter((row) => row.kind === 'terminal' && row.state === 'running')).toHaveLength(4);
-            expect(await task).toContain('TASK_B_DONE');
+            await waitFor('fd watch covers every required live role', () => {
+                if (watcher.exitCode !== null) throw new Error(`fd watcher exited ${watcher.exitCode}`);
+                const rows = stderr.split('\n').filter((line) => line.includes('MEASUREMENT_COVERAGE '));
+                if (!rows.length) return false;
+                const counts = JSON.parse(rows.at(-1).split('MEASUREMENT_COVERAGE ')[1]);
+                return ['prep', 'bwrap', 'orchestration', 'endpoint', 'workload', 'terminal'].every((kind) => counts[kind] > 0);
+            }, { timeoutMs: 60_000, intervalMs: 100 });
+            const aRows = readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: a.name }).executions;
+            const bRows = readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: b.name }).executions;
+            expect(aRows.filter((row) => row.kind === 'terminal' && row.state === 'running')).toHaveLength(4);
+            expect(bRows.some((row) => row.kind !== 'terminal' && row.state === 'running')).toBe(true);
+            expect(bRows.some((row) => row.kind === 'terminal' && row.state === 'running')).toBe(true);
+            expect((await terminalSnapshot(page, first)).exits).toEqual([]);
+            expect((await terminalSnapshot(page, second)).exits).toEqual([]);
+            const monitors = [...aRows.map((row) => ({ ...row, group: 'terminal-a' })), ...bRows.map((row) => ({ ...row, group: row.kind === 'terminal' ? 'terminal-b' : 'ai' }))]
+                .filter((row) => row.state === 'running').flatMap((row) => row.blockers
+                .filter((blocker) => ['endpoint', 'process-tree'].includes(blocker.kind) && blocker.identity && blocker.settled_at === null)
+                .map((blocker) => ({ ...JSON.parse(blocker.identity), marker: markerOf(blocker), group: row.group })));
+            expect(monitors.length).toBeGreaterThan(0);
+            ctx.save('measurement-finish.json', { monitors, aRows, bRows });
+            // The watch validates exact ledger pid/startTime identities and stops before the task or terminals are torn down.
+            watcher.stdin.end(`${JSON.stringify({ type: 'finish', monitors })}\n`);
             const result = await watchResult;
             ctx.save('ptyleak.json', result.stdout);
             ctx.save('ptyleak-stderr.txt', result.stderr);
@@ -446,11 +473,14 @@ test.describe('RoboWork robot terminals', () => {
             expect(probe.errors).toEqual([]);
             expect(probe.pending, 'Missing process roles are incomplete coverage, never a pass').toEqual([]);
             for (const role of ['prep', 'bwrap', 'orchestration', 'endpoint', 'workload', 'terminal']) expect(probe.counts[role], `${role} actually sampled`).toBeGreaterThan(0);
+            expect(await terminalCommand(page, second, 'echo TERMINAL_B_OK; ls -l /proc/$$/fd')).toContain('TERMINAL_B_OK');
+            expect(await task).toContain('TASK_B_DONE');
         } finally {
-            // Stop only this test's finite watch process. The worker and its terminals are closed by product APIs below.
-            if (watcher && watcher.exitCode === null) watcher.kill('SIGTERM');
+            // Abort this measurement before product cleanup, even when setup or finish validation failed.
+            if (watcher && watcher.exitCode === null && !watcher.stdin.writableEnded) watcher.stdin.end('{"type":"abort"}\n');
             await watchResult?.catch(() => {});
             await stopChatTurn(chatPage);
+            await task?.catch(() => {});
             await chatPage.close();
             await cleanup(ctx, page);
         }
