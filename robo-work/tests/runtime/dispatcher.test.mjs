@@ -289,6 +289,19 @@ test('a lost execution whose ALA never exits keeps the loss as the reason', asyn
     assert.deepEqual(view(admitted).result.data, { reason: 'execution_lost', detail: 'endpoint_ended:endpoint_lost' });
 });
 
+test('F-R1: a clean ALA finish whose tree exit arrives about 1 s after the endpoint loss completes under the default exit grace', async (t) => {
+    const { dispatcher, runs, admit, view } = rig(t, { timeouts: { exitGraceMs: 10000 } });
+    const admitted = admit();
+    dispatcher.start();
+    await wait(() => runs.length === 1 && runs[0].prompt !== null, 'running');
+    runs[0].lose('endpoint_ended:endpoint_lost');
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    runs[0].finishWith('final text\n');
+    await wait(() => view(admitted).state === 'completed', 'completed', 5000);
+    assert.equal(view(admitted).result.outputText, 'final text');
+    assert.equal(runs[0].ended[0].classification, 'completed');
+});
+
 test('a sandbox launch failure is logged with its code and detail and recorded as the result detail', async (t) => {
     const failure = Object.assign(new Error('setup_failed: x'), { name: 'SandboxError', code: 'mask_unverified', detail: 'mask check' });
     const { dispatcher, admit, view, logs } = rig(t, { startFails: failure });

@@ -21,7 +21,7 @@ import { createAttemptWatchdog } from './attemptWatchdog.mjs';
 //
 // A failure before an execution exists ends the attempt directly through beginAttemptEnd.
 
-const DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 750, failureAbortMs: 100, humanInputGraceMs: 10000, inactivityTimeoutMs: 20 * 60 * 1000, maxAttemptMs: 4 * 60 * 60 * 1000, resultBytes: 512 * 1024 - 1024 });
+const DEFAULTS = Object.freeze({ maxConcurrent: 4, pollMs: 250, controlPollMs: 200, drainMs: 2000, exitGraceMs: 10000, failureAbortMs: 100, humanInputGraceMs: 10000, inactivityTimeoutMs: 20 * 60 * 1000, maxAttemptMs: 4 * 60 * 60 * 1000, resultBytes: 512 * 1024 - 1024 });
 const FATAL_READER_ENDS = new Set(['control_stream_violation', 'control_stall', 'stdin_stall', 'stdin_overflow', 'stdout_error']);
 const SKIPPED_TRANSITION = new Set(['robot_busy', 'operation_conflict', 'stale_generation', 'not_found']);
 
@@ -294,7 +294,9 @@ export function createDispatcher({
             let exit = await Promise.race([execution.exited, fatalSignal.promise.then(() => null), endedSignal.then(() => null)]);
             if (finishing !== null) { await finishing; return; }
             // An endpoint that ends because ALA died is reported first by the channel and a moment later by the process: when the process
-            // exits within the grace period, its exit code is the reason (the endpoint loss is only its echo).
+            // exits within the grace period, its exit code is the reason (the endpoint loss is only its echo). The tree's exit is the
+            // bwrap monitor's, after its namespace is torn down; it was observed live more than 750 ms after a clean ALA finish (F-R1),
+            // so the grace is generous: only a real loss pays it.
             if (exit === null && fatal?.reason === 'execution_lost') {
                 const late = await Promise.race([execution.exited, sleep(settings.exitGraceMs)]);
                 if (late && typeof late === 'object') { fatal = null; exit = late; }

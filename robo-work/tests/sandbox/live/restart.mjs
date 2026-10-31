@@ -124,7 +124,7 @@ export function judge({ before, after, log, restartedBy }) {
 
 // ---- driving podman ----------------------------------------------------------------------------------------------------------------------
 function args(argv) {
-    const options = { ...DEFAULTS, kill: false, verify: false, waitAttemptS: 300, graceS: 180, restartWaitS: 180, state: '/tmp/robo-work-restart-state.json', then: null };
+    const options = { ...DEFAULTS, kill: false, verify: false, waitAttemptS: 300, graceS: 420, restartWaitS: 180, state: '/tmp/robo-work-restart-state.json', then: null };
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index];
         const next = () => argv[(index += 1)];
