@@ -160,8 +160,9 @@ export async function terminateFlows(roboTeamApi, page, flowIds) {
     try {
       const current = (await roboTeamApi(page, { path: `api/roboflow/flows/${id}?logs=none` })).payload?.flow;
       if (!current || ['completed', 'failed', 'terminated'].includes(current.status)) continue;
-      const reply = await roboTeamApi(page, { method: 'POST', path: `api/roboflow/flows/${id}/terminate`, body: {} });
-      results.push({ flow: id, status: reply.status });
+      // The exact path that mints the owner grant a worker phase's stop needs; the per-flow /terminate route answers 403 owner_evidence_unavailable.
+      const reply = await roboTeamApi(page, { method: 'POST', path: 'api/roboflow/control', body: { flowId: id, action: 'terminate' } });
+      results.push({ flow: id, status: reply.status, ...(reply.status === 200 ? {} : { error: JSON.stringify(reply.payload).slice(0, 160) }) });
     } catch (error) { results.push({ flow: id, error: String(error?.message ?? error).slice(0, 200) }); }
   }
   return results;

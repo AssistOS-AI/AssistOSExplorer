@@ -50,10 +50,10 @@ export const workerRobotDirs = (workspaceRoot) => {
 // Reference event types other than the relayed ALA records and the lifecycle states (M-14 channel events).
 export const channelEvents = (execution) => execution.events.filter((event) => !['state', 'ala', 'truncated'].includes(event.type));
 
-export function singleTaskWorkflow({ name, prompt, allowsHumanInput = false }) {
+export function singleTaskWorkflow({ name, prompt, allowsHumanInput = false, skill = null }) {
   return {
     name, description: `Single-phase e2e workflow ${name}`, entryTaskId: 'p1',
-    tasks: [{ id: 'p1', name: 'Phase 1', prompt, skillsets: [], executionType: 'terminal', ...(allowsHumanInput ? { allowsHumanInput: true } : {}) }],
+    tasks: [{ id: 'p1', name: 'Phase 1', prompt, skillsets: skill ? [skill] : [], executionType: 'terminal', ...(allowsHumanInput ? { allowsHumanInput: true } : {}) }],
     edges: [],
   };
 }
@@ -94,4 +94,38 @@ export async function applySelectedModel(roboTeamApi, page, robot) {
   const model = process.env.SMOKE_ROBOWORK_MODEL || '';
   if (!model) return null;
   return applyModel(roboTeamApi, page, robot, model);
+}
+
+// RoboFlow picks any robot whose skills match a phase, including `default`, which keeps the deployment default model. When the scenarios run on
+// another model (SMOKE_ROBOWORK_MODEL), the phases are tied to the scenario robot instead: a marker skill that only this robot carries. The skill
+// repository is a small test-owned directory under the workspace; attaching it is idempotent. Returns the skill id, or null when no other model is
+// in use (then nothing is restricted).
+export async function restrictFlowsToRobot(roboTeamApi, page, { workspaceRoot, robotName }) {
+  if (!process.env.SMOKE_ROBOWORK_MODEL) return null;
+  const repository = path.join(workspaceRoot, 'e2e-skillrepo');
+  fs.mkdirSync(path.join(repository, 'e2e-marker'), { recursive: true });
+  fs.writeFileSync(path.join(repository, 'e2e-marker/SKILL.md'), '---\nname: e2e-marker\ndescription: Marker skill that only selects the scenario robot.\n---\n\nThis skill carries no instructions.\n');
+  const find = async () => (await roboTeamApi(page, { path: 'api/robots' })).payload.robots.find((robot) => robot.name === robotName);
+  // The id a workflow task must name is the skill's canonical id: the repository's absolute source path plus the skill name (a relative `repo/skill`
+  // form is resolved against the workspace root and matches no robot).
+  const skillId = path.join(fs.realpathSync(repository), 'e2e-marker');
+  let robot = await find();
+  if (!robot) throw new Error(`Robot ${robotName} does not exist; the preflight or an earlier test creates it.`);
+  let id = robot?.repositories?.find((entry) => entry.id === 'e2emark') ? skillId : null;
+  if (!id) {
+    const added = await roboTeamApi(page, { method: 'POST', path: `api/robots/${robot.id}/skillsets`, body: { name: 'e2emark', source: repository, description: 'e2e marker repository' } });
+    if (added.status !== 200) throw new Error(`Could not attach the marker skill: HTTP ${added.status} ${JSON.stringify(added.payload).slice(0, 200)}`);
+    robot = await find();
+    id = robot?.repositories?.find((entry) => entry.id === 'e2emark') ? skillId : null;
+  }
+  if (!id) throw new Error('The marker skill id is not visible on the scenario robot.');
+  return id;
+}
+
+// POST to a RoboTeam API path through the APIRequestContext (same session cookies, mutation proof and Origin), so that an EXPECTED refusal (for
+// example 409 for a repeated answer) is not logged by the browser as a console error that the strict page diagnostics count against the test.
+export async function postQuietly(page, basePath, apiPath, body) {
+  const proof = await page.evaluate(async () => (await (await fetch('/auth/token?mutationRoute=roboTeamAgent', { credentials: 'include', cache: 'no-store' })).json()).browserMutation);
+  const reply = await page.request.post(`${basePath}${apiPath}`, { headers: { origin: new URL(page.url()).origin, 'x-ploinky-browser-csrf-token': proof.csrfToken, 'content-type': 'application/json', accept: 'application/json' }, data: JSON.stringify(body) });
+  return { status: reply.status(), payload: await reply.json().catch(() => ({})) };
 }

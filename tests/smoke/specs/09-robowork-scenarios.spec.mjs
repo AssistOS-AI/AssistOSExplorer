@@ -15,7 +15,7 @@ import {
 import {
   ProviderStall, makeStallGuard, terminateFlows, sleep, waitFor, readLedgerSince, markerOf, terminalEvent, queuedEvent, toolOutputs, finalText, workerProcesses, orphanReport, isClean, apiOk,
 } from '../lib/robowork-scenarios.mjs';
-import { stopChatTurn, applySelectedModel } from '../lib/robowork-interaction.mjs';
+import { stopChatTurn, applySelectedModel, restrictFlowsToRobot } from '../lib/robowork-interaction.mjs';
 
 // RoboWork r10 e2e scenarios on a live deployment (run `node scripts/run-robowork-e2e.mjs specs/09-robowork-scenarios.spec.mjs`).
 //   SMOKE_ROBOWORK_FLOW=1     (A) two-phase RoboFlow: both phases run as worker executions, in order, with the right files
@@ -100,12 +100,12 @@ function protectedUnchanged(fixture) {
 
 // ---- RoboFlow helpers
 
-async function createTwoPhaseWorkflow(page, { name, p1, p2 }) {
+async function createTwoPhaseWorkflow(page, { name, p1, p2, skill = null }) {
   const body = {
     name, description: `Two-phase e2e workflow ${name}`, entryTaskId: 'p1',
     tasks: [
-      { id: 'p1', name: 'Phase 1', prompt: p1, skillsets: [], executionType: 'terminal' },
-      { id: 'p2', name: 'Phase 2', prompt: p2, skillsets: [], executionType: 'terminal' },
+      { id: 'p1', name: 'Phase 1', prompt: p1, skillsets: skill ? [skill] : [], executionType: 'terminal' },
+      { id: 'p2', name: 'Phase 2', prompt: p2, skillsets: skill ? [skill] : [], executionType: 'terminal' },
     ],
     edges: [{ id: 'e1', sourceTaskId: 'p1', targetTaskId: 'p2' }],
   };
@@ -218,6 +218,7 @@ test.describe('RoboWork scenarios', () => {
     const attempts = [];
     let outcome = null;
     await openRoboTeam(page);
+    const skill = await restrictFlowsToRobot(roboTeamApi, page, { workspaceRoot: ctx.workspaceRoot, robotName });
     startPoller(ctx.containers);
     try {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -225,7 +226,7 @@ test.describe('RoboWork scenarios', () => {
         const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
         const nonce = crypto.randomBytes(6).toString('hex');
         const prompts = phasePrompts(nonce);
-        const workflow = await createTwoPhaseWorkflow(page, { name: `e2e two phase ${stamp()}`, ...prompts });
+        const workflow = await createTwoPhaseWorkflow(page, { name: `e2e two phase ${stamp()}`, ...prompts, skill });
         ctx.save(`${dir}/workflow.json`, workflow);
         // Only opencode robots exist (the unusable e2e robots were deleted), so any matching robot can run a phase.
         expect(workflow.coverage.tasks.every((task) => task.matchingRobotIds.length > 0), 'every task has a matching robot').toBe(true);
@@ -329,7 +330,11 @@ test.describe('RoboWork scenarios', () => {
         const execution = ledger.executions.at(-1);
         const outputs = execution ? toolOutputs(execution) : [];
         ctx.save(`${dir}/tool-outputs.json`, outputs);
-        const leaked = sentinelHits(JSON.stringify(execution?.events ?? []) + answer, [lateSentinel, ...fixture.sentinels]);
+        // The new task shares the chat conversation with the first one, so the model may legitimately remember (and repeat) what the first task read.
+        // The late sentinel is therefore checked in what the SANDBOX returned to the new task (its tool outputs), not in the model's own text; the
+        // fixture sentinels are checked everywhere.
+        const leaked = [...sentinelHits(outputs.map((output) => output.text).join('\n'), [lateSentinel, ...fixture.sentinels]),
+          ...sentinelHits(JSON.stringify(execution?.events ?? []) + answer, fixture.sentinels)];
         const verdict = !execution ? { verdict: 'fail', reason: 'no worker execution' }
           : execution.state !== 'completed' ? { verdict: 'fail', reason: `execution ${execution.state}` }
           : leaked.length ? { verdict: 'fail', reason: 'a sentinel (including the late one) appeared for the new task' }
@@ -367,9 +372,10 @@ test.describe('RoboWork scenarios', () => {
     let finished = null;
     let flow = null;
     await openRoboTeam(page);
+    const skill = await restrictFlowsToRobot(roboTeamApi, page, { workspaceRoot: ctx.workspaceRoot, robotName });
     startPoller(ctx.containers);
     try {
-      const workflow = await createTwoPhaseWorkflow(page, { name: `e2e restart ${stamp()}`, ...prompts });
+      const workflow = await createTwoPhaseWorkflow(page, { name: `e2e restart ${stamp()}`, ...prompts, skill });
       const startMs = Date.now() - 1000;
       flow = await startFlow(page, { workflowId: workflow.id, folder: fixture.root, objective: `Restart e2e ${nonce}` });
       ctx.save('flow-started.json', flow);

@@ -11,7 +11,7 @@ import {
   discoverContainers, nestedLogsMerged, startPoller, stopPoller, readPoll, bwrapMarkerProcesses, createProjectFixture, sentinelHits, collectEnvironment, removeRunDirectory,
 } from '../lib/robowork-e2e.mjs';
 import { ProviderStall, makeStallGuard, terminateFlows, sleep, waitFor, readLedgerSince, markerOf, toolOutputs, workerProcesses, apiOk } from '../lib/robowork-scenarios.mjs';
-import { readControls, workerRobots, workerRobotDirs, channelEvents, singleTaskWorkflow, chatTurn, stopChatTurn, applySelectedModel } from '../lib/robowork-interaction.mjs';
+import { readControls, workerRobots, workerRobotDirs, channelEvents, singleTaskWorkflow, chatTurn, stopChatTurn, applySelectedModel, restrictFlowsToRobot, postQuietly } from '../lib/robowork-interaction.mjs';
 
 // RoboWork r10 e2e: worker channels and robot delete on a live deployment (run `node scripts/run-robowork-e2e.mjs specs/10-robowork-interaction.spec.mjs`).
 //   SMOKE_ROBOWORK_HUMAN=1    (D) a phase asks a question through require-human-input; answering continues it as a new admission
@@ -89,6 +89,7 @@ test.describe('RoboWork interaction scenarios', () => {
     const attempts = [];
     let kept = null;
     await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
+    const skill = await restrictFlowsToRobot(roboTeamApi, page, { workspaceRoot: ctx.workspaceRoot, robotName: process.env.SMOKE_ROBOWORK_ROBOT || 'e2e-bot' });
     startPoller(ctx.containers);
     try {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -97,7 +98,7 @@ test.describe('RoboWork interaction scenarios', () => {
         const prompt = 'This is an automated test on disposable synthetic files. You must ask the user exactly ONE question, using the required require-human-input skill, '
           + 'with exactly these three options: ALPHA, BRAVO, CHARLIE. Do not decide for the user. After the user answers, write the chosen answer text, exactly as '
           + 'chosen, followed by a newline, to the file answer.txt in the project directory with a shell command (printf), then reply DONE.';
-        const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body: singleTaskWorkflow({ name: `e2e human ${stamp()}`, prompt, allowsHumanInput: true }) }, [201])).workflow;
+        const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body: singleTaskWorkflow({ name: `e2e human ${stamp()}`, prompt, allowsHumanInput: true, skill }) }, [201])).workflow;
         const startMs = Date.now() - 1000;
         const flow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/flows', body: { workflowTypeId: workflow.id, folder: fixture.root, objective: `Human input e2e ${stamp()}` } }, [201])).flow;
         flowIds.push(flow.id);
@@ -129,7 +130,7 @@ test.describe('RoboWork interaction scenarios', () => {
           answerReply = await roboTeamApi(page, { method: 'POST', path: 'api/roboflow/human-input/answer', body: { flowId: flow.id, requestId: question.id, option: choice } });
           ctx.save(`${dir}/answer-reply.json`, { status: answerReply.status, flowStatus: answerReply.payload?.flow?.status, error: answerReply.payload?.error });
           expect(answerReply.status, `answer: ${JSON.stringify(answerReply.payload).slice(0, 300)}`).toBe(200);
-          secondReply = await roboTeamApi(page, { method: 'POST', path: 'api/roboflow/human-input/answer', body: { flowId: flow.id, requestId: question.id, option: choice } });
+          secondReply = await postQuietly(page, ROBOTEAM_BASE_PATH, 'api/roboflow/human-input/answer', { flowId: flow.id, requestId: question.id, option: choice });
           ctx.save(`${dir}/second-answer-reply.json`, { status: secondReply.status, error: secondReply.payload?.error });
           expect(secondReply.status, `the repeated answer must be refused: ${JSON.stringify(secondReply.payload).slice(0, 200)}`).toBe(409);
           const finished = await waitFor('the flow to finish after the answer', async () => { const current = await getFlow(page, flow.id); return flowTerminal(current) ? current : null; }, { timeoutMs: 6 * 60_000, intervalMs: 3000, check: guard });
@@ -193,6 +194,7 @@ test.describe('RoboWork interaction scenarios', () => {
     const attempts = [];
     let kept = null;
     await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
+    const skill = await restrictFlowsToRobot(roboTeamApi, page, { workspaceRoot: ctx.workspaceRoot, robotName: process.env.SMOKE_ROBOWORK_ROBOT || 'e2e-bot' });
     try {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
         const dir = `attempt-${attempt}`;
@@ -201,7 +203,7 @@ test.describe('RoboWork interaction scenarios', () => {
         const message = `BLOCKED-${nonce}: the required database is unavailable`;
         const prompt = 'This is an automated test on disposable synthetic files. This task cannot be fulfilled: the required database is unavailable and no workaround is allowed. '
           + `Report that with the bundled report-task-blocked skill, using exactly this message: ${message}   Do nothing else.`;
-        const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body: singleTaskWorkflow({ name: `e2e fail ${stamp()}`, prompt }) }, [201])).workflow;
+        const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body: singleTaskWorkflow({ name: `e2e fail ${stamp()}`, prompt, skill }) }, [201])).workflow;
         const startMs = Date.now() - 1000;
         const flow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/flows', body: { workflowTypeId: workflow.id, folder: fixture.root, objective: `Task failure e2e ${nonce}` } }, [201])).flow;
         flowIds.push(flow.id);
@@ -244,7 +246,8 @@ test.describe('RoboWork interaction scenarios', () => {
     test.skip(!DELETE, 'Opt in with SMOKE_ROBOWORK_DELETE=1.');
     test.setTimeout(30 * 60_000);
     const ctx = context('robot-delete');
-    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(ctx.workspaceRoot, project) }) });
+    let projectDir = null; // set once the scenario project exists (the guard scope reads it)
+    const guard = makeStallGuard({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, testInfo, scope: () => ({ cwd: projectDir && path.join(ctx.workspaceRoot, projectDir) }) });
     const outcome = { steps: [] };
     const record = (step) => { outcome.steps.push(step); ctx.save('outcome.json', outcome); };
     const robotsList = async () => (await apiOk(roboTeamApi, page, { path: 'api/robots' })).robots;
@@ -287,6 +290,7 @@ test.describe('RoboWork interaction scenarios', () => {
     const busy = await createRobot(`e2e-busy-${stamp()}`);
     created.push(busy.name);
     const project = ownProject(ctx, `e2e-delete-${stamp()}`);
+    projectDir = project;
     createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
     let turn = null;
     let chatPage = null;
@@ -367,7 +371,7 @@ test.describe('RoboWork interaction scenarios', () => {
       fs.writeFileSync(path.join(repository, 'e2e-marker/SKILL.md'), '---\nname: e2e-marker\ndescription: Marker skill that only selects the scenario robot.\n---\n\nThis skill carries no instructions.\n');
       await apiOk(roboTeamApi, page, { method: 'POST', path: `api/robots/${robot.id}/skillsets`, body: { name: 'e2emark', source: repository, description: 'e2e marker repository' } });
       const listed = (await apiOk(roboTeamApi, page, { path: 'api/robots' })).robots.find((entry) => entry.name === name);
-      const skillId = listed.repositories?.find((entry) => entry.id === 'e2emark')?.skills?.[0]?.id;
+      const skillId = listed.repositories?.find((entry) => entry.id === 'e2emark') ? path.join(fs.realpathSync(repository), 'e2e-marker') : null;
       expect(skillId, 'the marker skill id on the robot').toBeTruthy();
       const body = singleTaskWorkflow({ name: `e2e worker busy ${stamp()}`, prompt: 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: `sleep 70`   Then reply DONE.' });
       body.tasks[0].skillsets = [skillId];

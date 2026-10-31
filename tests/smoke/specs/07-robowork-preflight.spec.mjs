@@ -48,22 +48,28 @@ test('provider liveness: a tiny turn gets an answer', async ({ page }, testInfo)
   // One direct request per candidate from the worker's network: a provider quota (429 FreeUsageLimitError) is reported at once instead of after
   // minutes of stalled turns. The deployment default's model id comes from the robot's coding-agent config.
   const deploymentDefault = (await apiOk(roboTeamApi, page, { path: `api/robots/${e2e.id}/coding-agents` })).defaultModels?.opencode ?? '';
-  const ids = candidates.map((model) => (model || deploymentDefault).replace(/^opencode\//, ''));
-  const probes = probeZenModels(containers, [...new Set(ids)]);
+  // Only OpenCode Zen models (the deployment default and `opencode/...`) are probed against the Zen endpoint; a `soul-gateway/...` model is
+  // served by the local-llm agent and is proven by the tiny turn itself.
+  const zen = (model) => model === '' || model.startsWith('opencode/');
+  const idOf = (model) => (model || deploymentDefault).replace(/^opencode\//, '');
+  const probes = probeZenModels(containers, [...new Set(candidates.filter(zen).map(idOf))]);
   save('provider-probes.json', probes);
-  const probeOf = (model) => probes.find((entry) => entry.model === (model || deploymentDefault).replace(/^opencode\//, ''));
+  const probeOf = (model) => (zen(model) ? probes.find((entry) => entry.model === idOf(model)) : undefined);
   try {
     for (const model of candidates) {
+      // The direct probe is evidence only. It uses the anonymous key and can be refused (429) while the OpenCode client, which identifies itself
+      // differently, is served; the tiny turn below is what decides.
       const probe = probeOf(model);
-      if (probe && probe.status === 429) {
-        tried.push({ model: model || '(deployment default)', result: `quota: ${probe.type} (retry-after ${probe.retryAfterSeconds ?? '?'} s)`, ms: probe.ms });
-        continue;
-      }
       const startedMs = Date.now();
-      const entry = { model: model || '(deployment default)', startedAt: new Date().toISOString() };
+      const entry = { model: model || '(deployment default)', startedAt: new Date().toISOString(), ...(probe ? { directProbe: { status: probe.status, type: probe.type, retryAfterSeconds: probe.retryAfterSeconds ?? null } } : {}) };
       tried.push(entry);
       // '' is the deployment default: clear the robot's selection first, so the label is what actually runs.
-      const applied = await applyModel(roboTeamApi, page, e2e, model || null);
+      // Nothing to change when the robot already runs the candidate (a robot with an unfinished task refuses a PATCH with 409).
+      const current = (await apiOk(roboTeamApi, page, { path: `api/robots/${e2e.id}/coding-agents` })).models?.opencode ?? '';
+      const wanted = model || '';
+      const applied = (model ? current === wanted : (current === '' || current === deploymentDefault))
+        ? { status: 200, payload: { worker: 'unchanged' } }
+        : await applyModel(roboTeamApi, page, e2e, model || null);
       entry.apply = { status: applied.status, worker: applied.payload?.worker ?? applied.payload?.error ?? null };
       if (applied.status !== 200) { entry.result = 'not-applicable'; continue; }
       const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(workspaceRoot, project), robotName }), stallMs: Math.min(TURN_TIMEOUT_MS, 90_000), everyMs: 5_000 });
