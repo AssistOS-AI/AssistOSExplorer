@@ -8,7 +8,7 @@ import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { signIn } from '../lib/auth.mjs';
 import { setComposer } from '../lib/webchat.mjs';
-import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
+import { ROBOTEAM_BASE_PATH, roboTeamApi, conversationFromSkillsURL } from '../lib/conversation-skills.mjs';
 import {
   discoverContainers, nestedLogsMerged, startPoller, stopPoller, readPoll, bwrapMarkerProcesses, createProjectFixture, sentinelHits, collectEnvironment, removeRunDirectory,
 } from '../lib/robowork-e2e.mjs';
@@ -16,6 +16,7 @@ import {
   ProviderStall, makeStallGuard, terminateFlows, sleep, waitFor, readLedgerSince, markerOf, terminalEvent, queuedEvent, toolOutputs, finalText, workerProcesses, orphanReport, isClean, apiOk,
 } from '../lib/robowork-scenarios.mjs';
 import { stopChatTurn, applySelectedModel, restrictFlowsToRobot } from '../lib/robowork-interaction.mjs';
+import { pinChatTurnBaseline, currentChatTurnAnswer } from '../lib/robowork-chat-turn-identity.mjs';
 
 // RoboWork r10 e2e scenarios on a live deployment (run `node scripts/run-robowork-e2e.mjs specs/09-robowork-scenarios.spec.mjs`).
 //   SMOKE_ROBOWORK_FLOW=1     (A) two-phase RoboFlow: both phases run as worker executions, in order, with the right files
@@ -78,17 +79,36 @@ async function chatTurn(page, project, prompt, { timeoutMs = 5 * 60_000, robot =
     await expect(page.locator('#cmd')).toBeVisible();
     await page.waitForTimeout(4000);
   }
-  const before = await page.locator(BOT).count();
+  await expect(page.locator('#sessionsBtn')).toBeEnabled();
+  const selectedContext = () => page.locator('#sessionSettingsLink').getAttribute('href')
+    .then((href) => conversationFromSkillsURL(href, smokeConfig.baseURL));
+  const context = { ...await selectedContext(), cwd: path.join(smokeConfig.workspaceRoot, project) };
+  const metadataPath = path.join(context.cwd, '.roboteam/sessions', context.sessionId, 'config.json');
+  const readMetadata = () => {
+    const fd = fs.openSync(metadataPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try { return JSON.parse(fs.readFileSync(fd, 'utf8')); } finally { fs.closeSync(fd); }
+  };
+  const baseline = pinChatTurnBaseline(readMetadata(), context);
+  const beforeCount = await page.locator(BOT).count();
   await setComposer(page, prompt);
   await page.locator('#send').click();
   const deadline = Date.now() + timeoutMs;
+  let binding = null;
+  let last = null;
   for (;;) {
     await page.waitForTimeout(2000);
-    const texts = await page.locator(BOT).allTextContents();
+    const bubbles = await page.locator(BOT).evaluateAll((nodes) => nodes.map((bubble) => ({
+      messageId: bubble.parentElement?.getAttribute('data-message-id') || null,
+      text: bubble.getAttribute('data-full-text'),
+    })));
     const busy = await page.locator('#cancelBtn').isVisible().catch(() => false);
-    if (!busy && texts.length > before) return texts.slice(before).join('\n---\n');
+    const currentContext = await selectedContext();
+    const result = currentChatTurnAnswer({ baseline, metadata: readMetadata(), currentContext, bubbles, busy, binding });
+    binding = result.binding;
+    last = { beforeCount, currentCount: bubbles.length, busy, sessionId: currentContext.sessionId, ...binding };
+    if (result.answer !== null) return result.answer;
     if (check) await check();
-    if (Date.now() > deadline) throw new Error(`The turn did not finish within ${timeoutMs / 1000} s.`);
+    if (Date.now() > deadline) throw new Error(`The turn did not finish within ${timeoutMs / 1000} s. Identity state: ${JSON.stringify(last)}`);
   }
 }
 
