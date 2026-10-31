@@ -9,12 +9,13 @@ import { smokeConfig } from '../lib/config.mjs';
 import { signIn } from '../lib/auth.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
 import { discoverContainers, createProjectFixture, readLedger, nested, nestedLogsMerged, startPoller, readPoll, stopPoller, bwrapMarkerProcesses, removeRunDirectory } from '../lib/robowork-e2e.mjs';
-import { waitFor, apiOk, markerOf } from '../lib/robowork-scenarios.mjs';
+import { waitFor, apiOk, markerOf, workerProcesses } from '../lib/robowork-scenarios.mjs';
 import { applySelectedModel, chatTurn, stopChatTurn, postQuietly } from '../lib/robowork-interaction.mjs';
 import { projectManifest, runtimeIdentity, webttyRequest, robotTarget, launchTerminal, terminalCommand, terminalInput, terminalSnapshot, closeTerminal, settledTerminals, workerMainPid, providerProbe, shellQuote, requireRoboWorkGateFlags, CODING_AGENT_DISCOVERY_COMMAND, assertCodingAgentDiscovery } from '../lib/robowork-terminal.mjs';
 import { collectExactRoutingServerIdentity, workspaceHash } from '../lib/webtty-runtime-evidence.mjs';
 import { openExplorer, assertExplorerDirectory } from '../lib/explorer.mjs';
 import { extendTerminalFixture, terminalMatrixSource, networkInventorySource } from '../lib/robowork-terminal-matrix.mjs';
+import { deleteOwnRobotAfterUtilities } from '../lib/robowork-terminal-cleanup.mjs';
 
 // Fresh-deploy live suite. No restart is performed unless its specific flag is set.
 // SMOKE_ROBOWORK_TERMINALS=1: L1-L6/L8, M-51 logs, M-54 Close terminals, project launch latency.
@@ -84,12 +85,29 @@ async function cleanup(ctx, page) {
     }
     await page.goto(ROBOTEAM_BASE_PATH, { waitUntil: 'load' }).catch((error) => failures.push(String(error.message)));
     for (const robot of ctx.robots) {
+        const deletion = [];
         try {
             const ids = terminalIds(ctx, robot);
             if (ids.length) ctx.save(`settled-${robot.name}.json`, await settledTerminals({ ...ctx, scratchDir: ctx.evidenceDir, robotName: robot.name, executionIds: ids }));
-            const reply = await postQuietly(page, ROBOTEAM_BASE_PATH, 'api/control', { robotName: robot.name, operation: 'robot-delete' });
-            if (reply.status !== 200) failures.push(`Delete ${robot.name}: ${reply.status}`);
+            await deleteOwnRobotAfterUtilities({
+                robot, ownedNamePrefix: ctx.name,
+                readLedger: () => readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: robot.name }),
+                removeRobot: (robotId) => postQuietly(page, ROBOTEAM_BASE_PATH, 'api/control', { robotId, operation: 'robot-delete' }),
+                record: (event) => deletion.push(event),
+                confirmAbsent: async ({ workerRobotId, ledger }) => {
+                    expect(fs.existsSync(path.join(ctx.workspaceRoot, '.data/robo-work/robots', workerRobotId)), 'Deleted worker robot directory is absent').toBe(false);
+                    for (const row of ledger.executions) for (const blocker of row.blockers.filter((entry) => entry.process_bearing)) {
+                        const marker = markerOf(blocker);
+                        expect(marker, 'Released process-bearing resources have an identity marker').toBeTruthy();
+                        expect(workerProcesses(ctx.containers, marker), 'Deleted robot has no marked terminal, task or utility process').toEqual([]);
+                    }
+                    const listed = await roboTeamApi(page, { path: 'api/robots' });
+                    expect(listed.status).toBe(200);
+                    expect(listed.payload.robots.some((entry) => entry.id === robot.id || entry.name === robot.name), 'Deleted RoboTeam robot record is absent').toBe(false);
+                },
+            });
         } catch (error) { failures.push(String(error.message)); }
+        finally { ctx.save(`delete-${robot.name}.json`, deletion); }
     }
     ctx.save('cleanup.json', { failures, closeRobotScope: 'current ownership session; ledger and process checks cover all test admissions' });
     expect(failures, 'All test-owned terminal admissions settle; robots are removed').toEqual([]);
