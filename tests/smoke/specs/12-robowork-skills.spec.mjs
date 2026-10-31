@@ -8,10 +8,10 @@ import { smokeConfig } from '../lib/config.mjs';
 import { signIn } from '../lib/auth.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi, conversationFromSkillsURL, openConversationSkills, conversationSkillsState, setConversationSkill, refreshConversationSkills } from '../lib/conversation-skills.mjs';
 import { discoverContainers, readLedger, removeRunDirectory } from '../lib/robowork-e2e.mjs';
-import { apiOk, makeStallGuard, toolOutputs } from '../lib/robowork-scenarios.mjs';
+import { apiOk, makeStallGuard, toolOutputs, markerOf, workerProcesses } from '../lib/robowork-scenarios.mjs';
 import { chatTurn, stopChatTurn, applySelectedModel, postQuietly } from '../lib/robowork-interaction.mjs';
 import { projectManifest, runtimeIdentity, requireRoboWorkGateFlags } from '../lib/robowork-terminal.mjs';
-import { scopedSkillTurn, assertAdmittedMarker, throwScenarioFailures } from '../lib/robowork-skills-fixture.mjs';
+import { scopedSkillTurn, assertAdmittedMarker, throwScenarioFailures, freshSkillConversation, assertNoProjectGrant, deleteOwnSkillRobotAfterChat } from '../lib/robowork-skills-fixture.mjs';
 
 // H / S3-S4, fresh deployment only:
 // SMOKE_ROBOWORK_SKILLS=1 node scripts/run-robowork-e2e.mjs specs/12-robowork-skills.spec.mjs
@@ -48,7 +48,7 @@ test.describe('RoboWork admitted skills', () => {
             save('project-before.json', before);
             save('environment.json', runtimeIdentity(discoverContainers({ workspaceRoot })));
             let robot;
-            let ended = false;
+            let robotDeleted = false;
             let primaryError = null;
             let sessionId;
             let turnStartedMs;
@@ -64,13 +64,28 @@ test.describe('RoboWork admitted skills', () => {
                 assert.ok(!prompt.includes(nonce));
                 const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: startMs, scope: () => ({ cwd: withProject ? project : undefined, robotName: run }) });
                 const answer = await chatTurn(page, {
-                    robot: run, project: withProject ? path.basename(project) : '', prompt, check: withProject ? guard : null,
+                    // The outer CLI requires a metadata directory even when the worker receives no project grant.
+                    robot: run, project: withProject ? path.basename(project) : '.', prompt, check: withProject ? guard : null,
                     beforeSend: async (chatPage) => {
+                        const previousLink = await chatPage.locator('#sessionSettingsLink').getAttribute('href');
+                        await expect(chatPage.locator('#sessionsBtn')).toBeEnabled();
+                        await chatPage.locator('#sessionsBtn').click();
+                        await expect(chatPage.locator('#sessionList .wa-session-list-new')).toBeVisible();
+                        await chatPage.locator('#sessionList .wa-session-list-new').click();
+                        await expect.poll(async () => {
+                            try {
+                                freshSkillConversation({ previousLink, selectedLink: await chatPage.locator('#sessionSettingsLink').getAttribute('href'), origin: smokeConfig.baseURL, robotId: robot.id });
+                                return true;
+                            } catch { return false; }
+                        }).toBe(true);
+                        const fresh = freshSkillConversation({ previousLink, selectedLink: await chatPage.locator('#sessionSettingsLink').getAttribute('href'), origin: smokeConfig.baseURL, robotId: robot.id });
+                        save('fresh-conversation.json', fresh);
                         const settings = await openConversationSkills(chatPage);
                         let selectionError = null;
                         try {
                             const context = conversationFromSkillsURL(await chatPage.locator('#sessionSettingsLink').getAttribute('href'), smokeConfig.baseURL, { robotId: robot.id });
                             sessionId = context.sessionId;
+                            expect(sessionId).toBe(fresh.sessionId);
                             const initial = await conversationSkillsState(settings);
                             expect(initial.robotId).toBe(robot.id);
                             expect(initial.sessionId).toBe(sessionId);
@@ -95,7 +110,7 @@ test.describe('RoboWork admitted skills', () => {
                 save('ledger.json', ledger);
                 save('answer.txt', answer);
                 const execution = scopedSkillTurn(ledger, { sinceMs: turnStartedMs, cwd: withProject ? project : '', sessionId });
-                ended = true;
+                if (!withProject) assertNoProjectGrant(execution);
                 assertAdmittedMarker(execution, { name: skillName, path: fs.realpathSync(path.join(repository, skillName)) });
                 expect(answer, 'Only marker.txt supplied this nonce').toContain(nonce);
                 const outputs = toolOutputs(execution);
@@ -110,14 +125,33 @@ test.describe('RoboWork admitted skills', () => {
                 save('project-after.json', after);
                 expect(after, 'Every authored file and skill tree is unchanged; only exact root runtime state is reserved').toEqual(before);
             });
-            if (robot && ended) await cleanup(async () => {
-                // postQuietly works from the current WebChat page; avoid reopening the admin list and starting unrelated status utilities.
-                const removed = await postQuietly(page, ROBOTEAM_BASE_PATH, 'api/control', { robotId: robot.id, operation: 'robot-delete' });
-                save('robot-cleanup.json', removed);
-                expect(removed.status).toBe(200);
+            if (robot) await cleanup(async () => {
+                const events = [];
+                try {
+                    await deleteOwnSkillRobotAfterChat({
+                        robot, ownedNamePrefix: run,
+                        detachOwnChat: () => page.goto(ROBOTEAM_BASE_PATH, { waitUntil: 'load' }),
+                        readLedger: () => readLedger({ workspaceRoot, scratchDir: evidenceDir, robotName: run }),
+                        removeRobot: (robotId) => postQuietly(page, ROBOTEAM_BASE_PATH, 'api/control', { robotId, operation: 'robot-delete' }),
+                        record: (event) => events.push(event),
+                        confirmAbsent: async ({ workerRobotId, ledger }) => {
+                            expect(fs.existsSync(path.join(workspaceRoot, '.data/robo-work/robots', workerRobotId))).toBe(false);
+                            const containers = discoverContainers({ workspaceRoot });
+                            for (const row of ledger.executions) for (const blocker of row.blockers.filter((entry) => entry.process_bearing)) {
+                                const marker = markerOf(blocker);
+                                expect(marker).toBeTruthy();
+                                expect(workerProcesses(containers, marker), 'Deleted skill robot has no marked execution process').toEqual([]);
+                            }
+                            const listed = await roboTeamApi(page, { path: 'api/robots' });
+                            expect(listed.status).toBe(200);
+                            expect(listed.payload.robots.some((entry) => entry.id === robot.id || entry.name === robot.name)).toBe(false);
+                        },
+                    });
+                    robotDeleted = true;
+                } finally { save('robot-cleanup.json', events); }
             });
             // Retain a still-active robot's sources on failure; its read grants may still name these paths.
-            if (!robot || ended) await cleanup(() => {
+            if (!robot || robotDeleted) await cleanup(() => {
                 for (const directory of [repository, project]) removeRunDirectory({ workspaceRoot, name: path.basename(directory), prefixes: ['e2e-h-'] });
             });
             await cleanup(() => save('cleanup-errors.json', cleanupErrors.map((error) => ({ name: error.name, message: error.message }))));

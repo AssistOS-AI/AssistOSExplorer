@@ -5,7 +5,7 @@ import test from 'node:test';
 
 import { chatTurnUrl } from './robowork-interaction.mjs';
 import { projectManifest } from './robowork-terminal.mjs';
-import { scopedSkillTurn, assertAdmittedMarker, throwScenarioFailures } from './robowork-skills-fixture.mjs';
+import { scopedSkillTurn, assertAdmittedMarker, throwScenarioFailures, freshSkillConversation, assertNoProjectGrant, deleteOwnSkillRobotAfterChat } from './robowork-skills-fixture.mjs';
 
 test('no-project chat input omits workspace-dir; every nonempty root or invalid input reaches Router validation intact', () => {
     for (const project of [undefined, null, '']) {
@@ -57,6 +57,88 @@ const scope = { sinceMs: 1000, cwd: '/workspace/project', sessionId };
 const turn = (overrides = {}) => ({ execution_id: 'turn', robot_id: 'worker-robot', kind: 'turn', created_at: 1100,
     specification: { cwd: scope.cwd, sessionId }, state: 'completed', end_classification: 'completed', ...overrides });
 const ledger = (executions) => ({ robot: { id: 'worker-robot' }, executions });
+
+test('fresh conversation selection uses a new UUID and the exact robot, including root metadata sessions', () => {
+    const origin = 'http://localhost:8080';
+    const robotId = 'e2e-h-123456abcdef';
+    const link = (id, robot = robotId) => `/base-agent-additional-server/roboTeamAgent/3001/conversation-skills/${robot}/${id}`;
+    const previousLink = link(sessionId);
+    const freshId = '87654321-4321-4321-8321-cba987654321';
+    const selectedLink = link(freshId);
+    assert.equal(freshSkillConversation({ previousLink: null, selectedLink, origin, robotId }).sessionId, freshId);
+    assert.equal(freshSkillConversation({ previousLink, selectedLink, origin, robotId }).previousSessionId, sessionId);
+    assert.throws(() => freshSkillConversation({ previousLink, selectedLink: previousLink, origin, robotId }));
+    assert.throws(() => freshSkillConversation({ previousLink, selectedLink: link(freshId, 'another-robot'), origin, robotId }));
+    assert.throws(() => freshSkillConversation({ previousLink, selectedLink: null, origin, robotId }));
+});
+
+test('root metadata context never permits a worker project cwd, folder grant or ignore path', () => {
+    assertNoProjectGrant(turn({ specification: {} }));
+    assertNoProjectGrant(turn({ specification: { cwd: '', folders: [], ignore: [] } }));
+    for (const specification of [{ cwd: '/workspace' }, { folders: [{ path: '/workspace', access: 'write' }] }, { ignore: ['/workspace/.roboteam'] }]) {
+        assert.throws(() => assertNoProjectGrant(turn({ specification })));
+    }
+});
+
+function chatCleanupRig(replies) {
+    let time = 0; let calls = 0; let detached = false; let confirmed = false;
+    const robot = { id: 'own-chat-robot', name: 'e2e-h-123456abcdef' };
+    const state = { robot: { id: 'worker-robot', name: robot.name, lifecycle: 'ready' }, executions: [turn({ blockers: [{ release_state: 'released', retained: 0 }] })] };
+    const events = [];
+    const options = {
+        robot, ownedNamePrefix: robot.name,
+        now: () => time, sleep: async (ms) => { assert.ok(ms <= 1000); time += ms; },
+        detachOwnChat: async () => { detached = true; events.push('detach own chat'); },
+        readLedger: () => structuredClone(state),
+        removeRobot: async (id) => {
+            assert.equal(id, robot.id);
+            assert.equal(detached, true);
+            assert.ok(time >= 121_000, 'No delete before the documented disconnect grace and disposal margin');
+            events.push('delete');
+            const reply = replies[Math.min(calls++, replies.length - 1)];
+            if (reply.status === 200) state.robot.lifecycle = 'deleted';
+            return reply;
+        },
+        confirmAbsent: async () => { confirmed = true; events.push('confirmed absent'); },
+    };
+    return { options, state, events, calls: () => calls, confirmed: () => confirmed };
+}
+
+test('owned chat cleanup detaches before grace, and only the exact CLI usage refusal may retry', async (t) => {
+    const cliBusy = { status: 409, payload: { error: 'close the robot chat and stop its CLI tasks before deleting it' } };
+    const r = chatCleanupRig([cliBusy, { status: 200 }]);
+    await deleteOwnSkillRobotAfterChat(r.options);
+    assert.deepEqual(r.events, ['detach own chat', 'delete', 'delete', 'confirmed absent']);
+    for (const reply of [{ status: 409, payload: { error: 'stop the robot and its queued tasks before deleting it' } },
+        { status: 409, payload: { error: 'the robot has running or unsettled work; stop it first' } },
+        { status: 409, payload: { error: 'unknown refusal' } }, { status: 403 }, { status: 500 }]) {
+        await t.test(`${reply.status}/${reply.payload?.error || ''}`, async () => {
+            const refused = chatCleanupRig([reply]);
+            await assert.rejects(deleteOwnSkillRobotAfterChat(refused.options));
+            assert.equal(refused.calls(), 1);
+            assert.equal(refused.confirmed(), false);
+        });
+    }
+    const stuck = chatCleanupRig([cliBusy]);
+    await assert.rejects(deleteOwnSkillRobotAfterChat(stuck.options), /close the robot chat/);
+    assert.equal(stuck.calls(), 3);
+    assert.equal(stuck.confirmed(), false);
+});
+
+test('chat cleanup cannot detach/delete another robot or delete active AI work', async () => {
+    const other = chatCleanupRig([{ status: 200 }]);
+    other.options.robot = { ...other.options.robot, name: 'another-robot' };
+    await assert.rejects(deleteOwnSkillRobotAfterChat(other.options), /exactly the robot/);
+    assert.deepEqual(other.events, []);
+    const active = chatCleanupRig([{ status: 200 }]);
+    active.state.executions[0].state = 'running';
+    await assert.rejects(deleteOwnSkillRobotAfterChat(active.options), /Active or unsettled turn/);
+    assert.equal(active.calls(), 0);
+    const detached = chatCleanupRig([{ status: 200 }]);
+    detached.options.detachOwnChat = async () => { throw new Error('own navigation failed'); };
+    await assert.rejects(deleteOwnSkillRobotAfterChat(detached.options), /own navigation failed/);
+    assert.equal(detached.calls(), 0);
+});
 
 test('only documented utility admissions are excluded; exactly one scoped completed AI turn is required', () => {
     assert.equal(scopedSkillTurn(ledger([turn({ execution_id: 'old', created_at: 999 }), turn({ kind: 'utility' }), turn()]), scope).execution_id, 'turn');

@@ -28,7 +28,7 @@ function inspectLedger(ledger, robot, workerRobotId) {
 
 export async function deleteOwnRobotAfterUtilities({ robot, ownedNamePrefix, readLedger, removeRobot, confirmAbsent,
     now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), timeoutMs = 20_000, record = () => {} }) {
-    assert.match(ownedNamePrefix, /^e2e-term-[a-f0-9]{12}$/u);
+    assert.match(ownedNamePrefix, /^e2e-(?:term|h)-[a-f0-9]{12}$/u);
     assert.ok(robot.name === ownedNamePrefix || robot.name.startsWith(`${ownedNamePrefix}-`), 'Cleanup owns this exact run namespace');
     assert.ok(typeof robot.id === 'string' && robot.id.length > 0, 'Cleanup names the created RoboTeam robot ID');
     const initial = readLedger();
