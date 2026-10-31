@@ -23,7 +23,7 @@ import { readControls, workerRobots, workerRobotDirs, channelEvents, singleTaskW
 const HUMAN = process.env.SMOKE_ROBOWORK_HUMAN === '1';
 const FAILURE = process.env.SMOKE_ROBOWORK_FAILURE === '1';
 const DELETE = process.env.SMOKE_ROBOWORK_DELETE === '1';
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 2;
 const TERMINAL_FLOW = new Set(['completed', 'failed', 'terminated']);
 const stamp = () => Date.now().toString(36);
 

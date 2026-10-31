@@ -30,7 +30,7 @@ const LATE = process.env.SMOKE_ROBOWORK_LATE === '1';
 const RESTART = process.env.SMOKE_ROBOWORK_RESTART === '1';
 const robotName = process.env.SMOKE_ROBOWORK_ROBOT || 'e2e-bot';
 const BOT = '#chatList > .wa-message.in:not(.wa-typing):not(.wa-task-item) .wa-message-bubble';
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 2;
 const TERMINAL_FLOW = new Set(['completed', 'failed', 'terminated']);
 const stamp = () => Date.now().toString(36);
 
