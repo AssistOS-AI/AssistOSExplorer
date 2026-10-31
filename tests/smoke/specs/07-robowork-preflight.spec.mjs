@@ -7,8 +7,9 @@ import { smokeConfig } from '../lib/config.mjs';
 import { signIn } from '../lib/auth.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
 import { discoverContainers, collectEnvironment, probeZenModels } from '../lib/robowork-e2e.mjs';
-import { ProviderStall, makeStallGuard, apiOk } from '../lib/robowork-scenarios.mjs';
+import { ProviderStall, makeStallGuard, apiOk, readLedgerSince } from '../lib/robowork-scenarios.mjs';
 import { chatTurn, stopChatTurn, applyModel } from '../lib/robowork-interaction.mjs';
+import { validatePreflightExecution } from '../lib/robowork-preflight-validation.mjs';
 
 // Provider-liveness preflight (run by scripts/run-robowork-e2e.mjs before a set, or alone with SMOKE_ROBOWORK_PREFLIGHT=1).
 // A tiny WebChat turn with a short timeout proves that the coding agent's model answers. If the deployment default stalls, other models that the
@@ -28,6 +29,8 @@ test('provider liveness: a tiny turn gets an answer', async ({ page }, testInfo)
   test.setTimeout(candidates.length * (TURN_TIMEOUT_MS + 60_000) + 60_000);
   const workspaceRoot = smokeConfig.workspaceRoot;
   assert.ok(path.isAbsolute(workspaceRoot), 'Set SMOKE_WORKSPACE_ROOT to the deployed workspace.');
+  const outputFile = process.env.SMOKE_ROBOWORK_PREFLIGHT_OUT;
+  assert.ok(!outputFile || !fs.existsSync(outputFile), 'Use a fresh preflight output filename; preserve previous model-selection evidence.');
   const evidenceDir = path.resolve(process.env.SMOKE_ROBOWORK_EVIDENCE || path.join(smokeConfig.artifactRoot, 'robowork'), 'preflight');
   fs.mkdirSync(evidenceDir, { recursive: true });
   const save = (name, value) => fs.writeFileSync(path.join(evidenceDir, name), typeof value === 'string' ? value : JSON.stringify(value, null, 2));
@@ -74,7 +77,14 @@ test('provider liveness: a tiny turn gets an answer', async ({ page }, testInfo)
       if (applied.status !== 200) { entry.result = 'not-applicable'; continue; }
       const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: startedMs - 1000, testInfo, scope: () => ({ cwd: path.join(workspaceRoot, project), robotName }), stallMs: Math.min(TURN_TIMEOUT_MS, 90_000), everyMs: 5_000 });
       try {
+        const cwd = path.join(workspaceRoot, project);
+        const previousExecutionIds = readLedgerSince({ workspaceRoot, scratchDir: evidenceDir, sinceMs: startedMs, cwd }).executions.map((row) => row.execution_id);
+        const turnStartedMs = Date.now();
         const answer = await chatTurn(page, { robot: robotName, project, prompt: 'Reply with the single word OK.', timeoutMs: TURN_TIMEOUT_MS, check: guard });
+        const observedAtMs = Date.now();
+        const ledger = readLedgerSince({ workspaceRoot, scratchDir: evidenceDir, sinceMs: turnStartedMs, cwd });
+        save(`candidate-${tried.length}-ledger.json`, ledger);
+        entry.worker = validatePreflightExecution({ executions: ledger.executions, robotName, cwd, startedMs: turnStartedMs, observedAtMs, previousExecutionIds });
         entry.result = 'answered';
         entry.answerChars = answer.length;
         entry.ms = Date.now() - startedMs;
@@ -93,15 +103,15 @@ test('provider liveness: a tiny turn gets an answer', async ({ page }, testInfo)
     save('candidates.json', tried);
     fs.rmSync(path.join(workspaceRoot, project), { recursive: true, force: true });
   }
-  if (!tried.some((entry) => entry.result === 'answered')) {
+  const result = { ok: tried.some((entry) => entry.result === 'answered'), selectedModel: selected || null, tried: tried.map((entry) => ({ model: entry.model, result: entry.result, ms: entry.ms, ...(entry.worker ? { worker: entry.worker } : {}) })), robotsTouched: [robotName] };
+  save('selected-model.json', result);
+  if (outputFile) fs.writeFileSync(outputFile, JSON.stringify(result), { flag: 'wx' });
+  await testInfo.attach('preflight', { body: JSON.stringify(result, null, 2), contentType: 'application/json' });
+  if (!result.ok) {
     // Nothing answered: the e2e robot goes back to the deployment default before the test fails.
     await applyModel(roboTeamApi, page, e2e, null);
     save('candidates.json', tried);
     testInfo.annotations.push({ type: 'provider-down', description: 'no free model answered a tiny turn' });
     expect(selected, `no model answered a tiny turn: ${JSON.stringify(tried)}`).not.toBeNull();
   }
-  const result = { ok: tried.some((entry) => entry.result === 'answered'), selectedModel: selected || null, tried: tried.map((entry) => ({ model: entry.model, result: entry.result, ms: entry.ms })), robotsTouched: [robotName] };
-  save('selected-model.json', result);
-  if (process.env.SMOKE_ROBOWORK_PREFLIGHT_OUT) fs.writeFileSync(process.env.SMOKE_ROBOWORK_PREFLIGHT_OUT, JSON.stringify(result));
-  await testInfo.attach('preflight', { body: JSON.stringify(result, null, 2), contentType: 'application/json' });
 });
